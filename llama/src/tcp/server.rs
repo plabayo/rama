@@ -23,6 +23,11 @@ impl<'a> Default for Options<'a> {
     }
 }
 
+// TODO: how do common Http frameworks deal with handlers blocking exit,
+// without requiring to expose something like a task?!
+//
+// asking as we probably want to implement the same thing here...
+
 pub trait Handler<IO>: Clone + Send + Sized + 'static
 where
     IO: io::AsyncRead + io::AsyncWrite + Unpin,
