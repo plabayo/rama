@@ -1,0 +1,12 @@
+[package]
+name = "llama"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = {version = "1", features = ["io-util", "io-std", "net", "time", "rt-multi-thread", "macros", "tracing"]}
+tokio-task-manager = "0.2"
+num_cpus = "1"
+thiserror = "1"
+tracing = "0.1"
+futures-core = "0.3"
