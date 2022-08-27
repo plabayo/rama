@@ -50,7 +50,7 @@ where
     }
 }
 
-pub async fn serve<'a, H>(mut task: Task, handler: H, opt: Option<Options<'a>>) -> Result<()>
+pub async fn serve<H>(mut task: Task, handler: H, opt: Option<Options<'_>>) -> Result<()>
 where
     H: Handler<TcpStream>,
 {
