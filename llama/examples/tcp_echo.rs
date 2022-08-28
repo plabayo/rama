@@ -10,5 +10,5 @@ async fn handle(_task: Task, stream: TcpStream) -> Result<()> {
 }
 
 pub fn main() -> Result<()> {
-    Runtime::new(Server::new(handle)).run()
+    Runtime::new(Server::new(handle).listen_addr("127.0.0.1:20018")).run()
 }

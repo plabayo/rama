@@ -52,8 +52,8 @@ where
         }
     }
 
-    pub fn listen_addr<T: AsRef<str> + 'a>(&mut self, listen_addr: &'a T) -> &mut Self {
-        self.listen_addr = Some(listen_addr.as_ref());
+    pub fn listen_addr(mut self, listen_addr: &'a str) -> Self {
+        self.listen_addr = Some(listen_addr);
         self
     }
 
