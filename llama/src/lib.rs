@@ -3,6 +3,7 @@ pub fn add(left: usize, right: usize) -> usize {
 }
 
 pub mod error;
+pub mod runtime;
 pub mod tcp;
 
 #[cfg(test)]

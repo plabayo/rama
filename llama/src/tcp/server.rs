@@ -32,6 +32,7 @@ where
     }
 }
 
+#[derive(Clone)]
 pub struct Server<'a, H>
 where
     H: Handler<TcpStream>,
