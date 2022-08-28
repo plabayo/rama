@@ -4,7 +4,7 @@ use tokio::runtime::Builder;
 use tokio_task_manager::{Task, TaskManager};
 
 use llama::error::Result;
-use llama::tcp::serve;
+use llama::tcp::Server;
 
 async fn handle<IO>(_task: Task, stream: IO) -> Result<()>
 where
@@ -29,7 +29,7 @@ pub fn main() -> Result<()> {
 
     runtime.block_on(async move {
         tokio::spawn(async move {
-            if let Err(err) = serve(task, handle, None).await {
+            if let Err(err) = Server::new(handle).serve(task).await {
                 panic!("tcp-echo exited with an error: {}", err);
             }
         });

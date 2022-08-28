@@ -8,25 +8,7 @@ use tokio::task;
 use tokio_task_manager::Task;
 use tracing::{debug, error};
 
-#[derive(Debug)]
-pub struct Options<'a> {
-    pub listen_addr: Option<&'a str>,
-}
-
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:4040";
-
-impl<'a> Default for Options<'a> {
-    fn default() -> Self {
-        Self {
-            listen_addr: Some(DEFAULT_LISTEN_ADDR),
-        }
-    }
-}
-
-// TODO: how do common Http frameworks deal with handlers blocking exit,
-// without requiring to expose something like a task?!
-//
-// asking as we probably want to implement the same thing here...
 
 pub trait Handler<IO>: Clone + Send + Sized + 'static
 where
@@ -50,38 +32,58 @@ where
     }
 }
 
-pub async fn serve<H>(mut task: Task, handler: H, opt: Option<Options<'_>>) -> Result<()>
+pub struct Server<'a, H>
 where
     H: Handler<TcpStream>,
 {
-    let opt = opt.unwrap_or_default();
-    let listen_addr = opt.listen_addr.unwrap_or(DEFAULT_LISTEN_ADDR);
+    handler: H,
+    listen_addr: Option<&'a str>,
+}
 
-    let listener = TcpListener::bind(listen_addr).await?;
+impl<'a, H> Server<'a, H>
+where
+    H: Handler<TcpStream>,
+{
+    pub fn new(handler: H) -> Self {
+        Self {
+            handler,
+            listen_addr: None,
+        }
+    }
 
-    debug!("starting TCP accept loop...");
-    loop {
-        let accept_result = tokio::select! {
-            r = listener.accept() => r,
-            _ = task.wait() => {
-                return Ok(());
-            }
-        };
-        let socket = match accept_result {
-            Ok((socket, _)) => socket,
-            Err(err) => {
-                error!("TCP loop: accept result: {}", err);
-                continue;
-            }
-        };
+    pub fn listen_addr<T: AsRef<str> + 'a>(&mut self, listen_addr: &'a T) -> &mut Self {
+        self.listen_addr = Some(listen_addr.as_ref());
+        self
+    }
 
-        let task = task.clone();
-        let handler = handler.clone();
+    pub async fn serve(self, mut task: Task) -> Result<()> {
+        let listen_addr = self.listen_addr.unwrap_or(DEFAULT_LISTEN_ADDR);
+        let listener = TcpListener::bind(listen_addr).await?;
 
-        task::spawn(async move {
-            if let Err(err) = handler.call(task, socket).await {
-                error!("tcp stream handle error = {:#}", err);
-            }
-        });
+        debug!("starting TCP accept loop...");
+        loop {
+            let accept_result = tokio::select! {
+                r = listener.accept() => r,
+                _ = task.wait() => {
+                    return Ok(());
+                }
+            };
+            let socket = match accept_result {
+                Ok((socket, _)) => socket,
+                Err(err) => {
+                    error!("TCP loop: accept result: {}", err);
+                    continue;
+                }
+            };
+
+            let task = task.clone();
+            let handler = self.handler.clone();
+
+            task::spawn(async move {
+                if let Err(err) = handler.call(task, socket).await {
+                    error!("tcp stream handle error = {:#}", err);
+                }
+            });
+        }
     }
 }

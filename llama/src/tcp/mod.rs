@@ -1,3 +1,3 @@
 mod server;
 
-pub use server::{serve, Handler, Options};
+pub use server::{Handler, Server};
