@@ -2,7 +2,6 @@ use crate::error::Result;
 
 use std::future::Future;
 use std::pin::Pin;
-use tokio::io;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task;
 use tokio_task_manager::Task;
@@ -10,41 +9,31 @@ use tracing::{debug, error};
 
 const DEFAULT_LISTEN_ADDR: &str = "127.0.0.1:4040";
 
-pub trait Handler<IO>: Clone + Send + Sized + 'static
-where
-    IO: io::AsyncRead + io::AsyncWrite + Unpin,
-{
+pub trait Handler: Clone + Send + Sized + 'static {
     type Future: Future<Output = Result<()>> + Send + 'static;
 
-    fn call(self, task: Task, stream: IO) -> Self::Future;
+    fn call(self, task: Task, stream: TcpStream) -> Self::Future;
 }
 
-impl<F, Fut, IO> Handler<IO> for F
+impl<F, Fut> Handler for F
 where
-    F: FnOnce(Task, IO) -> Fut + Clone + Send + 'static,
+    F: FnOnce(Task, TcpStream) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = Result<()>> + Send,
-    IO: io::AsyncRead + io::AsyncWrite + Unpin + Send + 'static,
 {
     type Future = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 
-    fn call(self, task: Task, stream: IO) -> Self::Future {
+    fn call(self, task: Task, stream: TcpStream) -> Self::Future {
         Box::pin(async move { self(task, stream).await })
     }
 }
 
 #[derive(Clone)]
-pub struct Server<'a, H>
-where
-    H: Handler<TcpStream>,
-{
+pub struct Server<'a, H: Handler> {
     handler: H,
     listen_addr: Option<&'a str>,
 }
 
-impl<'a, H> Server<'a, H>
-where
-    H: Handler<TcpStream>,
-{
+impl<'a, H: Handler> Server<'a, H> {
     pub fn new(handler: H) -> Self {
         Self {
             handler,
