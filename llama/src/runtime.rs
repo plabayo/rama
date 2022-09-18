@@ -1,5 +1,5 @@
 use crate::error::Result;
-use crate::tcp::{Handler, Server};
+use crate::tcp::{Server, TcpService};
 
 use std::{future::Future, pin::Pin, time::Duration};
 use tokio::runtime::Builder;
@@ -11,7 +11,10 @@ pub trait Application: Clone + Send + Sized + 'static {
     fn run(self, task: Task) -> Self::Future;
 }
 
-impl<H: Handler> Application for Server<'static, H> {
+impl<S: TcpService + Send + Clone + 'static> Application for Server<'static, S>
+where
+    S::Future: Send,
+{
     type Future = Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 
     fn run(self, task: Task) -> Self::Future {

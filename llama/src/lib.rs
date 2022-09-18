@@ -2,9 +2,12 @@ pub fn add(left: usize, right: usize) -> usize {
     left + right
 }
 
-pub mod error;
 pub mod runtime;
+pub mod service;
 pub mod tcp;
+
+mod error;
+pub use error::{Error, Result};
 
 #[cfg(test)]
 mod tests {

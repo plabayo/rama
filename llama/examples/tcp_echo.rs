@@ -1,14 +1,15 @@
 use tokio::{io, net::TcpStream};
-use tokio_task_manager::Task;
+use tower::util::service_fn;
 
-use llama::{error::Result, runtime::Runtime, tcp::Server};
+use llama::{runtime::Runtime, tcp::Server, Result};
 
-async fn handle(_task: Task, stream: TcpStream) -> Result<()> {
+async fn handle(stream: TcpStream) -> Result<()> {
     let (mut reader, mut writer) = io::split(stream);
     io::copy(&mut reader, &mut writer).await?;
     Ok(())
 }
 
 pub fn main() -> Result<()> {
-    Runtime::new(Server::new(handle).listen_addr("127.0.0.1:20018")).run()
+    let service = service_fn(handle);
+    Runtime::new(Server::new(service).listen_addr("127.0.0.1:20018")).run()
 }

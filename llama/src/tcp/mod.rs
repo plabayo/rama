@@ -1,3 +1,5 @@
 mod server;
+mod service;
 
-pub use server::{Handler, Server};
+pub use server::Server;
+pub use service::TcpService;
