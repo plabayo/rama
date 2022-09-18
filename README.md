@@ -10,6 +10,9 @@ it's services all the way down.
 
 Tracking of active issues/features that require urgent attention:
 
+- use Service properly from within TCP Server:
+    - call ready first before using it, to make sure service is ready;
+    - do not require to clone it, instead we probably want to do something else, but not sure what;
 - do not require TCPService::Future to be Send, most likely we need to implement our own future instead...
 - do not require services to be Clone, as services in the ecosystem do not require that by default
 - incoming connections:

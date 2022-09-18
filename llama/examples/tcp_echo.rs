@@ -1,7 +1,10 @@
 use std::task::{Context, Poll};
 
 use tokio::{io, net::TcpStream};
-use tower::util::service_fn;
+use tower::{
+    util::service_fn,
+    limit::ConcurrencyLimit,
+};
 
 use llama::{runtime::Runtime, service::Service, tcp::Server, Result};
 
@@ -49,5 +52,6 @@ where
 pub fn main() -> Result<()> {
     let service = service_fn(handle);
     let service = LogService::new("TCP Echo Example", service);
+    let service = ConcurrencyLimit::new(service, 1);
     Runtime::new(Server::new(service).listen_addr("127.0.0.1:20018")).run()
 }
