@@ -1,37 +1,20 @@
 # llama
 
-```
-┌────────────────────────────────────────────────────────┐                                ┌┐ ┌┐ ┌───┐ ┌──────┐ ┌───┐
-│┼──────────────────────────────────────────────────────┼│                                ││ ││ │┼┼┼│ │┼─┼┼─┼│ │┼┼┼│
-││                                                      ││                                ││ ││ │┼─┼│ ││ ││ ││ │┼─┼│
-││ ┌─────────────────────────────────────┐              ││                                ││ ││ ││ ││ ││ ││ ││ ││ ││
-││ │┼───────────────────────────────────┼│              ││                                └┘ └┘ └┘ └┘ └┘ └┘ └┘ └┘ └┘
-││ ││                                   ││              ││
-││ ││ ┌───────────────────────────────┐ ││              ││                       ┌─────────────────────────────────┐
-││ ││ │┼─────────────────────────────┼│ ││              ││                       │┼───────────────────────────────┼│
-││ ││ ││                             ││ ││              ││                       ││                               ││
-││ ││ ││ ┌─────────────┐             ││ ││              ││                       ││ ┌─────────────┐               ││
-││ ││ ││ │┼───────────┼│             ││ ││              ││                       ││ │┼───────────┼│               ││
-││ ││ ││ ││tcp::server││ tls::server ││ ││ http::client ││ ─────► target ◄─────  ││ ││tcp::server││ socks5::proxy ││
-││ ││ ││ │┼───────────┼│             ││ ││              ││                       ││ │┼───────────┼│               ││
-││ ││ ││ └─────────────┘             ││ ││              ││                       ││ └─────────────┘               ││
-││ ││ ││                             ││ ││              ││                       ││                               ││
-││ ││ │┼─────────────────────────────┼│ ││              ││                       │┼───────────────────────────────┼│
-││ ││ └───────────────────────────────┘ ││              ││                       └─────────────────────────────────┘
-││ ││                                   ││              ││
-││ ││     http::server                  ││              ││                               ▲
-││ ││                                   ││              ││                               │
-││ │┼───────────────────────────────────┼│              ││                               │
-││ └─────────────────────────────────────┘              ││ ◄────────── user ─────────────┘
-││                                                      ││
-│┼──────────────────────────────────────────────────────┼│
-└────────────────────────────────────────────────────────┘
-```
-
-llama is a proxy framework written purely in Rust.
+llama is a proxy framework written purely in Rust,
+it's services all the way down.
 
 > llama is in early development and not ready for production use yet.
 > Use this framework at your own risk and your own responsibility.
+
+## Issue backlog
+
+Tracking of active issues/features that require urgent attention:
+
+- do not require TCPService::Future to be Send, most likely we need to implement our own future instead...
+- do not require services to be Clone, as services in the ecosystem do not require that by default
+- incoming connections:
+  - make sure that process is closed only when all tasks are released
+  - do add an opt-in feature for a timeout where possible
 
 ## Goals
 
