@@ -6,7 +6,7 @@ use tower::{
     limit::ConcurrencyLimit,
 };
 
-use llama::{runtime::Runtime, service::Service, tcp::Server, Result};
+use proxy_llama::{runtime::Runtime, service::Service, tcp::Server, Result};
 
 async fn handle(stream: TcpStream) -> Result<()> {
     let (mut reader, mut writer) = io::split(stream);
