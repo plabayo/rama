@@ -1,7 +1,14 @@
 [package]
+categories = ["asynchronous", "network-programming"]
 edition = "2021"
 name = "llama"
 version = "0.1.0"
+description = "a proxy framework using Tokio written purely in Rust"
+homepage = "https://github.com/plabayo/llama"
+keywords = ["io", "async", "non-blocking", "futures"]
+license = "MIT"
+readme = "../README.md"
+repository = "https://github.com/plabayo/llama"
 
 [dependencies]
 futures-core = "0.3"
