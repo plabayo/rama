@@ -8,8 +8,6 @@ The name is Japanese for rama, the mascot and spiritual inspiration of this prox
 > rama is in early development and not ready for production use yet.
 > Use this framework at your own risk and your own responsibility.
 
-Look into [rama's README](./rama/README.md) for more information.
-
 ## Issue backlog
 
 Tracking of active issues/features that require urgent attention:
