@@ -61,7 +61,7 @@ tcp::Server
              ⤷ tcp::Client ⭢ /target/
 ```
 
-Look into [pango's README](./pango/README.md) for more information.
+Look into [pango's README](./pangotls/README.md) for more information.
 
 ## Issue backlog
 
