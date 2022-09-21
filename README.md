@@ -14,9 +14,9 @@ llama is the monorepo for [rama (ラマ)](./rama) and [pango](#pango).
 [docs-badge]: https://img.shields.io/docsrs/rama/latest
 [docs-url]: https://docs.rs/rama/latest/rama/index.html
 [mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
-[mit-url]: https://github.com/plabayo/rama/blob/master/LICENSE
-[actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
-[actions-url]: https://github.com/plabayo/rama/actions?query=workflow%3ACI+branch%main
+[mit-url]: https://github.com/plabayo/llama/blob/master/LICENSE
+[actions-badge]: https://github.com/plabayo/llama/workflows/CI/badge.svg
+[actions-url]: https://github.com/plabayo/llama/actions?query=workflow%3ACI+branch%main
 
 rama is a proxy framework using Tokio written purely in Rust,
 it's services all the way down.
@@ -28,16 +28,30 @@ The name is Japanese for rama, the mascot and spiritual inspiration of this prox
 
 Look into [rama's README](./rama/README.md) for more information.
 
-## Pango
+## pango
 
-Pango is a cross platform TLS Reverse Proxy, written purely in Rust, built on top of [rama](./rama).
+[![Crates.io][crates-badge]][crates-url]
+[![Docs.rs][docs-badge]][docs-url]
+[![MIT licensed][mit-badge]][mit-url]
+[![Build Status][actions-badge]][actions-url]
+
+[crates-badge]: https://img.shields.io/crates/v/pango.svg
+[crates-url]: https://crates.io/crates/pango
+[docs-badge]: https://img.shields.io/docsrs/pango/latest
+[docs-url]: https://docs.rs/pango/latest/pango/index.html
+[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+[mit-url]: https://github.com/plabayo/llama/blob/master/LICENSE
+[actions-badge]: https://github.com/plabayo/llama/workflows/CI/badge.svg
+[actions-url]: https://github.com/plabayo/llama/actions?query=workflow%3ACI+branch%main
+
+pango is a cross platform TLS Reverse Proxy, written purely in Rust, built on top of [rama](./rama).
 It can be used either as a standalone binary where it is used as part of your backend infrastructure,
-or as a library in order to use Pango as a [Tower][tower] service which wraps your _Http_ service.
+or as a library in order to use pango as a [Tower][tower] service which wraps your _Http_ service.
 
 [Axum](https://github.com/tokio-rs/axum) is the recommended http server library of choice
 should you wanna go for the latter approach, as it will fit nicely with the rest of the code.
 
-Here is a high level overview of how Pango's services are composed:
+Here is a high level overview of how pango's services are composed:
 
 ```
 tcp::Server
@@ -46,6 +60,8 @@ tcp::Server
          ⤷ tls::middleware::*
              ⤷ tcp::Client ⭢ /target/
 ```
+
+Look into [pango's README](./pango/README.md) for more information.
 
 ## Issue backlog
 

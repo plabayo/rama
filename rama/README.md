@@ -1,5 +1,19 @@
 # rama (ラマ)
 
+[![Crates.io][crates-badge]][crates-url]
+[![Docs.rs][docs-badge]][docs-url]
+[![MIT licensed][mit-badge]][mit-url]
+[![Build Status][actions-badge]][actions-url]
+
+[crates-badge]: https://img.shields.io/crates/v/rama.svg
+[crates-url]: https://crates.io/crates/rama
+[docs-badge]: https://img.shields.io/docsrs/rama/latest
+[docs-url]: https://docs.rs/rama/latest/rama/index.html
+[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+[mit-url]: https://github.com/plabayo/llama/blob/master/LICENSE
+[actions-badge]: https://github.com/plabayo/llama/workflows/CI/badge.svg
+[actions-url]: https://github.com/plabayo/llama/actions?query=workflow%3ACI+branch%main
+
 rama is a proxy framework using Tokio written purely in Rust,
 it's services all the way down.
 
