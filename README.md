@@ -35,10 +35,10 @@ Look into [rama's README](./rama/README.md) for more information.
 [![MIT licensed][mit-badge]][mit-url]
 [![Build Status][actions-badge]][actions-url]
 
-[crates-badge]: https://img.shields.io/crates/v/pango.svg
-[crates-url]: https://crates.io/crates/pango
-[docs-badge]: https://img.shields.io/docsrs/pango/latest
-[docs-url]: https://docs.rs/pango/latest/pango/index.html
+[crates-badge]: https://img.shields.io/crates/v/pangotls.svg
+[crates-url]: https://crates.io/crates/pangotls
+[docs-badge]: https://img.shields.io/docsrs/pangotls/latest
+[docs-url]: https://docs.rs/pangotls/latest/pangotls/index.html
 [mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [mit-url]: https://github.com/plabayo/llama/blob/master/LICENSE
 [actions-badge]: https://github.com/plabayo/llama/workflows/CI/badge.svg
