@@ -1,4 +1,4 @@
-use pango::hello;
+use pangotls::hello;
 
 fn main() {
     hello();

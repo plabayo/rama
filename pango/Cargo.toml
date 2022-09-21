@@ -11,7 +11,7 @@ license = "MIT"
 repository = "https://github.com/plabayo/llama"
 
 [lib]
-name = "pango"
+name = "pangotls"
 path = "src/lib/lib.rs"
 
 [[bin]]
