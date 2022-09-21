@@ -1,10 +1,11 @@
 [package]
 categories = ["asynchronous", "network-programming"]
 edition = "2021"
-name = "proxy-llama"
+name = "rama"
 version = "0.1.0"
-description = "a proxy framework using Tokio written purely in Rust"
+description = "proxy framework using Tokio written purely in Rust"
 homepage = "https://github.com/plabayo/llama"
+readme = "README.md"
 keywords = ["io", "async", "non-blocking", "futures"]
 license = "MIT"
 repository = "https://github.com/plabayo/llama"
