@@ -1,4 +1,4 @@
-# llama
+![rama banner](./docs/img/banner.png)
 
 llama is the monorepo for [rama (ラマ)](./rama) and [pango](#pango).
 
@@ -21,10 +21,7 @@ llama is the monorepo for [rama (ラマ)](./rama) and [pango](#pango).
 rama is a proxy framework using Tokio written purely in Rust,
 it's services all the way down.
 
-The name is Japanese for rama, the mascot and spiritual inspiration of this proxy framework.
-
-> rama is in early development and not ready for production use yet.
-> Use this framework at your own risk and your own responsibility.
+The name is Japanese for llama, the mascot and spiritual inspiration of this proxy framework.
 
 Look into [rama's README](./rama/README.md) for more information.
 
@@ -45,8 +42,8 @@ Look into [rama's README](./rama/README.md) for more information.
 [actions-url]: https://github.com/plabayo/llama/actions?query=workflow%3ACI+branch%main
 
 pango is a cross platform TLS Reverse Proxy, written purely in Rust, built on top of [rama](./rama).
-It can be used either as a standalone binary where it is used as part of your backend infrastructure,
-or as a library in order to use pango as a [Tower][tower] service which wraps your _Http_ service.
+
+It can be used either as a standalone binary where it is used as part of your backend infrastructure, or as a library in order to use pango as a [Tower](https://github.com/tower-rs/tower) service which wraps your _Http_ service.
 
 [Axum](https://github.com/tokio-rs/axum) is the recommended http server library of choice
 should you wanna go for the latter approach, as it will fit nicely with the rest of the code.
