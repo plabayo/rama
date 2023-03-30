@@ -1,10 +1,7 @@
 use std::task::{Context, Poll};
 
 use tokio::{io, net::TcpStream};
-use tower::{
-    util::service_fn,
-    limit::ConcurrencyLimit,
-};
+use tower::{limit::ConcurrencyLimit, util::service_fn};
 
 use rama::{runtime::Runtime, service::Service, tcp::Server, Result};
 

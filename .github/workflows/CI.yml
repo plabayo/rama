@@ -193,9 +193,6 @@ jobs:
     - name: Install cargo-sort
       run: |
         cargo install cargo-sort
-    - name: Remove non-crate folder
-      run: rm -rf ushift-webiste || true
-      working-directory: .
     - name: Check dependency tables
       working-directory: .
       run: |
