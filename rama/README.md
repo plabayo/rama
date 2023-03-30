@@ -17,6 +17,8 @@
 rama is a proxy framework using Tokio written purely in Rust,
 it's services all the way down.
 
+> The name "ラマ (rama)" is Japanese for llama, the mascot and spiritual inspiration of this proxy framework.
+
 ```
 ┌────────────────────────────────────────┐      ┌──────────────────────────────────────┐
 │inbound                                 │      │outbound                              │
@@ -32,8 +34,6 @@ it's services all the way down.
 which should allow you to focus only on the config of the proxy and any custom services
 you might wish to use.
 ```
-
-> The name is Japanese for llama, the mascot and spiritual inspiration of this proxy framework.
 
 ## Goals
 
