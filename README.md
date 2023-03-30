@@ -59,20 +59,3 @@ tcp::Server
 ```
 
 Look into [pango's README](./pangotls/README.md) for more information.
-
-## Issue backlog
-
-Tracking of active issues/features that require urgent attention:
-
-- use Service properly from within TCP Server:
-    - call ready first before using it, to make sure service is ready;
-    - do not require to clone it, instead we probably want to do something else, but not sure what;
-- do not require TCPService::Future to be Send, most likely we need to implement our own future instead...
-- do not require services to be Clone, as services in the ecosystem do not require that by default
-- incoming connections:
-  - make sure that process is closed only when all tasks are released
-  - do add an opt-in feature for a timeout where possible
-  - see <https://docs.rs/hyper/0.14.20/src/hyper/server/server.rs.html#153-159>
-    for inspiration how we might instead allow for opt-in graceful shutdown behavior
-- server will need to implement future, will be the way to go to keep things as efficient as possible,
-  same for other services
