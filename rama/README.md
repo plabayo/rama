@@ -1,4 +1,4 @@
-# rama (ラマ)
+![rama banner](../docs/img/banner.png)
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
@@ -17,7 +17,23 @@
 rama is a proxy framework using Tokio written purely in Rust,
 it's services all the way down.
 
-The name is Japanese for llama, the mascot and spiritual inspiration of this proxy framework.
+```
+┌────────────────────────────────────────┐      ┌──────────────────────────────────────┐
+│inbound                                 │      │outbound                              │
+├──────────┬─────────────────────────────┤      ├──────────────────────────────────────┤      ┌──────┐
+│transports│services                     │      │handlers                              │      │Target│
+├──────────┼─────────────────────────────┤ ◄──► ├──────────────────────────────────────┤ ◄──► ├──────┤
+│          │AsyncRW -> Result<AsyncRW>   │      │HTTP(S) Proxy, Socks5 Proxy, ...      │      │Proxy │
+├──────────┼─────────────────────────────┤      │                                      │      └──────┘
+│TCP       │TLS, Firewall, RateLimit, ...│      │        TODO: define this side better │
+└──────────┴─────────────────────────────┘      └──────────────────────────────────────┘
+
+`rama::managed::*` combines the above to give you an easy to use Proxy framework,
+which should allow you to focus only on the config of the proxy and any custom services
+you might wish to use.
+```
+
+> The name is Japanese for llama, the mascot and spiritual inspiration of this proxy framework.
 
 ## Goals
 
