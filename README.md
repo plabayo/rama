@@ -21,8 +21,6 @@
 rama is a proxy framework using Tokio written purely in Rust,
 with as primary goal to anonymise your network traffic.
 
-> The name "ラマ (rama)" is Japanese for llama, the mascot and spiritual inspiration of this proxy framework.
-
 rama can be used in two different ways:
 
 - `rama::core::*` contains all the building blocks to build your own (web) proxy,
@@ -113,3 +111,13 @@ This gives you [an accepted TcpStream](https://docs.rs/tokio/latest/tokio/net/st
 > _eBPF_ could help you achieve this, which can be done
 > using https://github.com/foniod/redbpf. Note though that this comes
 > with a lot of effort on your side while at the same time not giving a lot in return.
+
+## FAQ
+
+### Why the name rama?
+
+The name _rama_ is Japanese for llama and written as "ラマ".
+This animal is used as a our mascot and spiritual inspiration of this proxy framework.
+It was chosen to honor our connection with Peru, the homeland of this magnificent animal,
+and translated into Japanese because we gratefully have built _rama_
+upon the broad shoulders of the [Tokio and its community](https://tokio.rs/).
