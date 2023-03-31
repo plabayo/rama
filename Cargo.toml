@@ -1,6 +1,23 @@
-[workspace]
+[package]
+categories = ["asynchronous", "network-programming"]
+edition = "2021"
+name = "rama"
+version = "0.1.0"
+description = "proxy framework using Tokio written purely in Rust"
+homepage = "https://github.com/plabayo/llama"
+readme = "README.md"
+keywords = ["io", "async", "non-blocking", "futures"]
+license = "MIT"
+repository = "https://github.com/plabayo/llama"
 
-members = [
-  "pangotls",
-  "rama",
-]
+[dependencies]
+futures-core = "0.3"
+num_cpus = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["io-util", "io-std", "net", "time", "rt-multi-thread", "macros", "tracing"] }
+tokio-task-manager = "0.2"
+tower-service = "0.3"
+tracing = "0.1"
+
+[dev-dependencies]
+tower = { version = "0.4", features = ["util", "limit"] }
