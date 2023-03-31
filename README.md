@@ -14,6 +14,10 @@
 [actions-badge]: https://github.com/plabayo/llama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/llama/actions?query=workflow%3ACI+branch%main
 
+> rama is early work in progress, use at your own risk.
+>
+> Not everything that exists is documented and not everything that is documented is implemented.
+
 rama is a proxy framework using Tokio written purely in Rust,
 with as primary goal to anonymise your network traffic.
 
@@ -22,14 +26,14 @@ with as primary goal to anonymise your network traffic.
 rama can be used in two different ways:
 
 - `rama::core::*` contains all the building blocks to build your own (web) proxy,
-  which can be used to build any (web) proxy you can think of;
-- `rama::managed::*` combines the above to give you an easy to use Proxy builder and other web related services such as a TLS terminator and HTTP(S) mirror web service.
+  which can be used to build any (web) proxy you can think of (`[TODO: create]`);
+- `rama::managed::*` combines the above to give you an easy to use Proxy builder and other web related services such as a TLS terminator and HTTP(S) mirror web service (`[TODO: create]`).
 
-In the `/bin` folder your find a variety of ready-to-use binaries that use the `rama` crate internally:
+In the `/bin` folder there are a variety of ready-to-use binaries that use the `rama` crate internally:
 
-- `/bin/rama` has a ready to use `rama::managed::proxy`, usable as a pure transport layer proxy or a full blown MITM proxy;
-- `/bin/pango` has a ready to use `rama::managed::tls`, a TLS terminator;
-- `/bin/mirror` has a ready to use `rama::managed::mirror`, a HTTP(S) mirror web service that can be used to see incoming traffic and mock services for it;
+- `/bin/rama` has a ready to use `rama::managed::proxy`, usable as a pure transport layer proxy or a full blown MITM proxy (`[TODO: create]`);
+- `/bin/pango` has a ready to use `rama::managed::tls`, a TLS terminator (`[TODO: create]`);
+- `/bin/mirror` has a ready to use `rama::managed::mirror`, a HTTP(S) mirror web service that can be used to see incoming traffic and mock services for it (`[TODO: create]`);
 
 The `rama::core` can be summarized in one chart as follows:
 
