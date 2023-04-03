@@ -150,7 +150,7 @@ jobs:
       - uses: EmbarkStudios/cargo-deny-action@v1
         with:
           command: check ${{ matrix.checks }}
-          arguments: --all-features --manifest-path ushift/Cargo.toml
+          arguments: --all-features
 
   armv5te-unknown-linux-musleabi:
     needs: check
