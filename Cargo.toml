@@ -11,3 +11,4 @@ license = "MIT"
 repository = "https://github.com/plabayo/llama"
 
 [dependencies]
+tokio = { version = "1", features = ["full"] }
