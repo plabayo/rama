@@ -61,16 +61,16 @@ impl GracefulService {
 
     /// Wait indefinitely until the server can be gracefully shut down.
     pub async fn shutdown(mut self) {
-        let _ = self.shutdown.cancelled().await;
+        self.shutdown.cancelled().await;
         drop(self.shutdown_complete_tx);
-        let _ = self.shutdown_complete_rx.recv().await;
+        self.shutdown_complete_rx.recv().await;
     }
 
     /// Wait until the server is gracefully shutdown,
     /// but adding a max amount of time to wait since the moment
     /// a cancellation it desired.
     pub async fn shutdown_until(mut self, duration: Duration) -> Result<(), TimeoutError> {
-        let _ = self.shutdown.cancelled().await;
+        self.shutdown.cancelled().await;
         drop(self.shutdown_complete_tx);
         match tokio::time::timeout(duration, self.shutdown_complete_rx.recv()).await {
             Err(_) => Err(TimeoutError(())),
@@ -87,7 +87,7 @@ pub struct Token {
 
 impl Token {
     pub async fn shutdown(self) {
-        let _ = self.shutdown.cancelled().await;
+        self.shutdown.cancelled().await;
     }
 
     pub fn child_token(&self) -> Token {
