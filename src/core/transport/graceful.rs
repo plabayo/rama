@@ -3,10 +3,10 @@
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
+    future::Future,
     time::Duration,
 };
 
-use futures::Future;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 
