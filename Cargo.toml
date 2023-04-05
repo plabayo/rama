@@ -11,10 +11,10 @@ license = "MIT"
 repository = "https://github.com/plabayo/llama"
 
 [dependencies]
-anyhow = "1.0.70"
-pin-project-lite = "0.2.9"
-thiserror = "1.0.40"
+anyhow = "1"
+pin-project-lite = "0.2"
+thiserror = "1"
 tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7.7"
-tower-service = "0.3.2"
-tracing = "0.1.37"
+tokio-util = "0.7"
+tower-service = "0.3"
+tracing = "0.1"
