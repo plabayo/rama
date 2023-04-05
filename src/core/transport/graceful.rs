@@ -19,20 +19,7 @@ pub struct GracefulService {
 
 /// Create the service required to facilitate graceful shutdown within your server.
 pub fn service(signal: impl Future + Send + 'static) -> GracefulService {
-    let shutdown = CancellationToken::new();
-    let (shutdown_complete_tx, shutdown_complete_rx) = channel(1);
-
-    let token = shutdown.clone();
-    tokio::spawn(async move {
-        let _ = signal.await;
-        token.cancel();
-    });
-
-    GracefulService {
-        shutdown,
-        shutdown_complete_rx,
-        shutdown_complete_tx,
-    }
+    GracefulService::new(signal)
 }
 
 /// The error returned in case a graceful service that was blocked on shutdown
@@ -49,6 +36,23 @@ impl Display for TimeoutError {
 impl Error for TimeoutError {}
 
 impl GracefulService {
+    fn new(signal: impl Future + Send + 'static) -> Self {
+        let shutdown = CancellationToken::new();
+        let (shutdown_complete_tx, shutdown_complete_rx) = channel(1);
+
+        let token = shutdown.clone();
+        tokio::spawn(async move {
+            let _ = signal.await;
+            token.cancel();
+        });
+
+        Self {
+            shutdown,
+            shutdown_complete_rx,
+            shutdown_complete_tx,
+        }
+    }
+
     /// Create a new graceful token that can be used by a graceful service's
     /// child processes to indicate it is finished as well as to interrupt itself
     /// in case a shutdown is desired.
@@ -76,6 +80,13 @@ impl GracefulService {
             Err(_) => Err(TimeoutError(())),
             Ok(_) => Ok(()),
         }
+    }
+}
+
+impl Default for GracefulService {
+    fn default() -> Self {
+        let signal = tokio::signal::ctrl_c();
+        Self::new(signal)
     }
 }
 
