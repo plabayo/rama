@@ -116,7 +116,6 @@ jobs:
           --all
           --all-features
           --all-targets
-          --locked
         toolchain: ${{ env.MSRV }}
 
   test-docs:
