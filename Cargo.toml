@@ -17,5 +17,6 @@ pin-project = "1.0.12"
 pin-project-lite = "0.2.9"
 thiserror = "1.0.40"
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7.7"
 tower-service = "0.3.2"
 tracing = "0.1.37"
