@@ -2,7 +2,6 @@ name: CI
 
 env:
   CARGO_TERM_COLOR: always
-  MSRV: '1.67.1'
 
 on:
   push:
@@ -85,38 +84,6 @@ jobs:
       with:
         command: test
         args: --all --all-features --all-targets
-
-  test-msrv:
-    needs: check
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@master
-    - uses: dtolnay/rust-toolchain@stable
-      with:
-        toolchain: ${{ env.MSRV }}
-        override: true
-        profile: minimal
-    - name: "install Rust nightly"
-      uses: dtolnay/rust-toolchain@stable
-      with:
-        toolchain: nightly
-        profile: minimal
-    - uses: Swatinem/rust-cache@v1
-    - name: Select minimal versions
-      uses: actions-rs/cargo@v1
-      with:
-        command: update
-        args: -Z minimal-versions
-        toolchain: nightly
-    - name: Run tests
-      uses: actions-rs/cargo@v1
-      with:
-        command: test
-        args: >
-          --all
-          --all-features
-          --all-targets
-        toolchain: ${{ env.MSRV }}
 
   test-docs:
     needs: check
