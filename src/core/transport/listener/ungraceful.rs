@@ -15,7 +15,7 @@ pub trait Handler: Send {
     type Error: Send;
     type Future: Future<Output = Result<(), Self::Error>> + Send;
 
-    fn handle(&mut self) -> Self::Future;
+    fn handle(self) -> Self::Future;
 }
 
 pub fn server<L: Listener>(listener: L) -> Server<L> {
@@ -51,7 +51,7 @@ where
         let (tx, mut rx) = mpsc::channel(1);
 
         loop {
-            let mut handler = select! {
+            let handler = select! {
                 result = rx.recv() => Err(result.unwrap()),
                 result = self.listener.accept() => result,
             }?;

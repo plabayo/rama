@@ -5,7 +5,7 @@ use thiserror::Error;
 #[derive(Error, Debug)]
 pub enum Error {
     #[error("std I/O error")]
-    Disconnect(#[from] io::Error),
+    IO(#[from] io::Error),
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

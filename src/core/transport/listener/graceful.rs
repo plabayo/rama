@@ -1,8 +1,5 @@
 use std::{future::Future, time::Duration};
-use tokio::{
-    select,
-    sync::{broadcast, mpsc},
-};
+use tokio::sync::{broadcast, mpsc};
 
 use super::shutdown::Shutdown;
 
