@@ -75,7 +75,7 @@ where
     }
 }
 
-pub struct GracefulTcpStream(TcpStream, Token);
+pub struct GracefulTcpStream(pub(crate) TcpStream, pub(crate) Token);
 
 impl GracefulTcpStream {
     pub fn token(&self) -> Token {

@@ -36,7 +36,7 @@ impl Display for TimeoutError {
 impl Error for TimeoutError {}
 
 impl GracefulService {
-    fn new(signal: impl Future + Send + 'static) -> Self {
+    pub fn new(signal: impl Future + Send + 'static) -> Self {
         let shutdown = CancellationToken::new();
         let (shutdown_complete_tx, shutdown_complete_rx) = channel(1);
 
@@ -61,6 +61,11 @@ impl GracefulService {
             shutdown: self.shutdown.child_token(),
             _shutdown_complete: self.shutdown_complete_tx.clone(),
         }
+    }
+
+    /// Wait indefinitely until the server has its shutdown requested
+    pub async fn shutdown_req(&self) {
+        self.shutdown.cancelled().await;
     }
 
     /// Wait indefinitely until the server can be gracefully shut down.
