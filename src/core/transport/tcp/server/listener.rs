@@ -56,8 +56,12 @@ where
         loop {
             // accept incoming stream or handle a service error
             let result = tokio::select! {
-                res = tcp.accept() => { Ok(res) },
-                opt = error_rx.recv() => { Err(opt.unwrap()) },
+                res = tcp.accept() => {
+                    Ok(res)
+                },
+                opt = error_rx.recv() => {
+                    Err(opt.unwrap())
+                },
             };
 
             // unwrap the accept result if no service error was (yet) returned
