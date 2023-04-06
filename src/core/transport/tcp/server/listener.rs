@@ -82,7 +82,7 @@ where
                     tokio::spawn(async move {
                         if let Err(err) = service.call(stream).await {
                             // try to send the error to the main loop
-                            error_tx.send(err).await;
+                            let _ = error_tx.send(err).await;
                         }
                     });
                 }
@@ -195,7 +195,7 @@ impl<I, E> Builder<I, E, ()> {
     /// a graceful TCP listener which will shutdown once the "ctrl+c" signal is received (SIGINT).
     pub fn graceful_ctrl_c(self) -> Builder<I, E, GracefulConfig<impl Future<Output = ()>>> {
         self.graceful(async {
-            tokio::signal::ctrl_c().await;
+            let _ = tokio::signal::ctrl_c().await;
         })
     }
 }
@@ -210,7 +210,7 @@ impl<I, E, S> Builder<I, E, GracefulConfig<S>> {
     }
 }
 
-trait ToTcpListener {
+pub trait ToTcpListener {
     type Future: Future<Output = Result<TcpListener>>;
 
     fn into_tcp_listener(self) -> Self::Future;
@@ -225,7 +225,7 @@ impl ToTcpListener for TcpListener {
 }
 
 pin_project! {
-    struct SocketConfigToTcpListenerFuture<F> {
+    pub struct SocketConfigToTcpListenerFuture<F> {
         #[pin]
         future: F,
         ttl: Option<u32>,
