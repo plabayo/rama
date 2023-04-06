@@ -112,6 +112,25 @@ This gives you [an accepted TcpStream](https://docs.rs/tokio/latest/tokio/net/st
 > using https://github.com/foniod/redbpf. Note though that this comes
 > with a lot of effort on your side while at the same time not giving a lot in return.
 
+## Contributing
+
+:balloon: Thanks for your help improving the project! We are so happy to have
+you! We have a [contributing guide][contributing] to help you get involved in the
+`rama` project.
+
+## License
+
+This project is licensed under the [MIT license][license].
+
+### Contribution
+
+Unless you explicitly state otherwise, any contribution intentionally submitted
+for inclusion in `rama` by you, shall be licensed as MIT, without any
+additional terms or conditions.
+
+[contributing]: https://github.com/plabayo/rama/blob/main/CONTRIBUTING.md
+[license]: https://github.com/plabayo/rama/blob/main/rama/LICENSE
+
 ## FAQ
 
 ### Why the name rama?
