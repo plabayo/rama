@@ -1,8 +1,5 @@
-// TODO: get to understand tower's layer concept better...
-// and if useful, apply it
-
 use std::{
-    future::Future,
+    future::{self, Future},
     ops::{Deref, DerefMut},
     task::{Context, Poll},
 };
@@ -13,34 +10,35 @@ use tower_service::Service as TowerService;
 use super::{Error, Result};
 use crate::core::transport::graceful::Token;
 
+pub trait ErrorHandler {
+    type FutureAcceptErr: Future<Output = Result<()>>;
+    type FutureServiceErr: Future<Output = Result<()>>;
+
+    fn handle_accept_error(&self, err: Error) -> Self::FutureAcceptErr;
+    fn handle_service_error(&self, err: Error) -> Self::FutureServiceErr;
+}
+
+pub(crate) struct LogErrorHandler;
+
+impl ErrorHandler for LogErrorHandler {
+    type FutureAcceptErr = future::Ready<Result<()>>;
+    type FutureServiceErr = future::Ready<Result<()>>;
+
+    fn handle_accept_error(&self, err: Error) -> Self::FutureAcceptErr {
+        tracing::error!("tcp accept error: {}", err);
+        future::ready(Ok(()))
+    }
+
+    fn handle_service_error(&self, err: Error) -> Self::FutureServiceErr {
+        tracing::error!("tcp service error: {}", err);
+        future::ready(Ok(()))
+    }
+}
+
 pub trait ServiceFactory<Stream> {
     type Service: Service<Stream>;
 
     fn new_service(&self) -> Result<Self::Service>;
-}
-
-pub trait PermissiveServiceFactory<Stream> {
-    type Service: Service<Stream>;
-
-    fn handle_error(&self, error: Error) -> Result<()>;
-    fn new_service(&self) -> Result<Self::Service>;
-}
-
-impl<F, S, Stream> PermissiveServiceFactory<Stream> for F
-where
-    F: ServiceFactory<Stream, Service = S>,
-    S: Service<Stream>,
-{
-    type Service = S;
-
-    fn handle_error(&self, error: Error) -> Result<()> {
-        tracing::error!("tcp accept service error: {}", error);
-        Ok(())
-    }
-
-    fn new_service(&self) -> Result<Self::Service> {
-        self.new_service()
-    }
 }
 
 /// A tower-like service which is used to serve a TCP stream.
@@ -78,6 +76,12 @@ where
 }
 
 pub struct GracefulTcpStream(TcpStream, Token);
+
+impl GracefulTcpStream {
+    pub fn token(&self) -> Token {
+        self.1.child_token()
+    }
+}
 
 impl Deref for GracefulTcpStream {
     type Target = TcpStream;
