@@ -131,6 +131,14 @@ additional terms or conditions.
 [contributing]: https://github.com/plabayo/rama/blob/main/CONTRIBUTING.md
 [license]: https://github.com/plabayo/rama/blob/main/rama/LICENSE
 
+## Sponsors
+
+Support this project by becoming a [sponsor](https://github.com/sponsors/plabayo).
+
+### Platinum Sponsors
+
+[![OTA Insight Ltd. Logo](./docs/img/sponsor_ota_insight.png)](https://www.otainsight.com/)
+
 ## FAQ
 
 ### Why the name rama?
