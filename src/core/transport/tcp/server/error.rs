@@ -6,6 +6,8 @@ use thiserror::Error;
 pub enum Error {
     #[error("std I/O error")]
     IO(#[from] io::Error),
+    #[error("Graceful interupt error")]
+    Interupt,
     #[error(transparent)]
     Other(#[from] anyhow::Error),
 }

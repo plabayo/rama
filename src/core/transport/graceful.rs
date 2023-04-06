@@ -102,7 +102,7 @@ pub struct Token {
 }
 
 impl Token {
-    pub async fn shutdown(self) {
+    pub async fn shutdown(&self) {
         self.shutdown.cancelled().await;
     }
 

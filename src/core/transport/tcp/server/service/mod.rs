@@ -5,10 +5,11 @@ use std::{
 };
 
 use tokio::net::TcpStream;
-use tower_service::Service as TowerService;
 
 use super::{Error, Result};
 use crate::core::transport::graceful::Token;
+
+pub mod echo;
 
 pub trait ErrorHandler {
     type FutureAcceptErr: Future<Output = Result<()>>;
@@ -49,21 +50,6 @@ pub trait Service<Stream> {
     fn call(&mut self, stream: Stream) -> Self::Future;
 }
 
-impl<T, S> Service<S> for T
-where
-    T: TowerService<S, Response = (), Error = Error>,
-{
-    type Future = T::Future;
-
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        self.poll_ready(cx)
-    }
-
-    fn call(&mut self, stream: S) -> Self::Future {
-        self.call(stream)
-    }
-}
-
 impl<I, S> ServiceFactory<S> for I
 where
     I: Service<S> + Clone,
@@ -80,6 +66,14 @@ pub struct GracefulTcpStream(pub(crate) TcpStream, pub(crate) Token);
 impl GracefulTcpStream {
     pub fn token(&self) -> Token {
         self.1.child_token()
+    }
+
+    pub async fn shutdown(&self) {
+        self.1.shutdown().await;
+    }
+
+    pub fn into_inner(self) -> (TcpStream, Token) {
+        (self.0, self.1)
     }
 }
 
