@@ -1,8 +1,6 @@
 use std::time::Duration;
 
-use rama::core::transport::tcp::server::{
-    echo::echo, layer::log::LogLayer, Listener, Result,
-};
+use rama::core::transport::tcp::server::{echo::echo, layer::log::LogLayer, Listener, Result};
 
 #[tokio::main]
 async fn main() -> Result<()> {
