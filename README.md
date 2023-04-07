@@ -156,7 +156,7 @@ and (mobile) applications.
 Please [send an email to Glen at glen.decauwsemaecker@otainsight.com](mailto:glen.decauwsemaecker@otainsight.com),
 who is also the maintainer of `rama`, and apply now for this or other jobs at [OTA Insight Ltd.][OTA Insight Ltd.].
 
-We thank [OTA Insight Ltd.][OTA Insight Ltd.]. for their support of this project.
+We thank [OTA Insight Ltd.][OTA Insight Ltd.] for their support of this project.
 
 [OTA Insight Ltd.]: https://www.otainsight.com/
 
