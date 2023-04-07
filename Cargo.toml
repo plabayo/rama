@@ -21,3 +21,4 @@ tracing = "0.1"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["limit"] }
+tracing-subscriber = "0.3.16"

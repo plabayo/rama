@@ -189,7 +189,7 @@ where
     }
 }
 
-impl<F> Listener<F, LogErrorHandler> {
+impl Listener<(), LogErrorHandler> {
     pub fn bind<A: ToSocketAddrs>(
         addr: A,
     ) -> Builder<SocketConfig<StdTcpListener>, LogErrorHandler, ()> {

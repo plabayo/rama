@@ -19,7 +19,7 @@ pub trait ErrorHandler {
     fn handle_service_error(&self, err: Error) -> Self::FutureServiceErr;
 }
 
-pub(crate) struct LogErrorHandler;
+pub struct LogErrorHandler;
 
 impl ErrorHandler for LogErrorHandler {
     type FutureAcceptErr = future::Ready<Result<()>>;
@@ -88,5 +88,21 @@ impl Deref for GracefulTcpStream {
 impl DerefMut for GracefulTcpStream {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
+    }
+}
+
+impl<F, Fut, Stream> Service<Stream> for F
+where
+    F: FnMut(Stream) -> Fut,
+    Fut: Future<Output = Result<()>>,
+{
+    type Future = Fut;
+
+    fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<()>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, stream: Stream) -> Self::Future {
+        self(stream)
     }
 }
