@@ -21,14 +21,6 @@ impl<S> LogService<S> {
     }
 }
 
-impl<S> Layer<S> for LogService<S> {
-    type Service = Self;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        Self::new(inner)
-    }
-}
-
 impl<S, T> Service<T> for LogService<S>
 where
     S: Service<T>,
@@ -74,5 +66,15 @@ impl<F: Future> Future for LogFuture<F> {
                 Poll::Ready(output)
             }
         }
+    }
+}
+
+pub struct LogLayer;
+
+impl<S> Layer<S> for LogLayer {
+    type Service = LogService<S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        LogService::new(inner)
     }
 }
