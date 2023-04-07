@@ -137,7 +137,22 @@ Support this project by becoming a [sponsor](https://github.com/sponsors/plabayo
 
 ### Platinum Sponsors
 
-[![OTA Insight Ltd. Logo](./docs/img/sponsor_ota_insight.png)](https://www.otainsight.com/)
+[![OTA Insight Ltd. Logo](./docs/img/sponsor_ota_insight.png)][OTA Insight Ltd.]
+
+[OTA Insight Ltd.][OTA Insight Ltd.] is always [on the look for great talent](https://careers.otainsight.com/).
+They have many positions open, including a position for Senior Crawler Engineer which is not openly advertised.
+
+If you would be interested in the latter position, and you have a hacker mindset,
+as well as a passion to work on network technologies such as `rama`,
+automated browser technology for browser web scraping purposes or have amazing proven skills for reverse engineering APIs
+and (mobile) applications.
+
+Please [send an email to Glen at glen.decauwsemaecker@otainsight.com](mailto:glen.decauwsemaecker@otainsight.com),
+who is also the maintainer of `rama`, and apply now for this or other jobs at [OTA Insight Ltd][OTA Insight Ltd.].
+
+We thank [OTA Insight Ltd][OTA Insight Ltd.]. for their support of this project.
+
+[OTA Insight Ltd.]: https://www.otainsight.com/
 
 ## FAQ
 
