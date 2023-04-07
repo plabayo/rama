@@ -27,6 +27,8 @@ rama can be used in two different ways:
   which can be used to build any (web) proxy you can think of (`[TODO: create]`);
 - `rama::managed::*` combines the above to give you an easy to use Proxy builder and other web related services such as a TLS terminator and HTTP(S) mirror web service (`[TODO: create]`).
 
+See the [examples](examples) folder for some examples on how to use rama.
+
 In the `/bin` folder there are a variety of ready-to-use binaries that use the `rama` crate internally:
 
 - `/bin/rama` has a ready to use `rama::managed::proxy`, usable as a pure transport layer proxy or a full blown MITM proxy (`[TODO: create]`);
@@ -88,8 +90,12 @@ while at the same time retaining the ability to seamlessly piggy-back on rama fo
 
 With [Tower][tower] everything is a service. A service takes in a request and outputs either an error or a response.
 What the actual types for these request-response pairs are, is up to you and depend mostly on the layer it is used.
-In tower it is typical that a service wraps another service, as such all your services and middleware will stack on top of each other,
+
+In tower it is typical that a service wraps another service, called "layers", as such all your services and middleware will stack on top of each other,
 like a... _tower_.
+
+- if you are new to [Tower][tower] you can start learning how to use it by building your own tower middleware from scratch by following the guide at: <https://github.com/tower-rs/tower/blob/master/guides/building-a-middleware-from-scratch.md>;
+  - if you are not convinced on the usefulness of [Tower][tower] (and by the way nothing in Rama enforces you to even be aware of its existence) you perhaps read to [the "inventing your own Service trait" guide](https://tokio.rs/blog/2021-05-14-inventing-the-service-trait).
 
 ### Socks5 Proxy Example
 
@@ -148,9 +154,9 @@ automated browser technology for browser web scraping purposes or have amazing p
 and (mobile) applications.
 
 Please [send an email to Glen at glen.decauwsemaecker@otainsight.com](mailto:glen.decauwsemaecker@otainsight.com),
-who is also the maintainer of `rama`, and apply now for this or other jobs at [OTA Insight Ltd][OTA Insight Ltd.].
+who is also the maintainer of `rama`, and apply now for this or other jobs at [OTA Insight Ltd.][OTA Insight Ltd.].
 
-We thank [OTA Insight Ltd][OTA Insight Ltd.]. for their support of this project.
+We thank [OTA Insight Ltd.][OTA Insight Ltd.]. for their support of this project.
 
 [OTA Insight Ltd.]: https://www.otainsight.com/
 
