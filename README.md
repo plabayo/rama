@@ -141,6 +141,13 @@ additional terms or conditions.
 
 Support this project by becoming a [sponsor](https://github.com/sponsors/plabayo).
 
+Sponsors help us continue to maintain and improve `rama`, as well as other
+Free and Open Source (FOSS) technology. It also helps us to create
+educational content such as <https://github.com/plabayo/learn-rust-101>.
+
+Sponsors receive perks and depending on your regular contribution it also
+allows you to rely on us for support and consulting.
+
 ### Platinum Sponsors
 
 [![OTA Insight Ltd. Logo](./docs/img/sponsor_ota_insight.png)][OTA Insight Ltd.]
