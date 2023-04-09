@@ -41,7 +41,7 @@ where
     async fn serve(self) -> Result<()> {
         let Self {
             tcp,
-            service_factory,
+            mut service_factory,
             error_handler,
         } = self;
 
@@ -128,7 +128,7 @@ where
     async fn serve(self) -> Result<()> {
         let Self {
             tcp,
-            service_factory,
+            mut service_factory,
             shutdown_timeout,
             graceful,
             error_handler,

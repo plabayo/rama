@@ -39,7 +39,7 @@ impl ErrorHandler for LogErrorHandler {
 pub trait ServiceFactory<Stream> {
     type Service: Service<Stream>;
 
-    fn new_service(&self) -> Result<Self::Service>;
+    fn new_service(&mut self) -> Result<Self::Service>;
 }
 
 /// A tower-like service which is used to serve a TCP stream.
@@ -56,7 +56,7 @@ where
 {
     type Service = I;
 
-    fn new_service(&self) -> Result<Self::Service> {
+    fn new_service(&mut self) -> Result<Self::Service> {
         Ok(self.clone())
     }
 }

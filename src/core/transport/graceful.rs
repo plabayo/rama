@@ -10,6 +10,13 @@ use std::{
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_util::sync::CancellationToken;
 
+pub use tokio_util::sync::WaitForCancellationFuture as ShutdownFuture;
+
+pub trait Graceful<'a> {
+    fn token(&self) -> Token;
+    fn shutdown(&self) -> ShutdownFuture<'a>;
+}
+
 /// A service to facilitate graceful shutdown within your server.
 pub struct GracefulService {
     shutdown: CancellationToken,

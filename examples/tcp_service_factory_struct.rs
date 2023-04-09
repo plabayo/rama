@@ -1,4 +1,4 @@
-use std::{cell::Cell, future, task};
+use std::{future, task};
 
 use anyhow::Context;
 use tokio::net::TcpStream;
@@ -8,15 +8,15 @@ use rama::core::transport::tcp::server::{Listener, Result, Service, ServiceFacto
 
 #[derive(Debug, Default)]
 struct HelloServiceFactory {
-    counter: Cell<usize>,
+    counter: usize,
 }
 
 impl ServiceFactory<TcpStream> for HelloServiceFactory {
     type Service = HelloService;
 
-    fn new_service(&self) -> Result<Self::Service> {
-        let id = self.counter.get();
-        self.counter.set(id + 1);
+    fn new_service(&mut self) -> Result<Self::Service> {
+        let id = self.counter;
+        self.counter += 1;
         Ok(HelloService { id })
     }
 }
