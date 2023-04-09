@@ -10,9 +10,9 @@
 [docs-badge]: https://img.shields.io/docsrs/rama/latest
 [docs-url]: https://docs.rs/rama/latest/rama/index.html
 [mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
-[mit-url]: https://github.com/plabayo/llama/blob/master/LICENSE
-[actions-badge]: https://github.com/plabayo/llama/workflows/CI/badge.svg
-[actions-url]: https://github.com/plabayo/llama/actions?query=workflow%3ACI+branch%main
+[mit-url]: https://github.com/plabayo/rama/blob/master/LICENSE
+[actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
+[actions-url]: https://github.com/plabayo/rama/actions?query=workflow%3ACI+branch%main
 
 > rama is early work in progress, use at your own risk.
 >
@@ -77,7 +77,7 @@ and are for the most part exposed to the user:
 [ws]: https://github.com/de-vri-es/hyper-tungstenite-rs
 
 All these technologies are built-in to rama and drive many of its provided services.
-Llama is also bundled with some custom middleware layers as well that can be used in combination with
+`rama` is also bundled with some custom middleware layers as well that can be used in combination with
 these services. Important to know is that:
 
 - All layers are optional and composable how you want;
