@@ -3,18 +3,62 @@
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
-    future::Future,
+    future::{self, Future},
+    pin::Pin,
+    task::{Context, Poll},
     time::Duration,
 };
 
-use tokio::sync::mpsc::{channel, Receiver, Sender};
-use tokio_util::sync::CancellationToken;
-
-pub use tokio_util::sync::WaitForCancellationFuture as ShutdownFuture;
+use pin_project_lite::pin_project;
+use tokio::{
+    net::TcpStream,
+    sync::mpsc::{channel, Receiver, Sender},
+};
+use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 pub trait Graceful<'a> {
     fn token(&self) -> Token;
     fn shutdown(&self) -> ShutdownFuture<'a>;
+}
+
+pin_project! {
+    pub struct ShutdownFuture<'a> {
+        #[pin]
+        maybe_future: Option<WaitForCancellationFuture<'a>>,
+    }
+}
+
+impl<'a> ShutdownFuture<'a> {
+    pub fn new(future: WaitForCancellationFuture<'a>) -> Self {
+        Self {
+            maybe_future: Some(future),
+        }
+    }
+
+    pub fn pending() -> Self {
+        Self { maybe_future: None }
+    }
+}
+
+impl Future for ShutdownFuture<'_> {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.project().maybe_future.as_pin_mut() {
+            Some(fut) => fut.poll(cx),
+            None => Poll::Pending,
+        }
+    }
+}
+
+impl<'a> Graceful<'a> for TcpStream {
+    fn token(&self) -> Token {
+        Token::pending()
+    }
+
+    fn shutdown(&self) -> ShutdownFuture<'a> {
+        ShutdownFuture::pending()
+    }
 }
 
 /// A service to facilitate graceful shutdown within your server.
@@ -64,10 +108,10 @@ impl GracefulService {
     /// child processes to indicate it is finished as well as to interrupt itself
     /// in case a shutdown is desired.
     pub fn token(&self) -> Token {
-        Token {
-            shutdown: self.shutdown.child_token(),
-            _shutdown_complete: self.shutdown_complete_tx.clone(),
-        }
+        Token::new(
+            self.shutdown.child_token(),
+            self.shutdown_complete_tx.clone(),
+        )
     }
 
     /// Wait indefinitely until the server has its shutdown requested
@@ -102,32 +146,58 @@ impl Default for GracefulService {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Token {
-    shutdown: CancellationToken,
-    _shutdown_complete: Sender<()>,
+    state: Option<TokenState>,
 }
 
 impl Token {
+    // Construct a true graceful token.
+    //
+    // This token will drop the shutdown_complete
+    // when finished (to mark it went out of scope) and which can be also used
+    // to await the given shutdown cancellation token.
+    pub fn new(shutdown: CancellationToken, shutdown_complete: Sender<()>) -> Self {
+        Self {
+            state: Some(TokenState {
+                shutdown,
+                shutdown_complete,
+            }),
+        }
+    }
+
+    // Construct a token that will never shutdown.
+    //
+    // This is a desired solution where you need to provide a token for
+    // a service which is not graceful.
+    pub fn pending() -> Self {
+        Self { state: None }
+    }
+
     pub async fn shutdown(&self) {
-        self.shutdown.cancelled().await;
+        match &self.state {
+            Some(state) => state.shutdown.cancelled().await,
+            None => future::pending().await,
+        }
     }
 
     pub fn child_token(&self) -> Token {
-        Token {
-            shutdown: self.shutdown.child_token(),
-            _shutdown_complete: self._shutdown_complete.clone(),
+        match &self.state {
+            Some(state) => Token {
+                state: Some(TokenState {
+                    shutdown: state.shutdown.child_token(),
+                    shutdown_complete: state.shutdown_complete.clone(),
+                }),
+            },
+            None => self.clone(),
         }
     }
 }
 
-impl Clone for Token {
-    fn clone(&self) -> Self {
-        Self {
-            shutdown: self.shutdown.clone(),
-            _shutdown_complete: self._shutdown_complete.clone(),
-        }
-    }
+#[derive(Debug, Clone)]
+struct TokenState {
+    shutdown: CancellationToken,
+    shutdown_complete: Sender<()>,
 }
 
 #[cfg(test)]
@@ -135,7 +205,17 @@ mod tests {
     use std::future::pending;
 
     use super::*;
-    use tokio::time::sleep;
+
+    use tokio::{select, time::sleep};
+
+    #[tokio::test]
+    async fn test_token_pending() {
+        let token = Token::pending();
+        select! {
+            _ = token.shutdown() => panic!("should not shutdown"),
+            _ = sleep(Duration::from_millis(100)) => (),
+        };
+    }
 
     #[tokio::test]
     async fn test_graceful_service() {
