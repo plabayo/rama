@@ -148,6 +148,17 @@ educational content such as <https://github.com/plabayo/learn-rust-101>.
 Sponsors receive perks and depending on your regular contribution it also
 allows you to rely on us for support and consulting.
 
+### Contribute to Open Source
+
+Part of the money we receive from sponsors is used to contribute to other projects
+that we depend upon. Plabayo sponsors the following organisations and individuals
+building and maintaining open source software that `rama` depends upon:
+
+| | name | projects |
+| - | - | - |
+| 💌 | [tokio-rs](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
+| 💌 | [Sean McArthur](https://github.com/seanmonstar) | (Hyper and Tokio)
+
 ### Platinum Sponsors
 
 [![OTA Insight Ltd. Logo](./docs/img/sponsor_ota_insight.png)][OTA Insight Ltd.]
