@@ -124,6 +124,8 @@ This gives you [an accepted TcpStream](https://docs.rs/tokio/latest/tokio/net/st
 you! We have a [contributing guide][contributing] to help you get involved in the
 `rama` project.
 
+Should you want to contribure this project but you do not yet know how to program in Rust, you could start learning Rust with as goal to contribute as soon as possible to `rama` by using "[the Rust 101 Learning Guide](https://rust-lang.guide/)" as your study companion. Glen can also be hired as a mentor or teacher to give you paid 1-on-1 lessons and other similar consultancy services. You can find his contact details at <https://www.glendc.com/>.
+
 ## License
 
 This project is licensed under the [MIT license][license].
@@ -156,8 +158,9 @@ building and maintaining open source software that `rama` depends upon:
 
 | | name | projects |
 | - | - | - |
-| 💌 | [tokio-rs](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
+| 💌 | [Tokio](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
 | 💌 | [Sean McArthur](https://github.com/seanmonstar) | (Hyper and Tokio)
+| 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
 
 ### Platinum Sponsors
 
