@@ -174,10 +174,10 @@ impl Token {
         Self { state: None }
     }
 
-    pub async fn shutdown(&self) {
+    pub fn shutdown(&self) -> ShutdownFuture<'_> {
         match &self.state {
-            Some(state) => state.shutdown.cancelled().await,
-            None => future::pending().await,
+            Some(state) => ShutdownFuture::new(state.shutdown.cancelled()),
+            None => ShutdownFuture::pending(),
         }
     }
 

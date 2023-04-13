@@ -53,6 +53,10 @@ which should allow you to focus only on the config of the proxy and any custom s
 you might wish to use.
 ```
 
+## [netscrape-io](https://netscrape.io)
+
+`rama` is the underlying technology driving the commercial proxies of [netscrape.io](https://netscrape.io). You can find the source code for that web platform at <https://github.com/plabayo/netscrape>.
+
 ## Goals
 
 With rama you can should be able to write any typical tls/http proxy,

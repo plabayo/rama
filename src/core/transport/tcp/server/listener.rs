@@ -3,17 +3,21 @@ use std::{
     net::{TcpListener as StdTcpListener, ToSocketAddrs},
     pin::Pin,
     task::{ready, Context, Poll},
-    time::Duration,
+    time::Duration, convert::Infallible, sync::Arc,
 };
 
 use pin_project_lite::pin_project;
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::core::transport::graceful;
+use crate::core::transport::graceful::{self, TimeoutError};
 
-use super::{
-    Error, ErrorHandler, GracefulTcpStream, LogErrorHandler, Result, Service, ServiceFactory,
-};
+use super::{ErrorHandler, GracefulTcpStream, LogErrorHandler, Service, ServiceFactory};
+
+pub enum ListenerError<A, S, F> {
+    Accept(A),
+    Service(S),
+    Factory(F),
+}
 
 pub struct Listener<F, E> {
     tcp: TcpListener,
@@ -38,7 +42,7 @@ where
     <<F as ServiceFactory<TcpStream>>::Service as Service<TcpStream>>::Future: Send,
     E: ErrorHandler,
 {
-    async fn serve(self) -> Result<()> {
+    async fn serve(self) -> Result<(), ListenerError<E::AcceptError, E::ServiceError, F::Error>> {
         let Self {
             tcp,
             mut service_factory,
@@ -62,16 +66,16 @@ where
             let result = match result {
                 Ok(res) => res,
                 Err(err) => {
-                    error_handler.handle_service_error(err).await?;
+                    error_handler.handle_service_error(err).await.map_err(ListenerError::Service)?;
                     continue;
                 }
             };
 
             // handle the accept error or serve the incoming (tcp) stream
             match result {
-                Err(err) => error_handler.handle_accept_error(err.into()).await?,
+                Err(err) => error_handler.handle_accept_error(err.into()).await.map_err(ListenerError::Accept)?,
                 Ok((stream, _)) => {
-                    let mut service = service_factory.new_service()?;
+                    let mut service = service_factory.new_service().await.map_err(ListenerError::Factory)?;
                     let error_tx = error_tx.clone();
                     tokio::spawn(async move {
                         if let Err(err) = service.call(stream).await {
@@ -83,6 +87,13 @@ where
             }
         }
     }
+}
+
+pub enum GracefulListenerError<A, S, F> {
+    Accept(A),
+    Service(S),
+    Factory(F),
+    Timeout(TimeoutError),
 }
 
 pub struct GracefulListener<F, E> {
@@ -112,7 +123,7 @@ impl<F, E> GracefulListener<F, E> {
     }
 }
 
-enum GracefulListenerEvent {
+enum GracefulListenerEvent<Error> {
     Accept(std::io::Result<(TcpStream, std::net::SocketAddr)>),
     ServiceError(Error),
     Shutdown,
@@ -125,7 +136,7 @@ where
     <<F as ServiceFactory<GracefulTcpStream>>::Service as Service<GracefulTcpStream>>::Future: Send,
     E: ErrorHandler,
 {
-    async fn serve(self) -> Result<()> {
+    async fn serve(self) -> Result<(), GracefulListenerError<E::AcceptError, E::ServiceError, F::Error>> {
         let Self {
             tcp,
             mut service_factory,
@@ -152,7 +163,7 @@ where
             let result = match event {
                 GracefulListenerEvent::Accept(res) => res,
                 GracefulListenerEvent::ServiceError(err) => {
-                    error_handler.handle_service_error(err).await?;
+                    Arc::new(error_handler.handle_service_error(err).await.map_err(GracefulListenerError::Service));
                     continue;
                 }
                 GracefulListenerEvent::Shutdown => {
@@ -162,9 +173,9 @@ where
 
             // handle the accept error or serve the incoming (tcp) stream
             match result {
-                Err(err) => error_handler.handle_accept_error(err.into()).await?,
+                Err(err) => error_handler.handle_accept_error(err.into()).await.map_err(GracefulListenerError::Accept)?,
                 Ok((stream, _)) => {
-                    let mut service = service_factory.new_service()?;
+                    let mut service = service_factory.new_service().await.map_err(GracefulListenerError::Factory)?;
                     let error_tx = error_tx.clone();
                     let token = graceful.token();
                     tokio::spawn(async move {
@@ -185,7 +196,7 @@ where
             graceful.shutdown().await;
             Ok(())
         }
-        .map_err(|err| Error::Other(err.into()))
+        .map_err(|err| GracefulListenerError::Timeout(err))
     }
 }
 
@@ -201,7 +212,7 @@ impl Listener<(), LogErrorHandler> {
 
     pub fn try_bind<A: ToSocketAddrs>(
         addr: A,
-    ) -> Result<Builder<SocketConfig<StdTcpListener>, LogErrorHandler, ()>> {
+    ) -> Result<Builder<SocketConfig<StdTcpListener>, LogErrorHandler, ()>, std::io::Error> {
         let incoming = StdTcpListener::bind(addr)?;
         incoming.set_nonblocking(true)?;
         Ok(Builder::new(incoming, LogErrorHandler, ()))
@@ -296,13 +307,15 @@ impl<I, E, S> Builder<I, E, GracefulConfig<S>> {
 }
 
 pub trait ToTcpListener {
-    type Future: Future<Output = Result<TcpListener>>;
+    type Error;
+    type Future: Future<Output = Result<TcpListener, Self::Error>>;
 
     fn into_tcp_listener(self) -> Self::Future;
 }
 
 impl ToTcpListener for TcpListener {
-    type Future = future::Ready<Result<TcpListener>>;
+    type Error = Infallible;
+    type Future = future::Ready<Result<TcpListener, Self::Error>>;
 
     fn into_tcp_listener(self) -> Self::Future {
         future::ready(Ok(self))
@@ -317,11 +330,11 @@ pin_project! {
     }
 }
 
-impl<F> Future for SocketConfigToTcpListenerFuture<F>
+impl<F, E> Future for SocketConfigToTcpListenerFuture<F>
 where
-    F: Future<Output = Result<TcpListener>>,
+    F: Future<Output = Result<TcpListener, E>>,
 {
-    type Output = Result<TcpListener>;
+    type Output = Result<TcpListener, E>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.project();
@@ -334,10 +347,11 @@ where
 }
 
 impl ToTcpListener for SocketConfig<StdTcpListener> {
-    type Future = SocketConfigToTcpListenerFuture<future::Ready<Result<TcpListener>>>;
+    type Error = std::io::Error;
+    type Future = SocketConfigToTcpListenerFuture<future::Ready<Result<TcpListener, Self::Error>>>;
 
     fn into_tcp_listener(self) -> Self::Future {
-        let listener = TcpListener::from_std(self.listener).map_err(|err| err.into());
+        let listener = TcpListener::from_std(self.listener);
         let future = future::ready(listener);
         SocketConfigToTcpListenerFuture {
             future,
@@ -346,24 +360,32 @@ impl ToTcpListener for SocketConfig<StdTcpListener> {
     }
 }
 
+// TODO: stop the generic madness, just box these damn errors already >.<
+// e.g. BuilderError { kind: BuilderErrorKind } ...
+
+pub enum BuilderError<L, A, S, F> {
+    Create(L),
+    Serve(ListenerError<A, S, F>),
+}
+
 impl<T, E> Builder<T, E, ()>
 where
     T: ToTcpListener,
     E: ErrorHandler,
 {
-    pub async fn serve<F>(self, service_factory: F) -> Result<()>
+    pub async fn serve<F>(self, service_factory: F) -> Result<(), BuilderError<T::Error, E::AcceptError, E::ServiceError, <<F as ServiceFactory<TcpStream>>::Service as Service<TcpStream>>::Error>>
     where
         F: ServiceFactory<TcpStream>,
         F::Service: Service<TcpStream> + Send + 'static,
         <<F as ServiceFactory<TcpStream>>::Service as Service<TcpStream>>::Future: Send,
     {
         // create and configure the tcp listener...
-        let listener = self.incoming.into_tcp_listener().await?;
+        let listener = self.incoming.into_tcp_listener().await.map_err(BuilderError::Create)?;
 
         // listen without any grace..
         Listener::new(listener, service_factory, self.error_handler)
             .serve()
-            .await
+            .await.map_err(BuilderError::Serve)
     }
 }
 
@@ -373,7 +395,7 @@ where
     S: Future + Send + 'static,
     E: ErrorHandler,
 {
-    pub async fn serve<F>(self, service_factory: F) -> Result<()>
+    pub async fn serve<F>(self, service_factory: F) -> Result<(), BoxError>
     where
         F: ServiceFactory<GracefulTcpStream>,
         F::Service: Service<GracefulTcpStream> + Send + 'static,

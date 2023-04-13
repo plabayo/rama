@@ -9,7 +9,7 @@ use pin_project_lite::pin_project;
 use tokio::net::TcpStream;
 use tower::Layer;
 
-use crate::core::transport::tcp::server::{Result, Service};
+use crate::core::transport::tcp::server::Service;
 
 pub struct LogService<S> {
     inner: S,
@@ -26,9 +26,10 @@ where
     S: Service<T>,
     T: AsRef<TcpStream>,
 {
+    type Error = S::Error;
     type Future = LogFuture<S::Future>;
 
-    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
