@@ -55,7 +55,7 @@ you might wish to use.
 
 ## netscrape.io
 
-`rama` is the underlying technology driving the commercial proxies of [netscrape.io](https://netscrape.io). You can find the source code for that web platform at <https://github.com/plabayo/netscrape>. It's a fullstack _Rust_ application, built using [Axum](https://github.com/tokio-rs/axum) for [its backend](https://github.com/plabayo/netscrape/tree/main/web/backend) and [Leptos](https://github.com/leptos-rs/leptos) for [its frontend](https://github.com/plabayo/netscrape/tree/main/web/frontend), in case you are interested.
+`rama` is the underlying technology driving the commercial proxies of [netscrape.io](https://netscrape.io). You can find the source code for that web platform at <https://github.com/plabayo/netscrape>.
 
 The commercial website can be found at <https://netscrape.io>.
 
