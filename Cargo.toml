@@ -10,6 +10,10 @@ keywords = ["io", "async", "non-blocking", "futures"]
 license = "MIT"
 repository = "https://github.com/plabayo/llama"
 
+[[bin]]
+name = "rama"
+path = "src/bin/rama/main.rs"
+
 [dependencies]
 anyhow = "1"
 pin-project-lite = "0.2"

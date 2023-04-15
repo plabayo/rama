@@ -1,0 +1,34 @@
+# fly.toml file generated for rama on 2023-04-15T21:22:03+02:00
+
+app = "rama"
+kill_signal = "SIGINT"
+kill_timeout = 5
+primary_region = "ams"
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8080
+
+  [[services.ports]]
+    port = 80
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "1s"
+    restart_limit = 6
+
+[[services]]
+  protocol = "tcp"
+  internal_port = 8443
+
+  [[services.ports]]
+    port = 443
+
+  [[services.tcp_checks]]
+    interval = "15s"
+    timeout = "2s"
+    grace_period = "1s"
+    restart_limit = 6
+
+## TODO: support also tls pass through tcp :)

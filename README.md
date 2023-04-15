@@ -53,9 +53,35 @@ which should allow you to focus only on the config of the proxy and any custom s
 you might wish to use.
 ```
 
-## [netscrape-io](https://netscrape.io)
+## netscrape.io
 
-`rama` is the underlying technology driving the commercial proxies of [netscrape.io](https://netscrape.io). You can find the source code for that web platform at <https://github.com/plabayo/netscrape>.
+`rama` is the underlying technology driving the commercial proxies of [netscrape.io](https://netscrape.io). You can find the source code for that web platform at <https://github.com/plabayo/netscrape>. It's a fullstack _Rust_ application, built using [Axum](https://github.com/tokio-rs/axum) for [its backend](https://github.com/plabayo/netscrape/tree/main/web/backend) and [Leptos](https://github.com/leptos-rs/leptos) for [its frontend](https://github.com/plabayo/netscrape/tree/main/web/frontend), in case you are interested.
+
+The commercial website can be found at <https://netscrape.io>.
+
+## rama demo proxy
+
+[![deploy rama proxy to fly.io](https://github.com/plabayo/rama/actions/workflows/Fly-rama.yml/badge.svg)](https://github.com/plabayo/rama/actions/workflows/Fly-rama.yml)
+
+Thanks to [our sponsors](#sponsors) we are able to host a demo proxy available to all of you for now.
+Depending how much traffic we can handle we might be able to keep it up and running for a while.
+
+You can reach the demo without any authentication (for) now at:
+
+- plain traffic: `http://rama.netscrape.io`
+    ```
+    curl \
+      -x http://rama.netscrape.io
+      http://example.com
+    ```
+- secure traffic: `https://rama.netscrape.io`
+    ```
+    curl \
+      -x https://rama.netscrape.io
+      https://example.com
+    ```
+
+Thank you to our our sponsors, both anonymous and not, for making this possible. And please [do support Plabayo as well](https://github.com/sponsors/plabayo) if you like us and have the possibility to do so.
 
 ## Goals
 
