@@ -12,7 +12,7 @@ repository = "https://github.com/plabayo/llama"
 
 [[bin]]
 name = "rama"
-path = "src/bin/rama/main.rs"
+path = "./src/bin/rama/main.rs"
 
 [dependencies]
 anyhow = "1"

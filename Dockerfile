@@ -5,7 +5,7 @@ RUN USER=root cargo new app
 WORKDIR /usr/src/app
 COPY Cargo.toml ./
 # Needs at least a main.rs file with a main function
-RUN mkdir src && echo "fn main(){}" > src/main.rs
+RUN mkdir -p src/bin/rama && echo "fn main(){}" > src/bin/rama/main.rs
 # Will build all dependent crates in release mode
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/src/app/target \
