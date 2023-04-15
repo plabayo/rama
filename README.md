@@ -61,7 +61,7 @@ The commercial website can be found at <https://netscrape.io>.
 
 ## rama demo proxy
 
-[![deploy rama proxy to fly.io](https://github.com/plabayo/rama/actions/workflows/Fly-rama.yml/badge.svg)](https://github.com/plabayo/rama/actions/workflows/Fly-rama.yml)
+[![Deploy rama proxy](https://github.com/plabayo/rama/actions/workflows/Fly-rama.yml/badge.svg)](https://github.com/plabayo/rama/actions/workflows/Fly-rama.yml)
 
 Thanks to [our sponsors](#sponsors) we are able to host a demo proxy available to all of you for now.
 Depending how much traffic we can handle we might be able to keep it up and running for a while.
