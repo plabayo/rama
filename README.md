@@ -71,13 +71,13 @@ You can reach the demo without any authentication (for) now at:
 - plain traffic: `http://rama.netscrape.io`
     ```
     curl \
-      -x http://rama.netscrape.io
+      -x http://rama.netscrape.io \
       http://example.com
     ```
 - secure traffic: `https://rama.netscrape.io`
     ```
     curl \
-      -x https://rama.netscrape.io
+      -x https://rama.netscrape.io \
       https://example.com
     ```
 
