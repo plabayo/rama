@@ -6,10 +6,9 @@ use std::{
 };
 
 use pin_project_lite::pin_project;
-use tokio::net::TcpStream;
 use tower::Layer;
 
-use crate::core::transport::tcp::server::Service;
+use crate::core::transport::tcp::server::{Service, Connection};
 
 pub struct LogService<S> {
     inner: S,
@@ -21,10 +20,9 @@ impl<S> LogService<S> {
     }
 }
 
-impl<S, T> Service<T> for LogService<S>
+impl<S, State> Service<State> for LogService<S>
 where
-    S: Service<T>,
-    T: AsRef<TcpStream>,
+    S: Service<State>,
 {
     type Error = S::Error;
     type Future = LogFuture<S::Future>;
@@ -33,12 +31,12 @@ where
         self.inner.poll_ready(cx)
     }
 
-    fn call(&mut self, stream: T) -> Self::Future {
-        let maybe_addr = stream.as_ref().peer_addr().ok();
+    fn call(&mut self, conn: Connection<State>) -> Self::Future {
+        let maybe_addr = conn.stream().peer_addr().ok();
         tracing::info!("tcp stream accepted: {:?}", maybe_addr);
         LogFuture {
             maybe_addr,
-            inner: self.inner.call(stream),
+            inner: self.inner.call(conn),
         }
     }
 }

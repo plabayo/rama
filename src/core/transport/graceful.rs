@@ -3,23 +3,15 @@
 use std::{
     error::Error,
     fmt::{self, Display, Formatter},
-    future::{self, Future},
+    future::Future,
     pin::Pin,
     task::{Context, Poll},
     time::Duration,
 };
 
 use pin_project_lite::pin_project;
-use tokio::{
-    net::TcpStream,
-    sync::mpsc::{channel, Receiver, Sender},
-};
+use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
-
-pub trait Graceful<'a> {
-    fn token(&self) -> Token;
-    fn shutdown(&self) -> ShutdownFuture<'a>;
-}
 
 pin_project! {
     pub struct ShutdownFuture<'a> {
@@ -48,16 +40,6 @@ impl Future for ShutdownFuture<'_> {
             Some(fut) => fut.poll(cx),
             None => Poll::Pending,
         }
-    }
-}
-
-impl<'a> Graceful<'a> for TcpStream {
-    fn token(&self) -> Token {
-        Token::pending()
-    }
-
-    fn shutdown(&self) -> ShutdownFuture<'a> {
-        ShutdownFuture::pending()
     }
 }
 

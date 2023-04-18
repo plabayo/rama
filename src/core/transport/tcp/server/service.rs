@@ -1,67 +1,51 @@
 use std::{
+    convert::Infallible,
     future::{self, Future},
-    ops::{Deref, DerefMut},
-    task::{Context, Poll}, convert::Infallible,
+    task::{Context, Poll}, pin::Pin,
 };
 
 use tokio::net::TcpStream;
 
-use crate::core::{
-    BoxError,
-    transport::graceful::{Graceful, ShutdownFuture, Token},
+use crate::core::transport::{
+    graceful::Token,
+    tcp::server::{Connection, Stateful, Stateless},
 };
 
-pub trait ErrorHandler {
-    type AcceptError;
-    type AcceptFuture: Future<Output = Result<(), Self::AcceptError>>;
+pub type BoxErrorFuture<Error> = Pin<Box<dyn Future<Output = Result<(), Error>>>>;
 
-    type ServiceError;
-    type ServiceFuture: Future<Output = Result<(), Self::ServiceError>>;
-
-    fn handle_accept_error(&self, err: BoxError) -> Self::AcceptFuture;
-    fn handle_service_error(&self, err: BoxError) -> Self::ServiceFuture;
-}
-
-pub struct LogErrorHandler;
-
-impl ErrorHandler for LogErrorHandler {
-    type AcceptError = BoxError;
-    type AcceptFuture = future::Ready<Result<(), BoxError>>;
-
-    type ServiceError = BoxError;
-    type ServiceFuture = future::Ready<Result<(), BoxError>>;
-
-    fn handle_accept_error(&self, err: BoxError) -> Self::AcceptFuture {
-        tracing::error!("tcp accept error: {}", err);
-        future::ready(Ok(()))
-    }
-
-    fn handle_service_error(&self, err: BoxError) -> Self::ServiceFuture {
-        tracing::error!("tcp service error: {}", err);
-        future::ready(Ok(()))
-    }
-}
-
-pub trait ServiceFactory<Stream> {
+/// Factory to create Services, one service per incoming connection.
+pub trait ServiceFactory<State> {
     type Error;
-    type Service: Service<Stream>;
+    type Service: Service<State>;
     type Future: Future<Output = Result<Self::Service, Self::Error>>;
 
     fn new_service(&mut self) -> Self::Future;
+
+    fn handle_accept_error(&mut self, err: std::io::Error) -> BoxErrorFuture<Self::Error> {
+        tracing::error!("TCP accept error: {}", err);
+        Box::pin(future::ready(Ok(())))
+    }
+
+    fn handle_service_error(
+        &mut self,
+        _: <Self::Service as Service<State>>::Error,
+    ) -> BoxErrorFuture<Self::Error> {
+        Box::pin(future::ready(Ok(())))
+    }
 }
 
 /// A tower-like service which is used to serve a TCP stream.
-pub trait Service<Stream> {
+pub trait Service<State> {
     type Error;
     type Future: Future<Output = Result<(), Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
-    fn call(&mut self, stream: Stream) -> Self::Future;
+    fn call(&mut self, conn: Connection<State>) -> Self::Future;
 }
 
-impl<T, Stream> ServiceFactory<Stream> for T
+impl<T, State> ServiceFactory<State> for T
 where
-    T: Service<Stream> + Clone,
+    T: Service<State> + Clone,
 {
     type Error = Infallible;
     type Service = T;
@@ -72,35 +56,9 @@ where
     }
 }
 
-pub struct GracefulTcpStream(pub(crate) TcpStream, pub(crate) Token);
-
-impl<'a> Graceful<'a> for GracefulTcpStream {
-    fn token(&self) -> Token {
-        self.1.child_token()
-    }
-
-    fn shutdown(&self) -> ShutdownFuture<'a> {
-        self.1.shutdown()
-    }
-}
-
-impl Deref for GracefulTcpStream {
-    type Target = TcpStream;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for GracefulTcpStream {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
-    }
-}
-
-impl<F, Fut, Stream, Error> Service<Stream> for F
+impl<F, Fut, State, Error> Service<State> for F
 where
-    F: FnMut(Stream) -> Fut,
+    F: FnMut(Connection<State>) -> Fut,
     Fut: Future<Output = Result<(), Error>>,
 {
     type Error = Error;
@@ -110,7 +68,222 @@ where
         Poll::Ready(Ok(()))
     }
 
-    fn call(&mut self, stream: Stream) -> Self::Future {
-        self(stream)
+    fn call(&mut self, conn: Connection<State>) -> Self::Future {
+        self(conn)
     }
 }
+
+// impl<F, Fut, State, Error> Service<State> for F
+// where
+//     F: FnMut(TcpStream) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<State>) -> Self::Future {
+//         self(conn.into_stream())
+//     }
+// }
+
+// impl<F, Fut, Error> Service<Stateless> for F
+// where
+//     F: FnMut(Token, TcpStream) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateless>) -> Self::Future {
+//         let (state, token) = conn.into_parts();
+//         self(token, state)
+//     }
+// }
+
+// impl<F, Fut, Error> Service<Stateless> for F
+// where
+//     F: FnMut(TcpStream, Token) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateless>) -> Self::Future {
+//         let (state, token) = conn.into_parts();
+//         self(state, token)
+//     }
+// }
+
+// impl<F, Fut, State, Error> Service<Stateful<State>> for F
+// where
+//     F: FnMut(TcpStream, Token) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateful<State>>) -> Self::Future {
+//         let (state, token, _) = conn.into_parts();
+//         self(state, token)
+//     }
+// }
+
+// impl<F, Fut, State, Error> Service<Stateful<State>> for F
+// where
+//     F: FnMut(Token, TcpStream) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateful<State>>) -> Self::Future {
+//         let (state, token, _) = conn.into_parts();
+//         self(token, state)
+//     }
+// }
+
+// impl<F, Fut, State, Error> Service<Stateful<State>> for F
+// where
+//     F: FnMut(TcpStream, State) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateful<State>>) -> Self::Future {
+//         let (stream, _, state) = conn.into_parts();
+//         self(stream, state)
+//     }
+// }
+
+// impl<F, Fut, State, Error> Service<Stateful<State>> for F
+// where
+//     F: FnMut(TcpStream, State, Token) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateful<State>>) -> Self::Future {
+//         let (stream, token, state) = conn.into_parts();
+//         self(stream, state, token)
+//     }
+// }
+
+// impl<F, Fut, State, Error> Service<Stateful<State>> for F
+// where
+//     F: FnMut(TcpStream, Token, State) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateful<State>>) -> Self::Future {
+//         let (stream, token, state) = conn.into_parts();
+//         self(stream, token, state)
+//     }
+// }
+
+// impl<F, Fut, State, Error> Service<Stateful<State>> for F
+// where
+//     F: FnMut(Token, TcpStream, State) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateful<State>>) -> Self::Future {
+//         let (stream, token, state) = conn.into_parts();
+//         self(token, stream, state)
+//     }
+// }
+
+// impl<F, Fut, State, Error> Service<Stateful<State>> for F
+// where
+//     F: FnMut(Token, State, TcpStream) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateful<State>>) -> Self::Future {
+//         let (stream, token, state) = conn.into_parts();
+//         self(token, state, stream)
+//     }
+// }
+
+// impl<F, Fut, State, Error> Service<Stateful<State>> for F
+// where
+//     F: FnMut(State, Token, TcpStream) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateful<State>>) -> Self::Future {
+//         let (stream, token, state) = conn.into_parts();
+//         self(state, token, stream)
+//     }
+// }
+
+// impl<F, Fut, State, Error> Service<Stateful<State>> for F
+// where
+//     F: FnMut(State, TcpStream, Token) -> Fut,
+//     Fut: Future<Output = Result<(), Error>>,
+// {
+//     type Error = Error;
+//     type Future = Fut;
+
+//     fn poll_ready(&mut self, _cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
+//         Poll::Ready(Ok(()))
+//     }
+
+//     fn call(&mut self, conn: Connection<Stateful<State>>) -> Self::Future {
+//         let (stream, token, state) = conn.into_parts();
+//         self(state, stream, token)
+//     }
+// }

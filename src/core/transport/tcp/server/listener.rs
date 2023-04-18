@@ -1,116 +1,62 @@
 use std::{
+    convert::Infallible,
     future::{self, Future},
     net::{TcpListener as StdTcpListener, ToSocketAddrs},
     pin::Pin,
+    sync::Arc,
     task::{ready, Context, Poll},
-    time::Duration, convert::Infallible, sync::Arc,
+    time::Duration,
 };
 
 use pin_project_lite::pin_project;
 use tokio::net::{TcpListener, TcpStream};
 
-use crate::core::transport::graceful::{self, TimeoutError};
+use crate::core::transport::{
+    graceful::{self, TimeoutError},
+    tcp::server::{Connection, Service, ServiceFactory, Stateful, Stateless},
+};
 
-use super::{ErrorHandler, GracefulTcpStream, LogErrorHandler, Service, ServiceFactory};
-
-pub enum ListenerError<A, S, F> {
-    Accept(A),
-    Service(S),
-    Factory(F),
+#[derive(Debug)]
+pub enum ListenerErrorKind {
+    Accept,
+    Service,
+    Factory,
+    Timeout,
 }
 
-pub struct Listener<F, E> {
-    tcp: TcpListener,
-    service_factory: F,
-    error_handler: E,
+#[derive(Debug)]
+pub struct ListenerError {
+    kind: ListenerErrorKind,
+    source: Box<dyn std::error::Error>,
 }
 
-impl<F, E> Listener<F, E> {
-    fn new(tcp: TcpListener, service_factory: F, error_handler: E) -> Self {
-        Self {
-            tcp,
-            service_factory,
-            error_handler,
-        }
+impl std::fmt::Display for ListenerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "ListenerError({:?}): {}", self.kind, self.source)
     }
 }
 
-impl<F, E> Listener<F, E>
-where
-    F: ServiceFactory<TcpStream>,
-    F::Service: Service<TcpStream> + Send + 'static,
-    <<F as ServiceFactory<TcpStream>>::Service as Service<TcpStream>>::Future: Send,
-    E: ErrorHandler,
-{
-    async fn serve(self) -> Result<(), ListenerError<E::AcceptError, E::ServiceError, F::Error>> {
-        let Self {
-            tcp,
-            mut service_factory,
-            error_handler,
-        } = self;
-
-        let (error_tx, mut error_rx) = tokio::sync::mpsc::channel(1);
-
-        loop {
-            // accept incoming stream or handle a service error
-            let result = tokio::select! {
-                res = tcp.accept() => {
-                    Ok(res)
-                },
-                opt = error_rx.recv() => {
-                    Err(opt.unwrap())
-                },
-            };
-
-            // unwrap the accept result if no service error was (yet) returned
-            let result = match result {
-                Ok(res) => res,
-                Err(err) => {
-                    error_handler.handle_service_error(err).await.map_err(ListenerError::Service)?;
-                    continue;
-                }
-            };
-
-            // handle the accept error or serve the incoming (tcp) stream
-            match result {
-                Err(err) => error_handler.handle_accept_error(err.into()).await.map_err(ListenerError::Accept)?,
-                Ok((stream, _)) => {
-                    let mut service = service_factory.new_service().await.map_err(ListenerError::Factory)?;
-                    let error_tx = error_tx.clone();
-                    tokio::spawn(async move {
-                        if let Err(err) = service.call(stream).await {
-                            // try to send the error to the main loop
-                            let _ = error_tx.send(err).await;
-                        }
-                    });
-                }
-            }
-        }
+impl std::error::Error for ListenerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&*self.source)
     }
 }
 
-pub enum GracefulListenerError<A, S, F> {
-    Accept(A),
-    Service(S),
-    Factory(F),
-    Timeout(TimeoutError),
-}
-
-pub struct GracefulListener<F, E> {
+pub struct Listener<F, State> {
     tcp: TcpListener,
     service_factory: F,
     shutdown_timeout: Option<Duration>,
     graceful: graceful::GracefulService,
-    error_handler: E,
+    state: State,
 }
 
-impl<F, E> GracefulListener<F, E> {
+impl<F, State> Listener<F, State> {
     fn new<S: Future + Send + 'static>(
         tcp: TcpListener,
         service_factory: F,
         shutdown: S,
         shutdown_timeout: Option<Duration>,
-        error_handler: E,
+        state: State,
     ) -> Self {
         let graceful = graceful::GracefulService::new(shutdown);
         Self {
@@ -118,31 +64,31 @@ impl<F, E> GracefulListener<F, E> {
             service_factory,
             shutdown_timeout,
             graceful,
-            error_handler,
+            state,
         }
     }
 }
 
-enum GracefulListenerEvent<Error> {
+enum ListenerEvent<Error> {
     Accept(std::io::Result<(TcpStream, std::net::SocketAddr)>),
     ServiceError(Error),
     Shutdown,
 }
 
-impl<F, E> GracefulListener<F, E>
+impl<F, State> Listener<F, State>
 where
-    F: ServiceFactory<GracefulTcpStream>,
-    F::Service: Service<GracefulTcpStream> + Send + 'static,
-    <<F as ServiceFactory<GracefulTcpStream>>::Service as Service<GracefulTcpStream>>::Future: Send,
-    E: ErrorHandler,
+    F: ServiceFactory<State>,
+    F::Service: Service<State> + Send + 'static,
+    <<F as ServiceFactory<State>>::Service as Service<State>>::Future: Send,
+    State: Clone + Send,
 {
-    async fn serve(self) -> Result<(), GracefulListenerError<E::AcceptError, E::ServiceError, F::Error>> {
+    async fn serve(self) -> Result<(), ListenerError> {
         let Self {
             tcp,
             mut service_factory,
             shutdown_timeout,
             graceful,
-            error_handler,
+            state,
         } = self;
 
         let (error_tx, mut error_rx) = tokio::sync::mpsc::channel(1);
@@ -151,36 +97,55 @@ where
             // listen for any listener event
             let event = tokio::select! {
                 res = tcp.accept() => {
-                    GracefulListenerEvent::Accept(res)
+                    ListenerEvent::Accept(res)
                 },
                 opt = error_rx.recv() => {
-                    GracefulListenerEvent::ServiceError(opt.unwrap())
+                    ListenerEvent::ServiceError(opt.unwrap())
                 },
-                _ = graceful.shutdown_req() => GracefulListenerEvent::Shutdown,
+                _ = graceful.shutdown_req() => ListenerEvent::Shutdown,
             };
 
             // handle the listner event
             let result = match event {
-                GracefulListenerEvent::Accept(res) => res,
-                GracefulListenerEvent::ServiceError(err) => {
-                    Arc::new(error_handler.handle_service_error(err).await.map_err(GracefulListenerError::Service));
+                ListenerEvent::Accept(res) => res,
+                ListenerEvent::ServiceError(err) => {
+                    Arc::new(
+                        service_factory
+                            .handle_service_error(err)
+                            .await
+                            .map_err(|err| ListenerError {
+                                kind: ListenerErrorKind::Service,
+                                source: Box::new(err),
+                            }),
+                    );
                     continue;
                 }
-                GracefulListenerEvent::Shutdown => {
+                ListenerEvent::Shutdown => {
                     break;
                 }
             };
 
             // handle the accept error or serve the incoming (tcp) stream
             match result {
-                Err(err) => error_handler.handle_accept_error(err.into()).await.map_err(GracefulListenerError::Accept)?,
+                Err(err) => service_factory
+                    .handle_accept_error(err.into())
+                    .await
+                    .map_err(ListenerError::Accept)?,
                 Ok((stream, _)) => {
-                    let mut service = service_factory.new_service().await.map_err(GracefulListenerError::Factory)?;
+                    let mut service =
+                        service_factory
+                            .new_service()
+                            .await
+                            .map_err(|err| ListenerError {
+                                kind: ListenerErrorKind::Accept,
+                                source: Box::new(err),
+                            })?;
                     let error_tx = error_tx.clone();
                     let token = graceful.token();
+                    let state = state.clone();
                     tokio::spawn(async move {
-                        let stream = GracefulTcpStream(stream, token);
-                        if let Err(err) = service.call(stream).await {
+                        let conn = Connection::stateful(stream, token, state);
+                        if let Err(err) = service.call(conn).await {
                             // try to send the error to the main loop
                             let _ = error_tx.send(err).await;
                         }
@@ -196,14 +161,17 @@ where
             graceful.shutdown().await;
             Ok(())
         }
-        .map_err(|err| GracefulListenerError::Timeout(err))
+        .map_err(|err| {
+            ListenerError {
+                kind: ListenerErrorKind::Timeout,
+                source: Box::new(err),
+            }
+        })
     }
 }
 
-impl Listener<(), LogErrorHandler> {
-    pub fn bind<A: ToSocketAddrs>(
-        addr: A,
-    ) -> Builder<SocketConfig<StdTcpListener>, LogErrorHandler, ()> {
+impl Listener<(), ()> {
+    pub fn bind<A: ToSocketAddrs>(addr: A) -> Builder<SocketConfig<StdTcpListener>, (), Stateless> {
         match Self::try_bind(addr) {
             Ok(incoming) => incoming,
             Err(err) => panic!("failed to bind tcp listener: {}", err),
@@ -212,33 +180,21 @@ impl Listener<(), LogErrorHandler> {
 
     pub fn try_bind<A: ToSocketAddrs>(
         addr: A,
-    ) -> Result<Builder<SocketConfig<StdTcpListener>, LogErrorHandler, ()>, std::io::Error> {
+    ) -> Result<Builder<SocketConfig<StdTcpListener>, (), Stateless>, std::io::Error> {
         let incoming = StdTcpListener::bind(addr)?;
         incoming.set_nonblocking(true)?;
-        Ok(Builder::new(incoming, LogErrorHandler, ()))
+        Ok(Self::build(incoming))
     }
 
-    pub fn build(
-        incoming: StdTcpListener,
-    ) -> Builder<SocketConfig<StdTcpListener>, LogErrorHandler, ()> {
-        Builder::new(incoming, LogErrorHandler, ())
+    pub fn build(incoming: StdTcpListener) -> Builder<SocketConfig<StdTcpListener>, (), Stateless> {
+        Builder::new(incoming, (), ())
     }
 }
 
-pub struct Builder<I, E, K> {
+pub struct Builder<I, G, S> {
     incoming: I,
-    error_handler: E,
-    kind: K,
-}
-
-impl<I, E, K> Builder<I, E, K> {
-    pub fn error_handler<F>(self, error_handler: F) -> Builder<I, F, K> {
-        Builder {
-            incoming: self.incoming,
-            error_handler,
-            kind: self.kind,
-        }
-    }
+    graceful: G,
+    state: S,
 }
 
 pub struct SocketConfig<L> {
@@ -251,16 +207,26 @@ pub struct GracefulConfig<S> {
     timeout: Option<Duration>,
 }
 
-impl<E, K> Builder<SocketConfig<StdTcpListener>, E, K> {
+impl<I, G> Builder<I, G, Stateless> {
+    pub fn state<S>(self, state: S) -> Builder<I, G, Stateful<S>> {
+        Builder {
+            incoming: self.incoming,
+            graceful: self.graceful,
+            state: Stateful(state),
+        }
+    }
+}
+
+impl<G, S> Builder<SocketConfig<StdTcpListener>, G, S> {
     /// Create a new `Builder` with the specified address.
-    pub fn new(listener: StdTcpListener, error_handler: E, kind: K) -> Self {
+    pub fn new(listener: StdTcpListener, graceful: G, state: S) -> Self {
         Self {
             incoming: SocketConfig {
                 listener,
                 ttl: None,
             },
-            error_handler,
-            kind,
+            graceful,
+            state,
         }
     }
 
@@ -273,30 +239,32 @@ impl<E, K> Builder<SocketConfig<StdTcpListener>, E, K> {
     }
 }
 
-impl<I, E> Builder<I, E, ()> {
+impl<I, S, State> Builder<I, GracefulConfig<S>, State> {
     /// Upgrade the builder to one which builds
     /// a graceful TCP listener which will shutdown once the given future resolves.
-    pub fn graceful<S>(self, shutdown: S) -> Builder<I, E, GracefulConfig<S>> {
+    pub fn graceful(self, shutdown: S) -> Builder<I, GracefulConfig<S>, State> {
         Builder {
             incoming: self.incoming,
-            error_handler: self.error_handler,
-            kind: GracefulConfig {
+            graceful: GracefulConfig {
                 shutdown,
                 timeout: None,
             },
+            state: self.state,
         }
     }
+}
 
+impl<I, State, F: Future<Output = ()>> Builder<I, GracefulConfig<F>, State> {
     /// Upgrade the builder to one which builds
     /// a graceful TCP listener which will shutdown once the "ctrl+c" signal is received (SIGINT).
-    pub fn graceful_ctrl_c(self) -> Builder<I, E, GracefulConfig<impl Future<Output = ()>>> {
+    pub fn graceful_ctrl_c(self) -> Builder<I, GracefulConfig<impl Future<Output = ()>>, State> {
         self.graceful(async {
             let _ = tokio::signal::ctrl_c().await;
         })
     }
 }
 
-impl<I, E, S> Builder<I, E, GracefulConfig<S>> {
+impl<I, S, State> Builder<I, GracefulConfig<S>, State> {
     /// Set the timeout for graceful shutdown.
     ///
     /// If `None` is specified, the default timeout is used.
@@ -360,53 +328,49 @@ impl ToTcpListener for SocketConfig<StdTcpListener> {
     }
 }
 
-// TODO: stop the generic madness, just box these damn errors already >.<
-// e.g. BuilderError { kind: BuilderErrorKind } ...
-
-pub enum BuilderError<L, A, S, F> {
-    Create(L),
-    Serve(ListenerError<A, S, F>),
-}
-
-impl<T, E> Builder<T, E, ()>
+impl<T, State> Builder<T, (), State>
 where
     T: ToTcpListener,
-    E: ErrorHandler,
 {
-    pub async fn serve<F>(self, service_factory: F) -> Result<(), BuilderError<T::Error, E::AcceptError, E::ServiceError, <<F as ServiceFactory<TcpStream>>::Service as Service<TcpStream>>::Error>>
+    pub async fn serve<F>(self, service_factory: F) -> Result<(), Box<dyn std::error::Error>>
     where
-        F: ServiceFactory<TcpStream>,
-        F::Service: Service<TcpStream> + Send + 'static,
-        <<F as ServiceFactory<TcpStream>>::Service as Service<TcpStream>>::Future: Send,
+        F: ServiceFactory<State>,
+        F::Service: Service<State> + Send + 'static,
+        <<F as ServiceFactory<State>>::Service as Service<State>>::Future: Send,
     {
         // create and configure the tcp listener...
-        let listener = self.incoming.into_tcp_listener().await.map_err(BuilderError::Create)?;
+        let listener = self.incoming.into_tcp_listener().await.map_err(Box::new)?;
 
         // listen without any grace..
-        Listener::new(listener, service_factory, self.error_handler)
-            .serve()
-            .await.map_err(BuilderError::Serve)
+        Listener::new(
+            listener,
+            service_factory,
+            future::pending(),
+            None,
+            self.state,
+        )
+        .serve()
+        .await
+        .map_err(Box::new)
     }
 }
 
-impl<T, E, S> Builder<T, E, GracefulConfig<S>>
+impl<T, S, State> Builder<T, GracefulConfig<S>, State>
 where
     T: ToTcpListener,
     S: Future + Send + 'static,
-    E: ErrorHandler,
 {
-    pub async fn serve<F>(self, service_factory: F) -> Result<(), BoxError>
+    pub async fn serve<F>(self, service_factory: F) -> Result<(), Box<dyn std::error::Error>>
     where
-        F: ServiceFactory<GracefulTcpStream>,
-        F::Service: Service<GracefulTcpStream> + Send + 'static,
-        <<F as ServiceFactory<GracefulTcpStream>>::Service as Service<GracefulTcpStream>>::Future:
-            Send,
+        F: ServiceFactory<State>,
+        F::Service: Service<State> + Send + 'static,
+        <<F as ServiceFactory<State>>::Service as Service<State>>::Future: Send,
     {
         // create and configure the tcp listener...
         let listener = self.incoming.into_tcp_listener().await?;
 
         // listen gracefully..
-        GracefulListener::new(
+        Listener::new(
             listener,
             service_factory,
             self.kind.shutdown,
