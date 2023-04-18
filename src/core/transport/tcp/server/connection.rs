@@ -2,7 +2,7 @@ use tokio::net::TcpStream;
 
 use crate::core::transport::graceful::{ShutdownFuture, Token};
 
-pub struct Stateless(());
+pub struct Stateless(pub(crate) ());
 
 pub struct Stateful<T: Sized>(pub(crate) T);
 
@@ -24,6 +24,14 @@ impl Connection<Stateless> {
 }
 
 impl<T> Connection<T> {
+    pub(crate) fn new(socket: TcpStream, shutdown: Token, state: T) -> Self {
+        Connection {
+            socket,
+            shutdown,
+            state,
+        }
+    }
+
     pub fn shutdown(&self) -> ShutdownFuture<'_> {
         self.shutdown.shutdown()
     }

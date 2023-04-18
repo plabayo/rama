@@ -79,8 +79,10 @@ impl<F, State> Listener<F, State>
 where
     F: ServiceFactory<State>,
     F::Service: Service<State> + Send + 'static,
+    F::Error: 'static,
     <<F as ServiceFactory<State>>::Service as Service<State>>::Future: Send,
-    State: Clone + Send,
+    <<F as ServiceFactory<State>>::Service as Service<State>>::Error: 'static,
+    State: Clone + Send + 'static,
 {
     async fn serve(self) -> Result<(), ListenerError> {
         let Self {
@@ -130,7 +132,10 @@ where
                 Err(err) => service_factory
                     .handle_accept_error(err.into())
                     .await
-                    .map_err(ListenerError::Accept)?,
+                    .map_err(|err| ListenerError {
+                        kind: ListenerErrorKind::Accept,
+                        source: Box::new(err),
+                    })?,
                 Ok((stream, _)) => {
                     let mut service =
                         service_factory
@@ -144,7 +149,7 @@ where
                     let token = graceful.token();
                     let state = state.clone();
                     tokio::spawn(async move {
-                        let conn = Connection::stateful(stream, token, state);
+                        let conn = Connection::new(stream, token, state);
                         if let Err(err) = service.call(conn).await {
                             // try to send the error to the main loop
                             let _ = error_tx.send(err).await;
@@ -187,7 +192,7 @@ impl Listener<(), ()> {
     }
 
     pub fn build(incoming: StdTcpListener) -> Builder<SocketConfig<StdTcpListener>, (), Stateless> {
-        Builder::new(incoming, (), ())
+        Builder::new(incoming, (), Stateless(()))
     }
 }
 
@@ -269,7 +274,7 @@ impl<I, S, State> Builder<I, GracefulConfig<S>, State> {
     ///
     /// If `None` is specified, the default timeout is used.
     pub fn timeout(mut self, timeout: Option<Duration>) -> Self {
-        self.kind.timeout = timeout;
+        self.graceful.timeout = timeout;
         self
     }
 }
@@ -336,7 +341,10 @@ where
     where
         F: ServiceFactory<State>,
         F::Service: Service<State> + Send + 'static,
+        F::Error: std::error::Error + 'static,
         <<F as ServiceFactory<State>>::Service as Service<State>>::Future: Send,
+        <<F as ServiceFactory<State>>::Service as Service<State>>::Error: std::error::Error + 'static,
+        State: Clone + Send + 'static,
     {
         // create and configure the tcp listener...
         let listener = self.incoming.into_tcp_listener().await.map_err(Box::new)?;

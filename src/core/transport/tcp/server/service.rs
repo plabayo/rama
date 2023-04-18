@@ -11,11 +11,11 @@ use crate::core::transport::{
     tcp::server::{Connection, Stateful, Stateless},
 };
 
-pub type BoxErrorFuture<Error> = Pin<Box<dyn Future<Output = Result<(), Error>>>>;
+pub type BoxErrorFuture<Error: std::error::Error + Send> = Pin<Box<dyn Future<Output = Result<(), Error>>>>;
 
 /// Factory to create Services, one service per incoming connection.
 pub trait ServiceFactory<State> {
-    type Error;
+    type Error: std::error::Error + Send;
     type Service: Service<State>;
     type Future: Future<Output = Result<Self::Service, Self::Error>>;
 
@@ -36,7 +36,7 @@ pub trait ServiceFactory<State> {
 
 /// A tower-like service which is used to serve a TCP stream.
 pub trait Service<State> {
-    type Error;
+    type Error: std::error::Error + Send;
     type Future: Future<Output = Result<(), Self::Error>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>>;
@@ -60,6 +60,7 @@ impl<F, Fut, State, Error> Service<State> for F
 where
     F: FnMut(Connection<State>) -> Fut,
     Fut: Future<Output = Result<(), Error>>,
+    Error: std::error::Error + Send
 {
     type Error = Error;
     type Future = Fut;
