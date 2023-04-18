@@ -244,7 +244,7 @@ impl<G, S> Builder<SocketConfig<StdTcpListener>, G, S> {
     }
 }
 
-impl<I, S, State> Builder<I, GracefulConfig<S>, State> {
+impl<I, State> Builder<I, (), State> {
     /// Upgrade the builder to one which builds
     /// a graceful TCP listener which will shutdown once the given future resolves.
     pub fn graceful(self, shutdown: S) -> Builder<I, GracefulConfig<S>, State> {
@@ -257,9 +257,7 @@ impl<I, S, State> Builder<I, GracefulConfig<S>, State> {
             state: self.state,
         }
     }
-}
 
-impl<I, State, F: Future<Output = ()>> Builder<I, GracefulConfig<F>, State> {
     /// Upgrade the builder to one which builds
     /// a graceful TCP listener which will shutdown once the "ctrl+c" signal is received (SIGINT).
     pub fn graceful_ctrl_c(self) -> Builder<I, GracefulConfig<impl Future<Output = ()>>, State> {
