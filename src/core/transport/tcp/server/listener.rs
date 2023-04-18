@@ -247,7 +247,7 @@ impl<G, S> Builder<SocketConfig<StdTcpListener>, G, S> {
 impl<I, State> Builder<I, (), State> {
     /// Upgrade the builder to one which builds
     /// a graceful TCP listener which will shutdown once the given future resolves.
-    pub fn graceful(self, shutdown: S) -> Builder<I, GracefulConfig<S>, State> {
+    pub fn graceful<S: Future<Output=()>>(self, shutdown: S) -> Builder<I, GracefulConfig<S>, State> {
         Builder {
             incoming: self.incoming,
             graceful: GracefulConfig {
