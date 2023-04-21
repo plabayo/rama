@@ -2,15 +2,15 @@
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
-[![MIT licensed][mit-badge]][mit-url]
+[![Business Source License][license-badge]][license-url]
 [![Build Status][actions-badge]][actions-url]
 
 [crates-badge]: https://img.shields.io/crates/v/rama.svg
 [crates-url]: https://crates.io/crates/rama
 [docs-badge]: https://img.shields.io/docsrs/rama/latest
 [docs-url]: https://docs.rs/rama/latest/rama/index.html
-[mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
-[mit-url]: https://github.com/plabayo/rama/blob/master/LICENSE
+[license-badge]: https://img.shields.io/badge/license-BSL-blue.svg
+[license-url]: https://github.com/plabayo/rama/blob/master/LICENSE
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions?query=workflow%3ACI+branch%main
 
@@ -158,12 +158,12 @@ Should you want to contribure this project but you do not yet know how to progra
 
 ## License
 
-This project is licensed under the [MIT license][license].
+This project is licensed under the [BSL license][license].
 
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in `rama` by you, shall be licensed as MIT, without any
+for inclusion in `rama` by you, shall be licensed as BSL, without any
 additional terms or conditions.
 
 [contributing]: https://github.com/plabayo/rama/blob/main/CONTRIBUTING.md
