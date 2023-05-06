@@ -53,6 +53,17 @@ which should allow you to focus only on the config of the proxy and any custom s
 you might wish to use.
 ```
 
+## Nightly
+
+`rama` is currently only available on nightly rust,
+this is because it uses the `async_trait` feature,
+which is currently only available on nightly rust.
+
+We expect to be able to switch back to stable rust once `async_trait` is available on stable rust,
+which should be by the end of 2023.
+
+See <https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html> for more information.
+
 ## netscrape.io
 
 `rama` is the underlying technology driving the commercial proxies of [netscrape.io](https://netscrape.io). You can find the source code for that web platform at <https://github.com/plabayo/netscrape>.
