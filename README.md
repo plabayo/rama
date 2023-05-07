@@ -64,6 +64,10 @@ which should be by the end of 2023.
 
 See <https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html> for more information.
 
+## datapoints.earth
+
+`rama` is used as a core technology of <https://datapoints.earth> to help our earth by facilitating data liberation at scale for the good of its citizens.
+
 ## netscrape.io
 
 `rama` is the underlying technology driving the commercial proxies of [netscrape.io](https://netscrape.io). You can find the source code for that web platform at <https://github.com/plabayo/netscrape>.
