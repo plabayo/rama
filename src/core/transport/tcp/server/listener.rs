@@ -2,17 +2,14 @@ use std::{
     convert::Infallible,
     future::{self, Future},
     net::{TcpListener as StdTcpListener, ToSocketAddrs},
-    pin::Pin,
     sync::Arc,
-    task::{ready, Context, Poll},
     time::Duration,
 };
 
-use pin_project_lite::pin_project;
 use tokio::net::{TcpListener, TcpStream};
 
 use crate::core::transport::{
-    graceful::{self, TimeoutError},
+    graceful::{self},
     tcp::server::{Connection, Service, ServiceFactory, Stateful, Stateless},
 };
 
@@ -79,9 +76,8 @@ impl<F, State> Listener<F, State>
 where
     F: ServiceFactory<State>,
     F::Service: Service<State> + Send + 'static,
-    F::Error: 'static,
-    <<F as ServiceFactory<State>>::Service as Service<State>>::Future: Send,
-    <<F as ServiceFactory<State>>::Service as Service<State>>::Error: 'static,
+    // F::Error: 'static,
+    // <<F as ServiceFactory<State>>::Service as Service<State>>::Error: 'static,
     State: Clone + Send + 'static,
 {
     async fn serve(self) -> Result<(), ListenerError> {
@@ -166,11 +162,9 @@ where
             graceful.shutdown().await;
             Ok(())
         }
-        .map_err(|err| {
-            ListenerError {
-                kind: ListenerErrorKind::Timeout,
-                source: Box::new(err),
-            }
+        .map_err(|err| ListenerError {
+            kind: ListenerErrorKind::Timeout,
+            source: Box::new(err),
         })
     }
 }
@@ -247,7 +241,10 @@ impl<G, S> Builder<SocketConfig<StdTcpListener>, G, S> {
 impl<I, State> Builder<I, (), State> {
     /// Upgrade the builder to one which builds
     /// a graceful TCP listener which will shutdown once the given future resolves.
-    pub fn graceful<S: Future<Output=()>>(self, shutdown: S) -> Builder<I, GracefulConfig<S>, State> {
+    pub fn graceful<S: Future<Output = ()>>(
+        self,
+        shutdown: S,
+    ) -> Builder<I, GracefulConfig<S>, State> {
         Builder {
             incoming: self.incoming,
             graceful: GracefulConfig {
@@ -279,55 +276,27 @@ impl<I, S, State> Builder<I, GracefulConfig<S>, State> {
 
 pub trait ToTcpListener {
     type Error;
-    type Future: Future<Output = Result<TcpListener, Self::Error>>;
 
-    fn into_tcp_listener(self) -> Self::Future;
+    async fn into_tcp_listener(self) -> Result<TcpListener, Self::Error>;
 }
 
 impl ToTcpListener for TcpListener {
     type Error = Infallible;
-    type Future = future::Ready<Result<TcpListener, Self::Error>>;
 
-    fn into_tcp_listener(self) -> Self::Future {
-        future::ready(Ok(self))
-    }
-}
-
-pin_project! {
-    pub struct SocketConfigToTcpListenerFuture<F> {
-        #[pin]
-        future: F,
-        ttl: Option<u32>,
-    }
-}
-
-impl<F, E> Future for SocketConfigToTcpListenerFuture<F>
-where
-    F: Future<Output = Result<TcpListener, E>>,
-{
-    type Output = Result<TcpListener, E>;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.project();
-        let listener = ready!(this.future.poll(cx))?;
-        if let Some(ttl) = this.ttl {
-            listener.set_ttl(*ttl)?;
-        }
-        Poll::Ready(Ok(listener))
+    async fn into_tcp_listener(self) -> Result<TcpListener, Self::Error> {
+        Ok(self)
     }
 }
 
 impl ToTcpListener for SocketConfig<StdTcpListener> {
     type Error = std::io::Error;
-    type Future = SocketConfigToTcpListenerFuture<future::Ready<Result<TcpListener, Self::Error>>>;
 
-    fn into_tcp_listener(self) -> Self::Future {
-        let listener = TcpListener::from_std(self.listener);
-        let future = future::ready(listener);
-        SocketConfigToTcpListenerFuture {
-            future,
-            ttl: self.ttl,
+    async fn into_tcp_listener(self) -> Result<TcpListener, Self::Error> {
+        let listener = TcpListener::from_std(self.listener)?;
+        if let Some(ttl) = self.ttl {
+            listener.set_ttl(ttl)?;
         }
+        Ok(listener)
     }
 }
 
@@ -339,9 +308,8 @@ where
     where
         F: ServiceFactory<State>,
         F::Service: Service<State> + Send + 'static,
-        F::Error: std::error::Error + 'static,
-        <<F as ServiceFactory<State>>::Service as Service<State>>::Future: Send,
-        <<F as ServiceFactory<State>>::Service as Service<State>>::Error: std::error::Error + 'static,
+        // F::Error: std::error::Error + 'static,
+        // <<F as ServiceFactory<State>>::Service as Service<State>>::Error: std::error::Error + 'static,
         State: Clone + Send + 'static,
     {
         // create and configure the tcp listener...
@@ -370,7 +338,6 @@ where
     where
         F: ServiceFactory<State>,
         F::Service: Service<State> + Send + 'static,
-        <<F as ServiceFactory<State>>::Service as Service<State>>::Future: Send,
     {
         // create and configure the tcp listener...
         let listener = self.incoming.into_tcp_listener().await?;
