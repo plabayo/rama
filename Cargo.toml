@@ -9,10 +9,9 @@ readme = "README.md"
 keywords = ["io", "async", "non-blocking", "futures"]
 license = "BSL"
 repository = "https://github.com/plabayo/llama"
-
-[[bin]]
-name = "rama"
-path = "./src/bin/rama/main.rs"
+# [[bin]]
+# name = "rama"
+# path = "./src/bin/rama/main.rs"
 
 [dependencies]
 anyhow = "1"
