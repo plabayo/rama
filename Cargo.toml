@@ -23,5 +23,5 @@ tower = { version = "0.4" }
 tracing = "0.1"
 
 [dev-dependencies]
-tower = { version = "0.4", features = ["limit"] }
+tower = { version = "0.4", features = ["limit", "util"] }
 tracing-subscriber = "0.3.16"
