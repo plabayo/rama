@@ -139,4 +139,13 @@ mod tower_service_tests {
         let result = service.call(5).await.expect("tower service fn to succeed");
         assert_eq!(result, 10);
     }
+
+    #[tokio::test]
+    async fn test_tower_service_builder_fn() {
+        let service = tower::ServiceBuilder::new()
+            .concurrency_limit(1)
+            .service_fn(handle);
+        let result = service.call(5).await.expect("tower service fn to succeed");
+        assert_eq!(result, 10);
+    }
 }
