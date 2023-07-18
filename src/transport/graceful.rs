@@ -44,6 +44,7 @@ impl Future for ShutdownFuture<'_> {
 }
 
 /// A service to facilitate graceful shutdown within your server.
+#[derive(Debug)]
 pub struct GracefulService {
     shutdown: CancellationToken,
     shutdown_complete_rx: Receiver<()>,

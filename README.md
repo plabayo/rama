@@ -74,9 +74,12 @@ building and maintaining open source software that `rama` depends upon:
 
 | | name | projects |
 | - | - | - |
-| 💌 | [Tokio](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
+| 💌 | [Tokio (*)](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
 | 💌 | [Sean McArthur](https://github.com/seanmonstar) | (Hyper and Tokio)
 | 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
+
+> (*) we no longer depend upon `tower` directly, and instead
+> have made a permanent fork of it, avaialble at: <https://github.com/plabayo/tower-async>
 
 ## FAQ
 

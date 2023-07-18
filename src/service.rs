@@ -1,8 +1,10 @@
-use super::Service;
+use std::convert::Infallible;
 
-pub trait ServiceFactory<Input> {
+pub use tower_async::Service;
+
+pub trait ServiceFactory<Request> {
     type Error;
-    type Service: Service<Input>;
+    type Service: Service<Request>;
 
     async fn new_service(&mut self) -> Result<Self::Service, Self::Error>;
 
@@ -14,17 +16,17 @@ pub trait ServiceFactory<Input> {
     async fn handle_service_error(
         &mut self,
         _: Self::Service,
-        _: <Self::Service as Service<Input>>::Error,
+        _: <Self::Service as Service<Request>>::Error,
     ) -> Result<(), Self::Error> {
         Ok(())
     }
 }
 
-impl<S, Input> ServiceFactory<Input> for S
+impl<S, Request> ServiceFactory<Request> for S
 where
-    S: Service<Input> + Clone,
+    S: Service<Request> + Clone,
 {
-    type Error = <S as Service<Input>>::Error;
+    type Error = Infallible;
     type Service = S;
 
     async fn new_service(&mut self) -> Result<Self::Service, Self::Error> {
