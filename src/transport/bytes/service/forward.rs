@@ -1,23 +1,22 @@
-use tokio::{net::TcpStream, pin};
-
 use crate::transport::bytes::ByteStream;
 use crate::{service::Service, transport::connection::Connection};
 
 #[derive(Debug)]
-pub struct Forwarder {
-    target: TcpStream,
+pub struct Forwarder<B> {
+    target: B,
 }
 
-impl<B, T> Service<Connection<B, T>> for Forwarder
+impl<B1, B2, T> Service<Connection<B1, T>> for Forwarder<B2>
 where
-    B: ByteStream,
+    B1: ByteStream,
+    B2: ByteStream + Unpin,
 {
     type Error = std::io::Error;
     type Response = ();
 
-    async fn call(&mut self, conn: Connection<B, T>) -> Result<Self::Response, Self::Error> {
+    async fn call(&mut self, conn: Connection<B1, T>) -> Result<Self::Response, Self::Error> {
         let (socket, token, _) = conn.into_parts();
-        pin!(socket);
+        tokio::pin!(socket);
 
         tokio::select! {
             _ = token.shutdown() => Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "graceful shutdown requested")),
