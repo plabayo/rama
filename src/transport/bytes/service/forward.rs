@@ -1,5 +1,7 @@
 use crate::transport::bytes::ByteStream;
-use crate::{service::Service, transport::connection::Connection};
+use crate::transport::connection::Connection;
+
+use tower_async::Service;
 
 #[derive(Debug)]
 pub struct Forwarder<B> {

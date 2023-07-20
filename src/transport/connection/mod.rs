@@ -1,16 +1,19 @@
 use crate::transport::graceful::{ShutdownFuture, Token};
 
+mod service_fn;
+pub use service_fn::{service_fn, Handler, ServiceFn};
+
 #[derive(Debug)]
 pub struct Connection<S, T> {
-    socket: S,
+    stream: S,
     shutdown: Token,
     state: T,
 }
 
 impl<S, T> Connection<S, T> {
-    pub fn new(socket: S, shutdown: Token, state: T) -> Self {
+    pub fn new(stream: S, shutdown: Token, state: T) -> Self {
         Connection {
-            socket,
+            stream,
             shutdown,
             state,
         }
@@ -24,15 +27,23 @@ impl<S, T> Connection<S, T> {
         self.shutdown.child_token()
     }
 
-    pub fn socket(&self) -> &S {
-        &self.socket
+    pub fn stream(&self) -> &S {
+        &self.stream
     }
 
     pub fn stream_mut(&mut self) -> &mut S {
-        &mut self.socket
+        &mut self.stream
+    }
+
+    pub fn state(&self) -> &T {
+        &self.state
+    }
+
+    pub fn state_mut(&mut self) -> &mut T {
+        &mut self.state
     }
 
     pub fn into_parts(self) -> (S, Token, T) {
-        (self.socket, self.shutdown, self.state)
+        (self.stream, self.shutdown, self.state)
     }
 }
