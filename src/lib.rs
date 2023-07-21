@@ -1,3 +1,9 @@
+//! # Rama
+//!
+//! rama is early work in progress, use at your own risk.
+//!
+//! Not everything that exists is documented and not everything that is documented is implemented.
+
 #![warn(
     missing_debug_implementations,
     // missing_docs,

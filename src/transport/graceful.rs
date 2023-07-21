@@ -1,4 +1,4 @@
-//! graceful shutdown utilities
+//! Graceful shutdown utilities.
 
 use std::{
     error::Error,

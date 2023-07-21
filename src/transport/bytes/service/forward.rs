@@ -1,28 +1,41 @@
-use crate::transport::bytes::ByteStream;
-use crate::transport::connection::Connection;
+use std::{
+    io::{Error, ErrorKind},
+    pin::Pin,
+};
 
 use tower_async::Service;
 
+use crate::transport::{bytes::ByteStream, connection::Connection};
+
+/// Crates an async service which forwards the incoming connection bytes to the given destination,
+/// and forwards the response back from the destination to the incoming connection.
 #[derive(Debug)]
-pub struct Forwarder<B> {
-    target: B,
+pub struct ForwardService<D> {
+    destination: Pin<Box<D>>,
 }
 
-impl<B1, B2, T> Service<Connection<B1, T>> for Forwarder<B2>
+impl<D> ForwardService<D> {
+    pub fn new(destination: D) -> Self {
+        ForwardService {
+            destination: Box::pin(destination),
+        }
+    }
+}
+
+impl<T, S, D> Service<Connection<S, T>> for ForwardService<D>
 where
-    B1: ByteStream,
-    B2: ByteStream + Unpin,
+    S: ByteStream,
+    D: ByteStream,
 {
-    type Error = std::io::Error;
-    type Response = ();
+    type Response = (u64, u64);
+    type Error = Error;
 
-    async fn call(&mut self, conn: Connection<B1, T>) -> Result<Self::Response, Self::Error> {
-        let (socket, token, _) = conn.into_parts();
-        tokio::pin!(socket);
-
+    async fn call(&mut self, conn: Connection<S, T>) -> Result<Self::Response, Self::Error> {
+        let (source, token, _) = conn.into_parts();
+        tokio::pin!(source);
         tokio::select! {
-            _ = token.shutdown() => Err(std::io::Error::new(std::io::ErrorKind::Interrupted, "graceful shutdown requested")),
-            res = tokio::io::copy(&mut socket, &mut self.target) => res.map(|_| ()),
+            _ = token.shutdown() => Err(Error::new(ErrorKind::Interrupted, "forward: graceful shutdown requested")),
+            res = tokio::io::copy_bidirectional(&mut source, &mut self.destination) => res,
         }
     }
 }

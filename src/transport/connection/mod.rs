@@ -1,3 +1,12 @@
+//! A connection is usually a socket (TCP, UDP, Unix, etc.),
+//! with the ability to gracefully shutdown. Optionally, it can also
+//! contain some state.
+//!
+//! See [`Connection`] for more details.
+//!
+//! `service_fn` is a helper for creating a [`tower_async::Service`] from a function or closure,
+//! to serve the full [`Connection`] or just parts of it, e.g. the `stream`.
+
 use crate::transport::graceful::{ShutdownFuture, Token};
 
 mod service_fn;

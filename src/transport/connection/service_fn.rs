@@ -198,6 +198,18 @@ pub struct ServiceFn<H, K> {
     _kind: std::marker::PhantomData<K>,
 }
 
+impl<H, K> Clone for ServiceFn<H, K>
+where
+    H: Clone,
+{
+    fn clone(&self) -> Self {
+        ServiceFn {
+            handler: self.handler.clone(),
+            _kind: std::marker::PhantomData,
+        }
+    }
+}
+
 impl<H, T, S, I> Service<Connection<T, S>> for ServiceFn<H, (T, S, I)>
 where
     H: Handler<T, S, I>,
@@ -205,6 +217,7 @@ where
     type Response = H::Response;
     type Error = H::Error;
 
+    #[inline]
     async fn call(&mut self, req: Connection<T, S>) -> Result<Self::Response, Self::Error> {
         self.handler.call(req).await
     }
@@ -260,6 +273,7 @@ where
     type Response = R;
     type Error = E;
 
+    #[inline]
     async fn call(&mut self, req: Connection<T, S>) -> Result<Self::Response, Self::Error> {
         let (stream, _, _) = req.into_parts();
         (self)(stream).await
@@ -281,6 +295,7 @@ where
     type Response = R;
     type Error = E;
 
+    #[inline]
     async fn call(&mut self, req: Connection<T, S>) -> Result<Self::Response, Self::Error> {
         let (stream, _, state) = req.into_parts();
         (self)(stream, state).await
@@ -302,6 +317,7 @@ where
     type Response = R;
     type Error = E;
 
+    #[inline]
     async fn call(&mut self, req: Connection<T, S>) -> Result<Self::Response, Self::Error> {
         let (stream, _, state) = req.into_parts();
         (self)(state, stream).await
@@ -323,6 +339,7 @@ where
     type Response = R;
     type Error = E;
 
+    #[inline]
     async fn call(&mut self, req: Connection<T, S>) -> Result<Self::Response, Self::Error> {
         (self)(req).await
     }
