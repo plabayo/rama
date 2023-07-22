@@ -10,48 +10,33 @@ use crate::transport::{bytes::ByteStream, connection::Connection};
 /// Crates an async service which forwards the incoming connection bytes to the given destination,
 /// and forwards the response back from the destination to the incoming connection.
 #[derive(Debug)]
-pub struct ForwardService<D, K> {
+pub struct ForwardService<D> {
     destination: Pin<Box<D>>,
-    _kind: std::marker::PhantomData<K>,
+    respect_shutdown: bool,
+    shutdown_delay: Option<std::time::Duration>,
 }
 
-mod marker {
-    /// Marker type for the graceful variant of [`super::ForwardService`].
-    pub(super) struct Graceful;
-    /// Marker type for the ungraceful variant of [`super::ForwardService`].
-    pub(super) struct Ungraceful;
-}
-
-impl<D> ForwardService<D, marker::Graceful> {
-    /// Creates a new [`ForwardService`] which respects the graceful shutdown,
-    /// by being an alias of [`ForwardService::graceful`].
+impl<D> ForwardService<D> {
+    /// Creates a new [`ForwardService`],
     pub fn new(destination: D) -> Self {
-        Self::graceful(destination)
+        Self {
+            destination: Box::pin(destination),
+            respect_shutdown: false,
+            shutdown_delay: None,
+        }
     }
 
-    /// Creates a new [`ForwardService`] which respects the graceful shutdown,
-    /// and stops bidirectionally copying bytes as soon as the shutdown is requested.
-    pub fn graceful(destination: D) -> Self {
-        ForwardService {
-            destination: Box::pin(destination),
-            _kind: std::marker::PhantomData,
-        }
+    /// Enable the option that this service will stop its work
+    /// as soon as the graceful shutdown is requested, optionally with
+    /// a a delay to give the actual work some time to finish.
+    pub fn respect_shutdown(mut self, delay: Option<std::time::Duration>) -> Self {
+        self.respect_shutdown = true;
+        self.shutdown_delay = delay;
+        self
     }
 }
 
-impl<D> ForwardService<D, marker::Ungraceful> {
-    /// Creates a new [`ForwardService`] which does not respect the graceful shutdown,
-    /// and keeps bidirectionally copying bytes until the connection is closed or other error,
-    /// even if the shutdown was requested already way before.
-    pub fn ungraceful(destination: D) -> Self {
-        ForwardService {
-            destination: Box::pin(destination),
-            _kind: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<T, S, D> Service<Connection<S, T>> for ForwardService<D, marker::Graceful>
+impl<T, S, D> Service<Connection<S, T>> for ForwardService<D>
 where
     S: ByteStream,
     D: ByteStream,
@@ -62,24 +47,24 @@ where
     async fn call(&mut self, conn: Connection<S, T>) -> Result<Self::Response, Self::Error> {
         let (source, token, _) = conn.into_parts();
         tokio::pin!(source);
-        tokio::select! {
-            _ = token.shutdown() => Err(Error::new(ErrorKind::Interrupted, "forward: graceful shutdown requested")),
-            res = tokio::io::copy_bidirectional(&mut source, &mut self.destination) => res,
+        if self.respect_shutdown {
+            if let Some(delay) = self.shutdown_delay {
+                let wait_for_shutdown = async {
+                    token.shutdown().await;
+                    tokio::time::sleep(delay).await;
+                };
+                tokio::select! {
+                    _ = wait_for_shutdown => Err(Error::new(ErrorKind::Interrupted, "forward: graceful shutdown requested and delay expired")),
+                    res = tokio::io::copy_bidirectional(&mut source, &mut self.destination) => res,
+                }
+            } else {
+                tokio::select! {
+                    _ = token.shutdown() => Err(Error::new(ErrorKind::Interrupted, "forward: graceful shutdown requested")),
+                    res = tokio::io::copy_bidirectional(&mut source, &mut self.destination) => res,
+                }
+            }
+        } else {
+            tokio::io::copy_bidirectional(&mut source, &mut self.destination).await
         }
-    }
-}
-
-impl<T, S, D> Service<Connection<S, T>> for ForwardService<D, marker::Ungraceful>
-where
-    S: ByteStream,
-    D: ByteStream,
-{
-    type Response = (u64, u64);
-    type Error = Error;
-
-    async fn call(&mut self, conn: Connection<S, T>) -> Result<Self::Response, Self::Error> {
-        let (source, _, _) = conn.into_parts();
-        tokio::pin!(source);
-        tokio::io::copy_bidirectional(&mut source, &mut self.destination).await
     }
 }

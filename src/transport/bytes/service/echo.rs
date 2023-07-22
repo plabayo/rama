@@ -4,31 +4,66 @@ use tower_async::Service;
 
 use crate::transport::{bytes::ByteStream, connection::Connection};
 
-/// Creates an async service which echoes the incoming bytes back on the same connection,
-/// and which respects the graceful shutdown, by shutting down the connection when requested.
-pub fn echo_service<B, T>() -> impl Service<Connection<B, T>>
-where
-    B: ByteStream,
-{
-    crate::transport::connection::service_fn(|conn: Connection<B, T>| async {
-        let (socket, token, _) = conn.into_parts();
-        let (mut reader, mut writer) = tokio::io::split(socket);
-        tokio::select! {
-            _ = token.shutdown() => Err(Error::new(ErrorKind::Interrupted, "echo: graceful shutdown requested")),
-            res = tokio::io::copy(&mut reader, &mut writer) => res,
-        }
-    })
+/// An async service which echoes the incoming bytes back on the same connection.
+#[derive(Debug)]
+pub struct EchoService {
+    respect_shutdown: bool,
+    shutdown_delay: Option<std::time::Duration>,
 }
 
-/// Creates an async service which echoes the incoming bytes back on the same connection,
-/// and which does not respect the graceful shutdown, by not shutting down the connection when requested,
-/// and instead keeps echoing bytes until the connection is closed or other error.
-pub fn echo_service_ungraceful<B, T>() -> impl Service<Connection<B, T>>
+impl EchoService {
+    /// Creates a new [`EchoService`],
+    pub fn new() -> Self {
+        Self {
+            respect_shutdown: false,
+            shutdown_delay: None,
+        }
+    }
+
+    /// Enable the option that this service will stop its work
+    /// as soon as the graceful shutdown is requested, optionally with
+    /// a a delay to give the actual work some time to finish.
+    pub fn respect_shutdown(mut self, delay: Option<std::time::Duration>) -> Self {
+        self.respect_shutdown = true;
+        self.shutdown_delay = delay;
+        self
+    }
+}
+
+impl Default for EchoService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, S> Service<Connection<S, T>> for EchoService
 where
-    B: ByteStream,
+    S: ByteStream,
 {
-    crate::transport::connection::service_fn(|stream: B| async {
+    type Response = u64;
+    type Error = Error;
+
+    async fn call(&mut self, conn: Connection<S, T>) -> Result<Self::Response, Self::Error> {
+        let (stream, token, _) = conn.into_parts();
         let (mut reader, mut writer) = tokio::io::split(stream);
-        tokio::io::copy(&mut reader, &mut writer).await
-    })
+        if self.respect_shutdown {
+            if let Some(delay) = self.shutdown_delay {
+                let wait_for_shutdown = async {
+                    token.shutdown().await;
+                    tokio::time::sleep(delay).await;
+                };
+                tokio::select! {
+                    _ = wait_for_shutdown => Err(Error::new(ErrorKind::Interrupted, "echo: graceful shutdown requested and delay expired")),
+                    res = tokio::io::copy(&mut reader, &mut writer) => res,
+                }
+            } else {
+                tokio::select! {
+                    _ = token.shutdown() => Err(Error::new(ErrorKind::Interrupted, "echo: graceful shutdown requested")),
+                    res = tokio::io::copy(&mut reader, &mut writer) => res,
+                }
+            }
+        } else {
+            tokio::io::copy(&mut reader, &mut writer).await
+        }
+    }
 }

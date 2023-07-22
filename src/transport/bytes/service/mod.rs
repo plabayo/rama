@@ -2,7 +2,7 @@
 //! Useful for testing and very specific purposes.
 
 mod echo;
-pub use echo::{echo_service, echo_service_ungraceful};
+pub use echo::EchoService;
 
 mod forward;
 pub use forward::ForwardService;
