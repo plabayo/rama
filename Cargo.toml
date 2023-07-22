@@ -14,9 +14,7 @@ repository = "https://github.com/plabayo/llama"
 # path = "./src/bin/rama/main.rs"
 
 [dependencies]
-anyhow = "1"
 pin-project-lite = "0.2"
-thiserror = "1"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tower-async = { version = "0.1" }
