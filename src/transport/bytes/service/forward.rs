@@ -7,8 +7,29 @@ use tower_async::Service;
 
 use crate::transport::{bytes::ByteStream, connection::Connection};
 
-/// Crates an async service which forwards the incoming connection bytes to the given destination,
+/// Async service which forwards the incoming connection bytes to the given destination,
 /// and forwards the response back from the destination to the incoming connection.
+///
+/// # Example
+///
+/// ```rust
+/// use tower_async::Service;
+/// use rama::transport::bytes::service::ForwardService;
+///
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # let destination = tokio_test::io::Builder::new().write(b"hello world").read(b"hello world").build();
+/// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
+/// # let conn = rama::transport::connection::Connection::new(stream, rama::transport::graceful::Token::pending(), ());
+/// let mut service = ForwardService::new(destination)
+///     .respect_shutdown(Some(std::time::Duration::from_secs(5)));
+///
+/// let (bytes_copied_to, bytes_copied_from) = service.call(conn).await?;
+/// # assert_eq!(bytes_copied_to, 11);
+/// # assert_eq!(bytes_copied_from, 11);
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Debug)]
 pub struct ForwardService<D> {
     destination: Pin<Box<D>>,
