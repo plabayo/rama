@@ -14,14 +14,14 @@ repository = "https://github.com/plabayo/llama"
 # path = "./src/bin/rama/main.rs"
 
 [dependencies]
+bytes = "1.4"
 pin-project-lite = "0.2"
 tokio = { version = "1", features = ["full"] }
 tokio-util = "0.7"
 tower-async = { version = "0.1" }
 tracing = "0.1"
-bytes = "1.4"
 
 [dev-dependencies]
+tokio-test = "0.4"
 tower = { version = "0.4", features = ["limit", "util"] }
 tracing-subscriber = "0.3"
-tokio-test = "0.4"
