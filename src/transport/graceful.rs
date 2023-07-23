@@ -14,6 +14,7 @@ use tokio::sync::mpsc::{channel, Receiver, Sender};
 use tokio_util::sync::{CancellationToken, WaitForCancellationFuture};
 
 pin_project! {
+    /// A future that resolves when a graceful shutdown is requested.
     pub struct ShutdownFuture<'a> {
         #[pin]
         maybe_future: Option<WaitForCancellationFuture<'a>>,
@@ -21,12 +22,16 @@ pin_project! {
 }
 
 impl<'a> ShutdownFuture<'a> {
+    /// Create a new [`ShutdownFuture`] from a [`WaitForCancellationFuture`].
+    ///
+    /// [`WaitForCancellationFuture`]: https://docs.rs/tokio-util/*/tokio_util/sync/struct.WaitForCancellationFuture.html
     pub fn new(future: WaitForCancellationFuture<'a>) -> Self {
         Self {
             maybe_future: Some(future),
         }
     }
 
+    /// Create a new [`ShutdownFuture`] that never resolves.
     pub fn pending() -> Self {
         Self { maybe_future: None }
     }
@@ -70,6 +75,8 @@ impl Display for TimeoutError {
 impl Error for TimeoutError {}
 
 impl GracefulService {
+    /// Create a new graceful service that can be used to facilitate graceful
+    /// shutdown within your server.
     pub fn new(signal: impl Future + Send + 'static) -> Self {
         let shutdown = CancellationToken::new();
         let (shutdown_complete_tx, shutdown_complete_rx) = channel(1);
@@ -129,17 +136,19 @@ impl Default for GracefulService {
     }
 }
 
+/// A graceful shutdown token,
+/// used to respect graceful shutdowns within your server's child routines.
 #[derive(Debug, Clone)]
 pub struct Token {
     state: Option<TokenState>,
 }
 
 impl Token {
-    // Construct a true graceful token.
-    //
-    // This token will drop the shutdown_complete
-    // when finished (to mark it went out of scope) and which can be also used
-    // to await the given shutdown cancellation token.
+    /// Construct a true graceful token.
+    ///
+    /// This token will drop the shutdown_complete
+    /// when finished (to mark it went out of scope) and which can be also used
+    /// to await the given shutdown cancellation token.
     pub fn new(shutdown: CancellationToken, shutdown_complete: Sender<()>) -> Self {
         Self {
             state: Some(TokenState {
@@ -149,14 +158,16 @@ impl Token {
         }
     }
 
-    // Construct a token that will never shutdown.
-    //
-    // This is a desired solution where you need to provide a token for
-    // a service which is not graceful.
+    /// Construct a token that will never shutdown.
+    ///
+    /// This is a desired solution where you need to provide a token for
+    /// a service which is not graceful.
     pub fn pending() -> Self {
         Self { state: None }
     }
 
+    /// Returns the future that resolves when the
+    /// graceful shutdown has been triggered.
     pub fn shutdown(&self) -> ShutdownFuture<'_> {
         match &self.state {
             Some(state) => ShutdownFuture::new(state.shutdown.cancelled()),
@@ -164,6 +175,9 @@ impl Token {
         }
     }
 
+    /// Creates a child token that
+    /// can be passed down to child procedures that
+    /// wish to respect the graceful shutdown when possible.
     pub fn child_token(&self) -> Token {
         match &self.state {
             Some(state) => Token {
