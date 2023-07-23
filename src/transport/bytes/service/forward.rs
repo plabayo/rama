@@ -70,7 +70,7 @@ where
         tokio::pin!(source);
         if self.respect_shutdown {
             if let Some(delay) = self.shutdown_delay {
-                let wait_for_shutdown = async {
+                let wait_for_shutdown = async move {
                     token.shutdown().await;
                     tokio::time::sleep(delay).await;
                 };
@@ -87,5 +87,136 @@ where
         } else {
             tokio::io::copy_bidirectional(&mut source, &mut self.destination).await
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tokio_test::io::Builder;
+
+    #[tokio::test]
+    async fn test_forwarder_no_respect_shutdown() {
+        let destination = Builder::new()
+            .write(b"to(1)")
+            .read(b"from(1)")
+            .write(b"to(2)")
+            .wait(std::time::Duration::from_secs(1))
+            .read(b"from(2)")
+            .build();
+        let stream = Builder::new()
+            .read(b"to(1)")
+            .write(b"from(1)")
+            .read(b"to(2)")
+            .write(b"from(2)")
+            .build();
+
+        let graceful_service = crate::transport::graceful::service(tokio::time::sleep(
+            std::time::Duration::from_millis(200),
+        ));
+
+        let conn = Connection::new(stream, graceful_service.token(), ());
+
+        ForwardService::new(destination).call(conn).await.unwrap();
+
+        graceful_service.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "There is still data left to read.")]
+    async fn test_forwarder_respect_shutdown_instant() {
+        let destination = Builder::new()
+            .write(b"to(1)")
+            .read(b"from(1)")
+            .write(b"to(2)")
+            .wait(std::time::Duration::from_millis(500))
+            .read(b"from(2)")
+            .build();
+        let stream = Builder::new()
+            .read(b"to(1)")
+            .write(b"from(1)")
+            .read(b"to(2)")
+            .build();
+
+        let graceful_service = crate::transport::graceful::service(tokio::time::sleep(
+            std::time::Duration::from_millis(200),
+        ));
+
+        let conn = Connection::new(stream, graceful_service.token(), ());
+
+        assert!(ForwardService::new(destination)
+            .respect_shutdown(None)
+            .call(conn)
+            .await
+            .is_err());
+
+        graceful_service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_forwarder_respect_shutdown_with_delay() {
+        let destination = Builder::new()
+            .write(b"to(1)")
+            .read(b"from(1)")
+            .write(b"to(2)")
+            .wait(std::time::Duration::from_millis(500))
+            .read(b"from(2)")
+            .build();
+        let stream = Builder::new()
+            .read(b"to(1)")
+            .write(b"from(1)")
+            .read(b"to(2)")
+            .write(b"from(2)")
+            .build();
+
+        let graceful_service = crate::transport::graceful::service(tokio::time::sleep(
+            std::time::Duration::from_millis(200),
+        ));
+
+        let conn = Connection::new(stream, graceful_service.token(), ());
+
+        ForwardService::new(destination)
+            .respect_shutdown(Some(std::time::Duration::from_secs(1)))
+            .call(conn)
+            .await
+            .unwrap();
+
+        graceful_service.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "There is still data left to read.")]
+    async fn test_forwarder_respect_shutdown_with_delay_partial_error() {
+        let destination = Builder::new()
+            .write(b"to(1)")
+            .read(b"from(1)")
+            .write(b"to(2)")
+            .read(b"from(2)")
+            .write(b"to(3)")
+            .wait(std::time::Duration::from_secs(2))
+            .read(b"from(3)")
+            .build();
+        let stream = Builder::new()
+            .read(b"to(1)")
+            .write(b"from(1)")
+            .read(b"to(2)")
+            .write(b"from(2)")
+            .read(b"to(3)")
+            .build();
+
+        let graceful_service = crate::transport::graceful::service(tokio::time::sleep(
+            std::time::Duration::from_millis(250),
+        ));
+
+        let conn = Connection::new(stream, graceful_service.token(), ());
+
+        assert!(ForwardService::new(destination)
+            .respect_shutdown(Some(std::time::Duration::from_millis(500)))
+            .call(conn)
+            .await
+            .is_err());
+
+        graceful_service.shutdown().await;
     }
 }

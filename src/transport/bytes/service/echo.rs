@@ -86,3 +86,109 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use tokio_test::io::Builder;
+
+    #[tokio::test]
+    async fn test_echo_no_respect_shutdown() {
+        let stream = Builder::new()
+            .read(b"one")
+            .write(b"one")
+            .read(b"two")
+            .write(b"two")
+            .build();
+
+        let graceful_service = crate::transport::graceful::service(tokio::time::sleep(
+            std::time::Duration::from_millis(200),
+        ));
+
+        let conn = Connection::new(stream, graceful_service.token(), ());
+
+        EchoService::new().call(conn).await.unwrap();
+
+        graceful_service.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "There is still data left to write.")]
+    async fn test_echo_respect_shutdown_instant() {
+        let stream = Builder::new()
+            .read(b"one")
+            .write(b"one")
+            .read(b"two")
+            .wait(std::time::Duration::from_millis(500))
+            .write(b"two")
+            .build();
+
+        let graceful_service = crate::transport::graceful::service(tokio::time::sleep(
+            std::time::Duration::from_millis(200),
+        ));
+
+        let conn = Connection::new(stream, graceful_service.token(), ());
+
+        assert!(EchoService::new()
+            .respect_shutdown(None)
+            .call(conn)
+            .await
+            .is_err());
+
+        graceful_service.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn test_echo_respect_shutdown_with_delay() {
+        let stream = Builder::new()
+            .read(b"one")
+            .write(b"one")
+            .read(b"two")
+            .wait(std::time::Duration::from_millis(500))
+            .write(b"two")
+            .build();
+
+        let graceful_service = crate::transport::graceful::service(tokio::time::sleep(
+            std::time::Duration::from_millis(200),
+        ));
+
+        let conn = Connection::new(stream, graceful_service.token(), ());
+
+        EchoService::new()
+            .respect_shutdown(Some(std::time::Duration::from_secs(1)))
+            .call(conn)
+            .await
+            .unwrap();
+
+        graceful_service.shutdown().await;
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "There is still data left to write.")]
+    async fn test_echo_respect_shutdown_with_delay_partial_error() {
+        let stream = Builder::new()
+            .read(b"one")
+            .write(b"one")
+            .read(b"two")
+            .write(b"two")
+            .read(b"three")
+            .wait(std::time::Duration::from_secs(2))
+            .write(b"three")
+            .build();
+
+        let graceful_service = crate::transport::graceful::service(tokio::time::sleep(
+            std::time::Duration::from_millis(250),
+        ));
+
+        let conn = Connection::new(stream, graceful_service.token(), ());
+
+        assert!(EchoService::new()
+            .respect_shutdown(Some(std::time::Duration::from_millis(500)))
+            .call(conn)
+            .await
+            .is_err());
+
+        graceful_service.shutdown().await;
+    }
+}
