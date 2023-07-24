@@ -22,5 +22,4 @@ tower-async = { version = "0.1" }
 
 [dev-dependencies]
 tokio-test = "0.4"
-tower = { version = "0.4", features = ["limit", "util"] }
 tracing-subscriber = "0.3"
