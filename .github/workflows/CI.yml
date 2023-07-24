@@ -2,6 +2,7 @@ name: CI
 
 env:
   CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: nightly-2023-07-08
 
 on:
   push:
@@ -16,19 +17,34 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: ${{env.RUST_TOOLCHAIN}}
           override: true
           profile: minimal
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
-      - name: Check
-        working-directory: .
+      - name: check
+        run: |
+          cargo check --all --all-targets --all-features
+      - name: clippy
         run: |
           cargo clippy --all --all-targets --all-features
       - name: rustfmt
-        working-directory: .
         run: |
           cargo fmt --all -- --check
+
+  check-minimal-versions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          override: true
+          profile: minimal
+      - uses: Swatinem/rust-cache@v2
+      - name: check minimal versions
+        run: |
+          cargo -Z minimal-versions check --all --all-targets --all-features
 
   check-docs:
     runs-on: ubuntu-latest
@@ -36,7 +52,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: ${{env.RUST_TOOLCHAIN}}
           override: true
           profile: minimal
       - uses: Swatinem/rust-cache@v1
@@ -52,15 +68,32 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: ${{env.RUST_TOOLCHAIN}}
           override: true
           profile: minimal
       - uses: Swatinem/rust-cache@v1
-      - name: Run doc tests
+      - name: Run tests
         uses: actions-rs/cargo@v1
         with:
           command: test
           args: --all-features
+
+  test-minimal-versions:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          override: true
+          profile: minimal
+      - uses: Swatinem/rust-cache@v1
+      - name: Run tests (minimal versions)
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: -Z minimal-versions --all-features
 
   test-docs:
     needs: check
@@ -69,7 +102,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: ${{env.RUST_TOOLCHAIN}}
           override: true
           profile: minimal
       - uses: Swatinem/rust-cache@v1
@@ -79,50 +112,53 @@ jobs:
           command: test
           args: --all-features --doc
 
-  test-codecov:
-    name:                       coverage
-    runs-on:                    ubuntu-latest
-    container:
-      image:                    xd009642/tarpaulin:develop-nightly
-      options:                  --security-opt seccomp=unconfined
-    steps:
-      - name:                   Checkout repository
-        uses:                   actions/checkout@v2
-
-      - name:                   Generate code coverage
-        run: |
-          cargo +nightly tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml
-
-      - name:                   Upload to codecov.io
-        uses:                   codecov/codecov-action@v2
-        with:
-          # token:                ${{secrets.CODECOV_TOKEN}} # not required for public repos
-          fail_ci_if_error:     true
-
-  armv5te-unknown-linux-musleabi:
+  test-examples:
     needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
-          target: armv5te-unknown-linux-musleabi
+          toolchain: ${{env.RUST_TOOLCHAIN}}
           override: true
           profile: minimal
       - uses: Swatinem/rust-cache@v1
-      - name: Check
+      - name: Run doc tests
         uses: actions-rs/cargo@v1
-        env:
-          # Clang has native cross-compilation support
-          CC: clang
         with:
-          command: check
-          args: >
-            --all-targets
-            --all-features
-            --all
-            --target armv5te-unknown-linux-musleabi
+          command: test
+          args: --all-features --examples
+
+  cargo-hack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          profile: minimal
+      - name: install cargo-hack
+        uses: taiki-e/install-action@cargo-hack
+      - name: cargo hack check
+        run: cargo hack check --each-feature --no-dev-deps --workspace
+
+  test-codecov:
+    name: coverage
+    runs-on: ubuntu-latest
+    container:
+      image: xd009642/tarpaulin:develop-nightly
+      options: --security-opt seccomp=unconfined
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+      - name: Generate code coverage
+        run: |
+          cargo +nightly tarpaulin --verbose --all-features --workspace --timeout 120 --out Xml
+      - name: Upload to codecov.io
+        uses: codecov/codecov-action@v2
+        with:
+          token: ${{secrets.CODECOV_TOKEN}}
+          fail_ci_if_error: true
 
   dependencies-are-sorted:
     runs-on: ubuntu-latest
@@ -130,7 +166,7 @@ jobs:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
         with:
-          toolchain: nightly
+          toolchain: ${{env.RUST_TOOLCHAIN}}
           override: true
           profile: minimal
       - uses: Swatinem/rust-cache@v2
@@ -141,3 +177,19 @@ jobs:
         working-directory: .
         run: |
           cargo sort --workspace --grouped --check
+
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: EmbarkStudios/cargo-deny-action@v1
+
+  semver-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          rust-toolchain: ${{env.RUST_TOOLCHAIN}}

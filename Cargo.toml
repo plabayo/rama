@@ -2,7 +2,7 @@
 categories = ["asynchronous", "network-programming"]
 edition = "2021"
 name = "rama"
-version = "0.1.0"
+version = "0.2.0"
 description = "proxy framework using Tokio written purely in Rust"
 homepage = "https://github.com/plabayo/llama"
 readme = "README.md"
