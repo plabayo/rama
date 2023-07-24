@@ -130,6 +130,7 @@ jobs:
           args: --all-features --examples
 
   cargo-hack:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -143,6 +144,7 @@ jobs:
         run: cargo hack check --each-feature --no-dev-deps --workspace
 
   dependencies-are-sorted:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
@@ -161,12 +163,14 @@ jobs:
           cargo sort --workspace --grouped --check
 
   cargo-deny:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v3
       - uses: EmbarkStudios/cargo-deny-action@v1
 
   semver-checks:
+    needs: check
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
