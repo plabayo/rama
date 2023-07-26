@@ -15,7 +15,7 @@ use crate::transport::{connection::Connection, graceful};
 /// Listens to incoming TCP connections and serves them with a [`tower_async::Service`].
 ///
 /// That [`tower_async::Service`] is created by a [`tower_async::Service`] for each incoming connection.
-/// 
+///
 /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
 #[derive(Debug)]
 pub struct TcpListener<S, H> {
@@ -74,7 +74,7 @@ impl TryFrom<std::net::TcpListener>
 impl<H> TcpListener<private::NoState, H> {
     /// Sets a state for the [`TcpListener`],
     /// which will be passed to the [`tower_async::Service`] for each incoming connection.
-    /// 
+    ///
     /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
     pub fn state<S>(self, state: S) -> TcpListener<S, H>
     where
@@ -199,7 +199,7 @@ mod private {
 
     use crate::transport::tcp::server::error::{Error, ErrorHandler, ErrorKind};
 
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy, Default)]
     pub(super) struct NoState;
 
     #[derive(Debug, Clone, Copy, Default)]

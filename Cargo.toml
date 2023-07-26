@@ -22,5 +22,6 @@ tower-async = { version = "0.1" }
 tracing = "0.1"
 
 [dev-dependencies]
+anyhow = "1.0"
 tokio-test = "0.4"
 tracing-subscriber = "0.3"
