@@ -42,9 +42,6 @@ pub enum ErrorKind {
     /// Indicates that the connection was closed because the timeout
     /// for graceful shutdown was reached, and thus the [`super::TcpListener`]
     /// was closed potentially ungracefully.
-    ///
-    /// The [`ErrorHandler`] will not be called for this error
-    /// as it can only occur while exiting the listen event loop.
     Timeout,
 }
 
@@ -111,6 +108,6 @@ impl std::error::Error for Error {
 pub trait ErrorHandler {
     /// In case a `BoxError` is returned by a call to this function,
     /// the [`super::TcpListener`] will attempt to close gracefully
-    /// and return this error to the caller of [`super::TcpListener::listen`].
-    async fn handle(&mut self, error: BoxError) -> std::result::Result<(), BoxError>;
+    /// and return this error to the caller of [`super::TcpListener::serve`].
+    async fn handle(&mut self, error: Error) -> std::result::Result<(), BoxError>;
 }

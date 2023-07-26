@@ -40,6 +40,7 @@
 #![forbid(unsafe_code)]
 #![allow(incomplete_features)]
 #![feature(async_fn_in_trait)]
+#![feature(return_type_notation)]
 #![feature(impl_trait_projections)]
 #![allow(elided_lifetimes_in_paths, clippy::type_complexity)]
 #![cfg_attr(test, allow(clippy::float_cmp))]
