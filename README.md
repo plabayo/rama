@@ -90,3 +90,13 @@ This animal is used as a our mascot and spiritual inspiration of this proxy fram
 It was chosen to honor our connection with Peru, the homeland of this magnificent animal,
 and translated into Japanese because we gratefully have built _rama_
 upon the broad shoulders of [Tokio and its community](https://tokio.rs/).
+
+### Help! My Async Trait's Future is not `Send`
+
+Due to a bug in Rust, most likely its trait resolver,
+you can currently run into this not very meanigful error.
+
+Cfr: <https://github.com/rust-lang/rust/issues/114142>
+
+By using the 'turbo fish' syntax you can resolve it.
+See that issue for more details on this solution.
