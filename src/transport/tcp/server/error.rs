@@ -39,10 +39,6 @@ pub enum ErrorKind {
     ///
     /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
     Factory,
-    /// Indicates that the connection was closed because the timeout
-    /// for graceful shutdown was reached, and thus the [`super::TcpListener`]
-    /// was closed potentially ungracefully.
-    Timeout,
 }
 
 impl std::fmt::Display for ErrorKind {
@@ -51,7 +47,6 @@ impl std::fmt::Display for ErrorKind {
             ErrorKind::Accept => write!(f, "Accept"),
             ErrorKind::Service => write!(f, "Service"),
             ErrorKind::Factory => write!(f, "Factory"),
-            ErrorKind::Timeout => write!(f, "Timeout"),
         }
     }
 }

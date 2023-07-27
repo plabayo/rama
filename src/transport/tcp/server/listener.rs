@@ -7,7 +7,7 @@ use std::{
 };
 use tokio::net::TcpStream;
 use tower_async::{BoxError, MakeService, Service};
-use tracing::info;
+use tracing::{debug, info};
 
 use super::error::{Error, ErrorHandler, ErrorKind};
 use crate::transport::{graceful, Connection, GracefulService};
@@ -28,12 +28,12 @@ pub struct TcpListener<S, H> {
 
 impl TcpListener<private::NoState, private::DefaultErrorHandler> {
     /// Creates a new [`TcpListener`] bound to a local address with an open port.
-    pub fn new() -> Result<Self, BoxError> {
+    pub fn new() -> Result<Self, std::io::Error> {
         Self::bind("127.0.0.1:0")
     }
 
     /// Creates a new [`TcpListener`] bound to a given address.
-    pub fn bind(addr: impl ToSocketAddrs) -> Result<Self, BoxError> {
+    pub fn bind(addr: impl ToSocketAddrs) -> Result<Self, std::io::Error> {
         let std_listener = std::net::TcpListener::bind(addr)?;
         std_listener.try_into()
     }
@@ -62,7 +62,7 @@ impl From<tokio::net::TcpListener> for TcpListener<private::NoState, private::De
 impl TryFrom<std::net::TcpListener>
     for TcpListener<private::NoState, private::DefaultErrorHandler>
 {
-    type Error = BoxError;
+    type Error = std::io::Error;
 
     fn try_from(listener: std::net::TcpListener) -> Result<Self, Self::Error> {
         listener.set_nonblocking(true)?;
@@ -130,7 +130,7 @@ where
 {
     /// Serves incoming connections with a [`tower_async::Service`] that acts as a factory,
     /// creating a new [`Service`] for each incoming connection.
-    pub async fn serve<Factory>(mut self, mut service_factory: Factory) -> Result<(), BoxError>
+    pub async fn serve<Factory>(mut self, mut service_factory: Factory) -> Result<(), Error>
     where
         Factory: MakeService<SocketAddr, Connection<TcpStream, S::State>>,
         // Factory::Service: Service<Connection<TcpStream, S::State>, call(): Send> + Send + 'static,
@@ -159,7 +159,7 @@ where
                         Ok((socket, peer_addr)) => (socket, peer_addr),
                         Err(err) => {
                             let error = Error::new(ErrorKind::Accept, err);
-                            self.err_handler.handle(error).await?;
+                            self.err_handler.handle(error).await.map_err(|err| Error::new(ErrorKind::Accept, err))?;
                             continue;
                         }
                     }
@@ -171,7 +171,10 @@ where
                 Ok(service) => service,
                 Err(err) => {
                     let error = Error::new(ErrorKind::Factory, err);
-                    self.err_handler.handle(error).await?;
+                    self.err_handler
+                        .handle(error)
+                        .await
+                        .map_err(|err| Error::new(ErrorKind::Factory, err))?;
                     continue;
                 }
             };
@@ -190,19 +193,22 @@ where
             // });
 
             if let Err(err) = service.call(conn).await {
-                let error = Error::new(ErrorKind::Accept, err);
-                self.err_handler.handle(error).await?;
+                let error = Error::new(ErrorKind::Service, err);
+                self.err_handler
+                    .handle(error)
+                    .await
+                    .map_err(|err| Error::new(ErrorKind::Service, err))?;
             }
         }
 
         // wait for all services to finish
         if let Some(timeout) = self.shutdown_timeout {
-            self.graceful.shutdown_until(timeout).await
+            if let Err(err) = self.graceful.shutdown_until(timeout).await {
+                debug!("TCP server shutdown error: {err}");
+            }
         } else {
             self.graceful.shutdown().await;
-            Ok(())
         }
-        .map_err(|err| Error::new(ErrorKind::Timeout, err))?;
 
         // all services finished, return
         Ok(())
@@ -211,7 +217,7 @@ where
 
 mod private {
     use tower_async::BoxError;
-    use tracing::{debug, error, warn};
+    use tracing::{debug, error};
 
     use crate::transport::tcp::server::error::{Error, ErrorHandler, ErrorKind};
 
@@ -260,9 +266,6 @@ mod private {
                 }
                 ErrorKind::Factory => {
                     debug!("TCP server factory error: {}", error);
-                }
-                ErrorKind::Timeout => {
-                    warn!("TCP server timeout error: {}", error);
                 }
             }
             Ok(())
