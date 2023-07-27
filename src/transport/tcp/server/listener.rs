@@ -92,12 +92,15 @@ impl<H> TcpListener<private::NoState, H> {
 
 impl<S> TcpListener<S, private::DefaultErrorHandler> {
     /// Sets an [``] for the [`TcpListener`].
-    pub fn err_handler<H>(self, err_handler: impl Into<H>) -> TcpListener<S, H> {
+    pub fn err_handler<H>(self, err_handler: H) -> TcpListener<S, H>
+    where
+        H: ErrorHandler<handle(): Send> + Send + Clone + 'static,
+    {
         TcpListener {
             listener: self.listener,
             shutdown_timeout: self.shutdown_timeout,
             graceful: self.graceful,
-            err_handler: err_handler.into(),
+            err_handler,
             state: self.state,
         }
     }
@@ -124,7 +127,7 @@ impl<S, H> TcpListener<S, H> {
 
 impl<S, H> TcpListener<S, H>
 where
-    H: ErrorHandler,
+    H: ErrorHandler<handle(): Send> + Send + Clone + 'static,
     S: private::IntoState,
     S::State: Clone + Send + 'static,
 {
@@ -136,6 +139,7 @@ where
         Factory::Service: Service<Connection<TcpStream, S::State>, call(): Send> + Send + 'static,
         Factory::MakeError: Into<BoxError>,
         Factory::Error: Into<BoxError> + Send + 'static,
+        Factory::Response: Send + 'static,
         <Factory as MakeService<
             std::net::SocketAddr,
             Connection<tokio::net::TcpStream, <S as private::IntoState>::State>,
@@ -143,17 +147,14 @@ where
     {
         let state = self.state.into_state();
 
-        let (service_err_tx, mut service_err_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (service_err_tx, mut service_err_rx) = tokio::sync::mpsc::channel(1);
         loop {
             let (socket, peer_addr) = tokio::select! {
                 maybe_err = service_err_rx.recv() => {
                     if let Some(err) = maybe_err {
-                        let error = Error::new(ErrorKind::Accept, err);
-                        if let Err(err) = self.err_handler.handle(error).await.map_err(|err| Error::new(ErrorKind::Service, err)) {
-                            self.graceful.trigger_shutdown().await;
-                            graceful_delay(self.graceful, self.shutdown_timeout).await;
-                            return Err(err);
-                        }
+                        self.graceful.trigger_shutdown().await;
+                        graceful_delay(self.graceful, self.shutdown_timeout).await;
+                        return Err(err);
                     }
                     continue;
                 },
@@ -190,11 +191,20 @@ where
             let token = self.graceful.token();
             let state = state.clone();
             let service_err_tx = service_err_tx.clone();
+
+            let mut err_handler = self.err_handler.clone();
             let conn: Connection<_, _> = Connection::new(socket, token, state);
 
             tokio::spawn(async move {
                 if let Err(err) = service.call(conn).await {
-                    let _ = service_err_tx.send(err);
+                    let error = Error::new(ErrorKind::Service, err);
+                    if let Err(err) = err_handler
+                        .handle(error)
+                        .await
+                        .map_err(|err| Error::new(ErrorKind::Service, err))
+                    {
+                        service_err_tx.send(err).await.ok();
+                    }
                 }
             });
         }
