@@ -133,8 +133,7 @@ where
     pub async fn serve<Factory>(mut self, mut service_factory: Factory) -> Result<(), Error>
     where
         Factory: MakeService<SocketAddr, Connection<TcpStream, S::State>>,
-        // Factory::Service: Service<Connection<TcpStream, S::State>, call(): Send> + Send + 'static,
-        Factory::Service: Service<Connection<TcpStream, S::State>> + Send + 'static,
+        Factory::Service: Service<Connection<TcpStream, S::State>, call(): Send> + Send + 'static,
         Factory::MakeError: Into<BoxError>,
         Factory::Error: Into<BoxError> + Send + 'static,
         <Factory as MakeService<
@@ -144,16 +143,16 @@ where
     {
         let state = self.state.into_state();
 
-        // let (service_err_tx, mut service_err_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (service_err_tx, mut service_err_rx) = tokio::sync::mpsc::unbounded_channel();
         loop {
             let (socket, peer_addr) = tokio::select! {
-                // maybe_err = service_err_rx.recv() => {
-                //     if let Some(err) = maybe_err {
-                //         let error = Error::new(ErrorKind::Accept, err);
-                //         self.err_handler.handle(error).await?;
-                //     }
-                //     continue;
-                // },
+                maybe_err = service_err_rx.recv() => {
+                    if let Some(err) = maybe_err {
+                        let error = Error::new(ErrorKind::Accept, err);
+                        self.err_handler.handle(error).await.map_err(|err| Error::new(ErrorKind::Service, err))?;
+                    }
+                    continue;
+                },
                 result = self.listener.accept() => {
                     match result{
                         Ok((socket, peer_addr)) => (socket, peer_addr),
@@ -181,24 +180,14 @@ where
 
             let token = self.graceful.token();
             let state = state.clone();
-            // let service_err_tx = service_err_tx.clone();
+            let service_err_tx = service_err_tx.clone();
             let conn: Connection<_, _> = Connection::new(socket, token, state);
 
-            // TODO: enable this kind of features once again when
-            // this bug is fixed: https://github.com/plabayo/tower-async/issues/9
-            // tokio::spawn(async move {
-            //     if let Err(err) = service.call(conn).await {
-            //         let _ = service_err_tx.send(err);
-            //     }
-            // });
-
-            if let Err(err) = service.call(conn).await {
-                let error = Error::new(ErrorKind::Service, err);
-                self.err_handler
-                    .handle(error)
-                    .await
-                    .map_err(|err| Error::new(ErrorKind::Service, err))?;
-            }
+            tokio::spawn(async move {
+                if let Err(err) = service.call(conn).await {
+                    let _ = service_err_tx.send(err);
+                }
+            });
         }
 
         // wait for all services to finish

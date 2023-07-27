@@ -14,7 +14,7 @@ async fn main() -> Result<()> {
     let service = Shared::new(EchoService::new());
     TcpListener::new()
         .context("create TCP listener")?
-        .serve(service)
+        .serve::<Shared<EchoService>>(service)
         .await
         .context("serve incoming TCP connections")?;
     Ok(())
