@@ -149,7 +149,11 @@ where
                 maybe_err = service_err_rx.recv() => {
                     if let Some(err) = maybe_err {
                         let error = Error::new(ErrorKind::Accept, err);
-                        self.err_handler.handle(error).await.map_err(|err| Error::new(ErrorKind::Service, err))?;
+                        if let Err(err) = self.err_handler.handle(error).await.map_err(|err| Error::new(ErrorKind::Service, err)) {
+                            self.graceful.trigger_shutdown().await;
+                            graceful_delay(self.graceful, self.shutdown_timeout).await;
+                            return Err(err);
+                        }
                     }
                     continue;
                 },
@@ -163,8 +167,13 @@ where
                         }
                     }
                 },
-                _ = self.graceful.shutdown_req() => break,
+                _ = self.graceful.shutdown_req() => {
+                    graceful_delay(self.graceful, self.shutdown_timeout).await;
+                    return Ok(());
+                },
             };
+
+            self.graceful.trigger_shutdown().await;
 
             let mut service = match service_factory.make_service(peer_addr).await {
                 Ok(service) => service,
@@ -189,18 +198,16 @@ where
                 }
             });
         }
+    }
+}
 
-        // wait for all services to finish
-        if let Some(timeout) = self.shutdown_timeout {
-            if let Err(err) = self.graceful.shutdown_until(timeout).await {
-                debug!("TCP server shutdown error: {err}");
-            }
-        } else {
-            self.graceful.shutdown().await;
+async fn graceful_delay(service: GracefulService, maybe_timeout: Option<Duration>) {
+    if let Some(timeout) = maybe_timeout {
+        if let Err(err) = service.shutdown_until(timeout).await {
+            debug!("TCP server shutdown error: {err}");
         }
-
-        // all services finished, return
-        Ok(())
+    } else {
+        service.shutdown().await;
     }
 }
 

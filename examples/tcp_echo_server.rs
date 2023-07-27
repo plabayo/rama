@@ -14,6 +14,7 @@ async fn main() -> Result<()> {
     let service = Shared::new(EchoService::new());
     TcpListener::new()
         .context("create TCP listener")?
+        .shutdown_timeout(std::time::Duration::from_secs(5))
         .serve::<Shared<EchoService>>(service)
         .await
         .context("serve incoming TCP connections")?;

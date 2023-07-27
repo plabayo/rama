@@ -104,6 +104,11 @@ impl GracefulService {
         )
     }
 
+    /// Trigger a manual shutdown.
+    pub async fn trigger_shutdown(&self) {
+        self.shutdown.cancel();
+    }
+
     /// Wait indefinitely until the server has its shutdown requested
     pub async fn shutdown_req(&self) {
         self.shutdown.cancelled().await;
