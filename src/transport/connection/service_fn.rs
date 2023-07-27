@@ -18,7 +18,7 @@ use super::Connection;
 ///
 /// ```
 /// use rama::transport::connection::service_fn;
-/// # use rama::transport::connection::Connection;
+/// # use rama::transport::Connection;
 /// # use rama::transport::graceful::Token;
 /// use tower_async::Service;
 /// use std::convert::Infallible;
@@ -54,7 +54,7 @@ use super::Connection;
 ///
 /// ```
 /// use rama::transport::connection::service_fn;
-/// # use rama::transport::connection::Connection;
+/// # use rama::transport::Connection;
 /// # use rama::transport::graceful::Token;
 /// use tower_async::Service;
 /// use std::convert::Infallible;
@@ -99,7 +99,7 @@ use super::Connection;
 ///
 /// ```
 /// use rama::transport::connection::service_fn;
-/// # use rama::transport::connection::Connection;
+/// # use rama::transport::Connection;
 /// # use rama::transport::graceful::Token;
 /// use tower_async::Service;
 /// use std::convert::Infallible;
@@ -143,7 +143,7 @@ use super::Connection;
 ///
 /// ```
 /// use rama::transport::connection::service_fn;
-/// # use rama::transport::connection::Connection;
+/// # use rama::transport::Connection;
 /// # use rama::transport::graceful::Token;
 /// use tower_async::Service;
 /// use std::convert::Infallible;

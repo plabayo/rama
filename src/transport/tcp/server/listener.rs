@@ -6,11 +6,11 @@ use std::{
     time::Duration,
 };
 use tokio::net::TcpStream;
-use tower_async::{BoxError, Service};
+use tower_async::{BoxError, MakeService, Service};
 use tracing::info;
 
 use super::error::{Error, ErrorHandler, ErrorKind};
-use crate::transport::{connection::Connection, graceful};
+use crate::transport::{graceful, Connection, GracefulService};
 
 /// Listens to incoming TCP connections and serves them with a [`tower_async::Service`].
 ///
@@ -21,7 +21,7 @@ use crate::transport::{connection::Connection, graceful};
 pub struct TcpListener<S, H> {
     listener: tokio::net::TcpListener,
     shutdown_timeout: Option<Duration>,
-    graceful: graceful::GracefulService,
+    graceful: GracefulService,
     err_handler: H,
     state: S,
 }
@@ -76,7 +76,7 @@ impl<H> TcpListener<private::NoState, H> {
     /// which will be passed to the [`tower_async::Service`] for each incoming connection.
     ///
     /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
-    pub fn state<S>(self, state: S) -> TcpListener<S, H>
+    pub fn state<S>(self, state: S) -> TcpListener<private::SomeState<S>, H>
     where
         S: Clone + Send + 'static,
     {
@@ -85,7 +85,7 @@ impl<H> TcpListener<private::NoState, H> {
             shutdown_timeout: self.shutdown_timeout,
             graceful: self.graceful,
             err_handler: self.err_handler,
-            state,
+            state: private::SomeState(state),
         }
     }
 }
@@ -125,27 +125,35 @@ impl<S, H> TcpListener<S, H> {
 impl<S, H> TcpListener<S, H>
 where
     H: ErrorHandler,
-    S: Clone + Send + 'static,
+    S: private::IntoState,
+    S::State: Clone + Send + 'static,
 {
     /// Serves incoming connections with a [`tower_async::Service`] that acts as a factory,
     /// creating a new [`Service`] for each incoming connection.
-    pub async fn serve<F>(mut self, mut service_factory: F) -> Result<(), BoxError>
+    pub async fn serve<Factory>(mut self, mut service_factory: Factory) -> Result<(), BoxError>
     where
-        F: Service<SocketAddr>,
-        F::Response: Service<Connection<TcpStream, S>, call(): Send> + Send + 'static,
-        F::Error: Into<BoxError>,
-        <F::Response as Service<Connection<TcpStream, S>>>::Error: Into<BoxError> + Send + 'static,
+        Factory: MakeService<SocketAddr, Connection<TcpStream, S::State>>,
+        // Factory::Service: Service<Connection<TcpStream, S::State>, call(): Send> + Send + 'static,
+        Factory::Service: Service<Connection<TcpStream, S::State>> + Send + 'static,
+        Factory::MakeError: Into<BoxError>,
+        Factory::Error: Into<BoxError> + Send + 'static,
+        <Factory as MakeService<
+            std::net::SocketAddr,
+            Connection<tokio::net::TcpStream, <S as private::IntoState>::State>,
+        >>::Service: Send,
     {
-        let (service_err_tx, mut service_err_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = self.state.into_state();
+
+        // let (service_err_tx, mut service_err_rx) = tokio::sync::mpsc::unbounded_channel();
         loop {
             let (socket, peer_addr) = tokio::select! {
-                maybe_err = service_err_rx.recv() => {
-                    if let Some(err) = maybe_err {
-                        let error = Error::new(ErrorKind::Accept, err);
-                        self.err_handler.handle(error).await?;
-                    }
-                    continue;
-                },
+                // maybe_err = service_err_rx.recv() => {
+                //     if let Some(err) = maybe_err {
+                //         let error = Error::new(ErrorKind::Accept, err);
+                //         self.err_handler.handle(error).await?;
+                //     }
+                //     continue;
+                // },
                 result = self.listener.accept() => {
                     match result{
                         Ok((socket, peer_addr)) => (socket, peer_addr),
@@ -159,7 +167,7 @@ where
                 _ = self.graceful.shutdown_req() => break,
             };
 
-            let mut service = match service_factory.call(peer_addr).await {
+            let mut service = match service_factory.make_service(peer_addr).await {
                 Ok(service) => service,
                 Err(err) => {
                     let error = Error::new(ErrorKind::Factory, err);
@@ -169,14 +177,22 @@ where
             };
 
             let token = self.graceful.token();
-            let state = self.state.clone();
-            let service_err_tx = service_err_tx.clone();
-            tokio::spawn(async move {
-                let conn: Connection<_, _> = Connection::new(socket, token, state);
-                if let Err(err) = service.call(conn).await {
-                    let _ = service_err_tx.send(err);
-                }
-            });
+            let state = state.clone();
+            // let service_err_tx = service_err_tx.clone();
+            let conn: Connection<_, _> = Connection::new(socket, token, state);
+
+            // TODO: enable this kind of features once again when
+            // this bug is fixed: https://github.com/plabayo/tower-async/issues/9
+            // tokio::spawn(async move {
+            //     if let Err(err) = service.call(conn).await {
+            //         let _ = service_err_tx.send(err);
+            //     }
+            // });
+
+            if let Err(err) = service.call(conn).await {
+                let error = Error::new(ErrorKind::Accept, err);
+                self.err_handler.handle(error).await?;
+            }
         }
 
         // wait for all services to finish
@@ -199,11 +215,39 @@ mod private {
 
     use crate::transport::tcp::server::error::{Error, ErrorHandler, ErrorKind};
 
-    #[derive(Debug, Clone, Copy, Default)]
-    pub(super) struct NoState;
+    /// Marker trait for the [`super::TcpListener`] to indicate
+    /// no state is defined, meaning we'll fallback to the empty type `()`.
+    #[derive(Debug)]
+    pub struct NoState;
+
+    /// Marker trait for the [`super::TcpListener`] to indicate
+    /// some state is defined, meaning we'll use the type `T` in the end for the
+    /// passed down [`crate::transport::Connection`].
+    #[derive(Debug)]
+    pub struct SomeState<T>(pub T);
+
+    pub trait IntoState {
+        type State;
+
+        fn into_state(self) -> Self::State;
+    }
+
+    impl IntoState for NoState {
+        type State = ();
+
+        fn into_state(self) -> Self::State {}
+    }
+
+    impl<T> IntoState for SomeState<T> {
+        type State = T;
+
+        fn into_state(self) -> Self::State {
+            self.0
+        }
+    }
 
     #[derive(Debug, Clone, Copy, Default)]
-    pub(super) struct DefaultErrorHandler;
+    pub struct DefaultErrorHandler;
 
     impl ErrorHandler for DefaultErrorHandler {
         async fn handle(&mut self, error: Error) -> std::result::Result<(), BoxError> {

@@ -2,7 +2,7 @@ use std::io::{Error, ErrorKind};
 
 use tower_async::Service;
 
-use crate::transport::{bytes::ByteStream, connection::Connection};
+use crate::transport::{bytes::ByteStream, Connection};
 
 /// An async service which echoes the incoming bytes back on the same connection.
 ///
@@ -15,7 +15,7 @@ use crate::transport::{bytes::ByteStream, connection::Connection};
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
-/// # let conn = rama::transport::connection::Connection::new(stream, rama::transport::graceful::Token::pending(), ());
+/// # let conn = rama::transport::Connection::new(stream, rama::transport::graceful::Token::pending(), ());
 /// let mut service = EchoService::new()
 ///     .respect_shutdown(Some(std::time::Duration::from_secs(5)));
 ///
@@ -24,7 +24,7 @@ use crate::transport::{bytes::ByteStream, connection::Connection};
 /// # Ok(())
 /// # }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct EchoService {
     respect_shutdown: bool,
     shutdown_delay: Option<std::time::Duration>,
