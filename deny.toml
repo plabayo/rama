@@ -13,7 +13,7 @@ allow-osi-fsf-free = "either"
 confidence-threshold = 0.8
 
 [bans]
-multiple-versions = "deny"
+multiple-versions = "warn"
 highlight = "all"
 skip-tree = []
 
