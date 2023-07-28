@@ -76,16 +76,51 @@ impl Error for TimeoutError {}
 
 impl GracefulService {
     /// Create a new graceful service that can be used to facilitate graceful
-    /// shutdown within your server.
+    /// shutdown within your server, which triggers when the given future (signal)
+    /// resolves.
     pub fn new(signal: impl Future + Send + 'static) -> Self {
-        let shutdown = CancellationToken::new();
-        let (shutdown_complete_tx, shutdown_complete_rx) = channel(1);
+        let service = Self::pending();
 
-        let token = shutdown.clone();
+        let token = service.shutdown.clone();
         tokio::spawn(async move {
             let _ = signal.await;
             token.cancel();
         });
+
+        service
+    }
+
+    /// Create a new graceful service that can be used to facilitate graceful
+    /// shutdown within your server, which triggers when the infamous "CTRL+C" signal (future)
+    /// resolves.
+    pub fn ctrl_c() -> Self {
+        let signal = tokio::signal::ctrl_c();
+        Self::new(signal)
+    }
+
+    #[cfg(unix)]
+    /// Create a new graceful service that can be used to facilitate graceful
+    /// shutdown within your server, which triggers when the UNIX "SIGTERM" signal (future)
+    /// resolves.
+    pub fn sigterm() -> Self {
+        let signal = async {
+            let mut os_signal =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+            os_signal.recv().await;
+            std::io::Result::Ok(())
+        };
+        Self::new(signal)
+    }
+
+    /// Create a new graceful service that can be used to facilitate graceful
+    /// shutdown without an external signal to auto-trigger graceful shutdown.
+    ///
+    /// This is useful when you want to ensure trigger graceful shutdown manually,
+    /// using [`GracefulService::trigger_shutdown`] or do not wish to use a dummy
+    /// service in case no graceful shutdown is desired at all.
+    pub fn pending() -> Self {
+        let shutdown = CancellationToken::new();
+        let (shutdown_complete_tx, shutdown_complete_rx) = channel(1);
 
         Self {
             shutdown,

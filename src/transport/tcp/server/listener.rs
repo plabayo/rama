@@ -28,11 +28,23 @@ pub struct TcpListener<S, H> {
 
 impl TcpListener<private::NoState, private::DefaultErrorHandler> {
     /// Creates a new [`TcpListener`] bound to a local address with an open port.
+    ///
+    /// This [`TcpListener`] will use the default [`ErrorHandler`] to handle errors by simply
+    /// logging them to the [`tracing`] subscriber. And will trigger a graceful shutdown
+    /// only when the infamous "CTRL+C" signal (future) resolves.
+    ///
+    /// [`tracer`]: https://docs.rs/tracing/*/tracing/
     pub fn new() -> Result<Self, std::io::Error> {
         Self::bind("127.0.0.1:0")
     }
 
     /// Creates a new [`TcpListener`] bound to a given address.
+    ///
+    /// This [`TcpListener`] will use the default [`ErrorHandler`] to handle errors by simply
+    /// logging them to the [`tracing`] subscriber. And will trigger a graceful shutdown
+    /// only when the infamous "CTRL+C" signal (future) resolves.
+    ///
+    /// [`tracer`]: https://docs.rs/tracing/*/tracing/
     pub fn bind(addr: impl ToSocketAddrs) -> Result<Self, std::io::Error> {
         let std_listener = std::net::TcpListener::bind(addr)?;
         std_listener.try_into()
@@ -123,6 +135,25 @@ impl<S, H> TcpListener<S, H> {
         self.graceful = graceful::service(signal);
         self
     }
+
+    /// Configures the [`TcpListener`] to use the SIGTERM signal
+    /// to trigger a graceful shutdown (instead of the by default used "Ctrl+C" signal).
+    #[cfg(unix)]
+    pub fn graceful_sigterm(mut self) -> Self {
+        self.graceful = GracefulService::sigterm();
+        self
+    }
+
+    /// Sets a graceful shutdown for the [`TcpListener`]
+    /// as a manual trigger only.
+    ///
+    /// This means that the [`TcpListener`] will not use any signal
+    /// to trigger a graceful shutdown, but instead will wait for a manual trigger,
+    /// which is only called when a fatal error occurs.
+    pub fn ungraceful(mut self) -> Self {
+        self.graceful = GracefulService::pending();
+        self
+    }
 }
 
 impl<S, H> TcpListener<S, H>
@@ -163,7 +194,11 @@ where
                         Ok((socket, peer_addr)) => (socket, peer_addr),
                         Err(err) => {
                             let error = Error::new(ErrorKind::Accept, err);
-                            self.err_handler.handle(error).await.map_err(|err| Error::new(ErrorKind::Accept, err))?;
+                            if let Err(err) = self.err_handler.handle(error).await.map_err(|err| Error::new(ErrorKind::Accept, err)) {
+                                self.graceful.trigger_shutdown().await;
+                                graceful_delay(self.graceful, self.shutdown_timeout).await;
+                                return Err(err);
+                            }
                             continue;
                         }
                     }
@@ -173,8 +208,6 @@ where
                     return Ok(());
                 },
             };
-
-            self.graceful.trigger_shutdown().await;
 
             let mut service = match service_factory.make_service(peer_addr).await {
                 Ok(service) => service,
