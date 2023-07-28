@@ -150,7 +150,7 @@ impl<S, H> TcpListener<S, H> {
     /// This means that the [`TcpListener`] will not use any signal
     /// to trigger a graceful shutdown, but instead will wait for a manual trigger,
     /// which is only called when a fatal error occurs.
-    pub fn ungraceful(mut self) -> Self {
+    pub fn graceful_without_signal(mut self) -> Self {
         self.graceful = GracefulService::pending();
         self
     }

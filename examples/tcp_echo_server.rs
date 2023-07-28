@@ -20,8 +20,8 @@ async fn main() -> Result<()> {
     TcpListener::new()
         .context("create TCP listener")?
         .shutdown_timeout(std::time::Duration::from_secs(5)) // set to '0' to disable shutdown
-        // use "ungraceful" to not listen to any signal
-        // .ungraceful()
+        // use "graceful_without_signal" to not listen to any signal
+        // .graceful_without_signal()
         // for some environments you might wish to trigger a shutdown based on the "SIGTERM" signal
         // instead of CTRL+C (SIGINT), available on UNIX platforms only.
         // .graceful_sigterm()
