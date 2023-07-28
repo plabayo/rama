@@ -35,7 +35,7 @@ impl<S, T> Connection<S, T> {
         }
     }
 
-    /// Retruns the future that resolves when the
+    /// Returns the future that resolves when the
     /// graceful shutdown has been triggered.
     pub fn shutdown(&self) -> ShutdownFuture<'_> {
         self.shutdown.shutdown()

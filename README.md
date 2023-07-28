@@ -79,7 +79,7 @@ building and maintaining open source software that `rama` depends upon:
 | 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
 
 > (*) we no longer depend upon `tower` directly, and instead
-> have made a permanent fork of it, avaialble at: <https://github.com/plabayo/tower-async>
+> have made a permanent fork of it, available at: <https://github.com/plabayo/tower-async>
 
 ## FAQ
 
