@@ -24,4 +24,4 @@ tracing = "0.1"
 [dev-dependencies]
 anyhow = "^1.0.72"
 tokio-test = "0.4"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "^0.3.17", features = ["env-filter"] }
