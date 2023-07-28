@@ -19,12 +19,17 @@ async fn main() -> Result<()> {
     let service = Shared::new(EchoService::new());
     TcpListener::new()
         .context("create TCP listener")?
-        .shutdown_timeout(std::time::Duration::from_secs(5)) // set to '0' to disable shutdown
+        // use `instant_shutdown` to shutdown the server immediately without a delay
+        // .instant_shutdown()
+        // or specify a timeout to wait for all active connections to be closed
+        // and thus exit gracefully after the timeout has elapsed
+        .shutdown_timeout(std::time::Duration::from_secs(5))
         // use "graceful_without_signal" to not listen to any signal
         // .graceful_without_signal()
         // for some environments you might wish to trigger a shutdown based on the "SIGTERM" signal
         // instead of CTRL+C (SIGINT), available on UNIX platforms only.
         // .graceful_sigterm()
+        .graceful_sigterm()
         .serve::<Shared<EchoService>>(service)
         .await
         .context("serve incoming TCP connections")?;

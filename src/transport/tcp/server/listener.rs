@@ -18,15 +18,22 @@ use crate::transport::{graceful, Connection, GracefulService};
 ///
 /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
 #[derive(Debug)]
-pub struct TcpListener<S, H> {
+pub struct TcpListener<S, H, G, D> {
     listener: tokio::net::TcpListener,
-    shutdown_timeout: Option<Duration>,
-    graceful: GracefulService,
+    shutdown_timeout: D,
+    graceful: G,
     err_handler: H,
     state: S,
 }
 
-impl TcpListener<private::NoState, private::DefaultErrorHandler> {
+impl
+    TcpListener<
+        private::NoState,
+        private::DefaultErrorHandler,
+        private::DefaultGracefulService,
+        private::NoShutdownTimeout,
+    >
+{
     /// Creates a new [`TcpListener`] bound to a local address with an open port.
     ///
     /// This [`TcpListener`] will use the default [`ErrorHandler`] to handle errors by simply
@@ -57,22 +64,34 @@ impl TcpListener<private::NoState, private::DefaultErrorHandler> {
         );
         Self {
             listener,
-            shutdown_timeout: None,
-            graceful: Default::default(),
+            shutdown_timeout: private::NoShutdownTimeout,
+            graceful: private::DefaultGracefulService,
             err_handler: Default::default(),
             state: private::NoState,
         }
     }
 }
 
-impl From<tokio::net::TcpListener> for TcpListener<private::NoState, private::DefaultErrorHandler> {
+impl From<tokio::net::TcpListener>
+    for TcpListener<
+        private::NoState,
+        private::DefaultErrorHandler,
+        private::DefaultGracefulService,
+        private::NoShutdownTimeout,
+    >
+{
     fn from(listener: tokio::net::TcpListener) -> Self {
         Self::from_tcp_listener(listener)
     }
 }
 
 impl TryFrom<std::net::TcpListener>
-    for TcpListener<private::NoState, private::DefaultErrorHandler>
+    for TcpListener<
+        private::NoState,
+        private::DefaultErrorHandler,
+        private::DefaultGracefulService,
+        private::NoShutdownTimeout,
+    >
 {
     type Error = std::io::Error;
 
@@ -83,12 +102,12 @@ impl TryFrom<std::net::TcpListener>
     }
 }
 
-impl<H> TcpListener<private::NoState, H> {
+impl<H, G, D> TcpListener<private::NoState, H, G, D> {
     /// Sets a state for the [`TcpListener`],
     /// which will be passed to the [`tower_async::Service`] for each incoming connection.
     ///
     /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
-    pub fn state<S>(self, state: S) -> TcpListener<private::SomeState<S>, H>
+    pub fn state<S>(self, state: S) -> TcpListener<private::SomeState<S>, H, G, D>
     where
         S: Clone + Send + 'static,
     {
@@ -102,9 +121,9 @@ impl<H> TcpListener<private::NoState, H> {
     }
 }
 
-impl<S> TcpListener<S, private::DefaultErrorHandler> {
+impl<S, G, D> TcpListener<S, private::DefaultErrorHandler, G, D> {
     /// Sets an [``] for the [`TcpListener`].
-    pub fn err_handler<H>(self, err_handler: H) -> TcpListener<S, H>
+    pub fn err_handler<H>(self, err_handler: H) -> TcpListener<S, H, G, D>
     where
         H: ErrorHandler<handle(): Send> + Send + Clone + 'static,
     {
@@ -118,30 +137,68 @@ impl<S> TcpListener<S, private::DefaultErrorHandler> {
     }
 }
 
-impl<S, H> TcpListener<S, H> {
+impl<S, H, G> TcpListener<S, H, G, private::NoShutdownTimeout> {
     /// Sets a timeout for the [`TcpListener`] shutdown
     /// which will be used to wait a maximum amount of time for all services to finish.
     ///
     /// By default, the [`TcpListener`] will wait forever.
-    pub fn shutdown_timeout(mut self, timeout: Duration) -> Self {
-        self.shutdown_timeout = Some(timeout);
-        self
+    pub fn shutdown_timeout(
+        self,
+        timeout: Duration,
+    ) -> TcpListener<S, H, G, private::ShutdownTimeout> {
+        TcpListener {
+            listener: self.listener,
+            shutdown_timeout: private::ShutdownTimeout(timeout),
+            graceful: self.graceful,
+            err_handler: self.err_handler,
+            state: self.state,
+        }
     }
 
+    /// Sets an instant shutdown for the [`TcpListener`]
+    /// which will be used to shutdown immediately after the first critical error occurs or
+    /// the graceful shutdown signal is triggered.
+    ///
+    /// By default, the [`TcpListener`] will wait forever.
+    pub fn instant_shutdown(self) -> TcpListener<S, H, G, private::InstantShutdown> {
+        TcpListener {
+            listener: self.listener,
+            shutdown_timeout: private::InstantShutdown,
+            graceful: self.graceful,
+            err_handler: self.err_handler,
+            state: self.state,
+        }
+    }
+}
+
+impl<S, H, D> TcpListener<S, H, private::DefaultGracefulService, D> {
     /// Sets a graceful shutdown signal for the [`TcpListener`].
     ///
     /// By default, the [`TcpListener`] will use the Ctrl+C signal.
-    pub fn graceful_signal(mut self, signal: impl Future + Send + 'static) -> Self {
-        self.graceful = graceful::service(signal);
-        self
+    pub fn graceful_signal(
+        self,
+        signal: impl Future + Send + 'static,
+    ) -> TcpListener<S, H, private::CustomGracefulService, D> {
+        TcpListener {
+            listener: self.listener,
+            shutdown_timeout: self.shutdown_timeout,
+            graceful: private::CustomGracefulService(graceful::service(signal)),
+            err_handler: self.err_handler,
+            state: self.state,
+        }
     }
 
     /// Configures the [`TcpListener`] to use the SIGTERM signal
     /// to trigger a graceful shutdown (instead of the by default used "Ctrl+C" signal).
     #[cfg(unix)]
-    pub fn graceful_sigterm(mut self) -> Self {
-        self.graceful = GracefulService::sigterm();
-        self
+    pub fn graceful_sigterm(self) -> TcpListener<S, H, private::CustomGracefulService, D> {
+        TcpListener {
+            listener: self.listener,
+            shutdown_timeout: self.shutdown_timeout,
+            graceful: private::CustomGracefulService(GracefulService::sigterm()),
+            err_handler: self.err_handler,
+            state: self.state,
+        }
     }
 
     /// Sets a graceful shutdown for the [`TcpListener`]
@@ -150,16 +207,23 @@ impl<S, H> TcpListener<S, H> {
     /// This means that the [`TcpListener`] will not use any signal
     /// to trigger a graceful shutdown, but instead will wait for a manual trigger,
     /// which is only called when a fatal error occurs.
-    pub fn graceful_without_signal(mut self) -> Self {
-        self.graceful = GracefulService::pending();
-        self
+    pub fn graceful_without_signal(self) -> TcpListener<S, H, private::CustomGracefulService, D> {
+        TcpListener {
+            listener: self.listener,
+            shutdown_timeout: self.shutdown_timeout,
+            graceful: private::CustomGracefulService(GracefulService::pending()),
+            err_handler: self.err_handler,
+            state: self.state,
+        }
     }
 }
 
-impl<S, H> TcpListener<S, H>
+impl<S, H, G, D> TcpListener<S, H, G, D>
 where
     H: ErrorHandler<handle(): Send> + Send + Clone + 'static,
     S: private::IntoState,
+    G: Into<GracefulService>,
+    D: private::IntoShutdownTimeout,
     S::State: Clone + Send + 'static,
 {
     /// Serves incoming connections with a [`tower_async::Service`] that acts as a factory,
@@ -177,14 +241,16 @@ where
         >>::Service: Send,
     {
         let state = self.state.into_state();
+        let graceful = self.graceful.into();
+        let shutdown_timeout = self.shutdown_timeout.into_shutdown_timeout();
 
         let (service_err_tx, mut service_err_rx) = tokio::sync::mpsc::channel(1);
         loop {
             let (socket, peer_addr) = tokio::select! {
                 maybe_err = service_err_rx.recv() => {
                     if let Some(err) = maybe_err {
-                        self.graceful.trigger_shutdown().await;
-                        graceful_delay(self.graceful, self.shutdown_timeout).await;
+                        graceful.trigger_shutdown().await;
+                        graceful_delay(graceful, shutdown_timeout).await;
                         return Err(err);
                     }
                     continue;
@@ -195,16 +261,16 @@ where
                         Err(err) => {
                             let error = Error::new(ErrorKind::Accept, err);
                             if let Err(err) = self.err_handler.handle(error).await.map_err(|err| Error::new(ErrorKind::Accept, err)) {
-                                self.graceful.trigger_shutdown().await;
-                                graceful_delay(self.graceful, self.shutdown_timeout).await;
+                                graceful.trigger_shutdown().await;
+                                graceful_delay(graceful, shutdown_timeout).await;
                                 return Err(err);
                             }
                             continue;
                         }
                     }
                 },
-                _ = self.graceful.shutdown_req() => {
-                    graceful_delay(self.graceful, self.shutdown_timeout).await;
+                _ = graceful.shutdown_req() => {
+                    graceful_delay(graceful, shutdown_timeout).await;
                     return Ok(());
                 },
             };
@@ -221,7 +287,7 @@ where
                 }
             };
 
-            let token = self.graceful.token();
+            let token = graceful.token();
             let state = state.clone();
             let service_err_tx = service_err_tx.clone();
 
@@ -258,7 +324,10 @@ mod private {
     use tower_async::BoxError;
     use tracing::{debug, error};
 
-    use crate::transport::tcp::server::error::{Error, ErrorHandler, ErrorKind};
+    use crate::transport::{
+        tcp::server::error::{Error, ErrorHandler, ErrorKind},
+        GracefulService,
+    };
 
     /// Marker trait for the [`super::TcpListener`] to indicate
     /// no state is defined, meaning we'll fallback to the empty type `()`.
@@ -288,6 +357,75 @@ mod private {
 
         fn into_state(self) -> Self::State {
             self.0
+        }
+    }
+
+    /// Marker trait for the [`super::TcpListener`] to indicate
+    /// no custom [`crate::graceful::GracefulService`] is defined, meaning we'll fallback to the
+    /// default [`crate::graceful::GracefulService`].
+    ///
+    /// It also means one can still be defined in the [`super::TcpListener`].
+    #[derive(Debug)]
+    pub struct DefaultGracefulService;
+
+    /// Marker trait for the [`super::TcpListener`] to indicate
+    /// that a custom [`crate::graceful::GracefulService`] is defined, meaning we'll fallback to the
+    /// default [`crate::graceful::GracefulService`].
+    ///
+    /// It also means that no other can be defined in the [`super::TcpListener`].
+    #[derive(Debug)]
+    pub struct CustomGracefulService(pub GracefulService);
+
+    impl From<DefaultGracefulService> for GracefulService {
+        fn from(_: DefaultGracefulService) -> Self {
+            Self::default()
+        }
+    }
+
+    impl From<CustomGracefulService> for GracefulService {
+        fn from(service: CustomGracefulService) -> Self {
+            service.0
+        }
+    }
+
+    /// Marker trait for the [`super::TcpListener`] to indicate
+    /// no shutdown timeout is requested and thus that we'll wait
+    /// until all services are finished, no matter how long it takes.
+    #[derive(Debug)]
+    pub struct NoShutdownTimeout;
+
+    /// Marker trait for the [`super::TcpListener`] to indicate
+    /// an instant shutdown is requested and thus that we'll shutdown
+    /// immediately after the first critical error occurs or
+    /// the graceful shutdown signal is triggered.
+    #[derive(Debug)]
+    pub struct InstantShutdown;
+
+    /// Marker trait for the [`super::TcpListener`] to indicate
+    /// a custom shutdown timeout is requested and thus that we'll wait
+    /// until all services are finished or the timeout is reached.
+    #[derive(Debug)]
+    pub struct ShutdownTimeout(pub std::time::Duration);
+
+    pub trait IntoShutdownTimeout {
+        fn into_shutdown_timeout(self) -> Option<std::time::Duration>;
+    }
+
+    impl IntoShutdownTimeout for NoShutdownTimeout {
+        fn into_shutdown_timeout(self) -> Option<std::time::Duration> {
+            None
+        }
+    }
+
+    impl IntoShutdownTimeout for InstantShutdown {
+        fn into_shutdown_timeout(self) -> Option<std::time::Duration> {
+            Some(std::time::Duration::from_secs(0))
+        }
+    }
+
+    impl IntoShutdownTimeout for ShutdownTimeout {
+        fn into_shutdown_timeout(self) -> Option<std::time::Duration> {
+            Some(self.0)
         }
     }
 
