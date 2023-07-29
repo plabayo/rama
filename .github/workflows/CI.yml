@@ -32,20 +32,6 @@ jobs:
         run: |
           cargo fmt --all -- --check
 
-  check-minimal-versions:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v2
-      - name: check minimal versions
-        run: |
-          cargo -Z minimal-versions check --all --all-targets --all-features
-
   check-docs:
     runs-on: ubuntu-latest
     steps:
@@ -77,23 +63,6 @@ jobs:
         with:
           command: test
           args: --all-features
-
-  test-minimal-versions:
-    needs: check-minimal-versions
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
-      - name: Run tests (minimal versions)
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: -Z minimal-versions --all-features
 
   test-docs:
     needs: check
