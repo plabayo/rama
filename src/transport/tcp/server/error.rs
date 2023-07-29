@@ -3,12 +3,7 @@
 //! a [`super::TcpListener`]'s listen event loop.
 
 pub use tower_async::BoxError;
-
-/// Result type for TCP server errors, as
-/// returned by the [`super::TcpListener`].
-///
-/// See [`Error`] for more information about the error type.
-pub type Result<T> = std::result::Result<T, Error>;
+use tracing::{debug, error};
 
 /// The kind of [`Error`] that can occur during the execution of
 /// a [`super::TcpListener`]'s listen event loop.
@@ -19,26 +14,20 @@ pub enum ErrorKind {
     ///
     /// This error is not expected to happen, and might mean the
     /// [`super::TcpListener`] is no longer able to accept new connections.
-    ///
-    /// The default [`ErrorHandler`] ignores it,
-    /// and the listener will continue to try to accept new connections.
     Accept,
     /// Indicates that an error was returned by the [`tower_async::Service`] that
     /// was used to handle the incoming connection.
-    ///
-    /// The default [`ErrorHandler`] only logs this error and
-    /// therefore the [`super::TcpListener`] will close the connection.
     ///
     /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
     Service,
     /// Indicates that an error was returned by the [`tower_async::Service`] which is used to
     /// create a new [`tower_async::Service`] that is to handle the incoming connection.
     ///
-    /// The default [`ErrorHandler`] only logs this error and
-    /// therefore the [`super::TcpListener`] will close the connection.
-    ///
     /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
     Factory,
+    /// Indicates that the [`super::TcpListener`] was closed during graceful shutdown,
+    /// while some connections were still active.
+    Timeout,
 }
 
 impl std::fmt::Display for ErrorKind {
@@ -47,6 +36,7 @@ impl std::fmt::Display for ErrorKind {
             ErrorKind::Accept => write!(f, "Accept"),
             ErrorKind::Service => write!(f, "Service"),
             ErrorKind::Factory => write!(f, "Factory"),
+            ErrorKind::Timeout => write!(f, "Timeout"),
         }
     }
 }
@@ -78,6 +68,11 @@ impl Error {
     pub fn kind(&self) -> ErrorKind {
         self.kind
     }
+
+    /// Get the underlying error, if any.
+    pub fn into_source(self) -> Option<BoxError> {
+        Some(self.source)
+    }
 }
 
 impl std::fmt::Display for Error {
@@ -92,17 +87,51 @@ impl std::error::Error for Error {
     }
 }
 
-/// Trait for handling errors (of type [`BoxError`]) that occur during the execution of
+/// Trait for handling errors that occur during the execution of
 /// a [`super::TcpListener`]'s listen event loop.
 ///
 /// The default [`ErrorHandler`] either logs the error
 /// or simply ignores it, depending on the kind of error.
-///
-/// See [`ErrorKind`] for more information about
-/// the different kinds of errors that can occur.
 pub trait ErrorHandler {
-    /// In case a `BoxError` is returned by a call to this function,
-    /// the [`super::TcpListener`] will attempt to close gracefully
-    /// and return this error to the caller of [`super::TcpListener::serve`].
-    async fn handle(&mut self, error: Error) -> std::result::Result<(), BoxError>;
+    /// The error type that can be returned by the [`ErrorHandler`]
+    /// to indicate a fatal error which cannot be handled.
+    type Error;
+
+    /// Handle an error that occurred while trying to accept
+    /// an incoming connection on the TCP listener's socket.
+    ///
+    /// By default this error is logged using [`tracing:error`],
+    /// with a return value of `Ok(())`.
+    ///
+    /// [`tracing:error`]: https://docs.rs/tracing/*/tracing/macro.error.html
+    async fn handle_accept_err(&mut self, error: std::io::Error) -> Result<(), Self::Error> {
+        error!("TCP server: accept error: {}", error);
+        Ok(())
+    }
+
+    /// Handle an error that was returned by the [`tower_async::Service`] that
+    /// was used to handle the incoming connection.
+    ///
+    /// By default this error is logged using [`tracing:debug`],
+    /// with a return value of `Ok(())`.
+    ///
+    /// [`tracing:debug`]: https://docs.rs/tracing/*/tracing/macro.debug.html
+    /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
+    async fn handle_service_err(&mut self, error: BoxError) -> Result<(), Self::Error> {
+        debug!("TCP server: service error: {}", error);
+        Ok(())
+    }
+
+    /// Handle an error that was returned by the [`tower_async::Service`] which is used to
+    /// create a new [`tower_async::Service`] that is to handle the incoming connection.
+    ///
+    /// By default this error is logged using [`tracing:debug`],
+    /// with a return value of `Ok(())`.
+    ///
+    /// [`tracing:debug`]: https://docs.rs/tracing/*/tracing/macro.debug.html
+    /// [`tower_async::Service`]: https://docs.rs/tower-async/*/tower_async/trait.Service.html
+    async fn handle_factory_err(&mut self, error: BoxError) -> Result<(), Self::Error> {
+        debug!("TCP server: factory error: {}", error);
+        Ok(())
+    }
 }

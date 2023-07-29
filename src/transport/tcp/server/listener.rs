@@ -125,7 +125,7 @@ impl<S, G, D> TcpListener<S, private::DefaultErrorHandler, G, D> {
     /// Sets an [``] for the [`TcpListener`].
     pub fn err_handler<H>(self, err_handler: H) -> TcpListener<S, H, G, D>
     where
-        H: ErrorHandler<handle(): Send> + Send + Clone + 'static,
+        H: ErrorHandler<handle_accept_err(): Send> + Send + Clone + 'static,
     {
         TcpListener {
             listener: self.listener,
@@ -220,7 +220,8 @@ impl<S, H, D> TcpListener<S, H, private::DefaultGracefulService, D> {
 
 impl<S, H, G, D> TcpListener<S, H, G, D>
 where
-    H: ErrorHandler<handle(): Send> + Send + Clone + 'static,
+    H: ErrorHandler<handle_service_err(): Send> + Send + Clone + 'static,
+    H::Error: Into<BoxError> + Send + 'static,
     S: private::IntoState,
     G: Into<GracefulService>,
     D: private::IntoShutdownTimeout,
@@ -250,7 +251,9 @@ where
                 maybe_err = service_err_rx.recv() => {
                     if let Some(err) = maybe_err {
                         graceful.trigger_shutdown().await;
-                        graceful_delay(graceful, shutdown_timeout).await;
+                        if let Err(delay_err) = graceful_delay(graceful, shutdown_timeout).await {
+                            debug!("TCP server: graceful delay error: {} (while waiting to fail on service err: {})", delay_err, err)
+                        }
                         return Err(err);
                     }
                     continue;
@@ -259,28 +262,27 @@ where
                     match result{
                         Ok((socket, peer_addr)) => (socket, peer_addr),
                         Err(err) => {
-                            let error = Error::new(ErrorKind::Accept, err);
-                            if let Err(err) = self.err_handler.handle(error).await.map_err(|err| Error::new(ErrorKind::Accept, err)) {
+                            if let Err(err) = self.err_handler.handle_accept_err(err).await.map_err(Into::into) {
                                 graceful.trigger_shutdown().await;
-                                graceful_delay(graceful, shutdown_timeout).await;
-                                return Err(err);
+                                if let Err(delay_err) = graceful_delay(graceful, shutdown_timeout).await {
+                                    debug!("TCP server: graceful delay error: {} (while waiting to fail on accept err: {})", delay_err, err)
+                                }
+                                return Err(Error::new(ErrorKind::Accept, err));
                             }
                             continue;
                         }
                     }
                 },
                 _ = graceful.shutdown_req() => {
-                    graceful_delay(graceful, shutdown_timeout).await;
-                    return Ok(());
+                    return graceful_delay(graceful, shutdown_timeout).await;
                 },
             };
 
             let mut service = match service_factory.make_service(peer_addr).await {
                 Ok(service) => service,
                 Err(err) => {
-                    let error = Error::new(ErrorKind::Factory, err);
                     self.err_handler
-                        .handle(error)
+                        .handle_factory_err(err.into())
                         .await
                         .map_err(|err| Error::new(ErrorKind::Factory, err))?;
                     continue;
@@ -296,9 +298,8 @@ where
 
             tokio::spawn(async move {
                 if let Err(err) = service.call(conn).await {
-                    let error = Error::new(ErrorKind::Service, err);
                     if let Err(err) = err_handler
-                        .handle(error)
+                        .handle_service_err(err.into())
                         .await
                         .map_err(|err| Error::new(ErrorKind::Service, err))
                     {
@@ -310,24 +311,23 @@ where
     }
 }
 
-async fn graceful_delay(service: GracefulService, maybe_timeout: Option<Duration>) {
+async fn graceful_delay(
+    service: GracefulService,
+    maybe_timeout: Option<Duration>,
+) -> Result<(), Error> {
     if let Some(timeout) = maybe_timeout {
-        if let Err(err) = service.shutdown_until(timeout).await {
-            debug!("TCP server shutdown error: {err}");
-        }
+        service
+            .shutdown_until(timeout)
+            .await
+            .map_err(|err| Error::new(ErrorKind::Timeout, err))
     } else {
         service.shutdown().await;
+        Ok(())
     }
 }
 
 mod private {
-    use tower_async::BoxError;
-    use tracing::{debug, error};
-
-    use crate::transport::{
-        tcp::server::error::{Error, ErrorHandler, ErrorKind},
-        GracefulService,
-    };
+    use crate::transport::{tcp::server::error::ErrorHandler, GracefulService};
 
     /// Marker trait for the [`super::TcpListener`] to indicate
     /// no state is defined, meaning we'll fallback to the empty type `()`.
@@ -432,20 +432,13 @@ mod private {
     #[derive(Debug, Clone, Copy, Default)]
     pub struct DefaultErrorHandler;
 
-    impl ErrorHandler for DefaultErrorHandler {
-        async fn handle(&mut self, error: Error) -> std::result::Result<(), BoxError> {
-            match error.kind() {
-                ErrorKind::Accept => {
-                    error!("TCP server accept error: {}", error);
-                }
-                ErrorKind::Service => {
-                    debug!("TCP server service error: {}", error);
-                }
-                ErrorKind::Factory => {
-                    debug!("TCP server factory error: {}", error);
-                }
-            }
-            Ok(())
+    impl std::fmt::Display for DefaultErrorHandler {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "(DefaultErrorHandler)")
         }
+    }
+
+    impl ErrorHandler for DefaultErrorHandler {
+        type Error = std::convert::Infallible;
     }
 }
