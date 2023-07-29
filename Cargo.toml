@@ -25,3 +25,4 @@ tracing = "0.1"
 anyhow = "^1.0.72"
 tokio-test = "0.4"
 tracing-subscriber = { version = "^0.3.17", features = ["env-filter"] }
+clap = { version = "^4.3.19", features = ["derive"] }

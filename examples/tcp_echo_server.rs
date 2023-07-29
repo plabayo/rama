@@ -1,9 +1,58 @@
 use rama::transport::{bytes::service::EchoService, tcp::server::TcpListener};
 
 use anyhow::{Context, Result};
+use clap::Parser;
 use tower_async::make::Shared;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+
+/// Simple Tcp echo server.
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Optional timeout to wait until forcing a shutdown
+    #[arg(short, long, value_parser = parse_duration)]
+    timeout: Option<std::time::Duration>,
+
+    /// the graceful kind of service to use
+    #[arg(short, long, value_parser = parse_graceful, default_value_t = Graceful::SigInt)]
+    graceful: Graceful,
+
+    /// an optional network interface to bind to
+    #[arg(short, long)]
+    interface: Option<String>,
+}
+
+fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntError> {
+    let seconds = arg.parse()?;
+    Ok(std::time::Duration::from_secs(seconds))
+}
+
+fn parse_graceful(arg: &str) -> Result<Graceful, &'static str> {
+    match arg {
+        "pending" => Ok(Graceful::Pending),
+        "sigint" => Ok(Graceful::SigInt),
+        "sigterm" => Ok(Graceful::SigTerm),
+        _ => Err("invalid graceful kind"),
+    }
+}
+
+#[derive(Debug, Clone)]
+enum Graceful {
+    Pending,
+    SigInt,
+    SigTerm,
+}
+
+impl std::fmt::Display for Graceful {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Graceful::Pending => write!(f, "pending"),
+            Graceful::SigInt => write!(f, "sigint"),
+            Graceful::SigTerm => write!(f, "sigterm"),
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -16,20 +65,30 @@ async fn main() -> Result<()> {
         )
         .init();
 
+    let args = Args::parse();
+
     let service = Shared::new(EchoService::new());
-    TcpListener::new()
-        .context("create TCP listener")?
-        // use `instant_shutdown` to shutdown the server immediately without a delay
-        // .instant_shutdown()
-        // or specify a timeout to wait for all active connections to be closed
-        // and thus exit gracefully after the timeout has elapsed
-        .shutdown_timeout(std::time::Duration::from_secs(5))
-        // use "graceful_without_signal" to not listen to any signal
-        // .graceful_without_signal()
-        // for some environments you might wish to trigger a shutdown based on the "SIGTERM" signal
-        // instead of CTRL+C (SIGINT), available on UNIX platforms only.
-        // .graceful_sigterm()
-        .graceful_sigterm()
+
+    let mut builder = match args.interface {
+        Some(interface) => TcpListener::bind(interface).context("bind TCP listener"),
+        None => TcpListener::new().context("create TCP listener"),
+    }?;
+
+    if let Some(timeout) = args.timeout {
+        builder.shutdown_timeout(timeout);
+    }
+
+    match args.graceful {
+        Graceful::Pending => {
+            builder.graceful_without_signal();
+        }
+        Graceful::SigInt => (),
+        Graceful::SigTerm => {
+            builder.graceful_sigterm();
+        }
+    };
+
+    builder
         .serve::<Shared<EchoService>>(service)
         .await
         .context("serve incoming TCP connections")?;

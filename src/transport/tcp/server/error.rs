@@ -92,10 +92,10 @@ impl std::error::Error for Error {
 ///
 /// The default [`ErrorHandler`] either logs the error
 /// or simply ignores it, depending on the kind of error.
-pub trait ErrorHandler {
+pub trait ErrorHandler: Clone + Send + Sync + 'static {
     /// The error type that can be returned by the [`ErrorHandler`]
     /// to indicate a fatal error which cannot be handled.
-    type Error;
+    type Error: Into<BoxError> + Send + 'static;
 
     /// Handle an error that occurred while trying to accept
     /// an incoming connection on the TCP listener's socket.

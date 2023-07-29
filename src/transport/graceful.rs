@@ -83,8 +83,13 @@ impl GracefulService {
 
         let token = service.shutdown.clone();
         tokio::spawn(async move {
-            let _ = signal.await;
-            token.cancel();
+            // ensure the signal is killed even when manual triggered
+            tokio::select! {
+                _ = signal => {
+                    token.cancel();
+                },
+                _ = token.cancelled() => (),
+            };
         });
 
         service
