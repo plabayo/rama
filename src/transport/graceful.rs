@@ -145,26 +145,26 @@ impl GracefulService {
     }
 
     /// Wait indefinitely until the server has its shutdown requested
-    pub async fn shutdown_req(&self) {
+    pub async fn shutdown_triggered(&self) {
         self.shutdown.cancelled().await;
     }
 
-    /// Wait indefinitely until the server can be gracefully shut down.
-    pub async fn shutdown(mut self) {
-        self.shutdown.cancelled().await;
+    /// Wait until the server can be gracefully shut down,
+    /// in case `wait` is `None` it will wait indefinitely.
+    pub async fn shutdown_gracefully(mut self, wait: Option<Duration>) -> Result<(), TimeoutError> {
+        self.shutdown_triggered().await;
         drop(self.shutdown_complete_tx);
-        self.shutdown_complete_rx.recv().await;
-    }
 
-    /// Wait until the server is gracefully shutdown,
-    /// but adding a max amount of time to wait since the moment
-    /// a cancellation it desired.
-    pub async fn shutdown_until(mut self, duration: Duration) -> Result<(), TimeoutError> {
-        self.shutdown.cancelled().await;
-        drop(self.shutdown_complete_tx);
-        match tokio::time::timeout(duration, self.shutdown_complete_rx.recv()).await {
-            Err(_) => Err(TimeoutError(())),
-            Ok(_) => Ok(()),
+        let future = self.shutdown_complete_rx.recv();
+        match wait {
+            Some(duration) => match tokio::time::timeout(duration, future).await {
+                Err(_) => Err(TimeoutError(())),
+                Ok(_) => Ok(()),
+            },
+            None => {
+                future.await;
+                Ok(())
+            }
         }
     }
 }
@@ -277,7 +277,7 @@ mod tests {
             tx.send(()).await.unwrap();
         });
 
-        service.shutdown().await;
+        service.shutdown_gracefully(None).await.unwrap();
 
         drop(shutdown_tx);
         shutdown_rx.recv().await;
@@ -308,7 +308,7 @@ mod tests {
         assert_eq!(
             TimeoutError(()),
             service
-                .shutdown_until(Duration::from_millis(100))
+                .shutdown_gracefully(Some(Duration::from_millis(100)))
                 .await
                 .unwrap_err(),
         );

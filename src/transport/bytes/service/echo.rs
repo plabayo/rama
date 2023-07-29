@@ -110,7 +110,7 @@ mod tests {
 
         EchoService::new().call(conn).await.unwrap();
 
-        graceful_service.shutdown().await;
+        graceful_service.shutdown_gracefully(None).await.unwrap();
     }
 
     #[tokio::test]
@@ -136,7 +136,7 @@ mod tests {
             .await
             .is_err());
 
-        graceful_service.shutdown().await;
+        graceful_service.shutdown_gracefully(None).await.unwrap();
     }
 
     #[tokio::test]
@@ -161,7 +161,7 @@ mod tests {
             .await
             .unwrap();
 
-        graceful_service.shutdown().await;
+        graceful_service.shutdown_gracefully(None).await.unwrap();
     }
 
     #[tokio::test]
@@ -189,6 +189,6 @@ mod tests {
             .await
             .is_err());
 
-        graceful_service.shutdown().await;
+        graceful_service.shutdown_gracefully(None).await.unwrap();
     }
 }

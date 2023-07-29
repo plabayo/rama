@@ -251,7 +251,7 @@ where
                 maybe_err = service_err_rx.recv() => {
                     if let Some(err) = maybe_err {
                         graceful.trigger_shutdown().await;
-                        if let Err(delay_err) = graceful_delay(graceful, shutdown_timeout).await {
+                        if let Err(delay_err) = graceful.shutdown_gracefully(shutdown_timeout).await {
                             debug!("TCP server: graceful delay error: {} (while waiting to fail on service err: {})", delay_err, err)
                         }
                         return Err(err);
@@ -264,7 +264,7 @@ where
                         Err(err) => {
                             if let Err(err) = self.err_handler.handle_accept_err(err).await.map_err(Into::into) {
                                 graceful.trigger_shutdown().await;
-                                if let Err(delay_err) = graceful_delay(graceful, shutdown_timeout).await {
+                                if let Err(delay_err) = graceful.shutdown_gracefully(shutdown_timeout).await {
                                     debug!("TCP server: graceful delay error: {} (while waiting to fail on accept err: {})", delay_err, err)
                                 }
                                 return Err(Error::new(ErrorKind::Accept, err));
@@ -273,8 +273,8 @@ where
                         }
                     }
                 },
-                _ = graceful.shutdown_req() => {
-                    return graceful_delay(graceful, shutdown_timeout).await;
+                _ = graceful.shutdown_triggered() => {
+                    return graceful.shutdown_gracefully(shutdown_timeout).await.map_err(|err| Error::new(ErrorKind::Timeout, err));
                 },
             };
 
@@ -308,21 +308,6 @@ where
                 }
             });
         }
-    }
-}
-
-async fn graceful_delay(
-    service: GracefulService,
-    maybe_timeout: Option<Duration>,
-) -> Result<(), Error> {
-    if let Some(timeout) = maybe_timeout {
-        service
-            .shutdown_until(timeout)
-            .await
-            .map_err(|err| Error::new(ErrorKind::Timeout, err))
-    } else {
-        service.shutdown().await;
-        Ok(())
     }
 }
 
