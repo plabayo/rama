@@ -3,6 +3,7 @@
 use tokio::io::{AsyncRead, AsyncWrite};
 
 pub mod service;
+pub mod tracker;
 
 /// A byte oriented stream.
 pub trait ByteStream: AsyncRead + AsyncWrite {}
