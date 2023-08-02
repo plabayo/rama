@@ -154,6 +154,7 @@ where
 /// A handle to a [`BytesRWTracker`] that can be used to get the number of bytes
 /// read and/or written even though the [`BytesRWTracker`] is consumed by a protocol
 /// consumer.
+#[derive(Debug, Clone)]
 pub struct BytesRWTrackerHandle {
     read: Arc<AtomicUsize>,
     written: Arc<AtomicUsize>,
@@ -279,36 +280,73 @@ mod tests {
         assert_eq!(handle.written(), 0);
 
         let (action_tx, mut action_rx) = tokio::sync::mpsc::channel(1);
-        let (check_tx, mut check_rx) = tokio::sync::mpsc::channel(1);
+        let (check_tx, mut check_rx) = tokio::sync::broadcast::channel(1);
+        let check_rx_2 = check_tx.subscribe();
 
-        tokio::spawn(async move {
+        let task_1 = tokio::spawn(async move {
             let mut tracker = tracker;
             let mut buf = [0u8; 3];
 
             action_rx.recv().await;
             tracker.read_exact(&mut buf).await.unwrap();
-            check_tx.send(()).await.unwrap();
+            check_tx.send(()).unwrap();
 
             action_rx.recv().await;
             tracker.write_all(b"foo").await.unwrap();
-            check_tx.send(()).await.unwrap();
+            check_tx.send(()).unwrap();
 
             action_rx.recv().await;
             tracker.read_exact(&mut buf).await.unwrap();
-            check_tx.send(()).await.unwrap();
+            check_tx.send(()).unwrap();
 
             action_rx.recv().await;
             tracker.write_all(b"bar").await.unwrap();
-            check_tx.send(()).await.unwrap();
+            check_tx.send(()).unwrap();
 
             action_rx.recv().await;
             tracker.read_exact(&mut buf).await.unwrap();
-            check_tx.send(()).await.unwrap();
+            check_tx.send(()).unwrap();
 
             action_rx.recv().await;
             tracker.write_all(b"baz").await.unwrap();
-            check_tx.send(()).await.unwrap();
+            check_tx.send(()).unwrap();
         });
+
+        let task_2 = {
+            let handle = handle.clone();
+            let mut check_rx = check_rx_2;
+            tokio::spawn(async move {
+                check_rx.recv().await.unwrap();
+
+                assert_eq!(handle.read(), 3);
+                assert_eq!(handle.written(), 0);
+
+                check_rx.recv().await.unwrap();
+
+                assert_eq!(handle.read(), 3);
+                assert_eq!(handle.written(), 3);
+
+                check_rx.recv().await.unwrap();
+
+                assert_eq!(handle.read(), 6);
+                assert_eq!(handle.written(), 3);
+
+                check_rx.recv().await.unwrap();
+
+                assert_eq!(handle.read(), 6);
+                assert_eq!(handle.written(), 6);
+
+                check_rx.recv().await.unwrap();
+
+                assert_eq!(handle.read(), 9);
+                assert_eq!(handle.written(), 6);
+
+                check_rx.recv().await.unwrap();
+
+                assert_eq!(handle.read(), 9);
+                assert_eq!(handle.written(), 9)
+            })
+        };
 
         assert_eq!(handle.read(), 0);
         assert_eq!(handle.written(), 0);
@@ -348,5 +386,7 @@ mod tests {
 
         assert_eq!(handle.read(), 9);
         assert_eq!(handle.written(), 9);
+
+        futures::future::join_all(vec![task_1, task_2]).await;
     }
 }

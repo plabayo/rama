@@ -26,3 +26,4 @@ anyhow = "1.0"
 clap = { version = "4.3", features = ["derive"] }
 tokio-test = "0.4"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
