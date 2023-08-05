@@ -5,7 +5,7 @@ notice = "warn"
 ignore = []
 
 [licenses]
-unlicensed = "allow"
+unlicensed = "deny"
 allow = []
 deny = []
 copyleft = "warn"

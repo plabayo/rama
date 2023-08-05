@@ -2,15 +2,18 @@
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
-[![Business Source License][license-badge]][license-url]
+[![MIT License][license-mit-badge]][license-mit-url]
+[![Apache 2.0 License][license-apache-badge]][license-apache-url]
 [![Build Status][actions-badge]][actions-url]
 
 [crates-badge]: https://img.shields.io/crates/v/rama.svg
 [crates-url]: https://crates.io/crates/rama
 [docs-badge]: https://img.shields.io/docsrs/rama/latest
 [docs-url]: https://docs.rs/rama/latest/rama/index.html
-[license-badge]: https://img.shields.io/badge/license-BSL-blue.svg
-[license-url]: https://github.com/plabayo/rama/blob/master/LICENSE
+[license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
+[license-mit-url]: https://github.com/plabayo/rama/blob/master/LICENSE-MIT
+[license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
+[license-apache-url]: https://github.com/plabayo/rama/blob/master/LICENSE-APACHE
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions?query=workflow%3ACI+branch%main
 
@@ -39,18 +42,21 @@ Should you want to contribure this project but you do not yet know how to progra
 
 ## License
 
-This project is licensed under the [BSL license][license].
+This project is dual-licensed under both the [MIT license][mit-license] and [Apache 2.0 License][apache-license].
 
 ### Contribution
 
 Unless you explicitly state otherwise, any contribution intentionally submitted
-for inclusion in `rama` by you, shall be licensed as BSL, without any
-additional terms or conditions.
+for inclusion in `rama` by you, shall be licensed as both [MIT][mit-license] and [Apache 2.0][apache-license],
+without any additional terms or conditions.
 
 [contributing]: https://github.com/plabayo/rama/blob/main/CONTRIBUTING.md
-[license]: https://github.com/plabayo/rama/blob/main/rama/LICENSE
+[mit-license]: https://github.com/plabayo/rama/blob/main/rama/LICENSE-MIT
+[apache-license]: https://github.com/plabayo/rama/blob/main/rama/LICENSE-APACHE
 
 ## Sponsors
+
+Rama is **completely free, open-source software** which needs lots of effort and time to develop and maintain.
 
 Support this project by becoming a [sponsor](https://github.com/sponsors/plabayo).
 

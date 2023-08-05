@@ -7,7 +7,7 @@ description = "proxy framework using Tokio written purely in Rust"
 homepage = "https://github.com/plabayo/llama"
 readme = "README.md"
 keywords = ["io", "async", "non-blocking", "futures"]
-license = "BSL"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/plabayo/llama"
 # [[bin]]
 # name = "rama"
