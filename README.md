@@ -11,9 +11,9 @@
 [docs-badge]: https://img.shields.io/docsrs/rama/latest
 [docs-url]: https://docs.rs/rama/latest/rama/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
-[license-mit-url]: https://github.com/plabayo/rama/blob/master/LICENSE-MIT
+[license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
-[license-apache-url]: https://github.com/plabayo/rama/blob/master/LICENSE-APACHE
+[license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions?query=workflow%3ACI+branch%main
 
@@ -51,8 +51,8 @@ for inclusion in `rama` by you, shall be licensed as both [MIT][mit-license] and
 without any additional terms or conditions.
 
 [contributing]: https://github.com/plabayo/rama/blob/main/CONTRIBUTING.md
-[mit-license]: https://github.com/plabayo/rama/blob/main/rama/LICENSE-MIT
-[apache-license]: https://github.com/plabayo/rama/blob/main/rama/LICENSE-APACHE
+[mit-license]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
+[apache-license]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
 
 ## Sponsors
 
