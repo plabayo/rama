@@ -6,6 +6,7 @@
 [![Apache 2.0 License][license-apache-badge]][license-apache-url]
 [![Build Status][actions-badge]][actions-url]
 
+[![Discord][discord-badge]][discord-url]
 [![Buy Me A Coffee][bmac-badge]](bmac-url)
 [![GitHub Sponsors][ghs-badge]](ghs-url)
 
@@ -20,6 +21,9 @@
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions?query=workflow%3ACI+branch%main
+
+[discord-badge]: https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white
+[discord-url]: https://discord.gg/29EetaSYCD
 [bmac-badge]: https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black
 [bmac-url]: https://www.buymeacoffee.com/plabayo
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
@@ -28,6 +32,8 @@
 > rama is early work in progress, use at your own risk.
 >
 > Not everything that exists is documented and not everything that is documented is implemented.
+
+Come join us at [Discord][discord-url] on the `#rama` public channel.
 
 ## Nightly
 
@@ -66,7 +72,7 @@ without any additional terms or conditions.
 
 Rama is **completely free, open-source software** which needs lots of effort and time to develop and maintain.
 
-Support this project by becoming a [sponsor](https://github.com/sponsors/plabayo).
+Support this project by becoming a [sponsor][ghs-url]. One time payments are accepted [at GitHub][ghs-url] as well as at ["Buy me a Coffee"][bmac-url]
 
 Sponsors help us continue to maintain and improve `rama`, as well as other
 Free and Open Source (FOSS) technology. It also helps us to create
