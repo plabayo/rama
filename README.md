@@ -1,10 +1,14 @@
-![rama banner](docs/img/banner.png)
+![rama banner](docs/img/banner.svg)
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
 [![MIT License][license-mit-badge]][license-mit-url]
 [![Apache 2.0 License][license-apache-badge]][license-apache-url]
 [![Build Status][actions-badge]][actions-url]
+
+[![Buy Me A Coffee][bmac-badge]](bmac-url)
+[![GitHub Sponsors][ghs-badge]](ghs-url)
+
 
 [crates-badge]: https://img.shields.io/crates/v/rama.svg
 [crates-url]: https://crates.io/crates/rama
@@ -16,6 +20,10 @@
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions?query=workflow%3ACI+branch%main
+[bmac-badge]: https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black
+[bmac-url]: https://www.buymeacoffee.com/plabayo
+[ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
+[ghs-url]: https://github.com/sponsors/plabayo
 
 > rama is early work in progress, use at your own risk.
 >
