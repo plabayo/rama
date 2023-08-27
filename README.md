@@ -1,4 +1,4 @@
-![rama banner](docs/img/banner.svg)
+![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg)
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
@@ -34,7 +34,7 @@
 
 Come join us at [Discord][discord-url] on the `#rama` public channel.
 
-![rama roadmap v0.2.0](docs/img/roadmap.svg)
+![rama roadmap v0.2.0](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/roadmap.svg)
 
 ## Nightly
 
