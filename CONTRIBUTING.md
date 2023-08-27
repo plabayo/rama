@@ -1,6 +1,6 @@
 # Contributing
 
-1. [File an issue](https://github.com/plabayo/llama/issues/new).
+1. [File an issue](https://github.com/plabayo/rama/issues/new).
    The issue will be used to discuss the bug or feature and should be created before opening an MR.
    > Best to even wait on actually developing it as to make sure
    > that we're all aligned on what you're trying to contribute,
@@ -9,10 +9,10 @@
 In case you also want to help resolve it by contributing to the code base you would continue as follows:
 
 2. Install Rust and configure correctly (https://www.rust-lang.org/tools/install).
-3. Clone the repo: `git clone https://github.com/plabayo/llama`
+3. Clone the repo: `git clone https://github.com/plabayo/rama`
 4. Change into the checked out source: `cd news`
 5. Fork the repo.
-6. Set your fork as a remote: `git remote add fork git@github.com:GITHUB_USERNAME/llama.git`
+6. Set your fork as a remote: `git remote add fork git@github.com:GITHUB_USERNAME/rama.git`
 7. Make changes, commit to your fork.
    Please add a short summary and a detailed commit message for each commit.
    > Feel free to make as many commits as you want in your branch,
