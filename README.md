@@ -7,8 +7,8 @@
 [![Build Status][actions-badge]][actions-url]
 
 [![Discord][discord-badge]][discord-url]
-[![Buy Me A Coffee][bmac-badge]](bmac-url)
-[![GitHub Sponsors][ghs-badge]](ghs-url)
+[![Buy Me A Coffee][bmac-badge]][bmac-url]
+[![GitHub Sponsors][ghs-badge]][ghs-url]
 
 [crates-badge]: https://img.shields.io/crates/v/rama.svg
 [crates-url]: https://crates.io/crates/rama
