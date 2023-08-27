@@ -10,7 +10,6 @@
 [![Buy Me A Coffee][bmac-badge]](bmac-url)
 [![GitHub Sponsors][ghs-badge]](ghs-url)
 
-
 [crates-badge]: https://img.shields.io/crates/v/rama.svg
 [crates-url]: https://crates.io/crates/rama
 [docs-badge]: https://img.shields.io/docsrs/rama/latest
@@ -34,6 +33,8 @@
 > Not everything that exists is documented and not everything that is documented is implemented.
 
 Come join us at [Discord][discord-url] on the `#rama` public channel.
+
+![rama roadmap v0.2.0](docs/img/roadmap.svg)
 
 ## Nightly
 
