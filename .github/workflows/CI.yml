@@ -2,7 +2,7 @@ name: CI
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: nightly-2023-07-08
+  RUST_TOOLCHAIN: nightly
 
 on:
   push:

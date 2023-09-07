@@ -1,4 +1,4 @@
-FROM rust:latest as builder
+FROM rust:nightly as builder
 
 # Make a fake Rust app to keep a cached layer of compiled crates
 RUN USER=root cargo new app
