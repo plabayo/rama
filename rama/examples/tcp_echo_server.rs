@@ -10,14 +10,6 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Optional timeout to wait until forcing a shutdown
-    #[arg(short, long, value_parser = parse_duration)]
-    timeout: Option<std::time::Duration>,
-
-    /// the graceful kind of service to use
-    #[arg(short, long, value_parser = parse_graceful, default_value_t = Graceful::SigInt)]
-    graceful: Graceful,
-
     /// an optional network interface to bind to
     #[arg(short, long)]
     interface: Option<String>,
@@ -26,32 +18,6 @@ struct Args {
 fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntError> {
     let seconds = arg.parse()?;
     Ok(std::time::Duration::from_secs(seconds))
-}
-
-fn parse_graceful(arg: &str) -> Result<Graceful, &'static str> {
-    match arg {
-        "pending" => Ok(Graceful::Pending),
-        "sigint" => Ok(Graceful::SigInt),
-        "sigterm" => Ok(Graceful::SigTerm),
-        _ => Err("invalid graceful kind"),
-    }
-}
-
-#[derive(Debug, Clone)]
-enum Graceful {
-    Pending,
-    SigInt,
-    SigTerm,
-}
-
-impl std::fmt::Display for Graceful {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Graceful::Pending => write!(f, "pending"),
-            Graceful::SigInt => write!(f, "sigint"),
-            Graceful::SigTerm => write!(f, "sigterm"),
-        }
-    }
 }
 
 #[tokio::main]
@@ -74,22 +40,8 @@ async fn main() -> Result<()> {
         None => TcpListener::new().context("create TCP listener"),
     }?;
 
-    if let Some(timeout) = args.timeout {
-        builder.shutdown_timeout(timeout);
-    }
-
-    match args.graceful {
-        Graceful::Pending => {
-            builder.graceful_without_signal();
-        }
-        Graceful::SigInt => (),
-        Graceful::SigTerm => {
-            builder.graceful_sigterm();
-        }
-    };
-
     builder
-        .serve::<Shared<EchoService>>(service)
+        .serve_graceful::<Shared<EchoService>>(service)
         .await
         .context("serve incoming TCP connections")?;
 
