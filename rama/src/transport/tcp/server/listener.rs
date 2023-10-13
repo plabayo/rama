@@ -18,23 +18,11 @@ pub struct TcpListener<S> {
 
 impl TcpListener<()> {
     /// Creates a new [`TcpListener`] bound to a local address with an open port.
-    ///
-    /// This [`TcpListener`] will use the default [`ErrorHandler`] to handle errors by simply
-    /// logging them to the [`tracing`] subscriber. And will trigger a graceful shutdown
-    /// only when the infamous "CTRL+C" signal (future) resolves.
-    ///
-    /// [`tracer`]: https://docs.rs/tracing/*/tracing/
     pub fn new() -> Result<Self, std::io::Error> {
         Self::bind("127.0.0.1:0")
     }
 
     /// Creates a new [`TcpListener`] bound to a given address.
-    ///
-    /// This [`TcpListener`] will use the default [`ErrorHandler`] to handle errors by simply
-    /// logging them to the [`tracing`] subscriber. And will trigger a graceful shutdown
-    /// only when the infamous "CTRL+C" signal (future) resolves.
-    ///
-    /// [`tracer`]: https://docs.rs/tracing/*/tracing/
     pub fn bind(addr: impl ToSocketAddrs) -> Result<Self, std::io::Error> {
         let std_listener = std::net::TcpListener::bind(addr)?;
         std_listener.try_into()

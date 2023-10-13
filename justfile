@@ -18,5 +18,8 @@ clippy-fix:
 test:
 	cargo test --all-features
 
-qa: lint check clippy test
+doc:
+	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
+
+qa: lint check clippy doc test
 
