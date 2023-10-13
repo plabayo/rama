@@ -33,13 +33,5 @@ In case you also want to help resolve it by contributing to the code base you wo
 All tests can be run locally against the latest Rust version (or whichever supported Rust version you're using on your development machine):
 
 ```bash
-cargo test --all
-```
-
-```bash
-cargo clippy --all
-```
-
-```bash
-cargo sort --workspace --grouped
+just qa
 ```

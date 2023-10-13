@@ -15,11 +15,6 @@ struct Args {
     interface: Option<String>,
 }
 
-fn parse_duration(arg: &str) -> Result<std::time::Duration, std::num::ParseIntError> {
-    let seconds = arg.parse()?;
-    Ok(std::time::Duration::from_secs(seconds))
-}
-
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()

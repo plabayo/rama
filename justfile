@@ -15,4 +15,8 @@ clippy:
 clippy-fix:
 	cargo clippy --fix
 
-qa: lint check clippy
+test:
+	cargo test --all-features
+
+qa: lint check clippy test
+

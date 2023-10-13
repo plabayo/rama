@@ -1,8 +1,6 @@
 //! [`TcpListener] implementation.
 
-use std::{
-    net::{SocketAddr, ToSocketAddrs},
-};
+use std::net::{SocketAddr, ToSocketAddrs};
 use tokio::net::TcpStream;
 use tower_async::{MakeService, Service};
 
