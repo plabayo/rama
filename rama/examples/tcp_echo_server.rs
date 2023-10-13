@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
 
     let service = Shared::new(EchoService::new());
 
-    let mut builder = match args.interface {
+    let builder = match args.interface {
         Some(interface) => TcpListener::bind(interface).context("bind TCP listener"),
         None => TcpListener::new().context("create TCP listener"),
     }?;

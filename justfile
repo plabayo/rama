@@ -12,4 +12,7 @@ check:
 clippy:
 	cargo clippy --all --all-targets --all-features
 
+clippy-fix:
+	cargo clippy --fix
+
 qa: lint check clippy
