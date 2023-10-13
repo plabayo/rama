@@ -19,7 +19,7 @@ use crate::transport::bytes::ByteStream;
 /// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let mut service = ForwardService::new(destination);
 ///
-/// let (bytes_copied_to, bytes_copied_from) = service.call(conn).await?;
+/// let (bytes_copied_to, bytes_copied_from) = service.call(stream).await?;
 /// # assert_eq!(bytes_copied_to, 11);
 /// # assert_eq!(bytes_copied_from, 11);
 /// # Ok(())

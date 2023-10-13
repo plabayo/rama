@@ -17,7 +17,7 @@ use crate::transport::bytes::ByteStream;
 /// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let mut service = EchoService::new();
 ///
-/// let bytes_copied = service.call(conn).await?;
+/// let bytes_copied = service.call(stream).await?;
 /// # assert_eq!(bytes_copied, 11);
 /// # Ok(())
 /// # }
