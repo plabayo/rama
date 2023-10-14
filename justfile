@@ -25,3 +25,6 @@ qa: lint check clippy doc test
 
 rama:
     FULL_BACKTRACE=1 cargo run -p rama --bin rama
+
+docker-build:
+    docker build -t rama:latest -f Dockerfile .

@@ -12,7 +12,7 @@ repository = "https://github.com/plabayo/rama"
 
 [[bin]]
 name = "rama"
-path = "./bin/rama/main.rs"
+path = "./bin/main.rs"
 
 [features]
 default = [

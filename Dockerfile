@@ -1,11 +1,11 @@
-FROM rust:nightly as builder
+FROM rustlang/rust:nightly-slim as builder
 
 # Make a fake Rust app to keep a cached layer of compiled crates
 RUN USER=root cargo new app
 WORKDIR /usr/src/app
 COPY Cargo.toml ./
 # Needs at least a main.rs file with a main function
-RUN mkdir -p src/bin/rama && echo "fn main(){}" > src/bin/rama/main.rs
+RUN mkdir -p rama/rama && echo "fn main(){}" > rama/bin/main.rs
 # Will build all dependent crates in release mode
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/src/app/target \
@@ -19,7 +19,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cargo install --path . --bin rama
 
 # Runtime image
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 # Run as "app" user
 RUN useradd -ms /bin/bash app
