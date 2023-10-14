@@ -9,15 +9,22 @@ readme = "../README.md"
 keywords = ["io", "async", "non-blocking", "futures"]
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/plabayo/rama"
-# [[bin]]
-# name = "rama"
-# path = "./src/bin/rama/main.rs"
+
+[[bin]]
+name = "rama"
+path = "./bin/rama/main.rs"
+
+[features]
+default = [
+    "tokio",
+]
+tokio = [
+    "dep:tokio",
+]
 
 [dependencies]
-bytes = "1.4"
 pin-project-lite = "0.2"
-tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
+tokio = { version = "1", features = ["full"], optional = true }
 tower-async = { version = "0.1", features = ["full"] }
 tracing = "0.1"
 

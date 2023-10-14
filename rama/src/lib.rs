@@ -47,6 +47,3 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
 
 pub mod transport;
-
-mod extensions;
-pub use extensions::Extensions;
