@@ -2,7 +2,7 @@ use std::io::Error;
 
 use tower_async::Service;
 
-use crate::transport::bytes::ByteStream;
+use crate::tokio::bytes::ByteStream;
 
 /// An async service which echoes the incoming bytes back on the same stream.
 ///
@@ -10,7 +10,7 @@ use crate::transport::bytes::ByteStream;
 ///
 /// ```rust
 /// use tower_async::Service;
-/// use rama::transport::bytes::service::EchoService;
+/// use rama::tokio::bytes::service::EchoService;
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {

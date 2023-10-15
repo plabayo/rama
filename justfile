@@ -15,13 +15,16 @@ clippy:
 clippy-fix:
 	cargo clippy --fix
 
-test:
-	cargo test --all-features
-
 doc:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
 
-qa: lint check clippy doc test
+hack:
+	cargo hack check --each-feature --no-dev-deps --workspace
+
+test:
+	cargo test --all-features
+
+qa: lint check clippy doc hack test
 
 rama:
     FULL_BACKTRACE=1 cargo run -p rama --bin rama
