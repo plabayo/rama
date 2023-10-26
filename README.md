@@ -34,7 +34,155 @@
 
 Come join us at [Discord][discord-url] on the `#rama` public channel.
 
-![rama roadmap v0.2.0](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/roadmap.svg)
+## Roadmap
+
+> NOTE: at this early experimental stage things might still derive from the roadmap and not be immediately
+> reflected in the summary below. Contact @glendc in doubt.
+
+Here we'll also add some draft snippets of how we might Rama want to be,
+these are rough sketches and are not tested or develoepd code. All of it is still
+in flux as well.
+
+```
+> rama-macros
+> rama
+```
+
+An eventual goal will be to make it also work on async runtimes like `smol`.
+Initially we will however just make sure tokio works, but will at least already
+put the guards in place to make sure that if you do not compile with features
+like `tokio` and `hyper` that we also not rely on it.
+
+Just not somethingt worry about ourselves immediately.
+
+```rust
+use rama::{
+    // better name then Stream?!
+    server::Stream,
+    server::http::Request,
+};
+
+async fn main() {
+    await https_proxy();
+
+    let rama::server::HttpServe
+
+    // TODO: graceful shutdown
+}
+
+async fn https_proxy() {
+    // requires `rustls` or `boringssl` feature to be enabled
+    let tls_server_config = rama::server::TlsServerConfig::builder()
+        .with_safe_defaults()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .unwrap();
+    let tls_acceptor = rama::server::TlsAcceptor::from(
+        std::sync::Arc::new(tls_server_config),
+    );
+
+    // proxy acceptor, always available
+    let http_proxy_config = rama::server::HttpProxyConfig::builder()
+        .with_basic_auth("username", "password")
+        .unwrap();
+    let proxy_acceptor = rama::server::HttpProxy::from(
+        std::sync::Arc::new(http_proxy_config),
+    );
+
+    // available only when enabled `smol` or `tokio`
+    rama::server::TcpServer::bind(&"0.0.0.0:8080".parse().unwrap())
+        .serve(|stream: Stream| async {
+            // // keep track of bytes R/W
+            // let (stream, stream_tracker) = rama::transport::Tracker::new(stream);
+
+            // terminate TLS
+            let tls_acceptor = tls_acceptor.clone();
+            let stream = tls_acceptor.accept(stream).await?;
+
+            // proxy authenticate
+            let proxy_acceptor = proxy_acceptor.clone();
+            let (stream, target_info) = proxy_acceptor.accept(stream).await?;
+
+            // common client to reuse connections for a single session
+            let http_client = rama::client::HttpClient::new();
+
+            // serve http,
+            // available when `hyper` feature is enabled (== default)
+            rama::server::HttpConnection::builder()
+                .http1_only(true)
+                .http1_keep_alive(true)
+                .handle_ws(|ws| {
+                    // this will probably work a lot like axum
+                    // (docs: )
+                    // which make use of hyper: https://docs.rs/hyper/latest/hyper/upgrade/index.html
+                })
+                .serve(stream, target_stream, |request: Request, target: Stream| async move {
+                    // // copy tracker so we can get bytes read/written
+                    // let stream_tracker = stream_tracker.clone();
+
+                    // clone target info to make use of it
+                    let target_info = target_info.clone();
+
+                    // select the client profile,
+                    // includes tls, http and transport settings
+                    let client_profile = rama::client::Profile::from(&request);
+
+                    // select an upstream proxy based on the request
+                    let proxy_info = rama::proxy::ProxyInfo::from(&request)
+
+                    // get http session for the given info (new or existing one)
+                    let http_session = http_client.clone().connect(
+                        target_info,
+                        client_profile,
+                        proxy_info,
+                    ).await?;
+
+                    // make the request
+                    // ..
+                    // ... incase of things like WebSocket (WS)
+                    // ... there will be:
+                    // ...... 1. a ws handshake
+                    // ...... 2. a problem as connection stream is not available here...
+                    // ......... TODO: allow to demote again to a lower protocol with intent
+                    let mut response = http_session.do_req(request).await?;
+
+                    // TODO: how to decide as what http version to return?
+                    // or is that something http_client should "know"?
+
+                    // add profile info to response
+                    client_profile.add_info_to_response(&mut response)?;
+
+                    // return final response
+                    Ok(response)
+                }).await.unwrap();
+        }).await.unwrap();
+}
+```
+
+The above code shows that there are roughly 3 sections on an https proxy code:
+
+1. The initial https server setup.
+   Result is an https proxy server running that can start handling incoming connections.
+2. for each incoming tcp connection (similar logic for udp would apply):
+   - terminate the tls (if its an https instead of http proxy)
+   - do the proxy accept (http/socks5, with or without auth)
+   - create a http client: optional, but would allow to reuse connections that use the same config,
+     which in most cases are all requests going over that single connection
+3. for each incoming http request on that now ready http connection:
+   - read and modify the http headers where desired
+   - do the http request (that request or a new one)
+   - read and modify the response
+   - return the response
+
+The setup (1) is not much to say about. But once you look into designs for (2) and (3) there's
+a very hard balance between making Rama too generic and thus also very complicated in how to design.
+Or you make it too specific (opininated), making the design a lot simpler though.
+
+The above design looks fine enough as a start. Still it's a bit messy,
+and this is where Axum+Tower do make a difference for Http web services.
+Point is to make it also work for proxy services.
+
+![rama roadmap v0.2.0](./docs/img/roadmap.svg)
 
 ## Nightly
 
@@ -46,6 +194,9 @@ We expect to be able to switch back to stable rust once `async_trait` is availab
 which should be by the end of 2023.
 
 See <https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html> for more information.
+
+> NOTE: the above information was about design #3 of Rama,
+> in the new design we might switch to `impl Future` which would stabalize this year...
 
 ## Contributing
 
@@ -111,6 +262,27 @@ This animal is used as a our mascot and spiritual inspiration of this proxy fram
 It was chosen to honor our connection with Peru, the homeland of this magnificent animal,
 and translated into Japanese because we gratefully have built _rama_
 upon the broad shoulders of [Tokio and its community](https://tokio.rs/).
+
+Note that the Tokio runtime and its ecosystems sparked initial experimental versions of Rama,
+but that we since then, after plenty of non-published iterations, have broken free from that ecosystem,
+and are now supporting other ecosystems as well. In fact, by default we link not into any async runtime,
+and rely only on the `std` library for for any future/async primitives.
+
+### What Async Runtime is used?
+
+We try to write the Rama codebase in an async runtime agnostic manner. Everything that is
+runtime specific (e.g. low level primitives) is hidden behind feature gates.
+
+You can bring your own runtinme, but for most purposes we recommend that activate
+the `[tokio]` or `[smol]` runtime. Both can be activated at the same time, but that is usually not done.
+
+### Do you support Tokio?
+
+Yes. It is not enabled by default, but can be activated using the `tokio` feature.
+
+### Do you support [Smol](https://github.com/smol-rs/smol)?
+
+Yes. It is not enabled by default, but can be activated using the `smol` feature.
 
 ### Help! My Async Trait's Future is not `Send`
 
