@@ -39,6 +39,20 @@ Come join us at [Discord][discord-url] on the `#rama` public channel.
 > NOTE: at this early experimental stage things might still derive from the roadmap and not be immediately
 > reflected in the summary below. Contact @glendc in doubt.
 
+```
+New Design Guidelines (for 0.2)
+
+- heavy things like tokio, hyper, ... will be behind feature gates
+- hyper, tokio etc will be by default enabled (for now)
+- have it not be a generic network lib, but do focus on proxying
+- stuff like an HttpConnector will be opiniated rather then generic
+- do built by default on `tower-async-core`, but hide the
+  heavy stuff (e.g. things within `tower-async`) behind feature gates
+- http connector follows no specific interface, for the tcp server
+  it is just something that handles tcp streams,
+- for state stuff we'll follow the axum approach, seems fine
+```
+
 Here we'll also add some draft snippets of how we might Rama want to be,
 these are rough sketches and are not tested or develoepd code. All of it is still
 in flux as well.
@@ -62,15 +76,55 @@ use rama::{
     server::http::Request,
 };
 
+#[tokio::main]
 async fn main() {
-    await https_proxy();
+    // client profiles...
+    let client_profile_db = rama::client::ProfileDB::new(..);
 
-    let rama::server::HttpServe
+    let shutdown = tokio_graceful::Shutdown::default();
 
-    // TODO: graceful shutdown
+    shutdown.spawn_task_fn(|guard| async move {
+        let client_profile_db = client_profile_db.clone();
+        if let Err(err) = https_proxy(guard, client_profile_db) {
+            trace::error!(..);
+        }
+    });
+
+    shutdown.spawn_task_fn(|guard| async move {
+        let client_profile_db = client_profile_db.clone();
+        if let Err(err) = http_server(guard, client_profile_db).await {
+            trace::error!(..);
+        }
+    });
+
+    shutdown.spawn_task_fn(|guard| async move {
+        let client_profile_db = client_profile_db.clone();
+        if let Err(err) = https_proxy(guard, client_profile_db).await {
+            trace::error!(..);
+        }
+    });
+    
+    shutdown
+        .shutdown_with_limit(Duration::from_secs(60))
+        .await
+        .unwrap();
 }
 
-async fn https_proxy() {
+async fn http_server(guard: Guard, client_profile_database: ProfileDatabase) {
+    rama::server::HttpServer::build()
+        .get("/k8s/health", |_| async {
+            "Ok"
+        })
+        .get("/api/v1/profile", |_| async {
+            client_profile_database.get_random_desktop_browser_profile()
+        })
+        .layer(tower_async_http::TraceLayer::new_for_http())
+        .layer(tower_async_http::compression::CompressionLayer::new())
+        .layer(tower_async_http::normalize_path::NormalizePathLayer::trim_trailing_slash())
+        .serve("127.0.0.1:8080").await
+}
+
+async fn https_proxy(guard: Guard, client_profile_database: ProfileDatabase) {
     // requires `rustls` or `boringssl` feature to be enabled
     let tls_server_config = rama::server::TlsServerConfig::builder()
         .with_safe_defaults()
@@ -89,11 +143,17 @@ async fn https_proxy() {
         std::sync::Arc::new(http_proxy_config),
     );
 
+    // profile db layer
+    let client_profile_database_layer = client_profile_database.layer();
+
+    // proxy db
+    let upstream_proxy_db = rama::proxy::ProxyDB::new(..);
+    let upstream_proxy_db_layer = upstream_proxy_db.layer();
+
     // available only when enabled `smol` or `tokio`
     rama::server::TcpServer::bind(&"0.0.0.0:8080".parse().unwrap())
-        .serve(|stream: Stream| async {
-            // // keep track of bytes R/W
-            // let (stream, stream_tracker) = rama::transport::Tracker::new(stream);
+        .serve(|stream: Stream| async move {
+            let client_profile_database_layer = client_profile_database_layer.clone();
 
             // terminate TLS
             let tls_acceptor = tls_acceptor.clone();
@@ -103,58 +163,34 @@ async fn https_proxy() {
             let proxy_acceptor = proxy_acceptor.clone();
             let (stream, target_info) = proxy_acceptor.accept(stream).await?;
 
-            // common client to reuse connections for a single session
-            let http_client = rama::client::HttpClient::new();
-
             // serve http,
             // available when `hyper` feature is enabled (== default)
             rama::server::HttpConnection::builder()
                 .http1_only(true)
                 .http1_keep_alive(true)
-                .handle_ws(|ws| {
-                    // this will probably work a lot like axum
-                    // (docs: )
-                    // which make use of hyper: https://docs.rs/hyper/latest/hyper/upgrade/index.html
-                })
-                .serve(stream, target_stream, |request: Request, target: Stream| async move {
-                    // // copy tracker so we can get bytes read/written
-                    // let stream_tracker = stream_tracker.clone();
-
-                    // clone target info to make use of it
-                    let target_info = target_info.clone();
-
-                    // select the client profile,
-                    // includes tls, http and transport settings
-                    let client_profile = rama::client::Profile::from(&request);
-
-                    // select an upstream proxy based on the request
-                    let proxy_info = rama::proxy::ProxyInfo::from(&request)
-
-                    // get http session for the given info (new or existing one)
-                    let http_session = http_client.clone().connect(
-                        target_info,
-                        client_profile,
-                        proxy_info,
-                    ).await?;
-
-                    // make the request
-                    // ..
-                    // ... incase of things like WebSocket (WS)
-                    // ... there will be:
-                    // ...... 1. a ws handshake
-                    // ...... 2. a problem as connection stream is not available here...
-                    // ......... TODO: allow to demote again to a lower protocol with intent
-                    let mut response = http_session.do_req(request).await?;
-
-                    // TODO: how to decide as what http version to return?
-                    // or is that something http_client should "know"?
-
-                    // add profile info to response
-                    client_profile.add_info_to_response(&mut response)?;
-
-                    // return final response
-                    Ok(response)
-                }).await.unwrap();
+                .serve(
+                    stream,
+                    rama::client::HttpClient::new()
+                        .handle_upgrade(
+                            "websocket",
+                            |request: Request| {
+                                // ... do stuff with request if desired...
+                                // ... todo
+                                // for default response you can use the shipped one
+                                rama::client::ws::accept_response(request)
+                            },
+                            |client: HttpClient, stream: Stream| {
+                                // TODO... how to get desired client conn...
+                            },
+                        )
+                        .layer(rama::middleware::http::RemoveHeaders::default())
+                        .layer(client_profile_db_layer.clone())
+                        .layer(upstream_proxy_db_layer.clone())
+                        .layer(rama::middleware::http::Firewall::new(
+                            Some(vec!["127.0.0.1"]),
+                            None,
+                        ))
+                ).await?;
         }).await.unwrap();
 }
 ```
