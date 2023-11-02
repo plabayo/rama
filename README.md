@@ -70,7 +70,7 @@ like `tokio` and `hyper` that we also not rely on it.
 Just not somethingt worry about ourselves immediately.
 
 ```rust
-use rama::{
+use rama_old::{
     // better name then Stream?!
     server::Stream,
     server::http::Request,
@@ -79,7 +79,7 @@ use rama::{
 #[tokio::main]
 async fn main() {
     // client profiles...
-    let client_profile_db = rama::client::ProfileDB::new(..);
+    let client_profile_db = rama_old::client::ProfileDB::new(..);
 
     let shutdown = tokio_graceful::Shutdown::default();
 
@@ -111,7 +111,7 @@ async fn main() {
 }
 
 async fn http_server(guard: Guard, client_profile_database: ProfileDatabase) {
-    rama::server::HttpServer::build()
+    rama_old::server::HttpServer::build()
         .get("/k8s/health", |_| async {
             "Ok"
         })
@@ -126,20 +126,20 @@ async fn http_server(guard: Guard, client_profile_database: ProfileDatabase) {
 
 async fn https_proxy(guard: Guard, client_profile_database: ProfileDatabase) {
     // requires `rustls` or `boringssl` feature to be enabled
-    let tls_server_config = rama::server::TlsServerConfig::builder()
+    let tls_server_config = rama_old::server::TlsServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
         .with_single_cert(certs, key)
         .unwrap();
-    let tls_acceptor = rama::server::TlsAcceptor::from(
+    let tls_acceptor = rama_old::server::TlsAcceptor::from(
         std::sync::Arc::new(tls_server_config),
     );
 
     // proxy acceptor, always available
-    let http_proxy_config = rama::server::HttpProxyConfig::builder()
+    let http_proxy_config = rama_old::server::HttpProxyConfig::builder()
         .with_basic_auth("username", "password")
         .unwrap();
-    let proxy_acceptor = rama::server::HttpProxy::from(
+    let proxy_acceptor = rama_old::server::HttpProxy::from(
         std::sync::Arc::new(http_proxy_config),
     );
 
@@ -147,11 +147,11 @@ async fn https_proxy(guard: Guard, client_profile_database: ProfileDatabase) {
     let client_profile_database_layer = client_profile_database.layer();
 
     // proxy db
-    let upstream_proxy_db = rama::proxy::ProxyDB::new(..);
+    let upstream_proxy_db = rama_old::proxy::ProxyDB::new(..);
     let upstream_proxy_db_layer = upstream_proxy_db.layer();
 
     // available only when enabled `smol` or `tokio`
-    rama::server::TcpServer::bind(&"0.0.0.0:8080".parse().unwrap())
+    rama_old::server::TcpServer::bind(&"0.0.0.0:8080".parse().unwrap())
         .serve(|stream: Stream| async move {
             let client_profile_database_layer = client_profile_database_layer.clone();
 
@@ -165,28 +165,28 @@ async fn https_proxy(guard: Guard, client_profile_database: ProfileDatabase) {
 
             // serve http,
             // available when `hyper` feature is enabled (== default)
-            rama::server::HttpConnection::builder()
+            rama_old::server::HttpConnection::builder()
                 .http1_only(true)
                 .http1_keep_alive(true)
                 .serve(
                     stream,
-                    rama::client::HttpClient::new()
+                    rama_old::client::HttpClient::new()
                         .handle_upgrade(
                             "websocket",
                             |request: Request| {
                                 // ... do stuff with request if desired...
                                 // ... todo
                                 // for default response you can use the shipped one
-                                rama::client::ws::accept_response(request)
+                                rama_old::client::ws::accept_response(request)
                             },
                             |client: HttpClient, stream: Stream| {
                                 // TODO... how to get desired client conn...
                             },
                         )
-                        .layer(rama::middleware::http::RemoveHeaders::default())
+                        .layer(rama_old::middleware::http::RemoveHeaders::default())
                         .layer(client_profile_db_layer.clone())
                         .layer(upstream_proxy_db_layer.clone())
-                        .layer(rama::middleware::http::Firewall::new(
+                        .layer(rama_old::middleware::http::Firewall::new(
                             Some(vec!["127.0.0.1"]),
                             None,
                         ))

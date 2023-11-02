@@ -1,36 +1,7 @@
 [package]
-categories = ["asynchronous", "network-programming"]
+name = "rama"
+version = "0.1.0"
 edition = "2021"
-name = "rama"
-version = "0.2.0"
-description = "proxy framework using Tokio written purely in Rust"
-homepage = "https://github.com/plabayo/rama"
-readme = "../README.md"
-keywords = ["io", "async", "non-blocking", "futures"]
-license = "MIT OR Apache-2.0"
-repository = "https://github.com/plabayo/rama"
-
-[[bin]]
-name = "rama"
-path = "./bin/main.rs"
-
-[features]
-default = [
-    "tokio",
-]
-tokio = [
-    "dep:tokio",
-]
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-pin-project-lite = "0.2"
-tokio = { version = "1", features = ["full"], optional = true }
-tower-async = { version = "0.1", features = ["full"] }
-tracing = "0.1"
-
-[dev-dependencies]
-anyhow = "1.0"
-clap = { version = "4.3", features = ["derive"] }
-futures = "0.3"
-tokio-test = "0.4"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }

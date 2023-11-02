@@ -11,7 +11,7 @@ use crate::tokio::bytes::ByteStream;
 ///
 /// ```rust
 /// use tower_async::Service;
-/// use rama::tokio::bytes::service::ForwardService;
+/// use rama_old::tokio::bytes::service::ForwardService;
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {

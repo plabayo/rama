@@ -1,5 +1,6 @@
 [workspace]
 members = [
   "rama",
+  "rama-old",
 ]
 resolver = "2"
