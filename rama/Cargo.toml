@@ -5,3 +5,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+http = "0.2.9"
+pin-project-lite = "0.2.13"
+tokio = { version = "1.33.0", features = ["net", "io-util"] }
+tower-async-service = "0.1.1"
+
+[dev-dependencies]
+tokio-test = "0.4.3"
