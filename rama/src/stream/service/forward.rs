@@ -11,7 +11,7 @@ use crate::stream::Stream;
 ///
 /// ```rust
 /// use tower_async_service::Service;
-/// use rama::server::tcp::service::ForwardService;
+/// use rama::stream::service::ForwardService;
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {

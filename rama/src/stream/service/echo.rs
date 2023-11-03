@@ -10,7 +10,7 @@ use crate::stream::Stream;
 ///
 /// ```rust
 /// use tower_async_service::Service;
-/// use rama::server::tcp::service::EchoService;
+/// use rama::stream::service::EchoService;
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
