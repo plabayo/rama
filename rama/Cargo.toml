@@ -12,6 +12,7 @@ repository = "https://github.com/plabayo/rama"
 
 [dependencies]
 http = "0.2.9"
+matchit = "0.7.3"
 pin-project-lite = "0.2.13"
 tokio = { version = "1.33.0", features = ["net", "io-util"] }
 tower-async-service = "0.1.1"
