@@ -2,15 +2,19 @@ use std::{io, net::SocketAddr};
 
 use tokio::net::{TcpListener as TokioTcpListener, ToSocketAddrs};
 
-use crate::Service;
+use crate::service::{
+    util::{Identity, Stack},
+    Layer, Service, ServiceBuilder,
+};
 
 use super::TcpStream;
 
-pub struct TcpListener {
+pub struct TcpListener<L> {
     inner: TokioTcpListener,
+    builder: ServiceBuilder<L>,
 }
 
-impl TcpListener {
+impl TcpListener<Identity> {
     /// Creates a new TcpListener, which will be bound to the specified address.
     ///
     /// The returned listener is ready for accepting connections.
@@ -18,11 +22,14 @@ impl TcpListener {
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
-    pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
+    pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
         let inner = TokioTcpListener::bind(addr).await?;
-        Ok(TcpListener { inner })
+        let builder = ServiceBuilder::new();
+        Ok(TcpListener { inner, builder })
     }
+}
 
+impl<L> TcpListener<L> {
     /// Returns the local address that this listener is bound to.
     ///
     /// This can be useful, for example, when binding to port 0 to figure out
@@ -48,14 +55,32 @@ impl TcpListener {
         self.inner.set_ttl(ttl)
     }
 
+    /// Adds a layer to the service.
+    ///
+    /// This method can be used to add a middleware to the service.
+    pub fn layer<M>(self, layer: M) -> TcpListener<Stack<M, L>>
+    where
+        M: tower_async::layer::Layer<L>,
+    {
+        TcpListener {
+            inner: self.inner,
+            builder: self.builder.layer(layer),
+        }
+    }
+}
+
+impl<L> TcpListener<L> {
     /// Serve connections from this listener with the given service.
     ///
     /// This method will block the current listener for each incoming connection,
     /// the underlying service can choose to spawn a task to handle the accepted stream.
-    pub async fn serve<T, S, E>(self, mut service: S) -> TcpServeResult<T, E>
+    pub async fn serve<T, S, E>(self, service: S) -> TcpServeResult<T, E>
     where
-        S: Service<TcpStream, Response = T, Error = E>,
+        L: Layer<S>,
+        L::Service: Service<TcpStream, Response = T, Error = E>,
     {
+        let mut service = self.builder.service(service);
+
         loop {
             let (stream, _) = self.inner.accept().await?;
             let stream = TcpStream::new(stream);

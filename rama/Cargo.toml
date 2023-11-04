@@ -16,12 +16,10 @@ matchit = "0.7.3"
 pin-project-lite = "0.2.13"
 tokio = { version = "1.33.0", features = ["net", "io-util"] }
 tokio-graceful = "0.1.5"
-tower-async-layer = "0.1.1"
-tower-async-service = "0.1.1"
+tower-async = { version = "0.1.1", features = ["util"] }
+tracing = "0.1.40"
 
 [dev-dependencies]
 tokio = { version = "1.33.0", features = ["full"] }
 tokio-test = "0.4.3"
-tower-async = { version = "0.1.1", features = ["full"] }
-tracing = "0.1.40"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }

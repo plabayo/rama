@@ -1,13 +1,13 @@
 use std::io::Error;
 
-use crate::{stream::Stream, Service};
+use crate::{service::Service, stream::Stream};
 
 /// An async service which echoes the incoming bytes back on the same stream.
 ///
 /// # Example
 ///
 /// ```rust
-/// use rama::{stream::service::EchoService, Service};
+/// use rama::{service::Service, stream::service::EchoService};
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {

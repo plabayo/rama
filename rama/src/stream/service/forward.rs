@@ -1,6 +1,6 @@
 use std::{io::Error, pin::Pin};
 
-use crate::{stream::Stream, Service};
+use crate::{service::Service, stream::Stream};
 
 /// Async service which forwards the incoming connection bytes to the given destination,
 /// and forwards the response back from the destination to the incoming connection.
@@ -8,7 +8,7 @@ use crate::{stream::Stream, Service};
 /// # Example
 ///
 /// ```rust
-/// use rama::{stream::service::ForwardService, Service};
+/// use rama::{service::Service, stream::service::ForwardService};
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {

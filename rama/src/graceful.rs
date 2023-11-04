@@ -1,14 +1,17 @@
-pub use tokio_graceful::*;
+pub use tokio_graceful::{Shutdown, ShutdownGuard, WeakShutdownGuard};
 
-use crate::{state::Extendable, Layer, Service};
+use crate::{
+    service::{Layer, Service},
+    state::Extendable,
+};
 
 pub struct ShutdownGuardAdder<S> {
     inner: S,
-    guard: ShutdownGuard,
+    guard: WeakShutdownGuard,
 }
 
 impl<S> ShutdownGuardAdder<S> {
-    fn new(inner: S, guard: ShutdownGuard) -> Self {
+    fn new(inner: S, guard: WeakShutdownGuard) -> Self {
         Self { inner, guard }
     }
 }
@@ -22,7 +25,7 @@ where
     type Error = S::Error;
 
     async fn call(&mut self, mut request: Request) -> Result<Self::Response, Self::Error> {
-        let guard = self.guard.clone();
+        let guard = self.guard.clone().upgrade();
         request.extensions_mut().insert(guard);
         self.inner.call(request).await
     }
@@ -42,6 +45,6 @@ impl<S> Layer<S> for ShutdownGuardAdderLayer {
     type Service = ShutdownGuardAdder<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        ShutdownGuardAdder::new(inner, self.guard.clone().upgrade())
+        ShutdownGuardAdder::new(inner, self.guard.clone())
     }
 }
