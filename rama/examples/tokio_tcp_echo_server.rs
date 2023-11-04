@@ -1,9 +1,9 @@
 use std::time::Duration;
 
-use rama::graceful::Shutdown;
-use rama::server::tcp::TcpListener;
-use rama::service::{limit::ConcurrentPolicy, spawn::SpawnLayer};
-use rama::stream::service::EchoService;
+use rama::{
+    graceful::Shutdown, server::tcp::TcpListener, service::limit::ConcurrentPolicy,
+    stream::service::EchoService,
+};
 
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -25,7 +25,7 @@ async fn main() {
         TcpListener::bind("127.0.0.1:8080")
             .await
             .expect("bind TCP Listener")
-            .layer(SpawnLayer::new())
+            .spawn()
             .limit(ConcurrentPolicy::new(2))
             .timeout(Duration::from_secs(30))
             .serve_graceful::<_, EchoService, _>(guard, EchoService::new())

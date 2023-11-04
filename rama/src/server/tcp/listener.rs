@@ -95,6 +95,11 @@ impl<L> TcpListener<L> {
         self.layer(crate::service::layer_fn(f))
     }
 
+    /// Spawn a task to handle each incoming request.
+    pub fn spawn(self) -> TcpListener<Stack<crate::service::spawn::SpawnLayer, L>> {
+        self.layer(crate::service::spawn::SpawnLayer::new())
+    }
+
     /// Fail requests that take longer than `timeout`.
     pub fn timeout(
         self,
