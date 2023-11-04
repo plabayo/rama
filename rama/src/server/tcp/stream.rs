@@ -10,7 +10,7 @@ use tokio::{
     net::TcpStream as TokioTcpStream,
 };
 
-use crate::state::Extensions;
+use crate::state::{Extendable, Extensions};
 
 pin_project_lite::pin_project! {
     #[derive(Debug)]
@@ -29,14 +29,6 @@ impl TcpStream {
         }
     }
 
-    pub fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-
-    pub fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
-    }
-
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.inner.peer_addr()
     }
@@ -51,6 +43,16 @@ impl TcpStream {
 
     pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
         self.inner.set_ttl(ttl)
+    }
+}
+
+impl Extendable for TcpStream {
+    fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
     }
 }
 
