@@ -1,10 +1,14 @@
 use std::{io, net::SocketAddr};
 
 use tokio::net::{TcpListener as TokioTcpListener, ToSocketAddrs};
+use tokio_graceful::ShutdownGuard;
 
-use crate::service::{
-    util::{Identity, Stack},
-    Layer, Service, ServiceBuilder,
+use crate::{
+    service::{
+        util::{Identity, Stack},
+        Layer, Service, ServiceBuilder,
+    },
+    state::Extendable,
 };
 
 use super::TcpStream;
@@ -85,6 +89,45 @@ impl<L> TcpListener<L> {
             let (stream, _) = self.inner.accept().await?;
             let stream = TcpStream::new(stream);
             service.call(stream).await.map_err(TcpServeError::Service)?;
+        }
+    }
+
+    /// Serve connections from this listener with the given service.
+    ///
+    /// This method does the same as [`Self::serve`] but it
+    /// will respect the given [`crate::graceful::ShutdownGuard`], and also pass
+    /// it to the service.
+    pub async fn serve_graceful<T, S, E>(
+        self,
+        guard: ShutdownGuard,
+        service: S,
+    ) -> TcpServeResult<Option<T>, E>
+    where
+        L: Layer<S>,
+        L::Service: Service<TcpStream, Response = T, Error = E>,
+    {
+        let mut service = self.builder.service(service);
+
+        loop {
+            let guard = guard.clone();
+            tokio::select! {
+                _ = guard.cancelled() => {
+                    tracing::info!("signal received: initiate graceful shutdown");
+                    break Ok(None);
+                }
+                result = self.inner.accept() => {
+                    match result {
+                        Ok((socket, _)) => {
+                            let mut stream = TcpStream::new(socket);
+                            stream.extensions_mut().insert(guard.clone());
+                            service.call(stream).await.map_err(TcpServeError::Service)?;
+                        }
+                        Err(err) => {
+                            tracing::debug!(error = &err as &dyn std::error::Error, "service error");
+                        }
+                    }
+                }
+            }
         }
     }
 }

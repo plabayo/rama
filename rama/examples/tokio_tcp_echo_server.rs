@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rama::graceful::{Shutdown, ShutdownGuardAdderLayer};
+use rama::graceful::Shutdown;
 use rama::server::tcp::TcpListener;
 use rama::service::spawn::SpawnLayer;
 use rama::stream::service::EchoService;
@@ -25,9 +25,8 @@ async fn main() {
         TcpListener::bind("127.0.0.1:8080")
             .await
             .expect("bind TCP Listener")
-            .layer(ShutdownGuardAdderLayer::new(guard.downgrade()))
             .layer(SpawnLayer::new())
-            .serve::<_, EchoService, _>(EchoService::new())
+            .serve_graceful::<_, EchoService, _>(guard, EchoService::new())
             .await
             .expect("serve incoming TCP connections");
     });
