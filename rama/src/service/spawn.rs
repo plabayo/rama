@@ -1,6 +1,6 @@
 use crate::{
     graceful::ShutdownGuard,
-    service::{Layer, Service},
+    service::{BoxError, Layer, Service},
     state::Extendable,
 };
 
@@ -17,7 +17,7 @@ impl<S> SpawnService<S> {
 impl<S, Request> Service<Request> for SpawnService<S>
 where
     S: Service<Request, call(): Send> + Clone + Send + 'static,
-    S::Error: std::error::Error,
+    S::Error: Into<BoxError>,
     Request: Extendable + Send + 'static,
 {
     type Response = ();
@@ -28,16 +28,15 @@ where
         if let Some(guard) = request.extensions().get::<ShutdownGuard>() {
             guard.clone().spawn_task(async move {
                 if let Err(err) = service.call(request).await {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "graceful service error"
-                    );
+                    let err = err.into();
+                    tracing::error!(error = err, "graceful service error");
                 }
             });
         } else {
             tokio::spawn(async move {
                 if let Err(err) = service.call(request).await {
-                    tracing::error!(error = &err as &dyn std::error::Error, "service error");
+                    let err = err.into();
+                    tracing::error!(error = err, "service error");
                 }
             });
         }
@@ -50,6 +49,12 @@ pub struct SpawnLayer(());
 impl SpawnLayer {
     pub fn new() -> Self {
         Self(())
+    }
+}
+
+impl Default for SpawnLayer {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

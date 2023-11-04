@@ -6,7 +6,7 @@ use tokio_graceful::ShutdownGuard;
 use crate::{
     service::{
         util::{Identity, Stack},
-        Layer, Service, ServiceBuilder,
+        BoxError, Layer, Service, ServiceBuilder,
     },
     state::Extendable,
 };
@@ -71,6 +71,89 @@ impl<L> TcpListener<L> {
             builder: self.builder.layer(layer),
         }
     }
+
+    /// Optionally add a new layer `T`.
+    pub fn option_layer<M>(
+        self,
+        layer: Option<M>,
+    ) -> TcpListener<Stack<crate::service::util::Either<M, Identity>, L>>
+    where
+        M: tower_async::layer::Layer<L>,
+    {
+        self.layer(crate::service::util::option_layer(layer))
+    }
+
+    /// Add a layer built from a function that accepts a service and returns another service.
+    ///
+    /// See the documentation for [`layer_fn`] for more details.
+    ///
+    /// [`layer_fn`]: crate::service::layer_fn
+    pub fn layer_fn<F>(self, f: F) -> TcpListener<Stack<crate::service::LayerFn<F>, L>>
+    where
+        F: Fn(L),
+    {
+        self.layer(crate::service::layer_fn(f))
+    }
+
+    /// Fail requests that take longer than `timeout`.
+    pub fn timeout(
+        self,
+        timeout: std::time::Duration,
+    ) -> TcpListener<Stack<crate::service::timeout::TimeoutLayer, L>> {
+        self.layer(crate::service::timeout::TimeoutLayer::new(timeout))
+    }
+
+    // Conditionally reject requests based on `predicate`.
+    ///
+    /// `predicate` must implement the [`Predicate`] trait.
+    ///
+    /// This wraps the inner service with an instance of the [`Filter`]
+    /// middleware.
+    ///
+    /// [`Filter`]: crate::service::filter::Filter
+    /// [`Predicate`]: crate::service::filter::Predicate
+    pub fn filter<P>(
+        self,
+        predicate: P,
+    ) -> TcpListener<Stack<crate::service::filter::FilterLayer<P>, L>>
+    where
+        P: Clone,
+    {
+        self.layer(crate::service::filter::FilterLayer::new(predicate))
+    }
+
+    /// Conditionally reject requests based on an asynchronous `predicate`.
+    ///
+    /// `predicate` must implement the [`AsyncPredicate`] trait.
+    ///
+    /// This wraps the inner service with an instance of the [`AsyncFilter`]
+    /// middleware.
+    ///
+    /// [`AsyncFilter`]: crate::service::filter::AsyncFilter
+    /// [`AsyncPredicate`]: crate::service::filter::AsyncPredicate
+    pub fn filter_async<P>(
+        self,
+        predicate: P,
+    ) -> TcpListener<Stack<crate::service::filter::AsyncFilterLayer<P>, L>>
+    where
+        P: Clone,
+    {
+        self.layer(crate::service::filter::AsyncFilterLayer::new(predicate))
+    }
+
+    /// Limit the number of in-flight requests.
+    ///
+    /// This wraps the inner service with an instance of the [`Limit`]
+    /// middleware. The `policy` determines how to handle requests sent
+    /// to the inner service when the limit has been reached.
+    ///
+    /// [`Limit`]: crate::service::limit::Limit
+    pub fn limit<P>(self, policy: P) -> TcpListener<Stack<crate::service::limit::LimitLayer<P>, L>>
+    where
+        P: Clone,
+    {
+        self.layer(crate::service::limit::LimitLayer::new(policy))
+    }
 }
 
 impl<L> TcpListener<L> {
@@ -78,17 +161,21 @@ impl<L> TcpListener<L> {
     ///
     /// This method will block the current listener for each incoming connection,
     /// the underlying service can choose to spawn a task to handle the accepted stream.
-    pub async fn serve<T, S, E>(self, service: S) -> TcpServeResult<T, E>
+    pub async fn serve<T, S, E>(self, service: S) -> TcpServeResult<T>
     where
         L: Layer<S>,
         L::Service: Service<TcpStream, Response = T, Error = E>,
+        E: Into<BoxError>,
     {
         let mut service = self.builder.service(service);
 
         loop {
             let (stream, _) = self.inner.accept().await?;
             let stream = TcpStream::new(stream);
-            service.call(stream).await.map_err(TcpServeError::Service)?;
+            service
+                .call(stream)
+                .await
+                .map_err(|err| TcpServeError::Service(err.into()))?;
         }
     }
 
@@ -101,10 +188,11 @@ impl<L> TcpListener<L> {
         self,
         guard: ShutdownGuard,
         service: S,
-    ) -> TcpServeResult<Option<T>, E>
+    ) -> TcpServeResult<Option<T>>
     where
         L: Layer<S>,
         L::Service: Service<TcpStream, Response = T, Error = E>,
+        E: Into<BoxError>,
     {
         let mut service = self.builder.service(service);
 
@@ -120,7 +208,7 @@ impl<L> TcpListener<L> {
                         Ok((socket, _)) => {
                             let mut stream = TcpStream::new(socket);
                             stream.extensions_mut().insert(guard.clone());
-                            service.call(stream).await.map_err(TcpServeError::Service)?;
+                            service.call(stream).await.map_err(|err| TcpServeError::Service(err.into()))?;
                         }
                         Err(err) => {
                             tracing::debug!(error = &err as &dyn std::error::Error, "service error");
@@ -132,24 +220,21 @@ impl<L> TcpListener<L> {
     }
 }
 
-pub type TcpServeResult<T, E> = Result<T, TcpServeError<E>>;
+pub type TcpServeResult<T> = Result<T, TcpServeError>;
 
 #[derive(Debug)]
-pub enum TcpServeError<E> {
+pub enum TcpServeError {
     Io(io::Error),
-    Service(E),
+    Service(BoxError),
 }
 
-impl<E> From<io::Error> for TcpServeError<E> {
+impl From<io::Error> for TcpServeError {
     fn from(e: io::Error) -> Self {
         TcpServeError::Io(e)
     }
 }
 
-impl<E> std::fmt::Display for TcpServeError<E>
-where
-    E: std::fmt::Display,
-{
+impl std::fmt::Display for TcpServeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             TcpServeError::Io(e) => write!(f, "IO error: {}", e),
@@ -158,4 +243,4 @@ where
     }
 }
 
-impl<E> std::error::Error for TcpServeError<E> where E: std::error::Error {}
+impl std::error::Error for TcpServeError {}
