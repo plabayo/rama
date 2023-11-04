@@ -20,4 +20,8 @@ tower-async-layer = "0.1.1"
 tower-async-service = "0.1.1"
 
 [dev-dependencies]
+tokio = { version = "1.33.0", features = ["full"] }
 tokio-test = "0.4.3"
+tower-async = { version = "0.1.1", features = ["full"] }
+tracing = "0.1.40"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }

@@ -29,11 +29,11 @@ where
 }
 
 pub struct ShutdownGuardAdderLayer {
-    guard: ShutdownGuard,
+    guard: WeakShutdownGuard,
 }
 
 impl ShutdownGuardAdderLayer {
-    pub fn new(guard: ShutdownGuard) -> Self {
+    pub fn new(guard: WeakShutdownGuard) -> Self {
         Self { guard }
     }
 }
@@ -42,6 +42,6 @@ impl<S> Layer<S> for ShutdownGuardAdderLayer {
     type Service = ShutdownGuardAdder<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        ShutdownGuardAdder::new(inner, self.guard.clone())
+        ShutdownGuardAdder::new(inner, self.guard.clone().upgrade())
     }
 }

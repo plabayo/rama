@@ -1,7 +1,4 @@
-use std::{
-    io,
-    net::{self, SocketAddr},
-};
+use std::{io, net::SocketAddr};
 
 use tokio::net::{TcpListener as TokioTcpListener, ToSocketAddrs};
 
@@ -23,29 +20,6 @@ impl TcpListener {
     /// method.
     pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<TcpListener> {
         let inner = TokioTcpListener::bind(addr).await?;
-        Ok(TcpListener { inner })
-    }
-
-    /// Creates new `TcpListener` from a `std::net::TcpListener`.
-    ///
-    /// This function is intended to be used to wrap a TCP listener from the
-    /// standard library in the Tokio equivalent.
-    ///
-    /// This API is typically paired with the `socket2` crate and the `Socket`
-    /// type to build up and customize a listener before it's shipped off to the
-    /// backing event loop. This allows configuration of options like
-    /// `SO_REUSEPORT`, binding to multiple addresses, etc.
-    ///
-    /// # Notes
-    ///
-    /// The caller is responsible for ensuring that the listener is in
-    /// non-blocking mode. Otherwise all I/O operations on the listener
-    /// will block the thread, which will cause unexpected behavior.
-    /// Non-blocking mode can be set using [`set_nonblocking`].
-    ///
-    /// [`set_nonblocking`]: std::net::TcpListener::set_nonblocking
-    pub fn from_std(listener: net::TcpListener) -> io::Result<TcpListener> {
-        let inner = TokioTcpListener::from_std(listener)?;
         Ok(TcpListener { inner })
     }
 
@@ -78,9 +52,9 @@ impl TcpListener {
     ///
     /// This method will block the current listener for each incoming connection,
     /// the underlying service can choose to spawn a task to handle the accepted stream.
-    pub async fn serve<S, E>(self, mut service: S) -> TcpServeResult<E>
+    pub async fn serve<T, S, E>(self, mut service: S) -> TcpServeResult<T, E>
     where
-        S: Service<TcpStream, Response = (), Error = E>,
+        S: Service<TcpStream, Response = T, Error = E>,
     {
         loop {
             let (stream, _) = self.inner.accept().await?;
@@ -90,7 +64,7 @@ impl TcpListener {
     }
 }
 
-pub type TcpServeResult<E> = Result<(), TcpServeError<E>>;
+pub type TcpServeResult<T, E> = Result<T, TcpServeError<E>>;
 
 #[derive(Debug)]
 pub enum TcpServeError<E> {
