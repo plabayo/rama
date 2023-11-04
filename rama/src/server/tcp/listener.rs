@@ -5,6 +5,8 @@ use std::{
 
 use tokio::net::{TcpListener as TokioTcpListener, ToSocketAddrs};
 
+use crate::Service;
+
 use super::TcpStream;
 
 pub struct TcpListener {
@@ -78,7 +80,7 @@ impl TcpListener {
     /// the underlying service can choose to spawn a task to handle the accepted stream.
     pub async fn serve<S, E>(self, mut service: S) -> TcpServeResult<E>
     where
-        S: tower_async_service::Service<TcpStream, Response = (), Error = E>,
+        S: Service<TcpStream, Response = (), Error = E>,
     {
         loop {
             let (stream, _) = self.inner.accept().await?;

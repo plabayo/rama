@@ -1,9 +1,6 @@
-use tower_async_layer::Layer;
-use tower_async_service::Service;
-
 pub use tokio_graceful::*;
 
-use crate::state::Extendable;
+use crate::{state::Extendable, Layer, Service};
 
 pub struct ShutdownGuardAdder<S> {
     inner: S,
