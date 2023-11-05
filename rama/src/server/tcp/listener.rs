@@ -1,17 +1,16 @@
 use std::{future::Future, io, net::SocketAddr};
 
-use tokio::net::{TcpListener as TokioTcpListener, ToSocketAddrs};
-use tokio_graceful::ShutdownGuard;
+use tokio::net::{TcpListener as TokioTcpListener, TcpStream as TokioTcpStream};
 
 use crate::{
+    graceful::ShutdownGuard,
     service::{
         util::{Identity, Stack},
         BoxError, Layer, Service, ServiceBuilder,
     },
     state::Extendable,
+    stream::net::{TcpStream, ToSocketAddrs},
 };
-
-use super::TcpStream;
 
 pub struct TcpListener<L> {
     inner: TokioTcpListener,
@@ -83,21 +82,19 @@ impl<L> TcpListener<L> {
         self.layer(crate::service::util::option_layer(layer))
     }
 
-    /// Add a layer built from a function that accepts a service and returns another service.
-    ///
-    /// See the documentation for [`layer_fn`] for more details.
-    ///
-    /// [`layer_fn`]: crate::service::layer_fn
-    pub fn layer_fn<F>(self, f: F) -> TcpListener<Stack<crate::service::LayerFn<F>, L>>
-    where
-        F: Fn(L),
-    {
-        self.layer(crate::service::layer_fn(f))
-    }
-
     /// Spawn a task to handle each incoming request.
     pub fn spawn(self) -> TcpListener<Stack<crate::service::spawn::SpawnLayer, L>> {
         self.layer(crate::service::spawn::SpawnLayer::new())
+    }
+
+    /// Attach a bytes tracker to each incoming request.
+    ///
+    /// This can be used to track the number of bytes read and written,
+    /// by using the [`BytesRWTrackerHandle`] found in the extensions.
+    ///
+    /// [`BytesRWTrackerHandle`]: crate::stream::service::BytesRWTrackerHandle
+    pub fn bytes_tracker(self) -> TcpListener<Stack<crate::stream::service::BytesTrackerLayer, L>> {
+        self.layer(crate::stream::service::BytesTrackerLayer::new())
     }
 
     /// Fail requests that take longer than `timeout`.
@@ -169,7 +166,7 @@ impl<L> TcpListener<L> {
     pub async fn serve<T, S, E>(self, service: S) -> TcpServeResult<()>
     where
         L: Layer<S>,
-        L::Service: Service<TcpStream, Response = T, Error = E>,
+        L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
     {
         let mut service = self.builder.service(service);
@@ -190,9 +187,9 @@ impl<L> TcpListener<L> {
     pub async fn serve_fn<T, E, F, Fut>(self, service: F) -> TcpServeResult<()>
     where
         L: Layer<crate::service::ServiceFn<F>>,
-        L::Service: Service<TcpStream, Response = T, Error = E>,
+        L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
-        F: FnMut(TcpStream) -> Fut,
+        F: FnMut(TcpStream<TokioTcpStream>) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
         let service = crate::service::service_fn(service);
@@ -211,7 +208,7 @@ impl<L> TcpListener<L> {
     ) -> TcpServeResult<()>
     where
         L: Layer<S>,
-        L::Service: Service<TcpStream, Response = T, Error = E>,
+        L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
     {
         let mut service = self.builder.service(service);
@@ -249,9 +246,9 @@ impl<L> TcpListener<L> {
     ) -> TcpServeResult<()>
     where
         L: Layer<crate::service::ServiceFn<F>>,
-        L::Service: Service<TcpStream, Response = T, Error = E>,
+        L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
-        F: FnMut(TcpStream) -> Fut,
+        F: FnMut(TcpStream<TokioTcpStream>) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
         let service = crate::service::service_fn(service);

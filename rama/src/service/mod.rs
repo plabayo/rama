@@ -1,9 +1,4 @@
-pub use tower_async::{
-    layer::{layer_fn, LayerFn},
-    service_fn,
-    util::ServiceFn,
-    BoxError, Layer, Service, ServiceBuilder,
-};
+pub use tower_async::{service_fn, util::ServiceFn, BoxError, Layer, Service, ServiceBuilder};
 
 pub mod util {
     pub use tower_async::layer::util::{Identity, Stack};

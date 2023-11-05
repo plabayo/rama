@@ -5,30 +5,40 @@ use std::{
     task::{Context, Poll},
 };
 
-use tokio::{
-    io::{AsyncRead, AsyncWrite, ReadBuf},
-    net::TcpStream as TokioTcpStream,
-};
+use tokio::net::TcpStream as TokioTcpStream;
 
-use crate::state::{Extendable, Extensions};
+use crate::{
+    state::{Extendable, Extensions},
+    stream::{AsyncRead, AsyncWrite, ReadBuf},
+};
 
 pin_project_lite::pin_project! {
     #[derive(Debug)]
-    pub struct TcpStream {
+    pub struct TcpStream<S> {
         #[pin]
-        inner: TokioTcpStream,
+        inner: S,
         extensions: Extensions,
     }
 }
 
-impl TcpStream {
-    pub fn new(inner: TokioTcpStream) -> Self {
+impl<S> TcpStream<S> {
+    pub fn new(inner: S) -> Self {
         Self {
             inner,
             extensions: Extensions::new(),
         }
     }
 
+    pub fn into_parts(self) -> (S, Extensions) {
+        (self.inner, self.extensions)
+    }
+
+    pub fn from_parts(inner: S, extensions: Extensions) -> Self {
+        Self { inner, extensions }
+    }
+}
+
+impl TcpStream<TokioTcpStream> {
     pub fn peer_addr(&self) -> io::Result<SocketAddr> {
         self.inner.peer_addr()
     }
@@ -46,7 +56,7 @@ impl TcpStream {
     }
 }
 
-impl Extendable for TcpStream {
+impl<S> Extendable for TcpStream<S> {
     fn extensions(&self) -> &Extensions {
         &self.extensions
     }
@@ -56,7 +66,10 @@ impl Extendable for TcpStream {
     }
 }
 
-impl AsyncRead for TcpStream {
+impl<S> AsyncRead for TcpStream<S>
+where
+    S: AsyncRead,
+{
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -66,7 +79,10 @@ impl AsyncRead for TcpStream {
     }
 }
 
-impl AsyncWrite for TcpStream {
+impl<S> AsyncWrite for TcpStream<S>
+where
+    S: AsyncWrite,
+{
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,

@@ -1,8 +1,13 @@
+#![feature(async_fn_in_trait)]
+
 use std::time::Duration;
 
 use rama::{
-    graceful::Shutdown, server::tcp::TcpListener, service::limit::ConcurrentPolicy,
-    stream::service::EchoService,
+    graceful::Shutdown,
+    server::tcp::TcpListener,
+    service::{limit::ConcurrentPolicy, Layer, Service},
+    state::Extendable,
+    stream::service::{BytesRWTrackerHandle, EchoService},
 };
 
 use tracing::metadata::LevelFilter;
@@ -36,6 +41,8 @@ async fn main() {
             .spawn()
             .limit(ConcurrentPolicy::new(2))
             .timeout(Duration::from_secs(30))
+            .bytes_tracker()
+            .layer(TcpLogLayer)
             .serve_graceful::<_, EchoService, _>(guard, EchoService::new())
             .await
             .expect("serve incoming TCP connections");
@@ -45,4 +52,46 @@ async fn main() {
         .shutdown_with_limit(Duration::from_secs(30))
         .await
         .expect("graceful shutdown");
+}
+
+#[derive(Debug, Clone)]
+pub struct TcpLogService<S> {
+    service: S,
+}
+
+impl<S, Stream> Service<Stream> for TcpLogService<S>
+where
+    S: Service<Stream>,
+    Stream: Extendable,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+
+    async fn call(&mut self, stream: Stream) -> Result<Self::Response, Self::Error> {
+        let handle = stream
+            .extensions()
+            .get::<BytesRWTrackerHandle>()
+            .expect("bytes tracker is enabled")
+            .clone();
+
+        let result = self.service.call(stream).await;
+
+        tracing::info!(
+            "bytes read: {}, bytes written: {}",
+            handle.read(),
+            handle.written(),
+        );
+
+        result
+    }
+}
+
+pub struct TcpLogLayer;
+
+impl<S> Layer<S> for TcpLogLayer {
+    type Service = TcpLogService<S>;
+
+    fn layer(&self, service: S) -> Self::Service {
+        TcpLogService { service }
+    }
 }
