@@ -32,5 +32,8 @@ rama:
 docker-build:
     docker build -t rama:latest -f Dockerfile .
 
+example-tcp-hello:
+		cargo run -p rama --example tokio_tcp_hello
+
 example-tcp-echo:
 		cargo run -p rama --example tokio_tcp_echo_server

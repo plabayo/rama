@@ -1,4 +1,4 @@
-use std::{io, net::SocketAddr};
+use std::{future::Future, io, net::SocketAddr};
 
 use tokio::net::{TcpListener as TokioTcpListener, ToSocketAddrs};
 use tokio_graceful::ShutdownGuard;
@@ -166,7 +166,7 @@ impl<L> TcpListener<L> {
     ///
     /// This method will block the current listener for each incoming connection,
     /// the underlying service can choose to spawn a task to handle the accepted stream.
-    pub async fn serve<T, S, E>(self, service: S) -> TcpServeResult<T>
+    pub async fn serve<T, S, E>(self, service: S) -> TcpServeResult<()>
     where
         L: Layer<S>,
         L::Service: Service<TcpStream, Response = T, Error = E>,
@@ -184,7 +184,22 @@ impl<L> TcpListener<L> {
         }
     }
 
-    /// Serve connections from this listener with the given service.
+    /// Serve connections from this listener with the given service function.
+    ///
+    /// See [`Self::serve`] for more details.
+    pub async fn serve_fn<T, E, F, Fut>(self, service: F) -> TcpServeResult<()>
+    where
+        L: Layer<crate::service::ServiceFn<F>>,
+        L::Service: Service<TcpStream, Response = T, Error = E>,
+        E: Into<BoxError>,
+        F: FnMut(TcpStream) -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let service = crate::service::service_fn(service);
+        self.serve(service).await
+    }
+
+    /// Serve gracefully connections from this listener with the given service.
     ///
     /// This method does the same as [`Self::serve`] but it
     /// will respect the given [`crate::graceful::ShutdownGuard`], and also pass
@@ -193,7 +208,7 @@ impl<L> TcpListener<L> {
         self,
         guard: ShutdownGuard,
         service: S,
-    ) -> TcpServeResult<Option<T>>
+    ) -> TcpServeResult<()>
     where
         L: Layer<S>,
         L::Service: Service<TcpStream, Response = T, Error = E>,
@@ -206,7 +221,7 @@ impl<L> TcpListener<L> {
             tokio::select! {
                 _ = guard.cancelled() => {
                     tracing::info!("signal received: initiate graceful shutdown");
-                    break Ok(None);
+                    break Ok(());
                 }
                 result = self.inner.accept() => {
                     match result {
@@ -222,6 +237,25 @@ impl<L> TcpListener<L> {
                 }
             }
         }
+    }
+
+    /// Serve gracefully connections from this listener with the given service function.
+    ///
+    /// See [`Self::serve_graceful`] for more details.
+    pub async fn serve_fn_graceful<T, E, F, Fut>(
+        self,
+        guard: ShutdownGuard,
+        service: F,
+    ) -> TcpServeResult<()>
+    where
+        L: Layer<crate::service::ServiceFn<F>>,
+        L::Service: Service<TcpStream, Response = T, Error = E>,
+        E: Into<BoxError>,
+        F: FnMut(TcpStream) -> Fut,
+        Fut: Future<Output = Result<T, E>>,
+    {
+        let service = crate::service::service_fn(service);
+        self.serve_graceful(guard, service).await
     }
 }
 

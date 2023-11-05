@@ -22,9 +22,17 @@ async fn main() {
     let shutdown = Shutdown::default();
 
     shutdown.spawn_task_fn(|guard| async {
-        TcpListener::bind("127.0.0.1:8080")
+        let tcp_listener = TcpListener::bind("127.0.0.1:0")
             .await
-            .expect("bind TCP Listener")
+            .expect("bind TCP Listener");
+        tracing::info!(
+            "listening for incoming TCP connections on {}",
+            tcp_listener.local_addr().unwrap()
+        );
+
+        tcp_listener.set_ttl(30).expect("set TTL");
+
+        tcp_listener
             .spawn()
             .limit(ConcurrentPolicy::new(2))
             .timeout(Duration::from_secs(30))
