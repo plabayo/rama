@@ -60,7 +60,7 @@ async fn main() {
     shutdown.spawn_task_fn(|guard| async move {
         TcpListener::bind("127.0.0.1:8443")
             .await
-            .expect("bind TCP Listener: http")
+            .expect("bind TCP Listener: tls")
             .spawn()
             .layer(RustlsAcceptorLayer::new(
                 RustlsServerConfig::builder()
