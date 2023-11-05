@@ -184,12 +184,12 @@ impl<L> TcpListener<L> {
     /// Serve connections from this listener with the given service function.
     ///
     /// See [`Self::serve`] for more details.
-    pub async fn serve_fn<T, E, F, Fut>(self, service: F) -> TcpServeResult<()>
+    pub async fn serve_fn<T, S, E, F, Fut>(self, service: F) -> TcpServeResult<()>
     where
         L: Layer<crate::service::ServiceFn<F>>,
         L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
-        F: FnMut(TcpStream<TokioTcpStream>) -> Fut,
+        F: FnMut(TcpStream<S>) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
         let service = crate::service::service_fn(service);
@@ -239,7 +239,7 @@ impl<L> TcpListener<L> {
     /// Serve gracefully connections from this listener with the given service function.
     ///
     /// See [`Self::serve_graceful`] for more details.
-    pub async fn serve_fn_graceful<T, E, F, Fut>(
+    pub async fn serve_fn_graceful<T, S, E, F, Fut>(
         self,
         guard: ShutdownGuard,
         service: F,
@@ -248,7 +248,7 @@ impl<L> TcpListener<L> {
         L: Layer<crate::service::ServiceFn<F>>,
         L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
-        F: FnMut(TcpStream<TokioTcpStream>) -> Fut,
+        F: FnMut(TcpStream<S>) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
         let service = crate::service::service_fn(service);

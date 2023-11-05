@@ -14,13 +14,17 @@ repository = "https://github.com/plabayo/rama"
 http = "0.2.9"
 matchit = "0.7.3"
 pin-project-lite = "0.2.13"
+rustls = "0.22.0-alpha.3"
 tokio = { version = "1.33.0", features = ["net", "io-util"] }
 tokio-graceful = "0.1.5"
+tokio-rustls = "0.25.0-alpha.1"
 tower-async = { version = "0.1.1", features = ["util", "timeout", "filter", "limit"] }
 tracing = "0.1.40"
 
 [dev-dependencies]
 futures = "0.3.29"
+pki-types = { package = "rustls-pki-types", version = "0.2.1" }
+rcgen = "0.11.3"
 tokio = { version = "1.33.0", features = ["full"] }
 tokio-test = "0.4.3"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }

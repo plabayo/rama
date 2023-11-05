@@ -37,3 +37,6 @@ example-tcp-hello:
 
 example-tcp-echo:
 		cargo run -p rama --example tokio_tcp_echo_server
+
+example-tls-proxy:
+		cargo run -p rama --example tokio_tls_proxy

@@ -27,6 +27,17 @@ pub struct ForwardService<D> {
     destination: Pin<Box<D>>,
 }
 
+impl<D> Clone for ForwardService<D>
+where
+    D: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            destination: self.destination.clone(),
+        }
+    }
+}
+
 impl<D> ForwardService<D> {
     /// Creates a new [`ForwardService`],
     pub fn new(destination: D) -> Self {

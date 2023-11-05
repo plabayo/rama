@@ -2,7 +2,9 @@
 #![feature(return_type_notation)]
 #![allow(incomplete_features)]
 
+pub mod client;
 pub mod graceful;
+pub mod io;
 pub mod runtime;
 pub mod server;
 pub mod service;
