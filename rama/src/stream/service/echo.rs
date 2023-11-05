@@ -9,7 +9,7 @@ use crate::{service::Service, stream::Stream};
 /// ```rust
 /// use rama::{service::Service, stream::service::EchoService};
 ///
-/// # #[tokio::main]
+/// # #[rama::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let mut service = EchoService::new();

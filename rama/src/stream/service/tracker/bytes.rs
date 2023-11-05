@@ -19,8 +19,9 @@ use std::{
     task::{Context, Poll},
 };
 
+use crate::stream::{AsyncRead, AsyncWrite, ReadBuf};
+
 use pin_project_lite::pin_project;
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
     /// A wrapper around a [`AsyncRead`] and/or [`AsyncWrite`] that tracks the number
@@ -283,7 +284,7 @@ mod tests {
         let (check_tx, mut check_rx) = tokio::sync::broadcast::channel(1);
         let check_rx_2 = check_tx.subscribe();
 
-        let task_1 = tokio::spawn(async move {
+        let task_1 = crate::spawn(async move {
             let mut tracker = tracker;
             let mut buf = [0u8; 3];
 
@@ -315,7 +316,7 @@ mod tests {
         let task_2 = {
             let handle = handle.clone();
             let mut check_rx = check_rx_2;
-            tokio::spawn(async move {
+            crate::spawn(async move {
                 check_rx.recv().await.unwrap();
 
                 assert_eq!(handle.read(), 3);

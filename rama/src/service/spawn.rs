@@ -33,7 +33,7 @@ where
                 }
             });
         } else {
-            tokio::spawn(async move {
+            crate::spawn(async move {
                 if let Err(err) = service.call(request).await {
                     let err = err.into();
                     tracing::error!(error = err, "service error");

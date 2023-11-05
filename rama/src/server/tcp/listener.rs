@@ -215,7 +215,7 @@ impl<L> TcpListener<L> {
 
         loop {
             let guard = guard.clone();
-            tokio::select! {
+            crate::select! {
                 _ = guard.cancelled() => {
                     tracing::info!("signal received: initiate graceful shutdown");
                     break Ok(());
