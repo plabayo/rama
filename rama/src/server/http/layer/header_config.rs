@@ -47,26 +47,12 @@ where
     type Error = BoxError;
 
     async fn call(&mut self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
-        let value = request
-            .header_value(&self.key)
-            .ok_or(HeaderMissingErr(self.key.clone()))?
-            .to_str()?;
+        let value = request.header_str(&self.key)?;
         let config = serde_urlencoded::from_str::<T>(value)?;
         request.extensions_mut().insert(config);
         self.inner.call(request).await.map_err(Into::into)
     }
 }
-
-#[derive(Debug)]
-struct HeaderMissingErr(String);
-
-impl std::fmt::Display for HeaderMissingErr {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "`{}` header is missing", self.0)
-    }
-}
-
-impl std::error::Error for HeaderMissingErr {}
 
 pub struct HeaderConfigLayer<T> {
     key: String,
