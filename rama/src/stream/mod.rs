@@ -1,5 +1,6 @@
 pub use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
+pub mod layer;
 pub mod service;
 
 pub trait Stream: AsyncRead + AsyncWrite {}

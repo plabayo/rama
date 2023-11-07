@@ -7,7 +7,8 @@ use rama::{
     server::tcp::TcpListener,
     service::{limit::ConcurrentPolicy, Layer, Service},
     state::Extendable,
-    stream::service::{BytesRWTrackerHandle, EchoService},
+    stream::layer::BytesRWTrackerHandle,
+    stream::service::EchoService,
 };
 
 use tracing::metadata::LevelFilter;

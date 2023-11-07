@@ -92,9 +92,9 @@ impl<L> TcpListener<L> {
     /// This can be used to track the number of bytes read and written,
     /// by using the [`BytesRWTrackerHandle`] found in the extensions.
     ///
-    /// [`BytesRWTrackerHandle`]: crate::stream::service::BytesRWTrackerHandle
-    pub fn bytes_tracker(self) -> TcpListener<Stack<crate::stream::service::BytesTrackerLayer, L>> {
-        self.layer(crate::stream::service::BytesTrackerLayer::new())
+    /// [`BytesRWTrackerHandle`]: crate::stream::layer::BytesRWTrackerHandle
+    pub fn bytes_tracker(self) -> TcpListener<Stack<crate::stream::layer::BytesTrackerLayer, L>> {
+        self.layer(crate::stream::layer::BytesTrackerLayer::new())
     }
 
     /// Fail requests that take longer than `timeout`.
