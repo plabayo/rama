@@ -1,4 +1,4 @@
-use http::{
+use crate::net::http::{
     header::{AsHeaderName, GetAll},
     HeaderValue, Request, Response,
 };
