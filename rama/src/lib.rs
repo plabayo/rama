@@ -5,6 +5,7 @@
 pub mod client;
 pub mod graceful;
 pub mod io;
+pub mod net;
 pub mod runtime;
 pub mod server;
 pub mod service;

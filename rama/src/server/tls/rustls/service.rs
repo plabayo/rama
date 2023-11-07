@@ -3,8 +3,9 @@ use std::sync::Arc;
 use tokio_rustls::TlsAcceptor;
 
 use crate::{
+    net::TcpStream,
     service::{Layer, Service},
-    stream::{net::TcpStream, Stream},
+    stream::Stream,
 };
 
 pub struct RustlsAcceptorService<S> {

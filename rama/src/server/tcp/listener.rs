@@ -4,12 +4,12 @@ use tokio::net::{TcpListener as TokioTcpListener, TcpStream as TokioTcpStream};
 
 use crate::{
     graceful::ShutdownGuard,
+    net::{TcpStream, ToSocketAddrs},
     service::{
         util::{Identity, Stack},
         BoxError, Layer, Service, ServiceBuilder,
     },
     state::Extendable,
-    stream::net::{TcpStream, ToSocketAddrs},
 };
 
 pub struct TcpListener<L> {

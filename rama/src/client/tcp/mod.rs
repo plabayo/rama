@@ -1,4 +1,4 @@
-use crate::stream::net::{TcpStream, ToSocketAddrs};
+use crate::net::{TcpStream, ToSocketAddrs};
 
 use tokio::net::TcpStream as TokioTcpStream;
 
