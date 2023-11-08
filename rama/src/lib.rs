@@ -14,4 +14,6 @@ pub mod stream;
 
 pub use tokio::main;
 
+pub use tokio::pin;
+
 pub use tokio::{select, spawn};

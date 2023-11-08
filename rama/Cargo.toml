@@ -12,6 +12,7 @@ repository = "https://github.com/plabayo/rama"
 
 [dependencies]
 http = "0.2.9"
+httparse = "1.8.0"
 matchit = "0.7.3"
 pin-project-lite = "0.2.13"
 rustls = "0.22.0-alpha.3"
