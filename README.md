@@ -58,16 +58,51 @@ these are rough sketches and are not tested or develoepd code. All of it is stil
 in flux as well.
 
 ```
-> rama-macros
+> rama-macros  // most likely not needed, and perhaps a good practice to try to avoid it if possible :)
 > rama
 ```
+
+### Consumers and Producers
+
+Rama is heavily built on the Tower way of doing things. The current established pattern has however no formal way to do
+state passing. After several iterations the decided approach for Rama to pass state between layers — in the broadest — possible sense
+is to reuse `http` crate's `Extensions` approach. This is built on top of the concept of typemaps and is quiet popular in the rust community.
+Reusing the same type as the `http` crate is therefore an excellent choice.
+
+Only big downside is that this gives no verification at compile time about dependencies between consumers and producers.
+
+- Consumers are layers which insert data into the extensions
+- Producers are layers which get data from the extensions
+- Producers can also be consumers
+
+Examples:
+
+- ProxyAuth: None | Basic (username, password)
+  - Producers: HttpProxy server, Socks5Proxy server
+  - Consumers: ProxyAuthVerifierLayer
+- ProxyConfig, TlsConfig, HttpConfig
+  - Producers: HeaderConfig layers
+  - Consumers: WebClient (Hyper based client service)
+- TargetAddress
+   - Producer: HttpProxy server, Socks5Proxy server
+   - Consumers: WebClient, Forwarder
+
+### Runtimes
 
 An eventual goal will be to make it also work on async runtimes like `smol`.
 Initially we will however just make sure tokio works, but will at least already
 put the guards in place to make sure that if you do not compile with features
 like `tokio` and `hyper` that we also not rely on it.
 
-Just not somethingt worry about ourselves immediately.
+> As a first step we do already can re-export the puzzle pieces of such runtime dependent types that we depend upon, so we
+> can easier (but not without serious effort anyway) get a working `rt-smol` feature :)
+>
+> By default `rama` would use `tokio`. Ideally we can just say if feature `rt-smol` use smol etc
+> otherwise tokio. But not sure if we can make an optional dependency based on a negated feature, rather then a regular positive one...
+
+Just not something to worry about ourselves immediately.
+
+### Code idea playground
 
 ```rust
 use rama_old::{
@@ -217,6 +252,8 @@ Or you make it too specific (opininated), making the design a lot simpler though
 The above design looks fine enough as a start. Still it's a bit messy,
 and this is where Axum+Tower do make a difference for Http web services.
 Point is to make it also work for proxy services.
+
+### Roadmap Visualized (out of date)
 
 ![rama roadmap v0.2.0](./docs/img/roadmap.svg)
 
