@@ -13,6 +13,8 @@ repository = "https://github.com/plabayo/rama"
 [dependencies]
 http = "0.2.9"
 httparse = "1.8.0"
+hyper = { version = "1.0.0-rc.4", features = ["http1", "http2", "server"] }
+hyper-util = { git = "https://github.com/hyperium/hyper-util.git" }
 matchit = "0.7.3"
 pin-project-lite = "0.2.13"
 rustls = "0.22.0-alpha.3"
