@@ -169,7 +169,7 @@ impl<L> TcpListener<L> {
         L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
     {
-        let mut service = self.builder.service(service);
+        let service = self.builder.service(service);
 
         loop {
             let (stream, _) = self.inner.accept().await?;
@@ -211,7 +211,7 @@ impl<L> TcpListener<L> {
         L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
     {
-        let mut service = self.builder.service(service);
+        let service = self.builder.service(service);
 
         loop {
             let guard = guard.clone();

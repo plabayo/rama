@@ -115,7 +115,8 @@ where
         <B2 as Body>::Data: Send,
         B2::Error: Into<BoxError>,
     {
-        let stream = Box::pin(self.stream);
+        let steam = Box::pin(self.stream);
+        let stream = TokioIo::new(steam);
         let service = HyperService::new(service);
 
         if self.with_upgrades {

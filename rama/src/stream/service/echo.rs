@@ -12,7 +12,7 @@ use crate::{service::Service, stream::Stream};
 /// # #[rama::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
-/// let mut service = EchoService::new();
+/// let service = EchoService::new();
 ///
 /// let bytes_copied = service.call(stream).await?;
 /// # assert_eq!(bytes_copied, 11);
@@ -44,7 +44,7 @@ where
     type Response = u64;
     type Error = Error;
 
-    async fn call(&mut self, stream: S) -> Result<Self::Response, Self::Error> {
+    async fn call(&self, stream: S) -> Result<Self::Response, Self::Error> {
         let (mut reader, mut writer) = tokio::io::split(stream);
         tokio::io::copy(&mut reader, &mut writer).await
     }

@@ -39,7 +39,7 @@ where
     type Response = S::Response;
     type Error = RustlsAcceptorError<S::Error>;
 
-    async fn call(&mut self, stream: TcpStream<I>) -> Result<Self::Response, Self::Error> {
+    async fn call(&self, stream: TcpStream<I>) -> Result<Self::Response, Self::Error> {
         let (stream, extensions) = stream.into_parts();
         let stream = self
             .acceptor

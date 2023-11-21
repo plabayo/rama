@@ -1,6 +1,10 @@
 use std::{io::Error, pin::Pin};
 
-use crate::{service::Service, stream::Stream};
+use crate::{
+    service::Service,
+    stream::Stream,
+    sync::{Arc, AsyncMutex},
+};
 
 /// Async service which forwards the incoming connection bytes to the given destination,
 /// and forwards the response back from the destination to the incoming connection.
@@ -14,7 +18,7 @@ use crate::{service::Service, stream::Stream};
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// # let destination = tokio_test::io::Builder::new().write(b"hello world").read(b"hello world").build();
 /// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
-/// let mut service = ForwardService::new(destination);
+/// let service = ForwardService::new(destination);
 ///
 /// let (bytes_copied_to, bytes_copied_from) = service.call(stream).await?;
 /// # assert_eq!(bytes_copied_to, 11);
@@ -24,7 +28,7 @@ use crate::{service::Service, stream::Stream};
 /// ```
 #[derive(Debug)]
 pub struct ForwardService<D> {
-    destination: Pin<Box<D>>,
+    destination: Arc<AsyncMutex<Pin<Box<D>>>>,
 }
 
 impl<D> Clone for ForwardService<D>
@@ -42,7 +46,7 @@ impl<D> ForwardService<D> {
     /// Creates a new [`ForwardService`],
     pub fn new(destination: D) -> Self {
         Self {
-            destination: Box::pin(destination),
+            destination: Arc::new(AsyncMutex::new(Box::pin(destination))),
         }
     }
 }
@@ -55,9 +59,11 @@ where
     type Response = (u64, u64);
     type Error = Error;
 
-    async fn call(&mut self, source: S) -> Result<Self::Response, Self::Error> {
-        tokio::pin!(source);
-        tokio::io::copy_bidirectional(&mut source, &mut self.destination).await
+    async fn call(&self, source: S) -> Result<Self::Response, Self::Error> {
+        crate::pin!(source);
+        let mut destination_guard = self.destination.lock().await;
+        let mut destination = destination_guard.as_mut();
+        tokio::io::copy_bidirectional(&mut source, &mut destination).await
     }
 }
 

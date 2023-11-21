@@ -10,6 +10,7 @@ pub mod server;
 pub mod service;
 pub mod state;
 pub mod stream;
+pub mod sync;
 
 pub use tokio::main;
 

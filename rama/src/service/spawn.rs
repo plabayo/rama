@@ -23,8 +23,8 @@ where
     type Response = ();
     type Error = std::convert::Infallible;
 
-    async fn call(&mut self, request: Request) -> Result<Self::Response, Self::Error> {
-        let mut service = self.inner.clone();
+    async fn call(&self, request: Request) -> Result<Self::Response, Self::Error> {
+        let service = self.inner.clone();
         if let Some(guard) = request.extensions().get::<ShutdownGuard>() {
             guard.clone().spawn_task(async move {
                 if let Err(err) = service.call(request).await {

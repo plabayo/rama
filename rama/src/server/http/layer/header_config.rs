@@ -40,13 +40,13 @@ where
 impl<T, S, Body, E> Service<Request<Body>> for HeaderConfigService<T, S>
 where
     S: Service<Request<Body>, Error = E>,
-    T: DeserializeOwned + Send + Sync + 'static,
+    T: DeserializeOwned + Clone + Send + Sync + 'static,
     E: Into<BoxError>,
 {
     type Response = S::Response;
     type Error = BoxError;
 
-    async fn call(&mut self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
+    async fn call(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
         let value = request.header_str(&self.key)?;
         let config = serde_urlencoded::from_str::<T>(value)?;
         request.extensions_mut().insert(config);
@@ -110,7 +110,7 @@ mod test {
             Ok::<_, std::convert::Infallible>(())
         });
 
-        let mut service =
+        let service =
             HeaderConfigService::<Config, _>::new(inner_service, "x-proxy-config".to_string());
 
         service.call(request).await.unwrap();
@@ -128,7 +128,7 @@ mod test {
             Ok::<_, std::convert::Infallible>(())
         });
 
-        let mut service =
+        let service =
             HeaderConfigService::<Config, _>::new(inner_service, "x-proxy-config".to_string());
 
         let result = service.call(request).await;
@@ -148,14 +148,14 @@ mod test {
             Ok::<_, std::convert::Infallible>(())
         });
 
-        let mut service =
+        let service =
             HeaderConfigService::<Config, _>::new(inner_service, "x-proxy-config".to_string());
 
         let result = service.call(request).await;
         assert!(result.is_err());
     }
 
-    #[derive(Debug, Deserialize)]
+    #[derive(Debug, Deserialize, Clone)]
     struct Config {
         s: String,
         n: i32,

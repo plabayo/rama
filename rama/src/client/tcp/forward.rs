@@ -16,8 +16,8 @@ impl<S: Stream> Service<TcpStream<S>> for ForwardService {
     type Error = Error;
 
     async fn call(&mut self, stream: TcpStream<S>) -> Result<Self::Response, Self::Error> {
-        tokio::pin!(source);
-        tokio::io::copy_bidirectional(&mut source, &mut self.destination).await
+        crate::pin!(source);
+        crate::io::copy_bidirectional(&mut source, &mut self.destination).await
     }
 }
 

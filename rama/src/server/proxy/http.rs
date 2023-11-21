@@ -19,7 +19,7 @@ where
     type Response = T::Response;
     type Error = HttpProxyError<T::Error>;
 
-    async fn call(&mut self, stream: TcpStream<S>) -> Result<Self::Response, Self::Error> {
+    async fn call(&self, stream: TcpStream<S>) -> Result<Self::Response, Self::Error> {
         let (stream, extensions) = stream.into_parts();
         let stream = Box::pin(stream);
         let mut stream = TcpStream::from_parts(stream, extensions);
@@ -45,6 +45,7 @@ where
 // TODO: should this implement perhaps certain traits?
 // TODO: perhaps split this up so that our downstream services do not need to know
 // it came from an http proxy (e.g. split into ProxyAuth and TargetSocketAddr)
+#[derive(Debug, Clone)]
 pub struct HttpProxyConfig {
     pub host: String,
     // TODO: should we already parse this perhaps?

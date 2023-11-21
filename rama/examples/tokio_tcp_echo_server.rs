@@ -66,7 +66,7 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn call(&mut self, stream: Stream) -> Result<Self::Response, Self::Error> {
+    async fn call(&self, stream: Stream) -> Result<Self::Response, Self::Error> {
         let handle = stream
             .extensions()
             .get::<BytesRWTrackerHandle>()
