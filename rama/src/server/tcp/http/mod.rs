@@ -1,2 +1,2 @@
 mod conn;
-pub use conn::HttpConnector;
+pub use conn::{HttpConnector, Request, Response, ServeResult};

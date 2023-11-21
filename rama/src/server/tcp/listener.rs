@@ -189,7 +189,7 @@ impl<L> TcpListener<L> {
         L: Layer<crate::service::ServiceFn<F>>,
         L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
-        F: FnMut(TcpStream<S>) -> Fut,
+        F: Fn(TcpStream<S>) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
         let service = crate::service::service_fn(service);
@@ -248,7 +248,7 @@ impl<L> TcpListener<L> {
         L: Layer<crate::service::ServiceFn<F>>,
         L::Service: Service<TcpStream<TokioTcpStream>, Response = T, Error = E>,
         E: Into<BoxError>,
-        F: FnMut(TcpStream<S>) -> Fut,
+        F: Fn(TcpStream<S>) -> Fut,
         Fut: Future<Output = Result<T, E>>,
     {
         let service = crate::service::service_fn(service);

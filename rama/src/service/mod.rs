@@ -2,7 +2,10 @@ pub use tower_async::{service_fn, util::ServiceFn, BoxError, Layer, Service, Ser
 
 pub mod util {
     pub use tower_async::layer::util::{Identity, Stack};
-    pub use tower_async::util::{option_layer, Either, MapErr, MapResponse};
+    pub use tower_async::util::{
+        option_layer, Either, MapErr, MapErrLayer, MapRequest, MapRequestLayer, MapResponse,
+        MapResponseLayer, MapResult, MapResultLayer,
+    };
 }
 
 pub mod timeout {
@@ -21,5 +24,8 @@ pub mod limit {
         Limit, LimitLayer,
     };
 }
+
+pub use tower_async_http as http;
+pub use tower_async_hyper as hyper;
 
 pub mod spawn;

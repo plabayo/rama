@@ -12,19 +12,23 @@ repository = "https://github.com/plabayo/rama"
 
 [dependencies]
 http = "1"
-httparse = "1.8.0"
+http-body = "1"
+http-body-util = "0.1"
+httparse = "1.8"
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
-matchit = "0.7.3"
+matchit = "0.7"
 pin-project-lite = "0.2.13"
 rustls = "0.22.0-alpha.3"
 serde = { version = "1.0", features = ["derive"] }
-serde_urlencoded = "0.7.1"
-tokio = { version = "1.33.0", features = ["net", "io-util"] }
-tokio-graceful = "0.1.5"
+serde_urlencoded = "0.7"
+tokio = { version = "1.33", features = ["net", "io-util"] }
+tokio-graceful = "0.1"
 tokio-rustls = "0.25.0-alpha.1"
 tower-async = { version = "0.2", features = ["util", "timeout", "filter", "limit"] }
-tracing = "0.1.40"
+tower-async-http = { version = "0.2", features = ["full"] }
+tower-async-hyper = "0.1"
+tracing = "0.1"
 
 [dev-dependencies]
 futures = "0.3.29"

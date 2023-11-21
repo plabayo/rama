@@ -21,6 +21,18 @@ pin_project_lite::pin_project! {
     }
 }
 
+impl<S> Clone for TcpStream<S>
+where
+    S: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            extensions: self.extensions.clone(),
+        }
+    }
+}
+
 impl<S> TcpStream<S> {
     pub fn new(inner: S) -> Self {
         Self {
