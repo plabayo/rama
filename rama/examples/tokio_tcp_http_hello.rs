@@ -133,7 +133,6 @@ where
             .compression()
             .trace()
             .timeout(Duration::from_secs(10))
-            .limit(ConcurrentPolicy::new(1))
             .serve::<WebServer, _, _, _>(self.web_server.clone())
             .await;
         if let Err(err) = result {

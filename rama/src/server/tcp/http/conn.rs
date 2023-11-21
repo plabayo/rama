@@ -139,25 +139,6 @@ impl<B, S, L> HttpConnector<B, S, L> {
             service_builder: self.service_builder.filter_async(predicate),
         }
     }
-
-    /// Limit the number of in-flight requests.
-    ///
-    /// This wraps the inner service with an instance of the [`Limit`]
-    /// middleware. The `policy` determines how to handle requests sent
-    /// to the inner service when the limit has been reached.
-    ///
-    /// [`Limit`]: crate::service::limit::Limit
-    pub fn limit<P>(
-        self,
-        policy: P,
-    ) -> HttpConnector<B, S, crate::service::util::Stack<crate::service::limit::LimitLayer<P>, L>>
-    {
-        HttpConnector {
-            builder: self.builder,
-            stream: self.stream,
-            service_builder: self.service_builder.limit(policy),
-        }
-    }
 }
 
 impl<B, S, L> HttpConnector<B, S, L> {
@@ -328,6 +309,7 @@ impl<B, S, L> HttpConnector<B, S, L> {
     ///
     /// [`tower_http::trace`]: crate::service::http::trace
     /// [`TraceLayer`]: crate::service::http::trace::TraceLayer
+    #[allow(clippy::type_complexity)]
     pub fn trace_layer<M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>(
         self,
         layer: crate::service::http::trace::TraceLayer<
