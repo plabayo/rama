@@ -83,6 +83,20 @@ where
 }
 
 impl<B, S, L> HttpConnector<B, S, L> {
+    /// Add a layer to the connector's service stack.
+    pub fn layer<T>(self, layer: T) -> HttpConnector<B, S, crate::service::util::Stack<T, L>>
+    where
+        T: Layer<L>,
+    {
+        HttpConnector {
+            builder: self.builder,
+            stream: self.stream,
+            service_builder: self.service_builder.layer(layer),
+        }
+    }
+}
+
+impl<B, S, L> HttpConnector<B, S, L> {
     /// Fail requests that take longer than `timeout`.
     pub fn timeout(
         self,
