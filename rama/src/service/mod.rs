@@ -25,7 +25,10 @@ pub mod limit {
     };
 }
 
-pub use tower_async_http as http;
-pub use tower_async_hyper as hyper;
+pub mod http;
+
+pub mod hyper {
+    pub use tower_async_hyper::{BoxFuture, HyperBody, HyperServiceWrapper, TowerHyperServiceExt};
+}
 
 pub mod spawn;
