@@ -11,6 +11,7 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/plabayo/rama"
 
 [dependencies]
+headers = "0.4"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
