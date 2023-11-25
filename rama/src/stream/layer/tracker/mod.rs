@@ -43,12 +43,13 @@ where
     }
 }
 
-#[derive(Debug)]
-pub struct BytesTrackerLayer(());
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct BytesTrackerLayer;
 
 impl BytesTrackerLayer {
     pub fn new() -> Self {
-        Self(())
+        Self
     }
 }
 

@@ -154,11 +154,13 @@ async fn write_http_connect_response<S>(
     Ok(())
 }
 
-pub struct HttpProxyLayer(());
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct HttpProxyLayer;
 
 impl HttpProxyLayer {
     pub fn new() -> Self {
-        Self(())
+        Self
     }
 }
 

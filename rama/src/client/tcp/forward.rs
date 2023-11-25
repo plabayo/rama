@@ -3,11 +3,12 @@ use std::{io::Error, pin::Pin};
 use crate::{service::Service, stream::Stream};
 
 #[derive(Debug, Clone)]
-pub struct ForwardService(());
+#[non_exhaustive]
+pub struct ForwardService();
 
 impl ForwardService {
     pub fn new() -> Self {
-        Self(())
+        Self
     }
 }
 

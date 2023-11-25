@@ -44,11 +44,13 @@ where
     }
 }
 
-pub struct SpawnLayer(());
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct SpawnLayer;
 
 impl SpawnLayer {
     pub fn new() -> Self {
-        Self(())
+        Self
     }
 }
 
