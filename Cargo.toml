@@ -1,5 +1,56 @@
 [workspace]
-members = [
-  "rama",
-]
-resolver = "2"
+members = ["."]
+
+[workspace.package]
+version = "0.2.0"
+license = "MIT OR Apache-2.0"
+edition = "2021"
+repository = "https://github.com/plabayo/rama"
+keywords = ["io", "async", "non-blocking", "futures"]
+categories = ["asynchronous", "network-programming"]
+authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
+
+[package]
+name = "rama"
+readme = "README.md"
+documentation = "https://docs.rs/rama"
+description = "distortion proxy framework"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+
+[dependencies]
+headers = "0.4"
+http = "1"
+http-body = "1"
+http-body-util = "0.1"
+httparse = "1.8"
+hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
+matchit = "0.7"
+pin-project-lite = "0.2.13"
+rustls = "0.22.0-alpha.3"
+serde = { version = "1.0", features = ["derive"] }
+serde_urlencoded = "0.7"
+tokio = { version = "1.33", features = ["net", "io-util"] }
+tokio-graceful = "0.1"
+tokio-rustls = "0.25.0-alpha.1"
+tower-async = { version = "0.2", features = [
+  "util",
+  "timeout",
+  "filter",
+  "limit",
+] }
+tower-async-http = { version = "0.2", features = ["full"] }
+tower-async-hyper = "0.1"
+tracing = "0.1"
+
+[dev-dependencies]
+futures = "0.3.29"
+pki-types = { package = "rustls-pki-types", version = "0.2.1" }
+rcgen = "0.11.3"
+tokio = { version = "1.33.0", features = ["full"] }
+tokio-test = "0.4.3"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
