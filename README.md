@@ -28,232 +28,28 @@
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
 [ghs-url]: https://github.com/sponsors/plabayo
 
+Rama is first and foremost a framework for the Rust language to build distortion proxy software. Meaning to build proxies that sit in between in your spiders (software used for data extraction, also known as scraping) and your upstream (IP) proxies.
+
+Please refer to [the examples found in the `./examples` dir](./examples) to learn how rama is to be used. There is no [crates.io](https://crates.io) release of rama yet. If you already want to start using rama already your can do so by referring to it in your `Cargo.toml` as follows:
+
+```
+rama = { git = "https://github.com/plabayo/rama" }
+```
+
+Come join us at [Discord][discord-url] on the `#rama` public channel. To ask questions, discuss ideas and ask how rama may be useful for you.
+
 > rama is early work in progress, use at your own risk.
 >
 > Not everything that exists is documented and not everything that is documented is implemented.
 
-Come join us at [Discord][discord-url] on the `#rama` public channel.
 
 ## Roadmap
 
-> NOTE: at this early experimental stage things might still derive from the roadmap and not be immediately
-> reflected in the summary below. Contact @glendc in doubt.
+Please refer to <https://github.com/plabayo/rama/milestones> to know what's on the roadmap. Is there something not on the roadmap for the next version that you would really like? Please [create a feature request](https://github.com/plabayo/rama/issues) to request it and [become a sponsor](#sponsors) if you can.
 
-```
-New Design Guidelines (for 0.2)
+### Visual Overview (out of date)
 
-- heavy things like tokio, hyper, ... will be behind feature gates
-- hyper, tokio etc will be by default enabled (for now)
-- have it not be a generic network lib, but do focus on proxying
-- stuff like an HttpConnector will be opiniated rather then generic
-- do built by default on `tower-async-core`, but hide the
-  heavy stuff (e.g. things within `tower-async`) behind feature gates
-- http connector follows no specific interface, for the tcp server
-  it is just something that handles tcp streams,
-- for state stuff we'll follow the axum approach, seems fine
-```
-
-Here we'll also add some draft snippets of how we might Rama want to be,
-these are rough sketches and are not tested or develoepd code. All of it is still
-in flux as well.
-
-```
-> rama-macros  // most likely not needed, and perhaps a good practice to try to avoid it if possible :)
-> rama
-```
-
-### Consumers and Producers
-
-Rama is heavily built on the Tower way of doing things. The current established pattern has however no formal way to do
-state passing. After several iterations the decided approach for Rama to pass state between layers — in the broadest — possible sense
-is to reuse `http` crate's `Extensions` approach. This is built on top of the concept of typemaps and is quiet popular in the rust community.
-Reusing the same type as the `http` crate is therefore an excellent choice.
-
-Only big downside is that this gives no verification at compile time about dependencies between consumers and producers.
-
-- Consumers are layers which insert data into the extensions
-- Producers are layers which get data from the extensions
-- Producers can also be consumers
-
-Examples:
-
-- ProxyAuth: None | Basic (username, password)
-  - Producers: HttpProxy server, Socks5Proxy server
-  - Consumers: ProxyAuthVerifierLayer
-- ProxyConfig, TlsConfig, HttpConfig
-  - Producers: HeaderConfig layers
-  - Consumers: WebClient (Hyper based client service)
-- TargetAddress
-   - Producer: HttpProxy server, Socks5Proxy server
-   - Consumers: WebClient, Forwarder
-
-### Runtimes
-
-An eventual goal will be to make it also work on async runtimes like `smol`.
-Initially we will however just make sure tokio works, but will at least already
-put the guards in place to make sure that if you do not compile with features
-like `tokio` and `hyper` that we also not rely on it.
-
-> As a first step we do already can re-export the puzzle pieces of such runtime dependent types that we depend upon, so we
-> can easier (but not without serious effort anyway) get a working `rt-smol` feature :)
->
-> By default `rama` would use `tokio`. Ideally we can just say if feature `rt-smol` use smol etc
-> otherwise tokio. But not sure if we can make an optional dependency based on a negated feature, rather then a regular positive one...
-
-Just not something to worry about ourselves immediately.
-
-### Code idea playground
-
-```rust
-use rama_old::{
-    // better name then Stream?!
-    server::Stream,
-    server::http::Request,
-};
-
-#[tokio::main]
-async fn main() {
-    // client profiles...
-    let client_profile_db = rama_old::client::ProfileDB::new(..);
-
-    let shutdown = tokio_graceful::Shutdown::default();
-
-    shutdown.spawn_task_fn(|guard| async move {
-        let client_profile_db = client_profile_db.clone();
-        if let Err(err) = https_proxy(guard, client_profile_db) {
-            trace::error!(..);
-        }
-    });
-
-    shutdown.spawn_task_fn(|guard| async move {
-        let client_profile_db = client_profile_db.clone();
-        if let Err(err) = http_server(guard, client_profile_db).await {
-            trace::error!(..);
-        }
-    });
-
-    shutdown.spawn_task_fn(|guard| async move {
-        let client_profile_db = client_profile_db.clone();
-        if let Err(err) = https_proxy(guard, client_profile_db).await {
-            trace::error!(..);
-        }
-    });
-    
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(60))
-        .await
-        .unwrap();
-}
-
-async fn http_server(guard: Guard, client_profile_database: ProfileDatabase) {
-    rama_old::server::HttpServer::build()
-        .get("/k8s/health", |_| async {
-            "Ok"
-        })
-        .get("/api/v1/profile", |_| async {
-            client_profile_database.get_random_desktop_browser_profile()
-        })
-        .layer(tower_async_http::TraceLayer::new_for_http())
-        .layer(tower_async_http::compression::CompressionLayer::new())
-        .layer(tower_async_http::normalize_path::NormalizePathLayer::trim_trailing_slash())
-        .serve("127.0.0.1:8080").await
-}
-
-async fn https_proxy(guard: Guard, client_profile_database: ProfileDatabase) {
-    // requires `rustls` or `boringssl` feature to be enabled
-    let tls_server_config = rama_old::server::TlsServerConfig::builder()
-        .with_safe_defaults()
-        .with_no_client_auth()
-        .with_single_cert(certs, key)
-        .unwrap();
-    let tls_acceptor = rama_old::server::TlsAcceptor::from(
-        std::sync::Arc::new(tls_server_config),
-    );
-
-    // proxy acceptor, always available
-    let http_proxy_config = rama_old::server::HttpProxyConfig::builder()
-        .with_basic_auth("username", "password")
-        .unwrap();
-    let proxy_acceptor = rama_old::server::HttpProxy::from(
-        std::sync::Arc::new(http_proxy_config),
-    );
-
-    // profile db layer
-    let client_profile_database_layer = client_profile_database.layer();
-
-    // proxy db
-    let upstream_proxy_db = rama_old::proxy::ProxyDB::new(..);
-    let upstream_proxy_db_layer = upstream_proxy_db.layer();
-
-    // available only when enabled `smol` or `tokio`
-    rama_old::server::TcpServer::bind(&"0.0.0.0:8080".parse().unwrap())
-        .serve(|stream: Stream| async move {
-            let client_profile_database_layer = client_profile_database_layer.clone();
-
-            // terminate TLS
-            let tls_acceptor = tls_acceptor.clone();
-            let stream = tls_acceptor.accept(stream).await?;
-
-            // proxy authenticate
-            let proxy_acceptor = proxy_acceptor.clone();
-            let (stream, target_info) = proxy_acceptor.accept(stream).await?;
-
-            // serve http,
-            // available when `hyper` feature is enabled (== default)
-            rama_old::server::HttpConnection::builder()
-                .http1_only(true)
-                .http1_keep_alive(true)
-                .serve(
-                    stream,
-                    rama_old::client::HttpClient::new()
-                        .handle_upgrade(
-                            "websocket",
-                            |request: Request| {
-                                // ... do stuff with request if desired...
-                                // ... todo
-                                // for default response you can use the shipped one
-                                rama_old::client::ws::accept_response(request)
-                            },
-                            |client: HttpClient, stream: Stream| {
-                                // TODO... how to get desired client conn...
-                            },
-                        )
-                        .layer(rama_old::middleware::http::RemoveHeaders::default())
-                        .layer(client_profile_db_layer.clone())
-                        .layer(upstream_proxy_db_layer.clone())
-                        .layer(rama_old::middleware::http::Firewall::new(
-                            Some(vec!["127.0.0.1"]),
-                            None,
-                        ))
-                ).await?;
-        }).await.unwrap();
-}
-```
-
-The above code shows that there are roughly 3 sections on an https proxy code:
-
-1. The initial https server setup.
-   Result is an https proxy server running that can start handling incoming connections.
-2. for each incoming tcp connection (similar logic for udp would apply):
-   - terminate the tls (if its an https instead of http proxy)
-   - do the proxy accept (http/socks5, with or without auth)
-   - create a http client: optional, but would allow to reuse connections that use the same config,
-     which in most cases are all requests going over that single connection
-3. for each incoming http request on that now ready http connection:
-   - read and modify the http headers where desired
-   - do the http request (that request or a new one)
-   - read and modify the response
-   - return the response
-
-The setup (1) is not much to say about. But once you look into designs for (2) and (3) there's
-a very hard balance between making Rama too generic and thus also very complicated in how to design.
-Or you make it too specific (opininated), making the design a lot simpler though.
-
-The above design looks fine enough as a start. Still it's a bit messy,
-and this is where Axum+Tower do make a difference for Http web services.
-Point is to make it also work for proxy services.
-
-### Roadmap Visualized (out of date)
+This was an early attempt to visualise the overview of what the project offers. It is badly out of date however and will be replaced by a purely markdown documentation in the form of sections, summaries and example code. For now this at least should give you an idea of what v0.2 wil llook like.
 
 ![rama roadmap v0.2.0](./docs/img/roadmap.svg)
 
@@ -325,6 +121,9 @@ building and maintaining open source software that `rama` depends upon:
 
 > (*) we no longer depend upon `tower` directly, and instead
 > have made a permanent fork of it, available at: <https://github.com/plabayo/tower-async>
+>
+> We do still contribure to `tower` as well and the goal is to move back to tower
+> once it becomes more suitable for our use cases.
 
 ## FAQ
 
