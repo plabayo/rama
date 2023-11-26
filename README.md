@@ -143,18 +143,11 @@ and rely only on the `std` library for for any future/async primitives.
 ### What Async Runtime is used?
 
 We try to write the Rama codebase in an async runtime agnostic manner. Everything that is
-runtime specific (e.g. low level primitives) is hidden behind feature gates.
+runtime specific (e.g. low level primitives) lives within `rama-rt`. For now Tokio is the only platform
+tested on and that is ready to use.
 
-You can bring your own runtinme, but for most purposes we recommend that activate
-the `[tokio]` or `[smol]` runtime. Both can be activated at the same time, but that is usually not done.
-
-### Do you support Tokio?
-
-Yes. It is not enabled by default, but can be activated using the `tokio` feature.
-
-### Do you support [Smol](https://github.com/smol-rs/smol)?
-
-Yes. It is not enabled by default, but can be activated using the `smol` feature.
+Please refer to <https://github.com/plabayo/rama/issues/6> if you have a use case / need for `rama` outside
+of the tokio async runtime setting.
 
 ### Help! My Async Trait's Future is not `Send`
 
