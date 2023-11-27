@@ -1,4 +1,4 @@
-![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg)
+[![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg)](https://ramaproxy.org/)
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
@@ -42,6 +42,8 @@ Come join us at [Discord][discord-url] on the `#rama` public channel. To ask que
 >
 > Not everything that exists is documented and not everything that is documented is implemented.
 
+Rama's full documentatuon can be found in the form of the "rama book" at
+<https://ramaproxy.org/>.
 
 ## Roadmap
 
