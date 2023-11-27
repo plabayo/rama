@@ -28,6 +28,9 @@ jobs:
   # Build job
   build:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./rama-book
     env:
       MDBOOK_VERSION: 0.4.21
     steps:
@@ -45,7 +48,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v2
         with:
-          path: ./rama-book
+          path: ./book
 
   # Deployment job
   deploy:
