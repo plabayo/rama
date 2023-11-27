@@ -27,9 +27,9 @@ http = "1"
 http-body = "1"
 http-body-util = "0.1"
 httparse = "1.8"
-hyper = { version = "1", features = ["http1", "http2", "server"] }
-hyper-util = { version = "0.1", features = ["tokio", "server-auto"] }
-matchit = "0.7"
+hyper = { package = "rama-hyper", version = "0.1000001", features = ["http1", "http2", "server"] }
+hyper-util = { package = "rama-hyper-util", version = "0.1001", features = ["tokio", "server-auto"] }
+matchit = "0.4.2"
 pin-project-lite = "0.2.13"
 rustls = "0.22.0-alpha.3"
 serde = { version = "1.0", features = ["derive"] }
@@ -44,7 +44,6 @@ tower-async = { version = "0.2", features = [
   "limit",
 ] }
 tower-async-http = { version = "0.2", features = ["full"] }
-tower-async-hyper = "0.1"
 tracing = "0.1"
 
 [dev-dependencies]

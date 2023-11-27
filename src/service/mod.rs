@@ -65,11 +65,5 @@ pub mod limit {
 }
 
 pub mod http;
-
-pub mod hyper {
-    //! Bridges a `tower-async` `Service` to be used within a `hyper` (1.x) environment.
-
-    pub use tower_async_hyper::{BoxFuture, HyperBody, HyperServiceWrapper, TowerHyperServiceExt};
-}
-
+pub mod hyper;
 pub mod spawn;
