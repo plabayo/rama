@@ -1,19 +1,16 @@
 use std::time::Duration;
 
 use rama::{
-    graceful::Shutdown,
-    server::{
-        tcp::TcpListener,
-        tls::rustls::{RustlsAcceptorLayer, RustlsServerConfig},
-    },
-    stream::AsyncWriteExt,
+    rt::{graceful::Shutdown, io::AsyncWriteExt},
+    tcp::server::TcpListener,
+    tls::server::rustls::{RustlsAcceptorLayer, RustlsServerConfig},
 };
 
 use pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-#[rama::main]
+#[rama::rt::main]
 async fn main() {
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -73,8 +70,8 @@ async fn main() {
             ))
             .serve_fn_graceful(guard, |mut stream| async move {
                 let result = async {
-                    let mut target_stream = rama::client::tcp::connect("127.0.0.1:8080").await?;
-                    match rama::io::copy_bidirectional(&mut stream, &mut target_stream).await {
+                    let mut target_stream = rama::tcp::client::connect("127.0.0.1:8080").await?;
+                    match rama::rt::io::copy_bidirectional(&mut stream, &mut target_stream).await {
                         Ok(_) => Ok(()),
                         Err(err) => {
                             if err.kind() == std::io::ErrorKind::ConnectionReset {

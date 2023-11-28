@@ -11,7 +11,7 @@ use crate::{service::Service, stream::Stream};
 ///
 /// # #[rama::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
+/// # let stream = crate::rt::test_util::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let service = EchoService::new();
 ///
 /// let bytes_copied = service.call(stream).await?;
@@ -45,8 +45,8 @@ where
     type Error = Error;
 
     async fn call(&self, stream: S) -> Result<Self::Response, Self::Error> {
-        let (mut reader, mut writer) = tokio::io::split(stream);
-        tokio::io::copy(&mut reader, &mut writer).await
+        let (mut reader, mut writer) = crate::rt::io::split(stream);
+        crate::rt::io::copy(&mut reader, &mut writer).await
     }
 }
 
@@ -54,9 +54,9 @@ where
 mod tests {
     use super::*;
 
-    use tokio_test::io::Builder;
+    use crate::rt::test_util::io::Builder;
 
-    #[tokio::test]
+    #[crate::rt::test]
     async fn test_echo() {
         let stream = Builder::new()
             .read(b"one")

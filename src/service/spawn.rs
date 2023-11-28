@@ -1,7 +1,8 @@
 use crate::{
-    graceful::ShutdownGuard,
-    service::{BoxError, Layer, Service},
+    rt::graceful::ShutdownGuard,
+    service::{Layer, Service},
     state::Extendable,
+    BoxError,
 };
 
 pub struct SpawnService<S> {
@@ -33,7 +34,9 @@ where
                 }
             });
         } else {
-            crate::spawn(async move {
+            // TODO: ideally we spawn not using this global spawn handle,
+            // and instead get it from the request.
+            crate::rt::spawn(async move {
                 if let Err(err) = service.call(request).await {
                     let err = err.into();
                     tracing::error!(error = err, "service error");

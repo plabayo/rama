@@ -1,6 +1,6 @@
-use rama::{server::tcp::TcpListener, stream::AsyncWriteExt};
+use rama::{rt::io::AsyncWriteExt, tcp::server::TcpListener};
 
-#[rama::main]
+#[rama::rt::main]
 async fn main() {
     TcpListener::bind("127.0.0.1:9000")
         .await

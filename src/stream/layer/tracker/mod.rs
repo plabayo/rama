@@ -1,6 +1,6 @@
 use crate::{
-    net::TcpStream,
     service::{Layer, Service},
+    tcp::TcpStream,
 };
 
 mod bytes;

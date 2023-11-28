@@ -1,10 +1,6 @@
-use std::{io::Error, pin::Pin};
+use std::{io::Error, pin::Pin, sync::Arc};
 
-use crate::{
-    service::Service,
-    stream::Stream,
-    sync::{Arc, AsyncMutex},
-};
+use crate::{rt::sync::Mutex as AsyncMutex, service::Service, stream::Stream};
 
 /// Async service which forwards the incoming connection bytes to the given destination,
 /// and forwards the response back from the destination to the incoming connection.
@@ -14,10 +10,10 @@ use crate::{
 /// ```rust
 /// use rama::{service::Service, stream::service::ForwardService};
 ///
-/// # #[tokio::main]
+/// # #[crate::rt::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # let destination = tokio_test::io::Builder::new().write(b"hello world").read(b"hello world").build();
-/// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
+/// # let destination = crate::rt::test_util::io::Builder::new().write(b"hello world").read(b"hello world").build();
+/// # let stream = crate::rt::test_util::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let service = ForwardService::new(destination);
 ///
 /// let (bytes_copied_to, bytes_copied_from) = service.call(stream).await?;
@@ -60,10 +56,10 @@ where
     type Error = Error;
 
     async fn call(&self, source: S) -> Result<Self::Response, Self::Error> {
-        crate::pin!(source);
+        crate::rt::pin!(source);
         let mut destination_guard = self.destination.lock().await;
         let mut destination = destination_guard.as_mut();
-        tokio::io::copy_bidirectional(&mut source, &mut destination).await
+        crate::rt::io::copy_bidirectional(&mut source, &mut destination).await
     }
 }
 
@@ -71,9 +67,9 @@ where
 mod tests {
     use super::*;
 
-    use tokio_test::io::Builder;
+    use crate::rt::test_util::io::Builder;
 
-    #[tokio::test]
+    #[crate::rt::test]
     async fn test_forwarder() {
         let destination = Builder::new()
             .write(b"to(1)")

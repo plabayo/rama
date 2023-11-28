@@ -1,20 +1,20 @@
 use std::{convert::Infallible, time::Duration};
 
 use rama::{
-    graceful::Shutdown,
-    net::http::StatusCode,
-    net::TcpStream,
-    server::tcp::http,
-    server::tcp::TcpListener,
+    http::server as http,
+    http::StatusCode,
+    rt::graceful::Shutdown,
     service::{limit::ConcurrentPolicy, Layer, Service},
     state::Extendable,
     stream::{layer::BytesRWTrackerHandle, Stream},
+    tcp::server::TcpListener,
+    tcp::TcpStream,
 };
 
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-#[rama::main]
+#[rama::rt::main]
 async fn main() {
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -158,11 +158,11 @@ impl WebServer {
     }
 
     async fn render_page_fast(&self) -> Response {
-        self.render_page(rama::net::http::StatusCode::OK, "This was a fast response.")
+        self.render_page(StatusCode::OK, "This was a fast response.")
     }
 
     async fn render_page_slow(&self) -> Response {
-        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        rama::rt::time::sleep(std::time::Duration::from_secs(5)).await;
         self.render_page(StatusCode::OK, "This was a slow response.")
     }
 
