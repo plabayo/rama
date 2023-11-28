@@ -1,18 +1,18 @@
 use std::time::Duration;
 
 use rama::{
-    graceful::Shutdown,
-    server::tcp::TcpListener,
+    rt::graceful::Shutdown,
     service::{limit::ConcurrentPolicy, Layer, Service},
     state::Extendable,
     stream::layer::BytesRWTrackerHandle,
     stream::service::EchoService,
+    tcp::server::TcpListener,
 };
 
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-#[rama::main]
+#[rama::rt::main]
 async fn main() {
     tracing_subscriber::registry()
         .with(fmt::layer())

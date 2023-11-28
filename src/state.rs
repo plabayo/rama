@@ -15,7 +15,7 @@ impl Extendable for Extensions {
     }
 }
 
-impl<T> Extendable for crate::net::http::Request<T> {
+impl<T> Extendable for crate::http::Request<T> {
     fn extensions(&self) -> &Extensions {
         self.extensions()
     }
@@ -25,7 +25,7 @@ impl<T> Extendable for crate::net::http::Request<T> {
     }
 }
 
-impl<T> Extendable for crate::net::http::Response<T> {
+impl<T> Extendable for crate::http::Response<T> {
     fn extensions(&self) -> &Extensions {
         self.extensions()
     }

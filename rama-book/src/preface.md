@@ -1,6 +1,6 @@
 [![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg)](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg)
 
-# Rama Book
+# Rama
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]

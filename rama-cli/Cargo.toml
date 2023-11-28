@@ -1,5 +1,6 @@
 [package]
 name = "rama-cli"
+description = "binary version of and cli utility for rama, a distortion proxy framework"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }

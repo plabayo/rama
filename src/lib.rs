@@ -1,19 +1,22 @@
 #![feature(return_type_notation)]
 #![allow(incomplete_features)]
 
-pub mod client;
-pub mod graceful;
-pub mod io;
-pub mod net;
-pub mod runtime;
-pub mod server;
+pub mod rt;
+
 pub mod service;
 pub mod state;
+
 pub mod stream;
-pub mod sync;
 
-pub use tokio::main;
+pub mod tcp;
 
-pub use tokio::pin;
+pub mod http;
+pub mod tls;
 
-pub use tokio::{select, spawn};
+#[allow(unreachable_pub)]
+mod sealed {
+    pub trait Sealed<T> {}
+}
+
+/// Alias for a type-erased error type.
+pub type BoxError = Box<dyn std::error::Error + Send + Sync>;

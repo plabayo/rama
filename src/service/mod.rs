@@ -1,6 +1,6 @@
 //! `async fn(&self, Request) -> Result<Response, Error>`
 
-pub use tower_async::{service_fn, util::ServiceFn, BoxError, Layer, Service, ServiceBuilder};
+pub use tower_async::{service_fn, util::ServiceFn, Layer, Service, ServiceBuilder};
 
 pub mod util {
     //! Various utility types and functions that are generally used with a `Service`.

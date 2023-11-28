@@ -1,6 +1,6 @@
 [package]
-name = "rama-rt"
-description = "async-first runtime for rama, a distortion proxy framework"
+name = "rama-rt-macros"
+description = "macros in function of rama-rt"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -10,8 +10,18 @@ categories = { workspace = true }
 authors = { workspace = true }
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+proc-macro = true
+
+[features]
+
 [dependencies]
-tokio = { version = "1.33", features = ["net", "io-util", "rt-multi-thread"] }
-tokio-graceful = "0.1"
-tokio-rustls = "0.25.0-alpha.1"
-tokio-test = "0.4.3"
+proc-macro2 = "1.0.70"
+quote = "1"
+syn = { version = "2.0", features = ["full"] }
+
+[dev-dependencies]
+rama = { version = "0.2", path = ".." }
+
+[package.metadata.docs.rs]
+all-features = true
