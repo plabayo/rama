@@ -47,7 +47,7 @@ jobs:
         working-directory: ./docs
         run: |
           mkdir -p www/man
-          cp -r book/book www/man
+          cp -r book/book/* www/man
           cp index.html www/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v2
