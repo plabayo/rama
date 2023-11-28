@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>ラマ</title>
+
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%2210 0 100 100%22><text y=%22.90em%22 font-size=%2290%22>🦙</text></svg>">
+
+    <meta name="description" content="distortion proxy software to be anonymous">
+    <meta name="robots" content="index,follow">
+    <link rel="canonical" href="https://ramaproxy.org/">
+
+    <meta property="og:title" content="ramaproxy.org" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:type" content="website">
+    <meta property="og:description" content="distortion proxy software to be anonymous" />
+    <meta property="og:url" content="https://ramaproxy.org/" />
+    <meta property="og:site_name" content="ramaproxy.org" />
+    <meta property="og:image" content="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg">
+
+    <style>
+        :root {
+            --width-target: calc(100vw / 6);
+            --height-target: calc(100vh / 3);
+            --size: min(var(--width-target), var(--height-target));
+            --margin-vertical: calc((100vh - var(--size) * 2) / 2);
+            --margin-horizontal: calc((100vw - var(--size) * 5) / 2);
+        }
+
+        * {
+            margin: 0;
+            padding: 0;
+        }
+
+        html {
+            background-color: #000000;
+            color: #FFFFFF;
+            overflow: hidden;
+            text-align: center;
+            font-family: monospace;
+            font-size: var(--size);
+            line-height: var(--size);
+        }
+
+        a {
+            color: white;
+            text-decoration: none;
+        }
+
+        a:hover {
+            text-shadow: 0 0 5px #fff;
+        }
+
+        body {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            margin: var(--margin-vertical) var(--margin-horizontal);
+        }
+
+        body>* {
+            width: var(--size);
+        }
+
+        body>div {
+            height: var(--size);
+            text-shadow: 0 0 5px #fff;
+        }
+
+        body>a:nth-child(n+5) {
+            align-items: center;
+            display: flex;
+            font-size: calc(var(--size) / 9);
+            height: calc(var(--size) / 2);
+            justify-content: center;
+            line-height: calc(var(--size) / 9);
+        }
+
+        /* just is an isogram */
+        #r:after {
+            content: 'r';
+        }
+
+        #r:hover:after {
+            content: '⛰️';
+        }
+
+        #a:after {
+            content: 'a';
+        }
+
+        #a:hover:after {
+            content: '📖';
+        }
+
+        #m:after {
+            content: 'm';
+        }
+
+        #m:hover:after {
+            content: '💬';
+        }
+
+        #a2:after {
+            content: 'a';
+        }
+
+        #a2:hover:after {
+            content: '🦙';
+        }
+    </style>
+</head>
+
+<body>
+    <a href=https://github.com/plabayo/rama>
+        <div id=r></div>
+    </a>
+    <a href=https://ramaproxy.org/man>
+        <div id=a></div>
+    </a>
+    <a href=https://discord.gg/29EetaSYCD>
+        <div id=m></div>
+    </a>
+    <a href=https://crates.io/crates/rama>
+        <div id=a2></div>
+    </a>
+
+    <a href=https://github.com/plabayo/rama>github</a>
+    <a href=https://ramaproxy.org/man>manual</a>
+    <a href=https://discord.gg/29EetaSYCD>discord</a>
+    <a href=https://crates.io/crates/rama>crates.io</a>
+
+    <div></div>
+    <a href="https://ramaproxy.org/" title="distortion proxy software">ラマ</a>
+    <div></div>
+</body>
+
+</html>

@@ -28,9 +28,6 @@ jobs:
   # Build job
   build:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: ./rama-book
     env:
       MDBOOK_VERSION: 0.4.21
     steps:
@@ -44,11 +41,18 @@ jobs:
         id: pages
         uses: actions/configure-pages@v3
       - name: Build with mdBook
+        working-directory: ./docs/book
         run: mdbook build
+      - name: Create artifact
+        working-directory: ./docs
+        run: |
+          mkdir wwww
+          cp -r book/book www/man
+          cp index.html www/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v2
         with:
-          path: ./rama-book/book
+          path: ./docs/www
 
   # Deployment job
   deploy:
