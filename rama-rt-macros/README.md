@@ -32,6 +32,9 @@
 
 Macros for the runtime definitions and implementation in function of Rama.
 
+This crate and its macros are not created to be used on itself. Please make use
+of these macros by using `rama::rt::*` as part of your _rama_ usage. E.g. `rama::rt::main` and `rama::rt::test`.
+
 > rama is early work in progress, use at your own risk.
 >
 > Not everything that exists is documented and not everything that is documented is implemented.

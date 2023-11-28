@@ -32,12 +32,14 @@
 
 Runtime definitions and implementation for Rama.
 
+This crate is not created to be used on itself. Please make use
+of this crate's functionality by using `rama::rt::*` as part of your _rama_ usage.
+
 > rama is early work in progress, use at your own risk.
 >
 > Not everything that exists is documented and not everything that is documented is implemented.
 
 Rama's full documentatuon can be found at <https://ramaproxy.org/>.
-
 
 ## Contributing
 
