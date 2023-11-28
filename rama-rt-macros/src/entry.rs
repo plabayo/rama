@@ -6,76 +6,28 @@ use syn::{braced, Attribute, Ident, Path, Signature, Visibility};
 // syn::AttributeArgs does not implement syn::Parse
 type AttributeArgs = syn::punctuated::Punctuated<syn::Meta, syn::Token![,]>;
 
-#[derive(Clone, Copy, PartialEq)]
-enum RuntimeFlavor {
-    CurrentThread,
-    Threaded,
-}
-
-impl RuntimeFlavor {
-    fn from_str(s: &str) -> Result<RuntimeFlavor, String> {
-        match s {
-            "current_thread" => Ok(RuntimeFlavor::CurrentThread),
-            "multi_thread" => Ok(RuntimeFlavor::Threaded),
-            "single_thread" => Err("The single threaded runtime flavor is called `current_thread`.".to_string()),
-            "basic_scheduler" => Err("The `basic_scheduler` runtime flavor has been renamed to `current_thread`.".to_string()),
-            "threaded_scheduler" => Err("The `threaded_scheduler` runtime flavor has been renamed to `multi_thread`.".to_string()),
-            _ => Err(format!("No such runtime flavor `{}`. The runtime flavors are `current_thread` and `multi_thread`.", s)),
-        }
-    }
-}
-
 struct FinalConfig {
-    flavor: RuntimeFlavor,
     worker_threads: Option<usize>,
-    start_paused: Option<bool>,
     crate_name: Option<Path>,
 }
 
 /// Config used in case of the attribute not being able to build a valid config
 const DEFAULT_ERROR_CONFIG: FinalConfig = FinalConfig {
-    flavor: RuntimeFlavor::CurrentThread,
     worker_threads: None,
-    start_paused: None,
     crate_name: None,
 };
 
 struct Configuration {
-    rt_multi_thread_available: bool,
-    default_flavor: RuntimeFlavor,
-    flavor: Option<RuntimeFlavor>,
     worker_threads: Option<(usize, Span)>,
-    start_paused: Option<(bool, Span)>,
-    is_test: bool,
     crate_name: Option<Path>,
 }
 
 impl Configuration {
-    fn new(is_test: bool, rt_multi_thread: bool) -> Self {
+    fn new() -> Self {
         Configuration {
-            rt_multi_thread_available: rt_multi_thread,
-            default_flavor: match is_test {
-                true => RuntimeFlavor::CurrentThread,
-                false => RuntimeFlavor::Threaded,
-            },
-            flavor: None,
             worker_threads: None,
-            start_paused: None,
-            is_test,
             crate_name: None,
         }
-    }
-
-    fn set_flavor(&mut self, runtime: syn::Lit, span: Span) -> Result<(), syn::Error> {
-        if self.flavor.is_some() {
-            return Err(syn::Error::new(span, "`flavor` set multiple times."));
-        }
-
-        let runtime_str = parse_string(runtime, span, "flavor")?;
-        let runtime =
-            RuntimeFlavor::from_str(&runtime_str).map_err(|err| syn::Error::new(span, err))?;
-        self.flavor = Some(runtime);
-        Ok(())
     }
 
     fn set_worker_threads(
@@ -98,16 +50,6 @@ impl Configuration {
         Ok(())
     }
 
-    fn set_start_paused(&mut self, start_paused: syn::Lit, span: Span) -> Result<(), syn::Error> {
-        if self.start_paused.is_some() {
-            return Err(syn::Error::new(span, "`start_paused` set multiple times."));
-        }
-
-        let start_paused = parse_bool(start_paused, span, "start_paused")?;
-        self.start_paused = Some((start_paused, span));
-        Ok(())
-    }
-
     fn set_crate_name(&mut self, name: syn::Lit, span: Span) -> Result<(), syn::Error> {
         if self.crate_name.is_some() {
             return Err(syn::Error::new(span, "`crate` set multiple times."));
@@ -117,57 +59,12 @@ impl Configuration {
         Ok(())
     }
 
-    fn macro_name(&self) -> &'static str {
-        if self.is_test {
-            "rama::rt::test"
-        } else {
-            "rama::rt::main"
-        }
-    }
-
     fn build(&self) -> Result<FinalConfig, syn::Error> {
-        use RuntimeFlavor as F;
-
-        let flavor = self.flavor.unwrap_or(self.default_flavor);
-        let worker_threads = match (flavor, self.worker_threads) {
-            (F::CurrentThread, Some((_, worker_threads_span))) => {
-                let msg = format!(
-                    "The `worker_threads` option requires the `multi_thread` runtime flavor. Use `#[{}(flavor = \"multi_thread\")]`",
-                    self.macro_name(),
-                );
-                return Err(syn::Error::new(worker_threads_span, msg));
-            }
-            (F::CurrentThread, None) => None,
-            (F::Threaded, worker_threads) if self.rt_multi_thread_available => {
-                worker_threads.map(|(val, _span)| val)
-            }
-            (F::Threaded, _) => {
-                let msg = if self.flavor.is_none() {
-                    "The default runtime flavor is `multi_thread`, but the `rt-multi-thread` feature is disabled."
-                } else {
-                    "The runtime flavor `multi_thread` requires the `rt-multi-thread` feature."
-                };
-                return Err(syn::Error::new(Span::call_site(), msg));
-            }
-        };
-
-        let start_paused = match (flavor, self.start_paused) {
-            (F::Threaded, Some((_, start_paused_span))) => {
-                let msg = format!(
-                    "The `start_paused` option requires the `current_thread` runtime flavor. Use `#[{}(flavor = \"current_thread\")]`",
-                    self.macro_name(),
-                );
-                return Err(syn::Error::new(start_paused_span, msg));
-            }
-            (F::CurrentThread, Some((start_paused, _))) => Some(start_paused),
-            (_, None) => None,
-        };
+        let worker_threads = self.worker_threads.map(|t| t.0);
 
         Ok(FinalConfig {
             crate_name: self.crate_name.clone(),
-            flavor,
             worker_threads,
-            start_paused,
         })
     }
 }
@@ -184,17 +81,6 @@ fn parse_int(int: syn::Lit, span: Span, field: &str) -> Result<usize, syn::Error
         _ => Err(syn::Error::new(
             span,
             format!("Failed to parse value of `{}` as integer.", field),
-        )),
-    }
-}
-
-fn parse_string(int: syn::Lit, span: Span, field: &str) -> Result<String, syn::Error> {
-    match int {
-        syn::Lit::Str(s) => Ok(s.value()),
-        syn::Lit::Verbatim(s) => Ok(s.to_string()),
-        _ => Err(syn::Error::new(
-            span,
-            format!("Failed to parse value of `{}` as string.", field),
         )),
     }
 }
@@ -219,29 +105,13 @@ fn parse_path(lit: syn::Lit, span: Span, field: &str) -> Result<Path, syn::Error
     }
 }
 
-fn parse_bool(bool: syn::Lit, span: Span, field: &str) -> Result<bool, syn::Error> {
-    match bool {
-        syn::Lit::Bool(b) => Ok(b.value),
-        _ => Err(syn::Error::new(
-            span,
-            format!("Failed to parse value of `{}` as bool.", field),
-        )),
-    }
-}
-
-fn build_config(
-    input: &ItemFn,
-    args: AttributeArgs,
-    is_test: bool,
-    rt_multi_thread: bool,
-) -> Result<FinalConfig, syn::Error> {
+fn build_config(input: &ItemFn, args: AttributeArgs) -> Result<FinalConfig, syn::Error> {
     if input.sig.asyncness.is_none() {
         let msg = "the `async` keyword is missing from the function declaration";
         return Err(syn::Error::new_spanned(input.sig.fn_token, msg));
     }
 
-    let mut config = Configuration::new(is_test, rt_multi_thread);
-    let macro_name = config.macro_name();
+    let mut config = Configuration::new();
 
     for arg in args {
         match arg {
@@ -262,55 +132,17 @@ fn build_config(
                     "worker_threads" => {
                         config.set_worker_threads(lit.clone(), syn::spanned::Spanned::span(lit))?;
                     }
-                    "flavor" => {
-                        config.set_flavor(lit.clone(), syn::spanned::Spanned::span(lit))?;
-                    }
-                    "start_paused" => {
-                        config.set_start_paused(lit.clone(), syn::spanned::Spanned::span(lit))?;
-                    }
-                    "core_threads" => {
-                        let msg = "Attribute `core_threads` is renamed to `worker_threads`";
-                        return Err(syn::Error::new_spanned(namevalue, msg));
-                    }
                     "crate" => {
                         config.set_crate_name(lit.clone(), syn::spanned::Spanned::span(lit))?;
                     }
                     name => {
                         let msg = format!(
-                            "Unknown attribute {} is specified; expected one of: `flavor`, `worker_threads`, `start_paused`, `crate`",
+                            "Unknown attribute {} is specified; expected one of: `worker_threads``, `crate`",
                             name,
                         );
                         return Err(syn::Error::new_spanned(namevalue, msg));
                     }
                 }
-            }
-            syn::Meta::Path(path) => {
-                let name = path
-                    .get_ident()
-                    .ok_or_else(|| syn::Error::new_spanned(&path, "Must have specified ident"))?
-                    .to_string()
-                    .to_lowercase();
-                let msg = match name.as_str() {
-                    "threaded_scheduler" | "multi_thread" => {
-                        format!(
-                            "Set the runtime flavor with #[{}(flavor = \"multi_thread\")].",
-                            macro_name
-                        )
-                    }
-                    "basic_scheduler" | "current_thread" | "single_threaded" => {
-                        format!(
-                            "Set the runtime flavor with #[{}(flavor = \"current_thread\")].",
-                            macro_name
-                        )
-                    }
-                    "flavor" | "worker_threads" | "start_paused" => {
-                        format!("The `{}` attribute requires an argument.", name)
-                    }
-                    name => {
-                        format!("Unknown attribute {} is specified; expected one of: `flavor`, `worker_threads`, `start_paused`, `crate`", name)
-                    }
-                };
-                return Err(syn::Error::new_spanned(path, msg));
             }
             other => {
                 return Err(syn::Error::new_spanned(
@@ -345,19 +177,11 @@ fn parse_knobs(mut input: ItemFn, is_test: bool, config: FinalConfig) -> TokenSt
         .map(ToTokens::into_token_stream)
         .unwrap_or_else(|| Ident::new("rama", last_stmt_start_span).into_token_stream());
 
-    let mut rt = match config.flavor {
-        RuntimeFlavor::CurrentThread => quote_spanned! {last_stmt_start_span=>
-            #crate_path::rt::Builder::new_current_thread()
-        },
-        RuntimeFlavor::Threaded => quote_spanned! {last_stmt_start_span=>
-            #crate_path::rt::Builder::new_multi_thread()
-        },
+    let mut rt = quote_spanned! {
+        last_stmt_start_span => #crate_path::rt::Builder::new_multi_thread()
     };
     if let Some(v) = config.worker_threads {
         rt = quote_spanned! {last_stmt_start_span=> #rt.worker_threads(#v) };
-    }
-    if let Some(v) = config.start_paused {
-        rt = quote_spanned! {last_stmt_start_span=> #rt.start_paused(#v) };
     }
 
     let header = if is_test {
@@ -401,7 +225,7 @@ fn parse_knobs(mut input: ItemFn, is_test: bool, config: FinalConfig) -> TokenSt
         };
         quote! {
             let body = async #body;
-            #crate_path::pin!(body);
+            #crate_path::rt::pin!(body);
             let body: ::core::pin::Pin<&mut dyn ::core::future::Future<Output = #output_type>> = body;
         }
     } else {
@@ -419,7 +243,7 @@ fn token_stream_with_error(mut tokens: TokenStream, error: syn::Error) -> TokenS
 }
 
 #[cfg(not(test))] // Work around for rust-lang/rust#62127
-pub(crate) fn main(args: TokenStream, item: TokenStream, rt_multi_thread: bool) -> TokenStream {
+pub(crate) fn main(args: TokenStream, item: TokenStream) -> TokenStream {
     // If any of the steps for this macro fail, we still want to expand to an item that is as close
     // to the expected output as possible. This helps out IDEs such that completions and other
     // related features keep working.
@@ -434,7 +258,7 @@ pub(crate) fn main(args: TokenStream, item: TokenStream, rt_multi_thread: bool) 
     } else {
         AttributeArgs::parse_terminated
             .parse2(args)
-            .and_then(|args| build_config(&input, args, false, rt_multi_thread))
+            .and_then(|args| build_config(&input, args))
     };
 
     match config {
@@ -443,7 +267,7 @@ pub(crate) fn main(args: TokenStream, item: TokenStream, rt_multi_thread: bool) 
     }
 }
 
-pub(crate) fn test(args: TokenStream, item: TokenStream, rt_multi_thread: bool) -> TokenStream {
+pub(crate) fn test(args: TokenStream, item: TokenStream) -> TokenStream {
     // If any of the steps for this macro fail, we still want to expand to an item that is as close
     // to the expected output as possible. This helps out IDEs such that completions and other
     // related features keep working.
@@ -457,7 +281,7 @@ pub(crate) fn test(args: TokenStream, item: TokenStream, rt_multi_thread: bool) 
     } else {
         AttributeArgs::parse_terminated
             .parse2(args)
-            .and_then(|args| build_config(&input, args, true, rt_multi_thread))
+            .and_then(|args| build_config(&input, args))
     };
 
     match config {

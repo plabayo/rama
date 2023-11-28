@@ -6,7 +6,7 @@
 //! There is no plan to support other runtimes.
 //! If you want to use other runtimes, you can
 //! provide feedback, input and motivation at
-//! <https://github.com/plabayo/rama/issues/6.
+//! <https://github.com/plabayo/rama/issues/6>.
 
 pub use rama_rt::*;
 

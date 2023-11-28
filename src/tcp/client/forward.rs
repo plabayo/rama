@@ -28,7 +28,7 @@ mod tests {
 
     use crate::rt::test_util::io::Builder;
 
-    #[rama::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_forwarder() {
         let destination = Builder::new()
             .write(b"to(1)")

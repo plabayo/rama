@@ -10,10 +10,10 @@ use crate::{rt::sync::Mutex as AsyncMutex, service::Service, stream::Stream};
 /// ```rust
 /// use rama::{service::Service, stream::service::ForwardService};
 ///
-/// # #[crate::rt::main]
+/// # #[rama::rt::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # let destination = crate::rt::test_util::io::Builder::new().write(b"hello world").read(b"hello world").build();
-/// # let stream = crate::rt::test_util::io::Builder::new().read(b"hello world").write(b"hello world").build();
+/// # let destination = rama::rt::test_util::io::Builder::new().write(b"hello world").read(b"hello world").build();
+/// # let stream = rama::rt::test_util::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let service = ForwardService::new(destination);
 ///
 /// let (bytes_copied_to, bytes_copied_from) = service.call(stream).await?;
@@ -69,7 +69,7 @@ mod tests {
 
     use crate::rt::test_util::io::Builder;
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_forwarder() {
         let destination = Builder::new()
             .write(b"to(1)")

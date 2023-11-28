@@ -9,9 +9,9 @@ use crate::{service::Service, stream::Stream};
 /// ```rust
 /// use rama::{service::Service, stream::service::EchoService};
 ///
-/// # #[rama::main]
+/// # #[rama::rt::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # let stream = crate::rt::test_util::io::Builder::new().read(b"hello world").write(b"hello world").build();
+/// # let stream = rama::rt::test_util::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let service = EchoService::new();
 ///
 /// let bytes_copied = service.call(stream).await?;
@@ -56,7 +56,7 @@ mod tests {
 
     use crate::rt::test_util::io::Builder;
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_echo() {
         let stream = Builder::new()
             .read(b"one")

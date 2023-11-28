@@ -1,8 +1,6 @@
 #![feature(return_type_notation)]
 #![allow(incomplete_features)]
 
-extern crate self as rama;
-
 pub mod rt;
 
 pub mod service;

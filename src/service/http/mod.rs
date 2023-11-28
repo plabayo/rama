@@ -177,7 +177,7 @@ pub mod timeout {
     //! # Differences from [`crate::service::timeout`]
     //!
     //! [`crate::service::timeout::Timeout`] middleware uses an error to signal timeout, i.e.
-    //! it changes the error type to [`crate::service::BoxError`]`. For HTTP services that is rarely
+    //! it changes the error type to [`crate::BoxError`]`. For HTTP services that is rarely
     //! what you want as returning errors will terminate the connection without sending a response.
     //!
     //! This middleware won't change the error type and instead return a `408 Request Timeout`

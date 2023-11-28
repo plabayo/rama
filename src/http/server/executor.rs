@@ -27,7 +27,7 @@ mod tests {
     use crate::rt::sync::oneshot;
     use hyper::rt::Executor;
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn simple_execute() -> Result<(), Box<dyn std::error::Error>> {
         let (tx, rx) = oneshot::channel();
         let executor = GlobalExecutor::new();

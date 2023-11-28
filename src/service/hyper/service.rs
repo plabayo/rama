@@ -69,7 +69,7 @@ mod test {
         s
     }
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_into_hyper_service() {
         let service =
             tower_async::service_fn(|req: &'static str| async move { Ok::<_, Infallible>(req) });
@@ -78,7 +78,7 @@ mod test {
         inner_test_hyper_service(hyper_service).await;
     }
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_into_layered_hyper_service() {
         let service = tower_async::ServiceBuilder::new()
             .timeout(std::time::Duration::from_secs(5))

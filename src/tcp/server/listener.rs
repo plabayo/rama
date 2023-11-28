@@ -202,7 +202,7 @@ impl<L> TcpListener<L> {
     /// Serve gracefully connections from this listener with the given service.
     ///
     /// This method does the same as [`Self::serve`] but it
-    /// will respect the given [`crate::graceful::ShutdownGuard`], and also pass
+    /// will respect the given [`crate::rt::graceful::ShutdownGuard`], and also pass
     /// it to the service.
     pub async fn serve_graceful<T, S, E>(
         self,

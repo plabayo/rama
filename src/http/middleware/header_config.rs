@@ -92,7 +92,7 @@ mod test {
 
     use super::*;
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_header_config_happy_path() {
         let request = Request::builder()
             .method(Method::GET)
@@ -117,7 +117,7 @@ mod test {
         service.call(request).await.unwrap();
     }
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_header_config_missing_header() {
         let request = Request::builder()
             .method(Method::GET)
@@ -136,7 +136,7 @@ mod test {
         assert!(result.is_err());
     }
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_header_config_invalid_config() {
         let request = Request::builder()
             .method(Method::GET)

@@ -180,7 +180,7 @@ mod tests {
     use crate::rt::io::{AsyncReadExt, AsyncWriteExt};
     use crate::rt::test_util::io::Builder;
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_read_tracker() {
         let stream = Builder::new()
             .read(b"foo")
@@ -204,7 +204,7 @@ mod tests {
         assert_eq!(tracker.written(), 0);
     }
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_written_tracker() {
         let stream = Builder::new()
             .write(b"foo")
@@ -227,7 +227,7 @@ mod tests {
         assert_eq!(tracker.written(), 9);
     }
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_rw_tracker() {
         let stream = Builder::new()
             .read(b"foo")
@@ -263,7 +263,7 @@ mod tests {
         assert_eq!(tracker.written(), 9);
     }
 
-    #[crate::rt::test]
+    #[crate::rt::test(crate = "crate")]
     async fn test_rw_handle_tracker() {
         let stream = Builder::new()
             .read(b"foo")
