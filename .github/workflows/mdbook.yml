@@ -46,7 +46,7 @@ jobs:
       - name: Create artifact
         working-directory: ./docs
         run: |
-          mkdir wwww
+          mkdir -p www/man
           cp -r book/book www/man
           cp index.html www/index.html
       - name: Upload artifact
