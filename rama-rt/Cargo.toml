@@ -1,10 +1,12 @@
 [package]
 name = "rama-rt"
 description = "async-first runtime for rama, a distortion proxy framework"
+readme = "README.md"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 repository = { workspace = true }
+homepage = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
 authors = { workspace = true }
@@ -13,5 +15,5 @@ authors = { workspace = true }
 [dependencies]
 tokio = { version = "1.33", features = ["net", "io-util", "rt-multi-thread"] }
 tokio-graceful = "0.1"
-tokio-rustls = "0.25.0-alpha.1"
+tokio-rustls = "=0.25.0-alpha.1"
 tokio-test = "0.4.3"
