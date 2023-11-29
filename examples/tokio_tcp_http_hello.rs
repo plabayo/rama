@@ -6,9 +6,8 @@ use rama::{
     rt::graceful::Shutdown,
     service::{limit::ConcurrentPolicy, Layer, Service},
     state::Extendable,
-    stream::{layer::BytesRWTrackerHandle, Stream},
+    stream::layer::BytesRWTrackerHandle,
     tcp::server::TcpListener,
-    tcp::TcpStream,
 };
 
 use tracing::metadata::LevelFilter;
@@ -43,13 +42,19 @@ async fn main() {
         // - find good way to pass state from stream to http
         // - provide HttpServer so that we can use it to serve http requests
 
+        let web_server = http::HttpServer::auto()
+            .compression()
+            .trace()
+            .timeout(Duration::from_secs(10))
+            .service::<WebServer, _, _, _>(WebServer::new());
+
         tcp_listener
             .spawn()
             .limit(ConcurrentPolicy::new(2))
             .timeout(Duration::from_secs(30))
             .bytes_tracker()
             .layer(TcpLogLayer)
-            .serve_graceful::<_, TcpWebService, _>(guard, TcpWebService::default())
+            .serve_graceful(guard, web_server)
             .await
             .expect("serve incoming TCP connections");
     });
@@ -99,46 +104,6 @@ impl<S> Layer<S> for TcpLogLayer {
 
     fn layer(&self, service: S) -> Self::Service {
         TcpLogService { service }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct TcpWebService {
-    web_server: WebServer,
-}
-
-impl TcpWebService {
-    pub fn new() -> Self {
-        Self {
-            web_server: WebServer::new(),
-        }
-    }
-}
-
-impl Default for TcpWebService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl<S> Service<TcpStream<S>> for TcpWebService
-where
-    S: Stream + Send + 'static,
-{
-    type Response = ();
-    type Error = Infallible;
-
-    async fn call(&self, stream: TcpStream<S>) -> Result<Self::Response, Self::Error> {
-        let result = http::HttpConnector::auto(stream)
-            .compression()
-            .trace()
-            .timeout(Duration::from_secs(10))
-            .serve::<WebServer, _, _, _>(self.web_server.clone())
-            .await;
-        if let Err(err) = result {
-            tracing::error!("error serving HTTP: {}", err);
-        }
-        Ok(())
     }
 }
 

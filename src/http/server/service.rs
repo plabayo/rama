@@ -1,112 +1,310 @@
-use std::error::Error as StdError;
+use std::pin::Pin;
+use std::sync::Arc;
+use std::time::Duration;
 
-use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
+use hyper::{rt::Timer, server::conn::http1::Builder as Http1Builder};
 use hyper_util::server::conn::auto::Builder as AutoBuilder;
 
-use crate::tcp::TcpStream;
+use crate::service::{http::ServiceBuilderExt, util::Identity, Layer, Service, ServiceBuilder};
+use crate::{tcp::TcpStream, BoxError};
 
-use super::{GlobalExecutor, HyperIo};
-
-use crate::service::{
-    http::ServiceBuilderExt,
-    hyper::{HyperBody, TowerHyperServiceExt},
-    util::Identity,
-    Layer, Service, ServiceBuilder,
-};
-
-use crate::BoxError;
-
-pub type ServeResult = Result<(), BoxError>;
-
-pub use crate::http::Response;
-pub type Request = crate::http::Request<HyperBody>;
+use super::hyper_conn::HyperConnServer;
+use super::{GlobalExecutor, HyperBody, Request, Response, ServeResult};
 
 #[derive(Debug)]
-pub struct HttpConnector<B, S, L> {
+pub struct HttpServer<B, L> {
     builder: B,
-    stream: TcpStream<S>,
     service_builder: ServiceBuilder<L>,
 }
 
-impl<B, S, L> Clone for HttpConnector<B, S, L>
+impl<B, L> Clone for HttpServer<B, L>
 where
     B: Clone,
-    S: Clone,
     L: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             builder: self.builder.clone(),
-            stream: self.stream.clone(),
             service_builder: self.service_builder.clone(),
         }
     }
 }
 
-impl<S> HttpConnector<Http1Builder, S, Identity>
-where
-    S: crate::stream::Stream + Send + 'static,
-{
-    pub fn http1(stream: TcpStream<S>) -> Self {
+impl HttpServer<Http1Builder, Identity> {
+    /// Create a new http/1.1 `Builder` with default settings.
+    pub fn http1() -> Self {
         Self {
             builder: Http1Builder::new(),
-            stream,
             service_builder: ServiceBuilder::new(),
         }
     }
+
+    /// Set whether HTTP/1 connections should support half-closures.
+    ///
+    /// Clients can chose to shutdown their write-side while waiting
+    /// for the server to respond. Setting this to `true` will
+    /// prevent closing the connection immediately if `read`
+    /// detects an EOF in the middle of a request.
+    ///
+    /// Default is `false`.
+    pub fn half_close(&mut self, val: bool) -> &mut Self {
+        self.builder.half_close(val);
+        self
+    }
+
+    /// Enables or disables HTTP/1 keep-alive.
+    ///
+    /// Default is true.
+    pub fn keep_alive(&mut self, val: bool) -> &mut Self {
+        self.builder.keep_alive(val);
+        self
+    }
+
+    /// Set whether HTTP/1 connections will write header names as title case at
+    /// the socket level.
+    ///
+    /// Default is false.
+    pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
+        self.builder.title_case_headers(enabled);
+        self
+    }
+
+    /// Set whether to support preserving original header cases.
+    ///
+    /// Currently, this will record the original cases received, and store them
+    /// in a private extension on the `Request`. It will also look for and use
+    /// such an extension in any provided `Response`.
+    ///
+    /// Since the relevant extension is still private, there is no way to
+    /// interact with the original cases. The only effect this can have now is
+    /// to forward the cases in a proxy-like fashion.
+    ///
+    /// Default is false.
+    pub fn preserve_header_case(&mut self, enabled: bool) -> &mut Self {
+        self.builder.preserve_header_case(enabled);
+        self
+    }
+
+    /// Set a timeout for reading client request headers. If a client does not
+    /// transmit the entire header within this time, the connection is closed.
+    ///
+    /// Pass `None` to disable.
+    ///
+    /// Default is 30 seconds.
+    pub fn header_read_timeout(&mut self, read_timeout: impl Into<Option<Duration>>) -> &mut Self {
+        self.builder.header_read_timeout(read_timeout);
+        self
+    }
+
+    /// Set whether HTTP/1 connections should try to use vectored writes,
+    /// or always flatten into a single buffer.
+    ///
+    /// Note that setting this to false may mean more copies of body data,
+    /// but may also improve performance when an IO transport doesn't
+    /// support vectored writes well, such as most TLS implementations.
+    ///
+    /// Setting this to true will force hyper to use queued strategy
+    /// which may eliminate unnecessary cloning on some TLS backends
+    ///
+    /// Default is `auto`. In this mode hyper will try to guess which
+    /// mode to use
+    pub fn writev(&mut self, val: bool) -> &mut Self {
+        self.builder.writev(val);
+        self
+    }
+
+    /// Set the maximum buffer size for the connection.
+    ///
+    /// Default is ~400kb.
+    ///
+    /// # Panics
+    ///
+    /// The minimum value allowed is 8192. This method panics if the passed `max` is less than the minimum.
+    pub fn max_buf_size(&mut self, max: usize) -> &mut Self {
+        self.builder.max_buf_size(max);
+        self
+    }
+
+    /// Aggregates flushes to better support pipelined responses.
+    ///
+    /// Experimental, may have bugs.
+    ///
+    /// Default is false.
+    pub fn pipeline_flush(&mut self, enabled: bool) -> &mut Self {
+        self.builder.pipeline_flush(enabled);
+        self
+    }
+
+    /// Set the timer used in background tasks.
+    pub fn timer<M>(&mut self, timer: M) -> &mut Self
+    where
+        M: Timer + Send + Sync + 'static,
+    {
+        self.builder.timer(timer);
+        self
+    }
 }
 
-impl<S> HttpConnector<Http2Builder<GlobalExecutor>, S, Identity>
-where
-    S: crate::stream::Stream + Send + 'static,
-{
-    pub fn h2(stream: TcpStream<S>) -> Self {
+impl HttpServer<Http2Builder<GlobalExecutor>, Identity> {
+    /// Create a new h2 `Builder` with default settings.
+    pub fn h2() -> Self {
         Self {
             builder: Http2Builder::new(GlobalExecutor::new()),
-            stream,
             service_builder: ServiceBuilder::new(),
         }
     }
+
+    /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
+    /// stream-level flow control.
+    ///
+    /// Passing `None` will do nothing.
+    ///
+    /// If not set, hyper will use a default.
+    ///
+    /// [spec]: https://httpwg.org/specs/rfc9113.html#SETTINGS_INITIAL_WINDOW_SIZE
+    pub fn initial_stream_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
+        self.builder.initial_connection_window_size(sz);
+        self
+    }
+
+    /// Sets the max connection-level flow control for HTTP2.
+    ///
+    /// Passing `None` will do nothing.
+    ///
+    /// If not set, hyper will use a default.
+    pub fn initial_connection_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
+        self.builder.initial_connection_window_size(sz);
+        self
+    }
+
+    /// Sets whether to use an adaptive flow control.
+    ///
+    /// Enabling this will override the limits set in
+    /// `initial_stream_window_size` and
+    /// `initial_connection_window_size`.
+    pub fn adaptive_window(&mut self, enabled: bool) -> &mut Self {
+        self.builder.adaptive_window(enabled);
+        self
+    }
+
+    /// Sets the maximum frame size to use for HTTP2.
+    ///
+    /// Passing `None` will do nothing.
+    ///
+    /// If not set, hyper will use a default.
+    pub fn max_frame_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
+        self.builder.max_frame_size(sz);
+        self
+    }
+
+    /// Sets the [`SETTINGS_MAX_CONCURRENT_STREAMS`][spec] option for HTTP2
+    /// connections.
+    ///
+    /// Default is 200, but not part of the stability of hyper. It could change
+    /// in a future release. You are encouraged to set your own limit.
+    ///
+    /// Passing `None` will remove any limit.
+    ///
+    /// [spec]: https://httpwg.org/specs/rfc9113.html#SETTINGS_MAX_CONCURRENT_STREAMS
+    pub fn max_concurrent_streams(&mut self, max: impl Into<Option<u32>>) -> &mut Self {
+        self.builder.max_concurrent_streams(max);
+        self
+    }
+
+    /// Sets an interval for HTTP2 Ping frames should be sent to keep a
+    /// connection alive.
+    ///
+    /// Pass `None` to disable HTTP2 keep-alive.
+    ///
+    /// Default is currently disabled.
+    pub fn keep_alive_interval(&mut self, interval: impl Into<Option<Duration>>) -> &mut Self {
+        self.builder.keep_alive_interval(interval);
+        self
+    }
+
+    /// Sets a timeout for receiving an acknowledgement of the keep-alive ping.
+    ///
+    /// If the ping is not acknowledged within the timeout, the connection will
+    /// be closed. Does nothing if `keep_alive_interval` is disabled.
+    ///
+    /// Default is 20 seconds.
+    pub fn keep_alive_timeout(&mut self, timeout: Duration) -> &mut Self {
+        self.builder.keep_alive_timeout(timeout);
+        self
+    }
+
+    /// Set the maximum write buffer size for each HTTP/2 stream.
+    ///
+    /// Default is currently ~400KB, but may change.
+    ///
+    /// # Panics
+    ///
+    /// The value must be no larger than `u32::MAX`.
+    pub fn max_send_buf_size(&mut self, max: usize) -> &mut Self {
+        self.builder.max_send_buf_size(max);
+        self
+    }
+
+    /// Enables the [extended CONNECT protocol].
+    ///
+    /// [extended CONNECT protocol]: https://datatracker.ietf.org/doc/html/rfc8441#section-4
+    pub fn enable_connect_protocol(&mut self) -> &mut Self {
+        self.builder.enable_connect_protocol();
+        self
+    }
+
+    /// Sets the max size of received header frames.
+    ///
+    /// Default is currently ~16MB, but may change.
+    pub fn max_header_list_size(&mut self, max: u32) -> &mut Self {
+        self.builder.max_header_list_size(max);
+        self
+    }
+
+    /// Set the timer used in background tasks.
+    pub fn timer<M>(&mut self, timer: M) -> &mut Self
+    where
+        M: Timer + Send + Sync + 'static,
+    {
+        self.builder.timer(timer);
+        self
+    }
 }
 
-impl<S> HttpConnector<AutoBuilder<GlobalExecutor>, S, Identity>
-where
-    S: crate::stream::Stream + Send + 'static,
-{
-    pub fn auto(stream: TcpStream<S>) -> Self {
+impl HttpServer<AutoBuilder<GlobalExecutor>, Identity> {
+    /// Create a new dual http/1.1 + h2 `Builder` with default settings.
+    pub fn auto() -> Self {
         Self {
             builder: AutoBuilder::new(GlobalExecutor::new()),
-            stream,
             service_builder: ServiceBuilder::new(),
         }
     }
+
+    // TODO: add methods to configure the http/1.1 and h2 settings
 }
 
-impl<B, S, L> HttpConnector<B, S, L> {
+impl<B, L> HttpServer<B, L> {
     /// Add a layer to the connector's service stack.
-    pub fn layer<T>(self, layer: T) -> HttpConnector<B, S, crate::service::util::Stack<T, L>>
+    pub fn layer<T>(self, layer: T) -> HttpServer<B, crate::service::util::Stack<T, L>>
     where
         T: Layer<L>,
     {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.layer(layer),
         }
     }
 }
 
-impl<B, S, L> HttpConnector<B, S, L> {
+impl<B, L> HttpServer<B, L> {
     /// Fail requests that take longer than `timeout`.
     pub fn timeout(
         self,
         timeout: std::time::Duration,
-    ) -> HttpConnector<B, S, crate::service::util::Stack<crate::service::timeout::TimeoutLayer, L>>
-    {
-        HttpConnector {
+    ) -> HttpServer<B, crate::service::util::Stack<crate::service::timeout::TimeoutLayer, L>> {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.timeout(timeout),
         }
     }
@@ -122,11 +320,9 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn filter<P>(
         self,
         predicate: P,
-    ) -> HttpConnector<B, S, crate::service::util::Stack<crate::service::filter::FilterLayer<P>, L>>
-    {
-        HttpConnector {
+    ) -> HttpServer<B, crate::service::util::Stack<crate::service::filter::FilterLayer<P>, L>> {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.filter(predicate),
         }
     }
@@ -143,20 +339,16 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn filter_async<P>(
         self,
         predicate: P,
-    ) -> HttpConnector<
-        B,
-        S,
-        crate::service::util::Stack<crate::service::filter::AsyncFilterLayer<P>, L>,
-    > {
-        HttpConnector {
+    ) -> HttpServer<B, crate::service::util::Stack<crate::service::filter::AsyncFilterLayer<P>, L>>
+    {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.filter_async(predicate),
         }
     }
 }
 
-impl<B, S, L> HttpConnector<B, S, L> {
+impl<B, L> HttpServer<B, L> {
     /// Propagate a header from the request to the response.
     ///
     /// See [`tower_async_http::propagate_header`] for more details.
@@ -165,17 +357,15 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn propagate_header(
         self,
         header: crate::http::HeaderName,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::propagate_header::PropagateHeaderLayer,
             L,
         >,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.propagate_header(header),
         }
     }
@@ -189,14 +379,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn add_extension<T>(
         self,
         value: T,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::add_extension::AddExtensionLayer<T>, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.add_extension(value),
         }
     }
@@ -209,17 +397,15 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn map_request_body<F>(
         self,
         f: F,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::map_request_body::MapRequestBodyLayer<F>,
             L,
         >,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.map_request_body(f),
         }
     }
@@ -232,17 +418,15 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn map_response_body<F>(
         self,
         f: F,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::map_response_body::MapResponseBodyLayer<F>,
             L,
         >,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.map_response_body(f),
         }
     }
@@ -254,14 +438,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
     /// [`tower_async_http::compression`]: crate::service::http::compression
     pub fn compression(
         self,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::compression::CompressionLayer, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.compression(),
         }
     }
@@ -273,14 +455,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
     /// [`tower_async_http::decompression`]: crate::service::http::decompression
     pub fn decompression(
         self,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::decompression::DecompressionLayer, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.decompression(),
         }
     }
@@ -296,9 +476,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
     /// [`TraceLayer`]: crate::service::http::trace::TraceLayer
     pub fn trace(
         self,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::trace::TraceLayer<
                 crate::service::http::classify::SharedClassifier<
@@ -308,9 +487,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
             L,
         >,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.trace_for_http(),
         }
     }
@@ -336,9 +514,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
             OnEos,
             OnFailure,
         >,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::trace::TraceLayer<
                 M,
@@ -352,9 +529,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
             L,
         >,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.layer(layer),
         }
     }
@@ -367,9 +543,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
     /// [`Standard`]: crate::service::http::follow_redirect::policy::Standard
     pub fn follow_redirects(
         self,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::follow_redirect::FollowRedirectLayer<
                 crate::service::http::follow_redirect::policy::Standard,
@@ -377,9 +552,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
             L,
         >,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.follow_redirects(),
         }
     }
@@ -393,9 +567,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn sensitive_headers<I>(
         self,
         headers: I,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::sensitive_headers::SetSensitiveHeadersLayer,
             L,
@@ -404,9 +577,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
     where
         I: IntoIterator<Item = crate::http::HeaderName>,
     {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.sensitive_headers(headers),
         }
     }
@@ -420,17 +592,15 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn sensitive_request_headers(
         self,
         headers: std::sync::Arc<[crate::http::HeaderName]>,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::sensitive_headers::SetSensitiveRequestHeadersLayer,
             L,
         >,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.sensitive_request_headers(headers),
         }
     }
@@ -444,17 +614,15 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn sensitive_response_headers(
         self,
         headers: std::sync::Arc<[crate::http::HeaderName]>,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::sensitive_headers::SetSensitiveResponseHeadersLayer,
             L,
         >,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.sensitive_response_headers(headers),
         }
     }
@@ -471,14 +639,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
         self,
         header_name: crate::http::HeaderName,
         make: M,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::set_header::SetRequestHeaderLayer<M>, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self
                 .service_builder
                 .override_request_header(header_name, make),
@@ -496,14 +662,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
         self,
         header_name: crate::http::HeaderName,
         make: M,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::set_header::SetRequestHeaderLayer<M>, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self
                 .service_builder
                 .append_request_header(header_name, make),
@@ -519,14 +683,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
         self,
         header_name: crate::http::HeaderName,
         make: M,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::set_header::SetRequestHeaderLayer<M>, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self
                 .service_builder
                 .insert_request_header_if_not_present(header_name, make),
@@ -545,14 +707,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
         self,
         header_name: crate::http::HeaderName,
         make: M,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::set_header::SetResponseHeaderLayer<M>, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self
                 .service_builder
                 .override_response_header(header_name, make),
@@ -570,14 +730,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
         self,
         header_name: crate::http::HeaderName,
         make: M,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::set_header::SetResponseHeaderLayer<M>, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self
                 .service_builder
                 .append_response_header(header_name, make),
@@ -593,14 +751,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
         self,
         header_name: crate::http::HeaderName,
         make: M,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::set_header::SetResponseHeaderLayer<M>, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self
                 .service_builder
                 .insert_response_header_if_not_present(header_name, make),
@@ -616,17 +772,15 @@ impl<B, S, L> HttpConnector<B, S, L> {
         self,
         header_name: crate::http::HeaderName,
         make_request_id: M,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::request_id::SetRequestIdLayer<M>, L>,
     >
     where
         M: crate::service::http::request_id::MakeRequestId,
     {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self
                 .service_builder
                 .set_request_id(header_name, make_request_id),
@@ -641,17 +795,15 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn set_x_request_id<M>(
         self,
         make_request_id: M,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::request_id::SetRequestIdLayer<M>, L>,
     >
     where
         M: crate::service::http::request_id::MakeRequestId,
     {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.set_x_request_id(make_request_id),
         }
     }
@@ -664,14 +816,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn propagate_request_id(
         self,
         header_name: crate::http::HeaderName,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::request_id::PropagateRequestIdLayer, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.propagate_request_id(header_name),
         }
     }
@@ -683,14 +833,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
     /// [`tower_async_http::request_id`]: crate::service::http::request_id
     pub fn propagate_x_request_id(
         self,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::request_id::PropagateRequestIdLayer, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.propagate_x_request_id(),
         }
     }
@@ -702,9 +850,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
     /// [`tower_async_http::catch_panic`]: crate::service::http::catch_panic
     pub fn catch_panic(
         self,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<
             crate::service::http::catch_panic::CatchPanicLayer<
                 crate::service::http::catch_panic::DefaultResponseForPanic,
@@ -712,9 +859,8 @@ impl<B, S, L> HttpConnector<B, S, L> {
             L,
         >,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.catch_panic(),
         }
     }
@@ -728,14 +874,12 @@ impl<B, S, L> HttpConnector<B, S, L> {
     pub fn request_body_limit(
         self,
         limit: usize,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::limit::RequestBodyLimitLayer, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.request_body_limit(limit),
         }
     }
@@ -747,25 +891,25 @@ impl<B, S, L> HttpConnector<B, S, L> {
     /// [`tower_async_http::normalize_path`]: crate::service::http::normalize_path
     pub fn trim_trailing_slash(
         self,
-    ) -> HttpConnector<
+    ) -> HttpServer<
         B,
-        S,
         crate::service::util::Stack<crate::service::http::normalize_path::NormalizePathLayer, L>,
     > {
-        HttpConnector {
+        HttpServer {
             builder: self.builder,
-            stream: self.stream,
             service_builder: self.service_builder.trim_trailing_slash(),
         }
     }
 }
 
-impl<B, S, L> HttpConnector<B, S, L>
+impl<B, L> HttpServer<B, L>
 where
     B: HyperConnServer,
-    S: crate::stream::Stream + Send + 'static,
 {
-    pub async fn serve<TowerService, ResponseBody, D, E>(self, service: TowerService) -> ServeResult
+    pub fn service<TowerService, ResponseBody, D, E>(
+        self,
+        service: TowerService,
+    ) -> HttpService<B, HyperServiceWrapper<L::Service>>
     where
         L: Layer<TowerService>,
         L::Service: Service<Request, Response = Response<ResponseBody>, call(): Send>
@@ -780,27 +924,21 @@ where
         E: Into<BoxError>,
     {
         let service = self.service_builder.service(service);
-        let service = ServiceBuilder::new()
-            .map_request_body(HyperBody::from)
-            .service(service)
-            .into_hyper_service();
+        let service: HyperServiceWrapper<<L as Layer<TowerService>>::Service> =
+            HyperServiceWrapper {
+                service: Arc::new(service),
+            };
 
-        self.builder
-            .hyper_serve_connection(self.stream, service)
-            .await
+        HttpService::new(self.builder, service)
     }
-}
 
-impl<B, S, L> HttpConnector<B, S, L>
-where
-    B: HyperConnWithUpgradesServer,
-    S: crate::stream::Stream + Send + 'static,
-{
-    pub async fn serve_with_upgrades<TowerService, ResponseBody, D, E>(
-        self,
+    pub async fn serve<S, TowerService, ResponseBody, D, E>(
+        &self,
+        stream: TcpStream<S>,
         service: TowerService,
     ) -> ServeResult
     where
+        S: crate::stream::Stream + Send + 'static,
         L: Layer<TowerService>,
         L::Service: Service<Request, Response = Response<ResponseBody>, call(): Send>
             + Send
@@ -814,197 +952,99 @@ where
         E: Into<BoxError>,
     {
         let service = self.service_builder.service(service);
-        let service = ServiceBuilder::new()
-            .map_request_body(HyperBody::from)
-            .service(service)
-            .into_hyper_service();
+        let service: HyperServiceWrapper<<L as Layer<TowerService>>::Service> =
+            HyperServiceWrapper {
+                service: Arc::new(service),
+            };
 
-        self.builder
-            .hyper_serve_connection_with_upgrades(self.stream, service)
-            .await
+        self.builder.hyper_serve_connection(stream, service).await
     }
 }
 
-pub trait HyperConnServer {
-    fn hyper_serve_connection<S, Service, Body>(
-        &self,
-        io: TcpStream<S>,
-        service: Service,
-    ) -> impl std::future::Future<Output = ServeResult>
-    where
-        S: crate::stream::Stream + Send + 'static,
-        Service: hyper::service::Service<
-                crate::http::Request<hyper::body::Incoming>,
-                Response = Response<Body>,
-            > + Send
-            + Sync
-            + 'static,
-        Service::Future: Send + 'static,
-        Service::Error: Into<Box<dyn StdError + Send + Sync>>,
-        Body: http_body::Body + Send + 'static,
-        Body::Data: Send,
-        Body::Error: Into<Box<dyn StdError + Send + Sync>>;
+pub struct HttpService<B, S> {
+    builder: Arc<B>,
+    service: S,
 }
 
-pub trait HyperConnWithUpgradesServer {
-    fn hyper_serve_connection_with_upgrades<S, Service, Body>(
-        &self,
-        io: TcpStream<S>,
-        service: Service,
-    ) -> impl std::future::Future<Output = ServeResult>
-    where
-        S: crate::stream::Stream + Send + 'static,
-        Service: hyper::service::Service<
-                crate::http::Request<hyper::body::Incoming>,
-                Response = Response<Body>,
-            > + Send
-            + Sync
-            + 'static,
-        Service::Future: Send + 'static,
-        Service::Error: Into<Box<dyn StdError + Send + Sync>>,
-        Body: http_body::Body + Send + 'static,
-        Body::Data: Send,
-        Body::Error: Into<Box<dyn StdError + Send + Sync>>;
-}
-
-impl HyperConnServer for Http1Builder {
-    #[inline]
-    async fn hyper_serve_connection<S, Service, Body>(
-        &self,
-        io: TcpStream<S>,
-        service: Service,
-    ) -> ServeResult
-    where
-        S: crate::stream::Stream + Send + 'static,
-        Service: hyper::service::Service<
-                crate::http::Request<hyper::body::Incoming>,
-                Response = Response<Body>,
-            > + Send
-            + Sync
-            + 'static,
-        Service::Future: Send + 'static,
-        Service::Error: Into<Box<dyn StdError + Send + Sync>>,
-        Body: http_body::Body + Send + 'static,
-        Body::Data: Send,
-        Body::Error: Into<Box<dyn StdError + Send + Sync>>,
-    {
-        let io = Box::pin(io);
-        let stream = HyperIo::new(io);
-        self.serve_connection(stream, service).await?;
-        Ok(())
+impl<B, S> std::fmt::Debug for HttpService<B, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpService").finish()
     }
 }
 
-impl HyperConnWithUpgradesServer for Http1Builder {
-    #[inline]
-    async fn hyper_serve_connection_with_upgrades<S, Service, Body>(
-        &self,
-        io: TcpStream<S>,
-        service: Service,
-    ) -> ServeResult
-    where
-        S: crate::stream::Stream + Send + 'static,
-        Service: hyper::service::Service<
-                crate::http::Request<hyper::body::Incoming>,
-                Response = Response<Body>,
-            > + Send
-            + Sync
-            + 'static,
-        Service::Future: Send + 'static,
-        Service::Error: Into<Box<dyn StdError + Send + Sync>>,
-        Body: http_body::Body + Send + 'static,
-        Body::Data: Send,
-        Body::Error: Into<Box<dyn StdError + Send + Sync>>,
-    {
-        let io = Box::pin(io);
-        let stream = HyperIo::new(io);
-        self.serve_connection(stream, service)
-            .with_upgrades()
-            .await?;
-        Ok(())
+impl<B, S> HttpService<B, S> {
+    fn new(builder: B, service: S) -> Self {
+        Self {
+            builder: Arc::new(builder),
+            service,
+        }
     }
 }
 
-impl HyperConnServer for Http2Builder<GlobalExecutor> {
-    #[inline]
-    async fn hyper_serve_connection<S, Service, Body>(
-        &self,
-        io: TcpStream<S>,
-        service: Service,
-    ) -> ServeResult
-    where
-        S: crate::stream::Stream + Send + 'static,
-        Service: hyper::service::Service<
-                crate::http::Request<hyper::body::Incoming>,
-                Response = Response<Body>,
-            > + Send
-            + Sync
-            + 'static,
-        Service::Future: Send + 'static,
-        Service::Error: Into<Box<dyn StdError + Send + Sync>>,
-        Body: http_body::Body + Send + 'static,
-        Body::Data: Send,
-        Body::Error: Into<Box<dyn StdError + Send + Sync>>,
-    {
-        let io = Box::pin(io);
-        let stream = HyperIo::new(io);
-        self.serve_connection(stream, service).await?;
-        Ok(())
+impl<B, S: Clone> Clone for HttpService<B, S> {
+    fn clone(&self) -> Self {
+        Self {
+            builder: self.builder.clone(),
+            service: self.service.clone(),
+        }
     }
 }
 
-impl HyperConnServer for AutoBuilder<GlobalExecutor> {
-    #[inline]
-    async fn hyper_serve_connection<S, Service, Body>(
-        &self,
-        io: TcpStream<S>,
-        service: Service,
-    ) -> ServeResult
-    where
-        S: crate::stream::Stream + Send + 'static,
-        Service: hyper::service::Service<
-                crate::http::Request<hyper::body::Incoming>,
-                Response = Response<Body>,
-            > + Send
-            + Sync
-            + 'static,
-        Service::Future: Send + 'static,
-        Service::Error: Into<Box<dyn StdError + Send + Sync>>,
-        Body: http_body::Body + Send + 'static,
-        Body::Data: Send,
-        Body::Error: Into<Box<dyn StdError + Send + Sync>>,
-    {
-        let io = Box::pin(io);
-        let stream = HyperIo::new(io);
-        self.serve_connection(stream, service).await?;
-        Ok(())
+// TODO: support graceful service...
+
+impl<B, T, S, Body> Service<TcpStream<T>> for HttpService<B, S>
+where
+    B: HyperConnServer,
+    T: crate::stream::Stream + Send + 'static,
+    S: hyper::service::Service<
+            crate::http::Request<hyper::body::Incoming>,
+            Response = Response<Body>,
+        > + Send
+        + Sync
+        + Clone
+        + 'static,
+    S::Error: Into<BoxError>,
+    S::Future: Send,
+    Body: http_body::Body + Send + 'static,
+    Body::Data: Send,
+    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    type Response = ();
+    type Error = BoxError;
+
+    async fn call(&self, stream: TcpStream<T>) -> Result<Self::Response, Self::Error> {
+        let service: S = self.service.clone();
+        self.builder.hyper_serve_connection(stream, service).await
     }
 }
 
-impl HyperConnWithUpgradesServer for AutoBuilder<GlobalExecutor> {
-    #[inline]
-    async fn hyper_serve_connection_with_upgrades<S, Service, Body>(
-        &self,
-        io: TcpStream<S>,
-        service: Service,
-    ) -> ServeResult
-    where
-        S: crate::stream::Stream + Send + 'static,
-        Service: hyper::service::Service<
-                crate::http::Request<hyper::body::Incoming>,
-                Response = Response<Body>,
-            > + Send
-            + Sync
-            + 'static,
-        Service::Future: Send + 'static,
-        Service::Error: Into<Box<dyn StdError + Send + Sync>>,
-        Body: http_body::Body + Send + 'static,
-        Body::Data: Send,
-        Body::Error: Into<Box<dyn StdError + Send + Sync>>,
-    {
-        let io = Box::pin(io);
-        let stream = HyperIo::new(io);
-        self.serve_connection_with_upgrades(stream, service).await?;
-        Ok(())
+#[derive(Debug, Clone)]
+/// A wrapper around a [`tower_async::Service`] that implements [`hyper::service::Service`].
+///
+/// [`tower_async::Service`]: https://docs.rs/tower-async/latest/tower_async/trait.Service.html
+/// [`hyper::service::Service`]: https://docs.rs/hyper/latest/hyper/service/trait.Service.html
+pub struct HyperServiceWrapper<S> {
+    service: Arc<S>,
+}
+
+impl<S> hyper::service::Service<crate::http::Request<hyper::body::Incoming>>
+    for HyperServiceWrapper<S>
+where
+    S: Service<Request, call(): Send> + Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
+
+    fn call(&self, req: crate::http::Request<hyper::body::Incoming>) -> Self::Future {
+        let (parts, body) = req.into_parts();
+        let req = Request::from_parts(parts, HyperBody::from(body));
+
+        let service = self.service.clone();
+        let fut = async move { service.call(req).await };
+        Box::pin(fut)
     }
 }
+
+pub type BoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;

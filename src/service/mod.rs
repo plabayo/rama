@@ -65,5 +65,4 @@ pub mod limit {
 }
 
 pub mod http;
-pub mod hyper;
 pub mod spawn;
