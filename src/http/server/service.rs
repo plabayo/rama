@@ -909,7 +909,7 @@ where
     pub fn service<TowerService, ResponseBody, D, E>(
         self,
         service: TowerService,
-    ) -> HttpService<B, HyperServiceWrapper<L::Service>>
+    ) -> HttpService<B, L::Service>
     where
         L: Layer<TowerService>,
         L::Service: Service<Request, Response = Response<ResponseBody>, call(): Send>
@@ -924,11 +924,6 @@ where
         E: Into<BoxError>,
     {
         let service = self.service_builder.service(service);
-        let service: HyperServiceWrapper<<L as Layer<TowerService>>::Service> =
-            HyperServiceWrapper {
-                service: Arc::new(service),
-            };
-
         HttpService::new(self.builder, service)
     }
 
@@ -963,7 +958,7 @@ where
 
 pub struct HttpService<B, S> {
     builder: Arc<B>,
-    service: S,
+    service: HyperServiceWrapper<S>,
 }
 
 impl<B, S> std::fmt::Debug for HttpService<B, S> {
@@ -976,12 +971,14 @@ impl<B, S> HttpService<B, S> {
     fn new(builder: B, service: S) -> Self {
         Self {
             builder: Arc::new(builder),
-            service,
+            service: HyperServiceWrapper {
+                service: Arc::new(service),
+            },
         }
     }
 }
 
-impl<B, S: Clone> Clone for HttpService<B, S> {
+impl<B, S> Clone for HttpService<B, S> {
     fn clone(&self) -> Self {
         Self {
             builder: self.builder.clone(),
@@ -996,15 +993,8 @@ impl<B, T, S, Body> Service<TcpStream<T>> for HttpService<B, S>
 where
     B: HyperConnServer,
     T: crate::stream::Stream + Send + 'static,
-    S: hyper::service::Service<
-            crate::http::Request<hyper::body::Incoming>,
-            Response = Response<Body>,
-        > + Send
-        + Sync
-        + Clone
-        + 'static,
+    S: Service<Request, call(): Send, Response = Response<Body>> + Send + Sync + 'static,
     S::Error: Into<BoxError>,
-    S::Future: Send,
     Body: http_body::Body + Send + 'static,
     Body::Data: Send,
     Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
@@ -1013,18 +1003,22 @@ where
     type Error = BoxError;
 
     async fn call(&self, stream: TcpStream<T>) -> Result<Self::Response, Self::Error> {
-        let service: S = self.service.clone();
+        let service = self.service.clone();
         self.builder.hyper_serve_connection(stream, service).await
     }
 }
 
-#[derive(Debug, Clone)]
-/// A wrapper around a [`tower_async::Service`] that implements [`hyper::service::Service`].
-///
-/// [`tower_async::Service`]: https://docs.rs/tower-async/latest/tower_async/trait.Service.html
-/// [`hyper::service::Service`]: https://docs.rs/hyper/latest/hyper/service/trait.Service.html
-pub struct HyperServiceWrapper<S> {
+#[derive(Debug)]
+struct HyperServiceWrapper<S> {
     service: Arc<S>,
+}
+
+impl<S> Clone for HyperServiceWrapper<S> {
+    fn clone(&self) -> Self {
+        Self {
+            service: self.service.clone(),
+        }
+    }
 }
 
 impl<S> hyper::service::Service<crate::http::Request<hyper::body::Incoming>>
