@@ -51,7 +51,7 @@ Please refer to <https://github.com/plabayo/rama/milestones> to know what's on t
 
 ### Visual Overview (out of date)
 
-This was an early attempt to visualise the overview of what the project offers. It is badly out of date however and will be replaced by a purely markdown documentation in the form of sections, summaries and example code. For now this at least should give you an idea of what v0.2 wil llook like.
+This was an early attempt to visualise the overview of what the project offers. It is badly out of date however and will be replaced by a purely markdown documentation in the form of sections, summaries and example code. For now this at least should give you an idea of what v0.2 will look like.
 
 ![rama roadmap v0.2.0](./docs/img/roadmap.svg)
 
