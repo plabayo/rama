@@ -52,7 +52,8 @@
         }
 
         a:hover {
-            text-shadow: 0 0 5px #fff;
+            text-shadow: 0 0 5px rgb(0, 200, 0);
+            color: rgb(0, 200, 0);
         }
 
         body {
@@ -111,21 +112,25 @@
         #a2:hover:after {
             content: '📦';
         }
+
+        #sponsor:after {
+            content: '🤍 ラマ';
+        }
+
+        #sponsor:hover:after {
+            content: '💚 ラマ';
+        }
     </style>
 </head>
 
 <body>
-    <a href="https://github.com/plabayo/rama" title="the official github repository of rama">
-        <div id=r></div>
+    <a href="https://github.com/plabayo/rama" title="the official github repository of rama" id="r">
     </a>
-    <a href="https://ramaproxy.org/man" title="learn more about rama and how to use it">
-        <div id=a></div>
+    <a href="https://ramaproxy.org/man" title="learn more about rama and how to use it" id="a">
     </a>
-    <a href="https://discord.gg/29EetaSYCD" title="join the plabayo discord server to reach out to us about rama">
-        <div id=m></div>
+    <a href="https://discord.gg/29EetaSYCD" title="join the plabayo discord server to reach out to us about rama" id=m>
     </a>
-    <a href="https://crates.io/crates/rama" title="official rama rust crate info page">
-        <div id=a2></div>
+    <a href="https://crates.io/crates/rama" title="official rama rust crate info page" id=a2>
     </a>
 
     <a href="https://github.com/plabayo/rama" title="the official github repository of rama">github</a>
@@ -134,7 +139,7 @@
     <a href="https://crates.io/crates/rama" title="official rama rust crate info page">crates.io</a>
 
     <div></div>
-    <a href="https://github.com/sponsors/plabayo" title="sponsor plabayo to support rama">♡ ラマ</a>
+    <a href="https://github.com/sponsors/plabayo" title="sponsor plabayo to support rama" id=sponsor></a>
     <div></div>
 </body>
 
