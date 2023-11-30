@@ -6,4 +6,7 @@ pub mod client {
 
 pub mod server {
     pub use tokio_rustls::server::TlsStream;
+
+    pub use rustls::server::WebPkiClientVerifier;
+    pub use rustls::ServerConfig as TlsServerConfig;
 }

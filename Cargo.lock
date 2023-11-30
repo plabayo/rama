@@ -811,7 +811,6 @@ dependencies = [
  "rama-rt",
  "rama-rt-macros",
  "rcgen",
- "rustls",
  "rustls-pki-types",
  "serde",
  "serde_urlencoded",
@@ -867,6 +866,7 @@ dependencies = [
 name = "rama-rt"
 version = "0.2.0"
 dependencies = [
+ "rustls",
  "tokio",
  "tokio-graceful",
  "tokio-rustls",

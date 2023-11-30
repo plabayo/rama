@@ -1,9 +1,9 @@
 use std::time::Duration;
 
 use rama::{
-    rt::{graceful::Shutdown, io::AsyncWriteExt},
+    rt::{graceful::Shutdown, io::AsyncWriteExt, tls::rustls::server::TlsServerConfig},
     tcp::server::TcpListener,
-    tls::server::rustls::{RustlsAcceptorLayer, RustlsServerConfig},
+    tls::server::rustls::RustlsAcceptorLayer,
 };
 
 use pki_types::{CertificateDer, PrivatePkcs8KeyDer};
@@ -58,7 +58,7 @@ async fn main() {
             .expect("bind TCP Listener: tls")
             .spawn()
             .layer(RustlsAcceptorLayer::new(
-                RustlsServerConfig::builder()
+                TlsServerConfig::builder()
                     .with_safe_defaults()
                     .with_no_client_auth()
                     .with_single_cert(

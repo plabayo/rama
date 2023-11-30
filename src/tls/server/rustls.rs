@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
 use crate::{
-    rt::tls::rustls::{server::TlsStream, TlsAcceptor},
+    rt::tls::rustls::{
+        server::{TlsServerConfig, TlsStream},
+        TlsAcceptor,
+    },
     service::{Layer, Service},
     stream::Stream,
     tcp::TcpStream,
 };
-
-pub use rustls::server::WebPkiClientVerifier;
-pub use rustls::ServerConfig as RustlsServerConfig;
 
 pub struct RustlsAcceptorService<S> {
     acceptor: TlsAcceptor,
@@ -82,7 +82,7 @@ pub struct RustlsAcceptorLayer {
 }
 
 impl RustlsAcceptorLayer {
-    pub fn new(config: RustlsServerConfig) -> Self {
+    pub fn new(config: TlsServerConfig) -> Self {
         Self {
             acceptor: TlsAcceptor::from(Arc::new(config)),
         }
