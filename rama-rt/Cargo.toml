@@ -15,5 +15,5 @@ authors = { workspace = true }
 [dependencies]
 tokio = { version = "1.33", features = ["net", "io-util", "rt-multi-thread"] }
 tokio-graceful = "0.1"
-tokio-rustls = "=0.25.0-alpha.1"
+tokio-rustls = "0.25.0-alpha.2"
 tokio-test = "0.4.3"
