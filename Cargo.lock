@@ -976,9 +976,9 @@ checksum = "d626bb9dae77e28219937af045c257c28bfd3f69333c512553507f5f9798cb76"
 
 [[package]]
 name = "rustls"
-version = "0.22.0-alpha.4"
+version = "0.22.0-alpha.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c23376606de66c7b9249d091b59ee55b52df72063e1cae7bb44e0691c9e5150"
+checksum = "72d42991943cf48034955ba6d9a28f30e6b1e5fd73e46737ce52e8461bcc28e3"
 dependencies = [
  "log",
  "ring 0.17.6",
@@ -990,15 +990,15 @@ dependencies = [
 
 [[package]]
 name = "rustls-pki-types"
-version = "0.2.1"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a47003264dea418db67060fa420ad16d0d2f8f0a0360d825c00e177ac52cb5d8"
+checksum = "f0d3edd6cdcdf26eda538757038343986e666d0b8ba4b5ac1de663b78475550d"
 
 [[package]]
 name = "rustls-webpki"
-version = "0.102.0-alpha.6"
+version = "0.102.0-alpha.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "34d9ed3a8267782ba32d257ff5b197b63eef19a467dbd1be011caaae35ee416e"
+checksum = "139cdfd1d8b96f927fbe0a0c98785afe94b63e95a7ef815ebae9263d20e10a0d"
 dependencies = [
  "ring 0.17.6",
  "rustls-pki-types",
@@ -1221,11 +1221,12 @@ dependencies = [
 
 [[package]]
 name = "tokio-rustls"
-version = "0.25.0-alpha.2"
+version = "0.25.0-alpha.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e5c10a693265819331780325ade615a6f3afdf6997bc922bc879c8050832f738"
+checksum = "60c65160c299ef8f0a06ca5dc1d152c5e21112764761fb1488419362fc13b87b"
 dependencies = [
  "rustls",
+ "rustls-pki-types",
  "tokio",
 ]
 
