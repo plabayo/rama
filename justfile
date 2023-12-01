@@ -43,3 +43,9 @@ example-tcp-echo:
 
 example-tls-proxy:
 		cargo run -p rama --example tokio_tls_proxy
+
+example-tcp-http-hello:
+		cargo run -p rama --example tokio_tcp_http_hello
+
+example-tls-https-hello:
+		cargo run -p rama --example tokio_tls_https_hello
