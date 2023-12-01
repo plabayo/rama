@@ -1197,9 +1197,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-graceful"
-version = "0.1.5"
+version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "078cf4b14639fe3a5122f7fef2e2b048c70004e7df883934277fdffb5d638b40"
+checksum = "627ba4daa4cbce14740603401c895e72d47ecd86690a18e3f0841266e9340de7"
 dependencies = [
  "loom",
  "pin-project-lite",
