@@ -40,7 +40,6 @@ async fn main() {
         // TODO:
         // - support state passing from tcp listener to stream
         // - find good way to pass state from stream to http
-        // - provide HttpServer so that we can use it to serve http requests
 
         let mut http_server = http::HttpServer::auto();
 
