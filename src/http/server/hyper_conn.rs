@@ -4,7 +4,8 @@ use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::server::conn::auto::Builder as AutoBuilder;
 
-use crate::tcp::TcpStream;
+use crate::rt::{graceful::ShutdownGuard, pin, select};
+use crate::{state::Extendable, tcp::TcpStream};
 
 use super::{GlobalExecutor, HyperIo, Response, ServeResult};
 
@@ -53,11 +54,32 @@ impl HyperConnServer for Http1Builder {
         Body::Error: Into<Box<dyn StdError + Send + Sync>>,
     {
         let io = Box::pin(io);
+        let guard = io.extensions().get::<ShutdownGuard>().cloned();
+
         let stream = HyperIo::new(io);
-        self.serve_connection(stream, service)
-            .with_upgrades()
-            .await?;
-        Ok(())
+
+        let conn = self.serve_connection(stream, service).with_upgrades();
+
+        if let Some(guard) = guard {
+            pin!(conn);
+
+            loop {
+                select! {
+                    _ = guard.cancelled() => {
+                        tracing::trace!("signal received: initiate graceful shutdown");
+                        conn.as_mut().graceful_shutdown();
+                    }
+                    result = conn.as_mut() => {
+                        tracing::trace!("connection finished");
+                        result?;
+                        return Ok(());
+                    }
+                }
+            }
+        } else {
+            conn.await?;
+            Ok(())
+        }
     }
 }
 
@@ -83,9 +105,32 @@ impl HyperConnServer for Http2Builder<GlobalExecutor> {
         Body::Error: Into<Box<dyn StdError + Send + Sync>>,
     {
         let io = Box::pin(io);
+        let guard = io.extensions().get::<ShutdownGuard>().cloned();
+
         let stream = HyperIo::new(io);
-        self.serve_connection(stream, service).await?;
-        Ok(())
+
+        let conn = self.serve_connection(stream, service);
+
+        if let Some(guard) = guard {
+            pin!(conn);
+
+            loop {
+                select! {
+                    _ = guard.cancelled() => {
+                        tracing::trace!("signal received: initiate graceful shutdown");
+                        conn.as_mut().graceful_shutdown();
+                    }
+                    result = conn.as_mut() => {
+                        tracing::trace!("connection finished");
+                        result?;
+                        return Ok(());
+                    }
+                }
+            }
+        } else {
+            conn.await?;
+            Ok(())
+        }
     }
 }
 
@@ -111,8 +156,33 @@ impl HyperConnServer for AutoBuilder<GlobalExecutor> {
         Body::Error: Into<Box<dyn StdError + Send + Sync>>,
     {
         let io = Box::pin(io);
+        let guard = io.extensions().get::<ShutdownGuard>().cloned();
+
         let stream = HyperIo::new(io);
-        self.serve_connection_with_upgrades(stream, service).await?;
-        Ok(())
+
+        let conn = self.serve_connection_with_upgrades(stream, service);
+
+        if let Some(guard) = guard {
+            pin!(conn);
+
+            loop {
+                select! {
+                    _ = guard.cancelled() => {
+                        tracing::trace!("signal received: nop: graceful shutdown not supported for auto builder");
+                        // TODO: support once it is implemented:
+                        // https://github.com/hyperium/hyper-util/pull/66
+                        // conn.as_mut().graceful_shutdown();
+                    }
+                    result = conn.as_mut() => {
+                        tracing::trace!("connection finished");
+                        result?;
+                        return Ok(());
+                    }
+                }
+            }
+        } else {
+            conn.await?;
+            Ok(())
+        }
     }
 }

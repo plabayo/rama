@@ -56,7 +56,7 @@ async fn main() {
 
     // create tls proxy
     shutdown.spawn_task_fn(|guard| async move {
-        let web_server = http::HttpServer::auto()
+        let web_server = http::HttpServer::http1()
             .compression()
             .trace()
             .timeout(Duration::from_secs(10))

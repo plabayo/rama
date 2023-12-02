@@ -286,14 +286,14 @@ impl HttpServer<AutoBuilder<GlobalExecutor>, Identity> {
 
 impl<E, L> HttpServer<AutoBuilder<E>, L> {
     /// Http1 configuration.
-    pub fn http1(&mut self) -> AutoHttp1Builder<'_, E> {
+    pub fn http1_config(&mut self) -> AutoHttp1Builder<'_, E> {
         AutoHttp1Builder {
             inner: self.builder.http1(),
         }
     }
 
     /// H2 configuration.
-    pub fn h2(&mut self) -> AutoH2Builder<'_, E> {
+    pub fn h2_config(&mut self) -> AutoH2Builder<'_, E> {
         AutoH2Builder {
             inner: self.builder.http2(),
         }
@@ -1240,8 +1240,6 @@ impl<B, S> Clone for HttpService<B, S> {
         }
     }
 }
-
-// TODO: support graceful service...
 
 impl<B, T, S, Body> Service<TcpStream<T>> for HttpService<B, S>
 where
