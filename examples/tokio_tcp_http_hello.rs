@@ -42,7 +42,12 @@ async fn main() {
         // - find good way to pass state from stream to http
         // - provide HttpServer so that we can use it to serve http requests
 
-        let web_server = http::HttpServer::auto()
+        let mut http_server = http::HttpServer::auto();
+
+        http_server.http1().preserve_header_case(true);
+        http_server.h2().adaptive_window(true);
+
+        let web_server = http_server
             .compression()
             .trace()
             .timeout(Duration::from_secs(10))
