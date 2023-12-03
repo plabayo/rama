@@ -216,10 +216,12 @@ impl<L> TcpListener<L> {
     {
         let service = self.builder.service(service);
 
+        let cancelled_fut = guard.cancelled();
+        crate::rt::pin!(cancelled_fut);
+
         loop {
-            let guard = guard.clone();
             crate::rt::select! {
-                _ = guard.cancelled() => {
+                _ = cancelled_fut.as_mut() => {
                     tracing::info!("signal received: initiate graceful shutdown");
                     break Ok(());
                 }

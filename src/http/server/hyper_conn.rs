@@ -63,9 +63,12 @@ impl HyperConnServer for Http1Builder {
         if let Some(guard) = guard {
             pin!(conn);
 
+            let cancelled_fut = guard.cancelled();
+            pin!(cancelled_fut);
+
             loop {
                 select! {
-                    _ = guard.cancelled() => {
+                    _ = cancelled_fut.as_mut() => {
                         tracing::trace!("signal received: initiate graceful shutdown");
                         conn.as_mut().graceful_shutdown();
                     }
@@ -114,9 +117,12 @@ impl HyperConnServer for Http2Builder<GlobalExecutor> {
         if let Some(guard) = guard {
             pin!(conn);
 
+            let cancelled_fut = guard.cancelled();
+            pin!(cancelled_fut);
+
             loop {
                 select! {
-                    _ = guard.cancelled() => {
+                    _ = cancelled_fut.as_mut() => {
                         tracing::trace!("signal received: initiate graceful shutdown");
                         conn.as_mut().graceful_shutdown();
                     }
@@ -165,9 +171,12 @@ impl HyperConnServer for AutoBuilder<GlobalExecutor> {
         if let Some(guard) = guard {
             pin!(conn);
 
+            let cancelled_fut = guard.cancelled();
+            pin!(cancelled_fut);
+
             loop {
                 select! {
-                    _ = guard.cancelled() => {
+                    _ = cancelled_fut.as_mut() => {
                         tracing::trace!("signal received: nop: graceful shutdown not supported for auto builder");
                         // TODO: support once it is implemented:
                         // https://github.com/hyperium/hyper-util/pull/66
