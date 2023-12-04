@@ -43,8 +43,8 @@ async fn main() {
 
         let mut http_server = http::HttpServer::auto();
 
-        http_server.http1_config().preserve_header_case(true);
-        http_server.h2_config().adaptive_window(true);
+        http_server.http1_mut().preserve_header_case(true);
+        http_server.h2_mut().adaptive_window(true);
 
         let web_server = http_server
             .compression()
