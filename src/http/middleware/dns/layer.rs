@@ -1,6 +1,6 @@
 use crate::{http::HeaderName, service::Layer};
 
-use super::{DefaultDnsResolver, DnsResolver, DnsService, NoDnsResolver};
+use super::{DefaultDnsResolver, DnsResolver, DnsResolverFn, DnsService, NoDnsResolver};
 
 pub struct DnsLayer<R> {
     resolver: R,
@@ -33,6 +33,17 @@ impl<R> DnsLayer<R> {
     {
         DnsLayer {
             resolver: resolver.into(),
+            header_name: self.header_name,
+        }
+    }
+
+    pub fn resolver_fn<F, T>(self, resolver: F) -> DnsLayer<DnsResolverFn<F>>
+    where
+        T: DnsResolver,
+        F: Fn(&str) -> T + Send + Sync + 'static,
+    {
+        DnsLayer {
+            resolver: DnsResolverFn::new(resolver),
             header_name: self.header_name,
         }
     }

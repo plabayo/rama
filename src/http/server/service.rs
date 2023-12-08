@@ -9,6 +9,8 @@ use hyper_util::server::conn::auto::Builder as AutoConnBuilder;
 use hyper_util::server::conn::auto::Http1Builder as InnerAutoHttp1Builder;
 use hyper_util::server::conn::auto::Http2Builder as InnerAutoHttp2Builder;
 
+use crate::http::middleware::dns::DnsResolver;
+use crate::http::middleware::DnsLayer;
 use crate::service::{http::ServiceBuilderExt, util::Identity, Layer, Service, ServiceBuilder};
 use crate::{tcp::TcpStream, BoxError};
 
@@ -1191,6 +1193,19 @@ impl<B, L> HttpServer<B, L> {
             builder: self.builder,
             service_builder: self.service_builder.trim_trailing_slash(),
         }
+    }
+}
+
+/// Add a dns layer to resolve hostnames prior to connecting.
+impl<B, L> HttpServer<B, L> {
+    pub fn dns<R>(
+        self,
+        dns: DnsLayer<R>,
+    ) -> HttpServer<B, crate::service::util::Stack<DnsLayer<R>, L>>
+    where
+        R: DnsResolver + Clone + Send + Sync + 'static,
+    {
+        self.layer(dns)
     }
 }
 

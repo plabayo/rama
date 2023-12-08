@@ -13,7 +13,7 @@ use crate::{
     BoxError,
 };
 
-use super::{DnsError, DnsResolver, NoDnsResolver, ResolvedSocketAddr};
+use super::{DnsError, DnsResolver, DnsResolverFn, NoDnsResolver, ResolvedSocketAddr};
 
 #[derive(Debug, Clone)]
 pub struct DnsService<S, R> {
@@ -41,6 +41,18 @@ impl<S, R> DnsService<S, R> {
         DnsService {
             inner: self.inner,
             resolver: resolver.into(),
+            header_name: self.header_name,
+        }
+    }
+
+    pub fn resolver_fn<F, T>(self, resolver: F) -> DnsService<S, DnsResolverFn<F>>
+    where
+        T: DnsResolver,
+        F: Fn(&str) -> T + Send + Sync + 'static,
+    {
+        DnsService {
+            inner: self.inner,
+            resolver: DnsResolverFn::new(resolver),
             header_name: self.header_name,
         }
     }

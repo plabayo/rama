@@ -49,3 +49,24 @@ impl DnsResolver for NoDnsResolver {
         Err(DnsError::MappingNotFound(String::from(host)))
     }
 }
+
+#[derive(Debug, Clone)]
+pub struct DnsResolverFn<F> {
+    inner: F,
+}
+
+impl<F> DnsResolverFn<F> {
+    pub fn new(inner: F) -> Self {
+        Self { inner }
+    }
+}
+
+impl<F, Fut> DnsResolver for DnsResolverFn<F>
+where
+    F: Fn(&str) -> Fut + Send + 'static,
+    Fut: Future<Output = DnsResult<SocketAddr>> + Send,
+{
+    fn lookup_host(&self, host: &str) -> impl Future<Output = DnsResult<SocketAddr>> {
+        (self.inner)(host)
+    }
+}

@@ -5,5 +5,7 @@ mod service;
 
 pub use error::{DnsError, DnsResult};
 pub use layer::DnsLayer;
-pub use resolver::{DefaultDnsResolver, DnsResolver, NoDnsResolver, ResolvedSocketAddr};
+pub use resolver::{
+    DefaultDnsResolver, DnsResolver, DnsResolverFn, NoDnsResolver, ResolvedSocketAddr,
+};
 pub use service::DnsService;
