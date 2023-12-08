@@ -1,12 +1,11 @@
 use std::{future::Future, net::SocketAddr};
 
-use crate::rt::net::{lookup_host, ToSocketAddrs};
+use crate::rt::net::lookup_host;
+
+use super::{DnsError, DnsResult};
 
 pub trait DnsResolver {
-    fn lookup_host<T: ToSocketAddrs>(
-        &self,
-        addr: T,
-    ) -> impl Future<Output = std::io::Result<SocketAddr>>;
+    fn lookup_host(&self, host: &str) -> impl Future<Output = DnsResult<SocketAddr>>;
 }
 
 #[derive(Debug, Clone)]
@@ -33,9 +32,20 @@ impl AsRef<SocketAddr> for ResolvedSocketAddr {
 pub struct DefaultDnsResolver;
 
 impl DnsResolver for DefaultDnsResolver {
-    async fn lookup_host<T: ToSocketAddrs>(&self, addr: T) -> std::io::Result<SocketAddr> {
-        lookup_host(addr).await?.next().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::Other, "DNS address failed to resolve")
-        })
+    async fn lookup_host(&self, host: &str) -> DnsResult<SocketAddr> {
+        lookup_host(host)
+            .await?
+            .next()
+            .ok_or_else(|| DnsError::MappingNotFound(String::from(host)))
+    }
+}
+
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub struct NoDnsResolver;
+
+impl DnsResolver for NoDnsResolver {
+    async fn lookup_host(&self, host: &str) -> DnsResult<SocketAddr> {
+        Err(DnsError::MappingNotFound(String::from(host)))
     }
 }

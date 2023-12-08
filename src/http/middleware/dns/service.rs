@@ -13,7 +13,7 @@ use crate::{
     BoxError,
 };
 
-use super::{DefaultDnsResolver, DnsResolver, ResolvedSocketAddr};
+use super::{DnsError, DnsResolver, NoDnsResolver, ResolvedSocketAddr};
 
 #[derive(Debug, Clone)]
 pub struct DnsService<S, R> {
@@ -22,21 +22,25 @@ pub struct DnsService<S, R> {
     pub(super) header_name: Option<HeaderName>,
 }
 
-impl<S> DnsService<S, DefaultDnsResolver> {
+impl<S> DnsService<S, NoDnsResolver> {
     pub fn new(inner: S) -> Self {
         Self {
             inner,
-            resolver: DefaultDnsResolver,
+            resolver: NoDnsResolver,
             header_name: None,
         }
     }
 }
 
 impl<S, R> DnsService<S, R> {
-    pub fn resolver<T>(self, resolver: T) -> DnsService<S, T> {
+    pub fn resolver<I, T>(self, resolver: I) -> DnsService<S, T>
+    where
+        T: DnsResolver,
+        I: Into<T>,
+    {
         DnsService {
             inner: self.inner,
-            resolver,
+            resolver: resolver.into(),
             header_name: self.header_name,
         }
     }
@@ -60,10 +64,21 @@ where
     type Error = BoxError;
 
     async fn call(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
+        let addr = self.lookup_host(&request).await?;
+        request.extensions_mut().insert(ResolvedSocketAddr(addr));
+        self.inner.call(request).await.map_err(Into::into)
+    }
+}
+
+impl<S, R> DnsService<S, R>
+where
+    R: DnsResolver,
+{
+    async fn lookup_host<Body>(&self, request: &Request<Body>) -> Result<SocketAddr, BoxError> {
         let host = request
             .headers()
             .typed_get::<Host>()
-            .ok_or("Host header is required for DNS resolution")?;
+            .ok_or_else(|| DnsError::HostnameNotFound)?;
 
         let hostname = host.hostname().to_lowercase();
         let port = host.port().unwrap_or_else(|| {
@@ -81,24 +96,21 @@ where
         // if a dns mapping was defined, try to use it
         if let Some(header_name) = &self.header_name {
             let dns_table =
-                extract_header_config::<_, _, HashMap<String, IpAddr>>(&request, header_name)
+                extract_header_config::<_, _, HashMap<String, IpAddr>>(request, header_name)
                     .await?;
             for (key, value) in dns_table.into_iter() {
                 if hostname == key.to_lowercase() {
                     let addr: SocketAddr = (value, port).into();
-                    request.extensions_mut().insert(ResolvedSocketAddr(addr));
-
-                    // early return with header-based dns mapping
-                    return self.inner.call(request).await.map_err(Into::into);
+                    return Ok(addr);
                 }
             }
         }
 
         // use internal dns resolver if still no dns mapping found
-        let addr = self.resolver.lookup_host((hostname.as_str(), port)).await?;
-        request.extensions_mut().insert(ResolvedSocketAddr(addr));
-
-        // call inner service in default path
-        self.inner.call(request).await.map_err(Into::into)
+        let addr = self
+            .resolver
+            .lookup_host(format!("{}:{}", hostname, port).as_str())
+            .await?;
+        Ok(addr)
     }
 }

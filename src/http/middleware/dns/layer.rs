@@ -1,23 +1,38 @@
 use crate::{http::HeaderName, service::Layer};
 
-use super::{DnsResolver, DnsService};
+use super::{DefaultDnsResolver, DnsResolver, DnsService, NoDnsResolver};
 
 pub struct DnsLayer<R> {
     resolver: R,
     header_name: Option<HeaderName>,
 }
 
-impl<R> DnsLayer<R> {
-    pub fn new(resolver: R) -> Self {
+impl DnsLayer<NoDnsResolver> {
+    pub fn new() -> Self {
         Self {
-            resolver,
+            resolver: NoDnsResolver,
             header_name: None,
         }
     }
+}
 
-    pub fn resolver<T>(self, resolver: T) -> DnsLayer<T> {
+impl Default for DnsLayer<DefaultDnsResolver> {
+    fn default() -> Self {
+        Self {
+            resolver: DefaultDnsResolver,
+            header_name: None,
+        }
+    }
+}
+
+impl<R> DnsLayer<R> {
+    pub fn resolver<T, S>(self, resolver: T) -> DnsLayer<S>
+    where
+        S: DnsResolver,
+        T: Into<S>,
+    {
         DnsLayer {
-            resolver,
+            resolver: resolver.into(),
             header_name: self.header_name,
         }
     }
