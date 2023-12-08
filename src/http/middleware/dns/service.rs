@@ -1,5 +1,6 @@
 use std::{
     collections::HashMap,
+    future::Future,
     net::{IpAddr, SocketAddr},
 };
 
@@ -13,7 +14,7 @@ use crate::{
     BoxError,
 };
 
-use super::{DnsError, DnsResolver, DnsResolverFn, NoDnsResolver, ResolvedSocketAddr};
+use super::{DnsError, DnsResolver, DnsResolverFn, DnsResult, NoDnsResolver, ResolvedSocketAddr};
 
 #[derive(Debug, Clone)]
 pub struct DnsService<S, R> {
@@ -45,10 +46,10 @@ impl<S, R> DnsService<S, R> {
         }
     }
 
-    pub fn resolver_fn<F, T>(self, resolver: F) -> DnsService<S, DnsResolverFn<F>>
+    pub fn resolver_fn<F, Fut>(self, resolver: F) -> DnsService<S, DnsResolverFn<F>>
     where
-        T: DnsResolver,
-        F: Fn(&str) -> T + Send + Sync + 'static,
+        Fut: Future<Output = DnsResult<SocketAddr>> + Send,
+        F: Fn(&str) -> Fut + Clone + Send + 'static,
     {
         DnsService {
             inner: self.inner,

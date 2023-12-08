@@ -63,7 +63,7 @@ impl<F> DnsResolverFn<F> {
 
 impl<F, Fut> DnsResolver for DnsResolverFn<F>
 where
-    F: Fn(&str) -> Fut + Send + 'static,
+    F: Fn(&str) -> Fut + Clone + Send + 'static,
     Fut: Future<Output = DnsResult<SocketAddr>> + Send,
 {
     fn lookup_host(&self, host: &str) -> impl Future<Output = DnsResult<SocketAddr>> {
