@@ -1,5 +1,6 @@
 use std::marker::PhantomData;
 
+use http::header::AsHeaderName;
 use serde::de::DeserializeOwned;
 
 use crate::{
@@ -7,6 +8,19 @@ use crate::{
     service::{Layer, Service},
     BoxError,
 };
+
+pub async fn extract_header_config<H, Body, T>(
+    request: &Request<Body>,
+    header_name: H,
+) -> Result<T, BoxError>
+where
+    H: AsHeaderName + Copy,
+    T: DeserializeOwned + Clone + Send + Sync + 'static,
+{
+    let value = request.header_str(header_name)?;
+    let config = serde_urlencoded::from_str::<T>(value)?;
+    Ok(config)
+}
 
 #[derive(Debug)]
 pub struct HeaderConfigService<T, S> {
@@ -48,8 +62,7 @@ where
     type Error = BoxError;
 
     async fn call(&self, mut request: Request<Body>) -> Result<Self::Response, Self::Error> {
-        let value = request.header_str(&self.key)?;
-        let config = serde_urlencoded::from_str::<T>(value)?;
+        let config = extract_header_config::<_, _, T>(&request, &self.key).await?;
         request.extensions_mut().insert(config);
         self.inner.call(request).await.map_err(Into::into)
     }
