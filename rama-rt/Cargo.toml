@@ -13,8 +13,8 @@ authors = { workspace = true }
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rustls = "=0.22.0-alpha.6"
+rustls = "0.22"
 tokio = { version = "1.33", features = ["net", "io-util", "rt-multi-thread"] }
 tokio-graceful = "0.1"
-tokio-rustls = "=0.25.0-alpha.4"
+tokio-rustls = "0.25"
 tokio-test = "0.4.3"

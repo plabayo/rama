@@ -59,7 +59,6 @@ async fn main() {
             .spawn()
             .layer(RustlsAcceptorLayer::new(
                 TlsServerConfig::builder()
-                    .with_safe_defaults()
                     .with_no_client_auth()
                     .with_single_cert(
                         vec![server_cert_der.clone()],

@@ -50,6 +50,6 @@ tracing = "0.1"
 
 [dev-dependencies]
 futures = "0.3.29"
-pki-types = { package = "rustls-pki-types", version = "0.2.3" }
+pki-types = { package = "rustls-pki-types", version = "^1" }
 rcgen = "0.11.3"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
