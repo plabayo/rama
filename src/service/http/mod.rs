@@ -113,23 +113,7 @@ pub mod follow_redirect {
     }
 }
 
-pub mod limit {
-    //! Middleware for limiting request bodies.
-    //!
-    //! This layer will also intercept requests with a `Content-Length` header
-    //! larger than the allowable limit and return an immediate error response
-    //! before reading any of the body.
-    //!
-    //! Note that payload length errors can be used by adversaries in an attempt
-    //! to smuggle requests. When an incoming stream is dropped due to an
-    //! over-sized payload, servers should close the connection or resynchronize
-    //! by optimistically consuming some data in an attempt to reach the end of
-    //! the current HTTP frame. If the incoming stream cannot be resynchronized,
-    //! then the connection should be closed. If you're using [hyper] this is
-    //! automatically handled for you.
-
-    pub use tower_async_http::limit::{RequestBodyLimit, RequestBodyLimitLayer, ResponseBody};
-}
+pub mod limit;
 
 pub mod cors {
     //! Middleware which adds headers for [CORS][mdn].
