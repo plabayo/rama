@@ -5,16 +5,6 @@ pub trait Extendable {
     fn extensions_mut(&mut self) -> &mut Extensions;
 }
 
-impl Extendable for Extensions {
-    fn extensions(&self) -> &Extensions {
-        self
-    }
-
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        self
-    }
-}
-
 impl<T> Extendable for crate::http::Request<T> {
     fn extensions(&self) -> &Extensions {
         crate::http::Request::extensions(self)
