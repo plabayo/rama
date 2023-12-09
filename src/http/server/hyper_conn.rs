@@ -80,12 +80,14 @@ impl HyperConnServer for Http1Builder {
 
             let cancelled_fut = guard.cancelled();
             pin!(cancelled_fut);
+            let mut cancelled = false;
 
             loop {
                 select! {
-                    _ = cancelled_fut.as_mut() => {
+                    _ = cancelled_fut.as_mut(), if !cancelled => {
                         tracing::trace!("signal received: initiate graceful shutdown");
                         conn.as_mut().graceful_shutdown();
+                        cancelled = true;
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
@@ -146,12 +148,14 @@ impl HyperConnServer for Http2Builder<GlobalExecutor> {
 
             let cancelled_fut = guard.cancelled();
             pin!(cancelled_fut);
+            let mut cancelled = false;
 
             loop {
                 select! {
-                    _ = cancelled_fut.as_mut() => {
+                    _ = cancelled_fut.as_mut(), if !cancelled => {
                         tracing::trace!("signal received: initiate graceful shutdown");
                         conn.as_mut().graceful_shutdown();
+                        cancelled = true;
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
@@ -212,11 +216,13 @@ impl HyperConnServer for AutoBuilder<GlobalExecutor> {
 
             let cancelled_fut = guard.cancelled();
             pin!(cancelled_fut);
+            let mut cancelled = false;
 
             loop {
                 select! {
-                    _ = cancelled_fut.as_mut() => {
+                    _ = cancelled_fut.as_mut(), if !cancelled => {
                         tracing::trace!("signal received: nop: graceful shutdown not supported for auto builder");
+                        cancelled = true;
                         // TODO: support once it is implemented:
                         // https://github.com/hyperium/hyper-util/pull/66
                         // conn.as_mut().graceful_shutdown();
