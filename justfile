@@ -26,11 +26,8 @@ test:
 
 qa: lint check clippy doc hack test
 
-watch:
-	cargo watch -w rama -s 'just fmt check clippy test'
-
-rama:
-    FULL_BACKTRACE=1 cargo run -p rama --bin rama
+rama +ARGS:
+    cargo run -p rama-cli -- {{ARGS}}
 
 docker-build:
     docker build -t rama:latest -f Dockerfile .

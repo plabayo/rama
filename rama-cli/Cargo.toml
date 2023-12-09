@@ -8,6 +8,15 @@ repository = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
 authors = { workspace = true }
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+default-run = "rama"
 
 [dependencies]
+anyhow = "1.0"
+clap = { version = "4.4", features = [ "derive" ] }
+crossterm = "0.27"
+rama = { version = "0.2", path = ".." }
+ratatui = "0.24"
+
+[[bin]]
+name = "rama"
+path = "src/main.rs"
