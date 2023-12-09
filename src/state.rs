@@ -17,20 +17,30 @@ impl Extendable for Extensions {
 
 impl<T> Extendable for crate::http::Request<T> {
     fn extensions(&self) -> &Extensions {
-        self.extensions()
+        crate::http::Request::extensions(self)
     }
 
     fn extensions_mut(&mut self) -> &mut Extensions {
-        self.extensions_mut()
+        crate::http::Request::extensions_mut(self)
     }
 }
 
 impl<T> Extendable for crate::http::Response<T> {
     fn extensions(&self) -> &Extensions {
-        self.extensions()
+        crate::http::Response::extensions(self)
     }
 
     fn extensions_mut(&mut self) -> &mut Extensions {
-        self.extensions_mut()
+        crate::http::Response::extensions_mut(self)
+    }
+}
+
+impl<S> Extendable for crate::tcp::TcpStream<S> {
+    fn extensions(&self) -> &Extensions {
+        crate::tcp::TcpStream::extensions(self)
+    }
+
+    fn extensions_mut(&mut self) -> &mut Extensions {
+        crate::tcp::TcpStream::extensions_mut(self)
     }
 }

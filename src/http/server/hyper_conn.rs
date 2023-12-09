@@ -5,7 +5,7 @@ use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::server::conn::auto::Builder as AutoBuilder;
 
 use crate::rt::{graceful::ShutdownGuard, pin, select};
-use crate::{state::Extendable, tcp::TcpStream};
+use crate::tcp::TcpStream;
 
 use super::{GlobalExecutor, HyperIo, Response, ServeResult};
 

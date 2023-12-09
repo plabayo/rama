@@ -10,7 +10,7 @@ use crate::{
         io::{AsyncRead, AsyncWrite, ReadBuf},
         net::TcpStream as TokioTcpStream,
     },
-    state::{Extendable, Extensions},
+    state::Extensions,
 };
 
 pub mod client;
@@ -52,6 +52,14 @@ impl<S> TcpStream<S> {
     pub fn from_parts(inner: S, extensions: Extensions) -> Self {
         Self { inner, extensions }
     }
+
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+
+    pub fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
 }
 
 impl TcpStream<TokioTcpStream> {
@@ -69,16 +77,6 @@ impl TcpStream<TokioTcpStream> {
 
     pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
         self.inner.set_ttl(ttl)
-    }
-}
-
-impl<S> Extendable for TcpStream<S> {
-    fn extensions(&self) -> &Extensions {
-        &self.extensions
-    }
-
-    fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
     }
 }
 

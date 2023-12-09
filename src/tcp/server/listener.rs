@@ -10,7 +10,6 @@ use crate::{
         util::{Identity, Stack},
         Layer, Service, ServiceBuilder,
     },
-    state::Extendable,
     tcp::TcpStream,
     BoxError,
 };
