@@ -14,6 +14,8 @@ use crate::{
     BoxError,
 };
 
+use super::TcpSocketInfo;
+
 pub struct TcpListener<L> {
     inner: AsyncTcpListener,
     builder: ServiceBuilder<L>,
@@ -226,9 +228,14 @@ impl<L> TcpListener<L> {
                 }
                 result = self.inner.accept() => {
                     match result {
-                        Ok((socket, _)) => {
+                        Ok((socket, peer_addr)) => {
+                            let local_addr = socket.local_addr().ok();
                             let mut stream = TcpStream::new(socket);
                             stream.extensions_mut().insert(guard.clone());
+                            stream.extensions_mut().insert(TcpSocketInfo{
+                                local_addr,
+                                peer_addr,
+                            });
                             service.call(stream).await.map_err(|err| TcpServeError::Service(err.into()))?;
                         }
                         Err(err) => {

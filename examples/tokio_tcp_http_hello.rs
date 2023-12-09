@@ -6,7 +6,7 @@ use rama::{
     rt::graceful::Shutdown,
     service::{limit::ConcurrentPolicy, Layer, Service},
     stream::layer::BytesRWTrackerHandle,
-    tcp::server::TcpListener,
+    tcp::server::{TcpListener, TcpSocketInfo},
 };
 
 use tracing::metadata::LevelFilter;
@@ -89,11 +89,22 @@ where
             .expect("bytes tracker is enabled")
             .clone();
 
+        let tcp_socket_info = request
+            .extensions()
+            .get::<TcpSocketInfo>()
+            .expect("tcp socket info is enabled")
+            .clone();
+
         let result = self.service.call(request).await;
         match &result {
             Ok(response) => {
                 tracing::info!(
-                    "{} > status: {} [ bytes read: {} ]",
+                    "{} -> {} | {} > status: {} [ bytes read: {} ]",
+                    tcp_socket_info.peer_addr,
+                    tcp_socket_info
+                        .local_addr
+                        .map(|addr| addr.to_string())
+                        .unwrap_or_default(),
                     uri,
                     response.status(),
                     handle.read(),
@@ -101,7 +112,12 @@ where
             }
             Err(err) => {
                 tracing::error!(
-                    "{} > error: {:?} [ bytes read: {} ]",
+                    "{} -> {} | {} > error: {:?} [ bytes read: {} ]",
+                    tcp_socket_info.peer_addr,
+                    tcp_socket_info
+                        .local_addr
+                        .map(|addr| addr.to_string())
+                        .unwrap_or_default(),
                     uri,
                     err,
                     handle.read(),
