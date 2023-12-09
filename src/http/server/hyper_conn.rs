@@ -2,6 +2,7 @@ use std::error::Error as StdError;
 
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
+use hyper::service::service_fn;
 use hyper_util::server::conn::auto::Builder as AutoBuilder;
 
 use crate::rt::{graceful::ShutdownGuard, pin, select};
@@ -53,12 +54,26 @@ impl HyperConnServer for Http1Builder {
         Body::Data: Send,
         Body::Error: Into<Box<dyn StdError + Send + Sync>>,
     {
+        let extensions = io.extensions().clone();
+
         let io = Box::pin(io);
         let guard = io.extensions().get::<ShutdownGuard>().cloned();
 
         let stream = HyperIo::new(io);
 
-        let conn = self.serve_connection(stream, service).with_upgrades();
+        let conn = self
+            .serve_connection(
+                stream,
+                service_fn(move |mut request| {
+                    // insert transport extensions into the request
+                    let extensions = extensions.clone();
+                    request.extensions_mut().extend(extensions);
+
+                    // call the service
+                    service.call(request)
+                }),
+            )
+            .with_upgrades();
 
         if let Some(guard) = guard {
             pin!(conn);
@@ -107,12 +122,24 @@ impl HyperConnServer for Http2Builder<GlobalExecutor> {
         Body::Data: Send,
         Body::Error: Into<Box<dyn StdError + Send + Sync>>,
     {
+        let extensions = io.extensions().clone();
+
         let io = Box::pin(io);
         let guard = io.extensions().get::<ShutdownGuard>().cloned();
 
         let stream = HyperIo::new(io);
 
-        let conn = self.serve_connection(stream, service);
+        let conn = self.serve_connection(
+            stream,
+            service_fn(move |mut request| {
+                // insert transport extensions into the request
+                let extensions = extensions.clone();
+                request.extensions_mut().extend(extensions);
+
+                // call the service
+                service.call(request)
+            }),
+        );
 
         if let Some(guard) = guard {
             pin!(conn);
@@ -161,12 +188,24 @@ impl HyperConnServer for AutoBuilder<GlobalExecutor> {
         Body::Data: Send,
         Body::Error: Into<Box<dyn StdError + Send + Sync>>,
     {
+        let extensions = io.extensions().clone();
+
         let io = Box::pin(io);
         let guard = io.extensions().get::<ShutdownGuard>().cloned();
 
         let stream = HyperIo::new(io);
 
-        let conn = self.serve_connection_with_upgrades(stream, service);
+        let conn = self.serve_connection_with_upgrades(
+            stream,
+            service_fn(move |mut request| {
+                // insert transport extensions into the request
+                let extensions = extensions.clone();
+                request.extensions_mut().extend(extensions);
+
+                // call the service
+                service.call(request)
+            }),
+        );
 
         if let Some(guard) = guard {
             pin!(conn);
