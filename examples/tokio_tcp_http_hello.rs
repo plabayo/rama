@@ -1,6 +1,8 @@
 use std::{convert::Infallible, time::Duration};
 
 use rama::{
+    http::header::WWW_AUTHENTICATE,
+    http::headers::{authorization::Basic, Authorization, HeaderMapExt},
     http::server as http,
     http::StatusCode,
     rt::graceful::Shutdown,
@@ -44,8 +46,9 @@ async fn main() {
         let web_server = http_server
             .compression()
             .trace()
-            .timeout(Duration::from_secs(10))
             .layer(HttpLogLayer)
+            .async_authorization(auth_admin_request)
+            .timeout(Duration::from_secs(10))
             .service::<WebServer, _, _, _>(WebServer::new());
 
         tcp_listener
@@ -150,6 +153,10 @@ impl WebServer {
         }
     }
 
+    async fn render_page_admin(&self) -> Response {
+        self.render_page(StatusCode::OK, "Hello admin.")
+    }
+
     async fn render_page_fast(&self) -> Response {
         self.render_page(StatusCode::OK, "This was a fast response.")
     }
@@ -197,9 +204,32 @@ impl Service<Request> for WebServer {
 
     async fn call(&self, request: Request) -> Result<Self::Response, Self::Error> {
         Ok(match request.uri().path() {
+            "/admin" => self.render_page_admin().await,
             "/fast" => self.render_page_fast().await,
             "/slow" => self.render_page_slow().await,
             path => self.render_page_not_found(path).await,
         })
+    }
+}
+
+async fn auth_admin_request(request: Request) -> Result<Request, Response> {
+    if request.uri().path().starts_with("/admin") {
+        let authorized = request
+            .headers()
+            .typed_get::<Authorization<Basic>>()
+            .map(|c| c.password() == "1234" && c.username() == "admin")
+            .unwrap_or_default();
+
+        if authorized {
+            Ok(request)
+        } else {
+            Err(rama::http::response::Builder::new()
+                .status(StatusCode::UNAUTHORIZED)
+                .header(WWW_AUTHENTICATE, "Basic realm=\"example-admin\"")
+                .body("Unauthorized".to_owned())
+                .unwrap())
+        }
+    } else {
+        Ok(request)
     }
 }

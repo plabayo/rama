@@ -1194,6 +1194,22 @@ impl<B, L> HttpServer<B, L> {
             service_builder: self.service_builder.trim_trailing_slash(),
         }
     }
+
+    pub fn async_authorization<T, Body>(
+        self,
+        auth: T,
+    ) -> HttpServer<
+        B,
+        crate::service::util::Stack<
+            crate::service::http::auth::AsyncRequireAuthorizationLayer<T>,
+            L,
+        >,
+    >
+    where
+        T: crate::service::http::auth::AsyncAuthorizeRequest<Body> + Clone,
+    {
+        self.layer(crate::service::http::auth::AsyncRequireAuthorizationLayer::new(auth))
+    }
 }
 
 /// Add a dns layer to resolve hostnames prior to connecting.
