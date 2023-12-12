@@ -57,12 +57,12 @@ impl<S> BytesRWTracker<S> {
 
     /// Get the number of bytes read (so far).
     pub fn read(&self) -> usize {
-        self.read.load(Ordering::Relaxed)
+        self.read.load(Ordering::SeqCst)
     }
 
     /// Get the number of bytes written (so far).
     pub fn written(&self) -> usize {
-        self.written.load(Ordering::Relaxed)
+        self.written.load(Ordering::SeqCst)
     }
 
     /// Get a [`BytesRWTrackerHandle`] that can be used to get the number of bytes
@@ -103,7 +103,7 @@ where
         let res: Poll<Result<(), io::Error>> = this.stream.poll_read(cx, buf);
         if let Poll::Ready(Ok(_)) = res {
             let bytes_read = buf.filled().len() - size;
-            this.read.fetch_add(bytes_read, Ordering::Relaxed);
+            this.read.fetch_add(bytes_read, Ordering::SeqCst);
         }
         res
     }
@@ -121,7 +121,7 @@ where
         let this = self.as_mut().project();
         let res: Poll<Result<usize, io::Error>> = this.stream.poll_write(cx, buf);
         if let Poll::Ready(Ok(bytes_written)) = res {
-            this.written.fetch_add(bytes_written, Ordering::Relaxed);
+            this.written.fetch_add(bytes_written, Ordering::SeqCst);
         }
         res
     }
@@ -142,7 +142,7 @@ where
         let this = self.as_mut().project();
         let res: Poll<Result<usize, io::Error>> = this.stream.poll_write_vectored(cx, bufs);
         if let Poll::Ready(Ok(bytes_written)) = res {
-            this.written.fetch_add(bytes_written, Ordering::Relaxed);
+            this.written.fetch_add(bytes_written, Ordering::SeqCst);
         }
         res
     }
@@ -164,12 +164,12 @@ pub struct BytesRWTrackerHandle {
 impl BytesRWTrackerHandle {
     /// Get the number of bytes read (so far).
     pub fn read(&self) -> usize {
-        self.read.load(Ordering::Relaxed)
+        self.read.load(Ordering::SeqCst)
     }
 
     /// Get the number of bytes written (so far).
     pub fn written(&self) -> usize {
-        self.written.load(Ordering::Relaxed)
+        self.written.load(Ordering::SeqCst)
     }
 }
 
