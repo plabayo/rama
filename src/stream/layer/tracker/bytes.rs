@@ -102,8 +102,14 @@ where
         let size = buf.filled().len();
         let res: Poll<Result<(), io::Error>> = this.stream.poll_read(cx, buf);
         if let Poll::Ready(Ok(_)) = res {
-            let bytes_read = buf.filled().len() - size;
-            this.read.fetch_add(bytes_read, Ordering::SeqCst);
+            let new_size = buf.filled().len();
+            if new_size > size {
+                let bytes_read = new_size - size;
+                this.read.fetch_add(bytes_read, Ordering::SeqCst);
+            } else if new_size < size {
+                tracing::error!(
+                    "BytesRWTracker: poll_read returned Ok(()) with filled buffer smaller then before");
+            }
         }
         res
     }
