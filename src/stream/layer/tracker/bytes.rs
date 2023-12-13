@@ -103,12 +103,18 @@ where
         let res: Poll<Result<(), io::Error>> = this.stream.poll_read(cx, buf);
         if let Poll::Ready(Ok(_)) = res {
             let new_size = buf.filled().len();
-            if new_size > size {
-                let bytes_read = new_size - size;
-                this.read.fetch_add(bytes_read, Ordering::SeqCst);
-            } else if new_size < size {
-                tracing::error!(
-                    "BytesRWTracker: poll_read returned Ok(()) with filled buffer smaller then before");
+            match new_size.cmp(&size) {
+                std::cmp::Ordering::Greater => {
+                    let bytes_read = new_size - size;
+                    this.read.fetch_add(bytes_read, Ordering::SeqCst);
+                }
+                std::cmp::Ordering::Less => {
+                    tracing::error!(
+                        "BytesRWTracker: poll_read returned Ok(()) with filled buffer smaller then before");
+                }
+                std::cmp::Ordering::Equal => {
+                    tracing::trace!("BytesRWTracker: poll_read returned Ok(()) with nothing read");
+                }
             }
         }
         res
