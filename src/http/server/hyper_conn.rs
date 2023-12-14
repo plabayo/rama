@@ -1,5 +1,6 @@
 use std::error::Error as StdError;
 
+use futures::FutureExt;
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper::service::service_fn;
@@ -78,16 +79,14 @@ impl HyperConnServer for Http1Builder {
         if let Some(guard) = guard {
             pin!(conn);
 
-            let cancelled_fut = guard.cancelled();
+            let cancelled_fut = guard.cancelled().fuse();
             pin!(cancelled_fut);
-            let mut cancelled = false;
 
             loop {
                 select! {
-                    _ = cancelled_fut.as_mut(), if !cancelled => {
+                    _ = cancelled_fut.as_mut() => {
                         tracing::trace!("signal received: initiate graceful shutdown");
                         conn.as_mut().graceful_shutdown();
-                        cancelled = true;
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
@@ -146,16 +145,14 @@ impl HyperConnServer for Http2Builder<GlobalExecutor> {
         if let Some(guard) = guard {
             pin!(conn);
 
-            let cancelled_fut = guard.cancelled();
+            let cancelled_fut = guard.cancelled().fuse();
             pin!(cancelled_fut);
-            let mut cancelled = false;
 
             loop {
                 select! {
-                    _ = cancelled_fut.as_mut(), if !cancelled => {
+                    _ = cancelled_fut.as_mut() => {
                         tracing::trace!("signal received: initiate graceful shutdown");
                         conn.as_mut().graceful_shutdown();
-                        cancelled = true;
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
@@ -214,15 +211,13 @@ impl HyperConnServer for AutoBuilder<GlobalExecutor> {
         if let Some(guard) = guard {
             pin!(conn);
 
-            let cancelled_fut = guard.cancelled();
+            let cancelled_fut = guard.cancelled().fuse();
             pin!(cancelled_fut);
-            let mut cancelled = false;
 
             loop {
                 select! {
-                    _ = cancelled_fut.as_mut(), if !cancelled => {
+                    _ = cancelled_fut.as_mut() => {
                         tracing::trace!("signal received: nop: graceful shutdown not supported for auto builder");
-                        cancelled = true;
                         // TODO: support once it is implemented:
                         // https://github.com/hyperium/hyper-util/pull/66
                         // conn.as_mut().graceful_shutdown();

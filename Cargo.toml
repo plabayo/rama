@@ -26,6 +26,7 @@ categories = { workspace = true }
 authors = { workspace = true }
 
 [dependencies]
+futures = "0.3.29"
 headers = "0.4"
 http = "1"
 http-body = "1"
@@ -49,7 +50,6 @@ tower-async-http = { version = "0.2", features = ["full"] }
 tracing = "0.1"
 
 [dev-dependencies]
-futures = "0.3.29"
 pki-types = { package = "rustls-pki-types", version = "^1" }
 rcgen = "0.11.3"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
