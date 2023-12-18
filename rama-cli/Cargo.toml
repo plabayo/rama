@@ -15,7 +15,7 @@ anyhow = "1.0"
 clap = { version = "4.4", features = [ "derive" ] }
 crossterm = "0.27"
 rama = { version = "0.2", path = ".." }
-ratatui = "0.24"
+ratatui = "0.25"
 
 [[bin]]
 name = "rama"
