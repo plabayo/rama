@@ -218,9 +218,7 @@ impl HyperConnServer for AutoBuilder<GlobalExecutor> {
                 select! {
                     _ = cancelled_fut.as_mut() => {
                         tracing::trace!("signal received: nop: graceful shutdown not supported for auto builder");
-                        // TODO: support once it is implemented:
-                        // https://github.com/hyperium/hyper-util/pull/66
-                        // conn.as_mut().graceful_shutdown();
+                        conn.as_mut().graceful_shutdown();
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");

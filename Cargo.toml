@@ -32,8 +32,8 @@ http = "1"
 http-body = "1"
 http-body-util = "0.1"
 httparse = "1.8"
-hyper = { package = "rama-hyper", version = "0.1000001", features = ["http1", "http2", "server"] }
-hyper-util = { package = "rama-hyper-util", version = "0.1001", features = ["server-auto"] }
+hyper = { package = "rama-hyper", version = "0.1001000", features = ["http1", "http2", "server"] }
+hyper-util = { package = "rama-hyper-util", version = "0.1002", features = ["server-auto"] }
 matchit = "0.7.3"
 pin-project-lite = "0.2.13"
 rama-rt = { version = "0.2", path = "./rama-rt" }
@@ -51,5 +51,5 @@ tracing = "0.1"
 
 [dev-dependencies]
 pki-types = { package = "rustls-pki-types", version = "^1" }
-rcgen = "0.11.3"
+rcgen = "0.12.0"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
