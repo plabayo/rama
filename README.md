@@ -1,4 +1,4 @@
-[![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg)](https://ramaproxy.org/)
+[![rama banner](./docs/img/rama_banner.jpeg)](https://ramaproxy.org/)
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
@@ -28,58 +28,37 @@
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
 [ghs-url]: https://github.com/sponsors/plabayo
 
-Rama is first and foremost a framework for the Rust language to build distortion proxy software. Meaning to build proxies that sit in between in your spiders (software used for data extraction, also known as scraping) and your upstream (IP) proxies.
+🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop 🚦 reverse proxies, 🔓 TLS termination proxies, 🌐 HTTP(S) proxies, 🧦 SOCKS5 proxies and 🕵️‍♀️ distortion proxies.
 
-Please refer to [the examples found in the `./examples` dir](./examples) to learn how rama is to be used. There is no [crates.io](https://crates.io) release of rama yet. If you already want to start using rama already your can do so by referring to it in your `Cargo.toml` as follows:
+Please refer to [the examples found in the `./examples` dir](./examples) to get inspired on how you can use it for your purposes. There is no [crates.io](https://crates.io) release of rama yet. If you already want to start using rama already your can do so by referring to it in your `Cargo.toml` as follows:
 
 ```
 rama = { git = "https://github.com/plabayo/rama" }
 ```
 
-Come join us at [Discord][discord-url] on the `#rama` public channel. To ask questions, discuss ideas and ask how rama may be useful for you.
+💬 Come join us at [Discord][discord-url] on the `#rama` public channel. To ask questions, discuss ideas and ask how rama may be useful for you.
 
-> rama is early work in progress, use at your own risk.
+> ⚠️ rama is early work in progress, use at your own risk.
 >
 > Not everything that exists is documented and not everything that is documented is implemented.
 
-Rama's full documentatuon can be found in the form of the "rama book" at
-<https://ramaproxy.org/>.
+📖 Rama's full documentatuon, references and background material can be found in the form of the "rama book" at <https://ramaproxy.org/>.
 
-## Roadmap
+## 🧭 | Roadmap
 
 Please refer to <https://github.com/plabayo/rama/milestones> to know what's on the roadmap. Is there something not on the roadmap for the next version that you would really like? Please [create a feature request](https://github.com/plabayo/rama/issues) to request it and [become a sponsor](#sponsors) if you can.
 
-### Visual Overview (out of date)
+## 💼 | License
 
-This was an early attempt to visualise the overview of what the project offers. It is badly out of date however and will be replaced by a purely markdown documentation in the form of sections, summaries and example code. For now this at least should give you an idea of what v0.2 will look like.
+This project is dual-licensed under both the [MIT license][mit-license] and [Apache 2.0 License][apache-license].
 
-![rama roadmap v0.2.0](./docs/img/roadmap.svg)
+## 👋 | Contributing
 
-## Nightly
-
-`rama` is currently only available on nightly rust,
-this is because it uses the `async_trait` feature,
-which is currently only available on nightly rust.
-
-We expect to be able to switch back to stable rust once `async_trait` is available on stable rust,
-which should be by the end of 2023.
-
-See <https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html> for more information.
-
-> NOTE: the above information was about design #3 of Rama,
-> in the new design we might switch to `impl Future` which would stabalize this year...
-
-## Contributing
-
-:balloon: Thanks for your help improving the project! We are so happy to have
+🎈 Thanks for your help improving the project! We are so happy to have
 you! We have a [contributing guide][contributing] to help you get involved in the
 `rama` project.
 
 Should you want to contribure this project but you do not yet know how to program in Rust, you could start learning Rust with as goal to contribute as soon as possible to `rama` by using "[the Rust 101 Learning Guide](https://rust-lang.guide/)" as your study companion. Glen can also be hired as a mentor or teacher to give you paid 1-on-1 lessons and other similar consultancy services. You can find his contact details at <https://www.glendc.com/>.
-
-## License
-
-This project is dual-licensed under both the [MIT license][mit-license] and [Apache 2.0 License][apache-license].
 
 ### Contribution
 
@@ -91,7 +70,13 @@ without any additional terms or conditions.
 [mit-license]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [apache-license]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
 
-## Sponsors
+### Acknowledgements
+
+Special thanks goes to all involved in developing, maintaining and supporting [the Rust programming language](https://www.rust-lang.org/), the [Tokio ecosystem](https://tokio.rs/) and [all other crates](./Cargo.toml) that we depend upon.
+
+Extra credits also go to [Axum](https://github.com/tokio-rs/axum), from which ideas and code were copied as its a project very much in line with the kind of software we want Rama to be, but for a different purpose. Our hats also go off to [Tower](https://github.com/tower-rs/tower), its inventors and all the people and creatures that help make it be every day.
+
+## 💖 | Sponsors
 
 Rama is **completely free, open-source software** which needs lots of effort and time to develop and maintain.
 
@@ -117,19 +102,14 @@ building and maintaining open source software that `rama` depends upon:
 
 | | name | projects |
 | - | - | - |
-| 💌 | [Tokio (*)](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
+| 💌 | [Tokio](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
 | 💌 | [Sean McArthur](https://github.com/seanmonstar) | (Hyper and Tokio)
+| 💌 | [Ratatui](https://github.com/ratatui-org/ratatui) | (TUI framework)
 | 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
 
-> (*) we no longer depend upon `tower` directly, and instead
-> have made a permanent fork of it, available at: <https://github.com/plabayo/tower-async>
->
-> We do still contribure to `tower` as well and the goal is to move back to tower
-> once it becomes more suitable for our use cases.
+## ❓| FAQ
 
-## FAQ
-
-### Why the name rama?
+### Why the name "rama"?
 
 The name _rama_ is Japanese for llama and written as "ラマ".
 This animal is used as a our mascot and spiritual inspiration of this proxy framework.
@@ -145,21 +125,8 @@ and rely only on the `std` library for for any future/async primitives.
 ### What Async Runtime is used?
 
 We try to write the Rama codebase in an async runtime agnostic manner. Everything that is
-runtime specific (e.g. low level primitives) lives within `rama-rt`. For now Tokio is the only platform
-tested on and that is ready to use. In fact it is for now the only one implemented in the `rama-rt` crate.
+runtime specific (e.g. low level primitives) lives within `rama-rt`. For now [multithreaded Tokio](https://tokio.rs/) is the only platform tested on and that is ready to use. In fact it is for now the only one implemented in the `rama-rt` crate.
 
-Please refer to <https://github.com/plabayo/rama/issues/6> if you have a use case / need for `rama` outside
-of the tokio async runtime setting. E.g. in case you want to be able to support async-std, smol, something else
-or any DIY custom async runtime. Please add sufficient reasons and motivation to explain why support for it would
-be required for your use case. Also describe your use case well enough and if possible link to the code in case
-it is source-open.
+There are currently no plans to move away from [Tokio](https://tokio.rs/), we do however have plans to look into adding opt-in (feature-gated) supported for _io-uring_.
 
-### Help! My Async Trait's Future is not `Send`
-
-Due to a bug in Rust, most likely its trait resolver,
-you can currently run into this not very meanigful error.
-
-Cfr: <https://github.com/rust-lang/rust/issues/114142>
-
-By using the 'turbo fish' syntax you can resolve it.
-See that issue for more details on this solution.
+Please [open an issue](https://github.com/plabayo/rama/issues) or come and talk to us by [joining our Discord][discord-url] in case you want to help in adding support for different async runtimes.

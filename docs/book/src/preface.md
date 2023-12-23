@@ -1,4 +1,4 @@
-[![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg)](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg)
+[![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
 
 # Rama
 
@@ -30,7 +30,7 @@
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
 [ghs-url]: https://github.com/sponsors/plabayo
 
-Rama is first and foremost a framework for the Rust language to build distortion proxy software. Meaning to build proxies that sit in between in your spiders (software used for data extraction, also known as scraping) and your upstream (IP) proxies.
+Rama, a modular proxy framework to move and transform your network packets.
 
 > Rama is gratis FOSS and the repo with the full source code can be found
 > at <https://github.com/plabayo/rama>.
