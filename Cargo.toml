@@ -29,6 +29,9 @@ authors = { workspace = true }
 default = ["tracing"]
 tracing = ["dep:tracing"]
 
+[build-dependencies]
+rustversion = "1.0.9"
+
 [dependencies]
 bytes = "1"
 futures = "0.3.29"
@@ -43,9 +46,10 @@ hyper-util = { package = "rama-hyper-util", version = "0.1002", features = ["ser
 matchit = "0.7.3"
 pin-project-lite = "0.2.13"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 serde_urlencoded = "0.7"
 sync_wrapper = "0.1.2"
-tower = { version = "0.4.13", default-features = false, features = ["util"] }
+tower = { version = "0.4.13", default-features = false, features = ["util", "make"] }
 tower-layer = "0.3.2"
 tower-service = "0.3.2"
 tracing = { version = "0.1", optional = true }
@@ -53,5 +57,22 @@ tracing = { version = "0.1", optional = true }
 [dev-dependencies]
 pki-types = { package = "rustls-pki-types", version = "^1" }
 rcgen = "0.12.0"
+rustversion = "1.0.9"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dev-dependencies.tower]
+package = "tower"
+version = "0.4.13"
+features = [
+    "util",
+    "timeout",
+    "limit",
+    "load-shed",
+    "steer",
+    "filter",
+]

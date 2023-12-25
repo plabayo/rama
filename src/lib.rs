@@ -53,10 +53,15 @@
 // TODO: delete these allows after refactor is finished
 #![allow(unused_macros)]
 #![allow(unused_imports)]
+#![allow(dead_code)]
 
 #[macro_use]
 pub(crate) mod macros;
 
+#[cfg(test)]
+mod test_helpers;
+
 pub mod error;
+pub mod handler;
 
 pub mod http;
