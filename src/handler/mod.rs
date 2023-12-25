@@ -1,12 +1,15 @@
 //! Async functions that can be used to handle requests.
 
 use std::{convert::Infallible, fmt, future::Future, marker::PhantomData, pin::Pin};
-use tower::ServiceExt;
+use tower::ServiceExt as _;
 use tower_layer::Layer;
 use tower_service::Service;
 
 pub mod future;
 mod service;
+
+mod service_ext;
+pub use service_ext::ServiceExt;
 
 mod into_make_service;
 pub use into_make_service::IntoMakeService;
