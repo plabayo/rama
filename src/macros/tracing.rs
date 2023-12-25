@@ -1,3 +1,6 @@
+//! Internal tracing macros,
+//! allowing tracing statements regardless if enabled or not.
+
 #[cfg(feature = "tracing")]
 pub(crate) use tracing::{error, trace, warn};
 

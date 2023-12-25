@@ -798,7 +798,9 @@ dependencies = [
 name = "rama"
 version = "0.2.0"
 dependencies = [
+ "bytes",
  "futures",
+ "futures-util",
  "headers",
  "http",
  "http-body",
@@ -812,6 +814,7 @@ dependencies = [
  "rustls-pki-types",
  "serde",
  "serde_urlencoded",
+ "sync_wrapper",
  "tower",
  "tower-layer",
  "tower-service",
@@ -1156,6 +1159,12 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
+
+[[package]]
+name = "sync_wrapper"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2047c6ded9c721764247e62cd3b03c09ffc529b2ba5b10ec482ae507a4a70160"
 
 [[package]]
 name = "thread_local"

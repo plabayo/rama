@@ -30,7 +30,9 @@ default = ["tracing"]
 tracing = ["dep:tracing"]
 
 [dependencies]
+bytes = "1"
 futures = "0.3.29"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 headers = "0.4"
 http = "1"
 http-body = "1"
@@ -42,6 +44,7 @@ matchit = "0.7.3"
 pin-project-lite = "0.2.13"
 serde = { version = "1.0", features = ["derive"] }
 serde_urlencoded = "0.7"
+sync_wrapper = "0.1.2"
 tower = { version = "0.4.13", default-features = false, features = ["util"] }
 tower-layer = "0.3.2"
 tower-service = "0.3.2"

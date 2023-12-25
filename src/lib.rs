@@ -56,3 +56,7 @@
 
 #[macro_use]
 pub(crate) mod macros;
+
+pub mod error;
+
+pub mod http;
