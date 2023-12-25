@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "rama-cli", "rama-rt", "rama-rt-macros"]
+members = [".", "rama-cli"]
 
 [workspace.package]
 version = "0.2.0"
@@ -36,17 +36,11 @@ hyper = { package = "rama-hyper", version = "0.1001000", features = ["http1", "h
 hyper-util = { package = "rama-hyper-util", version = "0.1002", features = ["server-auto"] }
 matchit = "0.7.3"
 pin-project-lite = "0.2.13"
-rama-rt = { version = "0.2", path = "./rama-rt" }
-rama-rt-macros = { version = "0.2", path = "./rama-rt-macros" }
 serde = { version = "1.0", features = ["derive"] }
 serde_urlencoded = "0.7"
-tower-async = { version = "0.2", features = [
-  "util",
-  "timeout",
-  "filter",
-  "limit",
-] }
-tower-async-http = { version = "0.2", features = ["full"] }
+tower = { version = "0.4.13", default-features = false, features = ["util"] }
+tower-layer = "0.3.2"
+tower-service = "0.3.2"
 tracing = "0.1"
 
 [dev-dependencies]

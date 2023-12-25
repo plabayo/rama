@@ -28,7 +28,7 @@
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
 [ghs-url]: https://github.com/sponsors/plabayo
 
-🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop 🚦 reverse proxies, 🔓 TLS termination proxies, 🌐 HTTP(S) proxies, 🧦 SOCKS5 proxies and 🕵️‍♀️ distortion proxies.
+🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop 🚦 reverse proxies, 🔓 TLS termination proxies, 🌐 HTTP(S) proxies, 🧦 SOCKS5 proxies and 🕵️‍♀️ distortion proxies. Rama is async-first using [Tokio](https://tokio.rs/) as its Async Runtime.
 
 Please refer to [the examples found in the `./examples` dir](./examples) to get inspired on how you can use it for your purposes. There is no [crates.io](https://crates.io) release of rama yet. If you already want to start using rama already your can do so by referring to it in your `Cargo.toml` as follows:
 
@@ -74,7 +74,7 @@ without any additional terms or conditions.
 
 Special thanks goes to all involved in developing, maintaining and supporting [the Rust programming language](https://www.rust-lang.org/), the [Tokio ecosystem](https://tokio.rs/) and [all other crates](./Cargo.toml) that we depend upon.
 
-Extra credits also go to [Axum](https://github.com/tokio-rs/axum), from which ideas and code were copied as its a project very much in line with the kind of software we want Rama to be, but for a different purpose. Our hats also go off to [Tower](https://github.com/tower-rs/tower), its inventors and all the people and creatures that help make it be every day.
+Extra credits also go to [Axum](https://github.com/tokio-rs/axum), from which ideas and code were copied as its a project very much in line with the kind of software we want Rama to be, but for a different purpose. Our hats also go off to [Tower](https://github.com/tower-rs/tower), its inventors and all the people and creatures that help make it be every day. The initial code for the SOCKS5 support was copied from EAimTY's codebases.
 
 ## 💖 | Sponsors
 
@@ -121,12 +121,3 @@ Note that the Tokio runtime and its ecosystems sparked initial experimental vers
 but that we since then, after plenty of non-published iterations, have broken free from that ecosystem,
 and are now supporting other ecosystems as well. In fact, by default we link not into any async runtime,
 and rely only on the `std` library for for any future/async primitives.
-
-### What Async Runtime is used?
-
-We try to write the Rama codebase in an async runtime agnostic manner. Everything that is
-runtime specific (e.g. low level primitives) lives within `rama-rt`. For now [multithreaded Tokio](https://tokio.rs/) is the only platform tested on and that is ready to use. In fact it is for now the only one implemented in the `rama-rt` crate.
-
-There are currently no plans to move away from [Tokio](https://tokio.rs/), we do however have plans to look into adding opt-in (feature-gated) supported for _io-uring_.
-
-Please [open an issue](https://github.com/plabayo/rama/issues) or come and talk to us by [joining our Discord][discord-url] in case you want to help in adding support for different async runtimes.
