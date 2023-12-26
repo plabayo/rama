@@ -1,0 +1,31 @@
+[package]
+name = "rama-macros"
+description = "macros for rama, a modular proxy framework"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+
+[features]
+default = []
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = [
+    "full",
+    "parsing",
+] }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

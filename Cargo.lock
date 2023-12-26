@@ -872,6 +872,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-macros"
+version = "0.2.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.42",
+]
+
+[[package]]
 name = "ratatui"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

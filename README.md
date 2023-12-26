@@ -109,15 +109,4 @@ building and maintaining open source software that `rama` depends upon:
 
 ## ❓| FAQ
 
-### Why the name "rama"?
-
-The name _rama_ is Japanese for llama and written as "ラマ".
-This animal is used as a our mascot and spiritual inspiration of this proxy framework.
-It was chosen to honor our connection with Peru, the homeland of this magnificent animal,
-and translated into Japanese because we gratefully have built _rama_
-upon the broad shoulders of [Tokio and its community](https://tokio.rs/).
-
-Note that the Tokio runtime and its ecosystems sparked initial experimental versions of Rama,
-but that we since then, after plenty of non-published iterations, have broken free from that ecosystem,
-and are now supporting other ecosystems as well. In fact, by default we link not into any async runtime,
-and rely only on the `std` library for for any future/async primitives.
+Available at <https://ramaproxy.org/man/faq.html>.

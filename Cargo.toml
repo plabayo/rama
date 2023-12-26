@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "rama-cli"]
+members = [".", "rama-cli", "rama-macros"]
 
 [workspace.package]
 version = "0.2.0"
@@ -15,7 +15,7 @@ authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
 name = "rama"
 readme = "README.md"
 documentation = "https://docs.rs/rama"
-description = "distortion proxy framework"
+description = "modular proxy framework"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
