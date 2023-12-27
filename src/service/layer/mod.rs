@@ -13,6 +13,9 @@ pub use identity::Identity;
 mod stack;
 pub use stack::Stack;
 
+mod then;
+pub use then::{Then, ThenLayer};
+
 mod layer_fn;
 pub use layer_fn::{layer_fn, LayerFn};
 

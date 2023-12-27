@@ -13,6 +13,9 @@ pub use context::Context;
 mod svc;
 pub use svc::{BoxService, Service};
 
+mod svc_fn;
+pub use svc_fn::{service_fn, ServiceFn};
+
 pub mod layer;
 pub use layer::Layer;
 

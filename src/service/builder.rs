@@ -3,6 +3,7 @@
 use super::{
     layer::{
         layer_fn, Either, Identity, LayerFn, MapErrLayer, MapRequestLayer, MapResponseLayer, Stack,
+        ThenLayer,
     },
     BoxService, Layer, Service,
 };
@@ -103,27 +104,24 @@ impl<L> ServiceBuilder<L> {
         self.layer(MapErrLayer::new(f))
     }
 
-    // /// Apply an asynchronous function after the service, regardless of whether the future
-    // /// succeeds or fails.
-    // ///
-    // /// This wraps the inner service with an instance of the [`Then`]
-    // /// middleware.
-    // ///
-    // /// This is similar to the [`map_response`] and [`map_err`] functions,
-    // /// except that the *same* function is invoked when the service's future
-    // /// completes, whether it completes successfully or fails. This function
-    // /// takes the [`Result`] returned by the service's future, and returns a
-    // /// [`Result`].
-    // ///
-    // /// See the documentation for the [`then` combinator] for details.
-    // ///
-    // /// [`Then`]: crate::util::Then
-    // /// [`then` combinator]: crate::util::ServiceExt::then
-    // /// [`map_response`]: ServiceBuilder::map_response
-    // /// [`map_err`]: ServiceBuilder::map_err
-    // pub fn then<F>(self, f: F) -> ServiceBuilder<Stack<crate::util::ThenLayer<F>, L>> {
-    //     self.layer(crate::util::ThenLayer::new(f))
-    // }
+    /// Apply an asynchronous function after the service, regardless of whether the future
+    /// succeeds or fails.
+    ///
+    /// This wraps the inner service with an instance of the [`Then`]
+    /// middleware.
+    ///
+    /// This is similar to the [`map_response`] and [`map_err`] functions,
+    /// except that the *same* function is invoked when the service's future
+    /// completes, whether it completes successfully or fails. This function
+    /// takes the [`Result`] returned by the service's future, and returns a
+    /// [`Result`].
+    ///
+    /// [`Then`]: crate::service::layer::Then
+    /// [`map_response`]: ServiceBuilder::map_response
+    /// [`map_err`]: ServiceBuilder::map_err
+    pub fn then<F>(self, f: F) -> ServiceBuilder<Stack<ThenLayer<F>, L>> {
+        self.layer(ThenLayer::new(f))
+    }
 
     // /// Executes a new future after this service's future resolves. This does
     // /// not alter the behaviour of the [`poll_ready`] method.
@@ -177,18 +175,18 @@ impl<L> ServiceBuilder<L> {
         self.layer.layer(service)
     }
 
-    // /// Wrap the async function `F` with the middleware provided by this [`ServiceBuilder`]'s
-    // /// [`Layer`]s, returning a new [`Service`].
-    // ///
-    // /// [`Layer`]: crate::service::Layer
-    // /// [`Service`]: crate::service::Service
-    // /// [`service_fn`]: crate::service::service_fn
-    // pub fn service_fn<F>(self, f: F) -> L::Service
-    // where
-    //     L: Layer<crate::util::ServiceFn<F>>,
-    // {
-    //     self.service(crate::util::service_fn(f))
-    // }
+    /// Wrap the async function `F` with the middleware provided by this [`ServiceBuilder`]'s
+    /// [`Layer`]s, returning a new [`Service`].
+    ///
+    /// [`Layer`]: crate::service::Layer
+    /// [`Service`]: crate::service::Service
+    /// [`service_fn`]: crate::service::service_fn
+    pub fn service_fn<F>(self, f: F) -> L::Service
+    where
+        L: Layer<crate::service::ServiceFn<F>>,
+    {
+        self.service(crate::service::service_fn(f))
+    }
 
     /// This ensures the service produced
     /// by the inner [`Layer`] is Boxed as [`BoxService`] and can be used in situations where
