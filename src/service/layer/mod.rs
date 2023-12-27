@@ -16,6 +16,9 @@ pub use stack::Stack;
 mod layer_fn;
 pub use layer_fn::{layer_fn, LayerFn};
 
+mod map_request;
+pub use map_request::{MapRequest, MapRequestLayer};
+
 /// A layer that produces a Layered service (middleware(inner service)).
 pub trait Layer<S> {
     /// The service produced by the layer.

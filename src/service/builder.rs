@@ -1,7 +1,7 @@
 //! Builder types to compose layers and services
 
 use super::{
-    layer::{layer_fn, Either, Identity, LayerFn, Stack},
+    layer::{layer_fn, Either, Identity, LayerFn, MapRequestLayer, Stack},
     Layer, Service,
 };
 use std::fmt;
@@ -68,21 +68,18 @@ impl<L> ServiceBuilder<L> {
         self.layer(layer_fn(f))
     }
 
-    // /// Map one request type to another.
-    // ///
-    // /// This wraps the inner service with an instance of the [`MapRequest`]
-    // /// middleware.
-    // ///
-    // /// [`MapRequest`]: crate::util::MapRequest
-    // pub fn map_request<F, R1, R2>(
-    //     self,
-    //     f: F,
-    // ) -> ServiceBuilder<Stack<crate::util::MapRequestLayer<F>, L>>
-    // where
-    //     F: FnMut(R1) -> R2 + Clone,
-    // {
-    //     self.layer(crate::util::MapRequestLayer::new(f))
-    // }
+    /// Map one request type to another.
+    ///
+    /// This wraps the inner service with an instance of the [`MapRequest`]
+    /// middleware.
+    ///
+    /// [`MapRequest`]: crate::service::layer::MapRequest
+    pub fn map_request<F, R1, R2>(self, f: F) -> ServiceBuilder<Stack<MapRequestLayer<F>, L>>
+    where
+        F: FnMut(R1) -> R2 + Clone,
+    {
+        self.layer(MapRequestLayer::new(f))
+    }
 
     // /// Map one response type to another.
     // ///
