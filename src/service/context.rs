@@ -1,7 +1,7 @@
 //! Context passed to and between services as input.
 
 /// Context passed to and between services as input.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct Context<S> {
     state: S,
 }

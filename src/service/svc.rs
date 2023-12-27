@@ -11,7 +11,7 @@ pub trait Service<S, Request>: Send + 'static {
     type Response: Send + 'static;
 
     /// The type of error returned by the service.
-    type Error: Send + 'static;
+    type Error: Send + Sync + 'static;
 
     /// Serve a response or error for the given request,
     /// using the given context.
@@ -41,7 +41,7 @@ trait DynService<S, Request> {
     type Response;
     type Error;
 
-    fn serve(
+    fn serve_box(
         &self,
         ctx: Context<S>,
         req: Request,
@@ -61,7 +61,7 @@ where
     type Response = T::Response;
     type Error = T::Error;
 
-    fn serve(
+    fn serve_box(
         &self,
         ctx: Context<S>,
         req: Request,
@@ -97,6 +97,67 @@ where
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone_box(),
+        }
+    }
+}
+
+impl<S, Request, Response, Error> Service<S, Request> for BoxService<S, Request, Response, Error>
+where
+    S: 'static,
+    Request: 'static,
+    Response: Send + 'static,
+    Error: Send + Sync + 'static,
+{
+    type Response = Response;
+    type Error = Error;
+
+    fn serve(
+        &self,
+        ctx: Context<S>,
+        req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        self.inner.serve_box(ctx, req)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn assert_send() {
+        use crate::test_helpers::*;
+
+        assert_send::<BoxService<(), (), (), ()>>();
+    }
+
+    #[tokio::test]
+    async fn dynamic_dispatch() {
+        use std::convert::Infallible;
+
+        #[derive(Debug, Clone)]
+        struct AddSvc(usize);
+
+        impl Service<(), usize> for AddSvc {
+            type Response = usize;
+            type Error = Infallible;
+
+            async fn serve(
+                &self,
+                _ctx: Context<()>,
+                req: usize,
+            ) -> Result<Self::Response, Self::Error> {
+                Ok(self.0 + req)
+            }
+        }
+
+        let services = vec![AddSvc(1).boxed(), AddSvc(2).boxed(), AddSvc(3).boxed()];
+
+        let ctx = Context::new(());
+
+        for (i, svc) in services.into_iter().enumerate() {
+            let response = svc.serve(ctx.clone(), i).await.unwrap();
+            assert_eq!(response, i * 2 + 1);
         }
     }
 }
