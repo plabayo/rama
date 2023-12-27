@@ -1,8 +1,10 @@
 //! Builder types to compose layers and services
 
 use super::{
-    layer::{layer_fn, Either, Identity, LayerFn, MapRequestLayer, Stack},
-    Layer, Service,
+    layer::{
+        layer_fn, Either, Identity, LayerFn, MapErrLayer, MapRequestLayer, MapResponseLayer, Stack,
+    },
+    BoxService, Layer, Service,
 };
 use std::fmt;
 
@@ -81,34 +83,25 @@ impl<L> ServiceBuilder<L> {
         self.layer(MapRequestLayer::new(f))
     }
 
-    // /// Map one response type to another.
-    // ///
-    // /// This wraps the inner service with an instance of the [`MapResponse`]
-    // /// middleware.
-    // ///
-    // /// See the documentation for the [`map_response` combinator] for details.
-    // ///
-    // /// [`MapResponse`]: crate::util::MapResponse
-    // /// [`map_response` combinator]: crate::util::ServiceExt::map_response
-    // pub fn map_response<F>(
-    //     self,
-    //     f: F,
-    // ) -> ServiceBuilder<Stack<crate::util::MapResponseLayer<F>, L>> {
-    //     self.layer(crate::util::MapResponseLayer::new(f))
-    // }
+    /// Map one response type to another.
+    ///
+    /// This wraps the inner service with an instance of the [`MapResponse`]
+    /// middleware.
+    ///
+    /// [`MapResponse`]: crate::service::layer::MapResponse
+    pub fn map_response<F>(self, f: F) -> ServiceBuilder<Stack<MapResponseLayer<F>, L>> {
+        self.layer(MapResponseLayer::new(f))
+    }
 
-    // /// Map one error type to another.
-    // ///
-    // /// This wraps the inner service with an instance of the [`MapErr`]
-    // /// middleware.
-    // ///
-    // /// See the documentation for the [`map_err` combinator] for details.
-    // ///
-    // /// [`MapErr`]: crate::util::MapErr
-    // /// [`map_err` combinator]: crate::util::ServiceExt::map_err
-    // pub fn map_err<F>(self, f: F) -> ServiceBuilder<Stack<crate::util::MapErrLayer<F>, L>> {
-    //     self.layer(crate::util::MapErrLayer::new(f))
-    // }
+    /// Map one error type to another.
+    ///
+    /// This wraps the inner service with an instance of the [`MapErr`]
+    /// middleware.
+    ///
+    /// [`MapErr`]: crate::service::layer::MapErr
+    pub fn map_err<F>(self, f: F) -> ServiceBuilder<Stack<MapErrLayer<F>, L>> {
+        self.layer(MapErrLayer::new(f))
+    }
 
     // /// Apply an asynchronous function after the service, regardless of whether the future
     // /// succeeds or fails.
@@ -167,22 +160,22 @@ impl<L> ServiceBuilder<L> {
     //     self.layer(crate::util::MapResultLayer::new(f))
     // }
 
-    // /// Returns the underlying `Layer` implementation.
-    // pub fn into_inner(self) -> L {
-    //     self.layer
-    // }
+    /// Returns the underlying `Layer` implementation.
+    pub fn into_inner(self) -> L {
+        self.layer
+    }
 
-    // /// Wrap the service `S` with the middleware provided by this
-    // /// [`ServiceBuilder`]'s [`Layer`]'s, returning a new [`Service`].
-    // ///
-    // /// [`Layer`]: crate::Layer
-    // /// [`Service`]: crate::Service
-    // pub fn service<S>(&self, service: S) -> L::Service
-    // where
-    //     L: Layer<S>,
-    // {
-    //     self.layer.layer(service)
-    // }
+    /// Wrap the service `S` with the middleware provided by this
+    /// [`ServiceBuilder`]'s [`Layer`]'s, returning a new [`Service`].
+    ///
+    /// [`Layer`]: crate::service::Layer
+    /// [`Service`]: crate::service::Service
+    pub fn service<S>(&self, service: S) -> L::Service
+    where
+        L: Layer<S>,
+    {
+        self.layer.layer(service)
+    }
 
     // /// Wrap the async function `F` with the middleware provided by this [`ServiceBuilder`]'s
     // /// [`Layer`]s, returning a new [`Service`].
@@ -197,34 +190,34 @@ impl<L> ServiceBuilder<L> {
     //     self.service(crate::util::service_fn(f))
     // }
 
-    // /// This wraps the inner service with the [`Layer`] returned by [`BoxService::layer()`].
-    // ///
-    // /// See that method for more details.
-    // ///
-    // /// [`BoxService::layer()`]: crate::util::BoxService::layer()
-    // pub fn boxed<S, R>(
-    //     self,
-    // ) -> ServiceBuilder<
-    //     Stack<
-    //         tower_layer::LayerFn<
-    //             fn(
-    //                 L::Service,
-    //             ) -> crate::util::BoxService<
-    //                 R,
-    //                 <L::Service as Service<R>>::Response,
-    //                 <L::Service as Service<R>>::Error,
-    //             >,
-    //         >,
-    //         L,
-    //     >,
-    // >
-    // where
-    //     L: Layer<S>,
-    //     L::Service: Service<R> + Send + 'static,
-    //     <L::Service as Service<R>>::Future: Send + 'static,
-    // {
-    //     self.layer(crate::util::BoxService::layer())
-    // }
+    /// This ensures the service produced
+    /// by the inner [`Layer`] is Boxed as [`BoxService`] and can be used in situations where
+    /// dynamic dispatch is required.
+    ///
+    /// See that method for more details.
+    pub fn boxed<S, R, State>(
+        self,
+    ) -> ServiceBuilder<
+        Stack<
+            LayerFn<
+                fn(
+                    L::Service,
+                ) -> crate::service::BoxService<
+                    State,
+                    R,
+                    <L::Service as Service<State, R>>::Response,
+                    <L::Service as Service<State, R>>::Error,
+                >,
+            >,
+            L,
+        >,
+    >
+    where
+        L: Layer<S>,
+        L::Service: Service<State, R> + Clone,
+    {
+        self.layer_fn(BoxService::new)
+    }
 }
 
 impl<L: fmt::Debug> fmt::Debug for ServiceBuilder<L> {

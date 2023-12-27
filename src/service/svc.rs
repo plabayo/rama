@@ -84,6 +84,18 @@ pub struct BoxService<S, Request, Response, Error> {
     inner: Box<dyn DynService<S, Request, Response = Response, Error = Error> + Send + 'static>,
 }
 
+impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
+    /// Create a new [`BoxService`] from the given service.
+    pub fn new<T>(service: T) -> Self
+    where
+        T: Service<S, Request, Response = Response, Error = Error> + Clone,
+    {
+        Self {
+            inner: Box::new(service),
+        }
+    }
+}
+
 impl<S, Request, Response, Error> std::fmt::Debug for BoxService<S, Request, Response, Error> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoxService").finish()
