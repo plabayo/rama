@@ -6,8 +6,7 @@
 //! # High-level features
 //!
 //! - Macro-free API.
-//! - Take full advantage of the [`tower`] and [`tower-http`] ecosystem of
-//!   middleware, services, and utilities.
+//! - Use a tower-like service abstraction, ready for stable Async Rust, with an eye on the future.
 //!
 
 #![warn(
@@ -62,7 +61,6 @@ pub(crate) mod macros;
 mod test_helpers;
 
 pub mod error;
-pub mod handler;
 pub mod service;
 
 pub mod http;

@@ -819,8 +819,6 @@ dependencies = [
  "sync_wrapper",
  "tokio",
  "tower",
- "tower-layer",
- "tower-service",
  "tracing",
  "tracing-subscriber",
 ]

@@ -4,6 +4,18 @@
 //!
 //! Direct copy of [tower-layer](https://docs.rs/tower-layer/0.3.0/tower_layer/trait.Layer.html).
 
+mod either;
+pub use either::Either;
+
+mod identity;
+pub use identity::Identity;
+
+mod stack;
+pub use stack::Stack;
+
+mod layer_fn;
+pub use layer_fn::{layer_fn, LayerFn};
+
 /// A layer that produces a Layered service (middleware(inner service)).
 pub trait Layer<S> {
     /// The service produced by the layer.
