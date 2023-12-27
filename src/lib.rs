@@ -63,5 +63,6 @@ mod test_helpers;
 
 pub mod error;
 pub mod handler;
+pub mod service;
 
 pub mod http;
