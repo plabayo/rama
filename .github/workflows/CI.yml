@@ -2,7 +2,7 @@ name: CI
 
 env:
   CARGO_TERM_COLOR: always
-  RUST_TOOLCHAIN: nightly
+  RUST_TOOLCHAIN: stable
 
 on:
   push:
@@ -138,16 +138,13 @@ jobs:
       - uses: actions/checkout@v3
       - uses: EmbarkStudios/cargo-deny-action@v1
 
-  # disabling semver-checks for now because it's not working with the latest
-  # version of nightly rust. We can renable it again in future if needed
-  # and defintely once we're at stable Rust
-  # semver-checks:
-  #   needs: check
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Checkout
-  #       uses: actions/checkout@v3
-  #     - name: Check semver
-  #       uses: obi1kenobi/cargo-semver-checks-action@v2
-  #       with:
-  #         rust-toolchain: ${{env.RUST_TOOLCHAIN}}
+  semver-checks:
+    needs: check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Check semver
+        uses: obi1kenobi/cargo-semver-checks-action@v2
+        with:
+          rust-toolchain: ${{env.RUST_TOOLCHAIN}}
