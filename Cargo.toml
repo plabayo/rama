@@ -66,15 +66,3 @@ tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
-
-[dev-dependencies.tower]
-package = "tower"
-version = "0.4.13"
-features = [
-    "util",
-    "timeout",
-    "limit",
-    "load-shed",
-    "steer",
-    "filter",
-]
