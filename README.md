@@ -44,6 +44,14 @@ rama = { git = "https://github.com/plabayo/rama" }
 
 📖 Rama's full documentatuon, references and background material can be found in the form of the "rama book" at <https://ramaproxy.org/>.
 
+## ⛨ | Safety
+
+This crate uses `#![forbid(unsafe_code)]` to ensure everything is implemented in 100% safe Rust.
+
+## 🦀 | Minimum supported Rust version
+
+Rama's MSRV is `1.75`.
+
 ## 🧭 | Roadmap
 
 Please refer to <https://github.com/plabayo/rama/milestones> to know what's on the roadmap. Is there something not on the roadmap for the next version that you would really like? Please [create a feature request](https://github.com/plabayo/rama/issues) to request it and [become a sponsor](#sponsors) if you can.
