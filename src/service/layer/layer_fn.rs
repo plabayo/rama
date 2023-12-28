@@ -79,11 +79,29 @@ mod tests {
             }
         }
 
-        let res = layer_fn(ToUpper)
-            .layer(service_fn(|_, req| async move { Ok::<_, Infallible>(req) }))
+        impl<S> Clone for ToUpper<S>
+        where
+            S: Clone,
+        {
+            fn clone(&self) -> Self {
+                ToUpper(self.0.clone())
+            }
+        }
+
+        let layer = layer_fn(ToUpper);
+        let f = |_, req| async move { Ok::<_, Infallible>(req) };
+
+        let res = layer
+            .layer(service_fn(f))
             .serve(Context::default(), "hello")
             .await;
+        assert_eq!(res, Ok("HELLO".to_owned()));
 
+        // can be cloned the layer, and the service
+        let svc = layer.layer(service_fn(f));
+        let res = svc.serve(Context::default(), "hello").await;
+        assert_eq!(res, Ok("HELLO".to_owned()));
+        let res = svc.clone().serve(Context::default(), "hello").await;
         assert_eq!(res, Ok("HELLO".to_owned()));
     }
 

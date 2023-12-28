@@ -10,7 +10,7 @@ homepage = "https://ramaproxy.org"
 keywords = ["io", "async", "non-blocking", "futures"]
 categories = ["asynchronous", "network-programming"]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-msrv = "1.75.0"
+rust-version = "1.75.0"
 
 [package]
 name = "rama"
@@ -25,6 +25,7 @@ homepage = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
 authors = { workspace = true }
+rust-version = { workspace = true }
 
 [features]
 default = ["tracing"]
