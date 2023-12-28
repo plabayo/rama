@@ -61,9 +61,9 @@ where
     fn serve(
         &self,
         ctx: Context<State>,
-        request: Request,
+        req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.inner.serve(ctx, request).map_err(self.f.clone())
+        self.inner.serve(ctx, req).map_err(self.f.clone())
     }
 }
 

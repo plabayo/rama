@@ -31,17 +31,17 @@ where
     fn serve(
         &self,
         ctx: Context<S>,
-        request: Request,
+        req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + '_ {
         match self {
             Either::Left(service) => EitherResponseFuture {
                 kind: Kind::Left {
-                    inner: service.serve(ctx, request),
+                    inner: service.serve(ctx, req),
                 },
             },
             Either::Right(service) => EitherResponseFuture {
                 kind: Kind::Right {
-                    inner: service.serve(ctx, request),
+                    inner: service.serve(ctx, req),
                 },
             },
         }

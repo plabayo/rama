@@ -16,17 +16,23 @@ pub use stack::Stack;
 mod then;
 pub use then::{Then, ThenLayer};
 
+mod and_then;
+pub use and_then::{AndThen, AndThenLayer};
+
 mod layer_fn;
 pub use layer_fn::{layer_fn, LayerFn};
-
-mod map_err;
-pub use map_err::{MapErr, MapErrLayer};
 
 mod map_request;
 pub use map_request::{MapRequest, MapRequestLayer};
 
 mod map_response;
 pub use map_response::{MapResponse, MapResponseLayer};
+
+mod map_err;
+pub use map_err::{MapErr, MapErrLayer};
+
+mod map_result;
+pub use map_result::{MapResult, MapResultLayer};
 
 /// A layer that produces a Layered service (middleware(inner service)).
 pub trait Layer<S> {
