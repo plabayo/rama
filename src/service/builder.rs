@@ -226,3 +226,51 @@ where
         self.layer.layer(inner)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use std::convert::Infallible;
+
+    use httparse::Response;
+
+    use crate::service::{Context, Service};
+
+    use super::*;
+
+    #[test]
+    fn assert_send() {
+        use crate::test_helpers::*;
+
+        assert_send::<ServiceBuilder<Identity>>();
+        assert_send::<ServiceBuilder<Stack<Identity, Identity>>>();
+        assert_send::<ServiceBuilder<Stack<Identity, Stack<Identity, Identity>>>>();
+    }
+
+    #[test]
+    fn assert_sync() {
+        use crate::test_helpers::*;
+
+        assert_sync::<ServiceBuilder<Identity>>();
+        assert_sync::<ServiceBuilder<Stack<Identity, Identity>>>();
+        assert_sync::<ServiceBuilder<Stack<Identity, Stack<Identity, Identity>>>>();
+    }
+
+    // #[tokio::test]
+    // async fn test_layer_service_fn() {
+    //     use futures_util::TryFutureExt;
+
+    //     let service = ServiceBuilder::new()
+    //         .layer_fn(|inner: impl Service<(), &'static str>| {
+    //             crate::service::service_fn(move |ctx, s| {
+    //                 let inner = inner.clone();
+    //                 inner.serve(ctx, s).map_ok(|s| s.to_uppercase())
+    //             })
+    //         })
+    //         .service_fn(|ctx: Context<()>, s: &'static str| async move {
+    //             s.trim()
+    //         });
+
+    //     let res = service.serve(Context::default(), "  hello world  ").await;
+    //     assert_eq!(res, Ok("HELLO WORLD".to_string()));
+    // }
+}

@@ -6,6 +6,12 @@ pub struct Context<S> {
     state: S,
 }
 
+impl Default for Context<()> {
+    fn default() -> Self {
+        Self { state: () }
+    }
+}
+
 impl<S> Context<S> {
     /// Create a new [`Context`] with the given state.
     pub fn new(state: S) -> Self {

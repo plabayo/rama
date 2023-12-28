@@ -43,3 +43,22 @@ where
         (self.f)(ctx, req)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_service_fn() {
+        let svc = service_fn(|_, req| async move { Ok::<_, ()>(req) });
+        let res = svc.serve(Context::default(), "hello").await;
+        assert_eq!(res, Ok("hello"));
+    }
+
+    #[tokio::test]
+    async fn test_service_fn_adder() {
+        let svc = service_fn(|_, (a, b)| async move { Ok::<_, ()>(a + b) });
+        let res = svc.serve(Context::default(), (1, 2)).await;
+        assert_eq!(res, Ok(3));
+    }
+}

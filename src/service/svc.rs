@@ -135,41 +135,90 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::convert::Infallible;
+
+    #[derive(Debug, Clone)]
+    struct AddSvc(usize);
+
+    impl Service<(), usize> for AddSvc {
+        type Response = usize;
+        type Error = Infallible;
+
+        async fn serve(
+            &self,
+            _ctx: Context<()>,
+            req: usize,
+        ) -> Result<Self::Response, Self::Error> {
+            Ok(self.0 + req)
+        }
+    }
+
+    #[derive(Debug, Clone)]
+    struct MulSvc(usize);
+
+    impl Service<(), usize> for MulSvc {
+        type Response = usize;
+        type Error = Infallible;
+
+        async fn serve(
+            &self,
+            _ctx: Context<()>,
+            req: usize,
+        ) -> Result<Self::Response, Self::Error> {
+            Ok(self.0 * req)
+        }
+    }
 
     #[test]
     fn assert_send() {
         use crate::test_helpers::*;
 
+        assert_send::<AddSvc>();
+        assert_send::<MulSvc>();
         assert_send::<BoxService<(), (), (), ()>>();
     }
 
     #[tokio::test]
-    async fn dynamic_dispatch() {
-        use std::convert::Infallible;
+    async fn add_svc() {
+        let svc = AddSvc(1);
 
-        #[derive(Debug, Clone)]
-        struct AddSvc(usize);
+        let ctx = Context::new(());
 
-        impl Service<(), usize> for AddSvc {
-            type Response = usize;
-            type Error = Infallible;
+        let response = svc.serve(ctx, 1).await.unwrap();
+        assert_eq!(response, 2);
+    }
 
-            async fn serve(
-                &self,
-                _ctx: Context<()>,
-                req: usize,
-            ) -> Result<Self::Response, Self::Error> {
-                Ok(self.0 + req)
-            }
-        }
-
-        let services = vec![AddSvc(1).boxed(), AddSvc(2).boxed(), AddSvc(3).boxed()];
+    #[tokio::test]
+    async fn static_dispatch() {
+        let services = vec![AddSvc(1), AddSvc(2), AddSvc(3)];
 
         let ctx = Context::new(());
 
         for (i, svc) in services.into_iter().enumerate() {
             let response = svc.serve(ctx.clone(), i).await.unwrap();
             assert_eq!(response, i * 2 + 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn dynamic_dispatch() {
+        let services = vec![
+            AddSvc(1).boxed(),
+            AddSvc(2).boxed(),
+            AddSvc(3).boxed(),
+            MulSvc(4).boxed(),
+            MulSvc(5).boxed(),
+        ];
+
+        let ctx = Context::new(());
+
+        for (i, svc) in services.into_iter().enumerate() {
+            let response = svc.serve(ctx.clone(), i).await.unwrap();
+            if i < 3 {
+                assert_eq!(response, i * 2 + 1);
+            } else {
+                assert_eq!(response, i * (i + 1));
+            }
         }
     }
 }
