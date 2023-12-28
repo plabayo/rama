@@ -229,9 +229,9 @@ where
 
 #[cfg(test)]
 mod test {
+    use futures_util::TryFutureExt;
     use std::convert::Infallible;
-
-    use httparse::Response;
+    use std::future::Future;
 
     use crate::service::{Context, Service};
 
@@ -255,22 +255,82 @@ mod test {
         assert_sync::<ServiceBuilder<Stack<Identity, Stack<Identity, Identity>>>>();
     }
 
-    // #[tokio::test]
-    // async fn test_layer_service_fn() {
-    //     use futures_util::TryFutureExt;
+    #[derive(Debug)]
+    struct ToUpper<S>(S);
 
-    //     let service = ServiceBuilder::new()
-    //         .layer_fn(|inner: impl Service<(), &'static str>| {
-    //             crate::service::service_fn(move |ctx, s| {
-    //                 let inner = inner.clone();
-    //                 inner.serve(ctx, s).map_ok(|s| s.to_uppercase())
-    //             })
-    //         })
-    //         .service_fn(|ctx: Context<()>, s: &'static str| async move {
-    //             s.trim()
-    //         });
+    impl<S, State, Request> Service<State, Request> for ToUpper<S>
+    where
+        S: Service<State, Request>,
+        S::Response: AsRef<str>,
+    {
+        type Response = String;
+        type Error = S::Error;
 
-    //     let res = service.serve(Context::default(), "  hello world  ").await;
-    //     assert_eq!(res, Ok("HELLO WORLD".to_string()));
-    // }
+        fn serve(
+            &self,
+            ctx: Context<State>,
+            req: Request,
+        ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+            self.0
+                .serve(ctx, req)
+                .map_ok(|res| res.as_ref().to_uppercase())
+        }
+    }
+
+    impl<S> Clone for ToUpper<S>
+    where
+        S: Clone,
+    {
+        fn clone(&self) -> Self {
+            ToUpper(self.0.clone())
+        }
+    }
+
+    #[tokio::test]
+    async fn test_layer_service_fn_static_and_dynamic() {
+        use futures_util::TryFutureExt;
+
+        let service = ServiceBuilder::new()
+            .layer_fn(ToUpper)
+            .service_fn(|_, s: &'static str| async move { Ok::<_, Infallible>(s.trim()) });
+
+        let res = service.serve(Context::default(), "  hello world  ").await;
+        assert_eq!(res, Ok("HELLO WORLD".to_owned()));
+
+        let boxed_service = service.boxed();
+        let res = boxed_service
+            .serve(Context::default(), "  ola mundo  ")
+            .await;
+        assert_eq!(res, Ok("OLA MUNDO".to_owned()));
+    }
+
+    #[test]
+    fn test_service_builder_hyper_compat() {
+        use bytes::Bytes;
+        use http_body_util::Full;
+        use hyper::body::Incoming;
+        use hyper::{Request, Response};
+        use hyper_util::rt::TokioIo;
+        use tokio_test::io::Builder;
+
+        let service = ServiceBuilder::new()
+            .map_response(|_| hyper::Response::new(Full::<Bytes>::default()))
+            .service_fn(|_, _: Request<Incoming>| async {
+                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("Hello, World!"))))
+            });
+
+        let mut io = TokioIo::new(Builder::new().build());
+        let ctx = Context::default();
+
+        let fut = hyper::server::conn::http1::Builder::new().serve_connection(
+            &mut io,
+            hyper::service::service_fn(move |req| {
+                let service = service.clone();
+                let ctx = ctx.clone();
+
+                async move { service.serve(ctx, req).await }
+            }),
+        );
+        std::mem::drop(fut);
+    }
 }
