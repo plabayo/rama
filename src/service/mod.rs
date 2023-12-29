@@ -24,3 +24,6 @@ pub use layer::Layer;
 
 mod builder;
 pub use builder::ServiceBuilder;
+
+mod identity;
+pub use identity::IdentityService;

@@ -47,11 +47,14 @@ hyper = { package = "rama-hyper", version = "0.1001000", features = ["http1", "h
 hyper-util = { package = "rama-hyper-util", version = "0.1002", features = ["tokio", "server-auto"] }
 matchit = "0.7.3"
 pin-project-lite = "0.2.13"
+rustls = "0.22"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_urlencoded = "0.7"
 sync_wrapper = "0.1.2"
 tokio = { version = "1", features = ["macros"] }
+tokio-graceful = "0.1"
+tokio-rustls = "0.25"
 tracing = { version = "0.1", optional = true }
 
 [dev-dependencies]

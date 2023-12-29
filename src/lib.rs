@@ -60,9 +60,12 @@ pub(crate) mod macros;
 #[cfg(test)]
 mod test_helpers;
 
+pub mod graceful;
+
 pub mod error;
 pub mod service;
 
 pub mod stream;
+pub mod tls;
 
 pub mod http;
