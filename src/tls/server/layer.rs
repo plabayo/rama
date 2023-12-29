@@ -110,7 +110,7 @@ impl std::fmt::Debug for TlsAcceptorLayer {
 impl TlsAcceptorLayer {
     /// Creates a new [`TlsAcceptorLayer`] using the given [`ServerConfig`],
     /// which is used to configure the inner TLS acceptor.
-    /// 
+    ///
     /// [`ServerConfig`]: https://docs.rs/rustls/latest/rustls/server/struct.ServerConfig.html
     pub fn new(config: ServerConfig) -> Self {
         Self {
