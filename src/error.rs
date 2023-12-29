@@ -36,3 +36,9 @@ impl StdError for Error {
         Some(&*self.inner)
     }
 }
+
+impl From<BoxError> for Error {
+    fn from(error: BoxError) -> Self {
+        Self { inner: error }
+    }
+}

@@ -1,8 +1,5 @@
 //! Internal macros
 
-mod tracing;
-pub(crate) use tracing::*;
-
 macro_rules! opaque_future {
     ($(#[$m:meta])* pub type $name:ident = $actual:ty;) => {
         opaque_future! {

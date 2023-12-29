@@ -66,6 +66,9 @@ pub mod error;
 pub mod service;
 
 pub mod stream;
+
+pub mod tcp;
+
 pub mod tls;
 
 pub mod http;

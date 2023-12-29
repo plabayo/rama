@@ -28,8 +28,7 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 
 [features]
-default = ["tracing"]
-tracing = ["dep:tracing"]
+default = []
 
 [build-dependencies]
 rustversion = "1.0.9"
@@ -55,7 +54,7 @@ sync_wrapper = "0.1.2"
 tokio = { version = "1", features = ["macros"] }
 tokio-graceful = "0.1"
 tokio-rustls = "0.25"
-tracing = { version = "0.1", optional = true }
+tracing = { version = "0.1" }
 
 [dev-dependencies]
 pki-types = { package = "rustls-pki-types", version = "^1" }
