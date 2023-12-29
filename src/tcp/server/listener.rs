@@ -1,5 +1,5 @@
 use super::TcpSocketInfo;
-use crate::error::Error;
+use crate::error::BoxError;
 use crate::graceful::ShutdownGuard;
 use crate::service::Context;
 use crate::service::{
@@ -94,6 +94,34 @@ pub struct TcpListener<S> {
     state: S,
 }
 
+impl TcpListener<()> {
+    /// Create a new `TcpListenerBuilder` without a state,
+    /// which can be used to configure a `TcpListener`.
+    pub fn build() -> TcpListenerBuilder<()> {
+        TcpListenerBuilder::new()
+    }
+
+    /// Create a new `TcpListenerBuilder` with the given state,
+    /// which can be used to configure a `TcpListener`.
+    pub fn with_state<S>(state: S) -> TcpListenerBuilder<S>
+    where
+        S: Clone + Send + 'static,
+    {
+        TcpListenerBuilder::with_state(state)
+    }
+
+    /// Creates a new TcpListener, which will be bound to the specified address.
+    ///
+    /// The returned listener is ready for accepting connections.
+    ///
+    /// Binding with a port number of 0 will request that the OS assigns a port
+    /// to this listener. The port allocated can be queried via the `local_addr`
+    /// method.
+    pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
+        TcpListenerBuilder::default().bind(addr).await
+    }
+}
+
 impl<S> TcpListener<S> {
     /// Returns the local address that this listener is bound to.
     ///
@@ -135,7 +163,7 @@ where
     where
         S: Service<State, TcpStream, Response = T, Error = E> + Clone,
         T: Send + 'static,
-        E: Into<Error>,
+        E: std::error::Error + Send + Sync + 'static,
     {
         let ctx = Context::new(self.state);
 
@@ -152,7 +180,7 @@ where
             let ctx = ctx.clone();
 
             tokio::spawn(async move {
-                if let Err(err) = service.serve(ctx, stream).await.map_err(Into::into) {
+                if let Err(err) = service.serve(ctx, stream).await {
                     tracing::error!(error = &err as &dyn std::error::Error, "tcp service error");
                 }
             });
@@ -167,7 +195,7 @@ where
         F: Fn(Context<State>, TcpStream) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
         T: Send + 'static,
-        E: Into<Error> + Send + Sync + 'static,
+        E: std::error::Error + Send + Sync + 'static,
     {
         let service = crate::service::service_fn(f);
         self.serve(service).await
@@ -181,7 +209,7 @@ where
     pub async fn serve_graceful<T, S, E>(self, guard: ShutdownGuard, service: S)
     where
         S: Service<State, TcpStream, Response = T, Error = E> + Clone,
-        E: Into<Error>,
+        E: std::error::Error + Send + Sync + 'static,
     {
         let ctx: Context<State> = Context::new(self.state);
         let mut cancelled_fut = pin!(guard.cancelled());
@@ -201,7 +229,7 @@ where
                             ctx.extensions_mut().insert(guard.clone());
                             ctx.extensions_mut().insert(TcpSocketInfo::new(local_addr, peer_addr));
 
-                            if let Err(err) = service.serve(ctx, socket).await.map_err(Into::into) {
+                            if let Err(err) = service.serve(ctx, socket).await {
                                 tracing::error!(error = &err as &dyn std::error::Error, "service error");
                             }
                         }
@@ -222,7 +250,7 @@ where
         F: Fn(Context<State>, TcpStream) -> Fut + Clone + Send + 'static,
         Fut: Future<Output = Result<T, E>> + Send + 'static,
         T: Send + 'static,
-        E: Into<Error> + Send + Sync + 'static,
+        E: std::error::Error + Send + Sync + 'static,
     {
         let service = crate::service::service_fn(service);
         self.serve_graceful(guard, service).await
