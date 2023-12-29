@@ -232,7 +232,7 @@ where
 
                             guard.spawn_task_fn(move |guard| async move {
                                 let local_addr = socket.local_addr().ok();
-                                ctx.extensions_mut().insert(guard.clone());
+                                ctx.extensions_mut().insert(guard);
                                 ctx.extensions_mut().insert(TcpSocketInfo::new(local_addr, peer_addr));
 
                                 if let Err(err) = service.serve(ctx, socket).await {
