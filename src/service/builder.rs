@@ -306,31 +306,24 @@ mod test {
 
     #[test]
     fn test_service_builder_hyper_compat() {
-        use bytes::Bytes;
-        use http_body_util::Full;
+        use crate::service::HyperService;
         use hyper::body::Incoming;
         use hyper::{Request, Response};
         use hyper_util::rt::TokioIo;
         use tokio_test::io::Builder;
 
         let service = ServiceBuilder::new()
-            .map_response(|_| hyper::Response::new(Full::<Bytes>::default()))
+            .map_response(|_| hyper::Response::new(crate::http::Body::default()))
             .service_fn(|_, _: Request<Incoming>| async {
-                Ok::<_, Infallible>(Response::new(Full::new(Bytes::from("Hello, World!"))))
+                Ok::<_, Infallible>(Response::new(crate::http::Body::from("Hello, World!")))
             });
 
         let mut io = TokioIo::new(Builder::new().build());
         let ctx = Context::default();
 
-        let fut = hyper::server::conn::http1::Builder::new().serve_connection(
-            &mut io,
-            hyper::service::service_fn(move |req| {
-                let service = service.clone();
-                let ctx = ctx.clone();
+        let service = HyperService::new(ctx, service);
 
-                async move { service.serve(ctx, req).await }
-            }),
-        );
+        let fut = hyper::server::conn::http1::Builder::new().serve_connection(&mut io, service);
         std::mem::drop(fut);
     }
 }
