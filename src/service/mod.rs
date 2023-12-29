@@ -7,7 +7,7 @@
 //! too restrictive and difficult to work with, for the use cases we have in Rama.
 //! See <https://ramaproxy.org/man/faq.html> for more information regarding this and more.
 
-mod context;
+pub mod context;
 pub use context::Context;
 
 mod svc;
