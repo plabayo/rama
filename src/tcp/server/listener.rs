@@ -168,7 +168,7 @@ where
         let ctx = Context::new(self.state);
 
         loop {
-            let (stream, _) = match self.inner.accept().await {
+            let (socket, peer_addr) = match self.inner.accept().await {
                 Ok(stream) => stream,
                 Err(err) => {
                     tracing::trace!(error = &err as &dyn std::error::Error, "accept error");
@@ -177,10 +177,14 @@ where
             };
 
             let service = service.clone();
-            let ctx = ctx.clone();
+            let mut ctx = ctx.clone();
 
             tokio::spawn(async move {
-                if let Err(err) = service.serve(ctx, stream).await {
+                let local_addr = socket.local_addr().ok();
+                ctx.extensions_mut()
+                    .insert(TcpSocketInfo::new(local_addr, peer_addr));
+
+                if let Err(err) = service.serve(ctx, socket).await {
                     tracing::error!(error = &err as &dyn std::error::Error, "tcp service error");
                 }
             });
@@ -223,15 +227,18 @@ where
                 result = self.inner.accept() => {
                     match result {
                         Ok((socket, peer_addr)) => {
+                            let service = service.clone();
                             let mut ctx = ctx.clone();
 
-                            let local_addr = socket.local_addr().ok();
-                            ctx.extensions_mut().insert(guard.clone());
-                            ctx.extensions_mut().insert(TcpSocketInfo::new(local_addr, peer_addr));
+                            guard.spawn_task_fn(move |guard| async move {
+                                let local_addr = socket.local_addr().ok();
+                                ctx.extensions_mut().insert(guard.clone());
+                                ctx.extensions_mut().insert(TcpSocketInfo::new(local_addr, peer_addr));
 
-                            if let Err(err) = service.serve(ctx, socket).await {
-                                tracing::error!(error = &err as &dyn std::error::Error, "service error");
-                            }
+                                if let Err(err) = service.serve(ctx, socket).await {
+                                    tracing::error!(error = &err as &dyn std::error::Error, "service error");
+                                }
+                            });
                         }
                         Err(err) => {
                             tracing::trace!(error = &err as &dyn std::error::Error, "service error");
