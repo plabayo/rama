@@ -18,6 +18,9 @@ clippy-fix:
 doc:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
 
+doc-open:
+	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps --open
+
 hack:
 	cargo hack check --each-feature --no-dev-deps --workspace
 

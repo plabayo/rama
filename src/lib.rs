@@ -1,4 +1,6 @@
 #![cfg_attr(nightly_error_messages, feature(diagnostic_namespace))]
+//! ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
+//!
 //! 🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets.
 //! You can use it to develop 🚦 reverse proxies, 🔓 TLS termination proxies, 🌐 HTTP(S) proxies, 🧦 SOCKS5 proxies
 //! and 🕵️‍♀️ distortion proxies.
