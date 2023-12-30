@@ -44,7 +44,7 @@ jobs:
       - uses: Swatinem/rust-cache@v1
       - name: Generate Rust Docs
         env:
-          RUSTDOCFLAGS: "-D broken-intra-doc-links"
+          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
         run: cargo doc --all-features --no-deps
       - name: Install mdBook
         run: |
