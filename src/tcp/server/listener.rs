@@ -103,7 +103,7 @@ impl TcpListener<()> {
 
     /// Create a new `TcpListenerBuilder` with the given state,
     /// which can be used to configure a `TcpListener`.
-    pub fn with_state<S>(state: S) -> TcpListenerBuilder<S>
+    pub fn build_with_state<S>(state: S) -> TcpListenerBuilder<S>
     where
         S: Clone + Send + 'static,
     {
