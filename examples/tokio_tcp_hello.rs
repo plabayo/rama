@@ -1,16 +1,29 @@
 use rama::tcp::server::TcpListener;
 use tokio::io::AsyncWriteExt;
 
+const SRC: &str = include_str!("./tokio_tcp_hello.rs");
+
 #[tokio::main]
 async fn main() {
     TcpListener::bind("127.0.0.1:9000")
         .await
         .expect("bind TCP Listener")
         .serve_fn(|_, mut stream| async move {
+            let resp = [
+                "HTTP/1.1 200 OK",
+                "Content-Type: text/plain",
+                format!("Content-Length: {}", SRC.len()).as_str(),
+                "",
+                SRC,
+                "",
+            ]
+            .join("\r\n");
+
             stream
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-type: text/plain\r\nContent-length: 14\r\n\r\nHello and bye!\r\n")
+                .write_all(resp.as_bytes())
                 .await
                 .expect("write to stream");
+
             Ok::<_, std::convert::Infallible>(())
         })
         .await;
