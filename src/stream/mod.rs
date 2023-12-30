@@ -1,4 +1,4 @@
-//! [`Stream`]` trait and related utilities.
+//! [`Stream`] trait and related utilities.
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
