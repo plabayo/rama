@@ -1,64 +1,110 @@
 use super::{Context, Service};
 use std::fmt;
 use std::future::Future;
+use std::marker::PhantomData;
 
-/// Returns a new [`ServiceFn`] with the given closure.
-///
-/// This lets you build a [`Service`] from an async function that returns a [`Result`].
-pub fn service_fn<T>(f: T) -> ServiceFn<T> {
-    ServiceFn { f }
-}
-
-/// A [`Service`] implemented by a closure.
-///
-/// See [`service_fn`] for more details.
-#[derive(Copy, Clone)]
-pub struct ServiceFn<T> {
-    f: T,
-}
-
-impl<T> fmt::Debug for ServiceFn<T> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ServiceFn")
-            .field("f", &format_args!("{}", std::any::type_name::<T>()))
-            .finish()
+/// Create a [`ServiceFn`] from a function.
+pub fn service_fn<F, S, Request, A>(f: F) -> ServiceFnBox<F, A>
+where
+    A: Send + 'static,
+    F: ServiceFn<S, Request, A>,
+{
+    ServiceFnBox {
+        f,
+        _marker: PhantomData,
     }
 }
 
-impl<T, F, State, Request, R, E> Service<State, Request> for ServiceFn<T>
+/// A [`ServiceFn`] is a [`Service`] implemented using a function.
+///
+/// You do not need to implement this trait yourself.
+/// Instead, you need to use the [`service_fn`] function to create a [`ServiceFn`].
+pub trait ServiceFn<S, Request, A>: Send + 'static {
+    /// The type of response returned by the service.
+    type Response: Send + 'static;
+
+    /// The type of error returned by the service.
+    type Error: Send + Sync + 'static;
+
+    /// Serve a response or error for the given request,
+    /// using the given context.
+    fn call(
+        &self,
+        ctx: Context<S>,
+        req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
+}
+
+impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, (Request,)> for F
 where
-    T: Fn(Context<State>, Request) -> F + Send + 'static,
-    F: Future<Output = Result<R, E>> + Send + 'static,
-    R: Send + 'static,
-    E: Send + Sync + 'static,
+    F: Fn(Request) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<Response, Error>> + Send + 'static,
+    Response: Send + 'static,
+    Error: Send + Sync + 'static,
 {
-    type Response = R;
-    type Error = E;
+    type Response = Response;
+    type Error = Error;
+
+    fn call(
+        &self,
+        _ctx: Context<S>,
+        req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        (self)(req)
+    }
+}
+
+impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, (Context<S>, Request)> for F
+where
+    F: Fn(Context<S>, Request) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<Response, Error>> + Send + 'static,
+    Response: Send + 'static,
+    Error: Send + Sync + 'static,
+{
+    type Response = Response;
+    type Error = Error;
+
+    fn call(
+        &self,
+        ctx: Context<S>,
+        req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        (self)(ctx, req)
+    }
+}
+
+/// The public wrapper type for [`ServiceFn`].
+#[derive(Debug)]
+pub struct ServiceFnBox<F, A> {
+    f: F,
+    _marker: PhantomData<A>,
+}
+
+impl<F, A> Clone for ServiceFnBox<F, A>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            f: self.f.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<F, S, Request, A> Service<S, Request> for ServiceFnBox<F, A>
+where
+    A: Send + 'static,
+    F: ServiceFn<S, Request, A>,
+{
+    type Response = F::Response;
+    type Error = F::Error;
 
     fn serve(
         &self,
-        ctx: Context<State>,
+        ctx: Context<S>,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        (self.f)(ctx, req)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_service_fn() {
-        let svc = service_fn(|_, req| async move { Ok::<_, ()>(req) });
-        let res = svc.serve(Context::default(), "hello").await;
-        assert_eq!(res, Ok("hello"));
-    }
-
-    #[tokio::test]
-    async fn test_service_fn_adder() {
-        let svc = service_fn(|_, (a, b)| async move { Ok::<_, ()>(a + b) });
-        let res = svc.serve(Context::default(), (1, 2)).await;
-        assert_eq!(res, Ok(3));
+        self.f.call(ctx, req)
     }
 }

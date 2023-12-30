@@ -1,5 +1,5 @@
 use rama::tcp::server::TcpListener;
-use tokio::io::AsyncWriteExt;
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 
 const SRC: &str = include_str!("./tokio_tcp_hello.rs");
 
@@ -8,7 +8,7 @@ async fn main() {
     TcpListener::bind("127.0.0.1:9000")
         .await
         .expect("bind TCP Listener")
-        .serve_fn(|_, mut stream| async move {
+        .serve_fn(|mut stream: TcpStream| async move {
             let resp = [
                 "HTTP/1.1 200 OK",
                 "Content-Type: text/plain",

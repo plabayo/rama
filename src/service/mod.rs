@@ -14,7 +14,7 @@ mod svc;
 pub use svc::{BoxService, Service};
 
 mod svc_fn;
-pub use svc_fn::{service_fn, ServiceFn};
+pub use svc_fn::{service_fn, ServiceFn, ServiceFnBox};
 
 mod svc_hyper;
 pub use svc_hyper::HyperService;

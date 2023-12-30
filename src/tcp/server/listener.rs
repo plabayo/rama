@@ -1,11 +1,12 @@
 use super::TcpSocketInfo;
 use crate::error::BoxError;
 use crate::graceful::ShutdownGuard;
-use crate::service::Context;
 use crate::service::{
     layer::{Identity, Stack},
     Layer, Service, ServiceBuilder,
 };
+use crate::service::{Context, ServiceFn};
+use std::convert::Infallible;
 use std::pin::pin;
 use std::{future::Future, io, net::SocketAddr};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
@@ -159,11 +160,10 @@ where
     ///
     /// This method will block the current listener for each incoming connection,
     /// the underlying service can choose to spawn a task to handle the accepted stream.
-    pub async fn serve<T, S, E>(self, service: S)
+    pub async fn serve<T, S>(self, service: S)
     where
-        S: Service<State, TcpStream, Response = T, Error = E> + Clone,
+        S: Service<State, TcpStream, Response = T, Error = Infallible> + Clone,
         T: Send + 'static,
-        E: std::error::Error + Send + Sync + 'static,
     {
         let ctx = Context::new(self.state);
 
@@ -184,9 +184,7 @@ where
                 ctx.extensions_mut()
                     .insert(TcpSocketInfo::new(local_addr, peer_addr));
 
-                if let Err(err) = service.serve(ctx, socket).await {
-                    tracing::error!(error = &err as &dyn std::error::Error, "tcp service error");
-                }
+                let _ = service.serve(ctx, socket).await;
             });
         }
     }
@@ -194,12 +192,10 @@ where
     /// Serve connections from this listener with the given service function.
     ///
     /// See [`Self::serve`] for more details.
-    pub async fn serve_fn<T, E, F, Fut>(self, f: F)
+    pub async fn serve_fn<F, A>(self, f: F)
     where
-        F: Fn(Context<State>, TcpStream) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Send + 'static,
-        E: std::error::Error + Send + Sync + 'static,
+        A: Send + 'static,
+        F: ServiceFn<State, TcpStream, A, Error = Infallible> + Clone,
     {
         let service = crate::service::service_fn(f);
         self.serve(service).await
@@ -210,10 +206,9 @@ where
     /// This method does the same as [`Self::serve`] but it
     /// will respect the given [`crate::graceful::ShutdownGuard`], and also pass
     /// it to the service.
-    pub async fn serve_graceful<T, S, E>(self, guard: ShutdownGuard, service: S)
+    pub async fn serve_graceful<T, S>(self, guard: ShutdownGuard, service: S)
     where
-        S: Service<State, TcpStream, Response = T, Error = E> + Clone,
-        E: std::error::Error + Send + Sync + 'static,
+        S: Service<State, TcpStream, Response = T, Error = Infallible> + Clone,
     {
         let ctx: Context<State> = Context::new(self.state);
         let mut cancelled_fut = pin!(guard.cancelled());
@@ -235,13 +230,11 @@ where
                                 ctx.extensions_mut().insert(guard);
                                 ctx.extensions_mut().insert(TcpSocketInfo::new(local_addr, peer_addr));
 
-                                if let Err(err) = service.serve(ctx, socket).await {
-                                    tracing::error!(error = &err as &dyn std::error::Error, "service error");
-                                }
+                                let _ = service.serve(ctx, socket).await;
                             });
                         }
                         Err(err) => {
-                            tracing::trace!(error = &err as &dyn std::error::Error, "service error");
+                            tracing::trace!(error = &err as &dyn std::error::Error, "accept error");
                         }
                     }
                 }
@@ -252,12 +245,10 @@ where
     /// Serve gracefully connections from this listener with the given service function.
     ///
     /// See [`Self::serve_graceful`] for more details.
-    pub async fn serve_fn_graceful<T, S, E, F, Fut>(self, guard: ShutdownGuard, service: F)
+    pub async fn serve_fn_graceful<F, A>(self, guard: ShutdownGuard, service: F)
     where
-        F: Fn(Context<State>, TcpStream) -> Fut + Clone + Send + 'static,
-        Fut: Future<Output = Result<T, E>> + Send + 'static,
-        T: Send + 'static,
-        E: std::error::Error + Send + Sync + 'static,
+        A: Send + 'static,
+        F: ServiceFn<State, TcpStream, A, Error = Infallible> + Clone,
     {
         let service = crate::service::service_fn(service);
         self.serve_graceful(guard, service).await
