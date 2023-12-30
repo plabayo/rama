@@ -32,6 +32,8 @@ jobs:
       MDBOOK_VERSION: 0.4.21
     steps:
       - uses: actions/checkout@v3
+      - name: Generate Rust Docs
+        run: cargo doc --all-features --no-deps
       - name: Install mdBook
         run: |
           curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
@@ -46,8 +48,10 @@ jobs:
       - name: Create artifact
         working-directory: ./docs
         run: |
-          mkdir -p www/man
-          cp -r book/book/* www/man
+          mkdir -p www/book
+          cp -r book/book/* www/book
+          mkdir -p www/docs
+          cp -r ../target/doc/rama/* www/docs
           cp index.html www/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v2

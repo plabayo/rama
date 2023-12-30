@@ -117,4 +117,4 @@ building and maintaining open source software that `rama` depends upon:
 
 ## ❓| FAQ
 
-Available at <https://ramaproxy.org/man/faq.html>.
+Available at <https://ramaproxy.org/book/faq.html>.

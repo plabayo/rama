@@ -5,7 +5,7 @@
 //!
 //! Initially the goal was to rely on `tower-service` directly, but it turned out to be
 //! too restrictive and difficult to work with, for the use cases we have in Rama.
-//! See <https://ramaproxy.org/man/faq.html> for more information regarding this and more.
+//! See <https://ramaproxy.org/book/faq.html> for more information regarding this and more.
 
 pub mod context;
 pub use context::Context;
