@@ -4,6 +4,10 @@
 #
 name: Deploy mdBook site to Pages
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: stable
+
 on:
   # Runs on pushes targeting the default branch
   push:
@@ -32,7 +36,15 @@ jobs:
       MDBOOK_VERSION: 0.4.21
     steps:
       - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          override: true
+          profile: minimal
+      - uses: Swatinem/rust-cache@v1
       - name: Generate Rust Docs
+        env:
+          RUSTDOCFLAGS: "-D broken-intra-doc-links"
         run: cargo doc --all-features --no-deps
       - name: Install mdBook
         run: |
