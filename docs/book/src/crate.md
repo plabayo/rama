@@ -6,5 +6,5 @@ Rama is first and foremost a modular proxy framework distributed as a Rust crate
 
 * Crates Page: <https://crates.io/crates/rama>
 * Official Docs Page: <https://docs.rs/rama>
-    * Mirror: <https://ramaproxy.org/docs>
+    * Mirror: <https://ramaproxy.org/docs/rama/index.html>
 * Github repo: <https://github.com/plabayo/rama>

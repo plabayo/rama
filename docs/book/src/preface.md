@@ -1,5 +1,7 @@
 [![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
 
+Source code: <https://github.com/plabayo/rama>
+
 # Rama
 
 [![Crates.io][crates-badge]][crates-url]
@@ -31,6 +33,8 @@
 [ghs-url]: https://github.com/sponsors/plabayo
 
 Rama, a modular proxy framework to move and transform your network packets.
+
+You can find the edge docs of the rama framework code at <https://ramaproxy.org/docs/rama/index.html>.
 
 > Rama is gratis FOSS and the repo with the full source code can be found
 > at <https://github.com/plabayo/rama>.

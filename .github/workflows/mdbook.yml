@@ -63,7 +63,7 @@ jobs:
           mkdir -p www/book
           cp -r book/book/* www/book
           mkdir -p www/docs
-          cp -r ../target/doc/rama/* www/docs
+          cp -r ../target/doc/* www/docs
           cp index.html www/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v2
