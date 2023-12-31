@@ -68,4 +68,10 @@ impl<S> Context<S> {
     pub fn extensions_mut(&mut self) -> &mut Extensions {
         &mut self.extensions
     }
+
+    /// Get a reference to the shutdown guard,
+    /// if and only if the context was created within a graceful environment.
+    pub(crate) fn guard(&self) -> Option<&ShutdownGuard> {
+        self.executor.guard()
+    }
 }
