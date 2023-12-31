@@ -34,7 +34,7 @@ pub trait Service<S, Request>: Send + 'static {
 }
 
 /// Internal trait for dynamic dispatch of Async Traits,
-/// implemented acording to the pioneers of this Design Pattern
+/// implemented according to the pioneers of this Design Pattern
 /// found at <https://rust-lang.github.io/async-fundamentals-initiative/evaluation/case-studies/builder-provider-api.html#dynamic-dispatch-behind-the-api>
 /// and widely published at <https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html>.
 trait DynService<S, Request> {

@@ -15,6 +15,9 @@ clippy:
 clippy-fix:
 	cargo clippy --fix
 
+typos:
+	typos -w
+
 doc:
 	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
 
