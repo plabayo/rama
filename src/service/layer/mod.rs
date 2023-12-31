@@ -14,8 +14,7 @@ pub trait Layer<S> {
 }
 
 mod into_error;
-pub use into_error::MakeLayerError;
-pub(crate) use into_error::{LayerErrorFn, LayerErrorStatic};
+pub use into_error::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
 
 mod either;
 pub use either::Either;
@@ -43,6 +42,9 @@ pub use map_response::{MapResponse, MapResponseLayer};
 
 mod map_err;
 pub use map_err::{MapErr, MapErrLayer};
+
+mod trace_err;
+pub use trace_err::{TraceErr, TraceErrLayer};
 
 mod map_result;
 pub use map_result::{MapResult, MapResultLayer};

@@ -19,8 +19,10 @@ pub trait MakeLayerError: Clone + Send + 'static {
     fn make_layer_error(&self) -> Self::Error;
 }
 
+/// A [`MakeLayerError`] implementation that
+/// returns a new error value every time.
 #[derive(Debug, Clone)]
-pub(crate) struct LayerErrorFn<F>(F);
+pub struct LayerErrorFn<F>(F);
 
 impl<F, E> LayerErrorFn<F>
 where
@@ -44,8 +46,10 @@ where
     }
 }
 
+/// A [`MakeLayerError`] implementation that
+/// always returns clone of the same error value.
 #[derive(Debug, Clone)]
-pub(crate) struct LayerErrorStatic<E>(E);
+pub struct LayerErrorStatic<E>(E);
 
 impl<E> LayerErrorStatic<E>
 where

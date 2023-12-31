@@ -3,7 +3,7 @@
 use super::{
     layer::{
         layer_fn, AndThenLayer, Either, Identity, LayerFn, MapErrLayer, MapRequestLayer,
-        MapResponseLayer, MapResultLayer, Stack, ThenLayer,
+        MapResponseLayer, MapResultLayer, Stack, ThenLayer, TraceErrLayer,
     },
     service_fn, BoxService, Layer, Service, ServiceFn, ServiceFnBox,
 };
@@ -102,6 +102,19 @@ impl<L> ServiceBuilder<L> {
     /// [`MapErr`]: crate::service::layer::MapErr
     pub fn map_err<F>(self, f: F) -> ServiceBuilder<Stack<MapErrLayer<F>, L>> {
         self.layer(MapErrLayer::new(f))
+    }
+
+    /// Trace errors that occur when serving requests.
+    pub fn trace_err(self) -> ServiceBuilder<Stack<TraceErrLayer, L>> {
+        self.layer(TraceErrLayer::new())
+    }
+
+    /// Trace errors that occur when serving requests at the given [`tracing::Level`].
+    pub fn trace_err_with_level(
+        self,
+        level: tracing::Level,
+    ) -> ServiceBuilder<Stack<TraceErrLayer, L>> {
+        self.layer(TraceErrLayer::with_level(level))
     }
 
     /// Apply an asynchronous function after the service, regardless of whether the future

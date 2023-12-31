@@ -1,20 +1,20 @@
 //! An async service which echoes the incoming bytes back on the same stream.
 
 use crate::{
+    error::Error,
     service::{Context, Service},
     stream::Stream,
 };
-use std::io::Error;
 
 /// An async service which echoes the incoming bytes back on the same stream.
 ///
 /// # Example
 ///
 /// ```rust
-/// use rama::{service::{Context, Service}, stream::service::EchoService};
+/// use rama::{error::Error, service::{Context, Service}, stream::service::EchoService};
 ///
 /// # #[tokio::main]
-/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # async fn main() -> Result<(), Error> {
 /// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let service = EchoService::new();
 ///
@@ -51,7 +51,9 @@ where
 
     async fn serve(&self, _ctx: Context<T>, stream: S) -> Result<Self::Response, Self::Error> {
         let (mut reader, mut writer) = tokio::io::split(stream);
-        tokio::io::copy(&mut reader, &mut writer).await
+        tokio::io::copy(&mut reader, &mut writer)
+            .await
+            .map_err(Error::new)
     }
 }
 

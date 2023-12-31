@@ -6,7 +6,6 @@ use crate::service::{
     Layer, Service, ServiceBuilder,
 };
 use crate::service::{Context, ServiceFn};
-use std::convert::Infallible;
 use std::pin::pin;
 use std::{future::Future, io, net::SocketAddr};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
@@ -160,10 +159,9 @@ where
     ///
     /// This method will block the current listener for each incoming connection,
     /// the underlying service can choose to spawn a task to handle the accepted stream.
-    pub async fn serve<T, S>(self, service: S)
+    pub async fn serve<S>(self, service: S)
     where
-        S: Service<State, TcpStream, Response = T, Error = Infallible> + Clone,
-        T: Send + 'static,
+        S: Service<State, TcpStream> + Clone,
     {
         let ctx = Context::new(self.state);
 
@@ -195,7 +193,7 @@ where
     pub async fn serve_fn<F, A>(self, f: F)
     where
         A: Send + 'static,
-        F: ServiceFn<State, TcpStream, A, Error = Infallible> + Clone,
+        F: ServiceFn<State, TcpStream, A> + Clone,
     {
         let service = crate::service::service_fn(f);
         self.serve(service).await
@@ -206,9 +204,9 @@ where
     /// This method does the same as [`Self::serve`] but it
     /// will respect the given [`crate::graceful::ShutdownGuard`], and also pass
     /// it to the service.
-    pub async fn serve_graceful<T, S>(self, guard: ShutdownGuard, service: S)
+    pub async fn serve_graceful<S>(self, guard: ShutdownGuard, service: S)
     where
-        S: Service<State, TcpStream, Response = T, Error = Infallible> + Clone,
+        S: Service<State, TcpStream> + Clone,
     {
         let ctx: Context<State> = Context::new(self.state);
         let mut cancelled_fut = pin!(guard.cancelled());
@@ -248,7 +246,7 @@ where
     pub async fn serve_fn_graceful<F, A>(self, guard: ShutdownGuard, service: F)
     where
         A: Send + 'static,
-        F: ServiceFn<State, TcpStream, A, Error = Infallible> + Clone,
+        F: ServiceFn<State, TcpStream, A> + Clone,
     {
         let service = crate::service::service_fn(service);
         self.serve_graceful(guard, service).await

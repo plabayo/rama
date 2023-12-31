@@ -37,15 +37,6 @@ impl<S, F> MapResponse<S, F> {
     pub fn new(inner: S, f: F) -> Self {
         MapResponse { f, inner }
     }
-
-    /// Returns a new [`Layer`] that produces [`MapResponse`] services.
-    ///
-    /// This is a convenience function that simply calls [`MapResponseLayer::new`].
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(f: F) -> MapResponseLayer<F> {
-        MapResponseLayer { f }
-    }
 }
 
 impl<S, F, State, Request, Response> Service<State, Request> for MapResponse<S, F>

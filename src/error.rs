@@ -1,6 +1,10 @@
 //! Error types for rama.
 
-use std::{error::Error as StdError, fmt};
+use std::{
+    error::Error as StdError,
+    fmt,
+    ops::{Deref, DerefMut},
+};
 
 /// Alias for a type-erased error type.
 pub type BoxError = Box<dyn StdError + Send + Sync>;
@@ -18,11 +22,6 @@ impl Error {
             inner: error.into(),
         }
     }
-
-    /// Convert an `Error` back into the underlying boxed trait object.
-    pub fn into_inner(self) -> BoxError {
-        self.inner
-    }
 }
 
 impl fmt::Display for Error {
@@ -31,14 +30,45 @@ impl fmt::Display for Error {
     }
 }
 
-impl StdError for Error {
-    fn source(&self) -> Option<&(dyn StdError + 'static)> {
-        Some(&*self.inner)
+impl AsRef<dyn StdError + Send + Sync> for Error {
+    fn as_ref(&self) -> &(dyn StdError + Send + Sync + 'static) {
+        &**self
     }
 }
 
-impl From<BoxError> for Error {
-    fn from(error: BoxError) -> Self {
-        Self { inner: error }
+impl AsRef<dyn StdError> for Error {
+    fn as_ref(&self) -> &(dyn StdError + 'static) {
+        &**self
+    }
+}
+
+impl Deref for Error {
+    type Target = dyn StdError + Send + Sync + 'static;
+
+    fn deref(&self) -> &Self::Target {
+        &*self.inner
+    }
+}
+
+impl DerefMut for Error {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut *self.inner
+    }
+}
+
+impl<E> From<E> for Error
+where
+    E: StdError + Send + Sync + 'static,
+{
+    fn from(error: E) -> Self {
+        Self {
+            inner: Box::new(error),
+        }
+    }
+}
+
+impl From<Error> for BoxError {
+    fn from(error: Error) -> Self {
+        error.inner
     }
 }

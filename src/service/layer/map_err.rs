@@ -37,15 +37,6 @@ impl<S, F> MapErr<S, F> {
     pub fn new(inner: S, f: F) -> Self {
         MapErr { f, inner }
     }
-
-    /// Returns a new [`Layer`] that produces [`MapErr`] services.
-    ///
-    /// This is a convenience function that simply calls [`MapErrLayer::new`].
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(f: F) -> MapErrLayer<F> {
-        MapErrLayer { f }
-    }
 }
 
 impl<S, F, State, Request, Error> Service<State, Request> for MapErr<S, F>
