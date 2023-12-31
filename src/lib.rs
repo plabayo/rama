@@ -64,6 +64,8 @@ mod test_helpers;
 
 pub mod graceful;
 
+pub mod rt;
+
 pub mod error;
 pub mod service;
 

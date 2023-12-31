@@ -1,6 +1,7 @@
 use super::TcpSocketInfo;
 use crate::error::BoxError;
 use crate::graceful::ShutdownGuard;
+use crate::rt::Executor;
 use crate::service::{
     layer::{Identity, Stack},
     Layer, Service, ServiceBuilder,
@@ -163,7 +164,7 @@ where
     where
         S: Service<State, TcpStream> + Clone,
     {
-        let ctx = Context::new(self.state);
+        let ctx = Context::new(self.state, Executor::new());
 
         loop {
             let (socket, peer_addr) = match self.inner.accept().await {
@@ -208,7 +209,7 @@ where
     where
         S: Service<State, TcpStream> + Clone,
     {
-        let ctx: Context<State> = Context::new(self.state);
+        let ctx: Context<State> = Context::new(self.state, Executor::graceful(guard.clone()));
         let mut cancelled_fut = pin!(guard.cancelled());
 
         loop {
@@ -225,8 +226,8 @@ where
 
                             guard.spawn_task_fn(move |guard| async move {
                                 let local_addr = socket.local_addr().ok();
-                                ctx.extensions_mut().insert(guard);
                                 ctx.extensions_mut().insert(TcpSocketInfo::new(local_addr, peer_addr));
+                                ctx.extensions_mut().insert(guard);
 
                                 let _ = service.serve(ctx, socket).await;
                             });

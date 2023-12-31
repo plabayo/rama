@@ -182,7 +182,7 @@ mod tests {
     async fn add_svc() {
         let svc = AddSvc(1);
 
-        let ctx = Context::new(());
+        let ctx = Context::default();
 
         let response = svc.serve(ctx, 1).await.unwrap();
         assert_eq!(response, 2);
@@ -192,7 +192,7 @@ mod tests {
     async fn static_dispatch() {
         let services = vec![AddSvc(1), AddSvc(2), AddSvc(3)];
 
-        let ctx = Context::new(());
+        let ctx = Context::default();
 
         for (i, svc) in services.into_iter().enumerate() {
             let response = svc.serve(ctx.clone(), i).await.unwrap();
@@ -210,7 +210,7 @@ mod tests {
             MulSvc(5).boxed(),
         ];
 
-        let ctx = Context::new(());
+        let ctx = Context::default();
 
         for (i, svc) in services.into_iter().enumerate() {
             let response = svc.serve(ctx.clone(), i).await.unwrap();
