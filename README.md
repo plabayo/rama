@@ -28,9 +28,23 @@
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
 [ghs-url]: https://github.com/sponsors/plabayo
 
-🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop 🚦 reverse proxies, 🔓 TLS termination proxies, 🌐 HTTP(S) proxies, 🧦 SOCKS5 proxies and 🕵️‍♀️ distortion proxies. Rama is async-first using [Tokio](https://tokio.rs/) as its Async Runtime.
+🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop:
 
-Please refer to [the examples found in the `./examples` dir](./examples) to get inspired on how you can use it for your purposes. There is no [crates.io](https://crates.io) release of rama yet. If you already want to start using rama already your can do so by referring to it in your `Cargo.toml` as follows:
+- 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
+- 🔓 [TLS termination proxies](https://ramaproxy.org/book/proxies/tls);
+- 🌐 [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http);
+- 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5);
+- 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
+- 🕵️‍♀️ [distortion proxies](https://ramaproxy.org/book/proxies/distort).
+
+Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
+Please refer to [the examples found in the `./examples` dir](./examples)
+to get inspired on how you can use it for your purposes.
+
+- Learn more by reading the Rama book at <https://ramaproxy.org/book>
+- or checkout the framework Rust docs at <https://ramaproxy.org/docs/rama>.
+
+There is no [crates.io](https://crates.io) release of rama yet. If you already want to start using rama already your can do so by referring to it in your `Cargo.toml` as follows:
 
 ```
 rama = { git = "https://github.com/plabayo/rama" }

@@ -1,9 +1,21 @@
 #![cfg_attr(nightly_error_messages, feature(diagnostic_namespace))]
 //! ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
 //!
-//! 🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets.
-//! You can use it to develop 🚦 reverse proxies, 🔓 TLS termination proxies, 🌐 HTTP(S) proxies, 🧦 SOCKS5 proxies
-//! and 🕵️‍♀️ distortion proxies.
+//! 🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop:
+//! 
+//! - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
+//! - 🔓 [TLS termination proxies](https://ramaproxy.org/book/proxies/tls);
+//! - 🌐 [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http);
+//! - 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5);
+//! - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
+//! - 🕵️‍♀️ [distortion proxies](https://ramaproxy.org/book/proxies/distort).
+//! 
+//! Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
+//! Please refer to [the examples found in the `./examples` dir](./examples)
+//! to get inspired on how you can use it for your purposes.
+//! 
+//! - Learn more by reading the Rama book at <https://ramaproxy.org/book>
+//! - or continue to read the framework Rust docs here.
 //!
 //! # High-level features
 //!

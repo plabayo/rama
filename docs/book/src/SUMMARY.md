@@ -1,11 +1,17 @@
-# Summary
+[Preface](./preface.md)
 
-- [Preface](./preface.md)
-
-## 📦 ラマ
+# 📦 ラマ
 
 - [📦 `rama` crate](./crate.md)
 
-## More
+# Proxies
 
-- [❓FAQ](./faq.md)
+- [A world of Proxies](./proxies/intro.md)
+- [🚦 Reverse proxies](./proxies/reverse.md)
+- [🔓 TLS termination proxies](./proxies/tls.md)
+- [🌐 HTTP(S) proxies](./proxies/http.md)
+- [🧦 SOCKS5 proxies](./proxies/socks5.md)
+- [🔎 MITM proxies](./proxies/mitm.md)
+- [🕵️‍♀️ distortion proxies](./proxies/distort.md)
+
+[❓FAQ](./faq.md)
