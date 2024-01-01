@@ -54,3 +54,5 @@ Please consult [the official docs.rs documentation][docs-url] or explore
 to know how to use rama for your purposes.
 
 > 💡 You can find the edge docs of the rama framework code at <https://ramaproxy.org/docs/rama/index.html>.
+
+🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
