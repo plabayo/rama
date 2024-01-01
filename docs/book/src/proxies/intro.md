@@ -10,7 +10,7 @@ different kinds and some are a superset of another one.
 In specifically we'll discuss:
 
 - [🚦 Reverse proxies](./reverse.md)
-- [🔓 TLS termination proxies](./tls.md)
+- [🔓 TLS Termination proxies](./tls.md)
 - [🌐 HTTP(S) proxies](./http.md)
 - [🧦 SOCKS5 proxies](./socks5.md)
 - [🔎 MITM proxies](./mitm.md)

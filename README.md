@@ -31,7 +31,7 @@
 🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop:
 
 - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
-- 🔓 [TLS termination proxies](https://ramaproxy.org/book/proxies/tls);
+- 🔓 [TLS Termination proxies](https://ramaproxy.org/book/proxies/tls);
 - 🌐 [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http);
 - 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5);
 - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);

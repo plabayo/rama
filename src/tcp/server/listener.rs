@@ -224,10 +224,9 @@ where
                             let service = service.clone();
                             let mut ctx = ctx.clone();
 
-                            guard.spawn_task_fn(move |guard| async move {
+                            guard.spawn_task(async move {
                                 let local_addr = socket.local_addr().ok();
                                 ctx.extensions_mut().insert(TcpSocketInfo::new(local_addr, peer_addr));
-                                ctx.extensions_mut().insert(guard);
 
                                 let _ = service.serve(ctx, socket).await;
                             });
