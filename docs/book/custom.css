@@ -1,0 +1,31 @@
+.book-article-intro {
+    display: flex;
+    flex-direction: row;
+}
+
+.book-article-intro > img {
+    height: 10em;
+    width: 10em;
+    object-fit: contain;
+    align-self: flex-start;
+}
+
+.book-article-intro > div {
+    margin-left: 20px;
+}
+
+@media (max-width: 800px) {
+    .book-article-intro {
+        flex-direction: column-reverse;
+    }
+
+    .book-article-intro > img {
+        align-self: center;
+        margin-top: 10px;
+    }
+}
+
+.book-article-image-center {
+    text-align: center;
+    margin: 10px;
+}
