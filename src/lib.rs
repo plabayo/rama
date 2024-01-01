@@ -11,7 +11,7 @@
 //! - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
 //!
 //! Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
-//! Please refer to [the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main//examples)
+//! Please refer to [the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 //! to get inspired on how you can use it for your purposes.
 //!
 //! - Learn more by reading the Rama book at <https://ramaproxy.org/book>

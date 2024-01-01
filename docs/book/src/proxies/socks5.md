@@ -3,7 +3,7 @@
 <div class="book-article-intro">
     <img src="../img/proxy_llama_socks5.jpeg" alt="artistical representation of rama socks5 proxy as llama carying cargo through space while wearing socks">
     <div>
-        Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus diam purus, semper at magna ut, venenatis sodales quam. Phasellus in semper enim. Nulla facilisi. Vestibulum sed lectus sollicitudin, commodo nunc eget.
+        Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus diam purus, semper at magna ut, venenatis sodales quam. Phasellus in semper enim. Nulla facilities. Vestibulum sed lectus sollicitudin, commodo nunc eget.
     </div>
 </div>
 

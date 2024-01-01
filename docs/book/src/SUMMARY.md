@@ -1,4 +1,5 @@
 [Preface](./preface.md)
+[Why Rama](./why_rama.md)
 
 # 📦 ラマ
 

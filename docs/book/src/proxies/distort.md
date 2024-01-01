@@ -3,7 +3,7 @@
 <div class="book-article-intro">
     <img src="../img/proxy_llama_distort.jpeg" alt="artistical representation of rama distort proxy as llama desguised as human in badly masked environment">
     <div>
-        Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus diam purus, semper at magna ut, venenatis sodales quam. Phasellus in semper enim. Nulla facilisi. Vestibulum sed lectus sollicitudin, commodo nunc eget.
+        Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus diam purus, semper at magna ut, venenatis sodales quam. Phasellus in semper enim. Nulla facilities. Vestibulum sed lectus sollicitudin, commodo nunc eget.
     </div>
 </div>
 
