@@ -1,7 +1,7 @@
 # 🚦 Reverse proxies
 
 <div style="display: grid; grid-template-columns: 1fr 3fr;">
-    <img src="../img/proxy_llama_reverse.jpeg" style="height: 10em">
+    <img src="../img/proxy_llama_reverse.jpeg" style="height: 10em; width: 10em">
     <div>
         <p>
             intro text
@@ -11,12 +11,10 @@
 
 example text
 
-```mermaid
-graph TD;
-    A-->B;
-    A-->C;
-    B-->D;
-    C-->D;
+```dot process
+digraph {
+    "processed" -> "graph"
+}
 ```
 
 continued text

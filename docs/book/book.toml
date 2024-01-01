@@ -7,7 +7,7 @@ title = "Rama"
 
 [output.html]
 git-repository-url = "https://github.com/plabayo/rama"
-additional-js = ["mermaid.min.js", "mermaid-init.js"]
 
-[preprocessor.mermaid]
-command = "mdbook-mermaid"
+[preprocessor.graphviz]
+command = "mdbook-graphviz"
+output-to-file = false
