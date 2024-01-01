@@ -1,3 +1,3 @@
-# 🕵️‍♀️ distortion proxies
+# 🕵️‍♀️ Distortion proxies
 
 _TODO_

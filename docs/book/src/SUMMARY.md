@@ -12,6 +12,6 @@
 - [🌐 HTTP(S) proxies](./proxies/http.md)
 - [🧦 SOCKS5 proxies](./proxies/socks5.md)
 - [🔎 MITM proxies](./proxies/mitm.md)
-- [🕵️‍♀️ distortion proxies](./proxies/distort.md)
+- [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
 
 [❓FAQ](./faq.md)

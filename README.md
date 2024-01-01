@@ -35,7 +35,7 @@
 - 🌐 [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http);
 - 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5);
 - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
-- 🕵️‍♀️ [distortion proxies](https://ramaproxy.org/book/proxies/distort).
+- 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 Please refer to [the examples found in the `./examples` dir](./examples)

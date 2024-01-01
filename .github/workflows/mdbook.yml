@@ -33,7 +33,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      MDBOOK_VERSION: 0.4.21
+      MDBOOK_VERSION: 0.4.36
+      MDBOOK_MERMAID_VERSION: 0.13.0
     steps:
       - uses: actions/checkout@v3
       - uses: actions-rs/toolchain@v1
@@ -51,6 +52,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
           rustup update
           cargo install --version ${MDBOOK_VERSION} mdbook
+          cargo install --version ${MDBOOK_GRAPHVIZ_VERSION} mdbook-mermaid
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v3
