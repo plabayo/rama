@@ -15,7 +15,7 @@ and that you cannot do without.
 
 (2) works, gives you the full freedom of a child's infinite creativity.
 However... having to do that once, twice, and more, becomes boring pretty quickly.
-Despite how specialised your pxoxy might be, it will be pretty similar to many other proxies
+Despite how specialised your proxy might be, it will be pretty similar to many other proxies
 out there, including the ones that you write yourself.
 
 and this is where Rama comes in and hopes to be. It allows you to develop
