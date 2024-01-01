@@ -4,12 +4,12 @@
     <img src="../img/proxy_llama_http.jpeg" style="height: 10em">
     <div>
         <p>
-            blabla
+            intro text
         </p>
     </div>
 </div>
 
-example blabla
+example text
 
 ```mermaid
 graph TD;
@@ -19,4 +19,4 @@ graph TD;
     C-->D;
 ```
 
-more blala
+continued text
