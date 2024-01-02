@@ -7,17 +7,29 @@
     </div>
 </div>
 
-mollis mi. Ut at nisl aliquam, euismod arcu et, suscipit arcu. Suspendisse potenti. Nulla tellus sem, placerat ut turpis ac, venenatis aliquet ante. Etiam sed semper nunc.
+There are currently
+[no examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+on how to create such a proxy using rama. If you are interested in contributing this
+you can create an issue at <https://github.com/plabayo/rama/issues> and we'll
+help you to get this shipped.
 
 <div class="book-article-image-center">
 
 ```dot process
 digraph {
-    "processed" -> "graph"
+    pad=0.2;
+    "client" -> "proxy(rama)" [dir=both]
+    "proxy(rama)" -> "server A" [dir=both]
+    "proxy(rama)" -> "server B" [dir=both]
 }
 ```
 
 </div>
 
-Etiam sed semper nunc. In id condimentum turpis. Integer orci nisi, sagittis ut nisl vitae, mattis pretium ipsum. Nullam vitae odio eu libero euismod mollis. Aliquam sollicitudin enim ac urna tincidunt ullamcorper. Donec luctus risus velit, id imperdiet dui volutpat at. Cras tempor sed lorem tempus tempus.
+You'll notice that the above graph is the exact same one used in
+[the http(s) Proxies chapter](./http.md). This is no coincidance,
+as topology wise they are the same.
 
+The key differences are:
+
+- TODO

@@ -3,20 +3,63 @@
 <div class="book-article-intro">
     <img src="../img/proxy_llama_http.jpeg" alt="artistical representation of rama http proxy as llamas spread across the globe">
     <div>
-        Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus diam purus, semper at magna ut, venenatis sodales quam. Phasellus in semper enim. Nulla facilities. Vestibulum sed lectus sollicitudin, commodo nunc eget.
+        HTTP(S) proxies forward HTTP requests. The request from the client is the same as a regular HTTP request except the full URL is passed, instead of just the path. Some web proxies allow the HTTP CONNECT method to set up forwarding of arbitrary data through the connection; a common policy is to only forward port 443 to allow HTTPS traffic.
+        <p>— <a href="https://en.wikipedia.org/wiki/Proxy_server#Web_proxy_servers">Wikipedia</a></p>
     </div>
 </div>
 
-mollis mi. Ut at nisl aliquam, euismod arcu et, suscipit arcu. Suspendisse potenti. Nulla tellus sem, placerat ut turpis ac, venenatis aliquet ante. Etiam sed semper nunc.
+There are currently
+[no examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+on how to create such a proxy using rama. If you are interested in contributing this
+you can create an issue at <https://github.com/plabayo/rama/issues> and we'll
+help you to get this shipped.
 
 <div class="book-article-image-center">
 
 ```dot process
 digraph {
-    "processed" -> "graph"
+    pad=0.2;
+    "client" -> "proxy(rama)" [dir=both]
+    "proxy(rama)" -> "server A" [dir=both]
+    "proxy(rama)" -> "server B" [dir=both]
 }
 ```
 
 </div>
 
-Etiam sed semper nunc. In id condimentum turpis. Integer orci nisi, sagittis ut nisl vitae, mattis pretium ipsum. Nullam vitae odio eu libero euismod mollis. Aliquam sollicitudin enim ac urna tincidunt ullamcorper. Donec luctus risus velit, id imperdiet dui volutpat at. Cras tempor sed lorem tempus tempus.
+You'll notice that the above graph is the exact same one used in
+[the Reverse Proxies chapter](./reverse.md). In an abstract topology sense
+this is expected, however there are typically differences:
+
+- The client, proxy and server are typically in 3 different intranets,
+  with communication going typically over the intranet;
+- The use cases of a reverse proxy are very wide, while
+  those of the http proxy are pretty specific.
+
+The most common use case of an http(s) proxy is to
+conceal the MAC (~L3) and IP address (~L4) of the client, and have the request
+originate instead from the http(s) proxy.
+
+In case the client request is encrypted (TLS) it will typically make a
+plaintext (http/1.1) request with the "CONNECT" method to the proxy,
+whom on the behalve of the client will establish an encrypted tunnel
+to the target (server), from there it will:
+
+- either just copy the data between the two connections as they are;
+- or it might act as [a MITM proxy](./mitm.md) and actually read and
+  possibly even modify the incoming (http) request prior to sending
+  it to the target client. In this case it might even act
+  as [a distortion proxy](./distort.md).
+
+In case we are dealing with TLS-encrypted traffic it does mean that the client
+most likely will have to accept/approve the authority of the proxy's TLS certification,
+given it will not match the expected target (server) TLS certificate. Depending on the
+client's network policies this might be handled automatically due to the use
+of a non-public [root certificate](https://en.wikipedia.org/wiki/Root_certificate).
+
+Plain text (http) requests are typically immediately made with the Host/Authorization
+headers being equal to the desired target server. Which once again looks a lot more
+like logic that a [reverse proxy](./reverse.md) would also do among one of its many tasks.
+
+See the official RFCs for more information regarding HTTP semantics and
+protocol specifications.

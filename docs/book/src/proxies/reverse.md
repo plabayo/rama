@@ -19,9 +19,9 @@ help you to get this shipped.
 ```dot process
 digraph {
     pad=0.2;
-    "client" -> "your_app(rama)" [dir=both]
-    "your_app(rama)" -> "server A" [dir=both]
-    "your_app(rama)" -> "server B" [dir=both]
+    "client" -> "proxy(rama)" [dir=both]
+    "proxy(rama)" -> "server A" [dir=both]
+    "proxy(rama)" -> "server B" [dir=both]
 }
 ```
 
