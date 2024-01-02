@@ -1,6 +1,5 @@
 use crate::service::{Context, Layer, Service};
 use futures_util::FutureExt;
-use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
 

@@ -1,6 +1,5 @@
 //! Context passed to and between services as input.
 
-use futures::executor;
 use std::future::Future;
 use tokio::task::JoinHandle;
 
@@ -71,7 +70,7 @@ impl<S> Context<S> {
 
     /// Get a reference to the shutdown guard,
     /// if and only if the context was created within a graceful environment.
-    pub(crate) fn guard(&self) -> Option<&ShutdownGuard> {
+    pub fn guard(&self) -> Option<&ShutdownGuard> {
         self.executor.guard()
     }
 }

@@ -1,5 +1,4 @@
 use super::{Context, Service};
-use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 

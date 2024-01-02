@@ -303,8 +303,6 @@ mod test {
 
     #[tokio::test]
     async fn test_layer_service_fn_static_and_dynamic() {
-        use futures_util::TryFutureExt;
-
         let service = ServiceBuilder::new()
             .layer_fn(ToUpper)
             .service_fn(|_, s: &'static str| async move { Ok::<_, Infallible>(s.trim()) });

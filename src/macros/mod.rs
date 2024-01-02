@@ -1,5 +1,8 @@
 //! Internal macros
 
+// TODO: remove once released
+#![allow(unused_macros)]
+
 macro_rules! opaque_future {
     ($(#[$m:meta])* pub type $name:ident = $actual:ty;) => {
         opaque_future! {

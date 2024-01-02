@@ -63,10 +63,6 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
-// TODO: delete these allows after refactor is finished
-#![allow(unused_macros)]
-#![allow(unused_imports)]
-#![allow(dead_code)]
 
 #[macro_use]
 pub(crate) mod macros;

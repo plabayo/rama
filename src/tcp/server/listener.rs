@@ -1,14 +1,10 @@
 use super::TcpSocketInfo;
-use crate::error::BoxError;
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
-use crate::service::{
-    layer::{Identity, Stack},
-    Layer, Service, ServiceBuilder,
-};
+use crate::service::Service;
 use crate::service::{Context, ServiceFn};
 use std::pin::pin;
-use std::{future::Future, io, net::SocketAddr};
+use std::{io, net::SocketAddr};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
 
 /// Builder for `TcpListener`.

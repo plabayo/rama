@@ -4,7 +4,6 @@ use crate::{
 };
 use rustls::ServerConfig;
 use std::{future::Future, sync::Arc};
-use tokio::net::TcpStream;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
