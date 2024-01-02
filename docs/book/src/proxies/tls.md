@@ -3,21 +3,30 @@
 <div class="book-article-intro">
     <img src="../img/proxy_llama_tls.jpeg" alt="artistical representation of rama TLS Termination proxy as llama unlocking cargo to move it forward unprotected">
     <div>
-        Lorem ipsum dolor sit amet, consectetur adipiscing elit. Vivamus diam purus, semper at magna ut, venenatis sodales quam. Phasellus in semper enim. Nulla facilities. Vestibulum sed lectus sollicitudin, commodo nunc eget.
+        A TLS termination proxy is a proxy server that acts as an intermediary point between client and server applications, and is used to terminate and/or establish TLS (or DTLS) tunnels by decrypting and/or encrypting communications. This is different to TLS pass-through proxies that forward encrypted (D)TLS traffic between clients and servers without terminating the tunnel.
+        <p> — <a href="https://en.wikipedia.org/wiki/TLS_termination_proxy">Wikipedia</a></p>
     </div>
 </div>
 
-mollis mi. Ut at nisl aliquam, euismod arcu et, suscipit arcu. Suspendisse potenti. Nulla tellus sem, placerat ut turpis ac, venenatis aliquet ante. Etiam sed semper nunc.
+There are currently
+[no examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+on how to create such a proxy using rama. If you are interested in contributing this
+you can create an issue at <https://github.com/plabayo/rama/issues> and we'll
+help you to get this shipped.
 
 <div class="book-article-image-center">
 
 ```dot process
 digraph {
-    "processed" -> "graph"
+    pad=0.2;
+    "client" -> "your_app(rama)" [dir=both; label="  https"]
+    "your_app(rama)" -> "server A" [dir=both; label="  http"]
+    "your_app(rama)" -> "server B" [dir=both; label="  http"]
 }
 ```
 
 </div>
 
-Etiam sed semper nunc. In id condimentum turpis. Integer orci nisi, sagittis ut nisl vitae, mattis pretium ipsum. Nullam vitae odio eu libero euismod mollis. Aliquam sollicitudin enim ac urna tincidunt ullamcorper. Donec luctus risus velit, id imperdiet dui volutpat at. Cras tempor sed lorem tempus tempus.
-
+[Reverse proxies](./reverse.md) are a superset of proxies that also
+include TLS Termination Proxies. It's very common for a reverse proxy
+to also terminate the TLS tunnel.
