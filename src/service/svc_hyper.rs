@@ -26,11 +26,9 @@ impl<S, T> HyperService<S, T> {
 
 impl<S, T> hyper::service::Service<HyperRequest> for HyperService<S, T>
 where
-    S: Clone + Send + 'static,
+    S: Clone + Send + Sync + 'static,
     T: Service<S, HyperRequest, Response = hyper::Response<crate::http::Body>, Error = Infallible>
-        + Clone
-        + Send
-        + 'static,
+        + Clone,
 {
     type Response = hyper::Response<crate::http::Body>;
     type Error = std::convert::Infallible;

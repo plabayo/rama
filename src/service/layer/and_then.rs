@@ -1,12 +1,9 @@
 use crate::service::{Context, Layer, Service};
-use futures_util::TryFutureExt;
 use std::fmt;
-use std::future::Future;
 
 /// Service returned by the [`and_then`] combinator.
 ///
 /// [`and_then`]: crate::service::ServiceBuilder::and_then
-#[derive(Clone)]
 pub struct AndThen<S, F> {
     inner: S,
     f: F,
@@ -24,10 +21,23 @@ where
     }
 }
 
+impl<S, F> Clone for AndThen<S, F>
+where
+    S: Clone,
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            f: self.f.clone(),
+        }
+    }
+}
+
 /// A [`Layer`] that produces a [`AndThen`] service.
 ///
 /// [`Layer`]: crate::service::Layer
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct AndThenLayer<F> {
     f: F,
 }
@@ -39,22 +49,36 @@ impl<S, F> AndThen<S, F> {
     }
 }
 
+impl<F> Clone for AndThenLayer<F>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self { f: self.f.clone() }
+    }
+}
+
 impl<S, F, State, Request, Fut, Output> Service<State, Request> for AndThen<S, F>
 where
     S: Service<State, Request>,
-    F: Fn(S::Response) -> Fut + Clone + Send + 'static,
+    F: Fn(S::Response) -> Fut + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Output, S::Error>> + Send + 'static,
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
     Output: Send + 'static,
 {
     type Response = Output;
     type Error = S::Error;
 
-    fn serve(
+    async fn serve(
         &self,
         ctx: Context<State>,
         req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.inner.serve(ctx, req).and_then(self.f.clone())
+    ) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(ctx, req).await {
+            Ok(resp) => (self.f)(resp).await,
+            Err(err) => Err(err),
+        }
     }
 }
 

@@ -6,7 +6,6 @@ use std::future::Future;
 /// Service returned by the [`trace_err`] combinator.
 ///
 /// [`trace_err`]: crate::service::ServiceBuilder::trace_err
-#[derive(Clone)]
 pub struct TraceErr<S> {
     inner: S,
     level: tracing::Level,
@@ -21,6 +20,18 @@ where
             .field("inner", &self.inner)
             .field("level", &self.level)
             .finish()
+    }
+}
+
+impl<S> Clone for TraceErr<S>
+where
+    S: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            level: self.level,
+        }
     }
 }
 

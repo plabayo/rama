@@ -43,7 +43,7 @@ impl Default for EchoService {
 
 impl<T, S> Service<T, S> for EchoService
 where
-    T: Send + 'static,
+    T: Send + Sync + 'static,
     S: Stream + 'static,
 {
     type Response = u64;

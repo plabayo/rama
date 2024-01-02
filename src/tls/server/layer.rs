@@ -3,7 +3,7 @@ use crate::{
     stream::Stream,
 };
 use rustls::ServerConfig;
-use std::{future::Future, sync::Arc};
+use std::sync::Arc;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
@@ -33,31 +33,24 @@ where
 
 impl<T, S, IO> Service<T, IO> for TlsAcceptorService<S>
 where
-    T: Send + 'static,
+    T: Send + Sync + 'static,
     IO: Stream + Unpin + 'static,
-    S: Service<T, TlsStream<IO>> + Clone,
+    S: Service<T, TlsStream<IO>>,
 {
     type Response = S::Response;
     type Error = TtlsAcceptorError<S::Error>;
 
-    fn serve(
-        &self,
-        ctx: Context<T>,
-        stream: IO,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let acceptor = self.acceptor.clone();
-        let inner = self.inner.clone();
-        async move {
-            let stream = acceptor
-                .accept(stream)
-                .await
-                .map_err(TtlsAcceptorError::Accept)?;
+    async fn serve(&self, ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
+        let stream = self
+            .acceptor
+            .accept(stream)
+            .await
+            .map_err(TtlsAcceptorError::Accept)?;
 
-            inner
-                .serve(ctx, stream)
-                .await
-                .map_err(TtlsAcceptorError::Service)
-        }
+        self.inner
+            .serve(ctx, stream)
+            .await
+            .map_err(TtlsAcceptorError::Service)
     }
 }
 
@@ -139,5 +132,13 @@ mod tests {
 
         assert_send::<TlsAcceptorLayer>();
         assert_send::<TlsAcceptorService<crate::service::IdentityService>>();
+    }
+
+    #[test]
+    fn assert_sync() {
+        use crate::test_helpers::assert_sync;
+
+        assert_sync::<TlsAcceptorLayer>();
+        assert_sync::<TlsAcceptorService<crate::service::IdentityService>>();
     }
 }

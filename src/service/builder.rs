@@ -16,7 +16,6 @@ use std::fmt;
 ///
 /// [`Service`]: crate::service::Service
 /// [builder]: https://doc.rust-lang.org/1.0.0/style/ownership/builders.html
-#[derive(Clone)]
 pub struct ServiceBuilder<L> {
     layer: L,
 }
@@ -24,6 +23,17 @@ pub struct ServiceBuilder<L> {
 impl Default for ServiceBuilder<Identity> {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl<L> Clone for ServiceBuilder<L>
+where
+    L: Clone,
+{
+    fn clone(&self) -> Self {
+        ServiceBuilder {
+            layer: self.layer.clone(),
+        }
     }
 }
 
@@ -77,10 +87,7 @@ impl<L> ServiceBuilder<L> {
     /// middleware.
     ///
     /// [`MapRequest`]: crate::service::layer::MapRequest
-    pub fn map_request<F, R1, R2>(self, f: F) -> ServiceBuilder<Stack<MapRequestLayer<F>, L>>
-    where
-        F: FnMut(R1) -> R2 + Clone,
-    {
+    pub fn map_request<F, R1, R2>(self, f: F) -> ServiceBuilder<Stack<MapRequestLayer<F>, L>> {
         self.layer(MapRequestLayer::new(f))
     }
 

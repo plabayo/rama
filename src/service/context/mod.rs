@@ -1,6 +1,6 @@
 //! Context passed to and between services as input.
 
-use std::future::Future;
+use std::{future::Future, sync::Arc};
 use tokio::task::JoinHandle;
 
 mod extensions;
@@ -10,9 +10,9 @@ use tokio_graceful::ShutdownGuard;
 use crate::rt::Executor;
 
 /// Context passed to and between services as input.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Context<S> {
-    state: S,
+    state: Arc<S>,
     executor: Executor,
     extensions: Extensions,
 }
@@ -23,11 +23,21 @@ impl Default for Context<()> {
     }
 }
 
+impl<S> Clone for Context<S> {
+    fn clone(&self) -> Self {
+        Self {
+            state: self.state.clone(),
+            executor: self.executor.clone(),
+            extensions: self.extensions.clone(),
+        }
+    }
+}
+
 impl<S> Context<S> {
     /// Create a new [`Context`] with the given state.
     pub fn new(state: S, executor: Executor) -> Self {
         Self {
-            state,
+            state: Arc::new(state),
             executor,
             extensions: Extensions::new(),
         }
@@ -36,11 +46,6 @@ impl<S> Context<S> {
     /// Get a reference to the state.
     pub fn state(&self) -> &S {
         &self.state
-    }
-
-    /// Get a mutable reference to the state.
-    pub fn state_mut(&mut self) -> &mut S {
-        &mut self.state
     }
 
     /// Get a reference to the executor.

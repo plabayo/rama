@@ -33,7 +33,7 @@ impl<S, F> MapRequest<S, F> {
 impl<S, F, State, R1, R2> Service<State, R1> for MapRequest<S, F>
 where
     S: Service<State, R2>,
-    F: Fn(R1) -> R2 + Send + 'static,
+    F: Fn(R1) -> R2 + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;

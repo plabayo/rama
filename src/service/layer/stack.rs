@@ -2,7 +2,6 @@ use super::Layer;
 use std::fmt;
 
 /// Two middlewares chained together.
-#[derive(Clone)]
 pub struct Stack<Inner, Outer> {
     inner: Inner,
     outer: Outer,
@@ -12,6 +11,19 @@ impl<Inner, Outer> Stack<Inner, Outer> {
     /// Create a new `Stack`.
     pub fn new(inner: Inner, outer: Outer) -> Self {
         Stack { inner, outer }
+    }
+}
+
+impl<Inner, Outer> Clone for Stack<Inner, Outer>
+where
+    Inner: Clone,
+    Outer: Clone,
+{
+    fn clone(&self) -> Self {
+        Stack {
+            inner: self.inner.clone(),
+            outer: self.outer.clone(),
+        }
     }
 }
 

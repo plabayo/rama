@@ -8,10 +8,22 @@ use crate::service::{
 use super::{error::Elapsed, Timeout};
 
 /// Applies a timeout to requests via the supplied inner service.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct TimeoutLayer<F> {
     timeout: Duration,
     into_error: F,
+}
+
+impl<F> Clone for TimeoutLayer<F>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            timeout: self.timeout,
+            into_error: self.into_error.clone(),
+        }
+    }
 }
 
 impl TimeoutLayer<LayerErrorStatic<Elapsed>> {
@@ -29,7 +41,7 @@ impl<E> TimeoutLayer<LayerErrorStatic<E>> {
     /// value.
     pub fn with_error(timeout: Duration, error: E) -> Self
     where
-        E: Clone + Send + 'static,
+        E: Clone + Send + Sync + 'static,
     {
         Self {
             timeout,
@@ -43,7 +55,7 @@ impl<F> TimeoutLayer<LayerErrorFn<F>> {
     /// function.
     pub fn with_error_fn<E>(timeout: Duration, error_fn: F) -> Self
     where
-        F: Fn() -> E + Clone + Send + 'static,
+        F: Fn() -> E + Send + Sync + 'static,
         E: Send + 'static,
     {
         Self {
@@ -55,7 +67,7 @@ impl<F> TimeoutLayer<LayerErrorFn<F>> {
 
 impl<S, F> Layer<S> for TimeoutLayer<F>
 where
-    F: MakeLayerError,
+    F: MakeLayerError + Clone,
 {
     type Service = Timeout<S, F>;
 

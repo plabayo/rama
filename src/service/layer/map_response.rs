@@ -1,7 +1,5 @@
 use crate::service::{Context, Layer, Service};
-use futures_util::TryFutureExt;
 use std::fmt;
-use std::future::Future;
 
 /// Service returned by the [`map_response`] combinator.
 ///
@@ -42,19 +40,23 @@ impl<S, F> MapResponse<S, F> {
 impl<S, F, State, Request, Response> Service<State, Request> for MapResponse<S, F>
 where
     S: Service<State, Request>,
-    F: Fn(S::Response) -> Response + Clone + Send + 'static,
+    F: Fn(S::Response) -> Response + Send + Sync + 'static,
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
     Response: Send + 'static,
 {
     type Response = Response;
     type Error = S::Error;
 
-    #[inline]
-    fn serve(
+    async fn serve(
         &self,
         ctx: Context<State>,
         req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.inner.serve(ctx, req).map_ok(self.f.clone())
+    ) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(ctx, req).await {
+            Ok(resp) => Ok((self.f)(resp)),
+            Err(err) => Err(err),
+        }
     }
 }
 

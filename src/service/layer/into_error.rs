@@ -5,7 +5,7 @@
 /// Utility error trait to allow Rama layers
 /// to return a default error as well as a user-defined one,
 /// being it a [`Clone`]-able type or a [`Fn`] returning an error type.
-pub trait MakeLayerError: Clone + Send + 'static {
+pub trait MakeLayerError: Send + Sync + 'static {
     /// The error type returned by the layer.
     ///
     /// It does not need to be an actual error type,
@@ -21,12 +21,12 @@ pub trait MakeLayerError: Clone + Send + 'static {
 
 /// A [`MakeLayerError`] implementation that
 /// returns a new error value every time.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct LayerErrorFn<F>(F);
 
 impl<F, E> LayerErrorFn<F>
 where
-    F: Fn() -> E + Clone + Send + 'static,
+    F: Fn() -> E + Send + Sync + 'static,
     E: Send + 'static,
 {
     pub(crate) fn new(f: F) -> Self {
@@ -34,9 +34,18 @@ where
     }
 }
 
+impl<F> Clone for LayerErrorFn<F>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 impl<F, E> MakeLayerError for LayerErrorFn<F>
 where
-    F: Fn() -> E + Clone + Send + 'static,
+    F: Fn() -> E + Send + Sync + 'static,
     E: Send + 'static,
 {
     type Error = E;
@@ -53,7 +62,7 @@ pub struct LayerErrorStatic<E>(E);
 
 impl<E> LayerErrorStatic<E>
 where
-    E: Clone + Send + 'static,
+    E: Clone + Send + Sync + 'static,
 {
     pub(crate) fn new(e: E) -> Self {
         Self(e)
@@ -62,7 +71,7 @@ where
 
 impl<E> MakeLayerError for LayerErrorStatic<E>
 where
-    E: Clone + Send + 'static,
+    E: Clone + Send + Sync + 'static,
 {
     type Error = E;
 

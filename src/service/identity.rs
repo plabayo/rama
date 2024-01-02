@@ -8,7 +8,7 @@ pub struct IdentityService;
 
 impl<S, Request> Service<S, Request> for IdentityService
 where
-    S: Send + 'static,
+    S: Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = Request;

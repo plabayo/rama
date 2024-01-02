@@ -18,7 +18,7 @@ where
 ///
 /// You do not need to implement this trait yourself.
 /// Instead, you need to use the [`service_fn`] function to create a [`ServiceFn`].
-pub trait ServiceFn<S, Request, A>: Send + 'static {
+pub trait ServiceFn<S, Request, A>: Send + Sync + 'static {
     /// The type of response returned by the service.
     type Response: Send + 'static;
 
@@ -36,7 +36,7 @@ pub trait ServiceFn<S, Request, A>: Send + 'static {
 
 impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, (Request,)> for F
 where
-    F: Fn(Request) -> Fut + Send + 'static,
+    F: Fn(Request) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Response, Error>> + Send + 'static,
     Response: Send + 'static,
     Error: Send + Sync + 'static,
@@ -55,7 +55,7 @@ where
 
 impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, (Context<S>, Request)> for F
 where
-    F: Fn(Context<S>, Request) -> Fut + Send + 'static,
+    F: Fn(Context<S>, Request) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<Response, Error>> + Send + 'static,
     Response: Send + 'static,
     Error: Send + Sync + 'static,
@@ -93,7 +93,7 @@ where
 
 impl<F, S, Request, A> Service<S, Request> for ServiceFnBox<F, A>
 where
-    A: Send + 'static,
+    A: Send + Sync + 'static,
     F: ServiceFn<S, Request, A>,
 {
     type Response = F::Response;

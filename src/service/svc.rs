@@ -6,7 +6,7 @@ use std::pin::Pin;
 
 /// A [`Service`] that produces rama services,
 /// to serve requests with, be it transport layer requests or application layer requests.
-pub trait Service<S, Request>: Send + 'static {
+pub trait Service<S, Request>: Send + Sync + 'static {
     /// The type of response returned by the service.
     type Response: Send + 'static;
 
@@ -50,7 +50,10 @@ trait DynService<S, Request> {
     fn clone_box(
         &self,
     ) -> Box<
-        dyn DynService<S, Request, Response = Self::Response, Error = Self::Error> + Send + 'static,
+        dyn DynService<S, Request, Response = Self::Response, Error = Self::Error>
+            + Send
+            + Sync
+            + 'static,
     >;
 }
 
@@ -72,7 +75,10 @@ where
     fn clone_box(
         &self,
     ) -> Box<
-        dyn DynService<S, Request, Response = Self::Response, Error = Self::Error> + Send + 'static,
+        dyn DynService<S, Request, Response = Self::Response, Error = Self::Error>
+            + Send
+            + Sync
+            + 'static,
     > {
         Box::new(self.clone())
     }
@@ -81,7 +87,8 @@ where
 /// A boxed [`Service`], to serve requests with,
 /// for where you require dynamic dispatch.
 pub struct BoxService<S, Request, Response, Error> {
-    inner: Box<dyn DynService<S, Request, Response = Response, Error = Error> + Send + 'static>,
+    inner:
+        Box<dyn DynService<S, Request, Response = Response, Error = Error> + Send + Sync + 'static>,
 }
 
 impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
@@ -176,6 +183,15 @@ mod tests {
         assert_send::<AddSvc>();
         assert_send::<MulSvc>();
         assert_send::<BoxService<(), (), (), ()>>();
+    }
+
+    #[test]
+    fn assert_sync() {
+        use crate::test_helpers::*;
+
+        assert_sync::<AddSvc>();
+        assert_sync::<MulSvc>();
+        assert_sync::<BoxService<(), (), (), ()>>();
     }
 
     #[tokio::test]

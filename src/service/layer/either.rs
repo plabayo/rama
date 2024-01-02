@@ -12,12 +12,25 @@ use crate::service::{Context, Layer, Service};
 /// Both services must be of the same request, response, and error types.
 /// [`Either`] is useful for handling conditional branching in service middleware
 /// to different inner service types.
-#[derive(Clone, Copy, Debug)]
+#[derive(Copy, Debug)]
 pub enum Either<A, B> {
     #[allow(missing_docs)]
     Left(A),
     #[allow(missing_docs)]
     Right(B),
+}
+
+impl<A, B> Clone for Either<A, B>
+where
+    A: Clone,
+    B: Clone,
+{
+    fn clone(&self) -> Self {
+        match self {
+            Either::Left(a) => Either::Left(a.clone()),
+            Either::Right(b) => Either::Right(b.clone()),
+        }
+    }
 }
 
 impl<A, B, S, Request> Service<S, Request> for Either<A, B>

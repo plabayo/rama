@@ -55,7 +55,7 @@ impl<S> TcpListenerBuilder<S> {
 
 impl<S> TcpListenerBuilder<S>
 where
-    S: Clone + Send + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     /// Create a new `TcpListenerBuilder` with the given state.
     pub fn with_state(state: S) -> Self {
@@ -102,7 +102,7 @@ impl TcpListener<()> {
     /// which can be used to configure a `TcpListener`.
     pub fn build_with_state<S>(state: S) -> TcpListenerBuilder<S>
     where
-        S: Clone + Send + 'static,
+        S: Clone + Send + Sync + 'static,
     {
         TcpListenerBuilder::with_state(state)
     }
@@ -150,7 +150,7 @@ impl<S> TcpListener<S> {
 
 impl<State> TcpListener<State>
 where
-    State: Clone + Send + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     /// Serve connections from this listener with the given service.
     ///
@@ -189,7 +189,7 @@ where
     /// See [`Self::serve`] for more details.
     pub async fn serve_fn<F, A>(self, f: F)
     where
-        A: Send + 'static,
+        A: Send + Sync + 'static,
         F: ServiceFn<State, TcpStream, A> + Clone,
     {
         let service = crate::service::service_fn(f);
@@ -241,7 +241,7 @@ where
     /// See [`Self::serve_graceful`] for more details.
     pub async fn serve_fn_graceful<F, A>(self, guard: ShutdownGuard, service: F)
     where
-        A: Send + 'static,
+        A: Send + Sync + 'static,
         F: ServiceFn<State, TcpStream, A> + Clone,
     {
         let service = crate::service::service_fn(service);
