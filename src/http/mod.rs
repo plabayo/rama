@@ -22,6 +22,8 @@ pub use http::status::StatusCode;
 pub use http::uri::Uri;
 pub use http::version::Version;
 
+pub mod layer;
+
 pub mod dep {
     //! Dependencies for rama http modules.
 
