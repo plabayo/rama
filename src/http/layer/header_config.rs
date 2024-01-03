@@ -1,7 +1,6 @@
-use std::marker::PhantomData;
-
-use http::header::AsHeaderName;
+use crate::http::dep::http::header::AsHeaderName;
 use serde::de::DeserializeOwned;
+use std::marker::PhantomData;
 
 use crate::{
     error::Error,

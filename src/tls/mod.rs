@@ -4,9 +4,24 @@ pub mod server;
 
 pub mod dep {
     //! Dependencies for rama tls modules.
+    //!
+    //! Exported for your convenience.
 
-    pub use pki_types;
-    pub use rcgen;
+    pub mod pki_types {
+        //! Re-export of the [`pki-types`] crate.
+        //!
+        //! [`pki-types`]: https://docs.rs/rustls-pki-types
+
+        pub use pki_types::*;
+    }
+
+    pub mod rcgen {
+        //! Re-export of the [`rcgen`] crate.
+        //!
+        //! [`rcgen`]: https://docs.rs/rcgen
+
+        pub use rcgen::*;
+    }
 
     pub mod rustls {
         //! Re-export of the `rustls` and `tokio-rustls` crates.
