@@ -5,7 +5,7 @@ use super::{
         layer_fn, AndThenLayer, Either, Identity, LayerFn, MapErrLayer, MapRequestLayer,
         MapResponseLayer, MapResultLayer, Stack, ThenLayer, TraceErrLayer,
     },
-    service_fn, BoxService, Layer, Service, ServiceFn, ServiceFnBox,
+    service_fn, BoxService, Layer, Service, ServiceFnBox,
 };
 use std::fmt;
 
@@ -193,11 +193,9 @@ impl<L> ServiceBuilder<L> {
     /// [`Layer`]: crate::service::Layer
     /// [`Service`]: crate::service::Service
     /// [`service_fn`]: crate::service::service_fn
-    pub fn service_fn<F, State, Request, A>(self, f: F) -> L::Service
+    pub fn service_fn<F, A>(self, f: F) -> L::Service
     where
         L: Layer<ServiceFnBox<F, A>>,
-        F: ServiceFn<State, Request, A>,
-        A: Send + 'static,
     {
         self.service(service_fn(f))
     }

@@ -250,7 +250,7 @@ where
 }
 
 async fn handle_accept_err(err: io::Error) {
-    if is_connection_error(&err) {
+    if crate::tcp::utils::is_connection_error(&err) {
         tracing::trace!(
             error = &err as &dyn std::error::Error,
             "TCP accept error: connect error"
@@ -270,13 +270,4 @@ async fn handle_accept_err(err: io::Error) {
         tracing::error!(error = &err as &dyn std::error::Error, "TCP accept error");
         tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
-}
-
-fn is_connection_error(e: &io::Error) -> bool {
-    matches!(
-        e.kind(),
-        io::ErrorKind::ConnectionRefused
-            | io::ErrorKind::ConnectionAborted
-            | io::ErrorKind::ConnectionReset
-    )
 }

@@ -3,11 +3,7 @@ use std::future::Future;
 use std::marker::PhantomData;
 
 /// Create a [`ServiceFn`] from a function.
-pub fn service_fn<F, S, Request, A>(f: F) -> ServiceFnBox<F, A>
-where
-    A: Send + 'static,
-    F: ServiceFn<S, Request, A>,
-{
+pub fn service_fn<F, A>(f: F) -> ServiceFnBox<F, A> {
     ServiceFnBox {
         f,
         _marker: PhantomData,
