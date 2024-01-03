@@ -24,6 +24,7 @@ pub use http::version::Version;
 
 pub mod dep {
     //! Dependencies for rama http modules.
+
     pub use http;
     pub use http_body;
 }

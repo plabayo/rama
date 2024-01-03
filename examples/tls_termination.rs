@@ -1,9 +1,10 @@
-use pki_types::{CertificateDer, PrivatePkcs8KeyDer};
 use rama::{
     graceful::Shutdown,
     service::ServiceBuilder,
     tcp::server::TcpListener,
-    tls::rustls::{server::TlsStream, ServerConfig},
+    tls::dep::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+    tls::dep::rcgen,
+    tls::dep::rustls::{server::TlsStream, ServerConfig},
     tls::server::TlsAcceptorLayer,
 };
 use std::{convert::Infallible, time::Duration};

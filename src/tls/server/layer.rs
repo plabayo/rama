@@ -1,7 +1,7 @@
 use crate::{
     service::{Context, Layer, Service},
     stream::Stream,
-    tls::rustls::ServerConfig,
+    tls::dep::rustls::ServerConfig,
 };
 use std::sync::Arc;
 use tokio_rustls::{server::TlsStream, TlsAcceptor};
