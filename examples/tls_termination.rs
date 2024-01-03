@@ -2,10 +2,11 @@ use rama::{
     graceful::Shutdown,
     service::ServiceBuilder,
     tcp::server::TcpListener,
-    tls::dep::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
-    tls::dep::rcgen,
-    tls::dep::rustls::{server::TlsStream, ServerConfig},
-    tls::server::TlsAcceptorLayer,
+    tls::{
+        dep::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+        dep::rustls::{server::TlsStream, ServerConfig},
+        server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
+    },
 };
 use std::{convert::Infallible, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
@@ -55,16 +56,29 @@ async fn main() {
 
     // create tls proxy
     shutdown.spawn_task_fn(|guard| async move {
+        let tls_client_config_handler = TlsClientConfigHandler::default()
+            .store_client_hello()
+            .server_config_provider(|client_hello: IncomingClientHello| async move {
+                tracing::debug!(?client_hello, "client hello");
+
+                // Return None in case you want to use the default acceptor Tls config
+                // Usually though when implementing this trait it's because you
+                // want to use the client hello to determine which server config to use.
+                Ok(None)
+            });
+
+        let tls_server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(
+                vec![server_cert_der.clone()],
+                PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned()).into(),
+            )
+            .expect("create tls server config");
+
         let tcp_service = ServiceBuilder::new()
-            .layer(TlsAcceptorLayer::new(
-                ServerConfig::builder()
-                    .with_no_client_auth()
-                    .with_single_cert(
-                        vec![server_cert_der.clone()],
-                        PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned())
-                            .into(),
-                    )
-                    .expect("create tls server config"),
+            .layer(TlsAcceptorLayer::with_client_config_handler(
+                tls_server_config,
+                tls_client_config_handler,
             ))
             .service_fn(|mut stream: TlsStream<TcpStream>| async move {
                 let result = async {
