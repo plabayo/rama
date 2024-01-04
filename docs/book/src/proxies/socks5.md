@@ -14,6 +14,8 @@ on how to create such a proxy using rama. If you are interested in contributing 
 you can create an issue at <https://github.com/plabayo/rama/issues> and we'll
 help you to get this shipped.
 
+## Description
+
 <div class="book-article-image-center">
 
 ```dot process
