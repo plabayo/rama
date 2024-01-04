@@ -12,14 +12,14 @@ use sync_wrapper::SyncWrapper;
 
 use crate::error::{BoxError, Error};
 
-type BoxBody = http_body_util::combinators::UnsyncBoxBody<Bytes, Error>;
+type BoxBody = http_body_util::combinators::BoxBody<Bytes, Error>;
 
 fn boxed<B>(body: B) -> BoxBody
 where
-    B: http_body::Body<Data = Bytes> + Send + 'static,
+    B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     B::Error: Into<BoxError>,
 {
-    try_downcast(body).unwrap_or_else(|body| body.map_err(Error::new).boxed_unsync())
+    try_downcast(body).unwrap_or_else(|body| body.map_err(Error::new).boxed())
 }
 
 pub(crate) fn try_downcast<T, K>(k: K) -> Result<T, K>
@@ -43,7 +43,7 @@ impl Body {
     /// Create a new `Body` that wraps another [`http_body::Body`].
     pub fn new<B>(body: B) -> Self
     where
-        B: http_body::Body<Data = Bytes> + Send + 'static,
+        B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
         B::Error: Into<BoxError>,
     {
         try_downcast(body).unwrap_or_else(|body| Self(boxed(body)))

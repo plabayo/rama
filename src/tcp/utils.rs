@@ -10,5 +10,6 @@ pub fn is_connection_error(e: &io::Error) -> bool {
         io::ErrorKind::ConnectionRefused
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::ConnectionReset
+            | io::ErrorKind::UnexpectedEof
     )
 }

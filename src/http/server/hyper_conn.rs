@@ -4,11 +4,13 @@ use crate::rt::Executor;
 use crate::service::Service;
 use crate::service::{Context, HyperService};
 use crate::stream::Stream;
+use crate::tcp::utils::is_connection_error;
 use futures::FutureExt;
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::{rt::TokioIo, server::conn::auto::Builder as AutoBuilder};
 use std::convert::Infallible;
+use std::error::Error;
 use std::pin::pin;
 use tokio::select;
 
@@ -57,14 +59,12 @@ impl HyperConnServer for Http1Builder {
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
-                        result?;
-                        return Ok(());
+                        return map_hyper_result(result);
                     }
                 }
             }
         } else {
-            conn.await?;
-            Ok(())
+            map_hyper_result(conn.await)
         }
     }
 }
@@ -99,14 +99,12 @@ impl HyperConnServer for Http2Builder<Executor> {
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
-                        result?;
-                        return Ok(());
+                        return map_hyper_result(result);
                     }
                 }
             }
         } else {
-            conn.await?;
-            Ok(())
+            map_hyper_result(conn.await)
         }
     }
 }
@@ -141,16 +139,65 @@ impl HyperConnServer for AutoBuilder<Executor> {
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
-                        result.map_err(crate::error::Error::new)?;
-                        return Ok(());
+                        return map_boxed_hyper_result(result);
                     }
                 }
             }
         } else {
-            conn.await.map_err(crate::error::Error::new)?;
-            Ok(())
+            map_boxed_hyper_result(conn.await)
         }
     }
+}
+
+/// A utility function to map boxed, potentially hyper errors, to our own error type.
+fn map_boxed_hyper_result(
+    result: Result<(), Box<dyn std::error::Error + Send + Sync>>,
+) -> HttpServeResult {
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) => match err.downcast::<hyper::Error>() {
+            Ok(err) => map_hyper_err_to_result(*err),
+            Err(err) => match err.downcast::<std::io::Error>() {
+                Ok(err) => {
+                    if is_connection_error(&err) {
+                        Ok(())
+                    } else {
+                        Err(err.into())
+                    }
+                }
+                Err(err) => Err(crate::error::Error::new(err)),
+            },
+        },
+    }
+}
+
+/// A utility function to map hyper errors to our own error type.
+fn map_hyper_result(result: hyper::Result<()>) -> HttpServeResult {
+    match result {
+        Ok(_) => Ok(()),
+        Err(err) => map_hyper_err_to_result(err),
+    }
+}
+
+/// A utility function to map hyper errors to our own error type.
+fn map_hyper_err_to_result(err: hyper::Error) -> HttpServeResult {
+    if err.is_canceled() || err.is_closed() {
+        return Ok(());
+    }
+
+    if let Some(source_err) = err.source() {
+        if let Some(h2_err) = source_err.downcast_ref::<h2::Error>() {
+            if h2_err.is_go_away() || h2_err.is_io() {
+                return Ok(());
+            }
+        } else if let Some(io_err) = source_err.downcast_ref::<std::io::Error>() {
+            if is_connection_error(io_err) {
+                return Ok(());
+            }
+        }
+    }
+
+    Err(err.into())
 }
 
 mod private {

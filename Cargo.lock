@@ -832,6 +832,7 @@ dependencies = [
  "bytes",
  "futures",
  "futures-util",
+ "h2",
  "headers",
  "http",
  "http-body",

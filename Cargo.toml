@@ -37,6 +37,7 @@ rustversion = "1.0.9"
 bytes = "1"
 futures = "0.3.29"
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+h2 = "0.4"
 headers = "0.4"
 http = "1"
 http-body = "1"

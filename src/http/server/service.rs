@@ -4,6 +4,7 @@ use crate::http::{Request, Response};
 use crate::rt::Executor;
 use crate::service::{Context, Service};
 use crate::stream::Stream;
+use crate::tcp::server::TcpListener;
 use hyper::server::conn::http2::Builder as H2ConnBuilder;
 use hyper::{rt::Timer, server::conn::http1::Builder as Http1ConnBuilder};
 use hyper_util::server::conn::auto::Builder as AutoConnBuilder;
@@ -13,6 +14,8 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::net::ToSocketAddrs;
+use tokio_graceful::ShutdownGuard;
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
 ///
@@ -619,6 +622,95 @@ where
         self.builder
             .hyper_serve_connection(ctx, stream, service)
             .await
+    }
+
+    /// Listen for connections on the given address, serving HTTP connections.
+    ///
+    /// It's a shortcut in case you don't need to operate on the transport layer directly.
+    pub async fn listen<S, A>(self, addr: A, service: S) -> HttpServeResult
+    where
+        S: Service<(), Request, Response = Response, Error = Infallible> + Clone,
+        A: ToSocketAddrs,
+    {
+        TcpListener::bind(addr)
+            .await?
+            .serve(self.service(service))
+            .await;
+        Ok(())
+    }
+
+    /// Listen gracefully for connections on the given address, serving HTTP connections.
+    ///
+    /// Same as [`Self::listen`], but it will respect the given [`ShutdownGuard`],
+    /// and also pass it to the service.
+    ///
+    /// [`ShutdownGuard`]: crate::graceful::ShutdownGuard
+    pub async fn listen_graceful<S, A>(
+        self,
+        guard: ShutdownGuard,
+        addr: A,
+        service: S,
+    ) -> HttpServeResult
+    where
+        S: Service<(), Request, Response = Response, Error = Infallible> + Clone,
+        A: ToSocketAddrs,
+    {
+        TcpListener::bind(addr)
+            .await?
+            .serve_graceful(guard, self.service(service))
+            .await;
+        Ok(())
+    }
+
+    /// Listen for connections on the given address, serving HTTP connections.
+    ///
+    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
+    ///
+    /// [`Service`]: crate::service::Service
+    /// [`Context`]: crate::service::Context
+    pub async fn listen_with_state<State, S, A>(
+        self,
+        state: State,
+        addr: A,
+        service: S,
+    ) -> HttpServeResult
+    where
+        State: Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        A: ToSocketAddrs,
+    {
+        TcpListener::build_with_state(state)
+            .bind(addr)
+            .await?
+            .serve(self.service(service))
+            .await;
+        Ok(())
+    }
+
+    /// Listen gracefully for connections on the given address, serving HTTP connections.
+    ///
+    /// Same as [`Self::listen_graceful`], but including the given state in the [`Service`]'s [`Context`].
+    ///
+    /// [`Service`]: crate::service::Service
+    /// [`Context`]: crate::service::Context
+    pub async fn listen_graceful_with_state<State, S, A>(
+        self,
+        guard: ShutdownGuard,
+        state: State,
+        addr: A,
+        service: S,
+    ) -> HttpServeResult
+    where
+        State: Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        A: ToSocketAddrs,
+    {
+        TcpListener::build_with_state(state)
+            .bind(addr)
+            .await?
+            .serve_graceful(guard, self.service(service))
+            .await;
+        Ok(())
     }
 }
 
