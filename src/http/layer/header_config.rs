@@ -12,10 +12,7 @@ use crate::{
 };
 
 /// Extract a header config from a request or response without consuming it.
-pub async fn extract_header_config<H, T, G>(
-    request: &G,
-    header_name: H,
-) -> Result<T, HeaderValueErr>
+pub fn extract_header_config<H, T, G>(request: &G, header_name: H) -> Result<T, HeaderValueErr>
 where
     H: AsHeaderName + Copy,
     T: DeserializeOwned + Clone + Send + Sync + 'static,
@@ -95,7 +92,7 @@ where
         ctx: Context<State>,
         mut request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        let config = match extract_header_config::<_, T, _>(&request, &self.key).await {
+        let config = match extract_header_config::<_, T, _>(&request, &self.key) {
             Ok(config) => config,
             Err(err) => {
                 if self.optional

@@ -72,6 +72,11 @@ pub trait ServerConfigProvider: Send + Sync + 'static {
     /// Returns a [`Future`] which resolves to a [`ServerConfig`],
     /// no [`ServerConfig`] to use the default one set for this service,
     /// or an error.
+    ///
+    /// Note that ideally we would be able to give a reference here (e.g. `ClientHello`),
+    /// instead of owned data, but due to it being async this makes it a bit tricky...
+    /// Impossible in the current design, but perhaps there is a solution possible.
+    /// For now we just turn it in cloned data ¯\_(ツ)_/¯
     fn get_server_config(
         &self,
         client_hello: IncomingClientHello,
