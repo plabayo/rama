@@ -1,12 +1,17 @@
 use crate::{
-    service::{Layer, Service},
-    tcp::TcpStream,
+    service::{Context, Layer, Service},
+    stream::Stream,
 };
+use std::future::Future;
 
 mod bytes;
 use bytes::BytesRWTracker;
 pub use bytes::BytesRWTrackerHandle;
 
+/// A [`Service`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.
+///
+/// [`Service`]: crate::service::Service
+/// [`Stream`]: crate::stream::Stream
 #[derive(Debug)]
 pub struct BytesTrackerService<S> {
     inner: S,
@@ -23,31 +28,38 @@ where
     }
 }
 
-impl<S, I> Service<TcpStream<I>> for BytesTrackerService<S>
+impl<State, S, IO> Service<State, IO> for BytesTrackerService<S>
 where
-    S: Service<TcpStream<BytesRWTracker<I>>>,
+    State: Send + Sync + 'static,
+    S: Service<State, BytesRWTracker<IO>>,
+    IO: Stream,
 {
     type Response = S::Response;
     type Error = S::Error;
 
-    async fn call(&self, stream: TcpStream<I>) -> Result<Self::Response, Self::Error> {
-        let (stream, mut extensions) = stream.into_parts();
-
-        let stream = BytesRWTracker::new(stream);
-        let handle = stream.handle();
-        extensions.insert(handle);
-
-        let stream = TcpStream::from_parts(stream, extensions);
-
-        self.inner.call(stream).await
+    fn serve(
+        &self,
+        mut ctx: Context<State>,
+        stream: IO,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        let tracked_stream = BytesRWTracker::new(stream);
+        let handle = tracked_stream.handle();
+        ctx.extensions_mut().insert(handle);
+        self.inner.serve(ctx, tracked_stream)
     }
 }
 
+/// A [`Layer`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.
+///
+/// [`Layer`]: crate::service::Layer
+/// [`Service`]: crate::service::Service
+/// [`Stream`]: crate::stream::Stream
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct BytesTrackerLayer;
 
 impl BytesTrackerLayer {
+    /// Create a new [`BytesTrackerLayer`].
     pub fn new() -> Self {
         Self
     }

@@ -4,6 +4,10 @@
 #
 name: Deploy mdBook site to Pages
 
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TOOLCHAIN: stable
+
 on:
   # Runs on pushes targeting the default branch
   push:
@@ -29,14 +33,28 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      MDBOOK_VERSION: 0.4.21
+      MDBOOK_VERSION: 0.4.36
+      MDBOOK_GRAPHVIZ_VERSION: 0.1.6
     steps:
       - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          override: true
+          profile: minimal
+      - uses: Swatinem/rust-cache@v1
+      - name: Generate Rust Docs
+        env:
+          RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
+        run: cargo doc --all-features --no-deps
+      - name: Install Graphviz
+        run: sudo apt-get install graphviz
       - name: Install mdBook
         run: |
           curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
           rustup update
           cargo install --version ${MDBOOK_VERSION} mdbook
+          cargo install --version ${MDBOOK_GRAPHVIZ_VERSION} mdbook-graphviz
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v3
@@ -46,8 +64,10 @@ jobs:
       - name: Create artifact
         working-directory: ./docs
         run: |
-          mkdir -p www/man
-          cp -r book/book/* www/man
+          mkdir -p www/book
+          cp -r book/book/* www/book
+          mkdir -p www/docs
+          cp -r ../target/doc/* www/docs
           cp index.html www/index.html
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v2

@@ -1,6 +1,6 @@
 [package]
 name = "rama-cli"
-description = "binary version of and cli utility for rama, a distortion proxy framework"
+description = "binary version of and cli utility for rama, a modular proxy framework"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -8,6 +8,7 @@ repository = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
 authors = { workspace = true }
+rust-version = { workspace = true }
 default-run = "rama"
 
 [dependencies]
@@ -16,6 +17,7 @@ clap = { version = "4.4", features = [ "derive" ] }
 crossterm = "0.27"
 rama = { version = "0.2", path = ".." }
 ratatui = "0.25"
+tokio = { version = "1.35", features = [ "rt-multi-thread", "macros" ] }
 
 [[bin]]
 name = "rama"

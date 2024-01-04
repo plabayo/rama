@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "rama-cli", "rama-rt", "rama-rt-macros"]
+members = [".", "rama-cli", "rama-macros"]
 
 [workspace.package]
 version = "0.2.0"
@@ -10,12 +10,13 @@ homepage = "https://ramaproxy.org"
 keywords = ["io", "async", "non-blocking", "futures"]
 categories = ["asynchronous", "network-programming"]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
+rust-version = "1.75.0"
 
 [package]
 name = "rama"
 readme = "README.md"
 documentation = "https://docs.rs/rama"
-description = "distortion proxy framework"
+description = "modular proxy framework"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -24,32 +25,47 @@ homepage = { workspace = true }
 keywords = { workspace = true }
 categories = { workspace = true }
 authors = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[build-dependencies]
+rustversion = "1.0.9"
 
 [dependencies]
+bytes = "1"
 futures = "0.3.29"
+futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
+h2 = "0.4"
 headers = "0.4"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
 httparse = "1.8"
 hyper = { package = "rama-hyper", version = "0.1001000", features = ["http1", "http2", "server"] }
-hyper-util = { package = "rama-hyper-util", version = "0.1002", features = ["server-auto"] }
+hyper-util = { package = "rama-hyper-util", version = "0.1002", features = ["tokio", "server-auto"] }
 matchit = "0.7.3"
 pin-project-lite = "0.2.13"
-rama-rt = { version = "0.2", path = "./rama-rt" }
-rama-rt-macros = { version = "0.2", path = "./rama-rt-macros" }
-serde = { version = "1.0", features = ["derive"] }
-serde_urlencoded = "0.7"
-tower-async = { version = "0.2", features = [
-  "util",
-  "timeout",
-  "filter",
-  "limit",
-] }
-tower-async-http = { version = "0.2", features = ["full"] }
-tracing = "0.1"
-
-[dev-dependencies]
 pki-types = { package = "rustls-pki-types", version = "^1" }
 rcgen = "0.12.0"
+rustls = "0.22"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_urlencoded = "0.7"
+sync_wrapper = "0.1.2"
+tokio = { version = "1", features = ["macros"] }
+tokio-graceful = "0.1"
+tokio-rustls = "0.25"
+tracing = { version = "0.1" }
+
+[dev-dependencies]
+rustversion = "1.0.9"
+tokio = { version = "1", features = ["full"] }
+tokio-test = { version = "0.4.3" }
+tracing = "0.1"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

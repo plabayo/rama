@@ -1,52 +1,53 @@
-use std::pin::Pin;
-use std::sync::Arc;
-use std::time::Duration;
-
+use super::hyper_conn::HyperConnServer;
+use super::HttpServeResult;
+use crate::http::{Request, Response};
+use crate::rt::Executor;
+use crate::service::{Context, Service};
+use crate::stream::Stream;
+use crate::tcp::server::TcpListener;
 use hyper::server::conn::http2::Builder as H2ConnBuilder;
 use hyper::{rt::Timer, server::conn::http1::Builder as Http1ConnBuilder};
 use hyper_util::server::conn::auto::Builder as AutoConnBuilder;
-
 use hyper_util::server::conn::auto::Http1Builder as InnerAutoHttp1Builder;
 use hyper_util::server::conn::auto::Http2Builder as InnerAutoHttp2Builder;
+use std::convert::Infallible;
+use std::future::Future;
+use std::sync::Arc;
+use std::time::Duration;
+use tokio::net::ToSocketAddrs;
+use tokio_graceful::ShutdownGuard;
 
-use crate::http::middleware::dns::DnsResolver;
-use crate::http::middleware::DnsLayer;
-use crate::service::{http::ServiceBuilderExt, util::Identity, Layer, Service, ServiceBuilder};
-use crate::{tcp::TcpStream, BoxError};
-
-use super::hyper_conn::HyperConnServer;
-use super::{GlobalExecutor, HyperBody, Request, Response, ServeResult};
-
+/// A builder for configuring and listening over HTTP using a [`Service`].
+///
+/// Supported Protocols: HTTP/1, HTTP/2, Auto (HTTP/1 + HTTP/2)
+///
+/// [`Service`]: crate::service::Service
 #[derive(Debug)]
-pub struct HttpServer<B, L> {
+pub struct HttpServer<B> {
     builder: B,
-    service_builder: ServiceBuilder<L>,
 }
 
-impl<B, L> Clone for HttpServer<B, L>
+impl<B> Clone for HttpServer<B>
 where
     B: Clone,
-    L: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             builder: self.builder.clone(),
-            service_builder: self.service_builder.clone(),
         }
     }
 }
 
-impl HttpServer<Http1ConnBuilder, Identity> {
+impl HttpServer<Http1ConnBuilder> {
     /// Create a new http/1.1 `Builder` with default settings.
     pub fn http1() -> Self {
         Self {
             builder: Http1ConnBuilder::new(),
-            service_builder: ServiceBuilder::new(),
         }
     }
 }
 
-impl<L> HttpServer<Http1ConnBuilder, L> {
+impl HttpServer<Http1ConnBuilder> {
     /// Http1 configuration.
     pub fn http1_mut(&mut self) -> Http1Config<'_> {
         Http1Config {
@@ -56,6 +57,7 @@ impl<L> HttpServer<Http1ConnBuilder, L> {
 }
 
 /// A configuration builder for HTTP/1 server connections.
+#[derive(Debug)]
 pub struct Http1Config<'a> {
     inner: &'a mut Http1ConnBuilder,
 }
@@ -169,17 +171,16 @@ impl<'a> Http1Config<'a> {
     }
 }
 
-impl HttpServer<H2ConnBuilder<GlobalExecutor>, Identity> {
+impl HttpServer<H2ConnBuilder<Executor>> {
     /// Create a new h2 `Builder` with default settings.
-    pub fn h2() -> Self {
+    pub fn h2(exec: Executor) -> Self {
         Self {
-            builder: H2ConnBuilder::new(GlobalExecutor::new()),
-            service_builder: ServiceBuilder::new(),
+            builder: H2ConnBuilder::new(exec),
         }
     }
 }
 
-impl<E, L> HttpServer<H2ConnBuilder<E>, L> {
+impl<E> HttpServer<H2ConnBuilder<E>> {
     /// H2 configuration.
     pub fn h2_mut(&mut self) -> H2Config<'_, E> {
         H2Config {
@@ -189,6 +190,7 @@ impl<E, L> HttpServer<H2ConnBuilder<E>, L> {
 }
 
 /// A configuration builder for HTTP/2 server connections.
+#[derive(Debug)]
 pub struct H2Config<'a, E> {
     inner: &'a mut H2ConnBuilder<E>,
 }
@@ -314,17 +316,16 @@ impl<'a, E> H2Config<'a, E> {
     }
 }
 
-impl HttpServer<AutoConnBuilder<GlobalExecutor>, Identity> {
+impl HttpServer<AutoConnBuilder<Executor>> {
     /// Create a new dual http/1.1 + h2 `Builder` with default settings.
-    pub fn auto() -> Self {
+    pub fn auto(exec: Executor) -> Self {
         Self {
-            builder: AutoConnBuilder::new(GlobalExecutor::new()),
-            service_builder: ServiceBuilder::new(),
+            builder: AutoConnBuilder::new(exec),
         }
     }
 }
 
-impl<E, L> HttpServer<AutoConnBuilder<E>, L> {
+impl<E> HttpServer<AutoConnBuilder<E>> {
     /// Http1 configuration.
     pub fn http1_mut(&mut self) -> AutoHttp1Config<'_, E> {
         AutoHttp1Config {
@@ -340,8 +341,15 @@ impl<E, L> HttpServer<AutoConnBuilder<E>, L> {
     }
 }
 
+/// A configuration builder for HTTP/1 server connections in auto mode.
 pub struct AutoHttp1Config<'a, E> {
     inner: InnerAutoHttp1Builder<'a, E>,
+}
+
+impl std::fmt::Debug for AutoHttp1Config<'_, ()> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoHttp1Config").finish()
+    }
 }
 
 impl<'a, E> AutoHttp1Config<'a, E> {
@@ -453,8 +461,15 @@ impl<'a, E> AutoHttp1Config<'a, E> {
     }
 }
 
+/// A configuration builder for HTTP/2 server connections in auto mode.
 pub struct AutoH2Config<'a, E> {
     inner: InnerAutoHttp2Builder<'a, E>,
+}
+
+impl std::fmt::Debug for AutoH2Config<'_, ()> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoH2Config").finish()
+    }
 }
 
 impl<'a, E> AutoH2Config<'a, E> {
@@ -578,710 +593,130 @@ impl<'a, E> AutoH2Config<'a, E> {
     }
 }
 
-impl<B, L> HttpServer<B, L> {
-    /// Add a layer to the connector's service stack.
-    pub fn layer<T>(self, layer: T) -> HttpServer<B, crate::service::util::Stack<T, L>>
-    where
-        T: Layer<L>,
-    {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.layer(layer),
-        }
-    }
-}
-
-impl<B, L> HttpServer<B, L> {
-    /// Fail requests that take longer than `timeout`.
-    pub fn timeout(
-        self,
-        timeout: std::time::Duration,
-    ) -> HttpServer<B, crate::service::util::Stack<crate::service::timeout::TimeoutLayer, L>> {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.timeout(timeout),
-        }
-    }
-    // Conditionally reject requests based on `predicate`.
-    ///
-    /// `predicate` must implement the [`Predicate`] trait.
-    ///
-    /// This wraps the inner service with an instance of the [`Filter`]
-    /// middleware.
-    ///
-    /// [`Filter`]: crate::service::filter::Filter
-    /// [`Predicate`]: crate::service::filter::Predicate
-    pub fn filter<P>(
-        self,
-        predicate: P,
-    ) -> HttpServer<B, crate::service::util::Stack<crate::service::filter::FilterLayer<P>, L>> {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.filter(predicate),
-        }
-    }
-
-    /// Conditionally reject requests based on an asynchronous `predicate`.
-    ///
-    /// `predicate` must implement the [`AsyncPredicate`] trait.
-    ///
-    /// This wraps the inner service with an instance of the [`AsyncFilter`]
-    /// middleware.
-    ///
-    /// [`AsyncFilter`]: crate::service::filter::AsyncFilter
-    /// [`AsyncPredicate`]: crate::service::filter::AsyncPredicate
-    pub fn filter_async<P>(
-        self,
-        predicate: P,
-    ) -> HttpServer<B, crate::service::util::Stack<crate::service::filter::AsyncFilterLayer<P>, L>>
-    {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.filter_async(predicate),
-        }
-    }
-}
-
-impl<B, L> HttpServer<B, L> {
-    /// Propagate a header from the request to the response.
-    ///
-    /// See [`tower_async_http::propagate_header`] for more details.
-    ///
-    /// [`tower_async_http::propagate_header`]: crate::service::http::propagate_header
-    pub fn propagate_header(
-        self,
-        header: crate::http::HeaderName,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::propagate_header::PropagateHeaderLayer,
-            L,
-        >,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.propagate_header(header),
-        }
-    }
-
-    /// Add some shareable value to [request extensions].
-    ///
-    /// See [`tower_async_http::add_extension`] for more details.
-    ///
-    /// [`tower_async_http::add_extension`]: crate::service::http::add_extension
-    /// [request extensions]: https://docs.rs/http/latest/http/struct.Extensions.html
-    pub fn add_extension<T>(
-        self,
-        value: T,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::add_extension::AddExtensionLayer<T>, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.add_extension(value),
-        }
-    }
-
-    /// Apply a transformation to the request body.
-    ///
-    /// See [`tower_async_http::map_request_body`] for more details.
-    ///
-    /// [`tower_async_http::map_request_body`]: crate::service::http::map_request_body
-    pub fn map_request_body<F>(
-        self,
-        f: F,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::map_request_body::MapRequestBodyLayer<F>,
-            L,
-        >,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.map_request_body(f),
-        }
-    }
-
-    /// Apply a transformation to the response body.
-    ///
-    /// See [`tower_async_http::map_response_body`] for more details.
-    ///
-    /// [`tower_async_http::map_response_body`]: crate::service::http::map_response_body
-    pub fn map_response_body<F>(
-        self,
-        f: F,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::map_response_body::MapResponseBodyLayer<F>,
-            L,
-        >,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.map_response_body(f),
-        }
-    }
-
-    /// Compresses response bodies.
-    ///
-    /// See [`tower_async_http::compression`] for more details.
-    ///
-    /// [`tower_async_http::compression`]: crate::service::http::compression
-    pub fn compression(
-        self,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::compression::CompressionLayer, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.compression(),
-        }
-    }
-
-    /// Decompress response bodies.
-    ///
-    /// See [`tower_async_http::decompression`] for more details.
-    ///
-    /// [`tower_async_http::decompression`]: crate::service::http::decompression
-    pub fn decompression(
-        self,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::decompression::DecompressionLayer, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.decompression(),
-        }
-    }
-
-    /// High level tracing that classifies responses using HTTP status codes.
-    ///
-    /// This method does not support customizing the output, to do that use [`TraceLayer`]
-    /// instead.
-    ///
-    /// See [`tower_http::trace`] for more details.
-    ///
-    /// [`tower_http::trace`]: crate::service::http::trace
-    /// [`TraceLayer`]: crate::service::http::trace::TraceLayer
-    pub fn trace(
-        self,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::trace::TraceLayer<
-                crate::service::http::classify::SharedClassifier<
-                    crate::service::http::classify::ServerErrorsAsFailures,
-                >,
-            >,
-            L,
-        >,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.trace_for_http(),
-        }
-    }
-
-    /// High level tracing that classifies responses using HTTP status codes.
-    ///
-    /// This method does not support customizing the output, to do that use [`TraceLayer`]
-    /// instead.
-    ///
-    /// See [`tower_http::trace`] for more details.
-    ///
-    /// [`tower_http::trace`]: crate::service::http::trace
-    /// [`TraceLayer`]: crate::service::http::trace::TraceLayer
-    #[allow(clippy::type_complexity)]
-    pub fn trace_layer<M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>(
-        self,
-        layer: crate::service::http::trace::TraceLayer<
-            M,
-            MakeSpan,
-            OnRequest,
-            OnResponse,
-            OnBodyChunk,
-            OnEos,
-            OnFailure,
-        >,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::trace::TraceLayer<
-                M,
-                MakeSpan,
-                OnRequest,
-                OnResponse,
-                OnBodyChunk,
-                OnEos,
-                OnFailure,
-            >,
-            L,
-        >,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.layer(layer),
-        }
-    }
-
-    /// Follow redirect responses using the [`Standard`] policy.
-    ///
-    /// See [`tower_async_http::follow_redirect`] for more details.
-    ///
-    /// [`tower_async_http::follow_redirect`]: crate::service::http::follow_redirect
-    /// [`Standard`]: crate::service::http::follow_redirect::policy::Standard
-    pub fn follow_redirects(
-        self,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::follow_redirect::FollowRedirectLayer<
-                crate::service::http::follow_redirect::policy::Standard,
-            >,
-            L,
-        >,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.follow_redirects(),
-        }
-    }
-
-    /// Mark headers as [sensitive] on both requests and responses.
-    ///
-    /// See [`tower_async_http::sensitive_headers`] for more details.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    /// [`tower_async_http::sensitive_headers`]: crate::service::http::sensitive_headers
-    pub fn sensitive_headers<I>(
-        self,
-        headers: I,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::sensitive_headers::SetSensitiveHeadersLayer,
-            L,
-        >,
-    >
-    where
-        I: IntoIterator<Item = crate::http::HeaderName>,
-    {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.sensitive_headers(headers),
-        }
-    }
-
-    /// Mark headers as [sensitive] on both requests.
-    ///
-    /// See [`tower_async_http::sensitive_headers`] for more details.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    /// [`tower_async_http::sensitive_headers`]: crate::service::http::sensitive_headers
-    pub fn sensitive_request_headers(
-        self,
-        headers: std::sync::Arc<[crate::http::HeaderName]>,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::sensitive_headers::SetSensitiveRequestHeadersLayer,
-            L,
-        >,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.sensitive_request_headers(headers),
-        }
-    }
-
-    /// Mark headers as [sensitive] on both responses.
-    ///
-    /// See [`tower_async_http::sensitive_headers`] for more details.
-    ///
-    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    /// [`tower_async_http::sensitive_headers`]: crate::service::http::sensitive_headers
-    pub fn sensitive_response_headers(
-        self,
-        headers: std::sync::Arc<[crate::http::HeaderName]>,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::sensitive_headers::SetSensitiveResponseHeadersLayer,
-            L,
-        >,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.sensitive_response_headers(headers),
-        }
-    }
-
-    /// Insert a header into the request.
-    ///
-    /// If a previous value exists for the same header, it is removed and replaced with the new
-    /// header value.
-    ///
-    /// See [`tower_async_http::set_header`] for more details.
-    ///
-    /// [`tower_async_http::set_header`]: crate::service::http::set_header
-    pub fn override_request_header<M>(
-        self,
-        header_name: crate::http::HeaderName,
-        make: M,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::set_header::SetRequestHeaderLayer<M>, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self
-                .service_builder
-                .override_request_header(header_name, make),
-        }
-    }
-
-    /// Append a header into the request.
-    ///
-    /// If previous values exist, the header will have multiple values.
-    ///
-    /// See [`tower_async_http::set_header`] for more details.
-    ///
-    /// [`tower_async_http::set_header`]: crate::service::http::set_header
-    pub fn append_request_header<M>(
-        self,
-        header_name: crate::http::HeaderName,
-        make: M,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::set_header::SetRequestHeaderLayer<M>, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self
-                .service_builder
-                .append_request_header(header_name, make),
-        }
-    }
-
-    /// Insert a header into the request, if the header is not already present.
-    ///
-    /// See [`tower_async_http::set_header`] for more details.
-    ///
-    /// [`tower_async_http::set_header`]: crate::service::http::set_header
-    pub fn insert_request_header_if_not_present<M>(
-        self,
-        header_name: crate::http::HeaderName,
-        make: M,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::set_header::SetRequestHeaderLayer<M>, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self
-                .service_builder
-                .insert_request_header_if_not_present(header_name, make),
-        }
-    }
-
-    /// Insert a header into the response.
-    ///
-    /// If a previous value exists for the same header, it is removed and replaced with the new
-    /// header value.
-    ///
-    /// See [`tower_async_http::set_header`] for more details.
-    ///
-    /// [`tower_async_http::set_header`]: crate::service::http::set_header
-    pub fn override_response_header<M>(
-        self,
-        header_name: crate::http::HeaderName,
-        make: M,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::set_header::SetResponseHeaderLayer<M>, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self
-                .service_builder
-                .override_response_header(header_name, make),
-        }
-    }
-
-    /// Append a header into the response.
-    ///
-    /// If previous values exist, the header will have multiple values.
-    ///
-    /// See [`tower_async_http::set_header`] for more details.
-    ///
-    /// [`tower_async_http::set_header`]: crate::service::http::set_header
-    pub fn append_response_header<M>(
-        self,
-        header_name: crate::http::HeaderName,
-        make: M,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::set_header::SetResponseHeaderLayer<M>, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self
-                .service_builder
-                .append_response_header(header_name, make),
-        }
-    }
-
-    /// Insert a header into the response, if the header is not already present.
-    ///
-    /// See [`tower_async_http::set_header`] for more details.
-    ///
-    /// [`tower_async_http::set_header`]: crate::service::http::set_header
-    pub fn insert_response_header_if_not_present<M>(
-        self,
-        header_name: crate::http::HeaderName,
-        make: M,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::set_header::SetResponseHeaderLayer<M>, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self
-                .service_builder
-                .insert_response_header_if_not_present(header_name, make),
-        }
-    }
-
-    /// Add request id header and extension.
-    ///
-    /// See [`tower_async_http::request_id`] for more details.
-    ///
-    /// [`tower_async_http::request_id`]: crate::service::http::request_id
-    pub fn set_request_id<M>(
-        self,
-        header_name: crate::http::HeaderName,
-        make_request_id: M,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::request_id::SetRequestIdLayer<M>, L>,
-    >
-    where
-        M: crate::service::http::request_id::MakeRequestId,
-    {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self
-                .service_builder
-                .set_request_id(header_name, make_request_id),
-        }
-    }
-
-    /// Add request id header and extension, using `x-request-id` as the header name.
-    ///
-    /// See [`tower_async_http::request_id`] for more details.
-    ///
-    /// [`tower_async_http::request_id`]: crate::service::http::request_id
-    pub fn set_x_request_id<M>(
-        self,
-        make_request_id: M,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::request_id::SetRequestIdLayer<M>, L>,
-    >
-    where
-        M: crate::service::http::request_id::MakeRequestId,
-    {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.set_x_request_id(make_request_id),
-        }
-    }
-
-    /// Propgate request ids from requests to responses.
-    ///
-    /// See [`tower_async_http::request_id`] for more details.
-    ///
-    /// [`tower_async_http::request_id`]: crate::service::http::request_id
-    pub fn propagate_request_id(
-        self,
-        header_name: crate::http::HeaderName,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::request_id::PropagateRequestIdLayer, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.propagate_request_id(header_name),
-        }
-    }
-
-    /// Propgate request ids from requests to responses, using `x-request-id` as the header name.
-    ///
-    /// See [`tower_async_http::request_id`] for more details.
-    ///
-    /// [`tower_async_http::request_id`]: crate::service::http::request_id
-    pub fn propagate_x_request_id(
-        self,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::request_id::PropagateRequestIdLayer, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.propagate_x_request_id(),
-        }
-    }
-
-    /// Catch panics and convert them into `500 Internal Server` responses.
-    ///
-    /// See [`tower_async_http::catch_panic`] for more details.
-    ///
-    /// [`tower_async_http::catch_panic`]: crate::service::http::catch_panic
-    pub fn catch_panic(
-        self,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::catch_panic::CatchPanicLayer<
-                crate::service::http::catch_panic::DefaultResponseForPanic,
-            >,
-            L,
-        >,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.catch_panic(),
-        }
-    }
-
-    /// Intercept requests with over-sized payloads and convert them into
-    /// `413 Payload Too Large` responses.
-    ///
-    /// See [`tower_async_http::limit`] for more details.
-    ///
-    /// [`tower_async_http::limit`]: crate::service::http::limit
-    pub fn request_body_limit(
-        self,
-        limit: usize,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::limit::RequestBodyLimitLayer, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.request_body_limit(limit),
-        }
-    }
-
-    /// Remove trailing slashes from paths.
-    ///
-    /// See [`tower_async_http::normalize_path`] for more details.
-    ///
-    /// [`tower_async_http::normalize_path`]: crate::service::http::normalize_path
-    pub fn trim_trailing_slash(
-        self,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<crate::service::http::normalize_path::NormalizePathLayer, L>,
-    > {
-        HttpServer {
-            builder: self.builder,
-            service_builder: self.service_builder.trim_trailing_slash(),
-        }
-    }
-
-    pub fn async_authorization<T, Body>(
-        self,
-        auth: T,
-    ) -> HttpServer<
-        B,
-        crate::service::util::Stack<
-            crate::service::http::auth::AsyncRequireAuthorizationLayer<T>,
-            L,
-        >,
-    >
-    where
-        T: crate::service::http::auth::AsyncAuthorizeRequest<Body> + Clone,
-    {
-        self.layer(crate::service::http::auth::AsyncRequireAuthorizationLayer::new(auth))
-    }
-}
-
-/// Add a dns layer to resolve hostnames prior to connecting.
-impl<B, L> HttpServer<B, L> {
-    pub fn dns<R>(
-        self,
-        dns: DnsLayer<R>,
-    ) -> HttpServer<B, crate::service::util::Stack<DnsLayer<R>, L>>
-    where
-        R: DnsResolver + Clone + Send + Sync + 'static,
-    {
-        self.layer(dns)
-    }
-}
-
-impl<B, L> HttpServer<B, L>
+impl<B> HttpServer<B>
 where
     B: HyperConnServer,
 {
-    pub fn service<TowerService, ResponseBody, D, E>(
-        self,
-        service: TowerService,
-    ) -> HttpService<B, L::Service>
+    /// Turn this `HttpServer` into a [`Service`] that can be used to serve
+    /// IO Byte streams (e.g. a TCP Stream) as HTTP.
+    pub fn service<State, S>(self, service: S) -> HttpService<B, S>
     where
-        L: Layer<TowerService>,
-        L::Service: Service<Request, Response = Response<ResponseBody>, call(): Send>
-            + Send
-            + Sync
-            + 'static,
-        <L::Service as Service<Request>>::Error: Into<BoxError>,
-        TowerService: Service<Request, call(): Send> + Send + Sync + 'static,
-        TowerService::Error: Into<BoxError>,
-        ResponseBody: http_body::Body<Data = D, Error = E> + Send + 'static,
-        D: Send,
-        E: Into<BoxError>,
+        State: Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
     {
-        let service = self.service_builder.service(service);
         HttpService::new(self.builder, service)
     }
 
-    pub async fn serve<S, TowerService, ResponseBody, D, E>(
+    /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
+    pub async fn serve<State, S, IO>(
         &self,
-        stream: TcpStream<S>,
-        service: TowerService,
-    ) -> ServeResult
+        ctx: Context<State>,
+        stream: IO,
+        service: S,
+    ) -> HttpServeResult
     where
-        S: crate::stream::Stream + Send + 'static,
-        L: Layer<TowerService>,
-        L::Service: Service<Request, Response = Response<ResponseBody>, call(): Send>
-            + Send
-            + Sync
-            + 'static,
-        <L::Service as Service<Request>>::Error: Into<BoxError>,
-        TowerService: Service<Request, call(): Send> + Send + Sync + 'static,
-        TowerService::Error: Into<BoxError>,
-        ResponseBody: http_body::Body<Data = D, Error = E> + Send + 'static,
-        D: Send,
-        E: Into<BoxError>,
+        State: Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        IO: Stream,
     {
-        let service = self.service_builder.service(service);
-        let service: HyperServiceWrapper<<L as Layer<TowerService>>::Service> =
-            HyperServiceWrapper {
-                service: Arc::new(service),
-            };
+        self.builder
+            .hyper_serve_connection(ctx, stream, service)
+            .await
+    }
 
-        self.builder.hyper_serve_connection(stream, service).await
+    /// Listen for connections on the given address, serving HTTP connections.
+    ///
+    /// It's a shortcut in case you don't need to operate on the transport layer directly.
+    pub async fn listen<S, A>(self, addr: A, service: S) -> HttpServeResult
+    where
+        S: Service<(), Request, Response = Response, Error = Infallible> + Clone,
+        A: ToSocketAddrs,
+    {
+        TcpListener::bind(addr)
+            .await?
+            .serve(self.service(service))
+            .await;
+        Ok(())
+    }
+
+    /// Listen gracefully for connections on the given address, serving HTTP connections.
+    ///
+    /// Same as [`Self::listen`], but it will respect the given [`ShutdownGuard`],
+    /// and also pass it to the service.
+    ///
+    /// [`ShutdownGuard`]: crate::graceful::ShutdownGuard
+    pub async fn listen_graceful<S, A>(
+        self,
+        guard: ShutdownGuard,
+        addr: A,
+        service: S,
+    ) -> HttpServeResult
+    where
+        S: Service<(), Request, Response = Response, Error = Infallible> + Clone,
+        A: ToSocketAddrs,
+    {
+        TcpListener::bind(addr)
+            .await?
+            .serve_graceful(guard, self.service(service))
+            .await;
+        Ok(())
+    }
+
+    /// Listen for connections on the given address, serving HTTP connections.
+    ///
+    /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
+    ///
+    /// [`Service`]: crate::service::Service
+    /// [`Context`]: crate::service::Context
+    pub async fn listen_with_state<State, S, A>(
+        self,
+        state: State,
+        addr: A,
+        service: S,
+    ) -> HttpServeResult
+    where
+        State: Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        A: ToSocketAddrs,
+    {
+        TcpListener::build_with_state(state)
+            .bind(addr)
+            .await?
+            .serve(self.service(service))
+            .await;
+        Ok(())
+    }
+
+    /// Listen gracefully for connections on the given address, serving HTTP connections.
+    ///
+    /// Same as [`Self::listen_graceful`], but including the given state in the [`Service`]'s [`Context`].
+    ///
+    /// [`Service`]: crate::service::Service
+    /// [`Context`]: crate::service::Context
+    pub async fn listen_graceful_with_state<State, S, A>(
+        self,
+        guard: ShutdownGuard,
+        state: State,
+        addr: A,
+        service: S,
+    ) -> HttpServeResult
+    where
+        State: Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        A: ToSocketAddrs,
+    {
+        TcpListener::build_with_state(state)
+            .bind(addr)
+            .await?
+            .serve_graceful(guard, self.service(service))
+            .await;
+        Ok(())
     }
 }
 
 pub struct HttpService<B, S> {
     builder: Arc<B>,
-    service: HyperServiceWrapper<S>,
+    service: S,
 }
 
 impl<B, S> std::fmt::Debug for HttpService<B, S> {
@@ -1294,14 +729,15 @@ impl<B, S> HttpService<B, S> {
     fn new(builder: B, service: S) -> Self {
         Self {
             builder: Arc::new(builder),
-            service: HyperServiceWrapper {
-                service: Arc::new(service),
-            },
+            service,
         }
     }
 }
 
-impl<B, S> Clone for HttpService<B, S> {
+impl<B, S> Clone for HttpService<B, S>
+where
+    S: Clone,
+{
     fn clone(&self) -> Self {
         Self {
             builder: self.builder.clone(),
@@ -1310,56 +746,22 @@ impl<B, S> Clone for HttpService<B, S> {
     }
 }
 
-impl<B, T, S, Body> Service<TcpStream<T>> for HttpService<B, S>
+impl<B, State, S, IO> Service<State, IO> for HttpService<B, S>
 where
     B: HyperConnServer,
-    T: crate::stream::Stream + Send + 'static,
-    S: Service<Request, call(): Send, Response = Response<Body>> + Send + Sync + 'static,
-    S::Error: Into<BoxError>,
-    Body: http_body::Body + Send + 'static,
-    Body::Data: Send,
-    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    State: Send + Sync + 'static,
+    S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+    IO: Stream,
 {
     type Response = ();
-    type Error = BoxError;
+    type Error = crate::error::Error;
 
-    async fn call(&self, stream: TcpStream<T>) -> Result<Self::Response, Self::Error> {
+    fn serve(
+        &self,
+        ctx: Context<State>,
+        stream: IO,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let service = self.service.clone();
-        self.builder.hyper_serve_connection(stream, service).await
+        self.builder.hyper_serve_connection(ctx, stream, service)
     }
 }
-
-#[derive(Debug)]
-struct HyperServiceWrapper<S> {
-    service: Arc<S>,
-}
-
-impl<S> Clone for HyperServiceWrapper<S> {
-    fn clone(&self) -> Self {
-        Self {
-            service: self.service.clone(),
-        }
-    }
-}
-
-impl<S> hyper::service::Service<crate::http::Request<hyper::body::Incoming>>
-    for HyperServiceWrapper<S>
-where
-    S: Service<Request, call(): Send> + Send + Sync + 'static,
-    Request: Send + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-    type Future = BoxFuture<'static, Result<Self::Response, Self::Error>>;
-
-    fn call(&self, req: crate::http::Request<hyper::body::Incoming>) -> Self::Future {
-        let (parts, body) = req.into_parts();
-        let req = Request::from_parts(parts, HyperBody::from(body));
-
-        let service = self.service.clone();
-        let fut = async move { service.call(req).await };
-        Box::pin(fut)
-    }
-}
-
-pub type BoxFuture<'a, T> = Pin<Box<dyn std::future::Future<Output = T> + Send + 'a>>;

@@ -19,7 +19,7 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::rt::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 use pin_project_lite::pin_project;
 
@@ -189,10 +189,10 @@ impl BytesRWTrackerHandle {
 mod tests {
     use super::*;
 
-    use crate::rt::io::{AsyncReadExt, AsyncWriteExt};
-    use crate::rt::test_util::io::Builder;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio_test::io::Builder;
 
-    #[crate::rt::test(crate = "crate")]
+    #[tokio::test]
     async fn test_read_tracker() {
         let stream = Builder::new()
             .read(b"foo")
@@ -216,7 +216,7 @@ mod tests {
         assert_eq!(tracker.written(), 0);
     }
 
-    #[crate::rt::test(crate = "crate")]
+    #[tokio::test]
     async fn test_written_tracker() {
         let stream = Builder::new()
             .write(b"foo")
@@ -239,7 +239,7 @@ mod tests {
         assert_eq!(tracker.written(), 9);
     }
 
-    #[crate::rt::test(crate = "crate")]
+    #[tokio::test]
     async fn test_rw_tracker() {
         let stream = Builder::new()
             .read(b"foo")
@@ -275,7 +275,7 @@ mod tests {
         assert_eq!(tracker.written(), 9);
     }
 
-    #[crate::rt::test(crate = "crate")]
+    #[tokio::test]
     async fn test_rw_handle_tracker() {
         let stream = Builder::new()
             .read(b"foo")
@@ -292,11 +292,11 @@ mod tests {
         assert_eq!(handle.read(), 0);
         assert_eq!(handle.written(), 0);
 
-        let (action_tx, mut action_rx) = crate::rt::sync::mpsc::channel(1);
-        let (check_tx, mut check_rx) = crate::rt::sync::broadcast::channel(1);
+        let (action_tx, mut action_rx) = tokio::sync::mpsc::channel(1);
+        let (check_tx, mut check_rx) = tokio::sync::broadcast::channel(1);
         let check_rx_2 = check_tx.subscribe();
 
-        let task_1 = crate::rt::spawn(async move {
+        let task_1 = tokio::spawn(async move {
             let mut tracker = tracker;
             let mut buf = [0u8; 3];
 
@@ -328,7 +328,7 @@ mod tests {
         let task_2 = {
             let handle = handle.clone();
             let mut check_rx = check_rx_2;
-            crate::rt::spawn(async move {
+            tokio::spawn(async move {
                 check_rx.recv().await.unwrap();
 
                 assert_eq!(handle.read(), 3);

@@ -1,68 +1,29 @@
-//! `async fn(&self, Request) -> Result<Response, Error>`
+//! `async fn serve(&self, Context<S>, Request) -> Result<Response, Error>`
+//!
+//! Heavily inspired by [tower-service](https://docs.rs/tower-service/0.3.0/tower_service/trait.Service.html)
+//! and the vast [Tokio](https://docs.rs/tokio/latest/tokio/) ecosystem which makes use of it.
+//!
+//! Initially the goal was to rely on `tower-service` directly, but it turned out to be
+//! too restrictive and difficult to work with, for the use cases we have in Rama.
+//! See <https://ramaproxy.org/book/faq.html> for more information regarding this and more.
 
-pub use tower_async::{service_fn, util::ServiceFn, Layer, Service, ServiceBuilder};
+pub mod context;
+pub use context::Context;
 
-pub mod util {
-    //! Various utility types and functions that are generally used with a `Service`.
+mod svc;
+pub use svc::{BoxService, Service};
 
-    pub use tower_async::layer::util::{Identity, Stack};
-    pub use tower_async::util::{
-        option_layer, AndThen, AndThenLayer, Either, MapErr, MapErrLayer, MapRequest,
-        MapRequestLayer, MapResponse, MapResponseLayer, MapResult, MapResultLayer,
-    };
-}
+mod svc_fn;
+pub use svc_fn::{service_fn, ServiceFn, ServiceFnBox};
 
-pub mod timeout {
-    //! Middleware that applies a timeout to requests.
-    //!
-    //! If the response does not complete within the specified timeout, the response
-    //! will be aborted.
+mod svc_hyper;
+pub use svc_hyper::HyperService;
 
-    pub use tower_async::timeout::{Timeout, TimeoutLayer};
-}
+pub mod layer;
+pub use layer::Layer;
 
-pub mod filter {
-    //! Conditionally dispatch requests to the inner service based on the result of
-    //! a predicate.
-    //!
-    //! A predicate takes some request type and returns a `Result<Request, Error>`.
-    //! If the predicate returns [`Ok`], the inner service is called with the request
-    //! returned by the predicate &mdash; which may be the original request or a
-    //! modified one. If the predicate returns [`Err`], the request is rejected and
-    //! the inner service is not called.
-    //!
-    //! Predicates may either be synchronous (simple functions from a `Request` to
-    //! a [`Result`]) or asynchronous (functions returning [`Future`]s). Separate
-    //! traits, [`Predicate`] and [`AsyncPredicate`], represent these two types of
-    //! predicate. Note that when it is not necessary to await some other
-    //! asynchronous operation in the predicate, the synchronous predicate should be
-    //! preferred, as it introduces less overhead.
-    //!
-    //! The predicate traits are implemented for closures and function pointers.
-    //! However, users may also implement them for other types, such as when the
-    //! predicate requires some state carried between requests. For example,
-    //! [`Predicate`] could be implemented for a type that rejects a fixed set of
-    //! requests by checking if they are contained by a a [`HashSet`] or other
-    //! collection.
-    //!
-    //! [`Future`]: std::future::Future
-    //! [`HashSet`]: std::collections::HashSet
+mod builder;
+pub use builder::ServiceBuilder;
 
-    pub use tower_async::filter::{
-        AsyncFilter, AsyncFilterLayer, AsyncPredicate, Filter, FilterLayer, Predicate,
-    };
-}
-
-pub mod limit {
-    //! A middleware that limits the number of in-flight requests.
-    //!
-    //! See [`Limit`].
-
-    pub use tower_async::limit::{
-        policy::{ConcurrentPolicy, LimitReached, Policy, PolicyOutput},
-        Limit, LimitLayer,
-    };
-}
-
-pub mod http;
-pub mod spawn;
+mod identity;
+pub use identity::IdentityService;

@@ -1,27 +1,116 @@
-use std::{future::Future, io, net::SocketAddr};
-
-use crate::rt::{
-    graceful::ShutdownGuard,
-    net::{TcpListener as AsyncTcpListener, TcpStream as AsyncTcpStream, ToSocketAddrs},
-};
-
-use crate::{
-    service::{
-        util::{Identity, Stack},
-        Layer, Service, ServiceBuilder,
-    },
-    tcp::TcpStream,
-    BoxError,
-};
-
 use super::TcpSocketInfo;
+use crate::graceful::ShutdownGuard;
+use crate::rt::Executor;
+use crate::service::Service;
+use crate::service::{Context, ServiceFn};
+use std::pin::pin;
+use std::sync::Arc;
+use std::{io, net::SocketAddr};
+use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
 
-pub struct TcpListener<L> {
-    inner: AsyncTcpListener,
-    builder: ServiceBuilder<L>,
+/// Builder for `TcpListener`.
+#[derive(Debug)]
+pub struct TcpListenerBuilder<S> {
+    ttl: Option<u32>,
+    state: Arc<S>,
 }
 
-impl TcpListener<Identity> {
+impl TcpListenerBuilder<()> {
+    /// Create a new `TcpListenerBuilder` without a state.
+    pub fn new() -> Self {
+        Self {
+            ttl: None,
+            state: Arc::new(()),
+        }
+    }
+}
+
+impl Default for TcpListenerBuilder<()> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<S> Clone for TcpListenerBuilder<S>
+where
+    S: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            ttl: self.ttl,
+            state: self.state.clone(),
+        }
+    }
+}
+
+impl<S> TcpListenerBuilder<S> {
+    /// Sets the value for the `IP_TTL` option on this socket.
+    ///
+    /// This value sets the time-to-live field that is used in every packet sent
+    /// from this socket.
+    pub fn ttl(&mut self, ttl: u32) -> &mut Self {
+        self.ttl = Some(ttl);
+        self
+    }
+}
+
+impl<S> TcpListenerBuilder<S>
+where
+    S: Send + Sync + 'static,
+{
+    /// Create a new `TcpListenerBuilder` with the given state.
+    pub fn with_state(state: S) -> Self {
+        Self {
+            ttl: None,
+            state: Arc::new(state),
+        }
+    }
+
+    /// Creates a new TcpListener, which will be bound to the specified address.
+    ///
+    /// The returned listener is ready for accepting connections.
+    ///
+    /// Binding with a port number of 0 will request that the OS assigns a port
+    /// to this listener. The port allocated can be queried via the `local_addr`
+    /// method.
+    pub async fn bind<A: ToSocketAddrs>(&self, addr: A) -> io::Result<TcpListener<S>> {
+        let inner = TokioTcpListener::bind(addr).await?;
+
+        if let Some(ttl) = self.ttl {
+            inner.set_ttl(ttl)?;
+        }
+
+        Ok(TcpListener {
+            inner,
+            state: self.state.clone(),
+        })
+    }
+}
+
+/// A TCP socket server, listening for incoming connections once served
+/// using one of the `serve` methods such as [`TcpListener::serve`].
+#[derive(Debug)]
+pub struct TcpListener<S> {
+    inner: TokioTcpListener,
+    state: Arc<S>,
+}
+
+impl TcpListener<()> {
+    /// Create a new `TcpListenerBuilder` without a state,
+    /// which can be used to configure a `TcpListener`.
+    pub fn build() -> TcpListenerBuilder<()> {
+        TcpListenerBuilder::new()
+    }
+
+    /// Create a new `TcpListenerBuilder` with the given state,
+    /// which can be used to configure a `TcpListener`.
+    pub fn build_with_state<S>(state: S) -> TcpListenerBuilder<S>
+    where
+        S: Send + Sync + 'static,
+    {
+        TcpListenerBuilder::with_state(state)
+    }
+
     /// Creates a new TcpListener, which will be bound to the specified address.
     ///
     /// The returned listener is ready for accepting connections.
@@ -30,13 +119,11 @@ impl TcpListener<Identity> {
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
     pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
-        let inner = AsyncTcpListener::bind(addr).await?;
-        let builder = ServiceBuilder::new();
-        Ok(TcpListener { inner, builder })
+        TcpListenerBuilder::default().bind(addr).await
     }
 }
 
-impl<L> TcpListener<L> {
+impl<S> TcpListener<S> {
     /// Returns the local address that this listener is bound to.
     ///
     /// This can be useful, for example, when binding to port 0 to figure out
@@ -49,197 +136,98 @@ impl<L> TcpListener<L> {
     ///
     /// For more information about this option, see [`set_ttl`].
     ///
-    /// [`set_ttl`]: method@Self::set_ttl
+    /// [`set_ttl`]: TcpListenerBuilder::ttl
     pub fn ttl(&self) -> io::Result<u32> {
         self.inner.ttl()
     }
 
-    /// Sets the value for the `IP_TTL` option on this socket.
-    ///
-    /// This value sets the time-to-live field that is used in every packet sent
-    /// from this socket.
-    pub fn set_ttl(&self, ttl: u32) -> io::Result<()> {
-        self.inner.set_ttl(ttl)
-    }
-
-    /// Adds a layer to the service.
-    ///
-    /// This method can be used to add a middleware to the service.
-    pub fn layer<M>(self, layer: M) -> TcpListener<Stack<M, L>>
-    where
-        M: tower_async::layer::Layer<L>,
-    {
-        TcpListener {
-            inner: self.inner,
-            builder: self.builder.layer(layer),
-        }
-    }
-
-    /// Optionally add a new layer `T`.
-    pub fn option_layer<M>(
-        self,
-        layer: Option<M>,
-    ) -> TcpListener<Stack<crate::service::util::Either<M, Identity>, L>>
-    where
-        M: tower_async::layer::Layer<L>,
-    {
-        self.layer(crate::service::util::option_layer(layer))
-    }
-
-    /// Spawn a task to handle each incoming request.
-    pub fn spawn(self) -> TcpListener<Stack<crate::service::spawn::SpawnLayer, L>> {
-        self.layer(crate::service::spawn::SpawnLayer::new())
-    }
-
-    /// Attach a bytes tracker to each incoming request.
-    ///
-    /// This can be used to track the number of bytes read and written,
-    /// by using the [`BytesRWTrackerHandle`] found in the extensions.
-    ///
-    /// [`BytesRWTrackerHandle`]: crate::stream::layer::BytesRWTrackerHandle
-    pub fn bytes_tracker(self) -> TcpListener<Stack<crate::stream::layer::BytesTrackerLayer, L>> {
-        self.layer(crate::stream::layer::BytesTrackerLayer::new())
-    }
-
-    /// Fail requests that take longer than `timeout`.
-    pub fn timeout(
-        self,
-        timeout: std::time::Duration,
-    ) -> TcpListener<Stack<crate::service::timeout::TimeoutLayer, L>> {
-        self.layer(crate::service::timeout::TimeoutLayer::new(timeout))
-    }
-
-    // Conditionally reject requests based on `predicate`.
-    ///
-    /// `predicate` must implement the [`Predicate`] trait.
-    ///
-    /// This wraps the inner service with an instance of the [`Filter`]
-    /// middleware.
-    ///
-    /// [`Filter`]: crate::service::filter::Filter
-    /// [`Predicate`]: crate::service::filter::Predicate
-    pub fn filter<P>(
-        self,
-        predicate: P,
-    ) -> TcpListener<Stack<crate::service::filter::FilterLayer<P>, L>>
-    where
-        P: Clone,
-    {
-        self.layer(crate::service::filter::FilterLayer::new(predicate))
-    }
-
-    /// Conditionally reject requests based on an asynchronous `predicate`.
-    ///
-    /// `predicate` must implement the [`AsyncPredicate`] trait.
-    ///
-    /// This wraps the inner service with an instance of the [`AsyncFilter`]
-    /// middleware.
-    ///
-    /// [`AsyncFilter`]: crate::service::filter::AsyncFilter
-    /// [`AsyncPredicate`]: crate::service::filter::AsyncPredicate
-    pub fn filter_async<P>(
-        self,
-        predicate: P,
-    ) -> TcpListener<Stack<crate::service::filter::AsyncFilterLayer<P>, L>>
-    where
-        P: Clone,
-    {
-        self.layer(crate::service::filter::AsyncFilterLayer::new(predicate))
-    }
-
-    /// Limit the number of in-flight requests.
-    ///
-    /// This wraps the inner service with an instance of the [`Limit`]
-    /// middleware. The `policy` determines how to handle requests sent
-    /// to the inner service when the limit has been reached.
-    ///
-    /// [`Limit`]: crate::service::limit::Limit
-    pub fn limit<P>(self, policy: P) -> TcpListener<Stack<crate::service::limit::LimitLayer<P>, L>>
-    where
-        P: Clone,
-    {
-        self.layer(crate::service::limit::LimitLayer::new(policy))
+    /// Gets a reference to the listener's state.
+    pub fn state(&self) -> &S {
+        &self.state
     }
 }
 
-impl<L> TcpListener<L> {
+impl<State> TcpListener<State>
+where
+    State: Send + Sync + 'static,
+{
     /// Serve connections from this listener with the given service.
     ///
     /// This method will block the current listener for each incoming connection,
     /// the underlying service can choose to spawn a task to handle the accepted stream.
-    pub async fn serve<T, S, E>(self, service: S) -> TcpServeResult<()>
+    pub async fn serve<S>(self, service: S)
     where
-        L: Layer<S>,
-        L::Service: Service<TcpStream<AsyncTcpStream>, Response = T, Error = E>,
-        E: Into<BoxError>,
+        S: Service<State, TcpStream> + Clone,
     {
-        let service = self.builder.service(service);
+        let ctx = Context::new(self.state, Executor::new());
 
         loop {
-            let (stream, _) = self.inner.accept().await?;
-            let stream = TcpStream::new(stream);
-            service
-                .call(stream)
-                .await
-                .map_err(|err| TcpServeError::Service(err.into()))?;
+            let (socket, peer_addr) = match self.inner.accept().await {
+                Ok(stream) => stream,
+                Err(err) => {
+                    handle_accept_err(err).await;
+                    continue;
+                }
+            };
+
+            let service = service.clone();
+            let mut ctx = ctx.clone();
+
+            tokio::spawn(async move {
+                let local_addr = socket.local_addr().ok();
+                ctx.extensions_mut()
+                    .insert(TcpSocketInfo::new(local_addr, peer_addr));
+
+                let _ = service.serve(ctx, socket).await;
+            });
         }
     }
 
     /// Serve connections from this listener with the given service function.
     ///
     /// See [`Self::serve`] for more details.
-    pub async fn serve_fn<T, S, E, F, Fut>(self, service: F) -> TcpServeResult<()>
+    pub async fn serve_fn<F, A>(self, f: F)
     where
-        L: Layer<crate::service::ServiceFn<F>>,
-        L::Service: Service<TcpStream<AsyncTcpStream>, Response = T, Error = E>,
-        E: Into<BoxError>,
-        F: Fn(TcpStream<S>) -> Fut,
-        Fut: Future<Output = Result<T, E>>,
+        A: Send + Sync + 'static,
+        F: ServiceFn<State, TcpStream, A> + Clone,
     {
-        let service = crate::service::service_fn(service);
+        let service = crate::service::service_fn(f);
         self.serve(service).await
     }
 
     /// Serve gracefully connections from this listener with the given service.
     ///
     /// This method does the same as [`Self::serve`] but it
-    /// will respect the given [`crate::rt::graceful::ShutdownGuard`], and also pass
+    /// will respect the given [`crate::graceful::ShutdownGuard`], and also pass
     /// it to the service.
-    pub async fn serve_graceful<T, S, E>(
-        self,
-        guard: ShutdownGuard,
-        service: S,
-    ) -> TcpServeResult<()>
+    pub async fn serve_graceful<S>(self, guard: ShutdownGuard, service: S)
     where
-        L: Layer<S>,
-        L::Service: Service<TcpStream<AsyncTcpStream>, Response = T, Error = E>,
-        E: Into<BoxError>,
+        S: Service<State, TcpStream> + Clone,
     {
-        let service = self.builder.service(service);
-
-        let cancelled_fut = guard.cancelled();
-        crate::rt::pin!(cancelled_fut);
+        let ctx: Context<State> = Context::new(self.state, Executor::graceful(guard.clone()));
+        let mut cancelled_fut = pin!(guard.cancelled());
 
         loop {
-            crate::rt::select! {
+            tokio::select! {
                 _ = cancelled_fut.as_mut() => {
-                    tracing::info!("signal received: initiate graceful shutdown");
-                    break Ok(());
+                    tracing::trace!("signal received: initiate graceful shutdown");
+                    break;
                 }
                 result = self.inner.accept() => {
                     match result {
                         Ok((socket, peer_addr)) => {
-                            let local_addr = socket.local_addr().ok();
-                            let mut stream = TcpStream::new(socket);
-                            stream.extensions_mut().insert(guard.clone());
-                            stream.extensions_mut().insert(TcpSocketInfo{
-                                local_addr,
-                                peer_addr,
+                            let service = service.clone();
+                            let mut ctx = ctx.clone();
+
+                            guard.spawn_task(async move {
+                                let local_addr = socket.local_addr().ok();
+                                ctx.extensions_mut().insert(TcpSocketInfo::new(local_addr, peer_addr));
+
+                                let _ = service.serve(ctx, socket).await;
                             });
-                            service.call(stream).await.map_err(|err| TcpServeError::Service(err.into()))?;
                         }
                         Err(err) => {
-                            tracing::debug!(error = &err as &dyn std::error::Error, "service error");
+                            handle_accept_err(err).await;
                         }
                     }
                 }
@@ -250,44 +238,35 @@ impl<L> TcpListener<L> {
     /// Serve gracefully connections from this listener with the given service function.
     ///
     /// See [`Self::serve_graceful`] for more details.
-    pub async fn serve_fn_graceful<T, S, E, F, Fut>(
-        self,
-        guard: ShutdownGuard,
-        service: F,
-    ) -> TcpServeResult<()>
+    pub async fn serve_fn_graceful<F, A>(self, guard: ShutdownGuard, service: F)
     where
-        L: Layer<crate::service::ServiceFn<F>>,
-        L::Service: Service<TcpStream<AsyncTcpStream>, Response = T, Error = E>,
-        E: Into<BoxError>,
-        F: Fn(TcpStream<S>) -> Fut,
-        Fut: Future<Output = Result<T, E>>,
+        A: Send + Sync + 'static,
+        F: ServiceFn<State, TcpStream, A> + Clone,
     {
         let service = crate::service::service_fn(service);
         self.serve_graceful(guard, service).await
     }
 }
 
-pub type TcpServeResult<T> = Result<T, TcpServeError>;
-
-#[derive(Debug)]
-pub enum TcpServeError {
-    Io(io::Error),
-    Service(BoxError),
-}
-
-impl From<io::Error> for TcpServeError {
-    fn from(e: io::Error) -> Self {
-        TcpServeError::Io(e)
+async fn handle_accept_err(err: io::Error) {
+    if crate::tcp::utils::is_connection_error(&err) {
+        tracing::trace!(
+            error = &err as &dyn std::error::Error,
+            "TCP accept error: connect error"
+        );
+    } else {
+        // [From `hyper::Server` in 0.14](https://github.com/hyperium/hyper/blob/v0.14.27/src/server/tcp.rs#L186)
+        //
+        // > A possible scenario is that the process has hit the max open files
+        // > allowed, and so trying to accept a new connection will fail with
+        // > `EMFILE`. In some cases, it's preferable to just wait for some time, if
+        // > the application will likely close some files (or connections), and try
+        // > to accept the connection again. If this option is `true`, the error
+        // > will be logged at the `error` level, since it is still a big deal,
+        // > and then the listener will sleep for 1 second.
+        //
+        // hyper allowed customizing this but axum does not.
+        tracing::error!(error = &err as &dyn std::error::Error, "TCP accept error");
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
-
-impl std::fmt::Display for TcpServeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TcpServeError::Io(e) => write!(f, "IO error: {}", e),
-            TcpServeError::Service(e) => write!(f, "Service error: {}", e),
-        }
-    }
-}
-
-impl std::error::Error for TcpServeError {}

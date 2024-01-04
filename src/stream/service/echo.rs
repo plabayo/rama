@@ -1,20 +1,24 @@
-use std::io::Error;
+//! An async service which echoes the incoming bytes back on the same stream.
 
-use crate::{service::Service, stream::Stream};
+use crate::{
+    error::Error,
+    service::{Context, Service},
+    stream::Stream,
+};
 
 /// An async service which echoes the incoming bytes back on the same stream.
 ///
 /// # Example
 ///
 /// ```rust
-/// use rama::{service::Service, stream::service::EchoService};
+/// use rama::{error::Error, service::{Context, Service}, stream::service::EchoService};
 ///
-/// # #[rama::rt::main]
-/// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// # let stream = rama::rt::test_util::io::Builder::new().read(b"hello world").write(b"hello world").build();
+/// # #[tokio::main]
+/// # async fn main() -> Result<(), Error> {
+/// # let stream = tokio_test::io::Builder::new().read(b"hello world").write(b"hello world").build();
 /// let service = EchoService::new();
 ///
-/// let bytes_copied = service.call(stream).await?;
+/// let bytes_copied = service.serve(Context::default(), stream).await?;
 /// # assert_eq!(bytes_copied, 11);
 /// # Ok(())
 /// # }
@@ -37,16 +41,19 @@ impl Default for EchoService {
     }
 }
 
-impl<S> Service<S> for EchoService
+impl<T, S> Service<T, S> for EchoService
 where
-    S: Stream,
+    T: Send + Sync + 'static,
+    S: Stream + 'static,
 {
     type Response = u64;
     type Error = Error;
 
-    async fn call(&self, stream: S) -> Result<Self::Response, Self::Error> {
-        let (mut reader, mut writer) = crate::rt::io::split(stream);
-        crate::rt::io::copy(&mut reader, &mut writer).await
+    async fn serve(&self, _ctx: Context<T>, stream: S) -> Result<Self::Response, Self::Error> {
+        let (mut reader, mut writer) = tokio::io::split(stream);
+        tokio::io::copy(&mut reader, &mut writer)
+            .await
+            .map_err(Error::new)
     }
 }
 
@@ -54,9 +61,9 @@ where
 mod tests {
     use super::*;
 
-    use crate::rt::test_util::io::Builder;
+    use tokio_test::io::Builder;
 
-    #[crate::rt::test(crate = "crate")]
+    #[tokio::test]
     async fn test_echo() {
         let stream = Builder::new()
             .read(b"one")
@@ -65,6 +72,9 @@ mod tests {
             .write(b"two")
             .build();
 
-        EchoService::new().call(stream).await.unwrap();
+        EchoService::new()
+            .serve(Context::default(), stream)
+            .await
+            .unwrap();
     }
 }
