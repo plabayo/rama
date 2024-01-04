@@ -1,12 +1,12 @@
 use std::{future::Future, net::SocketAddr};
 
 /// An implementation of `DynamicDnsResolver` is used to resolve a hostname to
-/// a set of IP addresses at runtime.
+/// a set of Socket addresses at runtime.
 pub trait DynamicDnsResolver: Send + Sync + 'static {
     /// The type of iterator returned by `lookup_host`.
     type Iterator: Iterator<Item = SocketAddr> + Send + 'static;
 
-    /// Resolve host names to a set of IP addresses.
+    /// Resolve host names to a set of Socket addresses.
     fn lookup_host(
         &self,
         host: String,

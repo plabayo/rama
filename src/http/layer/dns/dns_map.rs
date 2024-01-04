@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::{collections::HashMap, net::SocketAddr};
 
-/// A Static DNS resolver mapping that resolves host names to IP addresses.
+/// A Static DNS resolver mapping that resolves host names to Socket addresses.
 ///
 /// It is not meant to be created directly,
 /// but instead it it used internally only to parse from the header.
