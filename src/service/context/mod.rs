@@ -19,7 +19,7 @@ pub struct Context<S> {
 
 impl Default for Context<()> {
     fn default() -> Self {
-        Self::new((), Executor::default())
+        Self::new(Arc::new(()), Executor::default())
     }
 }
 
@@ -35,9 +35,9 @@ impl<S> Clone for Context<S> {
 
 impl<S> Context<S> {
     /// Create a new [`Context`] with the given state.
-    pub fn new(state: S, executor: Executor) -> Self {
+    pub fn new(state: Arc<S>, executor: Executor) -> Self {
         Self {
-            state: Arc::new(state),
+            state,
             executor,
             extensions: Extensions::new(),
         }

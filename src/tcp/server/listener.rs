@@ -4,6 +4,7 @@ use crate::rt::Executor;
 use crate::service::Service;
 use crate::service::{Context, ServiceFn};
 use std::pin::pin;
+use std::sync::Arc;
 use std::{io, net::SocketAddr};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
 
@@ -11,7 +12,7 @@ use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
 #[derive(Debug)]
 pub struct TcpListenerBuilder<S> {
     ttl: Option<u32>,
-    state: S,
+    state: Arc<S>,
 }
 
 impl TcpListenerBuilder<()> {
@@ -19,7 +20,7 @@ impl TcpListenerBuilder<()> {
     pub fn new() -> Self {
         Self {
             ttl: None,
-            state: (),
+            state: Arc::new(()),
         }
     }
 }
@@ -55,11 +56,14 @@ impl<S> TcpListenerBuilder<S> {
 
 impl<S> TcpListenerBuilder<S>
 where
-    S: Clone + Send + Sync + 'static,
+    S: Send + Sync + 'static,
 {
     /// Create a new `TcpListenerBuilder` with the given state.
     pub fn with_state(state: S) -> Self {
-        Self { ttl: None, state }
+        Self {
+            ttl: None,
+            state: Arc::new(state),
+        }
     }
 
     /// Creates a new TcpListener, which will be bound to the specified address.
@@ -88,7 +92,7 @@ where
 #[derive(Debug)]
 pub struct TcpListener<S> {
     inner: TokioTcpListener,
-    state: S,
+    state: Arc<S>,
 }
 
 impl TcpListener<()> {
@@ -102,7 +106,7 @@ impl TcpListener<()> {
     /// which can be used to configure a `TcpListener`.
     pub fn build_with_state<S>(state: S) -> TcpListenerBuilder<S>
     where
-        S: Clone + Send + Sync + 'static,
+        S: Send + Sync + 'static,
     {
         TcpListenerBuilder::with_state(state)
     }
@@ -141,16 +145,11 @@ impl<S> TcpListener<S> {
     pub fn state(&self) -> &S {
         &self.state
     }
-
-    /// Gets a mutable reference to the listener's state.
-    pub fn state_mut(&mut self) -> &mut S {
-        &mut self.state
-    }
 }
 
 impl<State> TcpListener<State>
 where
-    State: Clone + Send + Sync + 'static,
+    State: Send + Sync + 'static,
 {
     /// Serve connections from this listener with the given service.
     ///

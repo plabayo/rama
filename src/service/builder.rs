@@ -321,27 +321,4 @@ mod test {
             .await;
         assert_eq!(res, Ok("OLA MUNDO".to_owned()));
     }
-
-    #[test]
-    fn test_service_builder_hyper_compat() {
-        use crate::service::HyperService;
-        use hyper::body::Incoming;
-        use hyper::{Request, Response};
-        use hyper_util::rt::TokioIo;
-        use tokio_test::io::Builder;
-
-        let service = ServiceBuilder::new()
-            .map_response(|_| hyper::Response::new(crate::http::Body::default()))
-            .service_fn(|_, _: Request<Incoming>| async {
-                Ok::<_, Infallible>(Response::new(crate::http::Body::from("Hello, World!")))
-            });
-
-        let mut io = TokioIo::new(Builder::new().build());
-        let ctx = Context::default();
-
-        let service = HyperService::new(ctx, service);
-
-        let fut = hyper::server::conn::http1::Builder::new().serve_connection(&mut io, service);
-        std::mem::drop(fut);
-    }
 }

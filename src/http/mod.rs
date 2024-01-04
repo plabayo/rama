@@ -11,10 +11,16 @@ pub type Request<T = Body> = http::Request<T>;
 /// defaults to [`Body`], the most common body type used with rama.
 pub type Response<T = Body> = http::Response<T>;
 
-pub mod headers;
 pub mod utils;
 
+pub mod headers;
+
+mod response;
+pub use response::IntoResponse;
+
 pub mod layer;
+
+pub mod server;
 
 pub mod dep {
     //! Dependencies for rama http modules.

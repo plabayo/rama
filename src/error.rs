@@ -10,6 +10,8 @@ use std::{
 pub type BoxError = Box<dyn StdError + Send + Sync>;
 
 /// Errors that can happen when using rama.
+///
+/// TODO: improve ergonoamics (e.g. from Boxed error)
 #[derive(Debug)]
 pub struct Error {
     inner: BoxError,
