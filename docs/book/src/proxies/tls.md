@@ -11,7 +11,7 @@
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
 - [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_terminations.rs):
-  Spawns a mini handmade http server, as well as a TLS termination proxy, fowarding the
+  Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
   plain text stream to the first.
 
 <div class="book-article-image-center">
