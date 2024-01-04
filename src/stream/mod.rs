@@ -2,6 +2,7 @@
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
+pub mod layer;
 pub mod service;
 
 /// A stream is a type that implements `AsyncRead`, `AsyncWrite` and `Send`.
