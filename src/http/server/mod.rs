@@ -4,7 +4,7 @@
 /// Result type of [`HttpServer::serve`].
 pub type HttpServeResult = Result<(), crate::error::Error>;
 
-mod service;
+pub mod service;
 pub use service::HttpServer;
 
 mod hyper_conn;

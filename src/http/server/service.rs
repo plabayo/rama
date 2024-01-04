@@ -1,3 +1,5 @@
+//! Rama HTTP server module.
+
 use super::hyper_conn::HyperConnServer;
 use super::HttpServeResult;
 use crate::http::{Request, Response};
@@ -714,6 +716,7 @@ where
     }
 }
 
+/// A [`Service`] that can be used to serve IO Byte streams (e.g. a TCP Stream) as HTTP.
 pub struct HttpService<B, S> {
     builder: Arc<B>,
     service: S,
