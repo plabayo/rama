@@ -1,7 +1,7 @@
 # Introduction to rama
 
 <div class="book-article-intro">
-    <img src="../img/rama_intro.jpeg" alt="llama teaching a class of crabs">
+    <img src="./img/rama_intro.jpeg" alt="llama teaching a class of crabs">
     <div>
         🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets.
         The reasons behind the creation of rama can be read in <a href="/why_rama.html">the "Why Rama" chapter</a>.

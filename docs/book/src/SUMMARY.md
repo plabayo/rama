@@ -4,7 +4,7 @@
 # Introduction
 
 - [📦 `rama` crate](./crate.md)
-- [intro to `rama`](./intro.md)
+- [Intro to `rama`](./intro.md)
     - [🗼 Services all the way down 🐢](./intro/services_all_the_way_down.md)
     - [Service Stack](./intro/service_stack.md)
     - [🍔 Middlwares and ☘️ Leaf Services](./intro/terminology.md)

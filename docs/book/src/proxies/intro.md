@@ -15,3 +15,13 @@ In specifically we'll discuss:
 - [🧦 SOCKS5 proxies](./socks5.md)
 - [🔎 MITM proxies](./mitm.md)
 - [🕵️‍♀️ Distortion proxies](./distort.md)
+
+<br>
+
+---
+
+<br>
+
+<div class="book-article-image-center">
+<img style="width: 50%" src="../img/llama_party.jpeg" alt="party of llamas, as a fun visual representation of a world of proxies">
+</div>
