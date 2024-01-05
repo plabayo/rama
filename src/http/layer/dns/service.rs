@@ -19,22 +19,37 @@ use std::net::SocketAddr;
 /// [`Extensions`]: crate::service::context::Extensions
 #[derive(Debug, Clone)]
 pub struct DnsResolvedSocketAddresses {
-    addresses: Vec<SocketAddr>,
+    address: SocketAddr,
+    alt_addresses: Vec<SocketAddr>,
 }
 
 impl DnsResolvedSocketAddresses {
-    pub(crate) fn new(addresses: Vec<SocketAddr>) -> Self {
-        Self { addresses }
+    pub(crate) fn new(address: SocketAddr, alt_addresses: Vec<SocketAddr>) -> Self {
+        Self {
+            address,
+            alt_addresses,
+        }
     }
 
-    /// Get the resolved addresses, if any.
-    pub fn resolved_addresses(&self) -> &[SocketAddr] {
-        self.addresses.as_slice()
+    /// Reference to first resolved address.
+    pub fn address(&self) -> &SocketAddr {
+        &self.address
     }
 
-    /// Take the resolved addresses, if any.
-    pub fn into_resolved_addresses(self) -> Vec<SocketAddr> {
-        self.addresses
+    /// Iterator over the references of all resolved addresses.
+    ///
+    /// This is guaranteed to always return 1 item, the first address.
+    /// If you wish however to be guaraneteed of that you can use [`Self::address`],
+    /// and then use [`Self::alt_address_iter`] to check if there are more.
+    pub fn address_iter(&self) -> impl Iterator<Item = &SocketAddr> {
+        std::iter::once(&self.address).chain(self.alt_addresses.iter())
+    }
+
+    /// Iterator over the references of all alternative addresses.
+    ///
+    /// use [`Self::address_iter`] to get an iterator that also includes the first address.
+    pub fn alt_address_iter(&self) -> impl Iterator<Item = &SocketAddr> {
+        self.alt_addresses.iter()
     }
 }
 
@@ -94,8 +109,18 @@ where
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(addresses) = self.lookup_host(&request).await? {
-            ctx.extensions_mut()
-                .insert(DnsResolvedSocketAddresses::new(addresses));
+            let mut addresses_it = addresses.into_iter();
+            match addresses_it.next() {
+                Some(address) => {
+                    ctx.extensions_mut().insert(DnsResolvedSocketAddresses::new(
+                        address,
+                        addresses_it.collect(),
+                    ));
+                }
+                None => {
+                    return Err(DnsError::HostnameNotFound);
+                }
+            }
         }
         self.inner
             .serve(ctx, request)
