@@ -36,7 +36,8 @@ You can use it to develop:
 - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
 - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
 
-If you are new to proxy technology you might want to start with reading [the proxies intro chapter (a World of Proxies)](./proxies/intro.md) first.
+If you are new to proxy technology you might want to start with reading [the proxies intro chapter (a World of Proxies)](./proxies/intro.md) first. You can learn more about the design, architecture and philosophy behind rama
+[in the rama introduction chapters](./intro.md).
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 Please refer to [the examples found in the `./examples` dir](./examples)
@@ -53,6 +54,7 @@ Please consult [the official docs.rs documentation][docs-url] or explore
 [the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to know how to use rama for your purposes.
 
-> 💡 You can find the edge docs of the rama framework code at <https://ramaproxy.org/docs/rama/index.html>.
+> 💡 You can find the edge docs of the rama framework code at <https://ramaproxy.org/docs/rama/index.html>,
+> which contains the documentation for the main branch of the project.
 
 🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).

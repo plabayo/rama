@@ -1,0 +1,50 @@
+# 🗼 Services all the way down 🐢
+
+To understand Rama you need to understand the abstraction it uses, which is all about services.
+Which all boils down to the `Service` trait which can be found at
+<https://github.com/plabayo/rama/blob/main/src/service/svc.rs>.
+
+> 💡 Rama's `Service` trait and design is directly inspired by
+> [tower-rs/tower](https://github.com/tower-rs/tower). The initial goal was to actually use
+> it. At some point of the R&D phase we even [developed a fork of it](https://github.com/plabayo/tower-async).
+> In the end we decided it was best to roll out or own design.
+> You can [learn more about why in the FAQ](http://localhost:3000/faq.html#can-tower-be-used).
+>
+> Even so, `tower` has a great introduction tutorial that can help you to understand
+> how a design around something like a `Service` operates, how it is to be used,
+> and why it is such an excellent solution to this design space. You can find it
+> at <https://github.com/tower-rs/tower/blob/master/guides/README.md> 📚.
+
+[The trait](https://github.com/plabayo/rama/blob/main/src/service/svc.rs)
+can be represented in reduced form as follows:
+
+```rust
+/// A [`Service`] that produces rama services,
+/// to serve requests with, be it transport layer requests or application layer requests.
+pub trait Service<S, Request>: Send + Sync + 'static {
+    /// The type of response returned by the service.
+    type Response: Send + 'static;
+
+    /// The type of error returned by the service.
+    type Error: Send + Sync + 'static;
+
+    /// Serve a response or error for the given request,
+    /// using the given context.
+    fn serve(
+        &self,
+        ctx: Context<S>,
+        req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
+}
+```
+
+This trait is an [async trait](https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html) only supported
+[in Stable Rust since version 1.75](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html) of the Rust Language.
+Due to the unfinished async story in Rust and the fact that we want to support and mainly
+target the multithreaded async setting supported by [Tokio](https://tokio.rs/), 
+
+The design is all about allowing one to use a `Service` that can take a `Request`,
+process it and return a `Result` which contains a `Response` at success and an `Error` when it failed for some reason.
+As per the design of Rust's _std_ `Result` we do want to make clear that despite the associated type's name,
+that it does not have to mean that the assigned type implements the `std::error::Error` trait. It is perfectly fine
+for that to contain the same or similar type as is used for the `Response` associated type.

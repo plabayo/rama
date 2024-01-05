@@ -1,9 +1,15 @@
 [Preface](./preface.md)
 [Why Rama](./why_rama.md)
 
-# 📦 ラマ
+# Introduction
 
 - [📦 `rama` crate](./crate.md)
+- [intro to `rama`](./intro.md)
+    - [🗼 Services all the way down 🐢](./intro/services_all_the_way_down.md)
+    - [Service Stack](./intro/service_stack.md)
+    - [🍔 Middlwares and ☘️ Leaf Services](./intro/terminology.md)
+    - [Network Layers](./intro/network_layers.md)
+    - [☀️ Context<State>](./intro/context.md)
 
 # Intro to Proxies
 
@@ -15,4 +21,5 @@
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
 
-[❓FAQ](./faq.md)
+[❓ FAQ](./faq.md)
+[💖 Sponsor](./sponsor.md)
