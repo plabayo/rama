@@ -1,5 +1,5 @@
 use rama::{
-    http::{server::HttpServer, Body, Request, Response},
+    http::{response::Html, server::HttpServer, Request},
     rt::Executor,
     service::service_fn,
 };
@@ -11,8 +11,7 @@ async fn main() {
         .listen(
             "127.0.0.1:8080",
             service_fn(|req: Request| async move {
-                let body = Body::from(format!("Hello {}!", req.uri().path()));
-                Ok(Response::new(body))
+                Ok(Html(format!("<p>Hello <em>{}</em>!</p>", req.uri().path())))
             }),
         )
         .await

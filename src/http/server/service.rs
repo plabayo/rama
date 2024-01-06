@@ -2,7 +2,7 @@
 
 use super::hyper_conn::HyperConnServer;
 use super::HttpServeResult;
-use crate::http::{Request, Response};
+use crate::http::{IntoResponse, Request};
 use crate::rt::Executor;
 use crate::service::{Context, Service};
 use crate::stream::Stream;
@@ -601,16 +601,17 @@ where
 {
     /// Turn this `HttpServer` into a [`Service`] that can be used to serve
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
-    pub fn service<State, S>(self, service: S) -> HttpService<B, S>
+    pub fn service<State, S, Response>(self, service: S) -> HttpService<B, S>
     where
         State: Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
     {
         HttpService::new(self.builder, service)
     }
 
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
-    pub async fn serve<State, S, IO>(
+    pub async fn serve<State, S, Response, IO>(
         &self,
         ctx: Context<State>,
         stream: IO,
@@ -619,6 +620,7 @@ where
     where
         State: Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
         IO: Stream,
     {
         self.builder
@@ -629,9 +631,10 @@ where
     /// Listen for connections on the given address, serving HTTP connections.
     ///
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
-    pub async fn listen<S, A>(self, addr: A, service: S) -> HttpServeResult
+    pub async fn listen<S, Response, A>(self, addr: A, service: S) -> HttpServeResult
     where
         S: Service<(), Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
         TcpListener::bind(addr)
@@ -647,7 +650,7 @@ where
     /// and also pass it to the service.
     ///
     /// [`ShutdownGuard`]: crate::graceful::ShutdownGuard
-    pub async fn listen_graceful<S, A>(
+    pub async fn listen_graceful<S, Response, A>(
         self,
         guard: ShutdownGuard,
         addr: A,
@@ -655,6 +658,7 @@ where
     ) -> HttpServeResult
     where
         S: Service<(), Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
         TcpListener::bind(addr)
@@ -670,7 +674,7 @@ where
     ///
     /// [`Service`]: crate::service::Service
     /// [`Context`]: crate::service::Context
-    pub async fn listen_with_state<State, S, A>(
+    pub async fn listen_with_state<State, S, Response, A>(
         self,
         state: State,
         addr: A,
@@ -679,6 +683,7 @@ where
     where
         State: Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
         TcpListener::build_with_state(state)
@@ -695,7 +700,7 @@ where
     ///
     /// [`Service`]: crate::service::Service
     /// [`Context`]: crate::service::Context
-    pub async fn listen_graceful_with_state<State, S, A>(
+    pub async fn listen_graceful_with_state<State, S, Response, A>(
         self,
         guard: ShutdownGuard,
         state: State,
@@ -705,6 +710,7 @@ where
     where
         State: Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
         TcpListener::build_with_state(state)
@@ -749,11 +755,12 @@ where
     }
 }
 
-impl<B, State, S, IO> Service<State, IO> for HttpService<B, S>
+impl<B, State, S, Response, IO> Service<State, IO> for HttpService<B, S>
 where
     B: HyperConnServer,
     State: Send + Sync + 'static,
     S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+    Response: IntoResponse + Send + 'static,
     IO: Stream,
 {
     type Response = ();

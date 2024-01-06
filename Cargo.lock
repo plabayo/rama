@@ -839,6 +839,7 @@ dependencies = [
  "http-body-util",
  "httparse",
  "matchit",
+ "mime",
  "pin-project-lite",
  "rama-hyper",
  "rama-hyper-util",

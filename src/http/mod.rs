@@ -3,20 +3,16 @@
 pub(crate) mod body;
 pub use body::{Body, BodyDataStream};
 
-/// Type alias for [`http::Request`] whose body type
-/// defaults to [`Body`], the most common body type used with rama.
-pub type Request<T = Body> = http::Request<T>;
-
-/// Type alias for [`http::Response`] whose body type
-/// defaults to [`Body`], the most common body type used with rama.
-pub type Response<T = Body> = http::Response<T>;
-
 pub mod utils;
 
 pub mod headers;
 
-mod response;
-pub use response::IntoResponse;
+/// Type alias for [`http::Request`] whose body type
+/// defaults to [`Body`], the most common body type used with rama.
+pub type Request<T = Body> = http::Request<T>;
+
+pub mod response;
+pub use response::{IntoResponse, Response};
 
 pub mod layer;
 
@@ -45,6 +41,16 @@ pub mod dep {
         //! [`http-body`]: https://docs.rs/http-body
 
         pub use http_body::*;
+    }
+
+    pub mod mime {
+        //! Re-export of the [`mime`] crate.
+        //!
+        //! Support MIME (Media Types) as strong types in Rust.
+        //!
+        //! [`mime`]: https://docs.rs/mime
+
+        pub use mime::*;
     }
 }
 

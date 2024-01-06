@@ -3,7 +3,7 @@ use std::{convert::Infallible, pin::Pin};
 use futures_util::Future;
 
 use super::{Context, Service};
-use crate::http::{Request, Response};
+use crate::http::{IntoResponse, Request};
 
 /// Wrapper service that implements [`hyper::service::Service`].
 ///
@@ -25,12 +25,13 @@ impl<S, T> HyperService<S, T> {
     }
 }
 
-impl<S, T> hyper::service::Service<HyperRequest> for HyperService<S, T>
+impl<S, T, Response> hyper::service::Service<HyperRequest> for HyperService<S, T>
 where
     S: Send + Sync + 'static,
     T: Service<S, Request, Response = Response, Error = Infallible> + Clone,
+    Response: IntoResponse + Send + 'static,
 {
-    type Response = Response;
+    type Response = crate::http::Response;
     type Error = std::convert::Infallible;
     type Future =
         Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
@@ -41,7 +42,10 @@ where
 
         let req = req.map(crate::http::Body::new);
 
-        Box::pin(async move { inner.serve(ctx, req).await })
+        Box::pin(async move {
+            let resp = inner.serve(ctx, req).await?;
+            Ok(resp.into_response())
+        })
     }
 }
 

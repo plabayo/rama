@@ -1,5 +1,6 @@
 use rama::{
-    http::{server::HttpServer, Body, Request, Response},
+    http::response::Html,
+    http::{server::HttpServer, Request},
     rt::Executor,
     service::{layer::TimeoutLayer, service_fn, Context, ServiceBuilder},
     stream::layer::{BytesRWTrackerHandle, BytesTrackerLayer},
@@ -38,14 +39,28 @@ async fn main() {
                         |ctx: Context<()>, req: Request| async move {
                             let socket_info = ctx.extensions().get::<TcpSocketInfo>().unwrap();
                             let tracker = ctx.extensions().get::<BytesRWTrackerHandle>().unwrap();
-                            let body = Body::from(format!(
-                                "Hello {} @ {}, read: {}, written: {}",
+                            Ok(Html(format!(
+                                r##"
+                                <html>
+                                    <head>
+                                        <title>Rama — Http Service Hello</title>
+                                    </head>
+                                    <body>
+                                        <h1>Hello</h1>
+                                        <p>Peer: {}</p>
+                                        <p>Path: {}</p>
+                                        <p>Stats (bytes):</p>
+                                        <ul>
+                                            <li>Read: {}</li>
+                                            <li>Written: {}</li>
+                                        </ul>
+                                    </body>
+                                </html>"##,
                                 socket_info.peer_addr(),
                                 req.uri().path(),
                                 tracker.read(),
-                                tracker.written()
-                            ));
-                            Ok(Response::new(body))
+                                tracker.written(),
+                            )))
                         },
                     ))),
             )

@@ -1,6 +1,6 @@
-//! Macros for [`axum`].
+//! Macros for [`rama`].
 //!
-//! [`axum`]: https://crates.io/crates/axum
+//! [`rama`]: https://crates.io/crates/rama
 
 #![warn(
     clippy::all,

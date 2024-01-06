@@ -35,7 +35,7 @@ where
     }
 }
 
-/// The body type used in axum requests and responses.
+/// The body type used in rama requests and responses.
 #[derive(Debug)]
 pub struct Body(BoxBody);
 

@@ -1,5 +1,5 @@
 use super::HttpServeResult;
-use crate::http::{Request, Response};
+use crate::http::{IntoResponse, Request};
 use crate::rt::Executor;
 use crate::service::Service;
 use crate::service::{Context, HyperService};
@@ -17,7 +17,7 @@ use tokio::select;
 /// A utility trait to allow any of the hyper server builders to be used
 /// in the same way to (http) serve a connection.
 pub trait HyperConnServer: Send + Sync + private::Sealed + 'static {
-    fn hyper_serve_connection<IO, State, S>(
+    fn hyper_serve_connection<IO, State, S, Response>(
         &self,
         ctx: Context<State>,
         io: IO,
@@ -26,12 +26,13 @@ pub trait HyperConnServer: Send + Sync + private::Sealed + 'static {
     where
         IO: Stream,
         State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone;
+        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static;
 }
 
 impl HyperConnServer for Http1Builder {
     #[inline]
-    async fn hyper_serve_connection<IO, State, S>(
+    async fn hyper_serve_connection<IO, State, S, Response>(
         &self,
         ctx: Context<State>,
         io: IO,
@@ -41,6 +42,7 @@ impl HyperConnServer for Http1Builder {
         IO: Stream,
         State: Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
         let guard = ctx.guard().cloned();
@@ -71,7 +73,7 @@ impl HyperConnServer for Http1Builder {
 
 impl HyperConnServer for Http2Builder<Executor> {
     #[inline]
-    async fn hyper_serve_connection<IO, State, S>(
+    async fn hyper_serve_connection<IO, State, S, Response>(
         &self,
         ctx: Context<State>,
         io: IO,
@@ -81,6 +83,7 @@ impl HyperConnServer for Http2Builder<Executor> {
         IO: Stream,
         State: Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
         let guard = ctx.guard().cloned();
@@ -111,7 +114,7 @@ impl HyperConnServer for Http2Builder<Executor> {
 
 impl HyperConnServer for AutoBuilder<Executor> {
     #[inline]
-    async fn hyper_serve_connection<IO, State, S>(
+    async fn hyper_serve_connection<IO, State, S, Response>(
         &self,
         ctx: Context<State>,
         io: IO,
@@ -121,6 +124,7 @@ impl HyperConnServer for AutoBuilder<Executor> {
         IO: Stream,
         State: Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
         let guard = ctx.guard().cloned();
