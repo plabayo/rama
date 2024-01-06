@@ -1,5 +1,6 @@
 [Preface](./preface.md)
 [Why Rama](./why_rama.md)
+[Built with Rust](./rust.md)
 
 # Introduction
 

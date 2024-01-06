@@ -18,7 +18,7 @@ It all boils down to the `Service` trait that can be found at
 [The trait](https://github.com/plabayo/rama/blob/main/src/service/svc.rs)
 can be represented in reduced form as follows:
 
-```rust
+```rust,noplayground
 /// A [`Service`] that produces rama services,
 /// to serve requests with, be it transport layer requests or application layer requests.
 pub trait Service<S, Request>: Send + Sync + 'static {

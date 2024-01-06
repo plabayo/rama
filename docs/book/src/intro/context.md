@@ -2,7 +2,7 @@
 
 To recap, a `Service::serve` method has the following signature:
 
-```rust
+```rust,noplayground
 fn serve(
     &self,
     ctx: Context<State>,
@@ -18,7 +18,7 @@ and its documemtation can be consumed at <https://ramaproxy.org/docs/rama/servic
 
 `Context<State>` is used to:
 
-- access shared typesafe `State` defined by the code location instanciating the `Service` on its own or part of a _stack_.
+- access shared typesafe `State` defined by the code location instantiating the `Service` on its own or part of a _stack_.
 - access `Extensions` that can be used to dynamically get and set extra (optional) data, to be passed for usage by inner service(s).
 - spawn tasks for the given (async) executor, doing so gracefully if configured to do so.
 - abrubt tasks early in a graceful manner in case of a shutdown using the gracuful `ShutdownGuard` if defined.
