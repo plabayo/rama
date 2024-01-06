@@ -1,8 +1,7 @@
 # Service Stack
 
-Types implementing the `Service` trait may be the one actually providing the response directly or indirectly.
-They might also contain as one of its properties another `Service` which in the happy path produces the
-result directly or indirectly instead. The exact mode of operation is freely defined by the `Service` implementation.
+Types implementing the `Service` trait may be the one actually providing the `Result` directly or indirectly.
+They might also contain as one of its properties another `Service` that somehow produces a `Result` instead. The exact mode of operation is freely defined by the `Service` implementation.
 
 An easy example of this is [a `Timeout` service](https://github.com/plabayo/rama/blob/main/src/service/layer/timeout/mod.rs)
 which contains any other `Service` but will return a timeout 'error' in case that service took more
@@ -32,5 +31,6 @@ digraph {
 </div>
 
 What might not be clear on the graph, but what is important to understand,
-is that a response can be produced at any layer of such a service stack. While in the happy
-path it is produced by a leaf service, it is certainly not the case.
+is that a response can be produced at any layer of such a service stack. While ideally it is produced by a leaf service, there will be scenarios where this is not the case.
+
+In the case of the example above it will be the `Timeout` layer `Service` to return an `Error` early in case the inner `Service::serve` call takes longer then expanded as defined by its `Duration` property.
