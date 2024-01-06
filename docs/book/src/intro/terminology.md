@@ -3,14 +3,13 @@
 In a quick intermezzo, let's align on some terminology:
 
 - What in `tower` and `rama` is called a `Layer` is in many other places often referred
-  to as 'middleware'. The concept is the same and it is simply functionality operating somewhere
-  between the callee (the one calling the 'function') and the actual thing (service) responsible
-  for producing the 'response'.
+  to as 'middleware'. The concept is the same and it is functionality operating somewhere
+  between the callee (the one calling the 'function') and the actual thing (`Service`) responsible
+  for producing the 'Response'.
 - A Leaf Service is not really a term used in `tower`, but it can be a neat way to explicitly
-  label a `Service` which sole responsibility is produce the _result_, rather then relying on another
-  `Service` to do it (in the happy path) for it instead.
+  label a `Service` which sole responsibility is to produce a `Result` without relying on another wrapped `Service` to do so.
 
-A typical web server example of seeing these two in action in a less abstract is as follows:
+A typical web server example of seeing these two different types of `Service`s in action in a less abstract manner can be as follows:
 
 <div class="book-article-image-center">
 
