@@ -1,7 +1,7 @@
 # Built with Rust
 
 <div class="book-article-intro">
-    <img src="../img/llama_rust.jpeg" alt="artistical representation of a llama on top of a crab">
+    <img src="./img/llama_rust.jpeg" alt="artistical representation of a llama on top of a crab">
     <div>
         Rama (ラマ) is built using <a href="https://www.rust-lang.org/">Rust</a>, a language empowering
         everyone to build reliable and efficient software. Rama is developed and maintained by
