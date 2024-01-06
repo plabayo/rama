@@ -1,8 +1,9 @@
 use rama::{
-    http::{response::Html, server::HttpServer, Request},
+    http::{response::Json, server::HttpServer, Request},
     rt::Executor,
     service::service_fn,
 };
+use serde_json::json;
 
 #[tokio::main]
 async fn main() {
@@ -11,7 +12,10 @@ async fn main() {
         .listen(
             "127.0.0.1:8080",
             service_fn(|req: Request| async move {
-                Ok(Html(format!("<p>Hello <em>{}</em>!</p>", req.uri().path())))
+                Ok(Json(json!({
+                    "method": req.method().as_str(),
+                    "path": req.uri().path(),
+                })))
             }),
         )
         .await
