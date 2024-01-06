@@ -1,19 +1,19 @@
 # 🗼 Services all the way down 🐢
 
 To understand Rama you need to understand the abstraction it uses, which is all about services.
-Which all boils down to the `Service` trait which can be found at
+It all boils down to the `Service` trait that can be found at
 <https://github.com/plabayo/rama/blob/main/src/service/svc.rs>.
 
-> 💡 Rama's `Service` trait and design is directly inspired by
+> 💡 Rama's `Service` trait and design is directly influenced by
 > [tower-rs/tower](https://github.com/tower-rs/tower). The initial goal was to actually use
-> it. At some point of the R&D phase we even [developed a fork of it](https://github.com/plabayo/tower-async).
-> In the end we decided it was best to roll out or own design.
+> `tower`. At some point of the R&D phase we even [developed a fork of it](https://github.com/plabayo/tower-async).
+> In the end we decided to roll out or own design.
 > You can [learn more about why in the FAQ](http://localhost:3000/faq.html#can-tower-be-used).
 >
 > Even so, `tower` has a great introduction tutorial that can help you to understand
 > how a design around something like a `Service` operates, how it is to be used,
 > and why it is such an excellent solution to this design space. You can find it
-> at <https://github.com/tower-rs/tower/blob/master/guides/README.md> 📚.
+> at <https://github.com/tower-rs/tower/blob/master/guides/README.md> 📚. A must read if you haven't already.
 
 [The trait](https://github.com/plabayo/rama/blob/main/src/service/svc.rs)
 can be represented in reduced form as follows:
