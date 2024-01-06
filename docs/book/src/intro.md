@@ -11,8 +11,8 @@
     </div>
 </div>
 
-In case you are new to proxy technology you might want to
-[introduction to proxies chapter](./proxies/intro.md).
+In case you are new to proxy technology you might want to read the 
+[introduction to proxies chapter](./proxies/intro.md) first.
 
 ## Index
 
