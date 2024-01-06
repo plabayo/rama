@@ -12,7 +12,7 @@
 
 Now it is very well possible that you learned about Rama because as a proxy framework it perfectly fits your needs,
 or because your deep interest in proxy technology. Yet you might not be very familiar with Rust, or might not
-know it very well at all. Or perhaps you did play around with Rust but aren't comfortable enough to start using
+know the language all. Or perhaps you did play around with Rust but aren't comfortable enough to start using
 a crate such as Rama.
 
 <https://rust-lang.guide/> is a FOSS guide created by Plabayo, the maintainers behind Rama, and
