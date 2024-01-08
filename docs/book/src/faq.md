@@ -65,3 +65,9 @@ became a hurdle instead.
 This is not the fault of tower, but more a sign that it did not age well,
 or perhaps... it is actually a very different beast altogether.
 
+## Can I build Web Services with Rama?
+
+Yes...
+
+But this is however not the intention on itself.
+Please consult [./web_servers.md](./web_servers.md) for more information.

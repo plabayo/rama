@@ -37,3 +37,7 @@ Becoming proficient in Rust requires the fulfillment of three pillars:
   - [Next Steps](https://rust-lang.guide/guide/next-steps.md)
 
 You can find the full version of that chapter at <https://rust-lang.guide/intro/learning-rust.html>.
+
+Rama is developed with a multithreaded Async work-stealing runtime in mind, using Tokio. For ergonomic reasons it makes heavy
+use of generics on top of that. Combining this with the fact that Rust still has some surfaces it has to smooth out,
+makes it that you want to make sure you have a solid foundation in Rust, prior to being able to fully understand the Rama codebase.
