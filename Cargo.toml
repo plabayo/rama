@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "rama-cli", "rama-macros"]
+members = [".", "rama-cli"]
 
 [workspace.package]
 version = "0.2.0"
