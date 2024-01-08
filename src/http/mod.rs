@@ -15,6 +15,7 @@ pub mod response;
 pub use response::{IntoResponse, Response};
 
 pub mod layer;
+pub mod service;
 
 pub mod server;
 

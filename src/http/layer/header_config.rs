@@ -1,3 +1,8 @@
+//! Extract a header config from a request or response and insert it into the [`Extensions`] of its [`Context`].
+//!
+//! [`Extensions`]: crate::service::context::Extensions
+//! [`Context`]: crate::service::Context
+
 use crate::http::dep::http::header::AsHeaderName;
 use serde::de::DeserializeOwned;
 use std::marker::PhantomData;

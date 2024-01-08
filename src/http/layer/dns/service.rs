@@ -2,7 +2,7 @@ use super::{dns_map::DnsMap, DnsError, DynamicDnsResolver};
 use crate::{
     http::{
         headers::{HeaderMapExt, Host},
-        layer::extract_header_config,
+        layer::header_config::extract_header_config,
         utils::{HeaderValueErr, HeaderValueGetter},
         HeaderName, Request,
     },
@@ -68,7 +68,7 @@ impl DnsResolvedSocketAddresses {
 /// [`Service`]: crate::service::Service
 /// [`Extensions`]: crate::service::context::Extensions
 /// [`Host`]: crate::http::headers::Host
-/// [`DynamicDnsResolver`]: crate::http::layer::DynamicDnsResolver
+/// [`DynamicDnsResolver`]: crate::http::layer::dns::DynamicDnsResolver
 #[derive(Debug, Clone)]
 pub struct DnsService<S, R> {
     inner: S,

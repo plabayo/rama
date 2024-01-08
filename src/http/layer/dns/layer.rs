@@ -5,7 +5,7 @@ use crate::{http::HeaderName, service::Layer};
 ///
 /// See [`DnsService`] for more details.
 ///
-/// [`DnsService`]: crate::http::layer::DnsService
+/// [`DnsService`]: crate::http::layer::dns::DnsService
 #[derive(Clone)]
 pub struct DnsLayer<R> {
     resolver: R,
