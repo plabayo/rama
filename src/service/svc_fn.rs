@@ -30,6 +30,25 @@ pub trait ServiceFn<S, Request, A>: Send + Sync + 'static {
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
 }
 
+impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, ()> for F
+where
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response, Error>> + Send + 'static,
+    Response: Send + 'static,
+    Error: Send + Sync + 'static,
+{
+    type Response = Response;
+    type Error = Error;
+
+    fn call(
+        &self,
+        _ctx: Context<S>,
+        _req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        (self)()
+    }
+}
+
 impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, (Request,)> for F
 where
     F: Fn(Request) -> Fut + Send + Sync + 'static,
@@ -65,6 +84,25 @@ where
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         (self)(ctx, req)
+    }
+}
+
+impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, (Context<S>, (), ())> for F
+where
+    F: Fn(Context<S>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Response, Error>> + Send + 'static,
+    Response: Send + 'static,
+    Error: Send + Sync + 'static,
+{
+    type Response = Response;
+    type Error = Error;
+
+    fn call(
+        &self,
+        ctx: Context<S>,
+        _req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        (self)(ctx)
     }
 }
 
