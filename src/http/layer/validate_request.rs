@@ -57,11 +57,12 @@
 //! #[derive(Clone, Copy)]
 //! pub struct MyHeader { /* ...  */ }
 //!
-//! impl<B> ValidateRequest<B> for MyHeader {
+//! impl<S, B> ValidateRequest<S, B> for MyHeader {
 //!     type ResponseBody = Body;
 //!
 //!     fn validate(
 //!         &self,
+//!         ctx: &mut Context<S>,
 //!         request: &mut Request<B>,
 //!     ) -> Result<(), Response<Self::ResponseBody>> {
 //!         // validate the request...
@@ -242,7 +243,7 @@ where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
     State: Send + Sync + 'static,
-    V: ValidateRequest<ReqBody, ResponseBody = ResBody>,
+    V: ValidateRequest<State, ReqBody, ResponseBody = ResBody>,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
 {
     type Response = Response<ResBody>;
@@ -250,10 +251,10 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        match self.validate.validate(&mut req) {
+        match self.validate.validate(&mut ctx, &mut req) {
             Ok(_) => self.inner.serve(ctx, req).await,
             Err(res) => Ok(res),
         }
@@ -261,23 +262,31 @@ where
 }
 
 /// Trait for validating requests.
-pub trait ValidateRequest<B>: Send + Sync + 'static {
+pub trait ValidateRequest<S, B>: Send + Sync + 'static {
     /// The body type used for responses to unvalidated requests.
     type ResponseBody;
 
     /// Validate the request.
     ///
     /// If `Ok(())` is returned then the request is allowed through, otherwise not.
-    fn validate(&self, request: &mut Request<B>) -> Result<(), Response<Self::ResponseBody>>;
+    fn validate(
+        &self,
+        ctx: &mut Context<S>,
+        request: &mut Request<B>,
+    ) -> Result<(), Response<Self::ResponseBody>>;
 }
 
-impl<B, F, ResBody> ValidateRequest<B> for F
+impl<S, B, F, ResBody> ValidateRequest<S, B> for F
 where
     F: Fn(&mut Request<B>) -> Result<(), Response<ResBody>> + Send + Sync + 'static,
 {
     type ResponseBody = ResBody;
 
-    fn validate(&self, request: &mut Request<B>) -> Result<(), Response<Self::ResponseBody>> {
+    fn validate(
+        &self,
+        _ctx: &mut Context<S>,
+        request: &mut Request<B>,
+    ) -> Result<(), Response<Self::ResponseBody>> {
         self(request)
     }
 }
@@ -326,13 +335,17 @@ impl<ResBody> fmt::Debug for AcceptHeader<ResBody> {
     }
 }
 
-impl<B, ResBody> ValidateRequest<B> for AcceptHeader<ResBody>
+impl<S, B, ResBody> ValidateRequest<S, B> for AcceptHeader<ResBody>
 where
     ResBody: Body + Default + Send + 'static,
 {
     type ResponseBody = ResBody;
 
-    fn validate(&self, req: &mut Request<B>) -> Result<(), Response<Self::ResponseBody>> {
+    fn validate(
+        &self,
+        _ctx: &mut Context<S>,
+        req: &mut Request<B>,
+    ) -> Result<(), Response<Self::ResponseBody>> {
         if !req.headers().contains_key(header::ACCEPT) {
             return Ok(());
         }
