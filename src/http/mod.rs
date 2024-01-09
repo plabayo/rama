@@ -44,6 +44,17 @@ pub mod dep {
         pub use http_body::*;
     }
 
+    pub mod http_body_util {
+        //! Re-export of the [`http-body-util`] crate.
+        //!
+        //! Utilities for working with [`http-body`] types.
+        //!
+        //! [`http-body`]: https://docs.rs/http-body
+        //! [`http-body-util`]: https://docs.rs/http-body-util
+
+        pub use http_body_util::*;
+    }
+
     pub mod mime {
         //! Re-export of the [`mime`] crate.
         //!
@@ -55,6 +66,7 @@ pub mod dep {
     }
 }
 
+pub use self::dep::http::header;
 pub use self::dep::http::header::HeaderMap;
 pub use self::dep::http::header::HeaderName;
 pub use self::dep::http::header::HeaderValue;

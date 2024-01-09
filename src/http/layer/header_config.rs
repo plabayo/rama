@@ -3,7 +3,7 @@
 //! [`Extensions`]: crate::service::context::Extensions
 //! [`Context`]: crate::service::Context
 
-use crate::http::dep::http::header::AsHeaderName;
+use crate::http::header::AsHeaderName;
 use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
 

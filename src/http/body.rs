@@ -1,10 +1,12 @@
 //! HTTP body utilities.
 
+use crate::http::dep::{
+    http_body::{Body as _, Frame},
+    http_body_util::BodyExt,
+};
 use bytes::Bytes;
 use futures_util::stream::Stream;
 use futures_util::TryStream;
-use http_body::{Body as _, Frame};
-use http_body_util::BodyExt;
 use pin_project_lite::pin_project;
 use std::pin::Pin;
 use std::task::{Context, Poll};

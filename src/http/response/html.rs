@@ -1,4 +1,4 @@
-use crate::http::{dep::http::header, Body, HeaderValue, IntoResponse, Response};
+use crate::http::{header, Body, HeaderValue, IntoResponse, Response};
 
 /// An HTML response.
 ///

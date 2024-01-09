@@ -1,7 +1,7 @@
 //! Service that redirects all requests.
 
 use crate::http::Request;
-use crate::http::{dep::http::header, HeaderValue, Response, StatusCode, Uri};
+use crate::http::{header, HeaderValue, Response, StatusCode, Uri};
 use crate::service::{Context, Service};
 use std::{
     convert::{Infallible, TryFrom},

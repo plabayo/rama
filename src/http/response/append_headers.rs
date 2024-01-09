@@ -10,7 +10,7 @@ use std::fmt;
 /// ```rust
 /// use rama::{
 ///     http::response::{AppendHeaders, IntoResponse},
-///     http::dep::http::header::SET_COOKIE,
+///     http::header::SET_COOKIE,
 /// };
 ///
 /// async fn handler() -> impl IntoResponse {
