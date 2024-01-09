@@ -163,11 +163,9 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
     /// # Example
     ///
     /// ```
-    /// use bytes::Bytes;
-    /// use rama::http::dep::http_body_util::Full;
     /// use rama::http::layer::validate_request::{AcceptHeader, ValidateRequestHeaderLayer};
     ///
-    /// let layer = ValidateRequestHeaderLayer::<AcceptHeader<Full<Bytes>>>::accept("application/json");
+    /// let layer = ValidateRequestHeaderLayer::<AcceptHeader>::accept("application/json");
     /// ```
     ///
     /// [`Accept`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept
@@ -292,7 +290,7 @@ where
 }
 
 /// Type that performs validation of the Accept header.
-pub struct AcceptHeader<ResBody> {
+pub struct AcceptHeader<ResBody = crate::http::Body> {
     header_value: Arc<Mime>,
     _ty: PhantomData<fn() -> ResBody>,
 }
