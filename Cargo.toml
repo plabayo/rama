@@ -59,6 +59,7 @@ tokio = { version = "1", features = ["macros"] }
 tokio-graceful = "0.1"
 tokio-rustls = "0.25"
 tracing = { version = "0.1" }
+uuid = { version = "1.6", features = ["v4"] }
 
 [dev-dependencies]
 rustversion = "1.0.9"
