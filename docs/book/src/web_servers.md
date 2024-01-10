@@ -8,17 +8,22 @@ that you really need. But because developing web servers for the purpose of webs
 or other kinds of web applications is not our focus you'll not find anything fancy or 'magical'
 that you might be used to in other frameworks.
 
-> We recommend the usage of <https://docs.rs/axum/latest/axum/> in case you need a web server
-> for a full fledged API or website. It runs on Tokio as well, and can be run within the same process
-> as your proxy app. However, we believe that for anythng related to proxy technologies you should be able
-> to use Rama as-is. More on that later.
->
-> To be clear, there is no web service that you can make with Axum that you cannot build with Rama instead.
-> And in fact a lot of ideas and even code were copied directly from Axum. The major difference is however
-> that Axum is focussed on being an excellent modular web framework for building websites and APIs, while Rama is not.
-> As such Axum has a lot of code to do the heavy lifting for you and make building such stacks more ergonomic.
-> Notably are the request Extractors (`FromRequestParts`) and Response creators (`IntoResponse`). The latter has
-> been copied into Rama, the first not.
+## Axum
+
+We recommend the usage of <https://docs.rs/axum/latest/axum/> in case you need a web server
+for a full fledged API or website. It runs on Tokio as well, and can be run within the same process
+as your proxy app. However, we believe that for anythng related to proxy technologies you should be able
+to use Rama as-is. More on that later.
+
+To be clear, there is no web service that you can make with Axum that you cannot build with Rama instead.
+And in fact a lot of ideas and even code were copied directly from Axum. The major difference is however
+that Axum is focussed on being an excellent modular web framework for building websites and APIs, while Rama is not.
+As such Axum has a lot of code to do the heavy lifting for you and make building such stacks more ergonomic.
+Notably are the request Extractors (`FromRequestParts`) and Response creators (`IntoResponse`). The latter has
+been copied into Rama, the first not.
+
+There are of course also other difference, some bigger then others. Point being, use Axum if you need to build
+specialised Web Servers, use Rama in case your focus is on proxies instead.
 
 ## Proxy Web Services
 

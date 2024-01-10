@@ -29,3 +29,18 @@ the `Extensions` type/data also available in an `http Request`. Hower it provide
 of typesafe `State`, executors, spawning etc. On top of that it would make it more awkward to
 also freely pass all this data between services, especially those operating
 across different layers of the network.
+
+## Extensions
+
+Rama makes no use of `http::Extensions`, and instead keeps it all within the extensions API provided by `Context<State>`.
+Extensions are there for middleware to inject state into the context. Here is how you should think about extensions:
+
+- Extensions are not for shared data, as it will be unique to this request path, with only the inner service having access to it.
+  - Parent of sibling services will not have access to newly inserted data;
+- Extensions can be be referenced (`get`) and inserted (`insert`). They cannot be exclusively referenced (`mut`),
+  nor can they be removed or anything ese.
+
+`State` in contrast is shared and is fully statically typed. This is a great solution for putting resource pools, databases, etc...
+However such a statically typed static type does not lend itself well towards state that is provided by an extension and that is unique to
+a specific reuqest (path).
+
