@@ -1,8 +1,10 @@
 use super::TcpSocketInfo;
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
+use crate::service::handler::{Factory, FromContextRequest};
+use crate::service::Context;
 use crate::service::Service;
-use crate::service::{Context, ServiceFn};
+use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::{io, net::SocketAddr};
@@ -185,10 +187,13 @@ where
     /// Serve connections from this listener with the given service function.
     ///
     /// See [`Self::serve`] for more details.
-    pub async fn serve_fn<F, A>(self, f: F)
+    pub async fn serve_fn<F, T, R, O, E>(self, f: F)
     where
-        A: Send + Sync + 'static,
-        F: ServiceFn<State, TcpStream, A> + Clone,
+        F: Factory<T, R, O, E> + Clone,
+        R: Future<Output = Result<O, E>> + Send + Sync + 'static,
+        O: Send + Sync + 'static,
+        E: Send + Sync + 'static,
+        T: FromContextRequest<State, TcpStream>,
     {
         let service = crate::service::service_fn(f);
         self.serve(service).await
@@ -237,10 +242,13 @@ where
     /// Serve gracefully connections from this listener with the given service function.
     ///
     /// See [`Self::serve_graceful`] for more details.
-    pub async fn serve_fn_graceful<F, A>(self, guard: ShutdownGuard, service: F)
+    pub async fn serve_fn_graceful<F, T, R, O, E>(self, guard: ShutdownGuard, service: F)
     where
-        A: Send + Sync + 'static,
-        F: ServiceFn<State, TcpStream, A> + Clone,
+        F: Factory<T, R, O, E> + Clone,
+        R: Future<Output = Result<O, E>> + Send + Sync + 'static,
+        O: Send + Sync + 'static,
+        E: Send + Sync + 'static,
+        T: FromContextRequest<State, TcpStream>,
     {
         let service = crate::service::service_fn(service);
         self.serve_graceful(guard, service).await

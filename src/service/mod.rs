@@ -13,8 +13,8 @@ pub use context::Context;
 mod svc;
 pub use svc::{BoxService, Service};
 
-mod svc_fn;
-pub use svc_fn::{service_fn, ServiceFn, ServiceFnBox};
+pub mod handler;
+pub use handler::{service_fn, ServiceFn};
 
 mod svc_hyper;
 pub(crate) use svc_hyper::HyperService;

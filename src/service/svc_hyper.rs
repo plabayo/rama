@@ -1,6 +1,4 @@
-use std::{convert::Infallible, pin::Pin};
-
-use futures_util::Future;
+use std::{convert::Infallible, future::Future, pin::Pin};
 
 use super::{Context, Service};
 use crate::http::{IntoResponse, Request};

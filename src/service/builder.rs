@@ -1,13 +1,15 @@
 //! Builder types to compose layers and services
 
 use super::{
+    handler::Factory,
     layer::{
         layer_fn, AndThenLayer, Either, Identity, LayerFn, MapErrLayer, MapRequestLayer,
         MapResponseLayer, MapResultLayer, Stack, ThenLayer, TraceErrLayer,
     },
-    service_fn, BoxService, Layer, Service, ServiceFnBox,
+    service_fn, BoxService, Layer, Service, ServiceFn,
 };
 use std::fmt;
+use std::future::Future;
 
 /// Declaratively construct [`Service`] values.
 ///
@@ -193,9 +195,11 @@ impl<L> ServiceBuilder<L> {
     /// [`Layer`]: crate::service::Layer
     /// [`Service`]: crate::service::Service
     /// [`service_fn`]: crate::service::service_fn
-    pub fn service_fn<F, A>(self, f: F) -> L::Service
+    pub fn service_fn<F, T, R, O, E>(self, f: F) -> L::Service
     where
-        L: Layer<ServiceFnBox<F, A>>,
+        L: Layer<ServiceFn<F, T, R, O, E>>,
+        F: Factory<T, R, O, E>,
+        R: Future<Output = Result<O, E>>,
     {
         self.service(service_fn(f))
     }
