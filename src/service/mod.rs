@@ -17,7 +17,7 @@ mod svc_fn;
 pub use svc_fn::{service_fn, ServiceFn, ServiceFnBox};
 
 mod svc_hyper;
-pub use svc_hyper::HyperService;
+pub(crate) use svc_hyper::HyperService;
 
 pub mod layer;
 pub use layer::Layer;

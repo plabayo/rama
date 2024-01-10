@@ -13,15 +13,18 @@ use crate::http::{IntoResponse, Request};
 /// This is because we need to be able to Box the future returned by the service.
 /// Once we can specify such associated types using `impl Trait` we can skip this.
 #[derive(Debug)]
-pub struct HyperService<S, T> {
+pub(crate) struct HyperService<S, T> {
     ctx: Context<S>,
     inner: T,
 }
 
 impl<S, T> HyperService<S, T> {
     /// Create a new [`HyperService`] from a [`Context`] and a [`Service`].
-    pub fn new(ctx: Context<S>, inner: T) -> Self {
-        Self { ctx, inner }
+    pub(crate) fn new(ctx: Context<S>, inner: T) -> Self {
+        Self {
+            ctx: ctx.into_parent(),
+            inner,
+        }
     }
 }
 
