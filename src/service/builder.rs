@@ -2,11 +2,12 @@
 
 use super::{
     handler::Factory,
+    handler::ServiceFn,
     layer::{
         layer_fn, AndThenLayer, Either, Identity, LayerFn, MapErrLayer, MapRequestLayer,
         MapResponseLayer, MapResultLayer, Stack, ThenLayer, TraceErrLayer,
     },
-    service_fn, BoxService, Layer, Service, ServiceFn,
+    service_fn, BoxService, Layer, Service,
 };
 use std::fmt;
 use std::future::Future;

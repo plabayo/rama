@@ -14,7 +14,7 @@ mod svc;
 pub use svc::{BoxService, Service};
 
 pub mod handler;
-pub use handler::{service_fn, ServiceFn};
+pub use handler::service_fn;
 
 mod svc_hyper;
 pub(crate) use svc_hyper::HyperService;
