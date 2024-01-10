@@ -112,7 +112,7 @@ where
             let mut addresses_it = addresses.into_iter();
             match addresses_it.next() {
                 Some(address) => {
-                    ctx.extensions_mut().insert(DnsResolvedSocketAddresses::new(
+                    ctx.insert(DnsResolvedSocketAddresses::new(
                         address,
                         addresses_it.collect(),
                     ));

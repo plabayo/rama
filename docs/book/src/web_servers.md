@@ -17,7 +17,7 @@ that you might be used to in other frameworks.
 > And in fact a lot of ideas and even code were copied directly from Axum. The major difference is however
 > that Axum is focussed on being an excellent modular web framework for building websites and APIs, while Rama is not.
 > As such Axum has a lot of code to do the heavy lifting for you and make building such stacks more ergonomic.
-> Noteably are the request Extractors (`FromRequestParts`) and Response creators (`IntoResponse`). The latter has
+> Notably are the request Extractors (`FromRequestParts`) and Response creators (`IntoResponse`). The latter has
 > been copied into Rama, the first not.
 
 ## Proxy Web Services
@@ -47,7 +47,7 @@ All rama [examples can be found in the `./examples` dir](https://github.com/plab
   to health services or metrics exposures);
   - <https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs> is an even more minimal example
     of a health check service returning a _200 OK_ for any incoming request.
-- <https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs>: is an example simialr to the previous
+- <https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs>: is an example similar to the previous
   example but shows how you can also operate on the underlying transport (TCP) layer, prior to passing it to your
   http service;
 

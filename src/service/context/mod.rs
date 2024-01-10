@@ -63,19 +63,73 @@ impl<S> Context<S> {
         self.executor.spawn_task(future)
     }
 
-    /// Get a reference to the extensions.
-    pub fn extensions(&self) -> &Extensions {
-        &self.extensions
+    /// Get a reference to an extension.
+    ///
+    /// An extension is a type that implements `Send + Sync + 'static`,
+    /// and can be used to inject dynamic data into the [`Context`].
+    ///
+    /// Extensions are specific to this [`Context`]. It will be cloned when the [`Context`] is cloned,
+    /// but extensions inserted using [`Context::insert`] will not be visible the
+    /// original [`Context`], or any other cloned [`Context`].
+    ///
+    /// Please use the statically typed state (see [`Context::state`]) for data that is shared between
+    /// all context clones, parent or not.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::Context;
+    /// # let mut ctx = Context::default();
+    /// # ctx.insert(5i32);
+    /// assert_eq!(ctx.get::<i32>(), Some(&5i32));
+    /// ```
+    pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.extensions.get::<T>()
     }
 
-    /// Get a mutable reference to the extensions.
-    pub fn extensions_mut(&mut self) -> &mut Extensions {
-        &mut self.extensions
+    /// Insert an extension into the [`Context`].
+    ///
+    /// If a extension of this type already existed, it will
+    /// be returned.
+    ///
+    /// See [`Context::get`] for more details regarding extensions.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::Context;
+    /// let mut ctx = Context::default();
+    ///
+    /// assert_eq!(ctx.insert(5i32), None);
+    /// assert_eq!(ctx.get::<i32>(), Some(&5i32));
+    ///
+    /// assert_eq!(ctx.insert(4i32), Some(5i32));
+    /// assert_eq!(ctx.get::<i32>(), Some(&4i32));
+    /// ```
+    pub fn insert<T: Clone + Send + Sync + 'static>(&mut self, extension: T) -> Option<T> {
+        self.extensions.insert(extension)
     }
 
     /// Get a reference to the shutdown guard,
     /// if and only if the context was created within a graceful environment.
     pub fn guard(&self) -> Option<&ShutdownGuard> {
         self.executor.guard()
+    }
+
+    /// Turn this Context into a parent [`Context`].
+    ///
+    /// Naming is hard. Essentially it is meant to optimise the [`Context`] for cloning,
+    /// so that the extensions are not cloned upon [`Context`] cloning, but instead
+    /// are shared between the original [`Context`] and the cloned [`Context`].
+    ///
+    /// This is used when branching the [`Context`] into multiple [`Context`]s,
+    /// e.g. to go from a Transport Layer to a HTTP Layer, where the context is now
+    /// branched for each HTTP request.
+    pub fn into_parent(self) -> Self {
+        Self {
+            state: self.state,
+            executor: self.executor,
+            extensions: self.extensions.into_parent(),
+        }
     }
 }

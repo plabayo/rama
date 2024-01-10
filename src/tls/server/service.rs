@@ -88,7 +88,7 @@ where
 
         if self.client_config_handler.store_client_hello {
             let accepted_client_hello = IncomingClientHello::from(start.client_hello());
-            ctx.extensions_mut().insert(accepted_client_hello);
+            ctx.insert(accepted_client_hello);
         }
 
         let stream = start
@@ -121,7 +121,7 @@ where
         let accepted_client_hello = IncomingClientHello::from(start.client_hello());
 
         if self.client_config_handler.store_client_hello {
-            ctx.extensions_mut().insert(accepted_client_hello.clone());
+            ctx.insert(accepted_client_hello.clone());
         }
 
         let config = self

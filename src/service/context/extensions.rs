@@ -2,6 +2,7 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
+use std::sync::Arc;
 
 type AnyMap = HashMap<TypeId, Box<dyn AnyClone + Send + Sync>, BuildHasherDefault<IdHasher>>;
 
@@ -41,7 +42,7 @@ pub struct Extensions {
 impl Extensions {
     /// Create an empty `Extensions`.
     #[inline]
-    pub fn new() -> Extensions {
+    pub(crate) fn new() -> Extensions {
         Extensions { map: None }
     }
 
@@ -49,17 +50,7 @@ impl Extensions {
     ///
     /// If a extension of this type already existed, it will
     /// be returned.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rama::service::context::Extensions;
-    /// let mut ext = Extensions::new();
-    /// assert!(ext.insert(5i32).is_none());
-    /// assert!(ext.insert(4u8).is_none());
-    /// assert_eq!(ext.insert(9i32), Some(5i32));
-    /// ```
-    pub fn insert<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> Option<T> {
+    pub(crate) fn insert<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> Option<T> {
         self.map
             .get_or_insert_with(Box::default)
             .insert(TypeId::of::<T>(), Box::new(val))
@@ -67,113 +58,35 @@ impl Extensions {
     }
 
     /// Get a reference to a type previously inserted on this `Extensions`.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rama::service::context::Extensions;
-    /// let mut ext = Extensions::new();
-    /// assert!(ext.get::<i32>().is_none());
-    /// ext.insert(5i32);
-    ///
-    /// assert_eq!(ext.get::<i32>(), Some(&5i32));
-    /// ```
-    pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
+    pub(crate) fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.get_inner::<T>().or_else(|| {
+            self.get_inner::<ParentExtensions>()
+                .and_then(|parent| parent.extensions.get::<T>())
+        })
+    }
+
+    fn get_inner<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.map
             .as_ref()
             .and_then(|map| map.get(&TypeId::of::<T>()))
             .and_then(|boxed| (**boxed).as_any().downcast_ref())
     }
 
-    /// Get a mutable reference to a type previously inserted on this `Extensions`.
+    /// Get a new extension map with the current extensions as parent.
     ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rama::service::context::Extensions;
-    /// let mut ext = Extensions::new();
-    /// ext.insert(String::from("Hello"));
-    /// ext.get_mut::<String>().unwrap().push_str(" World");
-    ///
-    /// assert_eq!(ext.get::<String>().unwrap(), "Hello World");
-    /// ```
-    pub fn get_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T> {
-        self.map
-            .as_mut()
-            .and_then(|map| map.get_mut(&TypeId::of::<T>()))
-            .and_then(|boxed| (**boxed).as_any_mut().downcast_mut())
+    /// Note that later edits to parent won't be reflected here.
+    pub(crate) fn into_parent(self) -> Extensions {
+        let mut ext = Extensions::new();
+        ext.insert(ParentExtensions {
+            extensions: Arc::new(self),
+        });
+        ext
     }
+}
 
-    /// Remove a type from this `Extensions`.
-    ///
-    /// If a extension of this type existed, it will be returned.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rama::service::context::Extensions;
-    /// let mut ext = Extensions::new();
-    /// ext.insert(5i32);
-    /// assert_eq!(ext.remove::<i32>(), Some(5i32));
-    /// assert!(ext.get::<i32>().is_none());
-    /// ```
-    pub fn remove<T: Send + Sync + 'static>(&mut self) -> Option<T> {
-        self.map
-            .as_mut()
-            .and_then(|map| map.remove(&TypeId::of::<T>()))
-            .and_then(|boxed| boxed.into_any().downcast().ok().map(|boxed| *boxed))
-    }
-
-    /// Clear the `Extensions` of all inserted extensions.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rama::service::context::Extensions;
-    /// let mut ext = Extensions::new();
-    /// ext.insert(5i32);
-    /// ext.clear();
-    ///
-    /// assert!(ext.get::<i32>().is_none());
-    /// ```
-    #[inline]
-    pub fn clear(&mut self) {
-        if let Some(ref mut map) = self.map {
-            map.clear();
-        }
-    }
-
-    /// Check whether the extension set is empty or not.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rama::service::context::Extensions;
-    /// let mut ext = Extensions::new();
-    /// assert!(ext.is_empty());
-    /// ext.insert(5i32);
-    /// assert!(!ext.is_empty());
-    /// ```
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.map.as_ref().map_or(true, |map| map.is_empty())
-    }
-
-    /// Get the number of extensions available.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use rama::service::context::Extensions;
-    /// let mut ext = Extensions::new();
-    /// assert_eq!(ext.len(), 0);
-    /// ext.insert(5i32);
-    /// assert_eq!(ext.len(), 1);
-    /// ```
-    #[inline]
-    pub fn len(&self) -> usize {
-        self.map.as_ref().map_or(0, |map| map.len())
-    }
+#[derive(Debug, Clone)]
+struct ParentExtensions {
+    extensions: Arc<Extensions>,
 }
 
 impl fmt::Debug for Extensions {
@@ -224,17 +137,18 @@ fn test_extensions() {
     extensions.insert(MyType(10));
 
     assert_eq!(extensions.get(), Some(&5i32));
-    assert_eq!(extensions.get_mut(), Some(&mut 5i32));
 
-    let ext2 = extensions.clone();
+    let mut ext2 = extensions.clone();
+    let mut ext3 = extensions.into_parent();
 
-    assert_eq!(extensions.remove::<i32>(), Some(5i32));
-    assert!(extensions.get::<i32>().is_none());
+    ext2.insert(true);
+    ext3.insert(false);
 
-    // clone still has it
     assert_eq!(ext2.get(), Some(&5i32));
     assert_eq!(ext2.get(), Some(&MyType(10)));
+    assert_eq!(ext2.get(), Some(&true));
 
-    assert_eq!(extensions.get::<bool>(), None);
-    assert_eq!(extensions.get(), Some(&MyType(10)));
+    assert_eq!(ext3.get(), Some(&5i32));
+    assert_eq!(ext3.get(), Some(&MyType(10)));
+    assert_eq!(ext3.get(), Some(&false));
 }

@@ -44,7 +44,7 @@ where
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let tracked_stream = BytesRWTracker::new(stream);
         let handle = tracked_stream.handle();
-        ctx.extensions_mut().insert(handle);
+        ctx.insert(handle);
         self.inner.serve(ctx, tracked_stream)
     }
 }

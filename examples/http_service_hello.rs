@@ -37,8 +37,8 @@ async fn main() {
                     .layer(BytesTrackerLayer::new())
                     .service(HttpServer::auto(exec).service(service_fn(
                         |ctx: Context<()>, req: Request| async move {
-                            let socket_info = ctx.extensions().get::<TcpSocketInfo>().unwrap();
-                            let tracker = ctx.extensions().get::<BytesRWTrackerHandle>().unwrap();
+                            let socket_info = ctx.get::<TcpSocketInfo>().unwrap();
+                            let tracker = ctx.get::<BytesRWTrackerHandle>().unwrap();
                             Ok(Html(format!(
                                 r##"
                                 <html>

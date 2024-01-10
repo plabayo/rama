@@ -175,8 +175,7 @@ where
 
             tokio::spawn(async move {
                 let local_addr = socket.local_addr().ok();
-                ctx.extensions_mut()
-                    .insert(TcpSocketInfo::new(local_addr, peer_addr));
+                ctx.insert(TcpSocketInfo::new(local_addr, peer_addr));
 
                 let _ = service.serve(ctx, socket).await;
             });
@@ -221,7 +220,7 @@ where
 
                             guard.spawn_task(async move {
                                 let local_addr = socket.local_addr().ok();
-                                ctx.extensions_mut().insert(TcpSocketInfo::new(local_addr, peer_addr));
+                                ctx.insert(TcpSocketInfo::new(local_addr, peer_addr));
 
                                 let _ = service.serve(ctx, socket).await;
                             });
