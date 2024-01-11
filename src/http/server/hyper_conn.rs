@@ -130,7 +130,7 @@ impl HyperConnServer for AutoBuilder<Executor> {
         let guard = ctx.guard().cloned();
         let service = HyperService::new(ctx, service);
 
-        let mut conn = pin!(self.serve_connection(stream, service));
+        let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
 
         if let Some(guard) = guard {
             let mut cancelled_fut = pin!(guard.cancelled().fuse());
