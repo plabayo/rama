@@ -8,7 +8,7 @@ It all boils down to the `Service` trait that can be found at
 > [tower-rs/tower](https://github.com/tower-rs/tower). The initial goal was to actually use
 > `tower`. At some point of the R&D phase we even [developed a fork of it](https://github.com/plabayo/tower-async).
 > In the end we decided to roll out or own design.
-> You can [learn more about why in the FAQ](http://localhost:3000/faq.html#can-tower-be-used).
+> You can [learn more about why in the FAQ](https://ramaproxy.org/book/faq.html#can-tower-be-used).
 >
 > Even so, `tower` has a great introduction tutorial that can help you to understand
 > how a design around something like a `Service` operates, how it is to be used,
