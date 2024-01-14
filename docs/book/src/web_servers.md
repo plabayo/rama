@@ -25,6 +25,17 @@ been copied into Rama, the first not.
 There are of course also other difference, some bigger then others. Point being, use Axum if you need to build
 specialised Web Servers, use Rama in case your focus is on proxies instead.
 
+> 💡 The reason we want to stress this point is because people have often expectations with high demands when
+> searching for and selecting web frameworks, nowawdays more then ever. This does however not mean that one cannot make
+> web servers using rama.
+>
+> In fact we, at [plabayo](https://www.plabayo.tech) develop our company website
+> (<https://www.plabayo.tech/>), Free and Open Source Bulletin Software "rora" (<https://github.com/plabayo/rora>),
+> bucket (<https://bckt.xyz>) and more all by building on top of rama. We do this because we like to know our
+> technology stack in as much depth as practically possible, while still caring for our family, and because
+> we as minimalists love the balance we strike by dogfeeding on "rama" not only for proxy purposes but
+> for all our core web server needs as well.
+
 ## Proxy Web Services
 
 A proxy service is of course also a type of web service, but for this context we are not talking about
