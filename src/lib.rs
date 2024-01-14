@@ -1,5 +1,5 @@
 #![cfg_attr(nightly_error_messages, feature(diagnostic_namespace))]
-//! ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
+//! # rama
 //!
 //! 🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop:
 //!
@@ -13,6 +13,8 @@
 //! Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 //! Please refer to [the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 //! to get inspired on how you can use it for your purposes.
+//! 
+//! ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
 //!
 //! - Learn more by reading the Rama book at <https://ramaproxy.org/book>
 //! - or continue to read the framework Rust docs here.
