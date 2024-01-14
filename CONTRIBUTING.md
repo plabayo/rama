@@ -10,7 +10,7 @@ In case you also want to help resolve it by contributing to the code base you wo
 
 2. Install Rust and configure correctly (https://www.rust-lang.org/tools/install).
 3. Clone the repo: `git clone https://github.com/plabayo/rama`
-4. Change into the checked out source: `cd news`
+4. Change into the checked out source: `cd rama`
 5. Fork the repo.
 6. Set your fork as a remote: `git remote add fork git@github.com:GITHUB_USERNAME/rama.git`
 7. Make changes, commit to your fork.
