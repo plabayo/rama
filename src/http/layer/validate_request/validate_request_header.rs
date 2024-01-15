@@ -1,152 +1,28 @@
-//! Middleware that validates requests.
-//!
-//! # Example
-//!
-//! ```
-//! use rama::http::layer::validate_request::ValidateRequestHeaderLayer;
-//! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
-//!
-//! async fn handle(request: Request) -> Result<Response, Error> {
-//!     Ok(Response::new(Body::empty()))
-//! }
-//!
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
-//! let mut service = ServiceBuilder::new()
-//!     // Require the `Accept` header to be `application/json`, `*/*` or `application/*`
-//!     .layer(ValidateRequestHeaderLayer::accept("application/json"))
-//!     .service_fn(handle);
-//!
-//! // Requests with the correct value are allowed through
-//! let request = Request::builder()
-//!     .header(ACCEPT, "application/json")
-//!     .body(Body::empty())
-//!     .unwrap();
-//!
-//! let response = service
-//!     .serve(Context::default(), request)
-//!     .await?;
-//!
-//! assert_eq!(StatusCode::OK, response.status());
-//!
-//! // Requests with an invalid value get a `406 Not Acceptable` response
-//! let request = Request::builder()
-//!     .header(ACCEPT, "text/strings")
-//!     .body(Body::empty())
-//!     .unwrap();
-//!
-//! let response = service
-//!     .serve(Context::default(), request)
-//!     .await?;
-//!
-//! assert_eq!(StatusCode::NOT_ACCEPTABLE, response.status());
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Custom validation can be made by implementing [`ValidateRequest`]:
-//!
-//! ```
-//! use rama::http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
-//! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
-//!
-//! #[derive(Clone, Copy)]
-//! pub struct MyHeader { /* ...  */ }
-//!
-//! impl<S, B> ValidateRequest<S, B> for MyHeader {
-//!     type ResponseBody = Body;
-//!
-//!     fn validate(
-//!         &self,
-//!         ctx: &mut Context<S>,
-//!         request: &mut Request<B>,
-//!     ) -> Result<(), Response<Self::ResponseBody>> {
-//!         // validate the request...
-//!         # Ok::<_, Response>(())
-//!     }
-//! }
-//!
-//! async fn handle(request: Request) -> Result<Response, Error> {
-//!     # Ok(Response::builder().body(Body::empty()).unwrap())
-//!     // ...
-//! }
-//!
-//!
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
-//! let service = ServiceBuilder::new()
-//!     // Validate requests using `MyHeader`
-//!     .layer(ValidateRequestHeaderLayer::custom(MyHeader { /* ... */ }))
-//!     .service_fn(handle);
-//!
-//! # let request = Request::builder()
-//! #     .body(Body::empty())
-//! #     .unwrap();
-//!
-//! let response = service
-//!     .serve(Context::default(), request)
-//!     .await?;
-//!
-//! # Ok(())
-//! # }
-//! ```
-//!
-//! Or using a closure:
-//!
-//! ```
-//! use bytes::Bytes;
-//! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
-//! use rama::http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
-//!
-//! async fn handle(request: Request) -> Result<Response, Error> {
-//!     # Ok(Response::builder().body(Body::empty()).unwrap())
-//!     // ...
-//! }
-//!
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
-//! let service = ServiceBuilder::new()
-//!     .layer(ValidateRequestHeaderLayer::custom(|request: &mut Request| {
-//!         // Validate the request
-//!         # Ok::<_, Response>(())
-//!     }))
-//!     .service_fn(handle);
-//!
-//! # let request = Request::builder()
-//! #     .body(Body::empty())
-//! #     .unwrap();
-//!
-//! let response = service
-//!     .serve(Context::default(), request)
-//!     .await?;
-//!
-//! # Ok(())
-//! # }
-//! ```
-
+use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
 use crate::service::{Layer, Service};
 use crate::{
-    http::dep::{
-        http_body::Body,
-        mime::{Mime, MimeIter},
-    },
-    http::{header, Request, Response, StatusCode},
+    http::dep::http_body::Body,
+    http::{Request, Response},
     service::Context,
 };
-use std::{fmt, marker::PhantomData, sync::Arc};
 
 /// Layer that applies [`ValidateRequestHeader`] which validates all requests.
 ///
 /// See the [module docs](crate::http::layer::validate_request) for an example.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ValidateRequestHeaderLayer<T> {
     validate: T,
+}
+
+impl<T> Clone for ValidateRequestHeaderLayer<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            validate: self.validate.clone(),
+        }
+    }
 }
 
 impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
@@ -178,9 +54,18 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
 }
 
 impl<T> ValidateRequestHeaderLayer<T> {
-    /// Validate requests using a custom method.
-    pub fn custom(validate: T) -> ValidateRequestHeaderLayer<T> {
+    /// Validate requests using a custom validator.
+    pub fn custom(validate: T) -> Self {
         Self { validate }
+    }
+}
+
+impl<F, A> ValidateRequestHeaderLayer<BoxValidateRequestFn<F, A>> {
+    /// Validate requests using a custom validator Fn.
+    pub fn custom_fn(validate: F) -> Self {
+        Self {
+            validate: BoxValidateRequestFn::new(validate),
+        }
     }
 }
 
@@ -198,10 +83,23 @@ where
 /// Middleware that validates requests.
 ///
 /// See the [module docs](crate::http::layer::validate_request) for an example.
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 pub struct ValidateRequestHeader<S, T> {
     inner: S,
     validate: T,
+}
+
+impl<S, T> Clone for ValidateRequestHeader<S, T>
+where
+    S: Clone,
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            validate: self.validate.clone(),
+        }
+    }
 }
 
 impl<S, T> ValidateRequestHeader<S, T> {
@@ -230,9 +128,19 @@ impl<S, ResBody> ValidateRequestHeader<S, AcceptHeader<ResBody>> {
 }
 
 impl<S, T> ValidateRequestHeader<S, T> {
-    /// Validate requests using a custom method.
-    pub fn custom(inner: S, validate: T) -> ValidateRequestHeader<S, T> {
+    /// Validate requests using a custom validator.
+    pub fn custom(inner: S, validate: T) -> Self {
         Self { inner, validate }
+    }
+}
+
+impl<S, F, A> ValidateRequestHeader<S, BoxValidateRequestFn<F, A>> {
+    /// Validate requests using a custom validator Fn.
+    pub fn custom_fn(inner: S, validate: F) -> Self {
+        Self {
+            inner,
+            validate: BoxValidateRequestFn::new(validate),
+        }
     }
 }
 
@@ -249,134 +157,13 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
-        mut req: Request<ReqBody>,
+        ctx: Context<State>,
+        req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        match self.validate.validate(&mut ctx, &mut req) {
-            Ok(_) => self.inner.serve(ctx, req).await,
+        match self.validate.validate(ctx, req).await {
+            Ok((ctx, req)) => self.inner.serve(ctx, req).await,
             Err(res) => Ok(res),
         }
-    }
-}
-
-/// Trait for validating requests.
-pub trait ValidateRequest<S, B>: Send + Sync + 'static {
-    /// The body type used for responses to unvalidated requests.
-    type ResponseBody;
-
-    /// Validate the request.
-    ///
-    /// If `Ok(())` is returned then the request is allowed through, otherwise not.
-    fn validate(
-        &self,
-        ctx: &mut Context<S>,
-        request: &mut Request<B>,
-    ) -> Result<(), Response<Self::ResponseBody>>;
-}
-
-impl<S, B, F, ResBody> ValidateRequest<S, B> for F
-where
-    F: Fn(&mut Request<B>) -> Result<(), Response<ResBody>> + Send + Sync + 'static,
-{
-    type ResponseBody = ResBody;
-
-    fn validate(
-        &self,
-        _ctx: &mut Context<S>,
-        request: &mut Request<B>,
-    ) -> Result<(), Response<Self::ResponseBody>> {
-        self(request)
-    }
-}
-
-/// Type that performs validation of the Accept header.
-pub struct AcceptHeader<ResBody = crate::http::Body> {
-    header_value: Arc<Mime>,
-    _ty: PhantomData<fn() -> ResBody>,
-}
-
-impl<ResBody> AcceptHeader<ResBody> {
-    /// Create a new `AcceptHeader`.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `header_value` is not in the form: `type/subtype`, such as `application/json`
-    fn new(header_value: &str) -> Self
-    where
-        ResBody: Body + Default,
-    {
-        Self {
-            header_value: Arc::new(
-                header_value
-                    .parse::<Mime>()
-                    .expect("value is not a valid header value"),
-            ),
-            _ty: PhantomData,
-        }
-    }
-}
-
-impl<ResBody> Clone for AcceptHeader<ResBody> {
-    fn clone(&self) -> Self {
-        Self {
-            header_value: self.header_value.clone(),
-            _ty: PhantomData,
-        }
-    }
-}
-
-impl<ResBody> fmt::Debug for AcceptHeader<ResBody> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AcceptHeader")
-            .field("header_value", &self.header_value)
-            .finish()
-    }
-}
-
-impl<S, B, ResBody> ValidateRequest<S, B> for AcceptHeader<ResBody>
-where
-    ResBody: Body + Default + Send + 'static,
-{
-    type ResponseBody = ResBody;
-
-    fn validate(
-        &self,
-        _ctx: &mut Context<S>,
-        req: &mut Request<B>,
-    ) -> Result<(), Response<Self::ResponseBody>> {
-        if !req.headers().contains_key(header::ACCEPT) {
-            return Ok(());
-        }
-        if req
-            .headers()
-            .get_all(header::ACCEPT)
-            .into_iter()
-            .filter_map(|header| header.to_str().ok())
-            .any(|h| {
-                MimeIter::new(h)
-                    .map(|mim| {
-                        if let Ok(mim) = mim {
-                            let typ = self.header_value.type_();
-                            let subtype = self.header_value.subtype();
-                            match (mim.type_(), mim.subtype()) {
-                                (t, s) if t == typ && s == subtype => true,
-                                (t, mime::STAR) if t == typ => true,
-                                (mime::STAR, mime::STAR) => true,
-                                _ => false,
-                            }
-                        } else {
-                            false
-                        }
-                    })
-                    .reduce(|acc, mim| acc || mim)
-                    .unwrap_or(false)
-            })
-        {
-            return Ok(());
-        }
-        let mut res = Response::new(ResBody::default());
-        *res.status_mut() = StatusCode::NOT_ACCEPTABLE;
-        Err(res)
     }
 }
 

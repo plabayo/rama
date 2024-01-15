@@ -107,7 +107,6 @@ where
 }
 
 /// The public wrapper type for [`ServiceFn`].
-#[derive(Debug)]
 pub struct ServiceFnBox<F, A> {
     f: F,
     _marker: PhantomData<A>,
@@ -122,6 +121,13 @@ where
             f: self.f.clone(),
             _marker: PhantomData,
         }
+    }
+}
+
+impl <F, A> std::fmt::Debug for ServiceFnBox<F, A> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServiceFnBox")
+            .finish()
     }
 }
 

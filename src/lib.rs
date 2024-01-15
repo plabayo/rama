@@ -13,7 +13,7 @@
 //! Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 //! Please refer to [the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 //! to get inspired on how you can use it for your purposes.
-//! 
+//!
 //! ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
 //!
 //! - Learn more by reading the Rama book at <https://ramaproxy.org/book>
