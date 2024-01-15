@@ -6,6 +6,7 @@ use crate::{
     http::{HeaderMap, HeaderName, HeaderValue, Request, Response},
     service::Context,
 };
+use std::future::{ready, Future};
 
 pub mod request;
 pub mod response;
@@ -27,27 +28,52 @@ pub use self::{
 /// to all responses, it can be supplied directly to the middleware.
 pub trait MakeHeaderValue<S, T>: Send + Sync + 'static {
     /// Try to create a header value from the request or response.
-    fn make_header_value(&self, ctx: &Context<S>, message: &T) -> Option<HeaderValue>;
+    fn make_header_value(
+        &self,
+        ctx: Context<S>,
+        message: T,
+    ) -> impl Future<Output = (Context<S>, T, Option<HeaderValue>)> + Send + '_;
 }
 
-impl<F, S, T> MakeHeaderValue<S, T> for F
+impl<F, Fut, S, T> MakeHeaderValue<S, T> for F
 where
-    F: Fn(&T) -> Option<HeaderValue> + Send + Sync + 'static,
+    F: Fn(Context<S>, T) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (Context<S>, T, Option<HeaderValue>)> + Send + 'static,
 {
-    fn make_header_value(&self, _ctx: &Context<S>, message: &T) -> Option<HeaderValue> {
-        self(message)
+    fn make_header_value(
+        &self,
+        ctx: Context<S>,
+        message: T,
+    ) -> impl Future<Output = (Context<S>, T, Option<HeaderValue>)> + Send + '_ {
+        self(ctx, message)
     }
 }
 
-impl<S, T> MakeHeaderValue<S, T> for HeaderValue {
-    fn make_header_value(&self, _ctx: &Context<S>, _message: &T) -> Option<HeaderValue> {
-        Some(self.clone())
+impl<S, T> MakeHeaderValue<S, T> for HeaderValue
+where
+    S: Send + Sync + 'static,
+    T: Send + Sync + 'static,
+{
+    fn make_header_value(
+        &self,
+        ctx: Context<S>,
+        message: T,
+    ) -> impl Future<Output = (Context<S>, T, Option<HeaderValue>)> + Send + '_ {
+        ready((ctx, message, Some(self.clone())))
     }
 }
 
-impl<S, T> MakeHeaderValue<S, T> for Option<HeaderValue> {
-    fn make_header_value(&self, _ctx: &Context<S>, _message: &T) -> Option<HeaderValue> {
-        self.clone()
+impl<S, T> MakeHeaderValue<S, T> for Option<HeaderValue>
+where
+    S: Send + Sync + 'static,
+    T: Send + Sync + 'static,
+{
+    fn make_header_value(
+        &self,
+        ctx: Context<S>,
+        message: T,
+    ) -> impl Future<Output = (Context<S>, T, Option<HeaderValue>)> + Send + '_ {
+        ready((ctx, message, self.clone()))
     }
 }
 
@@ -59,28 +85,42 @@ enum InsertHeaderMode {
 }
 
 impl InsertHeaderMode {
-    fn apply<S, T, M>(self, ctx: &Context<S>, header_name: &HeaderName, target: &mut T, make: &M)
+    async fn apply<S, T, M>(
+        self,
+        header_name: &HeaderName,
+        ctx: Context<S>,
+        target: T,
+        make: &M,
+    ) -> (Context<S>, T)
     where
         T: Headers,
         M: MakeHeaderValue<S, T>,
     {
         match self {
             InsertHeaderMode::Override => {
-                if let Some(value) = make.make_header_value(ctx, target) {
+                let (ctx, mut target, maybe_value) = make.make_header_value(ctx, target).await;
+                if let Some(value) = maybe_value {
                     target.headers_mut().insert(header_name.clone(), value);
                 }
+                (ctx, target)
             }
             InsertHeaderMode::IfNotPresent => {
                 if !target.headers().contains_key(header_name) {
-                    if let Some(value) = make.make_header_value(ctx, target) {
+                    let (ctx, mut target, maybe_value) = make.make_header_value(ctx, target).await;
+                    if let Some(value) = maybe_value {
                         target.headers_mut().insert(header_name.clone(), value);
                     }
+                    (ctx, target)
+                } else {
+                    (ctx, target)
                 }
             }
             InsertHeaderMode::Append => {
-                if let Some(value) = make.make_header_value(ctx, target) {
+                let (ctx, mut target, maybe_value) = make.make_header_value(ctx, target).await;
+                if let Some(value) = maybe_value {
                     target.headers_mut().append(header_name.clone(), value);
                 }
+                (ctx, target)
             }
         }
     }

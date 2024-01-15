@@ -67,8 +67,8 @@
 //!         // may have.
 //!         SetRequestHeaderLayer::overriding(
 //!             header::DATE,
-//!             |request: &Request| {
-//!                 Some(date_header_value())
+//!             |ctx: Context<()>, request: Request| async move {
+//!                 (ctx, request, Some(date_header_value()))
 //!             }
 //!         )
 //!     )
@@ -85,7 +85,7 @@
 use super::{InsertHeaderMode, MakeHeaderValue};
 use crate::http::{header::HeaderName, Request, Response};
 use crate::service::{Context, Layer, Service};
-use std::{fmt, future::Future};
+use std::fmt;
 
 /// Layer that applies [`SetRequestHeader`] which adds a request header.
 ///
@@ -238,13 +238,15 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    fn serve(
+    async fn serve(
         &self,
         ctx: Context<State>,
-        mut req: Request<ReqBody>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.mode
-            .apply(&ctx, &self.header_name, &mut req, &self.make);
-        self.inner.serve(ctx, req)
+        req: Request<ReqBody>,
+    ) -> Result<Self::Response, Self::Error> {
+        let (ctx, req) = self
+            .mode
+            .apply(&self.header_name, ctx, req, &self.make)
+            .await;
+        self.inner.serve(ctx, req).await
     }
 }

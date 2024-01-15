@@ -67,8 +67,8 @@
 //!         // may have.
 //!         SetResponseHeaderLayer::overriding(
 //!             header::CONTENT_LENGTH,
-//!             |response: &Response| {
-//!                 if let Some(size) = response.body().size_hint().exact() {
+//!             |ctx: Context<()>, response: Response| async move {
+//!                 let value = if let Some(size) = response.body().size_hint().exact() {
 //!                     // If the response body has a known size, returning `Some` will
 //!                     // set the `Content-Length` header to that value.
 //!                     Some(HeaderValue::from_str(&size.to_string()).unwrap())
@@ -76,7 +76,8 @@
 //!                     // If the response body doesn't have a known size, return `None`
 //!                     // to skip setting the header on this response.
 //!                     None
-//!                 }
+//!                 };
+//!                 (ctx, response, value)
 //!             }
 //!         )
 //!     )
@@ -253,9 +254,11 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let mut res = self.inner.serve(ctx.clone(), req).await?;
-        self.mode
-            .apply(&ctx, &self.header_name, &mut res, &self.make);
+        let res = self.inner.serve(ctx.clone(), req).await?;
+        let (_ctx, res) = self
+            .mode
+            .apply(&self.header_name, ctx, res, &self.make)
+            .await;
         Ok(res)
     }
 }
