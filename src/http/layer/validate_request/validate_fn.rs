@@ -21,7 +21,29 @@ pub trait ValidateRequestFn<S, B, A>: Send + Sync + 'static {
     ) -> impl Future<Output = Result<(Context<S>, Request<B>), Response<Self::ResponseBody>>> + Send + '_;
 }
 
-impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, (Request<B>,)> for F
+impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, ()> for F
+where
+    S: Send + Sync + 'static,
+    B: Send + 'static,
+    ResBody: Send + 'static,
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<(), Response<ResBody>>> + Send + 'static,
+{
+    type ResponseBody = ResBody;
+
+    async fn call(
+        &self,
+        ctx: Context<S>,
+        req: Request<B>,
+    ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
+        match self().await {
+            Ok(_) => Ok((ctx, req)),
+            Err(res) => Err(res),
+        }
+    }
+}
+
+impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, ((), Request<B>)> for F
 where
     S: Send + Sync + 'static,
     B: Send + 'static,
@@ -34,10 +56,32 @@ where
     async fn call(
         &self,
         ctx: Context<S>,
-        request: Request<B>,
+        req: Request<B>,
     ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
-        match self(request).await {
+        match self(req).await {
             Ok(req) => Ok((ctx, req)),
+            Err(res) => Err(res),
+        }
+    }
+}
+
+impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, (Context<S>,)> for F
+where
+    S: Send + Sync + 'static,
+    B: Send + 'static,
+    ResBody: Send + 'static,
+    F: Fn(Context<S>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<Context<S>, Response<ResBody>>> + Send + 'static,
+{
+    type ResponseBody = ResBody;
+
+    async fn call(
+        &self,
+        ctx: Context<S>,
+        req: Request<B>,
+    ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
+        match self(ctx).await {
+            Ok(ctx) => Ok((ctx, req)),
             Err(res) => Err(res),
         }
     }
