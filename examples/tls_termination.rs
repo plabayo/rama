@@ -1,14 +1,15 @@
+use std::time::Duration;
+
 use rama::{
     graceful::Shutdown,
     service::ServiceBuilder,
-    tcp::server::TcpListener,
+    tcp::{server::TcpListener, service::Forwarder},
     tls::{
         dep::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
-        dep::rustls::{server::TlsStream, ServerConfig},
+        dep::rustls::ServerConfig,
         server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
     },
 };
-use std::{convert::Infallible, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -80,30 +81,7 @@ async fn main() {
                 tls_server_config,
                 tls_client_config_handler,
             ))
-            .service_fn(|mut stream: TlsStream<TcpStream>| async move {
-                let result = async {
-                    let mut target_stream =
-                        tokio::net::TcpStream::connect("127.0.0.1:8080").await?;
-                    match tokio::io::copy_bidirectional(&mut stream, &mut target_stream).await {
-                        Ok(_) => Ok(()),
-                        Err(err) => {
-                            if err.kind() == std::io::ErrorKind::ConnectionReset {
-                                Ok(())
-                            } else {
-                                Err(err)
-                            }
-                        }
-                    }
-                }
-                .await;
-                match result {
-                    Ok(_) => Ok::<_, Infallible>(()),
-                    Err(err) => {
-                        tracing::error!(error = %err, "proxy error");
-                        Ok(())
-                    }
-                }
-            });
+            .service(Forwarder::target("127.0.0.1:8080".parse().unwrap()));
 
         TcpListener::bind("127.0.0.1:8443")
             .await
