@@ -6,7 +6,10 @@ use crate::{
     http::{HeaderMap, HeaderName, HeaderValue, Request, Response},
     service::Context,
 };
-use std::future::{ready, Future};
+use std::{
+    future::{ready, Future},
+    marker::PhantomData,
+};
 
 pub mod request;
 pub mod response;
@@ -35,17 +38,119 @@ pub trait MakeHeaderValue<S, T>: Send + Sync + 'static {
     ) -> impl Future<Output = (Context<S>, T, Option<HeaderValue>)> + Send + '_;
 }
 
-impl<F, Fut, S, T> MakeHeaderValue<S, T> for F
+/// Functional version of [`MakeHeaderValue`].
+pub trait MakeHeaderValueFn<S, T, A>: Send + Sync + 'static {
+    /// Try to create a header value from the request or response.
+    fn call(
+        &self,
+        ctx: Context<S>,
+        message: T,
+    ) -> impl Future<Output = (Context<S>, T, Option<HeaderValue>)> + Send + '_;
+}
+
+impl<F, Fut, S, T> MakeHeaderValueFn<S, T, ()> for F
+where
+    S: Send + Sync + 'static,
+    T: Send + 'static,
+    F: Fn() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Option<HeaderValue>> + Send + 'static,
+{
+    async fn call(&self, ctx: Context<S>, message: T) -> (Context<S>, T, Option<HeaderValue>) {
+        let maybe_value = self().await;
+        (ctx, message, maybe_value)
+    }
+}
+
+impl<F, Fut, S, T> MakeHeaderValueFn<S, T, ((), T)> for F
+where
+    S: Send + Sync + 'static,
+    T: Send + 'static,
+    F: Fn(T) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (T, Option<HeaderValue>)> + Send + 'static,
+{
+    async fn call(&self, ctx: Context<S>, message: T) -> (Context<S>, T, Option<HeaderValue>) {
+        let (message, maybe_value) = self(message).await;
+        (ctx, message, maybe_value)
+    }
+}
+
+impl<F, Fut, S, T> MakeHeaderValueFn<S, T, (Context<S>,)> for F
+where
+    S: Send + Sync + 'static,
+    T: Send + 'static,
+    F: Fn(Context<S>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (Context<S>, Option<HeaderValue>)> + Send + 'static,
+{
+    async fn call(&self, ctx: Context<S>, message: T) -> (Context<S>, T, Option<HeaderValue>) {
+        let (ctx, maybe_value) = self(ctx).await;
+        (ctx, message, maybe_value)
+    }
+}
+
+impl<F, Fut, S, T> MakeHeaderValueFn<S, T, (Context<S>, T)> for F
 where
     F: Fn(Context<S>, T) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = (Context<S>, T, Option<HeaderValue>)> + Send + 'static,
 {
-    fn make_header_value(
+    fn call(
         &self,
         ctx: Context<S>,
         message: T,
     ) -> impl Future<Output = (Context<S>, T, Option<HeaderValue>)> + Send + '_ {
         self(ctx, message)
+    }
+}
+
+/// The public wrapper type for [`MakeHeaderValueFn`].
+pub struct BoxMakeHeaderValueFn<F, A> {
+    f: F,
+    _marker: PhantomData<A>,
+}
+
+impl<F, A> BoxMakeHeaderValueFn<F, A> {
+    /// Create a new [`BoxMakeHeaderValueFn`].
+    pub fn new(f: F) -> Self {
+        Self {
+            f,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<F, A> Clone for BoxMakeHeaderValueFn<F, A>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            f: self.f.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<F, A> std::fmt::Debug for BoxMakeHeaderValueFn<F, A>
+where
+    F: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoxMakeHeaderValueFn")
+            .field("f", &self.f)
+            .finish()
+    }
+}
+
+impl<S, B, A, F> MakeHeaderValue<S, B> for BoxMakeHeaderValueFn<F, A>
+where
+    A: Send + Sync + 'static,
+    F: MakeHeaderValueFn<S, B, A>,
+{
+    fn make_header_value(
+        &self,
+        ctx: Context<S>,
+        message: B,
+    ) -> impl Future<Output = (Context<S>, B, Option<HeaderValue>)> + Send + '_ {
+        self.f.call(ctx, message)
     }
 }
 

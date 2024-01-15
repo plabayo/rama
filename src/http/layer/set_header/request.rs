@@ -51,7 +51,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Error> {
-//! # let http_client = service_fn(|_: Request| async move {
+//! # let http_client = service_fn(|| async move {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! fn date_header_value() -> HeaderValue {
@@ -65,10 +65,10 @@
 //!         //
 //!         // `overriding` will insert the header and override any previous values it
 //!         // may have.
-//!         SetRequestHeaderLayer::overriding(
+//!         SetRequestHeaderLayer::overriding_fn(
 //!             header::DATE,
-//!             |ctx: Context<()>, request: Request| async move {
-//!                 (ctx, request, Some(date_header_value()))
+//!             || async move {
+//!                 Some(date_header_value())
 //!             }
 //!         )
 //!     )
@@ -82,7 +82,7 @@
 //! # }
 //! ```
 
-use super::{InsertHeaderMode, MakeHeaderValue};
+use super::{BoxMakeHeaderValueFn, InsertHeaderMode, MakeHeaderValue};
 use crate::http::{header::HeaderName, Request, Response};
 use crate::service::{Context, Layer, Service};
 use std::fmt;
@@ -136,6 +136,41 @@ impl<M> SetRequestHeaderLayer<M> {
             header_name,
             mode,
         }
+    }
+}
+
+impl<F, A> SetRequestHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
+    /// Create a new [`SetRequestHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetRequestHeaderLayer::overriding`] for more details.
+    pub fn overriding_fn(header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetRequestHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetRequestHeaderLayer::appending`] for more details.
+    pub fn appending_fn(header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetRequestHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetRequestHeaderLayer::if_not_present`] for more details.
+    pub fn if_not_present_fn(header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::IfNotPresent,
+        )
     }
 }
 
@@ -211,6 +246,44 @@ impl<S, M> SetRequestHeader<S, M> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<S, F, A> SetRequestHeader<S, BoxMakeHeaderValueFn<F, A>> {
+    /// Create a new [`SetRequestHeader`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetRequestHeader::overriding`] for more details.
+    pub fn overriding_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            inner,
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetRequestHeader`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetRequestHeader::appending`] for more details.
+    pub fn appending_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            inner,
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetRequestHeader`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetRequestHeader::if_not_present`] for more details.
+    pub fn if_not_present_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            inner,
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
 }
 
 impl<S, M> fmt::Debug for SetRequestHeader<S, M>

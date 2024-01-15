@@ -65,9 +65,9 @@
 //!         //
 //!         // `overriding` will insert the header and override any previous values it
 //!         // may have.
-//!         SetResponseHeaderLayer::overriding(
+//!         SetResponseHeaderLayer::overriding_fn(
 //!             header::CONTENT_LENGTH,
-//!             |ctx: Context<()>, response: Response| async move {
+//!             |response: Response| async move {
 //!                 let value = if let Some(size) = response.body().size_hint().exact() {
 //!                     // If the response body has a known size, returning `Some` will
 //!                     // set the `Content-Length` header to that value.
@@ -77,7 +77,7 @@
 //!                     // to skip setting the header on this response.
 //!                     None
 //!                 };
-//!                 (ctx, response, value)
+//!                 (response, value)
 //!             }
 //!         )
 //!     )
@@ -93,7 +93,7 @@
 //! # }
 //! ```
 
-use super::{InsertHeaderMode, MakeHeaderValue};
+use super::{BoxMakeHeaderValueFn, InsertHeaderMode, MakeHeaderValue};
 use crate::http::{header::HeaderName, Request, Response};
 use crate::service::{Context, Layer, Service};
 use std::fmt;
@@ -147,6 +147,41 @@ impl<M> SetResponseHeaderLayer<M> {
             header_name,
             mode,
         }
+    }
+}
+
+impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
+    /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetResponseHeaderLayer::overriding`] for more details.
+    pub fn overriding_fn(header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetResponseHeaderLayer::appending`] for more details.
+    pub fn appending_fn(header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
+    pub fn if_not_present_fn(header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::IfNotPresent,
+        )
     }
 }
 
@@ -222,6 +257,44 @@ impl<S, M> SetResponseHeader<S, M> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFn<F, A>> {
+    /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetResponseHeader::overriding`] for more details.
+    pub fn overriding_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            inner,
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::Override,
+        )
+    }
+
+    /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetResponseHeader::appending`] for more details.
+    pub fn appending_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            inner,
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::Append,
+        )
+    }
+
+    /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
+    ///
+    /// See [`SetResponseHeader::if_not_present`] for more details.
+    pub fn if_not_present_fn(inner: S, header_name: HeaderName, make_fn: F) -> Self {
+        Self::new(
+            inner,
+            header_name,
+            BoxMakeHeaderValueFn::new(make_fn),
+            InsertHeaderMode::IfNotPresent,
+        )
+    }
 }
 
 impl<S, M> fmt::Debug for SetResponseHeader<S, M>
