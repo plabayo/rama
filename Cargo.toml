@@ -36,7 +36,7 @@ compression = ["dep:async-compression"]
 rustversion = "1.0.9"
 
 [dependencies]
-async-compression = { version = "0.4", optional = true, features = ["tokio"] }
+async-compression = { version = "0.4", optional = true, features = ["tokio", "brotli", "zlib", "gzip", "zstd"] }
 bytes = "1"
 futures = "0.3.29"
 futures-core = "0.3"
@@ -67,11 +67,13 @@ tracing = { version = "0.1" }
 uuid = { version = "1.6", features = ["v4"] }
 
 [dev-dependencies]
+flate2 = "1.0"
 rustversion = "1.0.9"
 tokio = { version = "1", features = ["full"] }
 tokio-test = { version = "0.4.3" }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+zstd = "0.13"
 
 [package.metadata.docs.rs]
 all-features = true
