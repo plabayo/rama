@@ -1,5 +1,6 @@
 //! Http Layers provided by Rama.
 
+pub mod add_extension;
 pub mod catch_panic;
 pub mod dns;
 pub mod header_config;
