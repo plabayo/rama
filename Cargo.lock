@@ -99,6 +99,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "080e9890a082662b09c1ad45f567faeeb47f22b5fb23895fbe1e651e718e25ca"
 
 [[package]]
+name = "async-compression"
+version = "0.4.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a116f46a969224200a0a97f29cfd4c50e7534e4b4826bd23ea2c3c533039c82c"
+dependencies = [
+ "futures-core",
+ "memchr",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
 name = "async-stream"
 version = "0.3.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -835,8 +847,10 @@ dependencies = [
 name = "rama"
 version = "0.2.0"
 dependencies = [
+ "async-compression",
  "bytes",
  "futures",
+ "futures-core",
  "futures-util",
  "h2",
  "headers",
@@ -861,6 +875,7 @@ dependencies = [
  "tokio-graceful",
  "tokio-rustls",
  "tokio-test",
+ "tokio-util",
  "tracing",
  "tracing-subscriber",
  "uuid",

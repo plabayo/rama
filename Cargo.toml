@@ -29,13 +29,17 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+full = ["compression"]
+compression = ["dep:async-compression"]
 
 [build-dependencies]
 rustversion = "1.0.9"
 
 [dependencies]
+async-compression = { version = "0.4", optional = true, features = ["tokio"] }
 bytes = "1"
 futures = "0.3.29"
+futures-core = "0.3"
 futures-util = { version = "0.3", default-features = false, features = ["alloc"] }
 h2 = "0.4"
 headers = "0.4"
@@ -58,6 +62,7 @@ sync_wrapper = "0.1.2"
 tokio = { version = "1", features = ["macros"] }
 tokio-graceful = "0.1"
 tokio-rustls = "0.25"
+tokio-util = "0.7"
 tracing = { version = "0.1" }
 uuid = { version = "1.6", features = ["v4"] }
 
