@@ -51,3 +51,6 @@ pub use map_result::{MapResult, MapResultLayer};
 
 pub mod timeout;
 pub use timeout::{Timeout, TimeoutLayer};
+
+pub mod add_extension;
+pub use add_extension::{AddExtension, AddExtensionLayer};

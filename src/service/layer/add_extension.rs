@@ -7,9 +7,8 @@
 //! ```
 //! use std::{sync::Arc, convert::Infallible};
 //!
-//! use rama::http::{Body, Request, Response};
-//! use rama::http::layer::add_extension::AddExtensionLayer;
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::layer::add_extension::AddExtensionLayer;
 //! use rama::error::Error;
 //!
 //! # struct DatabaseConnectionPool;
@@ -22,14 +21,14 @@
 //!     pool: DatabaseConnectionPool,
 //! }
 //!
-//! async fn handle<S>(ctx: Context<S>, req: Request) -> Result<Response, Infallible>
+//! async fn handle<S>(ctx: Context<S>, req: ()) -> Result<(), Infallible>
 //! where
 //!    S: Send + Sync + 'static,
 //! {
 //!     // Grab the state from the request extensions.
 //!     let state = ctx.get::<Arc<State>>().unwrap();
 //!
-//!     Ok(Response::new(Body::empty()))
+//!     Ok(req)
 //! }
 //!
 //! # #[tokio::main]
@@ -46,13 +45,12 @@
 //!
 //! // Call the service.
 //! let response = service
-//!     .serve(Context::default(), Request::new(Body::default()))
+//!     .serve(Context::default(), ())
 //!     .await?;
 //! # Ok(())
 //! # }
 //! ```
 
-use crate::http::{Request, Response};
 use crate::service::{Context, Layer, Service};
 
 /// [`Layer`] for adding some shareable value to incoming [Context].
@@ -109,13 +107,12 @@ impl<S, T> AddExtension<S, T> {
     }
 }
 
-impl<State, ResBody, ReqBody, S, T> Service<State, Request<ReqBody>> for AddExtension<S, T>
+impl<State, Request, S, T> Service<State, Request> for AddExtension<S, T>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    T: Clone + Send + Sync + 'static,
-    ResBody: Send + 'static,
-    ReqBody: Send + 'static,
     State: Send + Sync + 'static,
+    Request: Send + 'static,
+    S: Service<State, Request>,
+    T: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -123,7 +120,7 @@ where
     fn serve(
         &self,
         mut ctx: Context<State>,
-        req: Request<ReqBody>,
+        req: Request,
     ) -> impl std::future::Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         ctx.insert(self.value.clone());
         self.inner.serve(ctx, req)
@@ -137,7 +134,6 @@ mod tests {
 
     use std::{convert::Infallible, sync::Arc};
 
-    use crate::http::{Body, Response};
     use crate::service::{service_fn, Context, ServiceBuilder};
 
     struct State(i32);
@@ -148,16 +144,12 @@ mod tests {
 
         let svc = ServiceBuilder::new()
             .layer(AddExtensionLayer::new(state))
-            .service(service_fn(|ctx: Context<()>, _req: Request| async move {
+            .service(service_fn(|ctx: Context<()>, _req: ()| async move {
                 let state = ctx.get::<Arc<State>>().unwrap();
-                Ok::<_, Infallible>(Response::new(state.0))
+                Ok::<_, Infallible>(state.0)
             }));
 
-        let res = svc
-            .serve(Context::default(), Request::new(Body::empty()))
-            .await
-            .unwrap()
-            .into_body();
+        let res = svc.serve(Context::default(), ()).await.unwrap();
 
         assert_eq!(1, res);
     }
