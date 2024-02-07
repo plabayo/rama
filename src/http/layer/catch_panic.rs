@@ -251,10 +251,10 @@ mod tests {
 
     use super::*;
 
-    use http_body_util::BodyExt;
     use hyper::Response;
     use std::convert::Infallible;
 
+    use crate::http::dep::http_body_util::BodyExt;
     use crate::service::ServiceBuilder;
 
     #[tokio::test]

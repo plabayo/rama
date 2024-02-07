@@ -15,3 +15,5 @@ pub mod validate_request;
 
 #[cfg(feature = "compression")]
 pub mod compression;
+#[cfg(feature = "compression")]
+pub mod decompression;
