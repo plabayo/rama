@@ -9,26 +9,27 @@
 //!
 //! use rama::http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
 //! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
-//! use rama::service::{Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
 //! use rama::error::BoxError;
 //!
 //! #[derive(Clone, Copy)]
 //! struct MyAuth;
 //!
-//! impl<B> AsyncAuthorizeRequest<B> for MyAuth
+//! impl<S, B> AsyncAuthorizeRequest<S, B> for MyAuth
 //! where
+//!     S: Send + Sync + 'static,
 //!     B: Send + Sync + 'static,
 //! {
 //!     type RequestBody = B;
 //!     type ResponseBody = Body;
 //!
-//!     async fn authorize(&self, mut request: Request<B>) -> Result<Request<B>, Response<Self::ResponseBody>> {
+//!     async fn authorize(&self, mut ctx: Context<S>, request: Request<B>) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
 //!         if let Some(user_id) = check_auth(&request).await {
 //!             // Set `user_id` as a request extension so it can be accessed by other
 //!             // services down the stack.
-//!             request.extensions_mut().insert(user_id);
+//!             ctx.insert(user_id);
 //!
-//!             Ok(request)
+//!             Ok((ctx, request))
 //!         } else {
 //!             let unauthorized_response = Response::builder()
 //!                 .status(StatusCode::UNAUTHORIZED)
@@ -48,11 +49,10 @@
 //! #[derive(Clone, Debug)]
 //! struct UserId(String);
 //!
-//! async fn handle(request: Request) -> Result<Response, BoxError> {
+//! async fn handle<S>(ctx: Context<S>, _request: Request) -> Result<Response, BoxError> {
 //!     // Access the `UserId` that was set in `on_authorized`. If `handle` gets called the
 //!     // request was authorized and `UserId` will be present.
-//!     let user_id = request
-//!         .extensions()
+//!     let user_id = ctx
 //!         .get::<UserId>()
 //!         .expect("UserId will be there if request was authorized");
 //!
@@ -66,7 +66,7 @@
 //! let service = ServiceBuilder::new()
 //!     // Authorize requests using `MyAuth`
 //!     .layer(AsyncRequireAuthorizationLayer::new(MyAuth))
-//!     .service_fn(handle);
+//!     .service_fn(handle::<()>);
 //! # Ok(())
 //! # }
 //! ```
@@ -183,7 +183,7 @@ impl<S, T> AsyncRequireAuthorization<S, T> {
 impl<ReqBody, ResBody, S, State, Auth> Service<State, Request<ReqBody>>
     for AsyncRequireAuthorization<S, Auth>
 where
-    Auth: AsyncAuthorizeRequest<ReqBody, ResponseBody = ResBody> + Send + Sync + 'static,
+    Auth: AsyncAuthorizeRequest<State, ReqBody, ResponseBody = ResBody> + Send + Sync + 'static,
     S: Service<State, Request<Auth::RequestBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
@@ -197,7 +197,7 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let req = match self.auth.authorize(req).await {
+        let (ctx, req) = match self.auth.authorize(ctx, req).await {
             Ok(req) => req,
             Err(res) => return Ok(res),
         };
@@ -206,7 +206,7 @@ where
 }
 
 /// Trait for authorizing requests.
-pub trait AsyncAuthorizeRequest<B> {
+pub trait AsyncAuthorizeRequest<S, B> {
     /// The type of request body returned by `authorize`.
     ///
     /// Set this to `B` unless you need to change the request body type.
@@ -220,18 +220,21 @@ pub trait AsyncAuthorizeRequest<B> {
     /// If the future resolves to `Ok(request)` then the request is allowed through, otherwise not.
     fn authorize(
         &self,
+        ctx: Context<S>,
         request: Request<B>,
     ) -> impl std::future::Future<
-        Output = Result<Request<Self::RequestBody>, Response<Self::ResponseBody>>,
+        Output = Result<(Context<S>, Request<Self::RequestBody>), Response<Self::ResponseBody>>,
     > + Send
            + '_;
 }
 
-impl<B, F, Fut, ReqBody, ResBody> AsyncAuthorizeRequest<B> for F
+impl<S, B, F, Fut, ReqBody, ResBody> AsyncAuthorizeRequest<S, B> for F
 where
-    F: Fn(Request<B>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<Request<ReqBody>, Response<ResBody>>> + Send + 'static,
+    F: Fn(Context<S>, Request<B>) -> Fut + Send + Sync + 'static,
+    Fut:
+        Future<Output = Result<(Context<S>, Request<ReqBody>), Response<ResBody>>> + Send + 'static,
     B: Send + 'static,
+    S: Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -240,9 +243,10 @@ where
 
     async fn authorize(
         &self,
+        ctx: Context<S>,
         request: Request<B>,
-    ) -> Result<Request<Self::RequestBody>, Response<Self::ResponseBody>> {
-        self(request).await
+    ) -> Result<(Context<S>, Request<Self::RequestBody>), Response<Self::ResponseBody>> {
+        self(ctx, request).await
     }
 }
 
@@ -258,8 +262,9 @@ mod tests {
     #[derive(Clone, Copy)]
     struct MyAuth;
 
-    impl<B> AsyncAuthorizeRequest<B> for MyAuth
+    impl<S, B> AsyncAuthorizeRequest<S, B> for MyAuth
     where
+        S: Send + Sync + 'static,
         B: Send + 'static,
     {
         type RequestBody = B;
@@ -267,8 +272,10 @@ mod tests {
 
         async fn authorize(
             &self,
-            mut request: Request<B>,
-        ) -> Result<Request<Self::RequestBody>, Response<Self::ResponseBody>> {
+            mut ctx: Context<S>,
+            request: Request<B>,
+        ) -> Result<(Context<S>, Request<Self::RequestBody>), Response<Self::ResponseBody>>
+        {
             let authorized = request
                 .headers()
                 .get(header::AUTHORIZATION)
@@ -279,8 +286,8 @@ mod tests {
 
             if authorized {
                 let user_id = UserId("6969".to_owned());
-                request.extensions_mut().insert(user_id);
-                Ok(request)
+                ctx.insert(user_id);
+                Ok((ctx, request))
             } else {
                 Err(Response::builder()
                     .status(StatusCode::UNAUTHORIZED)
