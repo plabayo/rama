@@ -17,6 +17,25 @@ pub mod dep {
         pub use pki_types::*;
     }
 
+    pub mod pemfile {
+        //! Re-export of the [`rustls-pemfile`] crate.
+        //!
+        //! A basic parser for .pem files containing cryptographic keys and certificates.
+        //!
+        //! [`rustls-pemfile`]: https://docs.rs/rustls-pemfile
+        pub use rustls_pemfile::*;
+    }
+
+    pub mod native_certs {
+        //! Re-export of the [`rustls-native-certs`] crate.
+        //!
+        //! rustls-native-certs allows rustls to use the platform's native certificate
+        //! store when operating as a TLS client.
+        //!
+        //! [`rustls-native-certs`]: https://docs.rs/rustls-native-certs
+        pub use rustls_native_certs::*;
+    }
+
     pub mod rustls {
         //! Re-export of the [`rustls`] and  [`tokio-rustls`] crates.
         //!
