@@ -1,6 +1,6 @@
 use super::TlsConnectService;
-use crate::tls::dep::pki_types::ServerName;
-use crate::{service::Layer, tls::dep::rustls::ClientConfig};
+use crate::tls::rustls::dep::pki_types::ServerName;
+use crate::{service::Layer, tls::rustls::dep::rustls::ClientConfig};
 use std::sync::Arc;
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnectService`].

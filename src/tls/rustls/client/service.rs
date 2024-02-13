@@ -1,9 +1,9 @@
 use crate::{
     service::{Context, Service},
     stream::Stream,
-    tls::dep::pki_types::ServerName,
-    tls::dep::rustls::ClientConfig,
-    tls::dep::tokio_rustls::{client::TlsStream, TlsConnector},
+    tls::rustls::dep::pki_types::ServerName,
+    tls::rustls::dep::rustls::ClientConfig,
+    tls::rustls::dep::tokio_rustls::{client::TlsStream, TlsConnector},
 };
 use std::sync::Arc;
 

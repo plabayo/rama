@@ -4,7 +4,7 @@ use rama::{
     graceful::Shutdown,
     service::ServiceBuilder,
     tcp::{server::TcpListener, service::Forwarder},
-    tls::{
+    tls::rustls::{
         dep::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
         dep::rustls::ServerConfig,
         server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},

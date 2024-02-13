@@ -1,5 +1,5 @@
 use super::{TlsAcceptorService, TlsClientConfigHandler};
-use crate::{service::Layer, tls::dep::rustls::ServerConfig};
+use crate::{service::Layer, tls::rustls::dep::rustls::ServerConfig};
 use std::sync::Arc;
 
 /// A [`Layer`] which wraps the given service with a [`TlsAcceptorService`].
