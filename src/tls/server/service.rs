@@ -19,7 +19,7 @@ pub struct TlsAcceptorService<S, H> {
 
 impl<S, H> TlsAcceptorService<S, H> {
     /// Creates a new [`TlsAcceptorService`].
-    pub(crate) fn new(config: Arc<ServerConfig>, inner: S, client_config_handler: H) -> Self {
+    pub fn new(config: Arc<ServerConfig>, inner: S, client_config_handler: H) -> Self {
         Self {
             config,
             client_config_handler,

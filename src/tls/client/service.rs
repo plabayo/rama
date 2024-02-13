@@ -17,11 +17,7 @@ pub struct TlsConnectService<S> {
 
 impl<S> TlsConnectService<S> {
     /// Creates a new [`TlsConnectService`].
-    pub(crate) fn new(
-        config: Arc<ClientConfig>,
-        server_name: ServerName<'static>,
-        inner: S,
-    ) -> Self {
+    pub fn new(config: Arc<ClientConfig>, server_name: ServerName<'static>, inner: S) -> Self {
         Self {
             config,
             server_name,
