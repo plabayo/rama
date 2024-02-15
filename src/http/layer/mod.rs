@@ -5,6 +5,8 @@ pub mod catch_panic;
 pub mod cors;
 pub mod dns;
 pub mod header_config;
+pub mod map_request_body;
+pub mod map_response_body;
 pub mod normalize_path;
 pub mod propagate_headers;
 pub mod request_id;
