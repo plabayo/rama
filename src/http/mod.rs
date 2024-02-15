@@ -64,6 +64,16 @@ pub mod dep {
 
         pub use mime::*;
     }
+
+    pub mod mime_guess {
+        //! Re-export of the [`mime_guess`] crate.
+        //!
+        //! Guessing of MIME types by file extension.
+        //!
+        //! [`mime_guess`]: https://docs.rs/mime_guess
+
+        pub use mime_guess::*;
+    }
 }
 
 pub use self::dep::http::header;

@@ -601,9 +601,8 @@ where
 {
     /// Turn this `HttpServer` into a [`Service`] that can be used to serve
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
-    pub fn service<State, S, Response>(self, service: S) -> HttpService<B, S>
+    pub fn service<State, S, Response>(self, service: S) -> HttpService<B, S, State>
     where
-        State: Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
         Response: IntoResponse + Send + 'static,
     {
@@ -723,27 +722,29 @@ where
 }
 
 /// A [`Service`] that can be used to serve IO Byte streams (e.g. a TCP Stream) as HTTP.
-pub struct HttpService<B, S> {
+pub struct HttpService<B, S, State> {
     builder: Arc<B>,
     service: S,
+    _phantom: std::marker::PhantomData<State>,
 }
 
-impl<B, S> std::fmt::Debug for HttpService<B, S> {
+impl<B, S, State> std::fmt::Debug for HttpService<B, S, State> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpService").finish()
     }
 }
 
-impl<B, S> HttpService<B, S> {
+impl<B, S, State> HttpService<B, S, State> {
     fn new(builder: B, service: S) -> Self {
         Self {
             builder: Arc::new(builder),
             service,
+            _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<B, S> Clone for HttpService<B, S>
+impl<B, S, State> Clone for HttpService<B, S, State>
 where
     S: Clone,
 {
@@ -751,11 +752,12 @@ where
         Self {
             builder: self.builder.clone(),
             service: self.service.clone(),
+            _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<B, State, S, Response, IO> Service<State, IO> for HttpService<B, S>
+impl<B, State, S, Response, IO> Service<State, IO> for HttpService<B, S, State>
 where
     B: HyperConnServer,
     State: Send + Sync + 'static,
