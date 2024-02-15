@@ -38,6 +38,7 @@ rustversion = "1.0.9"
 [dependencies]
 async-compression = { version = "0.4", optional = true, features = ["tokio", "brotli", "zlib", "gzip", "zstd"] }
 base64 = { version = "0.21" }
+bitflags = "2.4"
 bytes = "1"
 futures = "0.3.29"
 futures-core = "0.3"

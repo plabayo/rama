@@ -962,6 +962,7 @@ version = "0.2.0"
 dependencies = [
  "async-compression",
  "base64",
+ "bitflags 2.4.2",
  "brotli",
  "bytes",
  "flate2",

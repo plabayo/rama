@@ -2,6 +2,7 @@
 
 pub mod auth;
 pub mod catch_panic;
+pub mod classify;
 pub mod cors;
 pub mod dns;
 pub mod header_config;
