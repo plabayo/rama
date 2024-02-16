@@ -73,6 +73,7 @@ pub(crate) mod macros;
 mod test_helpers;
 
 pub mod graceful;
+pub mod latency;
 
 pub mod rt;
 

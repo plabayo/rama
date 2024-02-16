@@ -33,8 +33,9 @@ where
 
 impl<C, F, NewClass> ClassifyResponse for MapFailureClass<C, F>
 where
-    C: ClassifyResponse,
-    F: FnOnce(C::FailureClass) -> NewClass,
+    C: ClassifyResponse + Send + Sync + 'static,
+    F: FnOnce(C::FailureClass) -> NewClass + Send + Sync + 'static,
+    NewClass: Send + Sync + 'static,
 {
     type FailureClass = NewClass;
     type ClassifyEos = MapFailureClass<C::ClassifyEos, F>;

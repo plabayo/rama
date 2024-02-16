@@ -15,6 +15,7 @@ pub mod sensitive_headers;
 pub mod set_header;
 pub mod set_status;
 pub mod timeout;
+pub mod trace;
 pub mod util;
 pub mod validate_request;
 

@@ -24,7 +24,7 @@ pub use self::{
 /// This is necessary for [`ClassifyResponse::classify_error`].
 ///
 /// [`Error` type]: https://docs.rs/tower/latest/tower/trait.Service.html#associatedtype.Error
-pub trait MakeClassifier {
+pub trait MakeClassifier: Send + Sync + 'static {
     /// The response classifier produced.
     type Classifier: ClassifyResponse<
         FailureClass = Self::FailureClass,
@@ -36,10 +36,10 @@ pub trait MakeClassifier {
     /// This might include additional information about the error, such as
     /// whether it was a client or server error, or whether or not it should
     /// be considered retryable.
-    type FailureClass;
+    type FailureClass: Send + Sync + 'static;
 
     /// The type used to classify the response end of stream (EOS).
-    type ClassifyEos: ClassifyEos<FailureClass = Self::FailureClass>;
+    type ClassifyEos: ClassifyEos<FailureClass = Self::FailureClass> + Send + Sync + 'static;
 
     /// Returns a response classifier for this request
     fn make_classifier<B>(&self, req: &Request<B>) -> Self::Classifier;
@@ -139,16 +139,16 @@ where
 /// retryable.
 ///
 /// [retry policies]: https://docs.rs/tower/latest/tower/retry/trait.Policy.html
-pub trait ClassifyResponse {
+pub trait ClassifyResponse: Send + Sync + 'static {
     /// The type returned when a response is classified as a failure.
     ///
     /// Depending on the classifier, this may simply indicate that the
     /// request failed, or it may contain additional  information about
     /// the failure, such as whether or not it is retryable.
-    type FailureClass;
+    type FailureClass: Send + Sync + 'static;
 
     /// The type used to classify the response end of stream (EOS).
-    type ClassifyEos: ClassifyEos<FailureClass = Self::FailureClass>;
+    type ClassifyEos: ClassifyEos<FailureClass = Self::FailureClass> + Send + Sync + 'static;
 
     /// Attempt to classify the beginning of a response.
     ///
