@@ -2,3 +2,4 @@
 
 pub mod fs;
 pub mod redirect;
+pub mod web;

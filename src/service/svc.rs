@@ -109,10 +109,7 @@ impl<S, Request, Response, Error> std::fmt::Debug for BoxService<S, Request, Res
     }
 }
 
-impl<S, Request, Response, Error> Clone for BoxService<S, Request, Response, Error>
-where
-    S: Clone,
-{
+impl<S, Request, Response, Error> Clone for BoxService<S, Request, Response, Error> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone_box(),
