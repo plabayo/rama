@@ -53,7 +53,6 @@ httparse = "1.8"
 httpdate = "1.0"
 hyper = { package = "rama-hyper", version = "0.1001000", features = ["http1", "http2", "server"] }
 hyper-util = { package = "rama-hyper-util", version = "0.1002", features = ["tokio", "server-auto"] }
-matchit = "0.7.3"
 mime = "0.3.17"
 mime_guess = { version = "2", default_features = false }
 percent-encoding = "2.1"
