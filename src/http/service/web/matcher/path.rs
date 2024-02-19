@@ -25,8 +25,14 @@ impl UriParams {
             .map(String::as_str)
     }
 
-    pub(crate) fn insert_glob(&mut self, value: String) {
-        self.glob = Some(value);
+    pub(crate) fn append_glob(&mut self, value: &str) {
+        match self.glob {
+            Some(ref mut glob) => {
+                glob.push('/');
+                glob.push_str(value);
+            }
+            None => self.glob = Some(format!("/{}", value)),
+        }
     }
 
     /// Some str slice will be returned in case a glob value was captured
@@ -100,9 +106,10 @@ impl PathFilter {
     }
 
     pub(crate) fn matches_path(&self, path: &str) -> Option<UriParams> {
+        let path = path.trim().trim_matches('/');
         match &self.matcher {
             PathMatcher::Literal(literal) => {
-                if literal.eq_ignore_ascii_case(path.trim().trim_matches('/')) {
+                if literal.eq_ignore_ascii_case(path) {
                     Some(UriParams::default())
                 } else {
                     None
@@ -111,7 +118,12 @@ impl PathFilter {
             PathMatcher::FragmentList(fragments) => {
                 let fragments_iter = fragments.iter().map(Some).chain(std::iter::repeat(None));
                 let mut params = UriParams::default();
-                for (segment, fragment) in path.split('/').map(Some).zip(fragments_iter) {
+                for (segment, fragment) in path
+                    .split('/')
+                    .map(Some)
+                    .chain(std::iter::repeat(None))
+                    .zip(fragments_iter)
+                {
                     match (segment, fragment) {
                         (Some(segment), Some(fragment)) => match fragment {
                             PathFragment::Literal(literal) => {
@@ -123,11 +135,15 @@ impl PathFilter {
                                 params.insert(name.to_owned(), segment.to_owned());
                             }
                             PathFragment::Glob => {
-                                params.insert_glob(segment.to_owned());
+                                params.append_glob(segment);
                             }
                         },
                         (None, None) => {
                             break;
+                        }
+                        (Some(segment), None) => {
+                            params.glob()?;
+                            params.append_glob(segment);
                         }
                         _ => {
                             return None;
@@ -155,5 +171,126 @@ impl<State> Matcher<State> for PathFilter {
 
 #[cfg(test)]
 mod test {
-    // TODO
+    use super::*;
+
+    #[test]
+    fn test_path_filter_match_path() {
+        struct TestCase {
+            path: &'static str,
+            filter_path: &'static str,
+            result: Option<UriParams>,
+        }
+
+        impl TestCase {
+            fn some(path: &'static str, filter_path: &'static str, result: UriParams) -> Self {
+                Self {
+                    path,
+                    filter_path,
+                    result: Some(result),
+                }
+            }
+
+            fn none(path: &'static str, filter_path: &'static str) -> Self {
+                Self {
+                    path,
+                    filter_path,
+                    result: None,
+                }
+            }
+        }
+
+        let test_cases = vec![
+            TestCase::some("/", "/", UriParams::default()),
+            TestCase::some("", "/", UriParams::default()),
+            TestCase::some("/", "", UriParams::default()),
+            TestCase::some("", "", UriParams::default()),
+            TestCase::some("/foo", "/foo", UriParams::default()),
+            TestCase::none("/foo", "/bar"),
+            TestCase::some("/foo", "foo", UriParams::default()),
+            TestCase::some("/foo/bar/", "foo/bar", UriParams::default()),
+            TestCase::none("/foo/bar/", "foo/baz"),
+            TestCase::some("/foo/bar/", "/foo/bar", UriParams::default()),
+            TestCase::some("/foo/bar", "/foo/bar", UriParams::default()),
+            TestCase::some("/foo/bar", "foo/bar", UriParams::default()),
+            TestCase::some("/book/oxford-dictionary/author", "/book/:title/author", {
+                let mut params = UriParams::default();
+                params.insert("title".to_owned(), "oxford-dictionary".to_owned());
+                params
+            }),
+            TestCase::some(
+                "/book/oxford-dictionary/author/0",
+                "/book/:title/author/:index",
+                {
+                    let mut params = UriParams::default();
+                    params.insert("title".to_owned(), "oxford-dictionary".to_owned());
+                    params.insert("index".to_owned(), "0".to_owned());
+                    params
+                },
+            ),
+            TestCase::none("/book/oxford-dictionary", "/book/:title/author"),
+            TestCase::none(
+                "/book/oxford-dictionary/author/birthdate",
+                "/book/:title/author",
+            ),
+            TestCase::none("oxford-dictionary/author", "/book/:title/author"),
+            TestCase::none("/foo", "/"),
+            TestCase::some(
+                "/foo",
+                "/*",
+                UriParams {
+                    glob: Some("/foo".to_owned()),
+                    ..UriParams::default()
+                },
+            ),
+            TestCase::some(
+                "/assets/css/reset.css",
+                "/assets/*",
+                UriParams {
+                    glob: Some("/css/reset.css".to_owned()),
+                    ..UriParams::default()
+                },
+            ),
+            TestCase::some("/assets/eu/css/reset.css", "/assets/:local/*", {
+                let mut params = UriParams::default();
+                params.insert("local".to_owned(), "eu".to_owned());
+                params.glob = Some("/css/reset.css".to_owned());
+                params
+            }),
+            TestCase::some("/assets/eu/css/reset.css", "/assets/:local/css/*", {
+                let mut params = UriParams::default();
+                params.insert("local".to_owned(), "eu".to_owned());
+                params.glob = Some("/reset.css".to_owned());
+                params
+            }),
+        ];
+        for test_case in test_cases.into_iter() {
+            let filter = PathFilter::new(test_case.filter_path);
+            let result = filter.matches_path(test_case.path);
+            match (result.as_ref(), test_case.result.as_ref()) {
+                (None, None) => (),
+                (Some(result), Some(expected_result)) => {
+                    assert_eq!(
+                        result.params,
+                        expected_result.params,
+                        "unexpected result params: ({}).filter({}) => {:?} != {:?}",
+                        test_case.filter_path,
+                        test_case.path,
+                        result.params,
+                        expected_result.params,
+                    );
+                    assert_eq!(
+                        result.glob, expected_result.glob,
+                        "unexpected result glob: ({}).filter({}) => {:?} != {:?}",
+                        test_case.filter_path, test_case.path, result.glob, expected_result.glob,
+                    );
+                }
+                _ => {
+                    panic!(
+                        "unexpected result: ({}).filter({}) => {:?} != {:?}",
+                        test_case.filter_path, test_case.path, result, test_case.result
+                    )
+                }
+            }
+        }
+    }
 }
