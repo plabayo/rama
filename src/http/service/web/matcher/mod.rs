@@ -3,6 +3,9 @@
 mod method;
 pub use method::MethodFilter;
 
+mod domain;
+pub use domain::DomainFilter;
+
 use crate::{http::Request, service::Context};
 
 /// condition to decide whether [`Request`] within the given [`Context`] matches to a defined (web) [`Service`]
@@ -10,7 +13,7 @@ use crate::{http::Request, service::Context};
 /// [`Service`]: crate::service::Service
 pub trait Matcher<State> {
     /// returns true on a match, false otherwise
-    fn matches(&self, ctx: &Context<State>, req: &Request) -> bool;
+    fn matches(&self, ctx: &mut Context<State>, req: &Request) -> bool;
 }
 
 macro_rules! impl_matcher_tuple {
@@ -19,7 +22,7 @@ macro_rules! impl_matcher_tuple {
         impl<State,$($ty),+> Matcher<State> for ($($ty),+,)
             where $($ty: Matcher<State>),+
         {
-            fn matches(&self, ctx: &Context<State>, req: &Request) -> bool {
+            fn matches(&self, ctx: &mut Context<State>, req: &Request) -> bool {
                 let ($($ty),+,) = self;
                 $($ty.matches(ctx, req))&&+
             }
