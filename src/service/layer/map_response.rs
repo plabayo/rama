@@ -4,10 +4,22 @@ use std::fmt;
 /// Service returned by the [`map_response`] combinator.
 ///
 /// [`map_response`]: crate::service::ServiceBuilder::map_response
-#[derive(Clone)]
 pub struct MapResponse<S, F> {
     inner: S,
     f: F,
+}
+
+impl<S, F> Clone for MapResponse<S, F>
+where
+    S: Clone,
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        MapResponse {
+            inner: self.inner.clone(),
+            f: self.f.clone(),
+        }
+    }
 }
 
 impl<S, F> fmt::Debug for MapResponse<S, F>
@@ -25,9 +37,28 @@ where
 /// A [`Layer`] that produces a [`MapResponse`] service.
 ///
 /// [`Layer`]: crate::service::Layer
-#[derive(Debug, Clone)]
 pub struct MapResponseLayer<F> {
     f: F,
+}
+
+impl<F> Clone for MapResponseLayer<F>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        MapResponseLayer { f: self.f.clone() }
+    }
+}
+
+impl<F> fmt::Debug for MapResponseLayer<F>
+where
+    F: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MapResponseLayer")
+            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .finish()
+    }
 }
 
 impl<S, F> MapResponse<S, F> {

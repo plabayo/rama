@@ -2,16 +2,23 @@ use crate::{
     http::{IntoResponse, Request, Response, StatusCode},
     service::{
         handler::{Factory, FromContextRequest},
-        service_fn, Context, Service,
+        service_fn, BoxService, Context, Service, ServiceBuilder,
     },
 };
-use std::{convert::Infallible, future::Future, marker::PhantomData};
+use std::{convert::Infallible, future::Future, marker::PhantomData, sync::Arc};
 
-use super::matcher::{Matcher, MethodFilter};
+use super::matcher::{Matcher, MethodFilter, PathFilter};
 
 /// a basic web service
 pub struct WebService<State> {
+    endpoints: Vec<Arc<Endpoint<State>>>,
+    not_found: BoxService<State, Request, Response, Infallible>,
     _phantom: PhantomData<State>,
+}
+
+struct Endpoint<State> {
+    matcher: Box<dyn Matcher<State>>,
+    service: BoxService<State, Request, Response, Infallible>,
 }
 
 impl<State> std::fmt::Debug for WebService<State> {
@@ -20,10 +27,25 @@ impl<State> std::fmt::Debug for WebService<State> {
     }
 }
 
-impl<State> WebService<State> {
+impl<State> Clone for WebService<State> {
+    fn clone(&self) -> Self {
+        Self {
+            endpoints: self.endpoints.clone(),
+            not_found: self.not_found.clone(),
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<State> WebService<State>
+where
+    State: Send + Sync + 'static,
+{
     /// create a new web service
     pub(crate) fn new() -> Self {
         Self {
+            endpoints: Vec::new(),
+            not_found: service_fn(|| async { Ok(StatusCode::NOT_FOUND.into_response()) }).boxed(),
             _phantom: PhantomData,
         }
     }
@@ -31,202 +53,218 @@ impl<State> WebService<State> {
     /// add a GET route to the web service, using the given service.
     pub fn get<S, R>(self, path: &str, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         R: IntoResponse + Send + Sync + 'static,
     {
-        self.on(path, MethodFilter::GET, service)
+        let matcher = (MethodFilter::GET, PathFilter::new(path));
+        self.on(matcher, service)
     }
 
     /// add a GET route to the web service, using the given service function.
     pub fn get_fn<F, T, R, O>(self, path: &str, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
     {
-        self.on_fn(path, MethodFilter::GET, f)
+        self.get(path, service_fn(f))
     }
 
     /// add a POST route to the web service, using the given service.
     pub fn post<S, R>(self, path: &str, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         R: IntoResponse + Send + Sync + 'static,
     {
-        self.on(path, MethodFilter::POST, service)
+        let matcher = (MethodFilter::POST, PathFilter::new(path));
+        self.on(matcher, service)
     }
 
     /// add a POST route to the web service, using the given service function.
     pub fn post_fn<F, T, R, O>(self, path: &str, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
     {
-        self.on_fn(path, MethodFilter::POST, f)
+        self.post(path, service_fn(f))
     }
 
     /// add a PUT route to the web service, using the given service.
     pub fn put<S, R>(self, path: &str, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         R: IntoResponse + Send + Sync + 'static,
     {
-        self.on(path, MethodFilter::PUT, service)
+        let matcher = (MethodFilter::PUT, PathFilter::new(path));
+        self.on(matcher, service)
     }
 
     /// add a PUT route to the web service, using the given service function.
     pub fn put_fn<F, T, R, O>(self, path: &str, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
     {
-        self.on_fn(path, MethodFilter::PUT, f)
+        self.put(path, service_fn(f))
     }
 
     /// add a DELETE route to the web service, using the given service.
     pub fn delete<S, R>(self, path: &str, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         R: IntoResponse + Send + Sync + 'static,
     {
-        self.on(path, MethodFilter::DELETE, service)
+        let matcher = (MethodFilter::DELETE, PathFilter::new(path));
+        self.on(matcher, service)
     }
 
     /// add a DELETE route to the web service, using the given service function.
     pub fn delete_fn<F, T, R, O>(self, path: &str, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
     {
-        self.on_fn(path, MethodFilter::DELETE, f)
+        self.delete(path, service_fn(f))
     }
 
     /// add a PATCH route to the web service, using the given service.
     pub fn patch<S, R>(self, path: &str, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         R: IntoResponse + Send + Sync + 'static,
     {
-        self.on(path, MethodFilter::PATCH, service)
+        let matcher = (MethodFilter::PATCH, PathFilter::new(path));
+        self.on(matcher, service)
     }
 
     /// add a PATCH route to the web service, using the given service function.
     pub fn patch_fn<F, T, R, O>(self, path: &str, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
     {
-        self.on_fn(path, MethodFilter::PATCH, f)
+        self.patch(path, service_fn(f))
     }
 
     /// add a HEAD route to the web service, using the given service.
     pub fn head<S, R>(self, path: &str, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         R: IntoResponse + Send + Sync + 'static,
     {
-        self.on(path, MethodFilter::HEAD, service)
+        let matcher = (MethodFilter::HEAD, PathFilter::new(path));
+        self.on(matcher, service)
     }
 
     /// add a HEAD route to the web service, using the given service function.
     pub fn head_fn<F, T, R, O>(self, path: &str, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
     {
-        self.on_fn(path, MethodFilter::HEAD, f)
+        self.head(path, service_fn(f))
     }
 
     /// add a OPTIONS route to the web service, using the given service.
     pub fn options<S, R>(self, path: &str, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         R: IntoResponse + Send + Sync + 'static,
     {
-        self.on(path, MethodFilter::OPTIONS, service)
+        let matcher = (MethodFilter::OPTIONS, PathFilter::new(path));
+        self.on(matcher, service)
     }
 
     /// add a OPTIONS route to the web service, using the given service function.
     pub fn options_fn<F, T, R, O>(self, path: &str, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
     {
-        self.on_fn(path, MethodFilter::OPTIONS, f)
+        self.options(path, service_fn(f))
     }
 
     /// add a TRACE route to the web service, using the given service.
     pub fn trace<S, R>(self, path: &str, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         R: IntoResponse + Send + Sync + 'static,
     {
-        self.on(path, MethodFilter::TRACE, service)
+        let matcher = (MethodFilter::TRACE, PathFilter::new(path));
+        self.on(matcher, service)
     }
 
     /// add a TRACE route to the web service, using the given service function.
     pub fn trace_fn<F, T, R, O>(self, path: &str, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
     {
-        self.on_fn(path, MethodFilter::TRACE, f)
+        self.trace(path, service_fn(f))
     }
 
     /// add a route to the web service which matches the given matcher, using the given service.
-    pub fn on<S, R, M>(self, _path: &str, _matcher: M, _service: S) -> Self
+    pub fn on<S, R, M>(mut self, matcher: M, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
-        R: IntoResponse,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
+        R: IntoResponse + Send + Sync + 'static,
         M: Matcher<State>,
     {
-        Self {
-            _phantom: PhantomData,
-        }
+        let service = ServiceBuilder::new()
+            .map_response(|resp: R| resp.into_response())
+            .service(service);
+        let endpoint = Endpoint {
+            matcher: Box::new(matcher),
+            service: service.boxed(),
+        };
+        self.endpoints.push(Arc::new(endpoint));
+        self
     }
 
     /// add a route to the web service which matches the given matcher, using the given service function.
-    pub fn on_fn<F, T, R, O, M>(self, path: &str, matcher: M, f: F) -> Self
+    pub fn on_fn<F, T, R, O, M>(self, matcher: M, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
         M: Matcher<State>,
     {
-        self.on(path, matcher, service_fn(f))
+        self.on(matcher, service_fn(f))
     }
 
     /// use the given service in case no match could be found.
-    pub fn not_found<S, R>(self, _service: S) -> Self
+    pub fn not_found<S, R>(mut self, service: S) -> Self
     where
-        S: Service<State, Request, Response = R, Error = Infallible>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         R: IntoResponse + Send + Sync + 'static,
     {
-        Self {
-            _phantom: PhantomData,
-        }
+        let service = ServiceBuilder::new()
+            .map_response(|resp: R| resp.into_response())
+            .service(service);
+        self.not_found = service.boxed();
+        self
     }
 
     /// use the given service function in case no match could be found.
     pub fn not_found_fn<F, T, R, O>(self, f: F) -> Self
     where
-        F: Factory<T, R, O, Infallible>,
+        F: Factory<T, R, O, Infallible> + Clone,
         R: Future<Output = Result<O, Infallible>> + Send + Sync + 'static,
         O: IntoResponse + Send + Sync + 'static,
         T: FromContextRequest<State, Request>,
@@ -235,7 +273,10 @@ impl<State> WebService<State> {
     }
 }
 
-impl<State> Default for WebService<State> {
+impl<State> Default for WebService<State>
+where
+    State: Send + Sync + 'static,
+{
     fn default() -> Self {
         Self::new()
     }
@@ -250,9 +291,16 @@ where
 
     async fn serve(
         &self,
-        _ctx: Context<State>,
-        _req: Request,
+        ctx: Context<State>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        Ok(StatusCode::OK.into_response())
+        let ctx = ctx.into_parent();
+        for endpoint in &self.endpoints {
+            let mut ctx = ctx.clone();
+            if endpoint.matcher.matches(&mut ctx, &req) {
+                return endpoint.service.serve(ctx, req).await;
+            }
+        }
+        self.not_found.serve(ctx, req).await
     }
 }

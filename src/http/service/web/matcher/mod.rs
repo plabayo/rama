@@ -14,7 +14,7 @@ use crate::{http::Request, service::Context};
 /// condition to decide whether [`Request`] within the given [`Context`] matches to a defined (web) [`Service`]
 ///
 /// [`Service`]: crate::service::Service
-pub trait Matcher<State> {
+pub trait Matcher<State>: Send + Sync + 'static {
     /// returns true on a match, false otherwise
     fn matches(&self, ctx: &mut Context<State>, req: &Request) -> bool;
 }
