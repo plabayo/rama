@@ -12,6 +12,7 @@ use rama::{
     service::{Context, ServiceBuilder},
 };
 use std::collections::HashMap;
+use std::convert::Infallible;
 use tokio::sync::RwLock;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -48,22 +49,7 @@ async fn main() {
                 .layer(TraceLayer::new_for_http())
                 .service(
                     WebService::default()
-                        .get_fn(
-                            "/keys",
-                            |ctx: Context<AppState>, _req: Request| async move {
-                                let keys = ctx.state().db.read().await.keys().fold(
-                                    String::new(),
-                                    |a, b| {
-                                        if a.is_empty() {
-                                            b.clone()
-                                        } else {
-                                            format!("{a}, {b}")
-                                        }
-                                    },
-                                );
-                                Ok(keys)
-                            },
-                        )
+                        .get_fn("/keys", list_keys)
                         .get(
                             "/:key",
                             // only compress the get Action, not the Post Action
@@ -92,4 +78,22 @@ async fn main() {
         )
         .await
         .unwrap();
+}
+
+/// a service_fn can be a regular fn, instead of a closure
+async fn list_keys(ctx: Context<AppState>, _req: Request) -> Result<impl IntoResponse, Infallible> {
+    let keys = ctx
+        .state()
+        .db
+        .read()
+        .await
+        .keys()
+        .fold(String::new(), |a, b| {
+            if a.is_empty() {
+                b.clone()
+            } else {
+                format!("{a}, {b}")
+            }
+        });
+    Ok(keys)
 }
