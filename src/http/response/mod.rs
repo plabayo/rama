@@ -24,6 +24,9 @@ pub use html::Html;
 mod json;
 pub use json::Json;
 
+mod redirect;
+pub use redirect::Redirect;
+
 /// Type alias for [`http::Response`] whose body type defaults to [`Body`], the most common body
 /// type used with rama.
 pub type Response<T = Body> = http::Response<T>;
