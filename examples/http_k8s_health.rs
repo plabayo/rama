@@ -1,5 +1,5 @@
 use rama::{
-    http::{server::HttpServer, service::web::k8s_health},
+    http::{server::HttpServer, service::web::k8s_health_builder},
     rt::Executor,
 };
 
@@ -13,7 +13,7 @@ async fn main() {
             // by default the k8s health service is always ready and alive,
             // optionally you can define your own conditional closures to define
             // more accurate health checks
-            k8s_health()
+            k8s_health_builder()
                 .ready(move || {
                     // simulate a serice only ready after 10s for w/e reason
                     let uptime = startup_time.elapsed().as_secs();

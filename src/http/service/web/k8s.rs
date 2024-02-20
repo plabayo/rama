@@ -12,8 +12,16 @@ use crate::{
 use super::WebService;
 
 /// create a k8s web health service builder
-pub fn k8s_health<S>() -> K8sHealthServiceBuilder<(), (), S> {
+pub fn k8s_health_builder<S>() -> K8sHealthServiceBuilder<(), (), S> {
     K8sHealthServiceBuilder::new()
+}
+
+/// create a default k8s web health service
+pub fn k8s_health<S>() -> WebService<S>
+where
+    S: Send + Sync + 'static,
+{
+    k8s_health_builder().build()
 }
 
 #[derive(Debug)]

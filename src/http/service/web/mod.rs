@@ -6,4 +6,4 @@ pub use service::WebService;
 pub mod matcher;
 
 pub mod k8s;
-pub use k8s::k8s_health;
+pub use k8s::{k8s_health, k8s_health_builder};
