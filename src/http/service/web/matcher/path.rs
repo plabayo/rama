@@ -11,7 +11,7 @@ pub struct UriParams {
 }
 
 impl UriParams {
-    pub(crate) fn insert(&mut self, name: String, value: String) {
+    fn insert(&mut self, name: String, value: String) {
         self.params
             .get_or_insert_with(HashMap::new)
             .insert(name, value);
@@ -25,7 +25,7 @@ impl UriParams {
             .map(String::as_str)
     }
 
-    pub(crate) fn append_glob(&mut self, value: &str) {
+    fn append_glob(&mut self, value: &str) {
         match self.glob {
             Some(ref mut glob) => {
                 glob.push('/');
@@ -205,6 +205,9 @@ mod test {
             TestCase::some("/", "", UriParams::default()),
             TestCase::some("", "", UriParams::default()),
             TestCase::some("/foo", "/foo", UriParams::default()),
+            TestCase::some("/*foo", "/*foo", UriParams::default()),
+            TestCase::some("/foo/*bar/baz", "/foo/*bar/baz", UriParams::default()),
+            TestCase::none("/foo/*bar/baz", "/foo/*bar"),
             TestCase::none("/foo", "/bar"),
             TestCase::some("/foo", "foo", UriParams::default()),
             TestCase::some("/foo/bar/", "foo/bar", UriParams::default()),
@@ -234,6 +237,7 @@ mod test {
             ),
             TestCase::none("oxford-dictionary/author", "/book/:title/author"),
             TestCase::none("/foo", "/"),
+            TestCase::none("/foo", "/*f"),
             TestCase::some(
                 "/foo",
                 "/*",
