@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use rama::http::layer::trace::TraceLayer;
+use rama::http::response::Json;
 use rama::{
     http::{
         dep::http_body_util::BodyExt,
@@ -11,6 +12,7 @@ use rama::{
     rt::Executor,
     service::{Context, ServiceBuilder},
 };
+use serde_json::json;
 use std::collections::HashMap;
 use std::convert::Infallible;
 use tokio::sync::RwLock;
@@ -49,6 +51,14 @@ async fn main() {
                 .layer(TraceLayer::new_for_http())
                 .service(
                     WebService::default()
+                        .get_fn("/api", || async move {
+                            Ok(Json(json!({
+                                "GET /api": "show this API documentation in Json Format",
+                                "GET /keys": "list all keys for which (bytes) data is stored",
+                                "GET /:key": "return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise",
+                                "POST /:key": "store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined",
+                            })))
+                        })
                         .get_fn("/keys", list_keys)
                         .get(
                             "/:key",
