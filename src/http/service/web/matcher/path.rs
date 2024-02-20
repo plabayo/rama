@@ -73,7 +73,7 @@ impl PathFilter {
             };
         }
 
-        let path_parts: Vec<_> = path.split('/').collect();
+        let path_parts: Vec<_> = path.split('/').filter(|s| !s.is_empty()).collect();
         let fragment_length = path_parts.len();
         if fragment_length == 1 && path_parts[0].is_empty() {
             return Self {
@@ -120,6 +120,7 @@ impl PathFilter {
                 let mut params = UriParams::default();
                 for (segment, fragment) in path
                     .split('/')
+                    .filter(|s| !s.is_empty())
                     .map(Some)
                     .chain(std::iter::repeat(None))
                     .zip(fragments_iter)
@@ -205,9 +206,13 @@ mod test {
             TestCase::some("/", "", UriParams::default()),
             TestCase::some("", "", UriParams::default()),
             TestCase::some("/foo", "/foo", UriParams::default()),
+            TestCase::some("/foo", "//foo//", UriParams::default()),
             TestCase::some("/*foo", "/*foo", UriParams::default()),
             TestCase::some("/foo/*bar/baz", "/foo/*bar/baz", UriParams::default()),
             TestCase::none("/foo/*bar/baz", "/foo/*bar"),
+            TestCase::none("/", "/:foo"),
+            TestCase::none("/", "//:foo"),
+            TestCase::none("", "/:foo"),
             TestCase::none("/foo", "/bar"),
             TestCase::some("/foo", "foo", UriParams::default()),
             TestCase::some("/foo/bar/", "foo/bar", UriParams::default()),
