@@ -321,4 +321,76 @@ mod test {
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "not found");
     }
+
+    #[tokio::test]
+    async fn test_web_service_nest() {
+        let svc = WebService::new().nest(
+            "/api",
+            WebService::new()
+                .get(
+                    "/hello",
+                    service_fn(|_, _| async { Ok("hello".into_response()) }),
+                )
+                .post(
+                    "/world",
+                    service_fn(|_, _| async { Ok("world".into_response()) }),
+                ),
+        );
+
+        let res = svc
+            .serve(
+                Context::default(),
+                Request::builder()
+                    .method("GET")
+                    .uri("https://www.test.io/api/hello")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "hello");
+
+        let res = svc
+            .serve(
+                Context::default(),
+                Request::builder()
+                    .method("POST")
+                    .uri("https://www.test.io/api/world")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "world");
+
+        let res = svc
+            .serve(
+                Context::default(),
+                Request::builder()
+                    .method("GET")
+                    .uri("https://www.test.io/api/world")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        let res = svc
+            .serve(
+                Context::default(),
+                Request::builder()
+                    .method("GET")
+                    .uri("https://www.test.io")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
 }
