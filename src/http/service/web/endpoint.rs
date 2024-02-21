@@ -14,12 +14,14 @@ pub(crate) struct Endpoint<State> {
 }
 
 /// utility trait to accept multiple types as an endpoint service for [`super::WebService`]
-pub trait IntoBoxedService<State, T>: private::Sealed<T> {
-    /// convert the type into a [`crate::service::BoxService`].
-    fn into_boxed_service(self) -> BoxService<State, Request, Response, Infallible>;
+pub trait IntoEndpointService<State, T>: private::Sealed<T> {
+    /// convert the type into a [`crate::service::Service`].
+    fn into_endpoint_service(
+        self,
+    ) -> impl Service<State, Request, Response = Response, Error = Infallible> + Clone;
 }
 
-impl<State, F, T, R, O> IntoBoxedService<State, (State, F, T, R, O)> for F
+impl<State, F, T, R, O> IntoEndpointService<State, (State, F, T, R, O)> for F
 where
     State: Send + Sync + 'static,
     F: Factory<T, R, O, Infallible> + Clone,
@@ -27,35 +29,39 @@ where
     O: IntoResponse + Send + Sync + 'static,
     T: FromContextRequest<State, Request>,
 {
-    fn into_boxed_service(self) -> BoxService<State, Request, Response, Infallible> {
+    fn into_endpoint_service(
+        self,
+    ) -> impl Service<State, Request, Response = Response, Error = Infallible> + Clone {
         ServiceBuilder::new()
             .map_response(|resp: O| resp.into_response())
             .service_fn(self)
-            .boxed()
     }
 }
 
-impl<State, S, R> IntoBoxedService<State, (State, R)> for S
+impl<State, S, R> IntoEndpointService<State, (State, R)> for S
 where
     State: Send + Sync + 'static,
     S: Service<State, Request, Response = R, Error = Infallible> + Clone,
     R: IntoResponse + Send + Sync + 'static,
 {
-    fn into_boxed_service(self) -> BoxService<State, Request, Response, Infallible> {
+    fn into_endpoint_service(
+        self,
+    ) -> impl Service<State, Request, Response = Response, Error = Infallible> + Clone {
         ServiceBuilder::new()
             .map_response(|resp: R| resp.into_response())
             .service(self)
-            .boxed()
     }
 }
 
-impl<State, R> IntoBoxedService<State, ()> for R
+impl<State, R> IntoEndpointService<State, ()> for R
 where
     State: Send + Sync + 'static,
     R: IntoResponse + Clone + Send + Sync + 'static,
 {
-    fn into_boxed_service(self) -> BoxService<State, Request, Response, Infallible> {
-        StaticService(self).boxed()
+    fn into_endpoint_service(
+        self,
+    ) -> impl Service<State, Request, Response = Response, Error = Infallible> + Clone {
+        StaticService(self)
     }
 }
 

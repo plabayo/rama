@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use rama::http::layer::trace::TraceLayer;
+use rama::http::layer::validate_request::ValidateRequestHeaderLayer;
 use rama::http::response::Json;
 use rama::{
     http::{
@@ -58,8 +59,24 @@ async fn main() {
                                 "POST /:key": "store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined",
                             })))
                         .get("/keys", list_keys)
+                        // TODO: add /* automatically to end of path, so we can use the rest of the path as a key :) zzzzzzzzz
+                        // will make or remove prefix logic a lot easier... damn
+                        .nest("/admin", ServiceBuilder::new()
+                            .layer(ValidateRequestHeaderLayer::bearer("secret-token"))
+                            .service(WebService::default()
+                                .delete("/keys", |ctx: Context<AppState>, _req: Request| async move {
+                                    ctx.state().db.write().await.clear();
+                                    Ok(StatusCode::OK)
+                                })
+                                .delete("/item/:key", |ctx: Context<AppState>, _req: Request| async move {
+                                    let key = ctx.get::<UriParams>().unwrap().get("key").unwrap();
+                                    Ok(match ctx.state().db.write().await.remove(key) {
+                                        Some(_) => StatusCode::OK,
+                                        None => StatusCode::NOT_FOUND,
+                                    })
+                                })))
                         .get(
-                            "/:key",
+                            "/item/:key",
                             // only compress the get Action, not the Post Action
                             ServiceBuilder::new()
                                 .layer(CompressionLayer::new())
@@ -71,7 +88,7 @@ async fn main() {
                                     })
                                 }),
                         )
-                        .post("/:key", |ctx: Context<AppState>, req: Request| async move {
+                        .post("/item/:key", |ctx: Context<AppState>, req: Request| async move {
                             let key = ctx.get::<UriParams>().unwrap().get("key").unwrap();
                             let value = match req.into_body().collect().await {
                                 Err(_) => return Ok(StatusCode::BAD_REQUEST),
@@ -83,8 +100,6 @@ async fn main() {
                             ctx.state().db.write().await.insert(key.to_owned(), value);
                             Ok(StatusCode::OK)
                         }),
-                    // TODO: support nesting of services so that we can also support
-                    // endpoints that have common layers (e.g. auth layer for admin)
                 ),
         )
         .await

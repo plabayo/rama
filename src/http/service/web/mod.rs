@@ -4,7 +4,7 @@ mod service;
 pub use service::WebService;
 
 mod endpoint;
-pub use endpoint::IntoBoxedService;
+pub use endpoint::IntoEndpointService;
 
 pub mod matcher;
 
