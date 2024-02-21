@@ -4,7 +4,7 @@ use super::{
     IntoEndpointService,
 };
 use crate::{
-    http::{IntoResponse, Request, Response, StatusCode, Uri},
+    http::{service::fs::ServeDir, IntoResponse, Request, Response, StatusCode, Uri},
     service::{service_fn, BoxService, Context, Service},
 };
 use std::{convert::Infallible, future::Future, marker::PhantomData, sync::Arc};
@@ -120,14 +120,20 @@ where
     /// nest a web service under the given path.
     ///
     /// The nested service will receive a request with the path prefix removed.
-    pub fn nest<I, T>(self, path: &str, service: I) -> Self
+    pub fn nest<I, T>(self, prefix: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
     {
-        let path = format!("{}/*", path.trim_end_matches(['/', '*']));
-        let matcher = PathFilter::new(path);
+        let prefix = format!("{}/*", prefix.trim_end_matches(['/', '*']));
+        let matcher = PathFilter::new(prefix);
         let service = NestedService(service.into_endpoint_service());
         self.on(matcher, service)
+    }
+
+    /// serve the given directory under the given path.
+    pub fn dir(self, prefix: &str, dir: &str) -> Self {
+        let service = ServeDir::new(dir);
+        self.nest(prefix, service)
     }
 
     /// add a route to the web service which matches the given matcher, using the given service.

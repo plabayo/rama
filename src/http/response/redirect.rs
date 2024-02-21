@@ -10,17 +10,25 @@ pub struct Redirect {
 
 impl Redirect {
     /// Create a new temporary (307) redirect response.
-    pub fn temporary(loc: impl Into<HeaderValue>) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the `loc` argument contains invalid header value characters.
+    pub fn temporary(loc: impl AsRef<str>) -> Self {
         Redirect {
-            loc: loc.into(),
+            loc: HeaderValue::from_str(loc.as_ref()).unwrap(),
             status: StatusCode::TEMPORARY_REDIRECT,
         }
     }
 
     /// Create a new permanent (308) redirect response.
-    pub fn permanent(loc: impl Into<HeaderValue>) -> Self {
+    ///
+    /// # Panics
+    ///
+    /// This function panics if the `loc` argument contains invalid header value characters.
+    pub fn permanent(loc: impl AsRef<str>) -> Self {
         Redirect {
-            loc: loc.into(),
+            loc: HeaderValue::from_str(loc.as_ref()).unwrap(),
             status: StatusCode::PERMANENT_REDIRECT,
         }
     }

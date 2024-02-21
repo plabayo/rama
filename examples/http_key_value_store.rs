@@ -45,9 +45,6 @@ async fn main() {
         .listen_with_state(
             AppState::default(),
             addr,
-            // by default the k8s health service is always ready and alive,
-            // optionally you can define your own conditional closures to define
-            // more accurate health checks
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
                 .service(
