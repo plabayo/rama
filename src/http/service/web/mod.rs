@@ -3,6 +3,9 @@
 mod service;
 pub use service::WebService;
 
+mod endpoint;
+pub use endpoint::IntoBoxedService;
+
 pub mod matcher;
 
 pub mod k8s;

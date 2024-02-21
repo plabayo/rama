@@ -51,15 +51,13 @@ async fn main() {
                 .layer(TraceLayer::new_for_http())
                 .service(
                     WebService::default()
-                        .get_fn("/api", || async move {
-                            Ok(Json(json!({
-                                "GET /api": "show this API documentation in Json Format",
+                        .get("/", Json(json!({
+                                "GET /": "show this API documentation in Json Format",
                                 "GET /keys": "list all keys for which (bytes) data is stored",
                                 "GET /:key": "return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise",
                                 "POST /:key": "store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined",
                             })))
-                        })
-                        .get_fn("/keys", list_keys)
+                        .get("/keys", list_keys)
                         .get(
                             "/:key",
                             // only compress the get Action, not the Post Action
@@ -73,12 +71,15 @@ async fn main() {
                                     })
                                 }),
                         )
-                        .post_fn("/:key", |ctx: Context<AppState>, req: Request| async move {
+                        .post("/:key", |ctx: Context<AppState>, req: Request| async move {
                             let key = ctx.get::<UriParams>().unwrap().get("key").unwrap();
                             let value = match req.into_body().collect().await {
                                 Err(_) => return Ok(StatusCode::BAD_REQUEST),
                                 Ok(b) => b.to_bytes(),
                             };
+                            if value.is_empty() {
+                                return Ok(StatusCode::BAD_REQUEST);
+                            }
                             ctx.state().db.write().await.insert(key.to_owned(), value);
                             Ok(StatusCode::OK)
                         }),
