@@ -1,11 +1,11 @@
 use super::{
     endpoint::Endpoint,
-    matcher::{Matcher, MethodFilter, PathFilter},
+    matcher::{Matcher, MethodFilter, PathFilter, UriParams},
     IntoEndpointService,
 };
 use crate::{
     http::{IntoResponse, Request, Response, StatusCode, Uri},
-    service::{service_fn, BoxService, Context, Layer, Service, ServiceBuilder},
+    service::{service_fn, BoxService, Context, Service},
 };
 use std::{convert::Infallible, future::Future, marker::PhantomData, sync::Arc};
 
@@ -124,10 +124,9 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
+        let path = format!("{}/*", path.trim_end_matches(['/', '*']));
         let matcher = PathFilter::new(path);
-        let service = ServiceBuilder::new()
-            .layer(RemovePathPrefix::new(path))
-            .service(service.into_endpoint_service());
+        let service = NestedService(service.into_endpoint_service());
         self.on(matcher, service)
     }
 
@@ -156,62 +155,10 @@ where
 }
 
 #[derive(Debug, Clone)]
-struct RemovePathPrefix {
-    prefix: String,
-}
+#[non_exhaustive]
+struct NestedService<S>(S);
 
-impl RemovePathPrefix {
-    fn new(path: &str) -> Self {
-        Self {
-            prefix: path.trim_matches('/').to_lowercase(),
-        }
-    }
-
-    fn remove_prefix(&self, req: Request) -> Request {
-        let (mut parts, body) = req.into_parts();
-        let mut uri_parts = parts.uri.into_parts();
-        if let Some(path_and_query) = uri_parts.path_and_query.take() {
-            let mut path = path_and_query.path().trim_matches('/').to_lowercase();
-            if path.starts_with(&self.prefix) {
-                path = path
-                    .strip_prefix(&self.prefix)
-                    .unwrap()
-                    .trim_start_matches('/')
-                    .to_owned();
-            }
-            uri_parts.path_and_query = Some(
-                if let Some(query) = path_and_query.query() {
-                    format!("/{}?{}", path, query)
-                } else {
-                    format!("/{}", path)
-                }
-                .parse()
-                .unwrap(),
-            );
-        }
-        parts.uri = Uri::from_parts(uri_parts).unwrap();
-        Request::from_parts(parts, body)
-    }
-}
-
-impl<S> Layer<S> for RemovePathPrefix {
-    type Service = RemovePathPrefixService<S>;
-
-    fn layer(&self, service: S) -> Self::Service {
-        RemovePathPrefixService {
-            inner: service,
-            prefix: self.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-struct RemovePathPrefixService<S> {
-    inner: S,
-    prefix: RemovePathPrefix,
-}
-
-impl<S, State> Service<State, Request> for RemovePathPrefixService<S>
+impl<S, State> Service<State, Request> for NestedService<S>
 where
     S: Service<State, Request>,
 {
@@ -223,8 +170,26 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let req = self.prefix.remove_prefix(req);
-        self.inner.serve(ctx, req)
+        // get nested path
+        let path = ctx.get::<UriParams>().unwrap().glob().unwrap();
+
+        // set the nested path
+        let (mut parts, body) = req.into_parts();
+        let mut uri_parts = parts.uri.into_parts();
+        let path_and_query = uri_parts.path_and_query.take().unwrap();
+        match path_and_query.query() {
+            Some(query) => {
+                uri_parts.path_and_query = Some(format!("{}?{}", path, query).parse().unwrap());
+            }
+            None => {
+                uri_parts.path_and_query = Some(path.parse().unwrap());
+            }
+        }
+        parts.uri = Uri::from_parts(uri_parts).unwrap();
+        let req = Request::from_parts(parts, body);
+
+        // make the actual request
+        self.0.serve(ctx, req)
     }
 }
 
@@ -355,22 +320,5 @@ mod test {
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "not found");
-    }
-
-    #[test]
-    fn test_remove_prefix() {
-        let test_cases = vec![
-            ("/foo/bar", "/foo", "/bar"),
-            ("/foo/bar", "/foo/", "/bar"),
-            ("/foo/bar", "/foo/bar", "/"),
-            ("/foo/bar", "/foo/bar/", "/"),
-            ("/", "/foo", "/"),
-        ];
-        for (uri, prefix, expected) in test_cases {
-            let prefix = RemovePathPrefix::new(prefix);
-            let req = Request::builder().uri(uri).body(Body::empty()).unwrap();
-            let req = prefix.remove_prefix(req);
-            assert_eq!(req.uri().path(), expected);
-        }
     }
 }
