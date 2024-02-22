@@ -5,6 +5,8 @@ use crate::{
 };
 use std::collections::HashMap;
 
+mod de;
+
 #[derive(Debug, Clone, Default)]
 /// parameters that are inserted in the [`Context`],
 /// in case the [`PathFilter`] found a match for the given [`Request`].
@@ -42,6 +44,24 @@ impl UriParams {
     /// for the last part of the Path that was filtered on.
     pub fn glob(&self) -> Option<&str> {
         self.glob.as_deref()
+    }
+
+    /// Deserialize the [`UriParams`] into a given type.
+    pub(crate) fn deserialize<T>(&self) -> Result<T, de::PathDeserializationError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        match self.params {
+            Some(ref params) => {
+                let params: Vec<_> = params
+                    .iter()
+                    .map(|(k, v)| (k.as_str(), v.as_str()))
+                    .collect();
+                let deserializer = de::PathDeserializer::new(&params);
+                T::deserialize(deserializer)
+            }
+            None => Err(de::PathDeserializationError::new(de::ErrorKind::NoParams)),
+        }
     }
 }
 
@@ -138,7 +158,11 @@ impl PathFilter {
                                 if segment.is_empty() {
                                     return None;
                                 }
-                                params.insert(name.to_owned(), segment.to_owned());
+                                let segment = percent_encoding::percent_decode(segment.as_bytes())
+                                    .decode_utf8()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|_| segment.to_owned());
+                                params.insert(name.to_owned(), segment);
                             }
                             PathFragment::Glob => {
                                 params.append_glob(segment);
@@ -227,6 +251,19 @@ mod test {
             TestCase::none("/", "//:foo"),
             TestCase::none("", "/:foo"),
             TestCase::none("/foo", "/bar"),
+            TestCase::some(
+                "/person/glen%20dc/age",
+                "/person/:name/age",
+                UriParams {
+                    params: Some({
+                        let mut params = HashMap::new();
+                        params.insert("name".to_owned(), "glen dc".to_owned());
+                        params
+                    }),
+                    ..UriParams::default()
+                },
+            ),
+            TestCase::none("/foo", "/bar"),
             TestCase::some("/foo", "foo", UriParams::default()),
             TestCase::some("/foo/bar/", "foo/bar", UriParams::default()),
             TestCase::none("/foo/bar/", "foo/baz"),
@@ -314,5 +351,28 @@ mod test {
                 }
             }
         }
+    }
+
+    #[test]
+    fn test_deserialize_uri_params() {
+        let params = UriParams {
+            params: Some({
+                let mut params = HashMap::new();
+                params.insert("name".to_owned(), "glen dc".to_owned());
+                params.insert("age".to_owned(), "42".to_owned());
+                params
+            }),
+            glob: Some("/age".to_owned()),
+        };
+
+        #[derive(serde::Deserialize)]
+        struct Person {
+            name: String,
+            age: u8,
+        }
+
+        let person: Person = params.deserialize().unwrap();
+        assert_eq!(person.name, "glen dc");
+        assert_eq!(person.age, 42);
     }
 }
