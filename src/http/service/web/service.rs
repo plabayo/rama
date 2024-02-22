@@ -183,12 +183,29 @@ where
         let (mut parts, body) = req.into_parts();
         let mut uri_parts = parts.uri.into_parts();
         let path_and_query = uri_parts.path_and_query.take().unwrap();
+        let add_trailer = path.is_empty()
+            || path
+                .split('/')
+                .last()
+                .map(|s| !s.contains('.'))
+                .unwrap_or_default();
         match path_and_query.query() {
             Some(query) => {
-                uri_parts.path_and_query = Some(format!("{}?{}", path, query).parse().unwrap());
+                uri_parts.path_and_query = Some(
+                    format!("{}{}?{}", path, if add_trailer { "/" } else { "" }, query)
+                        .parse()
+                        .unwrap(),
+                );
             }
             None => {
-                uri_parts.path_and_query = Some(path.parse().unwrap());
+                uri_parts.path_and_query = Some(
+                    if add_trailer {
+                        path.parse()
+                    } else {
+                        format!("{}/", path).parse()
+                    }
+                    .unwrap(),
+                );
             }
         }
         parts.uri = Uri::from_parts(uri_parts).unwrap();
@@ -353,6 +370,8 @@ mod test {
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
         let res = get_response(&svc, "https://www.test.io/").await;
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "<h1>Hello, World!</h1>");
     }
 }

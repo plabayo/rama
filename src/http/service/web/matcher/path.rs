@@ -123,7 +123,6 @@ impl PathFilter {
                 let mut params = UriParams::default();
                 for (segment, fragment) in path
                     .split('/')
-                    .filter(|s| !s.is_empty())
                     .map(Some)
                     .chain(std::iter::repeat(None))
                     .zip(fragments_iter)
@@ -136,6 +135,9 @@ impl PathFilter {
                                 }
                             }
                             PathFragment::Param(name) => {
+                                if segment.is_empty() {
+                                    return None;
+                                }
                                 params.insert(name.to_owned(), segment.to_owned());
                             }
                             PathFragment::Glob => {
@@ -214,6 +216,14 @@ mod test {
             TestCase::some("/foo/*bar/baz", "/foo/*bar/baz", UriParams::default()),
             TestCase::none("/foo/*bar/baz", "/foo/*bar"),
             TestCase::none("/", "/:foo"),
+            TestCase::some(
+                "/",
+                "/*",
+                UriParams {
+                    glob: Some("/".to_owned()),
+                    ..UriParams::default()
+                },
+            ),
             TestCase::none("/", "//:foo"),
             TestCase::none("", "/:foo"),
             TestCase::none("/foo", "/bar"),

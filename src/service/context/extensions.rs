@@ -61,13 +61,16 @@ impl Extensions {
     pub fn extend(&mut self, other: Extensions) {
         if let Some(other_map) = other.map {
             let map = self.map.get_or_insert_with(Box::default);
+            #[allow(clippy::useless_conversion)]
             map.extend(other_map.into_iter());
         }
     }
 
     /// Clear the `Extensions` of all inserted extensions.
     pub fn clear(&mut self) {
-        self.map.as_mut().map(|map| map.clear());
+        if let Some(map) = self.map.as_mut() {
+            map.clear();
+        }
     }
 
     /// Get a reference to a type previously inserted on this `Extensions`.

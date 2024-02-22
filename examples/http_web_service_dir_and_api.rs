@@ -45,7 +45,6 @@ async fn main() {
                 .service(
                 WebService::default()
                     .not_found(Redirect::temporary("/error.html"))
-                    .get("/", Redirect::temporary("/coin"))
                     .get(
                         "/coin",
                         |ctx: Context<AppState>, _req: Request| async move { Ok(coin_page(ctx)) },
