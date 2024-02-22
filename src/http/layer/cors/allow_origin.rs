@@ -51,11 +51,14 @@ impl AllowOrigin {
         I: IntoIterator<Item = HeaderValue>,
     {
         let origins = origins.into_iter().collect::<Vec<_>>();
-        if origins.iter().any(|o| o == WILDCARD) {
-            panic!("Wildcard origin (`*`) cannot be passed to `AllowOrigin::list`. Use `AllowOrigin::any()` instead");
-        } else {
-            Self(OriginInner::List(origins))
+        if origins.contains(&WILDCARD) {
+            panic!(
+                "Wildcard origin (`*`) cannot be passed to `AllowOrigin::list`. \
+                 Use `AllowOrigin::any()` instead"
+            );
         }
+
+        Self(OriginInner::List(origins))
     }
 
     /// Set the allowed origins from a predicate

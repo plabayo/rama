@@ -90,6 +90,7 @@ where
 ///
 /// - They're gRPC, which has its own protocol specific compression scheme.
 /// - It's an image as determined by the `content-type` starting with `image/`.
+/// - They're Server-Sent Events (SSE) as determined by the `content-type` being `text/event-stream`.
 /// - The response is less than 32 bytes.
 ///
 /// # Configuring the defaults
@@ -113,14 +114,17 @@ where
 /// [`Compression`]: super::Compression
 /// [`CompressionLayer`]: super::CompressionLayer
 #[derive(Debug, Clone)]
-pub struct DefaultPredicate(And<And<SizeAbove, NotForContentType>, NotForContentType>);
+pub struct DefaultPredicate(
+    And<And<And<SizeAbove, NotForContentType>, NotForContentType>, NotForContentType>,
+);
 
 impl DefaultPredicate {
     /// Create a new `DefaultPredicate`.
     pub fn new() -> Self {
         let inner = SizeAbove::new(SizeAbove::DEFAULT_MIN_SIZE)
             .and(NotForContentType::GRPC)
-            .and(NotForContentType::IMAGES);
+            .and(NotForContentType::IMAGES)
+            .and(NotForContentType::SSE);
         Self(inner)
     }
 }
@@ -199,6 +203,9 @@ impl NotForContentType {
         content_type: Str::Static("image/"),
         exception: Some(Str::Static("image/svg+xml")),
     };
+
+    /// Predicate that wont compress Server-Sent Events (SSE) responses.
+    pub const SSE: Self = Self::const_new("text/event-stream");
 
     /// Create a new `NotForContentType`.
     pub fn new(content_type: &str) -> Self {

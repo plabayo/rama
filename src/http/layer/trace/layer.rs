@@ -1,6 +1,6 @@
 use super::{
     DefaultMakeSpan, DefaultOnBodyChunk, DefaultOnEos, DefaultOnFailure, DefaultOnRequest,
-    DefaultOnResponse, Trace,
+    DefaultOnResponse, GrpcMakeClassifier, HttpMakeClassifier, Trace,
 };
 use crate::http::layer::classify::{
     GrpcErrorsAsFailures, MakeClassifier, ServerErrorsAsFailures, SharedClassifier,
@@ -176,7 +176,7 @@ impl<M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
     }
 }
 
-impl TraceLayer<SharedClassifier<ServerErrorsAsFailures>> {
+impl TraceLayer<HttpMakeClassifier> {
     /// Create a new [`TraceLayer`] using [`ServerErrorsAsFailures`] which supports classifying
     /// regular HTTP responses based on the status code.
     pub fn new_for_http() -> Self {
@@ -192,7 +192,7 @@ impl TraceLayer<SharedClassifier<ServerErrorsAsFailures>> {
     }
 }
 
-impl TraceLayer<SharedClassifier<GrpcErrorsAsFailures>> {
+impl TraceLayer<GrpcMakeClassifier> {
     /// Create a new [`TraceLayer`] using [`GrpcErrorsAsFailures`] which supports classifying
     /// gRPC responses and streams based on the `grpc-status` header.
     pub fn new_for_grpc() -> Self {

@@ -81,6 +81,20 @@ impl ServeFile {
         Self(self.0.precompressed_deflate())
     }
 
+    /// Informs the service that it should also look for a precompressed zstd
+    /// version of the file.
+    ///
+    /// If the client has an `Accept-Encoding` header that allows the zstd encoding,
+    /// the file `foo.txt.zst` will be served instead of `foo.txt`.
+    /// If the precompressed file is not available, or the client doesn't support it,
+    /// the uncompressed version will be served instead.
+    /// Both the precompressed version and the uncompressed version are expected
+    /// to be present in the same directory. Different precompressed
+    /// variants can be combined.
+    pub fn precompressed_zstd(self) -> Self {
+        Self(self.0.precompressed_zstd())
+    }
+
     /// Set a specific read buffer chunk size.
     ///
     /// The default capacity is 64kb.
@@ -134,11 +148,13 @@ mod tests {
     use crate::http::Method;
     use crate::http::{Request, StatusCode};
     use crate::service::{Context, Service};
+    use async_compression::tokio::bufread::ZstdDecoder;
     use brotli::BrotliDecompress;
     use flate2::bufread::DeflateDecoder;
     use flate2::bufread::GzDecoder;
     use std::io::Read;
     use std::str::FromStr;
+    use tokio::io::AsyncReadExt;
 
     #[tokio::test]
     async fn basic() {
@@ -348,6 +364,25 @@ mod tests {
         let mut decoder = DeflateDecoder::new(&body[..]);
         let mut decompressed = String::new();
         decoder.read_to_string(&mut decompressed).unwrap();
+        assert!(decompressed.starts_with("\"This is a test file!\""));
+    }
+
+    #[tokio::test]
+    async fn precompressed_zstd() {
+        let svc = ServeFile::new("./test-files/precompressed.txt").precompressed_zstd();
+        let request = Request::builder()
+            .header("Accept-Encoding", "zstd,br")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(Context::default(), request).await.unwrap();
+
+        assert_eq!(res.headers()["content-type"], "text/plain");
+        assert_eq!(res.headers()["content-encoding"], "zstd");
+
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        let mut decoder = ZstdDecoder::new(&body[..]);
+        let mut decompressed = String::new();
+        decoder.read_to_string(&mut decompressed).await.unwrap();
         assert!(decompressed.starts_with("\"This is a test file!\""));
     }
 

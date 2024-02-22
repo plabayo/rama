@@ -1,4 +1,4 @@
-use super::{OnBodyChunk, OnEos, OnFailure};
+use super::{DefaultOnBodyChunk, DefaultOnEos, DefaultOnFailure, OnBodyChunk, OnEos, OnFailure};
 use crate::http::dep::http_body::{Body, Frame};
 use crate::http::layer::classify::ClassifyEos;
 use futures_core::ready;
@@ -15,7 +15,7 @@ pin_project! {
     /// Response body for [`Trace`].
     ///
     /// [`Trace`]: super::Trace
-    pub struct ResponseBody<B, C, OnBodyChunk, OnEos, OnFailure> {
+    pub struct ResponseBody<B, C, OnBodyChunk = DefaultOnBodyChunk, OnEos = DefaultOnEos, OnFailure = DefaultOnFailure> {
         #[pin]
         pub(crate) inner: B,
         pub(crate) classify_eos: Option<C>,

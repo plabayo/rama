@@ -33,7 +33,7 @@ where
 }
 
 impl CompressionLayer {
-    /// Create a new [`CompressionLayer`]
+    /// Creates a new [`CompressionLayer`].
     pub fn new() -> Self {
         Self::default()
     }

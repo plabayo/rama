@@ -1,7 +1,7 @@
 use super::{
     DefaultMakeSpan, DefaultOnBodyChunk, DefaultOnEos, DefaultOnFailure, DefaultOnRequest,
-    DefaultOnResponse, MakeSpan, OnBodyChunk, OnEos, OnFailure, OnRequest, OnResponse,
-    ResponseBody, TraceLayer,
+    DefaultOnResponse, GrpcMakeClassifier, HttpMakeClassifier, MakeSpan, OnBodyChunk, OnEos,
+    OnFailure, OnRequest, OnResponse, ResponseBody, TraceLayer,
 };
 use crate::http::dep::http_body::Body as HttpBody;
 use crate::http::layer::classify::{
@@ -204,7 +204,7 @@ impl<S, M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
 impl<S>
     Trace<
         S,
-        SharedClassifier<ServerErrorsAsFailures>,
+        HttpMakeClassifier,
         DefaultMakeSpan,
         DefaultOnRequest,
         DefaultOnResponse,
@@ -232,7 +232,7 @@ impl<S>
 impl<S>
     Trace<
         S,
-        SharedClassifier<GrpcErrorsAsFailures>,
+        GrpcMakeClassifier,
         DefaultMakeSpan,
         DefaultOnRequest,
         DefaultOnResponse,

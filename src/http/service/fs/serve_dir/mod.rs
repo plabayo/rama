@@ -433,10 +433,11 @@ impl<F> ServeDir<F> {
             .and_then(|value| value.to_str().ok())
             .map(|s| s.to_owned());
 
-        let negotiated_encodings = encodings(
+        let negotiated_encodings: Vec<_> = encodings(
             req.headers(),
             self.precompressed_variants.unwrap_or_default(),
-        );
+        )
+        .collect();
 
         let variant = self.variant.clone();
 

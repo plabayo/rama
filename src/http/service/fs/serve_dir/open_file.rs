@@ -174,7 +174,7 @@ fn preferred_encoding(
     path: &mut PathBuf,
     negotiated_encoding: &[(Encoding, QValue)],
 ) -> Option<Encoding> {
-    let preferred_encoding = Encoding::preferred_encoding(negotiated_encoding);
+    let preferred_encoding = Encoding::preferred_encoding(negotiated_encoding.iter().copied());
 
     if let Some(file_extension) =
         preferred_encoding.and_then(|encoding| encoding.to_file_extension())
@@ -253,23 +253,21 @@ async fn maybe_redirect_or_append_path(
     uri: &Uri,
     append_index_html_on_directories: bool,
 ) -> Option<OpenFileOutput> {
-    if !uri.path().ends_with('/') {
-        if is_dir(path_to_file).await {
-            let location =
-                HeaderValue::from_str(&append_slash_on_path(uri.clone()).to_string()).unwrap();
-            Some(OpenFileOutput::Redirect { location })
-        } else {
-            None
-        }
-    } else if is_dir(path_to_file).await {
-        if append_index_html_on_directories {
-            path_to_file.push("index.html");
-            None
-        } else {
-            Some(OpenFileOutput::FileNotFound)
-        }
-    } else {
+    if !is_dir(path_to_file).await {
+        return None;
+    }
+
+    if !append_index_html_on_directories {
+        return Some(OpenFileOutput::FileNotFound);
+    }
+
+    if uri.path().ends_with('/') {
+        path_to_file.push("index.html");
         None
+    } else {
+        let location =
+            HeaderValue::from_str(&append_slash_on_path(uri.clone()).to_string()).unwrap();
+        Some(OpenFileOutput::Redirect { location })
     }
 }
 
