@@ -29,7 +29,7 @@ async fn vary_set_by_inner_service() {
         .await
         .unwrap();
     let mut vary_headers = res.headers().get_all(header::VARY).into_iter();
-    assert_eq!(vary_headers.next(), Some(&PERMISSIVE_CORS_VARY_HEADERS));
     assert_eq!(vary_headers.next(), Some(&CUSTOM_VARY_HEADERS));
+    assert_eq!(vary_headers.next(), Some(&PERMISSIVE_CORS_VARY_HEADERS));
     assert_eq!(vary_headers.next(), None);
 }

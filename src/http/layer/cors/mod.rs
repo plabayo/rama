@@ -634,14 +634,15 @@ where
             let req = Request::from_parts(parts, body);
 
             let mut response: Response<ResBody> = self.inner.serve(ctx, req).await?;
+            let response_headers = response.headers_mut();
 
             // vary header can have multiple values, don't overwrite
             // previously-set value(s).
-            if let Some(vary) = response.headers_mut().remove(header::VARY) {
-                headers.append(header::VARY, vary);
+            if let Some(vary) = headers.remove(header::VARY) {
+                response_headers.append(header::VARY, vary);
             }
             // extend will overwrite previous headers of remaining names
-            response.headers_mut().extend(headers.drain());
+            response_headers.extend(headers.drain());
 
             Ok(response)
         }
