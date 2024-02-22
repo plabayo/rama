@@ -10,9 +10,7 @@ use percent_encoding::percent_decode;
 use std::{
     convert::Infallible,
     path::{Component, Path, PathBuf},
-    sync::Arc,
 };
-use tokio::sync::Mutex;
 
 pub(crate) mod future;
 mod headers;
@@ -73,7 +71,7 @@ pub struct ServeDir<F = DefaultServeDirFallback> {
     // This is used to specialise implementation for
     // single files
     variant: ServeVariant,
-    fallback: Arc<Mutex<Option<F>>>,
+    fallback: Option<F>,
     call_fallback_on_method_not_allowed: bool,
 }
 
@@ -93,7 +91,7 @@ impl ServeDir<DefaultServeDirFallback> {
             variant: ServeVariant::Directory {
                 append_index_html_on_directories: true,
             },
-            fallback: Arc::new(Mutex::new(None)),
+            fallback: None,
             call_fallback_on_method_not_allowed: false,
         }
     }
@@ -107,7 +105,7 @@ impl ServeDir<DefaultServeDirFallback> {
             buf_chunk_size: DEFAULT_CAPACITY,
             precompressed_variants: None,
             variant: ServeVariant::SingleFile { mime },
-            fallback: Arc::new(Mutex::new(None)),
+            fallback: None,
             call_fallback_on_method_not_allowed: false,
         }
     }
@@ -254,7 +252,7 @@ impl<F> ServeDir<F> {
             buf_chunk_size: self.buf_chunk_size,
             precompressed_variants: self.precompressed_variants,
             variant: self.variant,
-            fallback: Arc::new(Mutex::new(Some(new_fallback))),
+            fallback: Some(new_fallback),
             call_fallback_on_method_not_allowed: self.call_fallback_on_method_not_allowed,
         }
     }
@@ -387,7 +385,7 @@ impl<F> ServeDir<F> {
     {
         if req.method() != Method::GET && req.method() != Method::HEAD {
             if self.call_fallback_on_method_not_allowed {
-                if let Some(fallback) = self.fallback.lock().await.as_ref() {
+                if let Some(fallback) = self.fallback.as_ref() {
                     return future::serve_fallback(fallback, ctx, req).await;
                 }
             } else {
@@ -404,16 +402,12 @@ impl<F> ServeDir<F> {
         let extensions = std::mem::take(&mut parts.extensions);
         let req = Request::from_parts(parts, Body::empty());
 
-        let mut fallback_and_request = self.fallback.lock().await.as_mut().map(|fallback| {
+        let fallback_and_request = self.fallback.as_ref().map(|fallback| {
             let mut fallback_req = Request::new(body);
             *fallback_req.method_mut() = req.method().clone();
             *fallback_req.uri_mut() = req.uri().clone();
             *fallback_req.headers_mut() = req.headers().clone();
             *fallback_req.extensions_mut() = extensions;
-
-            // get the ready fallback and leave a non-ready clone in its place
-            let clone = fallback.clone();
-            let fallback = std::mem::replace(fallback, clone);
 
             (fallback, ctx, fallback_req)
         });
@@ -424,8 +418,8 @@ impl<F> ServeDir<F> {
         {
             Some(path_to_file) => path_to_file,
             None => {
-                return if let Some((fallback, ctx, request)) = fallback_and_request.take() {
-                    future::serve_fallback(&fallback, ctx, request).await
+                return if let Some((fallback, ctx, request)) = fallback_and_request {
+                    future::serve_fallback(fallback, ctx, request).await
                 } else {
                     Ok(future::not_found())
                 };

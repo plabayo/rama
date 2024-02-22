@@ -14,7 +14,7 @@ use std::{convert::Infallible, io};
 
 pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(
     open_file_result: Result<OpenFileOutput, std::io::Error>,
-    mut fallback_and_request: Option<(F, Context<State>, Request<ReqBody>)>,
+    fallback_and_request: Option<(&F, Context<State>, Request<ReqBody>)>,
 ) -> Result<Response, std::io::Error>
 where
     State: Send + Sync + 'static,
@@ -32,8 +32,8 @@ where
         }
 
         Ok(OpenFileOutput::FileNotFound) => {
-            if let Some((fallback, ctx, request)) = fallback_and_request.take() {
-                serve_fallback(&fallback, ctx, request).await
+            if let Some((fallback, ctx, request)) = fallback_and_request {
+                serve_fallback(fallback, ctx, request).await
             } else {
                 Ok(not_found())
             }
@@ -60,8 +60,8 @@ where
                 io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
             ) || error_is_not_a_directory
             {
-                if let Some((fallback, ctx, request)) = fallback_and_request.take() {
-                    serve_fallback(&fallback, ctx, request).await
+                if let Some((fallback, ctx, request)) = fallback_and_request {
+                    serve_fallback(fallback, ctx, request).await
                 } else {
                     Ok(not_found())
                 }
