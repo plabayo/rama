@@ -132,7 +132,7 @@ where
 
     /// serve the given directory under the given path.
     pub fn dir(self, prefix: &str, dir: &str) -> Self {
-        let service = ServeDir::new(dir);
+        let service = ServeDir::new(dir).fallback(self.not_found.clone());
         self.nest(prefix, service)
     }
 
@@ -238,91 +238,50 @@ mod test {
 
     use super::*;
 
+    async fn get_response<S>(service: &S, uri: &str) -> Response
+    where
+        S: Service<(), Request, Response = Response, Error = Infallible>,
+    {
+        let req = Request::get(uri).body(Body::empty()).unwrap();
+        service.serve(Context::default(), req).await.unwrap()
+    }
+
+    async fn post_response<S>(service: &S, uri: &str) -> Response
+    where
+        S: Service<(), Request, Response = Response, Error = Infallible>,
+    {
+        let req = Request::post(uri).body(Body::empty()).unwrap();
+        service.serve(Context::default(), req).await.unwrap()
+    }
+
     #[tokio::test]
     async fn test_web_service() {
         let svc = WebService::new()
-            .get(
-                "/hello",
-                service_fn(|_, _| async { Ok("hello".into_response()) }),
-            )
-            .post(
-                "/world",
-                service_fn(|_, _| async { Ok("world".into_response()) }),
-            );
+            .get("/hello", "hello")
+            .post("/world", "world");
 
-        let res = svc
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("https://www.test.io/hello")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = get_response(&svc, "https://www.test.io/hello").await;
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "hello");
 
-        let res = svc
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("POST")
-                    .uri("https://www.test.io/world")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = post_response(&svc, "https://www.test.io/world").await;
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "world");
 
-        let res = svc
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("https://www.test.io/world")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = get_response(&svc, "https://www.test.io/world").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-        let res = svc
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("https://www.test.io")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = get_response(&svc, "https://www.test.io").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]
     async fn test_web_service_not_found() {
-        let svc = WebService::new()
-            .not_found(service_fn(|_, _| async { Ok("not found".into_response()) }));
+        let svc = WebService::new().not_found("not found");
 
-        let res = svc
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("https://www.test.io/hello")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = get_response(&svc, "https://www.test.io/hello").await;
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "not found");
@@ -333,70 +292,64 @@ mod test {
         let svc = WebService::new().nest(
             "/api",
             WebService::new()
-                .get(
-                    "/hello",
-                    service_fn(|_, _| async { Ok("hello".into_response()) }),
-                )
-                .post(
-                    "/world",
-                    service_fn(|_, _| async { Ok("world".into_response()) }),
-                ),
+                .get("/hello", "hello")
+                .post("/world", "world"),
         );
 
-        let res = svc
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("https://www.test.io/api/hello")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = get_response(&svc, "https://www.test.io/api/hello").await;
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "hello");
 
-        let res = svc
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("POST")
-                    .uri("https://www.test.io/api/world")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = post_response(&svc, "https://www.test.io/api/world").await;
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "world");
 
-        let res = svc
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("https://www.test.io/api/world")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = get_response(&svc, "https://www.test.io/api/world").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
-        let res = svc
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("https://www.test.io")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
+        let res = get_response(&svc, "https://www.test.io").await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_web_service_dir() {
+        let tmp_dir = tempdir::TempDir::new("test_web_service_dir").unwrap();
+        let file_path = tmp_dir.path().join("index.html");
+        std::fs::write(&file_path, "<h1>Hello, World!</h1>").unwrap();
+        let style_dir = tmp_dir.path().join("style");
+        std::fs::create_dir(&style_dir).unwrap();
+        let file_path = style_dir.join("main.css");
+        std::fs::write(&file_path, "body { background-color: red }").unwrap();
+
+        let svc = WebService::new()
+            .get("/api/version", "v1")
+            .post("/api", StatusCode::FORBIDDEN)
+            .dir("/", tmp_dir.path().to_str().unwrap());
+
+        let res = get_response(&svc, "https://www.test.io/index.html").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "<h1>Hello, World!</h1>");
+
+        let res = get_response(&svc, "https://www.test.io/style/main.css").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "body { background-color: red }");
+
+        let res = get_response(&svc, "https://www.test.io/api/version").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "v1");
+
+        let res = post_response(&svc, "https://www.test.io/api").await;
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+
+        let res = get_response(&svc, "https://www.test.io/notfound.html").await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        let res = get_response(&svc, "https://www.test.io/").await;
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }

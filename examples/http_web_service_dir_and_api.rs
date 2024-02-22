@@ -1,7 +1,10 @@
 use std::sync::atomic::AtomicU64;
 
 use rama::http::response::{Html, Redirect};
-use rama::http::{layer::trace::TraceLayer, Request};
+use rama::http::{
+    layer::{compression::CompressionLayer, trace::TraceLayer},
+    Request,
+};
 use rama::{
     http::{server::HttpServer, service::web::WebService},
     rt::Executor,
@@ -38,8 +41,10 @@ async fn main() {
             addr,
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
+                .layer(CompressionLayer::new())
                 .service(
                 WebService::default()
+                    .not_found(Redirect::temporary("/error.html"))
                     .get("/", Redirect::temporary("/coin"))
                     .get(
                         "/coin",
@@ -78,6 +83,13 @@ fn coin_page(ctx: Context<AppState>) -> Html<String> {
             flex-direction: column;
             text-align: center;
         }}
+
+        footer {{
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            text-align: center;
+        }}
     </style>
 </head>
 <body>
@@ -87,6 +99,12 @@ fn coin_page(ctx: Context<AppState>) -> Html<String> {
     <form action="/coin" method="post">
         <button type="submit">&#x1F4B0; Click</button>
     </form>
+
+    <footer>
+        <p>
+            See <a href="/legal.html">the legal page</a> for more information on your rights.
+        </p>
+    </footer>
 </body>
 </html>
     "#
