@@ -42,7 +42,7 @@ pub struct Extensions {
 impl Extensions {
     /// Create an empty `Extensions`.
     #[inline]
-    pub(crate) fn new() -> Extensions {
+    pub fn new() -> Extensions {
         Extensions { map: None }
     }
 
@@ -50,7 +50,7 @@ impl Extensions {
     ///
     /// If a extension of this type already existed, it will
     /// be returned.
-    pub(crate) fn insert<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> Option<T> {
+    pub fn insert<T: Clone + Send + Sync + 'static>(&mut self, val: T) -> Option<T> {
         self.map
             .get_or_insert_with(Box::default)
             .insert(TypeId::of::<T>(), Box::new(val))
@@ -58,7 +58,7 @@ impl Extensions {
     }
 
     /// Get a reference to a type previously inserted on this `Extensions`.
-    pub(crate) fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
+    pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.get_inner::<T>().or_else(|| {
             self.get_inner::<ParentExtensions>()
                 .and_then(|parent| parent.extensions.get::<T>())
@@ -75,7 +75,7 @@ impl Extensions {
     /// Get a new extension map with the current extensions as parent.
     ///
     /// Note that later edits to parent won't be reflected here.
-    pub(crate) fn into_parent(self) -> Extensions {
+    pub fn into_parent(self) -> Extensions {
         let mut ext = Extensions::new();
         ext.insert(ParentExtensions {
             extensions: Arc::new(self),
