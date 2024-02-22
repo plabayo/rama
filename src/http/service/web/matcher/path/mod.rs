@@ -47,7 +47,7 @@ impl UriParams {
     }
 
     /// Deserialize the [`UriParams`] into a given type.
-    pub(crate) fn deserialize<T>(&self) -> Result<T, de::PathDeserializationError>
+    pub fn deserialize<T>(&self) -> Result<T, UriParamsDeserializeError>
     where
         T: serde::de::DeserializeOwned,
     {
@@ -62,8 +62,23 @@ impl UriParams {
             }
             None => Err(de::PathDeserializationError::new(de::ErrorKind::NoParams)),
         }
+        .map_err(UriParamsDeserializeError)
     }
 }
+
+#[derive(Debug)]
+/// Error that can occur during the deserialization of the [`UriParams`].
+///
+/// See [`UriParams::deserialize`] for more information.
+pub struct UriParamsDeserializeError(de::PathDeserializationError);
+
+impl std::fmt::Display for UriParamsDeserializeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl std::error::Error for UriParamsDeserializeError {}
 
 #[derive(Debug, Clone)]
 enum PathFragment {

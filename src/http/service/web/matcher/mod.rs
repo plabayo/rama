@@ -7,7 +7,7 @@ mod domain;
 pub use domain::DomainFilter;
 
 mod path;
-pub use path::{PathFilter, UriParams};
+pub use path::{PathFilter, UriParams, UriParamsDeserializeError};
 
 use crate::{
     http::Request,
