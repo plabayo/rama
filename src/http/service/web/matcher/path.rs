@@ -1,5 +1,8 @@
 use super::Matcher;
-use crate::{http::Request, service::Context};
+use crate::{
+    http::Request,
+    service::{context::Extensions, Context},
+};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone, Default)]
@@ -159,11 +162,11 @@ impl PathFilter {
 }
 
 impl<State> Matcher<State> for PathFilter {
-    fn matches(&self, ctx: &mut Context<State>, req: &Request) -> bool {
+    fn matches(&self, ext: &mut Extensions, _ctx: &Context<State>, req: &Request) -> bool {
         match self.matches_path(req.uri().path()) {
             None => false,
             Some(params) => {
-                ctx.insert(params);
+                ext.insert(params);
                 true
             }
         }

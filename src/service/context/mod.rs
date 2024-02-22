@@ -110,6 +110,44 @@ impl<S> Context<S> {
         self.extensions.insert(extension)
     }
 
+    /// Extend The [`Context`] [`Extensions`] with another [`Extensions`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::{context::Extensions, Context};
+    /// let mut ctx = Context::default();
+    /// let mut ext = Extensions::default();
+    ///
+    /// ctx.insert(true);
+    /// ext.insert(5i32);
+    /// ctx.extend(ext);
+    ///
+    /// assert_eq!(ctx.get::<bool>(), Some(&true));
+    /// assert_eq!(ctx.get::<i32>(), Some(&5i32));
+    /// ```
+    pub fn extend(&mut self, extensions: Extensions) {
+        self.extensions.extend(extensions);
+    }
+
+    /// Clear the [`Context`] of all inserted [`Extensions`].
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::Context;
+    /// let mut ctx = Context::default();
+    ///
+    /// ctx.insert(5i32);
+    /// assert_eq!(ctx.get::<i32>(), Some(&5i32));
+    ///
+    /// ctx.clear();
+    /// assert_eq!(ctx.get::<i32>(), None);
+    /// ```
+    pub fn clear(&mut self) {
+        self.extensions.clear();
+    }
+
     /// Get a reference to the shutdown guard,
     /// if and only if the context was created within a graceful environment.
     pub fn guard(&self) -> Option<&ShutdownGuard> {

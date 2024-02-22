@@ -1,6 +1,6 @@
 use crate::{
     http::{Method, Request},
-    service::Context,
+    service::{context::Extensions, Context},
 };
 use std::{
     fmt,
@@ -50,7 +50,7 @@ impl MethodFilter {
 
 impl<State> super::Matcher<State> for MethodFilter {
     /// returns true on a match, false otherwise
-    fn matches(&self, _ctx: &mut Context<State>, req: &Request) -> bool {
+    fn matches(&self, _ext: &mut Extensions, _ctx: &Context<State>, req: &Request) -> bool {
         MethodFilter::try_from(req.method())
             .ok()
             .map(|method| self.contains(method))

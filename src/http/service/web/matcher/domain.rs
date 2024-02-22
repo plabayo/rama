@@ -1,5 +1,8 @@
 use super::Matcher;
-use crate::{http::Request, service::Context};
+use crate::{
+    http::Request,
+    service::{context::Extensions, Context},
+};
 use std::cmp::Ordering;
 
 #[derive(Debug, Clone)]
@@ -45,7 +48,7 @@ impl DomainFilter {
 }
 
 impl<State> Matcher<State> for DomainFilter {
-    fn matches(&self, _ctx: &mut Context<State>, req: &Request) -> bool {
+    fn matches(&self, _ext: &mut Extensions, _ctx: &Context<State>, req: &Request) -> bool {
         let host = match req.uri().host() {
             Some(host) => host,
             None => return false,

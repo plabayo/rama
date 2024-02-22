@@ -65,6 +65,11 @@ impl Extensions {
         }
     }
 
+    /// Clear the `Extensions` of all inserted extensions.
+    pub fn clear(&mut self) {
+        self.map.as_mut().map(|map| map.clear());
+    }
+
     /// Get a reference to a type previously inserted on this `Extensions`.
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.get_inner::<T>().or_else(|| {
@@ -169,4 +174,9 @@ fn test_extensions() {
     extensions2.extend(extensions);
     assert_eq!(extensions2.get(), Some(&5i32));
     assert_eq!(extensions2.get(), Some(&MyType(10)));
+
+    // test clear
+    extensions2.clear();
+    assert_eq!(extensions2.get::<i32>(), None);
+    assert_eq!(extensions2.get::<MyType>(), None);
 }

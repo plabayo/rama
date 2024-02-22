@@ -9,14 +9,17 @@ pub use domain::DomainFilter;
 mod path;
 pub use path::{PathFilter, UriParams};
 
-use crate::{http::Request, service::Context};
+use crate::{
+    http::Request,
+    service::{context::Extensions, Context},
+};
 
 /// condition to decide whether [`Request`] within the given [`Context`] matches to a defined (web) [`Service`]
 ///
 /// [`Service`]: crate::service::Service
 pub trait Matcher<State>: Send + Sync + 'static {
     /// returns true on a match, false otherwise
-    fn matches(&self, ctx: &mut Context<State>, req: &Request) -> bool;
+    fn matches(&self, ext: &mut Extensions, ctx: &Context<State>, req: &Request) -> bool;
 }
 
 macro_rules! impl_matcher_tuple {
@@ -25,9 +28,9 @@ macro_rules! impl_matcher_tuple {
         impl<State,$($ty),+> Matcher<State> for ($($ty),+,)
             where $($ty: Matcher<State>),+
         {
-            fn matches(&self, ctx: &mut Context<State>, req: &Request) -> bool {
+            fn matches(&self, ext: &mut Extensions, ctx: &Context<State>, req: &Request) -> bool {
                 let ($($ty),+,) = self;
-                $($ty.matches(ctx, req))&&+
+                $($ty.matches(ext, ctx, req))&&+
             }
         }
     };
