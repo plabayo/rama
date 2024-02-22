@@ -57,6 +57,14 @@ impl Extensions {
             .and_then(|boxed| boxed.into_any().downcast().ok().map(|boxed| *boxed))
     }
 
+    /// Extend these extensions with another Extensions.
+    pub fn extend(&mut self, other: Extensions) {
+        if let Some(other_map) = other.map {
+            let map = self.map.get_or_insert_with(Box::default);
+            map.extend(other_map.into_iter());
+        }
+    }
+
     /// Get a reference to a type previously inserted on this `Extensions`.
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.get_inner::<T>().or_else(|| {
@@ -151,4 +159,14 @@ fn test_extensions() {
     assert_eq!(ext3.get(), Some(&5i32));
     assert_eq!(ext3.get(), Some(&MyType(10)));
     assert_eq!(ext3.get(), Some(&false));
+
+    // test extend
+    let mut extensions = Extensions::new();
+    extensions.insert(5i32);
+    extensions.insert(MyType(10));
+
+    let mut extensions2 = Extensions::new();
+    extensions2.extend(extensions);
+    assert_eq!(extensions2.get(), Some(&5i32));
+    assert_eq!(extensions2.get(), Some(&MyType(10)));
 }
