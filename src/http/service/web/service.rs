@@ -315,7 +315,7 @@ mod test {
 
     #[tokio::test]
     async fn test_web_service_dir() {
-        let tmp_dir = tempdir::TempDir::new("test_web_service_dir").unwrap();
+        let tmp_dir = tempfile::tempdir().unwrap();
         let file_path = tmp_dir.path().join("index.html");
         std::fs::write(&file_path, "<h1>Hello, World!</h1>").unwrap();
         let style_dir = tmp_dir.path().join("style");
