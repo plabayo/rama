@@ -990,6 +990,7 @@ dependencies = [
  "rama-hyper",
  "rama-hyper-util",
  "rcgen",
+ "regex",
  "rustls",
  "rustls-native-certs",
  "rustls-pemfile",

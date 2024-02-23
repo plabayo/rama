@@ -6,6 +6,9 @@ pub use method::MethodFilter;
 mod domain;
 pub use domain::DomainFilter;
 
+pub mod uri;
+pub use uri::UriFilter;
+
 mod path;
 pub use path::{PathFilter, UriParams, UriParamsDeserializeError};
 
