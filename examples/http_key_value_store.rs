@@ -8,11 +8,11 @@ use rama::{
         dep::http_body_util::BodyExt,
         layer::compression::CompressionLayer,
         server::HttpServer,
-        service::web::{matcher::UriParams, WebService},
-        IntoResponse, Request as HttpRequest, StatusCode,
+        service::web::{IntoEndpointService, WebService},
+        IntoResponse, StatusCode,
     },
     rt::Executor,
-    service::{Context, ServiceBuilder},
+    service::ServiceBuilder,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -62,8 +62,6 @@ async fn main() {
                                 "POST /:key": "store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined",
                             })))
                         .get("/keys", list_keys)
-                        // TODO: add /* automatically to end of path, so we can use the rest of the path as a key :) zzzzzzzzz
-                        // will make or remove prefix logic a lot easier... damn
                         .nest("/admin", ServiceBuilder::new()
                             .layer(ValidateRequestHeaderLayer::bearer("secret-token"))
                             .service(WebService::default()
@@ -82,13 +80,12 @@ async fn main() {
                             // only compress the get Action, not the Post Action
                             ServiceBuilder::new()
                                 .layer(CompressionLayer::new())
-                                .service_fn(|ctx: Context<AppState>, _req: HttpRequest| async move {
-                                    let key = ctx.get::<UriParams>().unwrap().get("key").unwrap();
-                                    Ok(match ctx.state().db.read().await.get(key) {
+                                .service((|State(state): State<AppState>, Path(params): Path<ItemParam>| async move {
+                                    match state.db.read().await.get(&params.key) {
                                         Some(b) => b.clone().into_response(),
                                         None => StatusCode::NOT_FOUND.into_response(),
-                                    })
-                                }),
+                                    }
+                                }).into_endpoint_service()),
                         )
                         .post("/item/:key", |State(state): State<AppState>, Path(params): Path<ItemParam>, Request(req): Request| async move {
                             let value = match req.into_body().collect().await {
