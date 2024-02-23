@@ -202,8 +202,8 @@ impl PathFilter {
     }
 }
 
-impl<State> Matcher<State> for PathFilter {
-    fn matches(&self, ext: &mut Extensions, _ctx: &Context<State>, req: &Request) -> bool {
+impl<State, Body> Matcher<State, Body> for PathFilter {
+    fn matches(&self, ext: &mut Extensions, _ctx: &Context<State>, req: &Request<Body>) -> bool {
         match self.matches_path(req.uri().path()) {
             None => false,
             Some(params) => {

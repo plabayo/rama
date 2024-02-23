@@ -4,7 +4,7 @@ use super::{
     IntoEndpointService,
 };
 use crate::{
-    http::{service::fs::ServeDir, IntoResponse, Request, Response, StatusCode, Uri},
+    http::{service::fs::ServeDir, Body, IntoResponse, Request, Response, StatusCode, Uri},
     service::{context::Extensions, service_fn, BoxService, Context, Service},
 };
 use std::{convert::Infallible, future::Future, marker::PhantomData, sync::Arc};
@@ -140,7 +140,7 @@ where
     pub fn on<I, T, M>(mut self, matcher: M, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
-        M: Matcher<State>,
+        M: Matcher<State, Body>,
     {
         let endpoint = Endpoint {
             matcher: Box::new(matcher),

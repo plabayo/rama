@@ -47,8 +47,8 @@ impl DomainFilter {
     }
 }
 
-impl<State> Matcher<State> for DomainFilter {
-    fn matches(&self, _ext: &mut Extensions, _ctx: &Context<State>, req: &Request) -> bool {
+impl<State, Body> Matcher<State, Body> for DomainFilter {
+    fn matches(&self, _ext: &mut Extensions, _ctx: &Context<State>, req: &Request<Body>) -> bool {
         let host = match req.uri().host() {
             Some(host) => host,
             None => return false,

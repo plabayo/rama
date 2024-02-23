@@ -20,18 +20,18 @@ use crate::{
 /// condition to decide whether [`Request`] within the given [`Context`] matches to a defined (web) [`Service`]
 ///
 /// [`Service`]: crate::service::Service
-pub trait Matcher<State>: Send + Sync + 'static {
+pub trait Matcher<State, Body>: Send + Sync + 'static {
     /// returns true on a match, false otherwise
-    fn matches(&self, ext: &mut Extensions, ctx: &Context<State>, req: &Request) -> bool;
+    fn matches(&self, ext: &mut Extensions, ctx: &Context<State>, req: &Request<Body>) -> bool;
 }
 
 macro_rules! impl_matcher_tuple {
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        impl<State,$($ty),+> Matcher<State> for ($($ty),+,)
-            where $($ty: Matcher<State>),+
+        impl<State, Body, $($ty),+> Matcher<State, Body> for ($($ty),+,)
+            where $($ty: Matcher<State, Body>),+
         {
-            fn matches(&self, ext: &mut Extensions, ctx: &Context<State>, req: &Request) -> bool {
+            fn matches(&self, ext: &mut Extensions, ctx: &Context<State>, req: &Request<Body>) -> bool {
                 let ($($ty),+,) = self;
                 $($ty.matches(ext, ctx, req))&&+
             }

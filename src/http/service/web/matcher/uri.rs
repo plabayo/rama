@@ -45,8 +45,8 @@ impl From<Regex> for UriFilter {
     }
 }
 
-impl<State> Matcher<State> for UriFilter {
-    fn matches(&self, _ext: &mut Extensions, _ctx: &Context<State>, req: &Request) -> bool {
+impl<State, Body> Matcher<State, Body> for UriFilter {
+    fn matches(&self, _ext: &mut Extensions, _ctx: &Context<State>, req: &Request<Body>) -> bool {
         self.matches_uri(req.uri())
     }
 }

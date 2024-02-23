@@ -6,6 +6,7 @@ pub mod classify;
 pub mod cors;
 pub mod dns;
 pub mod header_config;
+pub mod hijack;
 pub mod map_request_body;
 pub mod map_response_body;
 pub mod normalize_path;
