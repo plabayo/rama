@@ -4,9 +4,15 @@ Rama is a modular proxy framework, and we want to make it very clear upfront
 that it is not our goal to also be a framework for developing web services.
 There is however overlap, and for cases where you do need web-service like functionality
 in function of your proxy process you'll notice that rama on itself provides everything
-that you really need. But because developing web servers for the purpose of websites, http API's,
-or other kinds of web applications is not our focus you'll not find anything fancy or 'magical'
-that you might be used to in other frameworks.
+that you really need.
+
+Examples of the kind of web services you might build with `rama` in function of your proxy service:
+
+- a k8s health service (see code example at <https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.r>);
+- a metric exposure service;
+- a minimal api service (e.g. to expose device profiles or certificates);
+- a graphical interface / control panel;
+
 
 ## Axum
 
@@ -19,11 +25,14 @@ To be clear, there is no web service that you can make with Axum that you cannot
 And in fact a lot of ideas and even code were copied directly from Axum. The major difference is however
 that Axum is focussed on being an excellent modular web framework for building websites and APIs, while Rama is not.
 As such Axum has a lot of code to do the heavy lifting for you and make building such stacks more ergonomic.
-Notably are the request Extractors (`FromRequestParts`) and Response creators (`IntoResponse`). The latter has
-been copied into Rama, the first not.
+Rama has these as well, as we forked a lot of axum code to achieve, adapting it to the code and needs of Rama,
+but of course the user experience especially for compiler error diagnostics might be better with Axum,
+as they took a lot of care in getting that as right as can possibly be.
 
 There are of course also other difference, some bigger then others. Point being, use Axum if you need to build
-specialised Web Servers, use Rama in case your focus is on proxies instead.
+specialised Web Servers, use Rama in case your focus is on proxies instead. Or if you are a bit like us,
+do feel free to use Rama also for that. Either way the choice is yours, but keep in mind that Rama is a proxy framework,
+not a web service framework.
 
 > 💡 The reason we want to stress this point is because people have often expectations with high demands when
 > searching for and selecting web frameworks, nowawdays more then ever. This does however not mean that one cannot make
@@ -58,6 +67,8 @@ first and foremost a proxy framework.
 
 All rama [examples can be found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples).
 
+Here are some low level web service examples without fancy features:
+
 - <https://github.com/plabayo/rama/blob/main/examples/http_listener_hello.rs>: is the most basic example on how to provide
   a root service with no needs for endpoints or anything else (e.g. good enough for some use cases related
   to health services or metrics exposures);
@@ -66,7 +77,16 @@ All rama [examples can be found in the `./examples` dir](https://github.com/plab
 - <https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs>: is an example similar to the previous
   example but shows how you can also operate on the underlying transport (TCP) layer, prior to passing it to your
   http service;
+  
+There's also a premade webservice that can be used as the health service for your proxy k8s workloads:
 
-There are also plans to provide a web router, which will be part of the first useable release of Rama.
+- [http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs):
+  built-in web service that can be used as a k8s health service for proxies deploying as a k8s deployment;
 
-TODO: document web router here a bit as one of its introductions.
+And finally here some code examples that use the high level concepts of Request/State extractors and IntoResponse converters,
+that you'll recognise from `axum`, just as available for `rama `services:
+
+- [http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
+  a web service example showcasing how one might do a key value store web service using `Rama`;
+- [http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
+  a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
