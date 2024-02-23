@@ -13,7 +13,7 @@ on:
   push:
     # todo: switch back to "main" once mdbook-graphviz is fixed
     # see: https://github.com/dylanowen/mdbook-graphviz/issues/107
-    branches: ["todo"]
+    branches: ["main"]
 
   # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
@@ -56,7 +56,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 https://sh.rustup.rs -sSf -y | sh
           rustup update
           cargo install --version ${MDBOOK_VERSION} mdbook
-          cargo install --version ${MDBOOK_GRAPHVIZ_VERSION} mdbook-graphviz
+          # cargo install --version ${MDBOOK_GRAPHVIZ_VERSION} mdbook-graphviz
       - name: Setup Pages
         id: pages
         uses: actions/configure-pages@v3
