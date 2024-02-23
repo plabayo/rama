@@ -1,3 +1,5 @@
+use std::ops::Deref;
+
 use super::FromRequestParts;
 use crate::http::{
     dep::http::request::Parts,
@@ -73,24 +75,25 @@ fn parse_forwarded(headers: &HeaderMap) -> Option<&str> {
     })
 }
 
+impl Deref for Host {
+    type Target = str;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     use crate::http::dep::http_body_util::BodyExt as _;
-    use crate::http::response::IntoResponse;
-    use crate::http::service::web::extract::FromRequest;
     use crate::http::service::web::WebService;
     use crate::http::{Body, HeaderName, Request};
     use crate::service::Service;
 
     async fn test_host_from_request(host: &str, headers: Vec<(HeaderName, &str)>) {
-        let svc = WebService::default().get("/", |ctx: Context<()>, req: Request| async move {
-            match Host::from_request(ctx, req).await {
-                Ok(Host(host)) => Ok(host.into_response()),
-                Err(rejection) => Ok(rejection.into_response()),
-            }
-        });
+        let svc = WebService::default().get("/", |Host(host): Host| async move { host });
 
         let mut builder = Request::builder().method("GET").uri("http://example.com/");
         for (header, value) in headers {

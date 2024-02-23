@@ -5,9 +5,14 @@ use crate::service::Context;
 use serde::de::DeserializeOwned;
 use std::ops::{Deref, DerefMut};
 
-/// Extractor to get a Arc::clone of the state from the context.
-#[derive(Debug, Default)]
+/// Extractor to get path parameters from the context in deserialized form.
 pub struct Path<T>(pub T);
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Path<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Path").field(&self.0).finish()
+    }
+}
 
 impl<T: Clone> Clone for Path<T> {
     fn clone(&self) -> Self {
@@ -51,14 +56,13 @@ impl<T> DerefMut for Path<T> {
 mod tests {
     use super::*;
 
-    use crate::http::service::web::extract::FromRequest;
     use crate::http::service::web::WebService;
     use crate::http::{Body, Request};
     use crate::service::Service;
 
     #[tokio::test]
     async fn test_host_from_request() {
-        #[derive(serde::Deserialize)]
+        #[derive(Debug, serde::Deserialize)]
         struct Params {
             foo: String,
             bar: u32,
@@ -66,15 +70,10 @@ mod tests {
 
         let svc = WebService::default().get(
             "/a/:foo/:bar/b/*",
-            |ctx: Context<()>, req: Request| async move {
-                let params = match Path::<Params>::from_request(ctx, req).await {
-                    Ok(Path(params)) => params,
-                    Err(rejection) => return Ok(rejection),
-                };
-
+            |Path(params): Path<Params>| async move {
                 assert_eq!(params.foo, "hello");
                 assert_eq!(params.bar, 42);
-                Ok(StatusCode::OK)
+                StatusCode::OK
             },
         );
 
@@ -83,6 +82,7 @@ mod tests {
             .uri("http://example.com/a/hello/42/b/extra");
         let req = builder.body(Body::empty()).unwrap();
 
-        svc.serve(Context::default(), req).await.unwrap();
+        let resp = svc.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

@@ -6,8 +6,19 @@ use serde::de::DeserializeOwned;
 /// Extractor that deserializes query strings into some type.
 ///
 /// `T` is expected to implement [`serde::Deserialize`].
-#[derive(Debug, Clone, Copy, Default)]
 pub struct Query<T>(pub T);
+
+impl<T: std::fmt::Debug> std::fmt::Debug for Query<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("Query").field(&self.0).finish()
+    }
+}
+
+impl<T: Clone> Clone for Query<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<T, S> FromRequestParts<S> for Query<T>
 where

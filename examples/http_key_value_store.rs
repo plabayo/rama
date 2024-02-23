@@ -2,20 +2,21 @@ use bytes::Bytes;
 use rama::http::layer::trace::TraceLayer;
 use rama::http::layer::validate_request::ValidateRequestHeaderLayer;
 use rama::http::response::Json;
+use rama::http::service::web::extract::{Path, Request, State};
 use rama::{
     http::{
         dep::http_body_util::BodyExt,
         layer::compression::CompressionLayer,
         server::HttpServer,
         service::web::{matcher::UriParams, WebService},
-        IntoResponse, Request, StatusCode,
+        IntoResponse, Request as HttpRequest, StatusCode,
     },
     rt::Executor,
     service::{Context, ServiceBuilder},
 };
+use serde::Deserialize;
 use serde_json::json;
 use std::collections::HashMap;
-use std::convert::Infallible;
 use tokio::sync::RwLock;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -25,6 +26,11 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[derive(Debug, Default)]
 struct AppState {
     db: RwLock<HashMap<String, Bytes>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ItemParam {
+    key: String,
 }
 
 #[tokio::main]
@@ -61,23 +67,22 @@ async fn main() {
                         .nest("/admin", ServiceBuilder::new()
                             .layer(ValidateRequestHeaderLayer::bearer("secret-token"))
                             .service(WebService::default()
-                                .delete("/keys", |ctx: Context<AppState>, _req: Request| async move {
-                                    ctx.state().db.write().await.clear();
-                                    Ok(StatusCode::OK)
+                                .delete("/keys", |State(state): State<AppState>| async move {
+                                    state.db.write().await.clear();
+                                    StatusCode::OK
                                 })
-                                .delete("/item/:key", |ctx: Context<AppState>, _req: Request| async move {
-                                    let key = ctx.get::<UriParams>().unwrap().get("key").unwrap();
-                                    Ok(match ctx.state().db.write().await.remove(key) {
+                                .delete("/item/:key", |State(state): State<AppState>, Path(params): Path<ItemParam>| async move {
+                                    match state.db.write().await.remove(&params.key) {
                                         Some(_) => StatusCode::OK,
                                         None => StatusCode::NOT_FOUND,
-                                    })
+                                    }
                                 })))
                         .get(
                             "/item/:key",
                             // only compress the get Action, not the Post Action
                             ServiceBuilder::new()
                                 .layer(CompressionLayer::new())
-                                .service_fn(|ctx: Context<AppState>, _req: Request| async move {
+                                .service_fn(|ctx: Context<AppState>, _req: HttpRequest| async move {
                                     let key = ctx.get::<UriParams>().unwrap().get("key").unwrap();
                                     Ok(match ctx.state().db.read().await.get(key) {
                                         Some(b) => b.clone().into_response(),
@@ -85,17 +90,16 @@ async fn main() {
                                     })
                                 }),
                         )
-                        .post("/item/:key", |ctx: Context<AppState>, req: Request| async move {
-                            let key = ctx.get::<UriParams>().unwrap().get("key").unwrap();
+                        .post("/item/:key", |State(state): State<AppState>, Path(params): Path<ItemParam>, Request(req): Request| async move {
                             let value = match req.into_body().collect().await {
-                                Err(_) => return Ok(StatusCode::BAD_REQUEST),
+                                Err(_) => return StatusCode::BAD_REQUEST,
                                 Ok(b) => b.to_bytes(),
                             };
                             if value.is_empty() {
-                                return Ok(StatusCode::BAD_REQUEST);
+                                return StatusCode::BAD_REQUEST;
                             }
-                            ctx.state().db.write().await.insert(key.to_owned(), value);
-                            Ok(StatusCode::OK)
+                            state.db.write().await.insert(params.key, value);
+                            StatusCode::OK
                         }),
                 ),
         )
@@ -104,19 +108,12 @@ async fn main() {
 }
 
 /// a service_fn can be a regular fn, instead of a closure
-async fn list_keys(ctx: Context<AppState>, _req: Request) -> Result<impl IntoResponse, Infallible> {
-    let keys = ctx
-        .state()
-        .db
-        .read()
-        .await
-        .keys()
-        .fold(String::new(), |a, b| {
-            if a.is_empty() {
-                b.clone()
-            } else {
-                format!("{a}, {b}")
-            }
-        });
-    Ok(keys)
+async fn list_keys(State(state): State<AppState>) -> impl IntoResponse {
+    state.db.read().await.keys().fold(String::new(), |a, b| {
+        if a.is_empty() {
+            b.clone()
+        } else {
+            format!("{a}, {b}")
+        }
+    })
 }

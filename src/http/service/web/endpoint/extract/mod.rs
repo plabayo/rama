@@ -1,8 +1,11 @@
 //! Extract utilities to develop endpoint services efortless.
 
-use crate::http::{dep::http::request::Parts, IntoResponse, Request};
+use crate::http::{self, dep::http::request::Parts, IntoResponse};
 use crate::service::Context;
 use std::future::Future;
+
+mod extension;
+pub use extension::Extension;
 
 mod host;
 pub use host::Host;
@@ -12,6 +15,9 @@ pub use path::Path;
 
 mod query;
 pub use query::Query;
+
+mod request;
+pub use request::Request;
 
 mod state;
 pub use state::State;
@@ -50,7 +56,7 @@ pub trait FromRequestParts<S>: Sized + Send + Sync + 'static {
 ///
 /// If your extractor doesn't need to consume the request body then you should implement
 /// [`FromRequestParts`] and not [`FromRequest`].
-pub trait FromRequest<S, M = private::ViaRequest>: Sized {
+pub trait FromRequest<S, M = private::ViaRequest>: Sized + Send + Sync + 'static {
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
     type Rejection: IntoResponse;
@@ -58,7 +64,7 @@ pub trait FromRequest<S, M = private::ViaRequest>: Sized {
     /// Perform the extraction.
     fn from_request(
         ctx: Context<S>,
-        req: Request,
+        req: http::Request,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send;
 }
 
@@ -69,7 +75,7 @@ where
 {
     type Rejection = <Self as FromRequestParts<S>>::Rejection;
 
-    async fn from_request(ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
+    async fn from_request(ctx: Context<S>, req: http::Request) -> Result<Self, Self::Rejection> {
         let (parts, _) = req.into_parts();
         Self::from_request_parts(&ctx, &parts).await
     }

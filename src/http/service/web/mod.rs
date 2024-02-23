@@ -4,8 +4,7 @@ mod service;
 pub use service::WebService;
 
 mod endpoint;
-pub use endpoint::extract;
-pub use endpoint::IntoEndpointService;
+pub use endpoint::{extract, EndpointServiceFn, IntoEndpointService};
 
 pub mod matcher;
 
