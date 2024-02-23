@@ -6,7 +6,57 @@ use crate::http::response::{IntoResponse, Response};
 use bytes::{BufMut, BytesMut};
 use serde::Serialize;
 
-/// JSON Response.
+/// Wrapper used to create Json Http [`Response`]s,
+/// as well as to extract Json from Http [`Request`] bodies.
+///
+/// [`Request`]: crate::http::Request
+/// [`Response`]: crate::http::Response
+///
+/// # Examples
+///
+/// ## Creating a Json Response
+///
+/// ```
+/// use serde_json::json;
+/// use rama::http::{
+///     IntoResponse,
+///     // re-exported also as rama::http::service::web::extract::Json
+///     response::Json,
+/// };
+///
+/// async fn handler() -> impl IntoResponse {
+///     Json(json!({
+///         "name": "john",
+///         "age": 30,
+///         "is_student": false
+///     }))
+/// }
+/// ```
+///
+/// ## Extracting Json from a Request
+///
+/// ```
+/// use serde_json::json;
+/// use rama::http::service::web::extract::{
+///     // re-exported from rama::http::response::Json
+///     Json,
+/// };
+///
+/// #[derive(Debug, serde::Deserialize)]
+/// struct Input {
+///     name: String,
+///     age: u8,
+///     alive: Option<bool>,
+/// }
+///
+/// # fn bury(name: impl AsRef<str>) {}
+///
+/// async fn handler(Json(input): Json<Input>) {
+///     if !input.alive.unwrap_or_default() {
+///         bury(&input.name);
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, Default)]
 #[must_use]
 pub struct Json<T>(pub T);

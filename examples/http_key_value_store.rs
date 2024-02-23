@@ -65,7 +65,6 @@ async fn main() {
                             .service(WebService::default()
                                 .delete("/keys", |State(state): State<AppState>| async move {
                                     state.db.write().await.clear();
-                                    StatusCode::OK
                                 })
                                 .delete("/item/:key", |State(state): State<AppState>, Path(params): Path<ItemParam>| async move {
                                     match state.db.write().await.remove(&params.key) {
