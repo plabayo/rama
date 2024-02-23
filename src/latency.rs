@@ -1,4 +1,4 @@
-//! latency utilties and common types
+//! latency utilities and common types
 
 /// The latency unit used to report latencies by various parts of the Rama codebase.
 #[non_exhaustive]

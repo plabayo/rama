@@ -114,4 +114,4 @@ Most commonly you might get this error, especially the difficult ones, for high 
 - use something which is not `Send/Sync/'static`, while it is expected to be;
 - return a Result as the output of an `Endpoint` service/fn (when using the `WebService` router), instead of only returning the happy path value;
 
-There are other possibilities to get long wielded compiler errors as well. It is not feasable to list all possible reasons here, but know most likely it is amongs the lines of the examples above. If not, and you continue to be stuck, to feel free to join our discord at <https://discord.gg/29EetaSYCD> and reach out for help. We're here for you.
+There are other possibilities to get long wielded compiler errors as well. It is not feasible to list all possible reasons here, but know most likely it is among the lines of the examples above. If not, and you continue to be stuck, to feel free to join our discord at <https://discord.gg/29EetaSYCD> and reach out for help. We're here for you.

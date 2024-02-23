@@ -15,7 +15,7 @@ async fn main() {
             // more accurate health checks
             k8s_health_builder()
                 .ready(move || {
-                    // simulate a serice only ready after 10s for w/e reason
+                    // simulate a service only ready after 10s for w/e reason
                     let uptime = startup_time.elapsed().as_secs();
                     uptime > 10
                 })

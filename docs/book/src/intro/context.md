@@ -42,5 +42,5 @@ Extensions are there for middleware to inject state into the context. Here is ho
 
 `State` in contrast is shared and is fully statically typed. This is a great solution for putting resource pools, databases, etc...
 However such a statically typed static type does not lend itself well towards state that is provided by an extension and that is unique to
-a specific reuqest (path).
+a specific request (path).
 

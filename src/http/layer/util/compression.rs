@@ -121,7 +121,7 @@ pin_project! {
     /// `Body` that has been decorated by an `AsyncRead`
     pub(crate) struct WrapBody<M: DecorateAsyncRead> {
         #[pin]
-        // rust-analyer thinks this field is private if its `pub(crate)` but works fine when its
+        // rust-analyser thinks this field is private if its `pub(crate)` but works fine when its
         // `pub`
         pub read: M::Output,
         read_all_data: bool,
