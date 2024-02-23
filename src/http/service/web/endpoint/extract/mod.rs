@@ -1,9 +1,14 @@
+//! Extract utilities to develop endpoint services efortless.
+
 use crate::http::{dep::http::request::Parts, IntoResponse, Request};
 use crate::service::Context;
 use std::future::Future;
 
 mod path;
 pub use path::Path;
+
+mod query;
+pub use query::Query;
 
 mod state;
 pub use state::State;

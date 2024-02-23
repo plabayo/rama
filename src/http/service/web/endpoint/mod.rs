@@ -8,7 +8,7 @@ use crate::{
 };
 use std::{convert::Infallible, future::Future};
 
-pub(super) mod extract;
+pub mod extract;
 
 pub(crate) struct Endpoint<State> {
     pub(crate) matcher: Box<dyn Matcher<State>>,
