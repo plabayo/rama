@@ -22,6 +22,9 @@ pub use request::Request;
 mod state;
 pub use state::State;
 
+mod body;
+pub use body::{Body, Bytes, Json, Text};
+
 mod private {
     #[derive(Debug, Clone, Copy)]
     pub enum ViaParts {}

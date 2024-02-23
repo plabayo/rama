@@ -1,11 +1,9 @@
-use bytes::Bytes;
 use rama::http::layer::trace::TraceLayer;
 use rama::http::layer::validate_request::ValidateRequestHeaderLayer;
 use rama::http::response::Json;
-use rama::http::service::web::extract::{Path, Request, State};
+use rama::http::service::web::extract::{Bytes, Json as JsonRequest, Path, State};
 use rama::{
     http::{
-        dep::http_body_util::BodyExt,
         layer::compression::CompressionLayer,
         server::HttpServer,
         service::web::{IntoEndpointService, WebService},
@@ -25,7 +23,7 @@ use tracing_subscriber::{fmt, EnvFilter};
 
 #[derive(Debug, Default)]
 struct AppState {
-    db: RwLock<HashMap<String, Bytes>>,
+    db: RwLock<HashMap<String, bytes::Bytes>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,11 +85,14 @@ async fn main() {
                                     }
                                 }).into_endpoint_service()),
                         )
-                        .post("/item/:key", |State(state): State<AppState>, Path(params): Path<ItemParam>, Request(req): Request| async move {
-                            let value = match req.into_body().collect().await {
-                                Err(_) => return StatusCode::BAD_REQUEST,
-                                Ok(b) => b.to_bytes(),
-                            };
+                        .post("/items", |State(state): State<AppState>, JsonRequest(dict): JsonRequest<HashMap<String, String>>| async move {
+                            let mut db = state.db.write().await;
+                            for (k, v) in dict {
+                                db.insert(k, bytes::Bytes::from(v));
+                            }
+                            StatusCode::OK
+                        })
+                        .post("/item/:key", |State(state): State<AppState>, Path(params): Path<ItemParam>, Bytes(value): Bytes| async move {
                             if value.is_empty() {
                                 return StatusCode::BAD_REQUEST;
                             }
