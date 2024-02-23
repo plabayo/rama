@@ -4,6 +4,9 @@ use crate::http::{dep::http::request::Parts, IntoResponse, Request};
 use crate::service::Context;
 use std::future::Future;
 
+mod host;
+pub use host::Host;
+
 mod path;
 pub use path::Path;
 
