@@ -1,14 +1,13 @@
 use std::sync::atomic::AtomicU64;
+use std::sync::Arc;
 
+use rama::http::layer::{compression::CompressionLayer, trace::TraceLayer};
 use rama::http::response::{Html, Redirect};
-use rama::http::{
-    layer::{compression::CompressionLayer, trace::TraceLayer},
-    Request,
-};
+use rama::http::service::web::extract::State;
 use rama::{
     http::{server::HttpServer, service::web::WebService},
     rt::Executor,
-    service::{Context, ServiceBuilder},
+    service::ServiceBuilder,
 };
 use std::sync::atomic::Ordering;
 use tracing::level_filters::LevelFilter;
@@ -43,28 +42,24 @@ async fn main() {
                 .layer(TraceLayer::new_for_http())
                 .layer(CompressionLayer::new())
                 .service(
-                WebService::default()
-                    .not_found(Redirect::temporary("/error.html"))
-                    .get(
-                        "/coin",
-                        |ctx: Context<AppState>, _req: Request| async move { Ok(coin_page(ctx)) },
-                    )
-                    .post(
-                        "/coin",
-                        |ctx: Context<AppState>, _req: Request| async move {
-                            ctx.state().counter.fetch_add(1, Ordering::SeqCst);
-                            Ok(coin_page(ctx))
-                        },
-                    )
-                    .dir("/", "test-files/examples/webservice"),
-            ),
+                    WebService::default()
+                        .not_found(Redirect::temporary("/error.html"))
+                        .get("/coin", |State(state): State<AppState>| async move {
+                            coin_page(state)
+                        })
+                        .post("/coin", |State(state): State<AppState>| async move {
+                            state.counter.fetch_add(1, Ordering::SeqCst);
+                            coin_page(state)
+                        })
+                        .dir("/", "test-files/examples/webservice"),
+                ),
         )
         .await
         .unwrap();
 }
 
-fn coin_page(ctx: Context<AppState>) -> Html<String> {
-    let count = ctx.state().counter.load(Ordering::SeqCst);
+fn coin_page(state: Arc<AppState>) -> Html<String> {
+    let count = state.counter.load(Ordering::SeqCst);
     Html(format!(
         r#"
 <!DOCTYPE html>

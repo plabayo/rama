@@ -48,6 +48,11 @@ impl<S> Context<S> {
         &self.state
     }
 
+    /// Get a cloned reference to the state.
+    pub fn state_clone(&self) -> Arc<S> {
+        self.state.clone()
+    }
+
     /// Get a reference to the executor.
     pub fn executor(&self) -> &Executor {
         &self.executor
