@@ -1,7 +1,7 @@
 use rama::http::layer::trace::TraceLayer;
 use rama::http::layer::validate_request::ValidateRequestHeaderLayer;
 use rama::http::response::Json;
-use rama::http::service::web::extract::{Bytes, Json as JsonRequest, Path, State};
+use rama::http::service::web::extract::{Bytes, Path, State};
 use rama::{
     http::{
         layer::compression::CompressionLayer,
@@ -85,7 +85,7 @@ async fn main() {
                                     }
                                 }).into_endpoint_service()),
                         )
-                        .post("/items", |State(state): State<AppState>, JsonRequest(dict): JsonRequest<HashMap<String, String>>| async move {
+                        .post("/items", |State(state): State<AppState>, Json(dict): Json<HashMap<String, String>>| async move {
                             let mut db = state.db.write().await;
                             for (k, v) in dict {
                                 db.insert(k, bytes::Bytes::from(v));

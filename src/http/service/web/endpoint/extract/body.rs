@@ -107,20 +107,7 @@ impl DerefMut for Text {
     }
 }
 
-/// Extractor to get the response body, collected as [`String`].
-pub struct Json<T>(pub T);
-
-impl<T: std::fmt::Debug> std::fmt::Debug for Json<T> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("Json").field(&self.0).finish()
-    }
-}
-
-impl<T: Clone> Clone for Json<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
+pub use crate::http::response::Json;
 
 impl<S, T> FromRequest<S> for Json<T>
 where
@@ -141,20 +128,6 @@ where
             }
             Err(_) => Err(StatusCode::BAD_REQUEST),
         }
-    }
-}
-
-impl<T> Deref for Json<T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl<T> DerefMut for Json<T> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }
 
