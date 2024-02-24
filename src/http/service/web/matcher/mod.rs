@@ -1,5 +1,8 @@
 //! matchers to match a request to a web service
 
+mod or_matcher;
+pub use or_matcher::{or, Or};
+
 mod method;
 pub use method::MethodFilter;
 
@@ -40,3 +43,112 @@ macro_rules! impl_matcher_tuple {
 }
 
 all_the_tuples_no_last_special_case!(impl_matcher_tuple);
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_matcher_or() {
+        let m = or!(MethodFilter::GET, MethodFilter::POST);
+
+        // ok
+        assert!(m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder().method("GET").body(()).unwrap()
+        ));
+        assert!(m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder().method("POST").body(()).unwrap()
+        ));
+
+        // not ok
+        assert!(!m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder().method("PUT").body(()).unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_matcher_and() {
+        let m = (MethodFilter::GET, DomainFilter::new("www.example.com"));
+
+        // ok
+        assert!(m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder()
+                .method("GET")
+                .uri("http://www.example.com")
+                .body(())
+                .unwrap()
+        ));
+
+        // not ok
+        assert!(!m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder()
+                .method("GET")
+                .uri("http://example.com")
+                .body(())
+                .unwrap()
+        ));
+        assert!(!m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder()
+                .method("POST")
+                .uri("http://www.example.com")
+                .body(())
+                .unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_matcher_and_or() {
+        let m = or!(
+            (MethodFilter::GET, DomainFilter::new("www.example.com")),
+            MethodFilter::POST
+        );
+
+        // ok
+        assert!(m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder()
+                .method("GET")
+                .uri("http://www.example.com")
+                .body(())
+                .unwrap()
+        ));
+        assert!(m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder().method("POST").body(()).unwrap()
+        ));
+
+        // not ok
+        assert!(!m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder()
+                .method("GET")
+                .uri("http://example.com")
+                .body(())
+                .unwrap()
+        ));
+        assert!(!m.matches(
+            &mut Extensions::new(),
+            &Context::default(),
+            &Request::builder()
+                .method("PUT")
+                .uri("http://www.example.com")
+                .body(())
+                .unwrap()
+        ));
+    }
+}
