@@ -151,4 +151,23 @@ mod test {
                 .unwrap()
         ));
     }
+
+    #[test]
+    fn test_ensure_or_keeps_only_matched_state() {
+        let m = or!(
+            (PathFilter::new("/foo/:bar"), MethodFilter::GET),
+            MethodFilter::POST
+        );
+
+        let mut ext = Extensions::new();
+        let ctx = Context::default();
+        let req = Request::builder()
+            .method("POST")
+            .uri("http://www.example.com/foo/42")
+            .body(())
+            .unwrap();
+
+        assert!(m.matches(&mut ext, &ctx, &req));
+        assert!(ext.get::<UriParams>().is_none());
+    }
 }

@@ -34,7 +34,15 @@ macro_rules! impl_or {
         {
             fn matches(&self, ext: &mut Extensions, ctx: &Context<State>, req: &Request<Body>) -> bool {
                 let ($($ty),+,) = &self.0;
-                $($ty.matches(ext, ctx, req))||+
+                let mut inner_ext = Extensions::new();
+                $(
+                    if $ty.matches(&mut inner_ext, ctx, req) {
+                        ext.extend(inner_ext);
+                        return true;
+                    }
+                    inner_ext.clear();
+                )+
+                false
             }
         }
     };
