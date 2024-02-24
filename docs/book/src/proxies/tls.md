@@ -13,6 +13,9 @@
 - [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
   plain text stream to the first.
+- [/examples/mtls_tunnel_and_services.rs](https://github.com/plabayo/rama/tree/main/examples/mtls_tunnel_and_services.rs):
+  Example of how to do mTls (manual Tls, where the client also needs a certificate) using rama,
+  as well as how one might use this concept to provide a tunnel service build with these concepts;
 
 ## Description
 

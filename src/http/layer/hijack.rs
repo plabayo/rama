@@ -1,4 +1,4 @@
-//! Middleware to hijack request to a [`Service`] which match usiing a [`Matcher`].
+//! Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
 //!
 //! [`Service`]: crate::service::Service
 //! [`Matcher`]: crate::http::service::web::matcher::Matcher
@@ -8,7 +8,7 @@ use crate::{
     service::{context::Extensions, Context, Layer, Service},
 };
 
-/// Middleware to hijack request to a [`Service`] which match usiing a [`Matcher`].
+/// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
 ///
 /// [`Service`]: crate::service::Service
 /// [`Matcher`]: crate::http::service::web::matcher::Matcher
@@ -81,7 +81,7 @@ where
     }
 }
 
-/// Middleware to hijack request to a [`Service`] which match usiing a [`Matcher`].
+/// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
 ///
 /// [`Service`]: crate::service::Service
 /// [`Matcher`]: crate::http::service::web::matcher::Matcher
