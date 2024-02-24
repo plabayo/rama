@@ -32,6 +32,12 @@ test:
 
 qa: lint check clippy doc hack test
 
+watch-docs:
+	cargo watch -x doc
+
+watch-check:
+	cargo watch -x check -x test
+
 rama +ARGS:
     cargo run -p rama-cli -- {{ARGS}}
 
