@@ -1,5 +1,9 @@
 //! Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
 //!
+//! Common usecases for hijacking requests are:
+//! - Redirecting requests to a different service based on the conditions specified in the [`Matcher`].
+//! - Block requests based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
+//!
 //! [`Service`]: crate::service::Service
 //! [`Matcher`]: crate::http::service::web::matcher::Matcher
 
@@ -9,6 +13,10 @@ use crate::{
 };
 
 /// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
+///
+/// Common usecases for hijacking requests are:
+/// - Redirecting requests to a different service based on the conditions specified in the [`Matcher`].
+/// - Block requests based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
 ///
 /// [`Service`]: crate::service::Service
 /// [`Matcher`]: crate::http::service::web::matcher::Matcher
@@ -82,6 +90,10 @@ where
 }
 
 /// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
+///
+/// Common usecases for hijacking requests are:
+/// - Redirecting requests to a different service based on the conditions specified in the [`Matcher`].
+/// - Block requests based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
 ///
 /// [`Service`]: crate::service::Service
 /// [`Matcher`]: crate::http::service::web::matcher::Matcher
@@ -205,5 +217,55 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn hijack_layer_http_firewall() {
+        let hijack_layer = HijackLayer::new(
+            DomainFilter::sub("example.com"),
+            StatusCode::FORBIDDEN.into_endpoint_service(),
+        );
+
+        let service = StatusCode::OK.into_endpoint_service();
+        let service = hijack_layer.layer(service);
+
+        let response = service
+            .serve(
+                Context::default(),
+                Request::builder()
+                    .method("GET")
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = service
+            .serve(
+                Context::default(),
+                Request::builder()
+                    .method("GET")
+                    .uri("http://www.example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+
+        let response = service
+            .serve(
+                Context::default(),
+                Request::builder()
+                    .method("GET")
+                    .uri("http://example.org")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }

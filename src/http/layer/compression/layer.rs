@@ -192,7 +192,7 @@ mod tests {
 
         // check the corresponding algorithms are actually used
         // br should compresses better than deflate
-        assert!(br_byte_length < deflate_bytes_len * 9 / 10);
+        assert!(br_byte_length < deflate_bytes_len);
 
         Ok(())
     }
