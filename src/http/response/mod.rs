@@ -1,10 +1,6 @@
 //! Types and traits for generating responses.
 //!
 //! See [`crate::http::response`] for more details.
-//!
-//! Code in this module was forked from [`axum (v0.7)`]
-//!
-//! [`axum (v0.7)`]: https://docs.rs/axum/0.7.0/axum/response/index.html
 
 use crate::http::Body;
 

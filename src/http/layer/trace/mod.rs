@@ -32,11 +32,11 @@
 //! # }
 //! ```
 //!
-//! If you run this application with `RUST_LOG=tower_http=trace cargo run` you should see logs like:
+//! If you run this application with `RUST_LOG=rama=trace cargo run` you should see logs like:
 //!
 //! ```text
-//! Mar 05 20:50:28.523 DEBUG request{method=GET path="/foo"}: tower_async_http::trace::on_request: started processing request
-//! Mar 05 20:50:28.524 DEBUG request{method=GET path="/foo"}: tower_async_http::trace::on_response: finished processing request latency=1 ms status=200
+//! Mar 05 20:50:28.523 DEBUG request{method=GET path="/foo"}: rama::http::layer::trace::on_request: started processing request
+//! Mar 05 20:50:28.524 DEBUG request{method=GET path="/foo"}: rama::http::layer::trace::on_response: finished processing request latency=1 ms status=200
 //! ```
 //!
 //! # Customization

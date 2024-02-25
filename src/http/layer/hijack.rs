@@ -6,6 +6,89 @@
 //!
 //! [`Service`]: crate::service::Service
 //! [`Matcher`]: crate::http::service::web::matcher::Matcher
+//!
+//! # Example
+//!
+//! ```rust
+//! use rama::{
+//!     http::{
+//!         dep::http_body_util::BodyExt as _,
+//!         layer::hijack::HijackLayer,
+//!         service::web::{extract::Query, matcher::DomainFilter, IntoEndpointService, WebService},
+//!         Body, Request, StatusCode,
+//!     },
+//!     service::{Context, Layer, Service},
+//! };
+//! use serde::Deserialize;
+//!
+//! #[derive(Debug, Deserialize)]
+//! struct Device {
+//!     mobile: Option<bool>,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let hijack_service =
+//!         WebService::default().get("/profile", |Query(query): Query<Device>| async move {
+//!             if query.mobile.unwrap_or_default() {
+//!                 "Mobile"
+//!             } else {
+//!                 "Not Mobile"
+//!             }
+//!         });
+//!     let hijack_layer = HijackLayer::new(DomainFilter::new("profiles.rama"), hijack_service);
+//!
+//!     let service = StatusCode::BAD_REQUEST.into_endpoint_service();
+//!     let service = hijack_layer.layer(service);
+//!
+//!     let response = service
+//!         .serve(
+//!             Context::default(),
+//!             Request::builder()
+//!                 .method("GET")
+//!                 .uri("http://profiles.rama/profile?mobile=true")
+//!                 .body(Body::empty())
+//!                 .unwrap(),
+//!         )
+//!         .await
+//!         .unwrap();
+//!     assert_eq!(response.status(), StatusCode::OK);
+//!     assert_eq!(
+//!         response.into_body().collect().await.unwrap().to_bytes(),
+//!         "Mobile"
+//!     );
+//!
+//!     let response = service
+//!         .serve(
+//!             Context::default(),
+//!             Request::builder()
+//!                 .method("GET")
+//!                 .uri("http://profiles.rama/profile")
+//!                 .body(Body::empty())
+//!                 .unwrap(),
+//!         )
+//!         .await
+//!         .unwrap();
+//!     assert_eq!(response.status(), StatusCode::OK);
+//!     assert_eq!(
+//!         response.into_body().collect().await.unwrap().to_bytes(),
+//!         "Not Mobile"
+//!     );
+//!
+//!     let response = service
+//!         .serve(
+//!             Context::default(),
+//!             Request::builder()
+//!                 .method("GET")
+//!                 .uri("http://example.com/profile")
+//!                 .body(Body::empty())
+//!                 .unwrap(),
+//!         )
+//!         .await
+//!         .unwrap();
+//!     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+//! }
+//! ```
 
 use crate::{
     http::{dep::http_body, service::web::matcher::Matcher, Request},
@@ -143,81 +226,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::dep::http_body_util::BodyExt;
     use crate::http::{
-        service::web::{extract::Query, matcher::DomainFilter, IntoEndpointService, WebService},
+        service::web::{matcher::DomainFilter, IntoEndpointService},
         Body,
     };
     use crate::http::{Request, StatusCode};
-    use serde::Deserialize;
-
-    #[tokio::test]
-    async fn hijack_layer_service() {
-        #[derive(Debug, Deserialize)]
-        struct Device {
-            mobile: Option<bool>,
-        }
-
-        let hijack_service =
-            WebService::default().get("/profile", |Query(query): Query<Device>| async move {
-                if query.mobile.unwrap_or_default() {
-                    "Mobile"
-                } else {
-                    "Not Mobile"
-                }
-            });
-        let hijack_layer = HijackLayer::new(DomainFilter::new("profiles.rama"), hijack_service);
-
-        let service = StatusCode::BAD_REQUEST.into_endpoint_service();
-        let service = hijack_layer.layer(service);
-
-        let response = service
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("http://profiles.rama/profile?mobile=true")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.into_body().collect().await.unwrap().to_bytes(),
-            "Mobile"
-        );
-
-        let response = service
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("http://profiles.rama/profile")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        assert_eq!(
-            response.into_body().collect().await.unwrap().to_bytes(),
-            "Not Mobile"
-        );
-
-        let response = service
-            .serve(
-                Context::default(),
-                Request::builder()
-                    .method("GET")
-                    .uri("http://example.com/profile")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-    }
 
     #[tokio::test]
     async fn hijack_layer_http_firewall() {

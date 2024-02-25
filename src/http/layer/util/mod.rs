@@ -1,6 +1,6 @@
 //! Http Layer Utilities.
 
 #[cfg(feature = "compression")]
-pub mod compression;
+pub(crate) mod compression;
 
-pub mod content_encoding;
+pub(crate) mod content_encoding;

@@ -2,6 +2,45 @@
 //!
 //! [`Extensions`]: crate::service::context::Extensions
 //! [`Context`]: crate::service::Context
+//!
+//! # Example
+//!
+//! ```rust
+//! use rama::http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
+//! use rama::http::service::web::{WebService, extract::Extension};
+//! use rama::http::{Body, Request, StatusCode};
+//! use rama::service::{Context, Service, Layer};
+//! use serde::Deserialize;
+//!
+//! #[derive(Debug, Deserialize, Clone)]
+//! struct Config {
+//!     s: String,
+//!     n: i32,
+//!     m: Option<i32>,
+//!     b: bool,
+//! }
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let service = HeaderConfigLayer::<Config>::required("x-proxy-config".to_owned())
+//!         .layer(WebService::default()
+//!             .get("/", |Extension(cfg): Extension<Config>| async move {
+//!                 assert_eq!(cfg.s, "E&G");
+//!                 assert_eq!(cfg.n, 1);
+//!                 assert!(cfg.m.is_none());
+//!                 assert!(cfg.b);
+//!             }),
+//!         );
+//!
+//!     let request = Request::builder()
+//!         .header("x-proxy-config", "s=E%26G&n=1&b=true")
+//!         .body(Body::empty())
+//!         .unwrap();
+//!
+//!     let resp = service.serve(Context::default(), request).await.unwrap();
+//!     assert_eq!(resp.status(), StatusCode::OK);
+//! }
+//! ```
 
 use crate::http::header::AsHeaderName;
 use serde::de::DeserializeOwned;
@@ -94,8 +133,8 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
-        mut request: Request<Body>,
+        mut ctx: Context<State>,
+        request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let config = match extract_header_config::<_, T, _>(&request, &self.key) {
             Ok(config) => config,
@@ -110,7 +149,7 @@ where
                 }
             }
         };
-        request.extensions_mut().insert(config);
+        ctx.insert(config);
         self.inner.serve(ctx, request).await.map_err(Into::into)
     }
 }
@@ -175,15 +214,16 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = crate::service::service_fn(|req: Request<()>| async move {
-            let cfg: &Config = req.extensions().get().unwrap();
-            assert_eq!(cfg.s, "E&G");
-            assert_eq!(cfg.n, 1);
-            assert!(cfg.m.is_none());
-            assert!(cfg.b);
+        let inner_service =
+            crate::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+                let cfg: &Config = ctx.get().unwrap();
+                assert_eq!(cfg.s, "E&G");
+                assert_eq!(cfg.n, 1);
+                assert!(cfg.m.is_none());
+                assert!(cfg.b);
 
-            Ok::<_, std::convert::Infallible>(())
-        });
+                Ok::<_, std::convert::Infallible>(())
+            });
 
         let service =
             HeaderConfigService::<Config, _>::required(inner_service, "x-proxy-config".to_owned());
@@ -200,15 +240,16 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = crate::service::service_fn(|req: Request<()>| async move {
-            let cfg: &Config = req.extensions().get().unwrap();
-            assert_eq!(cfg.s, "E&G");
-            assert_eq!(cfg.n, 1);
-            assert!(cfg.m.is_none());
-            assert!(cfg.b);
+        let inner_service =
+            crate::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+                let cfg: &Config = ctx.get().unwrap();
+                assert_eq!(cfg.s, "E&G");
+                assert_eq!(cfg.n, 1);
+                assert!(cfg.m.is_none());
+                assert!(cfg.b);
 
-            Ok::<_, std::convert::Infallible>(())
-        });
+                Ok::<_, std::convert::Infallible>(())
+            });
 
         let service =
             HeaderConfigService::<Config, _>::optional(inner_service, "x-proxy-config".to_owned());
@@ -224,11 +265,12 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = crate::service::service_fn(|req: Request<()>| async move {
-            assert!(req.extensions().get::<Config>().is_none());
+        let inner_service =
+            crate::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+                assert!(ctx.get::<Config>().is_none());
 
-            Ok::<_, std::convert::Infallible>(())
-        });
+                Ok::<_, std::convert::Infallible>(())
+            });
 
         let service =
             HeaderConfigService::<Config, _>::optional(inner_service, "x-proxy-config".to_owned());
