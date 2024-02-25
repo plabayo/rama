@@ -8,10 +8,9 @@ as a distant relative.
 ## Sync Forks
 
 - <https://github.com/tower-rs/tower/tree/39adf5c509a1b2141f679654d8317524ca96b58b>
- - Service / Layer traits
- - ServiceBuilder (note that we keep ours more minimal on purpose)
- - Some layers such as timeout, filter, most of util ones
-
+  - Service / Layer traits
+  - ServiceBuilder (note that we keep ours more minimal on purpose)
+  - Some layers such as timeout, filter, most of util ones
 - <https://github.com/tower-rs/tower-http/tree/18219fca9ba728899e54e70f11026dd7dddf6d7e>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
