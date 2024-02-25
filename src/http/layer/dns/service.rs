@@ -1,8 +1,8 @@
 use super::{dns_map::DnsMap, DnsError, DynamicDnsResolver};
 use crate::{
     http::{
-        headers::{HeaderMapExt, Host},
         layer::header_config::extract_header_config,
+        service::web::extract::{FromRequestParts, Host},
         utils::{HeaderValueErr, HeaderValueGetter},
         HeaderName, Request,
     },
@@ -93,12 +93,13 @@ impl<S, R> DnsService<S, R> {
     }
 }
 
-impl<State, Body, E, S> Service<State, Request<Body>> for DnsService<S, ()>
+impl<State, Body, E, S, R> Service<State, Request<Body>> for DnsService<S, R>
 where
     State: Send + Sync + 'static,
     Body: Send + Sync + 'static,
     E: Into<crate::error::Error> + Send + Sync + 'static,
     S: Service<State, Request<Body>, Error = E>,
+    R: DynamicDnsResolver,
 {
     type Response = S::Response;
     type Error = DnsError<E>;
@@ -108,7 +109,14 @@ where
         mut ctx: Context<State>,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        if let Some(addresses) = self.lookup_host(&request).await? {
+        let (parts, body) = request.into_parts();
+        let host = Host::from_request_parts(&ctx, &parts)
+            .await
+            .ok()
+            .map(|h| h.0);
+        let request = Request::from_parts(parts, body);
+
+        if let Some(addresses) = self.lookup_host(&request, host).await? {
             let mut addresses_it = addresses.into_iter();
             match addresses_it.next() {
                 Some(address) => {
@@ -136,12 +144,8 @@ where
     async fn lookup_host<Body, E>(
         &self,
         request: &Request<Body>,
+        maybe_host: Option<String>,
     ) -> Result<Option<Vec<SocketAddr>>, DnsError<E>> {
-        let maybe_host = request
-            .headers()
-            .typed_get::<Host>()
-            .map(|host| host.to_string());
-
         // opt-in callee-defined dns map, only if allowed by the service
         if let Some(dns_map_header) = &self.dns_map_header {
             match extract_header_config::<_, DnsMap, _>(request, dns_map_header) {
@@ -154,7 +158,7 @@ where
                         None => Err(DnsError::HostnameNotFound),
                         Some(host) => {
                             let addr = dns_map
-                                .lookup_host(host.clone())
+                                .lookup_host(&host)
                                 .ok_or_else(|| DnsError::MappingNotFound(host))?;
                             Ok(Some(vec![addr]))
                         }

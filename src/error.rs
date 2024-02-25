@@ -1,4 +1,11 @@
 //! Error types for rama.
+//!
+//! the [`Error`] type is a type-erased error type that can be used to represent any error that
+//! implements the `std::error::Error` trait and is used for cases where it is usually not
+//! that important what specific error type is returned, but rather that an error occurred.
+//!
+//! [`BoxError`] is the internal type for [`Error`], but can also be directly
+//! used to represent the type-erased error.
 
 use std::{
     error::Error as StdError,

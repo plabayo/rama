@@ -24,7 +24,7 @@ impl<'a> Deserialize<'a> for DnsMap {
 impl DnsMap {
     /// Lookup a host name and return the IP address,
     /// if the host name is not found, return `None`.
-    pub(crate) fn lookup_host(&self, host: String) -> Option<SocketAddr> {
-        self.map.get(host.as_str()).cloned()
+    pub(crate) fn lookup_host(&self, host: impl AsRef<str>) -> Option<SocketAddr> {
+        self.map.get(host.as_ref()).cloned()
     }
 }

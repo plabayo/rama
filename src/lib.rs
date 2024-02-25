@@ -23,6 +23,23 @@
 //!
 //! - Macro-free API.
 //! - Use a tower-like service abstraction, ready for stable Async Rust, with an eye on the future.
+//! - Compose layers, services and state from the Transport Layer all the way to the Application Layer.
+//! - Compose your own proxy with the provided building blocks and your own custom logic intertwined.
+//!
+//! # Getting started
+//!
+//! Add the following to your `Cargo.toml`:
+//!
+//! ```toml
+//! [dependencies]
+//! rama = "0.2"
+//! ```
+//!
+//! or add it using: `cargo add rama`.
+//!
+//! See [the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+//! to get inspired on how you can use it for your purposes. Or check the [Rama book](https://ramaproxy.org/book)
+//! for more in-depth information.
 //!
 
 #![warn(

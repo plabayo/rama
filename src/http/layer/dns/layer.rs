@@ -67,7 +67,7 @@ impl<R> DnsLayer<R> {
     }
 
     /// Set the dynamic resolver to use for resolving the DNS.
-    pub fn resolver<T: DynamicDnsResolver>(self, resolver: T) -> DnsLayer<T> {
+    pub fn resolver<T: DynamicDnsResolver + Clone>(self, resolver: T) -> DnsLayer<T> {
         DnsLayer {
             resolver,
             resolver_header: self.resolver_header,
@@ -76,7 +76,7 @@ impl<R> DnsLayer<R> {
     }
 
     /// Enable the default resolver to be used for resolving DNS.
-    pub fn default_resolver(self) -> DnsLayer<impl DynamicDnsResolver> {
+    pub fn default_resolver(self) -> DnsLayer<impl DynamicDnsResolver + Clone> {
         DnsLayer {
             resolver: tokio::net::lookup_host,
             resolver_header: self.resolver_header,

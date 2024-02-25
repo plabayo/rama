@@ -20,6 +20,7 @@
 //!
 //! ```rust
 //! use rama::http::{headers::Header, HeaderName, HeaderValue};
+//!
 //! struct Dnt(bool);
 //!
 //! impl Header for Dnt {
