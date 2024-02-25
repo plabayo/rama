@@ -1,3 +1,24 @@
+//! An example to showcase how one can build a service using Rama,
+//! built with layers to modify and branch the traffic as it goes through the service.
+//! And this on Layer 4 (TCP) all the way to Layer 7 (HTTP).
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run --features=full --example http_service_hello
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:8080`. You can use `curl` to interact with the service:
+//!
+//! ```sh
+//! curl -v http://127.0.0.1:8080
+//! ```
+//!
+//! You should see a response with `HTTP/1.1 200 OK` and a HTML body containing
+//! the peer address, the path of the request and the stats of the bytes read and written.
+
 use bytes::Bytes;
 use rama::{
     http::{

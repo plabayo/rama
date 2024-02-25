@@ -1,15 +1,47 @@
-use std::time::Duration;
+//! This example demonstrates how to create a TLS termination proxy, forwarding the
+//! plain transport stream to another service.
+//!
+//! See also the [mtls_tunnel_and_services](./mtls_tunnel_and_services.rs) example for a more complex example
+//! of how to use the `TlsAcceptorLayer` and `TlsAcceptorService` to create a mTLS tunnel and services.
+//!
+//! This proxy is an example of a TLS termination proxy, which is a server that accepts TLS connections,
+//! decrypts the TLS and forwards the plain transport stream to another service.
+//! You can learn more about this kind of proxy in [the rama book](https://ramaproxy.org/book/) at the [TLS Termination Proxy](https://ramaproxy.org/book/proxies/tls.html) section.
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run --example tls_termination
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:8443`. You can use `curl` to interact with the service:
+//!
+//! ```sh
+//! curl -v https://127.0.0.1:8443
+//! ```
+//!
+//! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
 
+// these dependencies are re-exported by rama for your convenience,
+// as to make it easy to use them and ensure that the versions remain compatible
+// (given most do not have a stable release yet)
+use rama::tls::rustls::dep::{
+    pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+    rustls::ServerConfig,
+};
+
+// rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     graceful::Shutdown,
     service::ServiceBuilder,
     tcp::{server::TcpListener, service::Forwarder},
-    tls::rustls::{
-        dep::pki_types::{CertificateDer, PrivatePkcs8KeyDer},
-        dep::rustls::ServerConfig,
-        server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
-    },
+    tls::rustls::server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
 };
+
+// everything else is provided by the standard library, community crates or tokio
+use std::time::Duration;
 use tokio::{io::AsyncWriteExt, net::TcpStream};
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};

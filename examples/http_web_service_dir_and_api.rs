@@ -1,15 +1,42 @@
-use std::sync::atomic::AtomicU64;
-use std::sync::Arc;
+//! This example demonstrates how to use the `WebService` to serve static files and an API.
+//!
+//! The service has the following endpoints:
+//! - `GET /`: show the dummy homepage
+//! - `GET /coin`: show the coin clicker page
+//! - `POST /coin`: increment the coin counter
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run --features=full --example http_web_service_dir_and_api
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:8080`. You can use your browser to interact with the service:
+//!
+//! ```sh
+//! open http://localhost:8080
+//! ```
+//!
+//! You should see a the homepage in your browser.
+//! You can also click on the coin to increment the counter.
+//! please also try go to the legal page and some other non-existing pages.
 
-use rama::http::layer::{compression::CompressionLayer, trace::TraceLayer};
-use rama::http::response::{Html, Redirect};
-use rama::http::service::web::extract::State;
+// rama provides everything out of the box to build a complete web service.
 use rama::{
+    http::layer::{compression::CompressionLayer, trace::TraceLayer},
+    http::response::{Html, Redirect},
+    http::service::web::extract::State,
     http::{server::HttpServer, service::web::WebService},
     rt::Executor,
     service::ServiceBuilder,
 };
+
+/// Everything else we need is provided by the standard library, community crates or tokio.
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;

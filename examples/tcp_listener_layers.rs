@@ -1,3 +1,23 @@
+//! An example on how to add layers to a TCP listener.
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run --example tcp_listener_layers
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:9000`. You can use `curl` to interact with the service:
+//!
+//! ```sh
+//! telnet 127.0.0.1 9000
+//! ```
+//!
+//! Within the telnet session, you can type anything and it will be echoed back to you.
+//! After 8 seconds the connection will be closed by the server.
+//! This is because of the `TimeoutLayer` that was added to the server.
+
 use rama::{
     service::{layer::TimeoutLayer, ServiceBuilder},
     stream::service::EchoService,

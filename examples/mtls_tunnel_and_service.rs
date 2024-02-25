@@ -1,3 +1,30 @@
+//! This example demonstrates how to create a mTLS tunnel proxy and a mTLS web service.
+//! The mTLS tunnel proxy is a server that accepts mTLS connections, and forwards the mTLS transport stream to another service.
+//! The mTLS web service is a server that accepts mTLS connections, and serves a simple web page.
+//! You can learn more about this kind of proxy in [the rama book](https://ramaproxy.org/book/) at the [mTLS Tunnel Proxy](https://ramaproxy.org/book/proxies/tls.html) section.
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run --example mtls_tunnel_and_service
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:8443`. You can use `curl` to interact with the service:
+//!
+//! ```sh
+//! curl -v https://127.0.0.1:8443
+//! ```
+//!
+//! This won't work as the client is not authorized. You can use `curl` to interact with the service:
+//!
+//! ```sh
+//! curl -v http://127.0.0.1:8080/hello
+//! ```
+//!
+//! You should see a response with `HTTP/1.1 200 OK` and a body with `Hello, authorized client!`.
+
 // these dependencies are re-exported by rama for your convenience,
 // as to make it easy to use them and ensure that the versions remain compatible
 // (given most do not have a stable release yet)

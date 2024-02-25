@@ -1,3 +1,21 @@
+//! This example demonstrates how to serve files from the file system over HTTP.
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run --example http_service_fs
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:8080`. You can use your browser to interact with the service:
+//!
+//! ```sh
+//! curl -v http://localhost:8080/test-files/index.html
+//! ```
+//!
+//! You should see a response with `HTTP/1.1 200 OK` and the content of the `index.html` file.
+
 use rama::{
     http::{server::HttpServer, service::fs::ServeDir},
     rt::Executor,
