@@ -21,7 +21,7 @@ use tokio_graceful::ShutdownGuard;
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
 ///
-/// Supported Protocols: HTTP/1, HTTP/2, Auto (HTTP/1 + HTTP/2)
+/// Supported Protocols: HTTP/1, H2, Auto (HTTP/1 + H2)
 ///
 /// [`Service`]: crate::service::Service
 #[derive(Debug)]
@@ -89,7 +89,7 @@ impl<'a> Http1Config<'a> {
     /// Set whether HTTP/1 connections will write header names as title case at
     /// the socket level.
     ///
-    /// Note that this setting does not affect HTTP/2.
+    /// Note that this setting does not affect H2.
     ///
     /// Default is false.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
@@ -107,7 +107,7 @@ impl<'a> Http1Config<'a> {
     /// interact with the original cases. The only effect this can have now is
     /// to forward the cases in a proxy-like fashion.
     ///
-    /// Note that this setting does not affect HTTP/2.
+    /// Note that this setting does not affect H2.
     ///
     /// Default is false.
     pub fn preserve_header_case(&mut self, enabled: bool) -> &mut Self {
@@ -191,7 +191,7 @@ impl<E> HttpServer<H2ConnBuilder<E>> {
     }
 }
 
-/// A configuration builder for HTTP/2 server connections.
+/// A configuration builder for H2 server connections.
 #[derive(Debug)]
 pub struct H2Config<'a, E> {
     inner: &'a mut H2ConnBuilder<E>,
@@ -280,7 +280,7 @@ impl<'a, E> H2Config<'a, E> {
         self
     }
 
-    /// Set the maximum write buffer size for each HTTP/2 stream.
+    /// Set the maximum write buffer size for each H2 stream.
     ///
     /// Default is currently ~400KB, but may change.
     ///
@@ -379,7 +379,7 @@ impl<'a, E> AutoHttp1Config<'a, E> {
     /// Set whether HTTP/1 connections will write header names as title case at
     /// the socket level.
     ///
-    /// Note that this setting does not affect HTTP/2.
+    /// Note that this setting does not affect H2.
     ///
     /// Default is false.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
@@ -397,7 +397,7 @@ impl<'a, E> AutoHttp1Config<'a, E> {
     /// interact with the original cases. The only effect this can have now is
     /// to forward the cases in a proxy-like fashion.
     ///
-    /// Note that this setting does not affect HTTP/2.
+    /// Note that this setting does not affect H2.
     ///
     /// Default is false.
     pub fn preserve_header_case(&mut self, enabled: bool) -> &mut Self {
@@ -463,7 +463,7 @@ impl<'a, E> AutoHttp1Config<'a, E> {
     }
 }
 
-/// A configuration builder for HTTP/2 server connections in auto mode.
+/// A configuration builder for H2 server connections in auto mode.
 pub struct AutoH2Config<'a, E> {
     inner: InnerAutoHttp2Builder<'a, E>,
 }
@@ -557,7 +557,7 @@ impl<'a, E> AutoH2Config<'a, E> {
         self
     }
 
-    /// Set the maximum write buffer size for each HTTP/2 stream.
+    /// Set the maximum write buffer size for each H2 stream.
     ///
     /// Default is currently ~400KB, but may change.
     ///

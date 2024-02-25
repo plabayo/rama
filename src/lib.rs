@@ -14,10 +14,17 @@
 //! Please refer to [the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 //! to get inspired on how you can use it for your purposes.
 //!
-//! ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
+//! ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)\
 //!
-//! - Learn more by reading the Rama book at <https://ramaproxy.org/book>
-//! - or continue to read the framework Rust docs here.
+//! The goal of Rama is to provide a modular and composable framework to build your own proxy with ease.
+//! A lot of you are familiar with creating proxies using prebuilt tools that can be configured to ones desires.
+//! Rama is different in that it allows you to build your own proxies using code rather than configuration files.
+//! The goal is to provide a framework that is easy to use and understand, while also being powerful and flexible.
+//! While not as easy to use as configuration files, it does give freedom and a much higher order of control.
+//! As a result you can build a proxy that is exactly what you need, and nothing more.
+//!
+//! Learn more by reading the Rama book at <https://ramaproxy.org/book> or continue to read the framework Rust docs here,
+//! to [get started](#getting-started).
 //!
 //! # High-level features
 //!
