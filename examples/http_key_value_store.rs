@@ -1,11 +1,58 @@
-use rama::http::layer::trace::TraceLayer;
-use rama::http::layer::validate_request::ValidateRequestHeaderLayer;
-use rama::http::response::Json;
-use rama::http::service::web::extract::{Bytes, Path, State};
+//! An example key-value store service that stores bytes data.
+//! It is meant to demonstrate the [`WebService`] and [`HttpServer`] capabilities in Rama at a high level.
+//!
+//! [`WebService`]: crate::http::service::web::WebService
+//! [`HttpServer`]: crate::http::server::HttpServer
+//!
+//! This example demonstrates how to use rama to create a key-value store web service.
+//! The service has the following endpoints:
+//! - `GET /`: show this API documentation in Json Format
+//! - `GET /keys`: list all keys for which (bytes) data is stored
+//! - `GET /:key`: return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise
+//! - `POST /:key`: store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined
+//!
+//! The service also has admin endpoints:
+//! - `DELETE /keys`: clear all keys and their associated data
+//! - `DELETE /item/:key`: remove the data stored at <key>, returning a 200 Ok if the key was found, and a 404 Not Found otherwise
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run --example http_key_value_store
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:8080`. You can use `curl` to interact with the service:
+//!
+//! ```sh
+//! # show the API documentation
+//! curl -v http://127.0.0.1:8080
+//!
+//! # store multiple key value pairs
+//! curl -v -X POST http://127.0.0.1:8080/items -d '{"key1": "value1", "key2": "value2"}'
+//!
+//! # list all keys
+//! curl -v http://127.0.0.1:8080/keys
+//!
+//! # store a single key value pair
+//! curl -v -X POST http://127.0.0.1:8080/item/key3 -d "value3"
+//!
+//! # get the value for a key
+//! curl -v http://127.0.0.1:8080/item/key3
+//!
+//! # delete a key
+//! curl -v -X DELETE http://127.0.0.1:8080/admin/item/key3 -H "Authorization: Bearer secret-token"
+//! ```
+
 use rama::{
     http::{
         layer::compression::CompressionLayer,
+        layer::trace::TraceLayer,
+        layer::validate_request::ValidateRequestHeaderLayer,
+        response::Json,
         server::HttpServer,
+        service::web::extract::{Bytes, Path, State},
         service::web::{IntoEndpointService, WebService},
         IntoResponse, StatusCode,
     },
@@ -58,6 +105,10 @@ async fn main() {
                                 "GET /keys": "list all keys for which (bytes) data is stored",
                                 "GET /:key": "return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise",
                                 "POST /:key": "store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined",
+                                "admin": {
+                                    "DELETE /keys": "clear all keys and their associated data",
+                                    "DELETE /item/:key": "remove the data stored at <key>, returning a 200 Ok if the key was found, and a 404 Not Found otherwise"
+                                }
                             })))
                         .get("/keys", list_keys)
                         .nest("/admin", ServiceBuilder::new()

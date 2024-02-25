@@ -1,3 +1,29 @@
+//! An example to show how to create a k8s health check server,
+//! using the [`HttpServer`] and [`Executor`] from Rama.
+//!
+//! [`HttpServer`]: crate::http::server::HttpServer
+//! [`Executor`]: crate::rt::Executor
+//!
+//! This example will create a server that listens on `127.0.0.1:8080.
+//!
+//! # Run the example
+//!
+//! ```sh
+//! cargo run --example http_k8s_health
+//! ```
+//!
+//! # Expected output
+//!
+//! The server will start and listen on `:8080`. You can use `curl` to check if the server is ready:
+//!
+//! ```sh
+//! curl -v http://127.0.0.1:8080/k8s/ready
+//! ```
+//!
+//! You should see a response with `HTTP/1.1 503 Service Unavailable` and an empty body.
+//! When running that same curl command, at least 10 seconds after your started the service,
+//! you should see a response with `HTTP/1.1 200 OK` and an empty body.
+
 use rama::{
     http::{server::HttpServer, service::web::k8s_health_builder},
     rt::Executor,
