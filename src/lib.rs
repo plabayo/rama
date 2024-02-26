@@ -14,24 +14,29 @@
 //! Please refer to [the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 //! to get inspired on how you can use it for your purposes.
 //!
-//! ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)\
+//! ![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)
 //!
-//! The goal of Rama is to provide a modular and composable framework to build your own proxy with ease.
-//! A lot of you are familiar with creating proxies using prebuilt tools that can be configured to ones desires.
-//! Rama is different in that it allows you to build your own proxies using code rather than configuration files.
-//! The goal is to provide a framework that is easy to use and understand, while also being powerful and flexible.
-//! While not as easy to use as configuration files, it does give freedom and a much higher order of control.
-//! As a result you can build a proxy that is exactly what you need, and nothing more.
+//! Rama aims to offer a flexible and modular framework that empowers you to
+//! effortlessly create your own proxy. Unlike prebuilt tools that can be configured
+//! to suit your needs, Rama allows you to build proxies using code.
+//! The framework is designed to be both user-friendly and robust,
+//! offering a powerful and adaptable solution. Although using code may not be as intuitive
+//! as configuring files, it grants you greater freedom and control over the final product.
+//! This way, you can create a proxy that precisely fits your requirements and nothing more.
 //!
 //! Learn more by reading the Rama book at <https://ramaproxy.org/book> or continue to read the framework Rust docs here,
 //! to [get started](#getting-started).
 //!
 //! # High-level features
 //!
-//! - Macro-free API.
-//! - Use a tower-like service abstraction, ready for stable Async Rust, with an eye on the future.
-//! - Compose layers, services and state from the Transport Layer all the way to the Application Layer.
-//! - Compose your own proxy with the provided building blocks and your own custom logic intertwined.
+//! - Rama offers a macro-free API, ensuring a clean and streamlined development experience.
+//! - The framework utilizes a tower-like service abstraction, which is poised for
+//!   stable Async Rust and future growth.
+//! - You can easily compose layers, services, and state from the Transport Layer
+//!   to the Application Layer, allowing for a highly customizable solution.
+//! - With Rama, you have the freedom to build your own proxy using
+//!   the provided building blocks and your own custom logic, resulting in a
+//!   tailored and efficient solution.
 //!
 //! # Getting started
 //!
