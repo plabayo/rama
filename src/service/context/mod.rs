@@ -1,4 +1,57 @@
 //! Context passed to and between services as input.
+//!
+//! # Example
+//!
+//! ```
+//! use rama::service::Context;
+//! use std::sync::Arc;
+//!
+//! #[derive(Debug)]
+//! struct ServiceState {
+//!     value: i32,
+//! }
+//!
+//! let state = Arc::new(ServiceState{ value: 5 });
+//! let ctx = Context::with_state(state);
+//! ```
+//!
+//! ## Example: Extensions
+//!
+//! The [`Context`] can be extended with additional data using the [`Extensions`] type.
+//!
+//! [`Context`]: crate::service::Context
+//! [`Extensions`]: crate::service::context::Extensions
+//!
+//! ```
+//! use rama::service::Context;
+//!
+//! let mut ctx = Context::default();
+//! ctx.insert(5i32);
+//! assert_eq!(ctx.get::<i32>(), Some(&5i32));
+//! ```
+//!
+//! ## Example: State AsRef
+//!
+//! The state can be accessed as a reference using the [`AsRef`] trait.
+//!
+//! ```
+//! use rama::service::{Context, context};
+//! use std::sync::Arc;
+//! use std::convert::AsRef;
+//!
+//! #[derive(Debug)]
+//! struct ProxyDatabase;
+//!
+//! #[derive(Debug, context::AsRef)]
+//! struct ServiceState {
+//!     db: ProxyDatabase,
+//! }
+//!
+//! let state = Arc::new(ServiceState{ db: ProxyDatabase });
+//! let ctx = Context::with_state(state);
+//!
+//! let db: &ProxyDatabase = ctx.state().as_ref();
+//! ```
 
 use std::{future::Future, sync::Arc};
 use tokio::task::JoinHandle;
@@ -6,6 +59,8 @@ use tokio::task::JoinHandle;
 mod extensions;
 pub use extensions::Extensions;
 use tokio_graceful::ShutdownGuard;
+
+pub use rama_macros::AsRef;
 
 use crate::rt::Executor;
 
@@ -41,6 +96,11 @@ impl<S> Context<S> {
             executor,
             extensions: Extensions::new(),
         }
+    }
+
+    /// Create a new [`Context`] with the given state and default extension.
+    pub fn with_state(state: Arc<S>) -> Self {
+        Self::new(state, Executor::default())
     }
 
     /// Get a reference to the state.
