@@ -128,6 +128,28 @@ building and maintaining open source software that `rama` depends upon:
 | 💌 | [Ratatui](https://github.com/ratatui-org/ratatui) | (TUI framework)
 | 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
 
+#### Past Contributions
+
+| | name | projects |
+| - | - | - |
+| 💌 | [Tokio](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
+| 💌 | [Ratatui](https://github.com/ratatui-org/ratatui) | (TUI framework)
+
+## 🌱 | Alternatives
+
+While there are a handful of proxies written in Rust, there is only one other Rust framework
+specifically made for proxy services. All other proxies are single purpose code bases,
+some even just for learning purposes.
+
+[Cloudflare] has been working on a proxy service framework, named [`pingora`], since a couple of years already,
+and on the 28th of February of 2024 they also open sourced it.
+
+Rama is not for everyone, but we sure hope it is right for you.
+If not, consider giving [`pingora`] a try, it might very well be the next best thing for you.
+
+[Cloudflare]: https://www.cloudflare.com/
+[`pingora`]: https://github.com/cloudflare/pingora
+
 ## ❓| FAQ
 
 Available at <https://ramaproxy.org/book/faq.html>.
