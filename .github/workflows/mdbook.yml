@@ -35,7 +35,7 @@ jobs:
   build:
     runs-on: ubuntu-latest
     env:
-      MDBOOK_VERSION: 0.4.26
+      MDBOOK_VERSION: 0.4.27
       MDBOOK_GRAPHVIZ_VERSION: 0.1.6
     steps:
       - uses: actions/checkout@v3
