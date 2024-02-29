@@ -28,7 +28,7 @@
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
 [ghs-url]: https://github.com/sponsors/plabayo
 
-🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets.
+🦙 Rama (ラマ) is a modular proxy framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
 You can use it to develop:

@@ -1,7 +1,7 @@
 #![cfg_attr(nightly_error_messages, feature(diagnostic_namespace))]
 //! # rama
 //!
-//! 🦙 Rama is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop:
+//! 🦙 Rama (ラマ) is a modular proxy framework for the 🦀 Rust language to move and transform your network packets. You can use it to develop:
 //!
 //! - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
 //! - 🔓 [TLS Termination proxies](https://ramaproxy.org/book/proxies/tls);

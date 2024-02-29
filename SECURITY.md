@@ -11,6 +11,7 @@
 If you discover a vulnerability, please do the following:
 
 - E-mail your findings to security [at] plabayo [dot] tech.
+- Or alternatively report it securely at <https://github.com/plabayo/rama/security/advisories>.
 - Do not take advantage of the vulnerability or problem you have discovered, for example by downloading more data than necessary to demonstrate the vulnerability or deleting or modifying other people's data.
 - Do not reveal the problem to others until it has been resolved.
 - Do not use attacks on physical security, social engineering, distributed denial of service, spam or applications of third parties.
