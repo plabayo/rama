@@ -15,6 +15,6 @@ cname = "ramaproxy.org"
 [output.html.print]
 enable = false
 
-# [preprocessor.graphviz]
-# command = "mdbook-graphviz"
-# output-to-file = false
+[preprocessor.graphviz]
+command = "mdbook-graphviz"
+output-to-file = false
