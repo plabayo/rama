@@ -16,33 +16,50 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with the source code of this example.
 
-use rama::tcp::server::TcpListener;
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use std::convert::Infallible;
+
+use rama::{
+    stream::{Socket, Stream},
+    tcp::server::TcpListener,
+};
+use tokio::io::AsyncWriteExt;
 
 const SRC: &str = include_str!("./tcp_listener_hello.rs");
+const ADDR: &str = "127.0.0.1:9000";
 
 #[tokio::main]
 async fn main() {
-    TcpListener::bind("127.0.0.1:9000")
+    println!("Listening on: {ADDR}");
+    TcpListener::bind(ADDR)
         .await
         .expect("bind TCP Listener")
-        .serve_fn(|mut stream: TcpStream| async move {
-            let resp = [
-                "HTTP/1.1 200 OK",
-                "Content-Type: text/plain",
-                format!("Content-Length: {}", SRC.len()).as_str(),
-                "",
-                SRC,
-                "",
-            ]
-            .join("\r\n");
-
-            stream
-                .write_all(resp.as_bytes())
-                .await
-                .expect("write to stream");
-
-            Ok::<_, std::convert::Infallible>(())
-        })
+        .serve_fn(handle)
         .await;
+}
+
+async fn handle(mut stream: impl Socket + Stream + Unpin) -> Result<(), Infallible> {
+    println!(
+        "Incoming connection from: {}",
+        stream
+            .peer_addr()
+            .map(|a| a.to_string())
+            .unwrap_or_else(|_| "???".to_owned())
+    );
+
+    let resp = [
+        "HTTP/1.1 200 OK",
+        "Content-Type: text/plain",
+        format!("Content-Length: {}", SRC.len()).as_str(),
+        "",
+        SRC,
+        "",
+    ]
+    .join("\r\n");
+
+    stream
+        .write_all(resp.as_bytes())
+        .await
+        .expect("write to stream");
+
+    Ok::<_, std::convert::Infallible>(())
 }
