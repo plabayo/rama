@@ -67,12 +67,12 @@ all_the_tuples_no_last_special_case!(impl_and);
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __and {
+/// Create a new [`And`] matcher.
+macro_rules! __op_and {
     ($($ty:expr),+ $(,)?) => {
         $crate::service::matcher::And::new(($($ty),+,))
     };
 }
 
-/// Create a new `And` matcher.
 #[doc(inline)]
-pub use __and as and;
+pub use __op_and as and;

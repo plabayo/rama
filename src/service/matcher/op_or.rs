@@ -68,11 +68,12 @@ all_the_tuples_no_last_special_case!(impl_or);
 
 #[doc(hidden)]
 #[macro_export]
-macro_rules! __or {
+/// Create a new [`Or`] matcher.
+macro_rules! __op_or {
     ($($ty:expr),+ $(,)?) => {
         $crate::service::matcher::Or::new(($($ty),+,))
     };
 }
 
 #[doc(inline)]
-pub use __or as or;
+pub use __op_or as or;
