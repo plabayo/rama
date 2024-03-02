@@ -14,7 +14,7 @@ pub fn service_fn<F, A>(f: F) -> ServiceFnBox<F, A> {
 ///
 /// You do not need to implement this trait yourself.
 /// Instead, you need to use the [`service_fn`] function to create a [`ServiceFn`].
-pub trait ServiceFn<S, Request, A>: Send + Sync + 'static {
+pub trait ServiceFn<S, Request, A>: private::Sealed<S, Request, A> + Send + Sync + 'static {
     /// The type of response returned by the service.
     type Response: Send + 'static;
 
@@ -124,10 +124,9 @@ where
     }
 }
 
-impl <F, A> std::fmt::Debug for ServiceFnBox<F, A> {
+impl<F, A> std::fmt::Debug for ServiceFnBox<F, A> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ServiceFnBox")
-            .finish()
+        f.debug_struct("ServiceFnBox").finish()
     }
 }
 
@@ -145,5 +144,39 @@ where
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         self.f.call(ctx, req)
+    }
+}
+
+mod private {
+    use super::*;
+
+    pub trait Sealed<S, Request, A> {}
+
+    impl<S, Request, F, Fut, Response, Error> Sealed<S, Request, ()> for F
+    where
+        F: Fn() -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Response, Error>> + Send + 'static,
+    {
+    }
+
+    impl<S, Request, F, Fut, Response, Error> Sealed<S, Request, (Request,)> for F
+    where
+        F: Fn(Request) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Response, Error>> + Send + 'static,
+    {
+    }
+
+    impl<S, Request, F, Fut, Response, Error> Sealed<S, Request, (Context<S>, Request)> for F
+    where
+        F: Fn(Context<S>, Request) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Response, Error>> + Send + 'static,
+    {
+    }
+
+    impl<S, Request, F, Fut, Response, Error> Sealed<S, Request, (Context<S>, (), ())> for F
+    where
+        F: Fn(Context<S>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = Result<Response, Error>> + Send + 'static,
+    {
     }
 }
