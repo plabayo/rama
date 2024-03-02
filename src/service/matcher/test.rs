@@ -1,5 +1,25 @@
 use super::*;
 
+#[test]
+fn test_always() {
+    assert!(Always.matches(None, &Context::default(), &()));
+    assert!(Always.matches(None, &Context::default(), &0));
+    assert!(Always.matches(None, &Context::default(), &false));
+    assert!(Always.matches(None, &Context::default(), &"foo"));
+}
+
+#[test]
+fn test_not() {
+    assert!(!Always::new().not().matches(None, &Context::default(), &()));
+    assert!(!Always::new().not().matches(None, &Context::default(), &0));
+    assert!(!Always::new()
+        .not()
+        .matches(None, &Context::default(), &false));
+    assert!(!Always::new()
+        .not()
+        .matches(None, &Context::default(), &"foo"));
+}
+
 #[derive(Debug, Clone)]
 struct OddMatcher;
 
@@ -25,6 +45,13 @@ impl<State> Matcher<State, u8> for ConstMatcher {
     fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
         *req == self.0
     }
+}
+
+#[test]
+fn test_option() {
+    assert!(Option::<ConstMatcher>::None.matches(None, &Context::default(), &0));
+    assert!(Some(ConstMatcher(0)).matches(None, &Context::default(), &0));
+    assert!(!Some(ConstMatcher(1)).matches(None, &Context::default(), &0));
 }
 
 #[test]

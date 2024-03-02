@@ -5,9 +5,9 @@
 
 use super::{context::Extensions, Context};
 
-mod any;
+mod always;
 #[doc(inline)]
-pub use any::Any;
+pub use always::Always;
 
 mod op_or;
 #[doc(inline)]
@@ -20,6 +20,10 @@ pub use op_and::{and, And};
 mod op_not;
 #[doc(inline)]
 pub use op_not::Not;
+
+mod mfn;
+#[doc(inline)]
+pub use mfn::{match_fn, MatchFn};
 
 /// A condition to decide whether `Request` within the given [`Context`] matches for
 /// router or other middleware purposes.
@@ -50,7 +54,7 @@ pub trait Matcher<State, Request>: Send + Sync + 'static {
     }
 
     /// Negate the current condition.
-    fn not(self) -> Not<Self>
+    fn not(self) -> impl Matcher<State, Request>
     where
         Self: Sized,
     {
@@ -58,9 +62,17 @@ pub trait Matcher<State, Request>: Send + Sync + 'static {
     }
 }
 
-mod mfn;
-#[doc(inline)]
-pub use mfn::{match_fn, MatchFn};
+impl<State, Request, T> Matcher<State, Request> for Option<T>
+where
+    T: Matcher<State, Request>,
+{
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+        match self {
+            Some(inner) => inner.matches(ext, ctx, req),
+            None => true,
+        }
+    }
+}
 
 #[cfg(test)]
 mod test;

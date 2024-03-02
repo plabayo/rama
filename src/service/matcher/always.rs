@@ -5,16 +5,16 @@ use super::Matcher;
 #[derive(Debug, Default)]
 #[non_exhaustive]
 /// Matches any request.
-pub struct Any;
+pub struct Always;
 
-impl Any {
-    /// Create a new instance of `Any`.
+impl Always {
+    /// Create a new instance of `Always`.
     pub fn new() -> Self {
         Self
     }
 }
 
-impl<State, Request> Matcher<State, Request> for Any {
+impl<State, Request> Matcher<State, Request> for Always {
     fn matches(&self, _: Option<&mut Extensions>, _: &Context<State>, _: &Request) -> bool {
         true
     }
