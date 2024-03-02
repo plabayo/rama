@@ -32,7 +32,7 @@ pub trait Matcher<State, Request>: Send + Sync + 'static {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool;
 
     /// Provide an alternative matcher to match if the current one does not match.
-    fn or<M>(self, other: M) -> Or<(Self, M)>
+    fn or<M>(self, other: M) -> impl Matcher<State, Request>
     where
         Self: Sized,
         M: Matcher<State, Request>,
@@ -41,7 +41,7 @@ pub trait Matcher<State, Request>: Send + Sync + 'static {
     }
 
     /// Add another condition to match on top of the current one.
-    fn and<M>(self, other: M) -> And<(Self, M)>
+    fn and<M>(self, other: M) -> impl Matcher<State, Request>
     where
         Self: Sized,
         M: Matcher<State, Request>,

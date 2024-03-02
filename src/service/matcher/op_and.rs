@@ -23,51 +23,71 @@ impl<T> And<T> {
     }
 }
 
-macro_rules! impl_and_method_and {
-    ($($ty:ident),+) => {
+macro_rules! impl_and_matches {
+    ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        impl<$($ty),+> And<($($ty),+,)> {
-            /// Extend the `And` matcher with another possible matcher,
-            /// that must also match.
-            pub fn and<M>(self, matcher: M) -> And<($($ty,)+ M)> {
-                let ($($ty),+,) = self.0;
-                let inner = ($($ty,)+ matcher);
-                And::new(inner)
+        fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+            let ($($ty),+,) = &self.0;
+            match ext {
+                Some(ext) => {
+                    $(
+                        let mut inner_ext = Extensions::new();
+                        if !$ty.matches(Some(&mut inner_ext), ctx, req) {
+                            return false;
+                        }
+                    )+
+                    ext.extend(inner_ext);
+                    true
+                }
+                None => {
+                    $(
+                        if !$ty.matches(None, ctx, req) {
+                            return false;
+                        }
+                    )+
+                    true
+                }
             }
         }
     };
 }
 
-all_the_tuples_minus_one_no_last_special_case!(impl_and_method_and);
-
 macro_rules! impl_and {
+    ($T1:ident,$T2:ident,$T3:ident,$T4:ident,$T5:ident,$T6:ident,$T7:ident,$T8:ident,$T9:ident,$T10:ident,$T11:ident,$T12:ident $(,)?) => {
+        #[allow(non_snake_case)]
+        impl<State, Request, $T1, $T2, $T3, $T4, $T5, $T6, $T7, $T8, $T9, $T10, $T11, $T12> Matcher<State, Request> for And<($T1, $T2, $T3, $T4, $T5, $T6, $T7, $T8, $T9, $T10, $T11, $T12)>
+            where $T1: Matcher<State, Request>,
+                  $T2: Matcher<State, Request>,
+                  $T3: Matcher<State, Request>,
+                  $T4: Matcher<State, Request>,
+                  $T5: Matcher<State, Request>,
+                  $T6: Matcher<State, Request>,
+                  $T7: Matcher<State, Request>,
+                  $T8: Matcher<State, Request>,
+                  $T9: Matcher<State, Request>,
+                  $T10: Matcher<State, Request>,
+                  $T11: Matcher<State, Request>,
+                  $T12: Matcher<State, Request>
+        {
+            impl_and_matches!( $T1, $T2, $T3, $T4, $T5, $T6, $T7, $T8, $T9, $T10, $T11, $T12 );
+        }
+    };
+
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
         impl<State, Request, $($ty),+> Matcher<State, Request> for And<($($ty),+,)>
             where $($ty: Matcher<State, Request>),+
         {
-            fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
-                let ($($ty),+,) = &self.0;
-                match ext {
-                    Some(ext) => {
-                        $(
-                            let mut inner_ext = Extensions::new();
-                            if !$ty.matches(Some(&mut inner_ext), ctx, req) {
-                                return false;
-                            }
-                        )+
-                        ext.extend(inner_ext);
-                        true
-                    }
-                    None => {
-                        $(
-                            if !$ty.matches(None, ctx, req) {
-                                return false;
-                            }
-                        )+
-                        true
-                    }
-                }
+            impl_and_matches!($($ty),+);
+
+            fn and<M>(self, matcher: M) -> impl Matcher<State, Request>
+            where
+                Self: Sized,
+                M: Matcher<State, Request>,
+            {
+                let ($($ty),+,) = self.0;
+                let inner = ($($ty,)+ matcher);
+                And::new(inner)
             }
         }
     };
