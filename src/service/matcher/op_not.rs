@@ -1,16 +1,8 @@
 use super::Matcher;
 use crate::service::{context::Extensions, Context};
-use std::hash::Hash;
 
 /// A matcher that matches if the inner matcher does not match.
 pub struct Not<T>(T);
-
-impl<T: Hash> Hash for Not<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write(b"not");
-        self.0.hash(state);
-    }
-}
 
 impl<T: std::fmt::Debug> std::fmt::Debug for Not<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

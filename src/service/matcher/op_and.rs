@@ -1,16 +1,8 @@
 use super::Matcher;
 use crate::service::{context::Extensions, Context};
-use std::hash::Hash;
 
 /// A matcher that matches if all of the inner matchers match.
 pub struct And<T>(T);
-
-impl<T: Hash> Hash for And<T> {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        state.write(b"and");
-        self.0.hash(state);
-    }
-}
 
 impl<T: std::fmt::Debug> std::fmt::Debug for And<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
