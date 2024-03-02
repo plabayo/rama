@@ -31,6 +31,23 @@ impl<T> Or<T> {
     }
 }
 
+macro_rules! impl_or_method_or {
+    ($($ty:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<$($ty),+> Or<($($ty),+,)> {
+            /// Extend the `Or` matcher with another possible matcher
+            /// on which can be matched.
+            pub fn or<M>(self, matcher: M) -> Or<($($ty,)+ M)> {
+                let ($($ty),+,) = self.0;
+                let inner = ($($ty,)+ matcher);
+                Or::new(inner)
+            }
+        }
+    };
+}
+
+all_the_tuples_minus_one_no_last_special_case!(impl_or_method_or);
+
 macro_rules! impl_or {
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]

@@ -31,6 +31,23 @@ impl<T> And<T> {
     }
 }
 
+macro_rules! impl_and_method_and {
+    ($($ty:ident),+) => {
+        #[allow(non_snake_case)]
+        impl<$($ty),+> And<($($ty),+,)> {
+            /// Extend the `And` matcher with another possible matcher,
+            /// that must also match.
+            pub fn and<M>(self, matcher: M) -> And<($($ty,)+ M)> {
+                let ($($ty),+,) = self.0;
+                let inner = ($($ty,)+ matcher);
+                And::new(inner)
+            }
+        }
+    };
+}
+
+all_the_tuples_minus_one_no_last_special_case!(impl_and_method_and);
+
 macro_rules! impl_and {
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
