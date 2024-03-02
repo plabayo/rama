@@ -86,6 +86,16 @@ where
     }
 }
 
+impl<F, S, Request>
+    MatchFn<S, Request, ((), (), (), (), (), (), Option<&mut Extensions>, Context<S>)> for F
+where
+    F: Fn(Option<&mut Extensions>, &Context<S>) -> bool + Send + Sync + 'static,
+{
+    fn call(&self, ext: Option<&mut Extensions>, ctx: &Context<S>, _req: &Request) -> bool {
+        (self)(ext, ctx)
+    }
+}
+
 /// The public wrapper type for [`MatchFn`].
 pub struct MatchFnBox<F, A> {
     f: F,

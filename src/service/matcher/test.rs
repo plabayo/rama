@@ -141,3 +141,46 @@ fn test_or_never() {
         );
     }
 }
+
+#[test]
+fn test_and_or() {
+    let matcher = ConstMatcher(1)
+        .or(ConstMatcher(2))
+        .and(OddMatcher.or(EvenMatcher));
+    assert!(matcher.matches(None, &Context::default(), &1));
+    assert!(matcher.matches(None, &Context::default(), &2));
+    for i in 3..=255 {
+        assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+    }
+}
+
+#[test]
+fn test_match_fn_always() {
+    assert!(match_fn(|| true).matches(None, &Context::default(), &()));
+    assert!(match_fn(|_: &Context<()>| true).matches(None, &Context::default(), &()));
+    assert!(match_fn(|_: Option<&mut Extensions>| true).matches(None, &Context::default(), &()));
+    assert!(
+        match_fn(|_: Option<&mut Extensions>, _: &Context<()>| true).matches(
+            None,
+            &Context::default(),
+            &()
+        )
+    );
+    assert!(match_fn(|_: &Context<()>, _: &()| true).matches(None, &Context::default(), &()));
+    assert!(match_fn(|_: &()| true).matches(None, &Context::default(), &()));
+    assert!(match_fn(|_: &u8| true).matches(None, &Context::default(), &0));
+    assert!(match_fn(|_: &bool| true).matches(None, &Context::default(), &false));
+    assert!(match_fn(|_: &&str| true).matches(None, &Context::default(), &"foo"));
+}
+
+#[test]
+fn test_match_fn() {
+    let matcher = match_fn(|req: &u8| *req % 2 != 0);
+    for i in 0..=255 {
+        if i % 2 != 0 {
+            assert!(matcher.matches(None, &Context::default(), &i), "i = {}", i);
+        } else {
+            assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+        }
+    }
+}
