@@ -7,6 +7,7 @@ pub struct Or<T>(T);
 
 impl<T: Hash> Hash for Or<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write(b"or");
         self.0.hash(state);
     }
 }

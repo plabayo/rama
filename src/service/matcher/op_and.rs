@@ -7,6 +7,7 @@ pub struct And<T>(T);
 
 impl<T: Hash> Hash for And<T> {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        state.write(b"and");
         self.0.hash(state);
     }
 }

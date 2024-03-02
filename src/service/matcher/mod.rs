@@ -19,9 +19,12 @@ mod op_and;
 #[doc(inline)]
 pub use op_and::{and, And};
 
-/// condition to decide whether `Request` within the given [`Context`] matches to a defined (web) [`Service`]
-///
-/// [`Service`]: crate::service::Service
+mod op_not;
+#[doc(inline)]
+pub use op_not::Not;
+
+/// A condition to decide whether `Request` within the given [`Context`] matches for
+/// router or other middleware purposes.
 pub trait Matcher<State, Request>: Hash + Send + Sync + 'static {
     /// returns true on a match, false otherwise
     ///
