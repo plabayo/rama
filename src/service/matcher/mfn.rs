@@ -14,7 +14,7 @@ pub fn match_fn<F, A>(f: F) -> MatchFnBox<F, A> {
 ///
 /// You do not need to implement this trait yourself.
 /// Instead, you need to use the [`match_fn`] function to create a [`MatchFn`].
-pub trait MatchFn<S, Request, A>: Send + Sync + 'static {
+pub trait MatchFn<S, Request, A>: private::Sealed<S, Request, A> + Send + Sync + 'static {
     /// returns true on a match, false otherwise
     ///
     /// `ext` is None in case the callee is not interested in collecting potential
@@ -127,5 +127,46 @@ where
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<S>, req: &Request) -> bool {
         self.f.call(ext, ctx, req)
+    }
+}
+
+mod private {
+    use super::*;
+
+    pub trait Sealed<S, Request, A> {}
+
+    impl<F, S, Request> Sealed<S, Request, ()> for F where F: Fn() -> bool + Send + Sync + 'static {}
+    impl<F, S, Request> Sealed<S, Request, (Request,)> for F where
+        F: Fn(&Request) -> bool + Send + Sync + 'static
+    {
+    }
+    impl<F, S, Request> Sealed<S, Request, (Context<S>, Request)> for F where
+        F: Fn(&Context<S>, &Request) -> bool + Send + Sync + 'static
+    {
+    }
+    impl<F, S, Request> Sealed<S, Request, (Option<&mut Extensions>, Context<S>, Request)> for F where
+        F: Fn(Option<&mut Extensions>, &Context<S>, &Request) -> bool + Send + Sync + 'static
+    {
+    }
+    impl<F, S, Request> Sealed<S, Request, ((), (), Option<&mut Extensions>, Request)> for F where
+        F: Fn(Option<&mut Extensions>, &Request) -> bool + Send + Sync + 'static
+    {
+    }
+
+    impl<F, S, Request> Sealed<S, Request, ((), (), (), (), Option<&mut Extensions>)> for F where
+        F: Fn(Option<&mut Extensions>) -> bool + Send + Sync + 'static
+    {
+    }
+
+    impl<F, S, Request> Sealed<S, Request, ((), (), (), (), (), Context<S>)> for F where
+        F: Fn(&Context<S>) -> bool + Send + Sync + 'static
+    {
+    }
+
+    impl<F, S, Request>
+        Sealed<S, Request, ((), (), (), (), (), (), Option<&mut Extensions>, Context<S>)> for F
+    where
+        F: Fn(Option<&mut Extensions>, &Context<S>) -> bool + Send + Sync + 'static,
+    {
     }
 }
