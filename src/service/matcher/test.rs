@@ -10,6 +10,11 @@ fn test_always() {
 
 #[test]
 fn test_not() {
+    assert!(!Not::new(Always).matches(None, &Context::default(), &()));
+}
+
+#[test]
+fn test_not_builder() {
     assert!(!Always::new().not().matches(None, &Context::default(), &()));
     assert!(!Always::new().not().matches(None, &Context::default(), &0));
     assert!(!Always::new()
@@ -55,6 +60,28 @@ fn test_option() {
 }
 
 #[test]
+fn test_and() {
+    let matcher = and!(ConstMatcher(1), OddMatcher);
+    assert!(!matcher.matches(None, &Context::default(), &0));
+    assert!(matcher.matches(None, &Context::default(), &1));
+    assert!(!matcher.matches(None, &Context::default(), &2));
+    for i in 3..=255 {
+        assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+    }
+}
+
+#[test]
+fn test_and_builder() {
+    let matcher = ConstMatcher(1).and(OddMatcher);
+    assert!(!matcher.matches(None, &Context::default(), &0));
+    assert!(matcher.matches(None, &Context::default(), &1));
+    assert!(!matcher.matches(None, &Context::default(), &2));
+    for i in 3..=255 {
+        assert!(!matcher.matches(None, &Context::default(), &i), "i = {}", i);
+    }
+}
+
+#[test]
 fn test_or() {
     let matcher = or!(ConstMatcher(1), EvenMatcher);
     assert!(matcher.matches(None, &Context::default(), &0));
@@ -71,7 +98,7 @@ fn test_or() {
 
 #[test]
 fn test_or_builder() {
-    let matcher = or!(ConstMatcher(1))
+    let matcher = ConstMatcher(1)
         .or(ConstMatcher(2))
         .or(ConstMatcher(3))
         .or(ConstMatcher(4))
