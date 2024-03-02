@@ -30,8 +30,37 @@ pub trait Matcher<State, Request>: Send + Sync + 'static {
     /// match metadata gathered during the matching process. An example of this
     /// path parameters for an http Uri matcher.
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool;
+
+    /// Provide an alternative matcher to match if the current one does not match.
+    fn or<M>(self, other: M) -> Or<(Self, M)>
+    where
+        Self: Sized,
+        M: Matcher<State, Request>,
+    {
+        or!(self, other)
+    }
+
+    /// Add another condition to match on top of the current one.
+    fn and<M>(self, other: M) -> And<(Self, M)>
+    where
+        Self: Sized,
+        M: Matcher<State, Request>,
+    {
+        and!(self, other)
+    }
+
+    /// Negate the current condition.
+    fn not(self) -> Not<Self>
+    where
+        Self: Sized,
+    {
+        Not::new(self)
+    }
 }
 
 mod mfn;
 #[doc(inline)]
 pub use mfn::{match_fn, MatchFn};
+
+#[cfg(test)]
+mod test;
