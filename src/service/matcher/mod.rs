@@ -25,6 +25,10 @@ mod mfn;
 #[doc(inline)]
 pub use mfn::{match_fn, MatchFn};
 
+mod iter;
+#[doc(inline)]
+pub use iter::IteratorMatcherExt;
+
 /// A condition to decide whether `Request` within the given [`Context`] matches for
 /// router or other middleware purposes.
 pub trait Matcher<State, Request>: Send + Sync + 'static {
@@ -71,6 +75,25 @@ where
             Some(inner) => inner.matches(ext, ctx, req),
             None => true,
         }
+    }
+}
+
+impl<State, Request, T> Matcher<State, Request> for Box<T>
+where
+    T: Matcher<State, Request>,
+{
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+        (**self).matches(ext, ctx, req)
+    }
+}
+
+impl<State, Request> Matcher<State, Request> for Box<(dyn Matcher<State, Request> + 'static)>
+where
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+        (**self).matches(ext, ctx, req)
     }
 }
 

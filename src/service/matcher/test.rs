@@ -184,3 +184,148 @@ fn test_match_fn() {
         }
     }
 }
+
+#[derive(Debug)]
+#[allow(dead_code)]
+enum TestMatchers {
+    Const(ConstMatcher),
+    Even(EvenMatcher),
+    Odd(OddMatcher),
+}
+
+impl<State> Matcher<State, u8> for TestMatchers {
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &u8) -> bool {
+        match self {
+            TestMatchers::Const(m) => m.matches(ext, ctx, req),
+            TestMatchers::Even(m) => m.matches(ext, ctx, req),
+            TestMatchers::Odd(m) => m.matches(ext, ctx, req),
+        }
+    }
+}
+
+#[test]
+fn test_enum_matcher() {
+    assert!(!TestMatchers::Const(ConstMatcher(1)).matches(None, &Context::default(), &0));
+    assert!(TestMatchers::Const(ConstMatcher(1)).matches(None, &Context::default(), &1));
+    assert!(!TestMatchers::Even(EvenMatcher).matches(None, &Context::default(), &1));
+    assert!(TestMatchers::Even(EvenMatcher).matches(None, &Context::default(), &2));
+    assert!(!TestMatchers::Odd(OddMatcher).matches(None, &Context::default(), &2));
+    assert!(TestMatchers::Odd(OddMatcher).matches(None, &Context::default(), &3));
+}
+
+#[test]
+fn test_iter_enum_and() {
+    let matchers = vec![
+        TestMatchers::Const(ConstMatcher(1)),
+        TestMatchers::Odd(OddMatcher),
+    ];
+
+    assert!(matchers[0].matches(None, &Context::default(), &1));
+    assert!(matchers[1].matches(None, &Context::default(), &1));
+
+    for matcher in matchers.iter() {
+        assert!(matcher.matches(None, &Context::default(), &1));
+    }
+
+    assert!(matchers.iter().match_and(None, &Context::default(), &1));
+    assert!(!matchers.iter().match_and(None, &Context::default(), &3));
+    assert!(!matchers.iter().match_and(None, &Context::default(), &4));
+}
+
+#[test]
+fn test_iter_enum_or() {
+    let matchers = vec![
+        TestMatchers::Const(ConstMatcher(0)),
+        TestMatchers::Const(ConstMatcher(2)),
+        TestMatchers::Odd(OddMatcher),
+    ];
+
+    assert!(matchers[0].matches(None, &Context::default(), &0));
+    assert!(matchers[1].matches(None, &Context::default(), &2));
+    assert!(matchers[2].matches(None, &Context::default(), &1));
+
+    for i in 0..=2 {
+        assert!(
+            matchers.iter().match_or(None, &Context::default(), &i),
+            "i = {}",
+            i
+        );
+    }
+    for i in 3..=255 {
+        if i % 2 == 1 {
+            assert!(
+                matchers.iter().match_or(None, &Context::default(), &i),
+                "i = {}",
+                i
+            );
+        } else {
+            assert!(
+                !matchers.iter().match_or(None, &Context::default(), &i),
+                "i = {}",
+                i
+            );
+        }
+    }
+}
+
+#[test]
+#[allow(unused_allocation)]
+fn test_box() {
+    assert!(Box::new(ConstMatcher(0)).matches(None, &Context::default(), &0));
+    assert!(!Box::new(ConstMatcher(1)).matches(None, &Context::default(), &0));
+}
+
+#[test]
+fn test_iter_box_and() {
+    let matchers: Vec<Box<dyn Matcher<_, _>>> =
+        vec![Box::new(ConstMatcher(1)), Box::new(OddMatcher)];
+
+    assert!(matchers[0].matches(None, &Context::default(), &1));
+    assert!(matchers[1].matches(None, &Context::default(), &1));
+
+    for matcher in matchers.iter() {
+        assert!(matcher.matches(None, &Context::default(), &1));
+    }
+
+    assert!(matchers.iter().match_and(None, &Context::default(), &1));
+    assert!(!matchers.iter().match_and(None, &Context::default(), &3));
+    assert!(!matchers.iter().match_and(None, &Context::default(), &4));
+}
+
+#[test]
+fn test_iter_box_or() {
+    let matchers: Vec<Box<dyn Matcher<_, _>>> = vec![
+        Box::new(ConstMatcher(0)),
+        Box::new(ConstMatcher(2)),
+        Box::new(OddMatcher),
+    ];
+
+    assert!(matchers[0].matches(None, &Context::default(), &0));
+    assert!(matchers[1].matches(None, &Context::default(), &2));
+    assert!(matchers[2].matches(None, &Context::default(), &1));
+
+    for i in 0..=2 {
+        assert!(
+            matchers.iter().match_or(None, &Context::default(), &i),
+            "i = {}",
+            i
+        );
+    }
+    for i in 3..=255 {
+        if i % 2 == 1 {
+            assert!(
+                matchers.iter().match_or(None, &Context::default(), &i),
+                "i = {}",
+                i
+            );
+        } else {
+            assert!(
+                !matchers.iter().match_or(None, &Context::default(), &i),
+                "i = {}",
+                i
+            );
+        }
+    }
+}
+
+// TODO: add tests to ensure we do not store extension of unmatched branch
