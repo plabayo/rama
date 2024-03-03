@@ -180,6 +180,22 @@ impl<S> Context<S> {
     pub fn get_or_default<T: Send + Default + Clone + Sync + 'static>(&self) -> T {
         self.extensions.get::<T>().cloned().unwrap_or_default()
     }
+    /// Retrieves a value of type `T` from the context. If the value does not exist,
+    /// returns the provided fallback value.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::Context;
+    /// let mut ctx = Context::default();
+    /// ctx.insert(5i32);
+    ///
+    /// // Test existing value - should return the inserted value
+    /// assert_eq!(ctx.get_or::<i32>(10), 5);
+    ///
+    /// // Test with a fallback value for a type not inserted before (fallback to 2.5 for f64)
+    /// assert_eq!(ctx.get_or::<f64>(2.5), 2.5);
+    /// ```
 
     pub fn get_or<T: Send + Sync + Clone + 'static>(&self, fallback: T) -> T {
         self.extensions.get::<T>().cloned().unwrap_or(fallback)
