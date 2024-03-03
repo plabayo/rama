@@ -140,8 +140,8 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{self, dep::http_body_util::BodyExt, Body, StatusCode};
-    use extract::Request;
+    use crate::http::{self, dep::http_body_util::BodyExt, Body, Request, StatusCode};
+    use ::http::Method;
     use extract::*;
 
     fn assert_into_endpoint_service<T, I>(_: I)
@@ -220,7 +220,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_fn_wrapper_single_param_request() {
-        let svc = |Request(req): Request| async move { req.uri().to_string() };
+        let svc = |req: Request| async move { req.uri().to_string() };
         let svc = svc.into_endpoint_service();
 
         let resp = svc
@@ -298,7 +298,8 @@ mod tests {
         assert_into_endpoint_service(|_path: Path<Params>| async { StatusCode::OK });
         assert_into_endpoint_service(|Path(params): Path<Params>| async move { params.foo });
         assert_into_endpoint_service(|Query(query): Query<Params>| async move { query.foo });
-        assert_into_endpoint_service(|Request(req): Request| async move { req.uri().to_string() });
+        assert_into_endpoint_service(|method: Method| async move { method.to_string() });
+        assert_into_endpoint_service(|req: Request| async move { req.uri().to_string() });
         assert_into_endpoint_service(|State(_state): State<()>| async { StatusCode::OK });
         assert_into_endpoint_service(|Extension(ext): Extension<Params>| async { ext.foo });
         assert_into_endpoint_service(|_host: Host| async { StatusCode::OK });

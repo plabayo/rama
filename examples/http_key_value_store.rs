@@ -8,8 +8,9 @@
 //! The service has the following endpoints:
 //! - `GET /`: show this API documentation in Json Format
 //! - `GET /keys`: list all keys for which (bytes) data is stored
-//! - `GET /:key`: return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise
-//! - `POST /:key`: store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined
+//! - `GET /item/:key`: return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise
+//! - `HEAD /item/:key`: return a 200 Ok if found and a 404 Not Found otherwise
+//! - `POST /item/:key`: store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined
 //!
 //! The service also has admin endpoints:
 //! - `DELETE /keys`: clear all keys and their associated data
@@ -41,19 +42,27 @@
 //! # get the value for a key
 //! curl -v http://127.0.0.1:8080/item/key3
 //!
+//! # check existence for a key
+//! curl -v -XHEAD http://127.0.0.1:8080/item/key3
+//!
 //! # delete a key
 //! curl -v -X DELETE http://127.0.0.1:8080/admin/item/key3 -H "Authorization: Bearer secret-token"
 //! ```
 
+use http::Method;
 use rama::{
     http::{
-        layer::compression::CompressionLayer,
-        layer::trace::TraceLayer,
-        layer::validate_request::ValidateRequestHeaderLayer,
+        layer::{
+            compression::CompressionLayer, trace::TraceLayer,
+            validate_request::ValidateRequestHeaderLayer,
+        },
         response::Json,
         server::HttpServer,
-        service::web::extract::{Bytes, Path, State},
-        service::web::{IntoEndpointService, WebService},
+        service::web::{
+            extract::{Bytes, Path, State},
+            matcher::{MethodFilter, PathFilter},
+            IntoEndpointService, WebService,
+        },
         IntoResponse, StatusCode,
     },
     rt::Executor,
@@ -103,8 +112,9 @@ async fn main() {
                         .get("/", Json(json!({
                                 "GET /": "show this API documentation in Json Format",
                                 "GET /keys": "list all keys for which (bytes) data is stored",
-                                "GET /:key": "return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise",
-                                "POST /:key": "store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined",
+                                "GET /item/:key": "return a 200 Ok containing the (bytes) data stored at <key>, and a 404 Not Found otherwise",
+                                "HEAD /item/:key": "return a 200 Ok if found, and a 404 Not Found otherwise",
+                                "POST /item/:key": "store the given request payload as the value referenced by <key>, returning a 400 Bad Request if no payload was defined",
                                 "admin": {
                                     "DELETE /keys": "clear all keys and their associated data",
                                     "DELETE /item/:key": "remove the data stored at <key>, returning a 200 Ok if the key was found, and a 404 Not Found otherwise"
@@ -123,15 +133,30 @@ async fn main() {
                                         None => StatusCode::NOT_FOUND,
                                     }
                                 })))
-                        .get(
-                            "/item/:key",
+                        .on(
+                            (
+                                MethodFilter::GET.or(MethodFilter::HEAD),
+                                PathFilter::new("/item/:key"),
+                            ),
                             // only compress the get Action, not the Post Action
                             ServiceBuilder::new()
                                 .layer(CompressionLayer::new())
-                                .service((|State(state): State<AppState>, Path(params): Path<ItemParam>| async move {
-                                    match state.db.read().await.get(&params.key) {
-                                        Some(b) => b.clone().into_response(),
-                                        None => StatusCode::NOT_FOUND.into_response(),
+                                .service((|State(state): State<AppState>, Path(params): Path<ItemParam>, method: Method| async move {
+                                    match method {
+                                        Method::GET => {
+                                            match state.db.read().await.get(&params.key) {
+                                                Some(b) => b.clone().into_response(),
+                                                None => StatusCode::NOT_FOUND.into_response(),
+                                            }
+                                        }
+                                        Method::HEAD => {
+                                            if state.db.read().await.contains_key(&params.key) {
+                                                StatusCode::OK
+                                            } else {
+                                                StatusCode::NOT_FOUND
+                                            }.into_response()
+                                        }
+                                        _ => StatusCode::INTERNAL_SERVER_ERROR.into_response()
                                     }
                                 }).into_endpoint_service()),
                         )
