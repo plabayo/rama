@@ -151,6 +151,39 @@ impl<S> Context<S> {
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.extensions.get::<T>()
     }
+    /// Get a reference to an extension or T's default().
+    ///
+    /// An extension is a type that implements `Send + Sync + 'static`,
+    /// and can be used to inject dynamic data into the [`Context`].
+    ///
+    /// Extensions are specific to this [`Context`]. It will be cloned when the [`Context`] is cloned,
+    /// but extensions inserted using [`Context::insert`] will not be visible the
+    /// original [`Context`], or any other cloned [`Context`].
+    ///
+    /// Please use the statically typed state (see [`Context::state`]) for data that is shared between
+    /// all context clones, parent or not.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::Context;
+    /// # let mut ctx = Context::default();
+    /// # ctx.insert(5i32);
+    ///
+    /// // Test existing value
+    /// assert_eq!(ctx.get_or_default::<i32>(), 5i32);
+    ///
+    /// // Test default value for a type not inserted before (assuming `f64::default()` is 0.0)
+    /// assert_eq!(ctx.get_or_default::<f64>(), 0f64);
+    /// ```
+
+    pub fn get_or_default<T: Send + Default + Clone + Sync + 'static>(&self) -> T {
+        self.extensions.get::<T>().cloned().unwrap_or_default()
+    }
+
+    pub fn get_or<T: Send + Sync + Clone + 'static>(&self, fallback: T) -> T {
+        self.extensions.get::<T>().cloned().unwrap_or(fallback)
+    }
 
     /// Insert an extension into the [`Context`].
     ///
