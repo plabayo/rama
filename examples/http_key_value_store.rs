@@ -49,7 +49,6 @@
 //! curl -v -X DELETE http://127.0.0.1:8080/admin/item/key3 -H "Authorization: Bearer secret-token"
 //! ```
 
-use http::Method;
 use rama::{
     http::{
         layer::{
@@ -63,7 +62,7 @@ use rama::{
             matcher::{MethodFilter, PathFilter},
             IntoEndpointService, WebService,
         },
-        IntoResponse, StatusCode,
+        IntoResponse, Method, StatusCode,
     },
     rt::Executor,
     service::ServiceBuilder,
