@@ -9,7 +9,7 @@ where
 {
     /// Matches in case all [`Matcher`] elements match for the given `Request`
     /// within the specified [`crate::service::Context`].
-    fn match_and(
+    fn matches_and(
         self,
         ext: Option<&mut Extensions>,
         ctx: &Context<State>,
@@ -18,7 +18,7 @@ where
 
     /// Matches in case any of the [`Matcher`] elements match for the given `Request`
     /// within the specified [`crate::service::Context`].
-    fn match_or(
+    fn matches_or(
         self,
         ext: Option<&mut Extensions>,
         ctx: &Context<State>,
@@ -31,7 +31,7 @@ where
     I: Iterator<Item = &'a M> + 'a,
     M: Matcher<State, Request>,
 {
-    fn match_and(
+    fn matches_and(
         self,
         ext: Option<&mut Extensions>,
         ctx: &Context<State>,
@@ -59,7 +59,7 @@ where
         }
     }
 
-    fn match_or(
+    fn matches_or(
         self,
         ext: Option<&mut Extensions>,
         ctx: &Context<State>,

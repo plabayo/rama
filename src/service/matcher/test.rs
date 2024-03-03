@@ -227,9 +227,9 @@ fn test_iter_enum_and() {
         assert!(matcher.matches(None, &Context::default(), &1));
     }
 
-    assert!(matchers.iter().match_and(None, &Context::default(), &1));
-    assert!(!matchers.iter().match_and(None, &Context::default(), &3));
-    assert!(!matchers.iter().match_and(None, &Context::default(), &4));
+    assert!(matchers.iter().matches_and(None, &Context::default(), &1));
+    assert!(!matchers.iter().matches_and(None, &Context::default(), &3));
+    assert!(!matchers.iter().matches_and(None, &Context::default(), &4));
 }
 
 #[test]
@@ -246,7 +246,7 @@ fn test_iter_enum_or() {
 
     for i in 0..=2 {
         assert!(
-            matchers.iter().match_or(None, &Context::default(), &i),
+            matchers.iter().matches_or(None, &Context::default(), &i),
             "i = {}",
             i
         );
@@ -254,13 +254,13 @@ fn test_iter_enum_or() {
     for i in 3..=255 {
         if i % 2 == 1 {
             assert!(
-                matchers.iter().match_or(None, &Context::default(), &i),
+                matchers.iter().matches_or(None, &Context::default(), &i),
                 "i = {}",
                 i
             );
         } else {
             assert!(
-                !matchers.iter().match_or(None, &Context::default(), &i),
+                !matchers.iter().matches_or(None, &Context::default(), &i),
                 "i = {}",
                 i
             );
@@ -287,9 +287,9 @@ fn test_iter_box_and() {
         assert!(matcher.matches(None, &Context::default(), &1));
     }
 
-    assert!(matchers.iter().match_and(None, &Context::default(), &1));
-    assert!(!matchers.iter().match_and(None, &Context::default(), &3));
-    assert!(!matchers.iter().match_and(None, &Context::default(), &4));
+    assert!(matchers.iter().matches_and(None, &Context::default(), &1));
+    assert!(!matchers.iter().matches_and(None, &Context::default(), &3));
+    assert!(!matchers.iter().matches_and(None, &Context::default(), &4));
 }
 
 #[test]
@@ -306,7 +306,7 @@ fn test_iter_box_or() {
 
     for i in 0..=2 {
         assert!(
-            matchers.iter().match_or(None, &Context::default(), &i),
+            matchers.iter().matches_or(None, &Context::default(), &i),
             "i = {}",
             i
         );
@@ -314,13 +314,13 @@ fn test_iter_box_or() {
     for i in 3..=255 {
         if i % 2 == 1 {
             assert!(
-                matchers.iter().match_or(None, &Context::default(), &i),
+                matchers.iter().matches_or(None, &Context::default(), &i),
                 "i = {}",
                 i
             );
         } else {
             assert!(
-                !matchers.iter().match_or(None, &Context::default(), &i),
+                !matchers.iter().matches_or(None, &Context::default(), &i),
                 "i = {}",
                 i
             );
