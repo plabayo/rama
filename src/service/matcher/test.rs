@@ -25,12 +25,29 @@ fn test_not_builder() {
         .matches(None, &Context::default(), &"foo"));
 }
 
+mod marker {
+    #[derive(Debug, Clone)]
+    pub(super) struct Odd;
+
+    #[derive(Debug, Clone)]
+    pub(super) struct Even;
+
+    #[derive(Debug, Clone)]
+    pub(super) struct Const;
+}
+
 #[derive(Debug, Clone)]
 struct OddMatcher;
 
 impl<State> Matcher<State, u8> for OddMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
-        *req % 2 != 0
+    fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
+        if *req % 2 != 0 {
+            if let Some(ext) = ext {
+                ext.insert(marker::Odd);
+            }
+            return true;
+        }
+        false
     }
 }
 
@@ -38,8 +55,14 @@ impl<State> Matcher<State, u8> for OddMatcher {
 struct EvenMatcher;
 
 impl<State> Matcher<State, u8> for EvenMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
-        *req % 2 == 0
+    fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
+        if *req % 2 == 0 {
+            if let Some(ext) = ext {
+                ext.insert(marker::Even);
+            }
+            return true;
+        }
+        false
     }
 }
 
@@ -47,8 +70,14 @@ impl<State> Matcher<State, u8> for EvenMatcher {
 struct ConstMatcher(u8);
 
 impl<State> Matcher<State, u8> for ConstMatcher {
-    fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
-        *req == self.0
+    fn matches(&self, ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
+        if *req == self.0 {
+            if let Some(ext) = ext {
+                ext.insert(marker::Const);
+            }
+            return true;
+        }
+        false
     }
 }
 
@@ -328,4 +357,128 @@ fn test_iter_box_or() {
     }
 }
 
-// TODO: add tests to ensure we do not store extension of unmatched branch
+#[test]
+fn test_ext_insert_and_revert_op_or() {
+    let matcher = EvenMatcher
+        .and(ConstMatcher(2))
+        .or(OddMatcher.and(ConstMatcher(3)));
+
+    let mut ext = Extensions::new();
+    let ctx = Context::default();
+
+    // test #1: pass: match first part, should have extensions
+    ext.clear();
+    assert!(matcher.matches(Some(&mut ext), &ctx, &2));
+    assert!(ext.get::<marker::Even>().is_some());
+    assert!(ext.get::<marker::Const>().is_some());
+    assert!(ext.get::<marker::Odd>().is_none());
+
+    // test #2: pass: match 2nd part, should have extensions
+    ext.clear();
+    assert!(matcher.matches(Some(&mut ext), &ctx, &3));
+    assert!(ext.get::<marker::Even>().is_none());
+    assert!(ext.get::<marker::Const>().is_some());
+    assert!(ext.get::<marker::Odd>().is_some());
+
+    // test #3: pass: do not match any part
+    ext.clear();
+    assert!(!matcher.matches(Some(&mut ext), &ctx, &4));
+    assert!(ext.get::<marker::Even>().is_none());
+    assert!(ext.get::<marker::Const>().is_none());
+    assert!(ext.get::<marker::Odd>().is_none());
+}
+
+#[test]
+fn test_ext_insert_and_revert_iter_or() {
+    let matcher: Vec<Box<dyn Matcher<_, _>>> = vec![
+        Box::new(EvenMatcher.and(ConstMatcher(2))),
+        Box::new(OddMatcher.and(ConstMatcher(3))),
+    ];
+
+    let mut ext = Extensions::new();
+    let ctx = Context::default();
+
+    // test #1: pass: match first part, should have extensions
+    ext.clear();
+    assert!(matcher.iter().matches_or(Some(&mut ext), &ctx, &2));
+    assert!(ext.get::<marker::Even>().is_some());
+    assert!(ext.get::<marker::Const>().is_some());
+    assert!(ext.get::<marker::Odd>().is_none());
+
+    // test #2: pass: match 2nd part, should have extensions
+    ext.clear();
+    assert!(matcher.iter().matches_or(Some(&mut ext), &ctx, &3));
+    assert!(ext.get::<marker::Even>().is_none());
+    assert!(ext.get::<marker::Const>().is_some());
+    assert!(ext.get::<marker::Odd>().is_some());
+
+    // test #3: pass: do not match any part
+    ext.clear();
+    assert!(!matcher.iter().matches_or(Some(&mut ext), &ctx, &4));
+    assert!(ext.get::<marker::Even>().is_none());
+    assert!(ext.get::<marker::Const>().is_none());
+    assert!(ext.get::<marker::Odd>().is_none());
+}
+
+#[test]
+fn test_ext_insert_and_revert_iter_and() {
+    let matcher: Vec<Box<dyn Matcher<_, _>>> = vec![
+        Box::new(ConstMatcher(2).or(ConstMatcher(3))),
+        Box::new(OddMatcher.or(EvenMatcher)),
+    ];
+
+    let mut ext = Extensions::new();
+    let ctx = Context::default();
+
+    // test #1: pass: match both parts, with first member of 2nd part
+    ext.clear();
+    assert!(matcher.iter().matches_and(Some(&mut ext), &ctx, &3));
+    assert!(ext.get::<marker::Even>().is_none());
+    assert!(ext.get::<marker::Const>().is_some());
+    assert!(ext.get::<marker::Odd>().is_some());
+
+    // test #2: pass: match both parts, with second member of 2nd part
+    ext.clear();
+    assert!(matcher.iter().matches_and(Some(&mut ext), &ctx, &2));
+    assert!(ext.get::<marker::Even>().is_some());
+    assert!(ext.get::<marker::Const>().is_some());
+    assert!(ext.get::<marker::Odd>().is_none());
+
+    // test #3: pass: do not match any part
+    ext.clear();
+    assert!(!matcher.iter().matches_and(Some(&mut ext), &ctx, &1));
+    assert!(ext.get::<marker::Even>().is_none());
+    assert!(ext.get::<marker::Const>().is_none());
+    assert!(ext.get::<marker::Odd>().is_none());
+}
+
+#[test]
+fn test_ext_insert_and_revert_op_and() {
+    let matcher = ConstMatcher(2)
+        .or(ConstMatcher(3))
+        .and(OddMatcher.or(EvenMatcher));
+
+    let mut ext = Extensions::new();
+    let ctx = Context::default();
+
+    // test #1: pass: match both parts, with first member of 2nd part
+    ext.clear();
+    assert!(matcher.matches(Some(&mut ext), &ctx, &3));
+    assert!(ext.get::<marker::Even>().is_none());
+    assert!(ext.get::<marker::Const>().is_some());
+    assert!(ext.get::<marker::Odd>().is_some());
+
+    // test #2: pass: match both parts, with second member of 2nd part
+    ext.clear();
+    assert!(matcher.matches(Some(&mut ext), &ctx, &2));
+    assert!(ext.get::<marker::Even>().is_some());
+    assert!(ext.get::<marker::Const>().is_some());
+    assert!(ext.get::<marker::Odd>().is_none());
+
+    // test #3: pass: do not match any part
+    ext.clear();
+    assert!(!matcher.matches(Some(&mut ext), &ctx, &1));
+    assert!(ext.get::<marker::Even>().is_none());
+    assert!(ext.get::<marker::Const>().is_none());
+    assert!(ext.get::<marker::Odd>().is_none());
+}
