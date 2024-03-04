@@ -62,7 +62,7 @@ prometheus = "0.13.3"
 rama-macros = { path = "rama-macros" }
 rcgen = "0.12.0"
 regex = "1.10.3"
-rustls = "0.22"
+rustls = "0.23"
 rustls-native-certs = "=0.7.0"
 rustls-pemfile = "2.1"
 serde = { version = "1.0", features = ["derive"] }
