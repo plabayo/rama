@@ -1,4 +1,4 @@
-//! [`service::Matcher]s implementations to match on [`http::Request`]s.
+//! [`service::Matcher`]s implementations to match on [`http::Request`]s.
 //!
 //! See [`service::matcher` module] for more information.
 //!

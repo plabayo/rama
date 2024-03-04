@@ -1,7 +1,26 @@
 //! matcher utilities for any middleware where need to match
 //! on incoming requests within a given [`Context`]
 //!
+//! This module provides the [`Matcher`] trait and convenience utilities around it.
+//!
+//! - Examples of this are iterator "reducers" as made available via [`IteratorMatcherExt`],
+//!   as well as optional [`Matcher::or`] and [`Matcher::and`] trait methods.
+//! - These all serve as building blocks together with [`And`], [`Or`], [`Not`] and [`Always`]
+//!   to combine and transform any kind of [`Matcher`].
+//! - And finally there is [`MatchFn`], easily created using [`match_fn`] to create a [`Matcher`]
+//!   from any compatible [`Fn`].
+//!
+//! Implementation Examples:
+//!
+//! - [`http::matcher`]: [`Matcher`] implementations for [`http::Request`]s.
+//! - [`stream::matcher`]: [`Matcher`] implementations for [`Socket`]s (e.g. [`TcpStream`]).
+//!
 //! [`Context`]: crate::service::Context
+//! [`http::matcher`]: crate::http::matcher
+//! [`http::Request`]: crate::http::Request
+//! [`stream::matcher`]: crate::stream::matcher
+//! [`Socket`]: crate::stream::Socket
+//! [`TcpStream`]: tokio::net::TcpStream
 
 use super::{context::Extensions, Context};
 

@@ -2,6 +2,8 @@
 
 use tokio::io::{AsyncRead, AsyncWrite};
 
+pub mod matcher;
+
 pub mod layer;
 pub mod service;
 
