@@ -28,8 +28,8 @@ impl UriFilter {
     /// # Panics
     ///
     /// Panics if the regex pattern is invalid.
-    pub fn new(re: &str) -> Self {
-        let re = Regex::new(re).expect("valid regex pattern");
+    pub fn new(re: impl AsRef<str>) -> Self {
+        let re = Regex::new(re.as_ref()).expect("valid regex pattern");
         Self { re }
     }
 

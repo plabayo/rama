@@ -262,6 +262,15 @@ fn test_iter_enum_and() {
 }
 
 #[test]
+fn test_iter_empty() {
+    let matchers: Vec<ConstMatcher> = Vec::new();
+    for i in 0..=255 {
+        assert!(matchers.iter().matches_and(None, &Context::default(), &i));
+        assert!(matchers.iter().matches_or(None, &Context::default(), &i));
+    }
+}
+
+#[test]
 fn test_iter_enum_or() {
     let matchers = vec![
         TestMatchers::Const(ConstMatcher(0)),

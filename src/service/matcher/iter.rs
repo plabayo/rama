@@ -65,9 +65,14 @@ where
         ctx: &Context<State>,
         request: &Request,
     ) -> bool {
+        let mut it = self.peekable();
+        if it.peek().is_none() {
+            return true;
+        }
+
         match ext {
             None => {
-                for matcher in self {
+                for matcher in it {
                     if matcher.matches(None, ctx, request) {
                         return true;
                     }
@@ -76,7 +81,7 @@ where
             }
             Some(ext) => {
                 let mut inner_ext = Extensions::new();
-                for matcher in self {
+                for matcher in it {
                     if matcher.matches(Some(&mut inner_ext), ctx, request) {
                         ext.extend(inner_ext);
                         return true;
