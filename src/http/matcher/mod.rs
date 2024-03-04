@@ -44,6 +44,46 @@ impl HttpMatcher {
         Self::Method(method)
     }
 
+    /// Create a [`HttpMatcher::Method`] `DELETE` filter.
+    pub fn method_delete() -> Self {
+        Self::Method(MethodFilter::DELETE)
+    }
+
+    /// Create a [`HttpMatcher::Method`] `GET` filter.
+    pub fn method_get() -> Self {
+        Self::Method(MethodFilter::GET)
+    }
+
+    /// Create a [`HttpMatcher::Method`] `HEAD` filter.
+    pub fn method_head() -> Self {
+        Self::Method(MethodFilter::HEAD)
+    }
+
+    /// Create a [`HttpMatcher::Method`] `OPTIONS` filter.
+    pub fn method_options() -> Self {
+        Self::Method(MethodFilter::OPTIONS)
+    }
+
+    /// Create a [`HttpMatcher::Method`] `PATCH` filter.
+    pub fn method_patch() -> Self {
+        Self::Method(MethodFilter::PATCH)
+    }
+
+    /// Create a [`HttpMatcher::Method`] `POST` filter.
+    pub fn method_post() -> Self {
+        Self::Method(MethodFilter::POST)
+    }
+
+    /// Create a [`HttpMatcher::Method`] `PUT` filter.
+    pub fn method_put() -> Self {
+        Self::Method(MethodFilter::PUT)
+    }
+
+    /// Create a [`HttpMatcher::Method`] `TRACE` filter.
+    pub fn method_trace() -> Self {
+        Self::Method(MethodFilter::TRACE)
+    }
+
     /// Add a [`HttpMatcher::Method`] filter to the existing set of [`HttpMatcher`] filters.
     pub fn with_method(self, method: MethodFilter) -> Self {
         HttpMatcher::Multiple(match self {
@@ -53,6 +93,46 @@ impl HttpMatcher {
             }
             _ => vec![self, HttpMatcher::method(method)],
         })
+    }
+
+    /// Add a [`HttpMatcher::Method`] `DELETE` filter to the existing set of [`HttpMatcher`] filters.
+    pub fn with_method_delete(self) -> Self {
+        self.with_method(MethodFilter::DELETE)
+    }
+
+    /// Add a [`HttpMatcher::Method`] `GET` filter to the existing set of [`HttpMatcher`] filters.
+    pub fn with_method_get(self) -> Self {
+        self.with_method(MethodFilter::GET)
+    }
+
+    /// Add a [`HttpMatcher::Method`] `HEAD` filter to the existing set of [`HttpMatcher`] filters.
+    pub fn with_method_head(self) -> Self {
+        self.with_method(MethodFilter::HEAD)
+    }
+
+    /// Add a [`HttpMatcher::Method`] `OPTIONS` filter to the existing set of [`HttpMatcher`] filters.
+    pub fn with_method_options(self) -> Self {
+        self.with_method(MethodFilter::OPTIONS)
+    }
+
+    /// Add a [`HttpMatcher::Method`] `PATCH` filter to the existing set of [`HttpMatcher`] filters.
+    pub fn with_method_patch(self) -> Self {
+        self.with_method(MethodFilter::PATCH)
+    }
+
+    /// Add a [`HttpMatcher::Method`] `POST` filter to the existing set of [`HttpMatcher`] filters.
+    pub fn with_method_post(self) -> Self {
+        self.with_method(MethodFilter::POST)
+    }
+
+    /// Add a [`HttpMatcher::Method`] `PUT` filter to the existing set of [`HttpMatcher`] filters.
+    pub fn with_method_put(self) -> Self {
+        self.with_method(MethodFilter::PUT)
+    }
+
+    /// Add a [`HttpMatcher::Method`] `TRACE` filter to the existing set of [`HttpMatcher`] filters.
+    pub fn with_method_trace(self) -> Self {
+        self.with_method(MethodFilter::TRACE)
     }
 
     /// Create a [`HttpMatcher::Domain`] filter.

@@ -5,7 +5,7 @@
 //! - Block requests based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
 //!
 //! [`Service`]: crate::service::Service
-//! [`Matcher`]: crate::http::service::web::matcher::Matcher
+//! [`Matcher`]: crate::service::Matcher
 //!
 //! # Example
 //!
@@ -14,7 +14,8 @@
 //!     http::{
 //!         dep::http_body_util::BodyExt as _,
 //!         layer::hijack::HijackLayer,
-//!         service::web::{extract::Query, matcher::DomainFilter, IntoEndpointService, WebService},
+//!         service::web::{extract::Query, IntoEndpointService, WebService},
+//!         matcher::DomainFilter,
 //!         Body, Request, StatusCode,
 //!     },
 //!     service::{Context, Layer, Service},
@@ -91,8 +92,8 @@
 //! ```
 
 use crate::{
-    http::{dep::http_body, service::web::matcher::Matcher, Request},
-    service::{context::Extensions, Context, Layer, Service},
+    http::{dep::http_body, Request},
+    service::{context::Extensions, Context, Layer, Matcher, Service},
 };
 
 /// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
@@ -102,7 +103,7 @@ use crate::{
 /// - Block requests based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
 ///
 /// [`Service`]: crate::service::Service
-/// [`Matcher`]: crate::http::service::web::matcher::Matcher
+/// [`Matcher`]: crate::service::Matcher
 pub struct HijackService<S, H, M> {
     inner: S,
     hijack: H,
@@ -147,7 +148,7 @@ where
     H: Service<State, Request<Body>>,
     <H as Service<State, Request<Body>>>::Response: Into<S::Response>,
     <H as Service<State, Request<Body>>>::Error: Into<S::Error>,
-    M: Matcher<State, Body>,
+    M: Matcher<State, Request<Body>>,
     State: Send + Sync + 'static,
     Body: http_body::Body + Send + 'static,
 {
@@ -160,7 +161,7 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
-        if self.matcher.matches(&mut ext, &ctx, &req) {
+        if self.matcher.matches(Some(&mut ext), &ctx, &req) {
             ctx.extend(ext);
             match self.hijack.serve(ctx, req).await {
                 Ok(response) => Ok(response.into()),
@@ -179,7 +180,7 @@ where
 /// - Block requests based on the conditions specified in the [`Matcher`] (and thus act like an Http Firewall).
 ///
 /// [`Service`]: crate::service::Service
-/// [`Matcher`]: crate::http::service::web::matcher::Matcher
+/// [`Matcher`]: crate::service::Matcher
 pub struct HijackLayer<H, M> {
     hijack: H,
     matcher: M,
@@ -226,10 +227,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{
-        service::web::{matcher::DomainFilter, IntoEndpointService},
-        Body,
-    };
+    use crate::http::{matcher::DomainFilter, service::web::IntoEndpointService, Body};
     use crate::http::{Request, StatusCode};
 
     #[tokio::test]

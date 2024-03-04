@@ -55,11 +55,11 @@ use rama::{
             compression::CompressionLayer, trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
         },
+        matcher::{HttpMatcher, MethodFilter},
         response::Json,
         server::HttpServer,
         service::web::{
             extract::{Bytes, Path, State},
-            matcher::{MethodFilter, PathFilter},
             IntoEndpointService, WebService,
         },
         IntoResponse, Method, StatusCode,
@@ -133,10 +133,7 @@ async fn main() {
                                     }
                                 })))
                         .on(
-                            (
-                                MethodFilter::GET.or(MethodFilter::HEAD),
-                                PathFilter::new("/item/:key"),
-                            ),
+                            HttpMatcher::method(MethodFilter::GET.or(MethodFilter::HEAD)).with_path("/item/:key"),
                             // only compress the get Action, not the Post Action
                             ServiceBuilder::new()
                                 .layer(CompressionLayer::new())
