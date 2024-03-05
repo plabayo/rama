@@ -13,3 +13,7 @@ pub use socket::SocketAddressFilter;
 mod port;
 #[doc(inline)]
 pub use port::PortFilter;
+
+mod ip;
+#[doc(inline)]
+pub use ip::IpNetFilter;

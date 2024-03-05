@@ -15,3 +15,19 @@ impl<T> Stream for T where T: AsyncRead + AsyncWrite + Send + Sync + 'static {}
 
 mod socket;
 pub use socket::{Socket, SocketInfo};
+
+pub mod dep {
+    //! Dependencies for rama stream modules.
+    //!
+    //! Exported for your convenience.
+
+    pub mod ipnet {
+        //! Re-export of the [`ipnet`] crate.
+        //!
+        //! Types for IPv4 and IPv6 network addresses.
+        //!
+        //! [`ipnet`]: https://docs.rs/ipnet
+
+        pub use ipnet::*;
+    }
+}
