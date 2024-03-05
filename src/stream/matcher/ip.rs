@@ -7,7 +7,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-/// Filter based on the [`SocketAddr`] of the peer.
+/// Filter based on whether or not the [`IpNet`] contains the [`SocketAddr`] of the peer.
 ///
 /// [`SocketAddr`]: std::net::SocketAddr
 pub struct IpNetFilter {
