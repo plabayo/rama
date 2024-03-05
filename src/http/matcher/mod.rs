@@ -21,21 +21,24 @@ pub use path::{PathFilter, UriParams, UriParamsDeserializeError};
 use crate::{
     http::Request,
     service::{context::Extensions, matcher::IteratorMatcherExt, Context},
+    stream::matcher::SocketMatcher,
 };
 
 #[derive(Debug, Clone)]
 /// A filter that is used to match an http [`Request`]
 pub enum HttpMatcher {
+    /// zero or more [`HttpMatcher`]s that all need to match in order for the filter to return `true`.
+    Multiple(Vec<HttpMatcher>),
     /// [`MethodFilter`], a filter that matches one or more HTTP methods.
     Method(MethodFilter),
+    /// [`PathFilter`], a filter based on the URI path.
+    Path(PathFilter),
     /// [`DomainFilter`], a filter based on the (sub)domain of the request's URI.
     Domain(DomainFilter),
     /// [`UriFilter`], a filter the request's URI, using a substring or regex pattern.
     Uri(UriFilter),
-    /// [`PathFilter`], a filter based on the URI path.
-    Path(PathFilter),
-    /// zero or more [`HttpMatcher`]s that all need to match in order for the filter to return `true`.
-    Multiple(Vec<HttpMatcher>),
+    /// [`SocketMatcher`], a filter that matches on the [`SocketAddr`] of the peer.
+    Socket(SocketMatcher),
 }
 
 impl HttpMatcher {
@@ -182,6 +185,22 @@ impl HttpMatcher {
             _ => vec![self, HttpMatcher::path(path)],
         })
     }
+
+    /// Create a [`HttpMatcher::Socket`] filter.
+    pub fn socket(socket: SocketMatcher) -> Self {
+        Self::Socket(socket)
+    }
+
+    /// Add a [`HttpMatcher::Socket`] filter to the existing set of [`HttpMatcher`] filters.
+    pub fn with_socket(self, socket: SocketMatcher) -> Self {
+        HttpMatcher::Multiple(match self {
+            HttpMatcher::Multiple(mut v) => {
+                v.push(HttpMatcher::socket(socket));
+                v
+            }
+            _ => vec![self, HttpMatcher::socket(socket)],
+        })
+    }
 }
 
 impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcher {
@@ -192,11 +211,12 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcher 
         req: &Request<Body>,
     ) -> bool {
         match self {
+            HttpMatcher::Multiple(all) => all.iter().matches_and(ext, ctx, req),
             HttpMatcher::Method(method) => method.matches(ext, ctx, req),
+            HttpMatcher::Path(path) => path.matches(ext, ctx, req),
             HttpMatcher::Domain(domain) => domain.matches(ext, ctx, req),
             HttpMatcher::Uri(uri) => uri.matches(ext, ctx, req),
-            HttpMatcher::Path(path) => path.matches(ext, ctx, req),
-            HttpMatcher::Multiple(all) => all.iter().matches_and(ext, ctx, req),
+            HttpMatcher::Socket(socket) => socket.matches(ext, ctx, req),
         }
     }
 }

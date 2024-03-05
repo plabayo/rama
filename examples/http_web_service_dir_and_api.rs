@@ -25,12 +25,19 @@
 
 // rama provides everything out of the box to build a complete web service.
 use rama::{
-    http::layer::{compression::CompressionLayer, trace::TraceLayer},
-    http::response::{Html, Redirect},
-    http::service::web::extract::State,
-    http::{server::HttpServer, service::web::WebService},
+    http::{
+        layer::{compression::CompressionLayer, trace::TraceLayer},
+        matcher::HttpMatcher,
+        response::{Html, Redirect},
+        server::HttpServer,
+        service::web::{
+            extract::{Extension, State},
+            WebService,
+        },
+    },
     rt::Executor,
     service::ServiceBuilder,
+    stream::{matcher::SocketMatcher, SocketInfo},
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
@@ -58,7 +65,7 @@ async fn main() {
         )
         .init();
 
-    let addr = "127.0.0.1:8080";
+    let addr = "0.0.0.0:8080";
     tracing::info!("running service at: {addr}");
     let exec = Executor::default();
     HttpServer::auto(exec)
@@ -71,13 +78,27 @@ async fn main() {
                 .service(
                     WebService::default()
                         .not_found(Redirect::temporary("/error.html"))
-                        .get("/coin", |State(state): State<AppState>| async move {
-                            coin_page(state)
-                        })
-                        .post("/coin", |State(state): State<AppState>| async move {
-                            state.counter.fetch_add(1, Ordering::SeqCst);
-                            coin_page(state)
-                        })
+                        .get(
+                            "/coin",
+                            |Extension(addr): Extension<SocketInfo>,
+                             State(state): State<AppState>| async move {
+                                coin_page(state, addr)
+                            },
+                        )
+                        .post(
+                            "/coin",
+                            |Extension(addr): Extension<SocketInfo>,
+                             State(state): State<AppState>| async move {
+                                state.counter.fetch_add(1, Ordering::SeqCst);
+                                coin_page(state, addr)
+                            },
+                        )
+                        .on(
+                            HttpMatcher::method_get()
+                                .with_path("/home")
+                                .with_socket(SocketMatcher::ip_net("127.0.0.0/24")),
+                            Html("Home Sweet Home!".to_string()),
+                        )
                         .dir("/", "test-files/examples/webservice"),
                 ),
         )
@@ -85,7 +106,13 @@ async fn main() {
         .unwrap();
 }
 
-fn coin_page(state: Arc<AppState>) -> Html<String> {
+fn coin_page(state: Arc<AppState>, addr: SocketInfo) -> Html<String> {
+    let emoji = if addr.peer_addr().ip().is_loopback() {
+        r#"<a href="/home">🏠</a>"#
+    } else {
+        "🌍"
+    };
+
     let count = state.counter.load(Ordering::SeqCst);
     Html(format!(
         r#"
@@ -114,7 +141,7 @@ fn coin_page(state: Arc<AppState>) -> Html<String> {
     </style>
 </head>
 <body>
-    <h2>Coin Clicker</h2>
+    <h2>{emoji} Coin Clicker</h2>
     <h1 id="coinCount">{count}</h1>
     <p>Click the button for more coins.</p>
     <form action="/coin" method="post">
