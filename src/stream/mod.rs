@@ -14,4 +14,4 @@ pub trait Stream: AsyncRead + AsyncWrite + Send + Sync + 'static {}
 impl<T> Stream for T where T: AsyncRead + AsyncWrite + Send + Sync + 'static {}
 
 mod socket;
-pub use socket::Socket;
+pub use socket::{Socket, SocketInfo};

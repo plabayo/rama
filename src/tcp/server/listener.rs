@@ -1,9 +1,9 @@
-use super::TcpSocketInfo;
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
 use crate::service::handler::{Factory, FromContextRequest};
 use crate::service::Context;
 use crate::service::Service;
+use crate::stream::SocketInfo;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
@@ -177,7 +177,7 @@ where
 
             tokio::spawn(async move {
                 let local_addr = socket.local_addr().ok();
-                ctx.insert(TcpSocketInfo::new(local_addr, peer_addr));
+                ctx.insert(SocketInfo::new(local_addr, peer_addr));
 
                 let _ = service.serve(ctx, socket).await;
             });
@@ -225,7 +225,7 @@ where
 
                             guard.spawn_task(async move {
                                 let local_addr = socket.local_addr().ok();
-                                ctx.insert(TcpSocketInfo::new(local_addr, peer_addr));
+                                ctx.insert(SocketInfo::new(local_addr, peer_addr));
 
                                 let _ = service.serve(ctx, socket).await;
                             });

@@ -37,8 +37,11 @@ use rama::{
     latency::LatencyUnit,
     rt::Executor,
     service::{layer::TimeoutLayer, Context, ServiceBuilder},
-    stream::layer::{BytesRWTrackerHandle, BytesTrackerLayer},
-    tcp::server::{TcpListener, TcpSocketInfo},
+    stream::{
+        layer::{BytesRWTrackerHandle, BytesTrackerLayer},
+        SocketInfo,
+    },
+    tcp::server::TcpListener,
 };
 use std::{sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
@@ -77,7 +80,7 @@ async fn main() {
             .map_response(IntoResponse::into_response)
             .service_fn(
                 |ctx: Context<()>, req: Request| async move {
-                    let socket_info = ctx.get::<TcpSocketInfo>().unwrap();
+                    let socket_info = ctx.get::<SocketInfo>().unwrap();
                     let tracker = ctx.get::<BytesRWTrackerHandle>().unwrap();
                     Ok(Html(format!(
                         r##"
