@@ -4,42 +4,47 @@ use crate::{
     service::{context::Extensions, Context},
     stream::SocketInfo,
 };
-use std::net::SocketAddr;
 
 #[derive(Debug, Clone)]
-/// Filter based on the [`SocketAddr`] of the peer.
-pub struct SocketAddressFilter {
-    addr: SocketAddr,
+/// Filter based on the port part of the [`SocketAddr`] of the peer.
+///
+/// [`SocketAddr`]: std::net::SocketAddr
+pub struct PortFilter {
+    port: u16,
     optional: bool,
 }
 
-impl SocketAddressFilter {
-    /// create a new socket address filter to filter on a socket address
+impl PortFilter {
+    /// create a new port filter to filter on the part of part a [`SocketAddr`]
     ///
     /// This filter will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
-    /// use the [`SocketAddressFilter::optional`] constructor..
-    pub fn new(addr: impl Into<SocketAddr>) -> Self {
+    /// use the [`PortFilter::optional`] constructor..
+    ///
+    /// [`SocketAddr`]: std::net::SocketAddr
+    pub fn new(port: u16) -> Self {
         Self {
-            addr: addr.into(),
+            port,
             optional: false,
         }
     }
 
-    /// create a new socket address filter to filter on a socket address
+    /// create a new port filter to filter on the part of part a [`SocketAddr`]
     ///
     /// This filter will match in case socket address could not be found.
-    /// Use the [`SocketAddressFilter::new`] constructor if you want do not want
+    /// Use the [`PortFilter::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
-    pub fn optional(addr: impl Into<SocketAddr>) -> Self {
+    ///
+    /// [`SocketAddr`]: std::net::SocketAddr
+    pub fn optional(port: u16) -> Self {
         Self {
-            addr: addr.into(),
+            port,
             optional: true,
         }
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for SocketAddressFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for PortFilter {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -47,12 +52,12 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for SocketAddres
         _req: &Request<Body>,
     ) -> bool {
         ctx.get::<SocketInfo>()
-            .map(|info| info.peer_addr() == &self.addr)
+            .map(|info| info.peer_addr().port() == self.port)
             .unwrap_or(self.optional)
     }
 }
 
-impl<State, Socket> crate::service::Matcher<State, Socket> for SocketAddressFilter
+impl<State, Socket> crate::service::Matcher<State, Socket> for PortFilter
 where
     Socket: crate::stream::Socket,
 {
@@ -64,7 +69,7 @@ where
     ) -> bool {
         stream
             .peer_addr()
-            .map(|addr| addr == self.addr)
+            .map(|addr| addr.port() == self.port)
             .unwrap_or(self.optional)
     }
 }
@@ -72,12 +77,13 @@ where
 #[cfg(test)]
 mod test {
     use crate::{http::Body, service::Matcher};
+    use std::net::SocketAddr;
 
     use super::*;
 
     #[test]
-    fn test_socket_filter_http() {
-        let filter = SocketAddressFilter::new(([127, 0, 0, 1], 8080));
+    fn test_port_filter_http() {
+        let filter = PortFilter::new(8080);
 
         let mut ctx = Context::default();
         let req = Request::builder()
@@ -93,23 +99,23 @@ mod test {
         ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8081).into()));
         assert!(!filter.matches(None, &ctx, &req));
 
-        // test #3: no match: test with different socket info (ip addr difference)
+        // test #3: match: test with matching port
         ctx.insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(filter.matches(None, &ctx, &req));
 
-        // test #4: match: test with correct address
+        // test #4: match: test with different ip, same port
         ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
         assert!(filter.matches(None, &ctx, &req));
 
         // test #5: match: test with missing socket info, but it's seen as optional
-        let filter = SocketAddressFilter::optional(([127, 0, 0, 1], 8080));
+        let filter = PortFilter::optional(8080);
         let ctx = Context::default();
         assert!(filter.matches(None, &ctx, &req));
     }
 
     #[test]
-    fn test_socket_filter_socket_trait() {
-        let filter = SocketAddressFilter::new(([127, 0, 0, 1], 8080));
+    fn test_port_filter_socket_trait() {
+        let filter = PortFilter::new(8080);
 
         let ctx = Context::default();
 
@@ -142,16 +148,16 @@ mod test {
         // test #1: no match: test with different socket info (port difference)
         assert!(!filter.matches(None, &ctx, &socket));
 
-        // test #2: no match: test with different socket info (ip addr difference)
+        // test #2: match: test with correct port
         socket.peer_addr = Some(([127, 0, 0, 2], 8080).into());
-        assert!(!filter.matches(None, &ctx, &socket));
+        assert!(filter.matches(None, &ctx, &socket));
 
-        // test #3: match: test with correct address
+        // test #3: match: test with another correct address
         socket.peer_addr = Some(([127, 0, 0, 1], 8080).into());
         assert!(filter.matches(None, &ctx, &socket));
 
         // test #5: match: test with missing socket info, but it's seen as optional
-        let filter = SocketAddressFilter::optional(([127, 0, 0, 1], 8080));
+        let filter = PortFilter::optional(8080);
         socket.peer_addr = None;
         assert!(filter.matches(None, &ctx, &socket));
     }

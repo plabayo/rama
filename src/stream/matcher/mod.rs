@@ -9,3 +9,7 @@
 mod socket;
 #[doc(inline)]
 pub use socket::SocketAddressFilter;
+
+mod port;
+#[doc(inline)]
+pub use port::PortFilter;
