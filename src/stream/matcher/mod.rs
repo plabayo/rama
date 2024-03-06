@@ -92,11 +92,10 @@ impl SocketMatcher {
                 )));
             }
             _ => {
-                let mut filters = vec![self.kind];
-                filters.push(SocketFilterKind::SocketAddress(SocketAddressFilter::new(
-                    addr,
-                )));
-                self.kind = SocketFilterKind::All(filters);
+                self.kind = SocketFilterKind::All(vec![
+                    self.kind,
+                    SocketFilterKind::SocketAddress(SocketAddressFilter::new(addr)),
+                ]);
             }
         }
         self
@@ -113,11 +112,10 @@ impl SocketMatcher {
                 )));
             }
             _ => {
-                let mut filters = vec![self.kind];
-                filters.push(SocketFilterKind::SocketAddress(SocketAddressFilter::new(
-                    addr,
-                )));
-                self.kind = SocketFilterKind::Any(filters);
+                self.kind = SocketFilterKind::Any(vec![
+                    self.kind,
+                    SocketFilterKind::SocketAddress(SocketAddressFilter::new(addr)),
+                ]);
             }
         }
         self
@@ -153,9 +151,10 @@ impl SocketMatcher {
                 filters.push(SocketFilterKind::Loopback(LoopbackFilter::new()));
             }
             _ => {
-                let mut filters = vec![self.kind];
-                filters.push(SocketFilterKind::Loopback(LoopbackFilter::new()));
-                self.kind = SocketFilterKind::All(filters);
+                self.kind = SocketFilterKind::All(vec![
+                    self.kind,
+                    SocketFilterKind::Loopback(LoopbackFilter::new()),
+                ]);
             }
         }
         self
@@ -170,9 +169,10 @@ impl SocketMatcher {
                 filters.push(SocketFilterKind::Loopback(LoopbackFilter::new()));
             }
             _ => {
-                let mut filters = vec![self.kind];
-                filters.push(SocketFilterKind::Loopback(LoopbackFilter::new()));
-                self.kind = SocketFilterKind::Any(filters);
+                self.kind = SocketFilterKind::Any(vec![
+                    self.kind,
+                    SocketFilterKind::Loopback(LoopbackFilter::new()),
+                ]);
             }
         }
         self
@@ -209,9 +209,10 @@ impl SocketMatcher {
                 filters.push(SocketFilterKind::Port(PortFilter::new(port)));
             }
             _ => {
-                let mut filters = vec![self.kind];
-                filters.push(SocketFilterKind::Port(PortFilter::new(port)));
-                self.kind = SocketFilterKind::All(filters);
+                self.kind = SocketFilterKind::All(vec![
+                    self.kind,
+                    SocketFilterKind::Port(PortFilter::new(port)),
+                ]);
             }
         }
         self
@@ -227,9 +228,10 @@ impl SocketMatcher {
                 filters.push(SocketFilterKind::Port(PortFilter::new(port)));
             }
             _ => {
-                let mut filters = vec![self.kind];
-                filters.push(SocketFilterKind::Port(PortFilter::new(port)));
-                self.kind = SocketFilterKind::Any(filters);
+                self.kind = SocketFilterKind::Any(vec![
+                    self.kind,
+                    SocketFilterKind::Port(PortFilter::new(port)),
+                ]);
             }
         }
         self
@@ -265,9 +267,10 @@ impl SocketMatcher {
                 filters.push(SocketFilterKind::IpNet(IpNetFilter::new(ip_net)));
             }
             _ => {
-                let mut filters = vec![self.kind];
-                filters.push(SocketFilterKind::IpNet(IpNetFilter::new(ip_net)));
-                self.kind = SocketFilterKind::All(filters);
+                self.kind = SocketFilterKind::All(vec![
+                    self.kind,
+                    SocketFilterKind::IpNet(IpNetFilter::new(ip_net)),
+                ]);
             }
         }
         self
@@ -282,9 +285,10 @@ impl SocketMatcher {
                 filters.push(SocketFilterKind::IpNet(IpNetFilter::new(ip_net)));
             }
             _ => {
-                let mut filters = vec![self.kind];
-                filters.push(SocketFilterKind::IpNet(IpNetFilter::new(ip_net)));
-                self.kind = SocketFilterKind::Any(filters);
+                self.kind = SocketFilterKind::Any(vec![
+                    self.kind,
+                    SocketFilterKind::IpNet(IpNetFilter::new(ip_net)),
+                ]);
             }
         }
         self

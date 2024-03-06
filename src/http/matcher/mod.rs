@@ -26,15 +26,24 @@ use crate::{
 
 #[derive(Debug, Clone)]
 /// A filter that is used to match an http [`Request`]
-pub enum HttpMatcher {
-    /// zero or more [`HttpMatcher`]s that all need to match in order for the filter to return `true`.
-    Multiple(Vec<HttpMatcher>),
+pub struct HttpMatcher {
+    kind: HttpFilterKind,
+    negate: bool,
+}
+
+#[derive(Debug, Clone)]
+/// A filter that is used to match an http [`Request`]
+pub enum HttpFilterKind {
+    /// zero or more [`HttpFilterKind`]s that all need to match in order for the filter to return `true`.
+    All(Vec<HttpFilterKind>),
     /// [`MethodFilter`], a filter that matches one or more HTTP methods.
     Method(MethodFilter),
     /// [`PathFilter`], a filter based on the URI path.
     Path(PathFilter),
     /// [`DomainFilter`], a filter based on the (sub)domain of the request's URI.
     Domain(DomainFilter),
+    /// zero or more [`HttpFilterKind`]s that at least one needs to match in order for the filter to return `true`.
+    Any(Vec<HttpFilterKind>),
     /// [`UriFilter`], a filter the request's URI, using a substring or regex pattern.
     Uri(UriFilter),
     /// [`SocketMatcher`], a filter that matches on the [`SocketAddr`] of the peer.
@@ -44,164 +53,558 @@ pub enum HttpMatcher {
 }
 
 impl HttpMatcher {
-    /// Create a [`HttpMatcher::Method`] filter.
+    /// Create a new filter that matches one or more HTTP methods.
+    ///
+    /// See [`MethodFilter`] for more information.
     pub fn method(method: MethodFilter) -> Self {
-        Self::Method(method)
+        Self {
+            kind: HttpFilterKind::Method(method),
+            negate: false,
+        }
     }
 
-    /// Create a [`HttpMatcher::Method`] `DELETE` filter.
+    /// Create a filter that also matches one or more HTTP methods on top of the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn and_method(mut self, method: MethodFilter) -> Self {
+        let filter = HttpFilterKind::Method(method);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Create a filter that can also match one or more HTTP methods as an alternative to the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn or_method(mut self, method: MethodFilter) -> Self {
+        let filter = HttpFilterKind::Method(method);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Create a new filter that matches [`MethodFilter::DELETE`] requests.
+    ///
+    /// See [`MethodFilter`] for more information.
     pub fn method_delete() -> Self {
-        Self::Method(MethodFilter::DELETE)
+        Self {
+            kind: HttpFilterKind::Method(MethodFilter::DELETE),
+            negate: false,
+        }
     }
 
-    /// Create a [`HttpMatcher::Method`] `GET` filter.
+    /// Add a new filter that also matches [`MethodFilter::DELETE`] on top of the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn and_method_delete(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::DELETE);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Add a new filter that can also match [`MethodFilter::DELETE`]
+    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn or_method_delete(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::DELETE);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Create a new filter that matches [`MethodFilter::GET`] requests.
+    ///
+    /// See [`MethodFilter`] for more information.
     pub fn method_get() -> Self {
-        Self::Method(MethodFilter::GET)
+        Self {
+            kind: HttpFilterKind::Method(MethodFilter::GET),
+            negate: false,
+        }
     }
 
-    /// Create a [`HttpMatcher::Method`] `HEAD` filter.
+    /// Add a new filter that also matches [`MethodFilter::GET`] on top of the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn and_method_get(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::GET);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Add a new filter that can also match [`MethodFilter::GET`]
+    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn or_method_get(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::GET);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Create a new filter that matches [`MethodFilter::HEAD`] requests.
+    ///
+    /// See [`MethodFilter`] for more information.
     pub fn method_head() -> Self {
-        Self::Method(MethodFilter::HEAD)
+        Self {
+            kind: HttpFilterKind::Method(MethodFilter::HEAD),
+            negate: false,
+        }
     }
 
-    /// Create a [`HttpMatcher::Method`] `OPTIONS` filter.
+    /// Add a new filter that also matches [`MethodFilter::HEAD`] on top of the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn and_method_head(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::HEAD);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Add a new filter that can also match [`MethodFilter::HEAD`]
+    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn or_method_head(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::HEAD);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Create a new filter that matches [`MethodFilter::OPTIONS`] requests.
+    ///
+    /// See [`MethodFilter`] for more information.
     pub fn method_options() -> Self {
-        Self::Method(MethodFilter::OPTIONS)
+        Self {
+            kind: HttpFilterKind::Method(MethodFilter::OPTIONS),
+            negate: false,
+        }
     }
 
-    /// Create a [`HttpMatcher::Method`] `PATCH` filter.
+    /// Add a new filter that also matches [`MethodFilter::OPTIONS`] on top of the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn and_method_options(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::OPTIONS);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Add a new filter that can also match [`MethodFilter::OPTIONS`]
+    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn or_method_options(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::OPTIONS);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Create a new filter that matches [`MethodFilter::PATCH`] requests.
+    ///
+    /// See [`MethodFilter`] for more information.
     pub fn method_patch() -> Self {
-        Self::Method(MethodFilter::PATCH)
+        Self {
+            kind: HttpFilterKind::Method(MethodFilter::PATCH),
+            negate: false,
+        }
     }
 
-    /// Create a [`HttpMatcher::Method`] `POST` filter.
+    /// Add a new filter that also matches [`MethodFilter::PATCH`] on top of the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn and_method_patch(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::PATCH);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Add a new filter that can also match [`MethodFilter::PATCH`]
+    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn or_method_patch(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::PATCH);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Create a new filter that matches [`MethodFilter::POST`] requests.
+    ///
+    /// See [`MethodFilter`] for more information.
     pub fn method_post() -> Self {
-        Self::Method(MethodFilter::POST)
+        Self {
+            kind: HttpFilterKind::Method(MethodFilter::POST),
+            negate: false,
+        }
     }
 
-    /// Create a [`HttpMatcher::Method`] `PUT` filter.
+    /// Add a new filter that also matches [`MethodFilter::POST`] on top of the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn and_method_post(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::POST);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Add a new filter that can also match [`MethodFilter::POST`]
+    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn or_method_post(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::POST);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Create a new filter that matches [`MethodFilter::PUT`] requests.
+    ///
+    /// See [`MethodFilter`] for more information.
     pub fn method_put() -> Self {
-        Self::Method(MethodFilter::PUT)
+        Self {
+            kind: HttpFilterKind::Method(MethodFilter::PUT),
+            negate: false,
+        }
     }
 
-    /// Create a [`HttpMatcher::Method`] `TRACE` filter.
+    /// Add a new filter that also matches [`MethodFilter::PUT`] on top of the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn and_method_put(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::PUT);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Add a new filter that can also match [`MethodFilter::PUT`]
+    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn or_method_put(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::PUT);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        };
+        self
+    }
+
+    /// Create a new filter that matches [`MethodFilter::TRACE`] requests.
+    ///
+    /// See [`MethodFilter`] for more information.
     pub fn method_trace() -> Self {
-        Self::Method(MethodFilter::TRACE)
+        Self {
+            kind: HttpFilterKind::Method(MethodFilter::TRACE),
+            negate: false,
+        }
     }
 
-    /// Add a [`HttpMatcher::Method`] filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_method(self, method: MethodFilter) -> Self {
-        HttpMatcher::Multiple(match self {
-            HttpMatcher::Multiple(mut v) => {
-                v.push(HttpMatcher::method(method));
-                v
+    /// Add a new filter that also matches [`MethodFilter::TRACE`] on top of the existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn and_method_trace(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::TRACE);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
             }
-            _ => vec![self, HttpMatcher::method(method)],
-        })
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        };
+        self
     }
 
-    /// Add a [`HttpMatcher::Method`] `DELETE` filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_method_delete(self) -> Self {
-        self.with_method(MethodFilter::DELETE)
+    /// Add a new filter that can also match [`MethodFilter::TRACE`]
+    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    ///
+    /// See [`MethodFilter`] for more information.
+    pub fn or_method_trace(mut self) -> Self {
+        let filter = HttpFilterKind::Method(MethodFilter::TRACE);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        };
+        self
     }
 
-    /// Add a [`HttpMatcher::Method`] `GET` filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_method_get(self) -> Self {
-        self.with_method(MethodFilter::GET)
-    }
-
-    /// Add a [`HttpMatcher::Method`] `HEAD` filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_method_head(self) -> Self {
-        self.with_method(MethodFilter::HEAD)
-    }
-
-    /// Add a [`HttpMatcher::Method`] `OPTIONS` filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_method_options(self) -> Self {
-        self.with_method(MethodFilter::OPTIONS)
-    }
-
-    /// Add a [`HttpMatcher::Method`] `PATCH` filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_method_patch(self) -> Self {
-        self.with_method(MethodFilter::PATCH)
-    }
-
-    /// Add a [`HttpMatcher::Method`] `POST` filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_method_post(self) -> Self {
-        self.with_method(MethodFilter::POST)
-    }
-
-    /// Add a [`HttpMatcher::Method`] `PUT` filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_method_put(self) -> Self {
-        self.with_method(MethodFilter::PUT)
-    }
-
-    /// Add a [`HttpMatcher::Method`] `TRACE` filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_method_trace(self) -> Self {
-        self.with_method(MethodFilter::TRACE)
-    }
-
-    /// Create a [`HttpMatcher::Domain`] filter.
+    /// Create a [`DomainFilter`] filter.
     pub fn domain(domain: impl Into<String>) -> Self {
-        Self::Domain(DomainFilter::new(domain))
+        Self {
+            kind: HttpFilterKind::Domain(DomainFilter::new(domain)),
+            negate: false,
+        }
     }
 
-    /// Add a [`HttpMatcher::Domain`] filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_domain(self, domain: impl Into<String>) -> Self {
-        HttpMatcher::Multiple(match self {
-            HttpMatcher::Multiple(mut v) => {
-                v.push(HttpMatcher::domain(domain));
-                v
+    /// Create a [`DomainFilter`] filter to also match on top of the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`DomainFilter`] for more information.
+    pub fn and_domain(mut self, domain: impl Into<String>) -> Self {
+        let filter = HttpFilterKind::Domain(DomainFilter::new(domain));
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
             }
-            _ => vec![self, HttpMatcher::domain(domain)],
-        })
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        }
+        self
     }
 
-    /// Create a [`HttpMatcher::Uri`] filter.
+    /// Create a [`DomainFilter`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`DomainFilter`] for more information.
+    pub fn or_domain(mut self, domain: impl Into<String>) -> Self {
+        let filter = HttpFilterKind::Domain(DomainFilter::new(domain));
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`UriFilter`] filter.
     pub fn uri(re: impl AsRef<str>) -> Self {
-        Self::Uri(UriFilter::new(re))
+        Self {
+            kind: HttpFilterKind::Uri(UriFilter::new(re)),
+            negate: false,
+        }
     }
 
-    /// Add a [`HttpMatcher::Uri`] filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_uri(self, re: impl AsRef<str>) -> Self {
-        HttpMatcher::Multiple(match self {
-            HttpMatcher::Multiple(mut v) => {
-                v.push(HttpMatcher::uri(re));
-                v
+    /// Create a [`UriFilter`] filter to filter on top of the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`UriFilter`] for more information.
+    pub fn and_uri(mut self, re: impl AsRef<str>) -> Self {
+        let filter = HttpFilterKind::Uri(UriFilter::new(re));
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
             }
-            _ => vec![self, HttpMatcher::uri(re)],
-        })
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        }
+        self
     }
 
-    /// Create a [`HttpMatcher::Path`] filter.
+    /// Create a [`UriFilter`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    ///    
+    /// See [`UriFilter`] for more information.
+    pub fn or_uri(mut self, re: impl AsRef<str>) -> Self {
+        let filter = HttpFilterKind::Uri(UriFilter::new(re));
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`PathFilter`] filter.
     pub fn path(path: impl AsRef<str>) -> Self {
-        Self::Path(PathFilter::new(path))
+        Self {
+            kind: HttpFilterKind::Path(PathFilter::new(path)),
+            negate: false,
+        }
     }
 
-    /// Add a [`HttpMatcher::Path`] filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_path(self, path: impl AsRef<str>) -> Self {
-        HttpMatcher::Multiple(match self {
-            HttpMatcher::Multiple(mut v) => {
-                v.push(HttpMatcher::path(path));
-                v
+    /// Add a [`PathFilter`] to filter on top of the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`PathFilter`] for more information.
+    pub fn and_path(mut self, path: impl AsRef<str>) -> Self {
+        let filter = HttpFilterKind::Path(PathFilter::new(path));
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
             }
-            _ => vec![self, HttpMatcher::path(path)],
-        })
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        }
+        self
     }
 
-    /// Create a [`HttpMatcher::Socket`] filter.
+    /// Create a [`PathFilter`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`PathFilter`] for more information.
+    pub fn or_path(mut self, path: impl AsRef<str>) -> Self {
+        let filter = HttpFilterKind::Path(PathFilter::new(path));
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`SocketMatcher`] filter.
     pub fn socket(socket: SocketMatcher) -> Self {
-        Self::Socket(socket)
+        Self {
+            kind: HttpFilterKind::Socket(socket),
+            negate: false,
+        }
     }
 
-    /// Add a [`HttpMatcher::Socket`] filter to the existing set of [`HttpMatcher`] filters.
-    pub fn with_socket(self, socket: SocketMatcher) -> Self {
-        HttpMatcher::Multiple(match self {
-            HttpMatcher::Multiple(mut v) => {
-                v.push(HttpMatcher::socket(socket));
-                v
+    /// Add a [`SocketMatcher`] filter to filter on top of the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`SocketMatcher`] for more information.
+    pub fn and_socket(mut self, socket: SocketMatcher) -> Self {
+        let filter = HttpFilterKind::Socket(socket);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
             }
-            _ => vec![self, HttpMatcher::socket(socket)],
-        })
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`SocketMatcher`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`SocketMatcher`] for more information.
+    pub fn or_socket(mut self, socket: SocketMatcher) -> Self {
+        let filter = HttpFilterKind::Socket(socket);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Negate the current filter
+    pub fn negate(self) -> Self {
+        Self {
+            kind: self.kind,
+            negate: true,
+        }
     }
 }
 
@@ -212,13 +615,30 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcher 
         ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
+        let matches = self.kind.matches(ext, ctx, req);
+        if self.negate {
+            !matches
+        } else {
+            matches
+        }
+    }
+}
+
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpFilterKind {
+    fn matches(
+        &self,
+        ext: Option<&mut Extensions>,
+        ctx: &Context<State>,
+        req: &Request<Body>,
+    ) -> bool {
         match self {
-            HttpMatcher::Multiple(all) => all.iter().matches_and(ext, ctx, req),
-            HttpMatcher::Method(method) => method.matches(ext, ctx, req),
-            HttpMatcher::Path(path) => path.matches(ext, ctx, req),
-            HttpMatcher::Domain(domain) => domain.matches(ext, ctx, req),
-            HttpMatcher::Uri(uri) => uri.matches(ext, ctx, req),
-            HttpMatcher::Socket(socket) => socket.matches(ext, ctx, req),
+            HttpFilterKind::All(all) => all.iter().matches_and(ext, ctx, req),
+            HttpFilterKind::Method(method) => method.matches(ext, ctx, req),
+            HttpFilterKind::Path(path) => path.matches(ext, ctx, req),
+            HttpFilterKind::Domain(domain) => domain.matches(ext, ctx, req),
+            HttpFilterKind::Uri(uri) => uri.matches(ext, ctx, req),
+            HttpFilterKind::Socket(socket) => socket.matches(ext, ctx, req),
+            HttpFilterKind::Any(all) => all.iter().matches_or(ext, ctx, req),
         }
     }
 }

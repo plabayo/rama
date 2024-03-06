@@ -50,7 +50,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::method_get().with_path(path);
+        let matcher = HttpMatcher::method_get().and_path(path);
         self.on(matcher, service)
     }
 
@@ -59,7 +59,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::method_post().with_path(path);
+        let matcher = HttpMatcher::method_post().and_path(path);
         self.on(matcher, service)
     }
 
@@ -68,7 +68,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::method_put().with_path(path);
+        let matcher = HttpMatcher::method_put().and_path(path);
         self.on(matcher, service)
     }
 
@@ -77,7 +77,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::method_delete().with_path(path);
+        let matcher = HttpMatcher::method_delete().and_path(path);
         self.on(matcher, service)
     }
 
@@ -86,7 +86,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::method_patch().with_path(path);
+        let matcher = HttpMatcher::method_patch().and_path(path);
         self.on(matcher, service)
     }
 
@@ -95,7 +95,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::method_head().with_path(path);
+        let matcher = HttpMatcher::method_head().and_path(path);
         self.on(matcher, service)
     }
 
@@ -104,7 +104,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::method_options().with_path(path);
+        let matcher = HttpMatcher::method_options().and_path(path);
         self.on(matcher, service)
     }
 
@@ -113,7 +113,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::method_trace().with_path(path);
+        let matcher = HttpMatcher::method_trace().and_path(path);
         self.on(matcher, service)
     }
 
