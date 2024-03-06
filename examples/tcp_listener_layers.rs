@@ -27,6 +27,7 @@ use rama::{
     tcp::server::TcpListener,
 };
 use std::{convert::Infallible, time::Duration};
+use tokio::net::TcpStream;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -52,7 +53,16 @@ async fn main() {
                 ServiceBuilder::new()
                     .layer(HijackLayer::new(
                         SocketMatcher::loopback().negate(),
-                        service_fn(|| async move { Ok::<u64, Infallible>(0) }),
+                        service_fn(|stream: TcpStream| async move {
+                            match stream.peer_addr() {
+                                Ok(addr) => tracing::warn!("blocked incoming connection: {}", addr),
+                                Err(err) => tracing::error!(
+                                    error = %err,
+                                    "blocked incoming connection with unknown peer address",
+                                ),
+                            }
+                            Ok::<u64, Infallible>(0)
+                        }),
                     ))
                     .trace_err()
                     .layer(TimeoutLayer::new(Duration::from_secs(8)))
