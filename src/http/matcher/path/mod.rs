@@ -1,4 +1,3 @@
-use super::Matcher;
 use crate::{
     http::Request,
     service::{context::Extensions, Context},
@@ -202,12 +201,19 @@ impl PathFilter {
     }
 }
 
-impl<State, Body> Matcher<State, Body> for PathFilter {
-    fn matches(&self, ext: &mut Extensions, _ctx: &Context<State>, req: &Request<Body>) -> bool {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for PathFilter {
+    fn matches(
+        &self,
+        ext: Option<&mut Extensions>,
+        _ctx: &Context<State>,
+        req: &Request<Body>,
+    ) -> bool {
         match self.matches_path(req.uri().path()) {
             None => false,
             Some(params) => {
-                ext.insert(params);
+                if let Some(ext) = ext {
+                    ext.insert(params);
+                }
                 true
             }
         }

@@ -14,43 +14,61 @@ pub trait Layer<S> {
 }
 
 mod into_error;
+#[doc(inline)]
 pub use into_error::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
 
 mod either;
+#[doc(inline)]
 pub use either::Either;
 
+mod hijack;
+#[doc(inline)]
+pub use hijack::{HijackLayer, HijackService};
+
 mod identity;
+#[doc(inline)]
 pub use identity::Identity;
 
 mod stack;
+#[doc(inline)]
 pub use stack::Stack;
 
 mod then;
+#[doc(inline)]
 pub use then::{Then, ThenLayer};
 
 mod and_then;
+#[doc(inline)]
 pub use and_then::{AndThen, AndThenLayer};
 
 mod layer_fn;
+#[doc(inline)]
 pub use layer_fn::{layer_fn, LayerFn};
 
 mod map_request;
+#[doc(inline)]
 pub use map_request::{MapRequest, MapRequestLayer};
 
 mod map_response;
+#[doc(inline)]
 pub use map_response::{MapResponse, MapResponseLayer};
 
 mod map_err;
+#[doc(inline)]
 pub use map_err::{MapErr, MapErrLayer};
 
 mod trace_err;
+#[doc(inline)]
 pub use trace_err::{TraceErr, TraceErrLayer};
 
 mod map_result;
+#[doc(inline)]
 pub use map_result::{MapResult, MapResultLayer};
 
 pub mod timeout;
+#[doc(inline)]
 pub use timeout::{Timeout, TimeoutLayer};
 
 pub mod add_extension;
+#[doc(inline)]
 pub use add_extension::{AddExtension, AddExtensionLayer};

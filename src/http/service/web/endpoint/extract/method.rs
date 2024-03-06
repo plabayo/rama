@@ -1,15 +1,15 @@
 use super::FromRequest;
-use crate::http::Request;
+use crate::http::{Method, Request};
 use crate::service::Context;
 use std::convert::Infallible;
 
-impl<S> FromRequest<S> for Request
+impl<S> FromRequest<S> for Method
 where
     S: Send + Sync + 'static,
 {
     type Rejection = Infallible;
 
     async fn from_request(_ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
-        Ok(req)
+        Ok(req.method().clone())
     }
 }

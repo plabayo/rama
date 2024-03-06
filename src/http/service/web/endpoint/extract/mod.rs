@@ -16,8 +16,8 @@ pub use path::Path;
 mod query;
 pub use query::Query;
 
+mod method;
 mod request;
-pub use request::Request;
 
 mod state;
 pub use state::State;

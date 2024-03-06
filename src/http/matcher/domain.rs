@@ -1,4 +1,3 @@
-use super::Matcher;
 use crate::{
     http::Request,
     service::{context::Extensions, Context},
@@ -47,8 +46,13 @@ impl DomainFilter {
     }
 }
 
-impl<State, Body> Matcher<State, Body> for DomainFilter {
-    fn matches(&self, _ext: &mut Extensions, _ctx: &Context<State>, req: &Request<Body>) -> bool {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for DomainFilter {
+    fn matches(
+        &self,
+        _ext: Option<&mut Extensions>,
+        _ctx: &Context<State>,
+        req: &Request<Body>,
+    ) -> bool {
         let host = match req.uri().host() {
             Some(host) => host,
             None => return false,

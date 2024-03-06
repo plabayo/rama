@@ -14,6 +14,8 @@ pub type Request<T = Body> = http::Request<T>;
 pub mod response;
 pub use response::{IntoResponse, Response};
 
+pub mod matcher;
+
 pub mod layer;
 pub mod service;
 

@@ -1,6 +1,5 @@
 //! provides a [`UriFilter`] matcher for filtering requests based on their URI.
 
-use super::Matcher;
 use crate::{
     http::{Request, Uri},
     service::{context::Extensions, Context},
@@ -29,8 +28,8 @@ impl UriFilter {
     /// # Panics
     ///
     /// Panics if the regex pattern is invalid.
-    pub fn new(re: &str) -> Self {
-        let re = Regex::new(re).expect("valid regex pattern");
+    pub fn new(re: impl AsRef<str>) -> Self {
+        let re = Regex::new(re.as_ref()).expect("valid regex pattern");
         Self { re }
     }
 
@@ -45,8 +44,13 @@ impl From<Regex> for UriFilter {
     }
 }
 
-impl<State, Body> Matcher<State, Body> for UriFilter {
-    fn matches(&self, _ext: &mut Extensions, _ctx: &Context<State>, req: &Request<Body>) -> bool {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for UriFilter {
+    fn matches(
+        &self,
+        _ext: Option<&mut Extensions>,
+        _ctx: &Context<State>,
+        req: &Request<Body>,
+    ) -> bool {
         self.matches_uri(req.uri())
     }
 }

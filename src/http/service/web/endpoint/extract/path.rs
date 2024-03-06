@@ -1,5 +1,5 @@
 use super::FromRequestParts;
-use crate::http::service::web::matcher::UriParams;
+use crate::http::matcher::UriParams;
 use crate::http::{dep::http::request::Parts, StatusCode};
 use crate::service::Context;
 use serde::de::DeserializeOwned;
