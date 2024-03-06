@@ -38,6 +38,8 @@ pub enum HttpMatcher {
     /// [`UriFilter`], a filter the request's URI, using a substring or regex pattern.
     Uri(UriFilter),
     /// [`SocketMatcher`], a filter that matches on the [`SocketAddr`] of the peer.
+    ///
+    /// [`SocketAddr`]: std::net::SocketAddr
     Socket(SocketMatcher),
 }
 

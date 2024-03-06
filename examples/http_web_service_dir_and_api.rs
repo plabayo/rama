@@ -96,7 +96,7 @@ async fn main() {
                         .on(
                             HttpMatcher::method_get()
                                 .with_path("/home")
-                                .with_socket(SocketMatcher::ip_net("127.0.0.0/24")),
+                                .with_socket(SocketMatcher::loopback()),
                             Html("Home Sweet Home!".to_string()),
                         )
                         .dir("/", "test-files/examples/webservice"),
