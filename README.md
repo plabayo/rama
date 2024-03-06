@@ -147,8 +147,13 @@ and on the 28th of February of 2024 they also open sourced it.
 Rama is not for everyone, but we sure hope it is right for you.
 If not, consider giving [`pingora`] a try, it might very well be the next best thing for you.
 
+Finally, [ByteDance] has an open source proxy framework written in Rust to developer forward
+and reverse proxies alike, named [`g3proxy`].
+
 [Cloudflare]: https://www.cloudflare.com/
 [`pingora`]: https://github.com/cloudflare/pingora
+[ByteDance]: https://www.bytedance.com/en/
+[`g3proxy`]: https://github.com/bytedance/g3
 
 ## ❓| FAQ
 
