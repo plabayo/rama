@@ -98,6 +98,13 @@ impl Extensions {
         });
         ext
     }
+    /// Checks if a value of type T exists in the extensions map
+    pub fn contains<T: 'static + Send + Sync>(&self) -> bool {
+        match &self.map {
+            Some(boxed_map) => boxed_map.contains_key(&TypeId::of::<T>()),
+            None => false,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
