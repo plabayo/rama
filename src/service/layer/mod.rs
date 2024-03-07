@@ -33,6 +33,10 @@ mod stack;
 #[doc(inline)]
 pub use stack::Stack;
 
+mod state;
+#[doc(inline)]
+pub use state::{StateWrapperLayer, StateWrapperService};
+
 mod then;
 #[doc(inline)]
 pub use then::{Then, ThenLayer};

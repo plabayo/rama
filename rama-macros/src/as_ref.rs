@@ -56,6 +56,7 @@ fn expand_field(state: &Ident, idx: usize, field: &Field) -> TokenStream {
         return match extract_type_from_arc(field_ty) {
             Some(field_ty) => {
                 quote_spanned! {span=>
+                    #[allow(clippy::needless_borrow)]
                     impl<T> ::std::convert::AsRef<T> for #state
                         where #field_ty: ::std::convert::AsRef<T>
                     {

@@ -115,6 +115,18 @@ impl<S> Context<S> {
         self.state.clone()
     }
 
+    /// Map the state from one type to another.
+    pub fn map_state<F, W>(self, f: F) -> Context<W>
+    where
+        F: Fn(Arc<S>) -> Arc<W>,
+    {
+        Context {
+            state: f(self.state),
+            executor: self.executor,
+            extensions: self.extensions,
+        }
+    }
+
     /// Get a reference to the executor.
     pub fn executor(&self) -> &Executor {
         &self.executor

@@ -9,18 +9,14 @@ pub(crate) fn extract_type_from_arc(ty: &syn::Type) -> Option<&syn::Type> {
     }
 
     fn extract_arc_segment(path: &Path) -> Option<&PathSegment> {
-        let idents_of_path = path
-            .segments
-            .iter()
-            .into_iter()
-            .fold(String::new(), |mut acc, v| {
-                acc.push_str(&v.ident.to_string());
-                acc.push('|');
-                acc
-            });
+        let idents_of_path = path.segments.iter().fold(String::new(), |mut acc, v| {
+            acc.push_str(&v.ident.to_string());
+            acc.push('|');
+            acc
+        });
         ["Arc|", "std|sync|Arc|"]
             .into_iter()
-            .find(|s| &idents_of_path == *s)
+            .find(|s| idents_of_path == *s)
             .and_then(|_| path.segments.last())
     }
 

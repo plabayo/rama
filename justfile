@@ -28,7 +28,7 @@ hack:
 	cargo hack check --each-feature --no-dev-deps --workspace
 
 test:
-	cargo test --all-features
+	cargo test --all-features --workspace
 
 qa: lint check clippy doc hack test
 
