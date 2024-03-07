@@ -151,38 +151,30 @@ impl<S> Context<S> {
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.extensions.get::<T>()
     }
-    /// Get a reference to an extension or T's default().
-    ///
-    /// An extension is a type that implements `Send + Sync + 'static`,
-    /// and can be used to inject dynamic data into the [`Context`].
-    ///
-    /// Extensions are specific to this [`Context`]. It will be cloned when the [`Context`] is cloned,
-    /// but extensions inserted using [`Context::insert`] will not be visible the
-    /// original [`Context`], or any other cloned [`Context`].
-    ///
-    /// Please use the statically typed state (see [`Context::state`]) for data that is shared between
-    /// all context clones, parent or not.
-    ///
+
+    /// Get a reference to an extension or T's [default()](std::default::Default).
+    /// Refer to [Context::get](Self::get) for more detail's
     /// # Example
-    ///
     /// ```
     /// # use rama::service::Context;
     /// # let mut ctx = Context::default();
     /// # ctx.insert(5i32);
     ///
     /// // Test existing value
-    /// assert_eq!(ctx.get_or_default::<i32>(), 5i32);
+    /// assert_eq!(ctx.get_or_default::<i32>(), &5i32);
     ///
-    /// // Test default value for a type not inserted before (assuming `f64::default()` is 0.0)
-    /// assert_eq!(ctx.get_or_default::<f64>(), 0f64);
+    /// assert_eq!(ctx.get_or_default::<f64>(), &0f64);
     /// ```
-
-    pub fn get_or_default<T: Send + Default + Clone + Sync + 'static>(&self) -> T {
-        self.extensions.get::<T>().cloned().unwrap_or_default()
+    pub fn get_or_default<T: Send + Default + Clone + Sync + 'static>(&mut self) -> &T {
+        if !self.extensions.contains::<T>() {
+            self.extensions.insert(T::default());
+        }
+        // At this point, it is safe to unwrap because we know the value exists
+        self.extensions.get::<T>().unwrap()
     }
     /// Retrieves a value of type `T` from the context. If the value does not exist,
     /// returns the provided fallback value.
-    ///
+    /// Refer to [Context::get](Self::get) for more detail's
     /// # Example
     ///
     /// ```
@@ -191,14 +183,17 @@ impl<S> Context<S> {
     /// ctx.insert(5i32);
     ///
     /// // Test existing value - should return the inserted value
-    /// assert_eq!(ctx.get_or::<i32>(10), 5);
+    /// assert_eq!(ctx.get_or::<i32>(10), &5);
     ///
-    /// // Test with a fallback value for a type not inserted before (fallback to 2.5 for f64)
-    /// assert_eq!(ctx.get_or::<f64>(2.5), 2.5);
+    /// // Test with a fallback value
+    /// assert_eq!(ctx.get_or::<f64>(2.5), &2.5);
     /// ```
-
-    pub fn get_or<T: Send + Sync + Clone + 'static>(&self, fallback: T) -> T {
-        self.extensions.get::<T>().cloned().unwrap_or(fallback)
+    pub fn get_or<T: Send + Sync + Clone + 'static>(&mut self, fallback: T) -> &T {
+        if !self.extensions.contains::<T>() {
+            self.extensions.insert(fallback);
+        }
+        // At this point, it is safe to unwrap because we know the value exists
+        self.extensions.get::<T>().unwrap()
     }
 
     /// Insert an extension into the [`Context`].
