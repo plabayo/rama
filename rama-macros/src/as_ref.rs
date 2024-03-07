@@ -6,7 +6,10 @@ use syn::{
     Field, ItemStruct, Token,
 };
 
-use crate::attr_parsing::{combine_unary_attribute, parse_attrs, Combine};
+use crate::{
+    attr_parsing::{combine_unary_attribute, parse_attrs, Combine},
+    type_parsing::extract_type_from_arc,
+};
 
 pub(crate) fn expand(item: ItemStruct) -> syn::Result<TokenStream> {
     if !item.generics.params.is_empty() {
@@ -27,7 +30,7 @@ pub(crate) fn expand(item: ItemStruct) -> syn::Result<TokenStream> {
 }
 
 fn expand_field(state: &Ident, idx: usize, field: &Field) -> TokenStream {
-    let FieldAttrs { skip } = match parse_attrs("as_ref", &field.attrs) {
+    let FieldAttrs { skip, wrap } = match parse_attrs("as_ref", &field.attrs) {
         Ok(attrs) => attrs,
         Err(err) => return err.into_compile_error(),
     };
@@ -49,8 +52,29 @@ fn expand_field(state: &Ident, idx: usize, field: &Field) -> TokenStream {
         quote_spanned! {span=> &self.#idx }
     };
 
+    if wrap.is_some() {
+        return match extract_type_from_arc(field_ty) {
+            Some(field_ty) => {
+                quote_spanned! {span=>
+                    impl<T> ::std::convert::AsRef<T> for #state
+                        where #field_ty: ::std::convert::AsRef<T>
+                    {
+                        fn as_ref(&self) -> &T {
+                            use ::core::ops::Deref;
+                            #body.deref().as_ref()
+                        }
+                    }
+                }
+            }
+            None => syn::Error::new_spanned(
+                field.ty.clone(),
+                "`#[as_ref(wrap)]` is only supported for Arc types",
+            )
+            .into_compile_error(),
+        };
+    }
+
     quote_spanned! {span=>
-        #[allow(clippy::clone_on_copy)]
         impl ::std::convert::AsRef<#field_ty> for #state {
             fn as_ref(&self) -> &#field_ty {
                 #body
@@ -61,21 +85,26 @@ fn expand_field(state: &Ident, idx: usize, field: &Field) -> TokenStream {
 
 mod kw {
     syn::custom_keyword!(skip);
+    syn::custom_keyword!(wrap);
 }
 
 #[derive(Default)]
 pub(super) struct FieldAttrs {
     pub(super) skip: Option<kw::skip>,
+    pub(super) wrap: Option<kw::wrap>,
 }
 
 impl Parse for FieldAttrs {
     fn parse(input: ParseStream) -> syn::Result<Self> {
         let mut skip = None;
+        let mut wrap = None;
 
         while !input.is_empty() {
             let lh = input.lookahead1();
             if lh.peek(kw::skip) {
                 skip = Some(input.parse()?);
+            } else if lh.peek(kw::wrap) {
+                wrap = Some(input.parse()?);
             } else {
                 return Err(lh.error());
             }
@@ -83,14 +112,15 @@ impl Parse for FieldAttrs {
             let _ = input.parse::<Token![,]>();
         }
 
-        Ok(Self { skip })
+        Ok(Self { skip, wrap })
     }
 }
 
 impl Combine for FieldAttrs {
     fn combine(mut self, other: Self) -> syn::Result<Self> {
-        let Self { skip } = other;
+        let Self { skip, wrap } = other;
         combine_unary_attribute(&mut self.skip, skip)?;
+        combine_unary_attribute(&mut self.wrap, wrap)?;
         Ok(self)
     }
 }

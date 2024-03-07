@@ -53,16 +53,18 @@
 //! let db: &ProxyDatabase = ctx.state().as_ref();
 //! ```
 
+use crate::rt::Executor;
 use std::{future::Future, sync::Arc};
 use tokio::task::JoinHandle;
-
-mod extensions;
-pub use extensions::Extensions;
 use tokio_graceful::ShutdownGuard;
 
 pub use rama_macros::AsRef;
 
-use crate::rt::Executor;
+mod extensions;
+#[doc(inline)]
+pub use extensions::Extensions;
+
+mod state;
 
 /// Context passed to and between services as input.
 #[derive(Debug)]
