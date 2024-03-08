@@ -127,6 +127,8 @@ pub use extensions::Extensions;
 mod state;
 
 /// Context passed to and between services as input.
+/// 
+/// See [`crate::service::context`] for more information.
 #[derive(Debug)]
 pub struct Context<S> {
     state: Arc<S>,
