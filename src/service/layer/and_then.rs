@@ -1,9 +1,11 @@
 use crate::service::{Context, Layer, Service};
 use std::fmt;
 
-/// Service returned by the [`and_then`] combinator.
+/// Executes a new future after this service's future resolves.
 ///
-/// [`and_then`]: crate::service::ServiceBuilder::and_then
+/// This method can be used to change the `Response` type of the service
+/// into a different type. You can use this method to chain along a computation once the
+/// service's response has been resolved.
 pub struct AndThen<S, F> {
     inner: S,
     f: F,
@@ -61,7 +63,7 @@ where
 impl<S, F, State, Request, Fut, Output> Service<State, Request> for AndThen<S, F>
 where
     S: Service<State, Request>,
-    F: Fn(S::Response) -> Fut + Send + Sync + 'static,
+    F: FnOnce(S::Response) -> Fut + Clone + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Output, S::Error>> + Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
@@ -76,7 +78,7 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
-            Ok(resp) => (self.f)(resp).await,
+            Ok(resp) => (self.f.clone())(resp).await,
             Err(err) => Err(err),
         }
     }

@@ -26,7 +26,7 @@ pub struct LayerErrorFn<F>(F);
 
 impl<F, E> LayerErrorFn<F>
 where
-    F: Fn() -> E + Send + Sync + 'static,
+    F: FnOnce() -> E + Clone + Send + Sync + 'static,
     E: Send + 'static,
 {
     pub(crate) fn new(f: F) -> Self {
@@ -45,13 +45,13 @@ where
 
 impl<F, E> MakeLayerError for LayerErrorFn<F>
 where
-    F: Fn() -> E + Send + Sync + 'static,
+    F: FnOnce() -> E + Clone + Send + Sync + 'static,
     E: Send + 'static,
 {
     type Error = E;
 
     fn make_layer_error(&self) -> Self::Error {
-        self.0()
+        self.0.clone()()
     }
 }
 

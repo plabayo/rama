@@ -33,6 +33,10 @@ mod stack;
 #[doc(inline)]
 pub use stack::Stack;
 
+mod map_state;
+#[doc(inline)]
+pub use map_state::{MapState, MapStateLayer};
+
 mod then;
 #[doc(inline)]
 pub use then::{Then, ThenLayer};

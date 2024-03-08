@@ -1,9 +1,31 @@
 use crate::service::{Context, Layer, Service};
 use std::fmt;
 
-/// Service returned by the [`map_result`] combinator.
+/// Maps this service's result type (`Result<Self::Response, Self::Error>`)
+/// to a different value, regardless of whether the future succeeds or
+/// fails.
 ///
-/// [`map_result`]: crate::service::ServiceBuilder::map_result
+/// This is similar to the [`MapResponse`] and [`MapErr`] combinators,
+/// except that the *same* function is invoked when the service's future
+/// completes, whether it completes successfully or fails. This function
+/// takes the [`Result`] returned by the service's future, and returns a
+/// [`Result`].
+///
+/// Like the standard library's [`Result::and_then`], this method can be
+/// used to implement control flow based on `Result` values. For example, it
+/// may be used to implement error recovery, by turning some [`Err`]
+/// responses from the service into [`Ok`] responses. Similarly, some
+/// successful responses from the service could be rejected, by returning an
+/// [`Err`] conditionally, depending on the value inside the [`Ok`.] Finally,
+/// this method can also be used to implement behaviors that must run when a
+/// service's future completes, regardless of whether it succeeded or failed.
+///
+/// This method can be used to change the `Response` type of the service
+/// into a different type. It can also be used to change the `Error` type
+/// of the service.
+///
+/// [`MapResponse`]: crate::service::layer::MapResponse
+/// [`MapErr`]: crate::service::layer::MapErr
 pub struct MapResult<S, F> {
     inner: S,
     f: F,
@@ -61,7 +83,11 @@ impl<S, F> MapResult<S, F> {
 impl<S, F, State, Request, Response, Error> Service<State, Request> for MapResult<S, F>
 where
     S: Service<State, Request>,
-    F: Fn(Result<S::Response, S::Error>) -> Result<Response, Error> + Send + Sync + 'static,
+    F: FnOnce(Result<S::Response, S::Error>) -> Result<Response, Error>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
     Response: Send + 'static,
@@ -76,7 +102,7 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let result = self.inner.serve(ctx, req).await;
-        (self.f)(result)
+        (self.f.clone())(result)
     }
 }
 

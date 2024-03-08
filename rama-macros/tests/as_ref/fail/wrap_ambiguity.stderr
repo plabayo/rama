@@ -1,0 +1,7 @@
+error[E0119]: conflicting implementations of trait `AsRef<String>` for type `ConnState`
+  --> tests/as_ref/fail/wrap_ambiguity.rs:15:17
+   |
+14 |     app: Arc<AppState>,
+   |          --- first implementation here
+15 |     auth_token: String,
+   |                 ^^^^^^ conflicting implementation for `ConnState`

@@ -1,11 +1,10 @@
 //! Builder types to compose layers and services
 
 use super::{
-    handler::Factory,
-    handler::ServiceFn,
+    handler::{Factory, ServiceFn},
     layer::{
         layer_fn, AndThenLayer, Either, Identity, LayerFn, MapErrLayer, MapRequestLayer,
-        MapResponseLayer, MapResultLayer, Stack, ThenLayer, TraceErrLayer,
+        MapResponseLayer, MapResultLayer, MapStateLayer, Stack, ThenLayer, TraceErrLayer,
     },
     service_fn, BoxService, Layer, Service,
 };
@@ -90,8 +89,18 @@ impl<L> ServiceBuilder<L> {
     /// middleware.
     ///
     /// [`MapRequest`]: crate::service::layer::MapRequest
-    pub fn map_request<F, R1, R2>(self, f: F) -> ServiceBuilder<Stack<MapRequestLayer<F>, L>> {
+    pub fn map_request<F>(self, f: F) -> ServiceBuilder<Stack<MapRequestLayer<F>, L>> {
         self.layer(MapRequestLayer::new(f))
+    }
+
+    /// Map one state to another
+    ///
+    /// This wraps the inner service with an instance of the [`MapState`]
+    /// middleware.
+    ///
+    /// [`MapState`]: crate::service::layer::MapState
+    pub fn map_state<F>(self, f: F) -> ServiceBuilder<Stack<MapStateLayer<F>, L>> {
+        self.layer(MapStateLayer::new(f))
     }
 
     /// Map one response type to another.

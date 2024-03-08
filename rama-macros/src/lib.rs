@@ -50,6 +50,7 @@ use syn::parse::Parse;
 
 mod as_ref;
 mod attr_parsing;
+mod type_parsing;
 
 /// Derive an implementation of [`AsRef`] for each field in a struct.
 ///
@@ -75,7 +76,7 @@ where
     match result {
         Ok(tokens) => {
             let tokens = (quote! { #tokens }).into();
-            if std::env::var_os("AXUM_MACROS_DEBUG").is_some() {
+            if std::env::var_os("RAMA_MACROS_DEBUG").is_some() {
                 eprintln!("{tokens}");
             }
             tokens
