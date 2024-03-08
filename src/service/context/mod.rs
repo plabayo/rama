@@ -118,7 +118,7 @@ impl<S> Context<S> {
     /// Map the state from one type to another.
     pub fn map_state<F, W>(self, f: F) -> Context<W>
     where
-        F: Fn(Arc<S>) -> Arc<W>,
+        F: FnOnce(Arc<S>) -> Arc<W>,
     {
         Context {
             state: f(self.state),

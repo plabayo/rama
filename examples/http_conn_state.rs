@@ -33,7 +33,10 @@ use rama::{
 };
 use std::{
     convert::Infallible,
-    sync::{atomic::AtomicUsize, Arc},
+    sync::{
+        atomic::{AtomicBool, AtomicUsize},
+        Arc,
+    },
     time::Duration,
 };
 
@@ -56,27 +59,17 @@ struct AppState {
 struct ConnState {
     #[as_ref(wrap)]
     app: Arc<AppState>,
+    alive: Arc<AtomicBool>,
     conn_metrics: ConnMetrics,
-}
-
-impl From<Arc<AppState>> for ConnState {
-    fn from(app: Arc<AppState>) -> Self {
-        app.app_metrics
-            .connections
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        Self {
-            app,
-            ..Default::default()
-        }
-    }
 }
 
 async fn handle_index<S>(ctx: Context<S>, _: Request) -> Result<Html<String>, Infallible>
 where
-    S: AsRef<AppMetrics> + AsRef<ConnMetrics> + Send + Sync + 'static,
+    S: AsRef<AppMetrics> + AsRef<ConnMetrics> + AsRef<Arc<AtomicBool>> + Send + Sync + 'static,
 {
     let app_metrics: &AppMetrics = ctx.state().as_ref();
     let conn_metrics: &ConnMetrics = ctx.state().as_ref();
+    let alive: &Arc<AtomicBool> = ctx.state().as_ref();
 
     let conn_count = app_metrics
         .connections
@@ -85,6 +78,11 @@ where
         .requests
         .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
         + 1;
+    let is_alive = if alive.load(std::sync::atomic::Ordering::SeqCst) {
+        "yes"
+    } else {
+        "no"
+    };
 
     Ok(Html(format!(
         r##"
@@ -94,6 +92,7 @@ where
                 </head>
                 <body>
                     <h1>Metrics</h1>
+                    <p>Alive: {is_alive}
                     <p>Connection Count: <code>{conn_count}</code></p>
                     <p>Request Count: <code>{request_count}</code></p>
                 </body>
@@ -110,6 +109,8 @@ async fn main() {
 
         let tcp_http_service = HttpServer::auto(exec).service(service_fn(handle_index));
 
+        let alive = Arc::new(AtomicBool::new(true));
+
         TcpListener::build_with_state(AppState::default())
             .bind("127.0.0.1:8080")
             .await
@@ -117,7 +118,16 @@ async fn main() {
             .serve_graceful(
                 guard,
                 ServiceBuilder::new()
-                    .layer(StateWrapperLayer::<ConnState>::new())
+                    .layer(StateWrapperLayer::new(move |app: Arc<AppState>| {
+                        app.app_metrics
+                            .connections
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        Arc::new(ConnState {
+                            app,
+                            alive,
+                            ..Default::default()
+                        })
+                    }))
                     .service(tcp_http_service),
             )
             .await;
