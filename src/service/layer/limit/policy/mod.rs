@@ -2,10 +2,15 @@
 //! define how requests are handled when the limit is reached
 //! for a given request.
 
+use crate::service::Context;
+
 mod concurrent;
+#[doc(inline)]
 pub use concurrent::{ConcurrentPolicy, LimitReached};
 
-use crate::service::Context;
+mod matcher;
+#[doc(inline)]
+pub use matcher::{MatcherGuard, MatcherPolicyMap};
 
 #[derive(Debug)]
 /// The full result of a limit policy.
