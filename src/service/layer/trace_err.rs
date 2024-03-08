@@ -3,9 +3,8 @@ use futures_util::FutureExt;
 use std::fmt;
 use std::future::Future;
 
-/// Service returned by the [`trace_err`] combinator.
-///
-/// [`trace_err`]: crate::service::ServiceBuilder::trace_err
+/// Service which traces the error using [`tracing`],
+/// of the inner [`Service`].
 pub struct TraceErr<S> {
     inner: S,
     level: tracing::Level,

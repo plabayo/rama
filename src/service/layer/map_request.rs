@@ -2,9 +2,10 @@ use crate::service::{Context, Layer, Service};
 use std::fmt;
 use std::future::Future;
 
-/// Service returned by the [`MapRequest`] combinator.
+/// Composes a function *in front of* the service.
 ///
-/// [`MapRequest`]: crate::service::ServiceBuilder::map_request
+/// This adapter produces a new service that passes each value through the
+/// given function `f` before sending it to `self`.
 #[derive(Clone)]
 pub struct MapRequest<S, F> {
     inner: S,

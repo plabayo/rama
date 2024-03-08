@@ -1,9 +1,12 @@
 use crate::service::{Context, Layer, Service};
 use std::fmt;
 
-/// Service returned by the [`map_err`] combinator.
+/// Maps this service's error value to a different value.
 ///
-/// [`map_err`]: crate::service::ServiceBuilder::map_err
+/// This method can be used to change the [`Error`] type of the service
+/// into a different type. It is similar to the [`Result::map_err`] method.
+///
+/// [`Error`]: crate::error::Error
 #[derive(Clone)]
 pub struct MapErr<S, F> {
     inner: S,
