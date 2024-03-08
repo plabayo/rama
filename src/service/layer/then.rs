@@ -62,7 +62,7 @@ impl<S, F, State, Request, Response, Error, Fut> Service<State, Request> for The
 where
     S: Service<State, Request>,
     S::Error: Into<Error>,
-    F: Fn(Result<S::Response, S::Error>) -> Fut + Send + Sync + 'static,
+    F: FnOnce(Result<S::Response, S::Error>) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<Response, Error>> + Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
@@ -78,7 +78,7 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let result = self.inner.serve(ctx, req).await;
-        (self.f)(result).await
+        (self.f.clone())(result).await
     }
 }
 

@@ -71,7 +71,7 @@ impl<S, F> MapResponse<S, F> {
 impl<S, F, State, Request, Response> Service<State, Request> for MapResponse<S, F>
 where
     S: Service<State, Request>,
-    F: Fn(S::Response) -> Response + Send + Sync + 'static,
+    F: FnOnce(S::Response) -> Response + Clone + Send + Sync + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
     Response: Send + 'static,
@@ -85,7 +85,7 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
-            Ok(resp) => Ok((self.f)(resp)),
+            Ok(resp) => Ok((self.f.clone())(resp)),
             Err(err) => Err(err),
         }
     }

@@ -33,7 +33,7 @@ impl<S, F> MapRequest<S, F> {
 impl<S, F, State, R1, R2> Service<State, R1> for MapRequest<S, F>
 where
     S: Service<State, R2>,
-    F: Fn(R1) -> R2 + Send + Sync + 'static,
+    F: FnOnce(R1) -> R2 + Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -44,7 +44,7 @@ where
         ctx: Context<State>,
         request: R1,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        self.inner.serve(ctx, (self.f)(request))
+        self.inner.serve(ctx, (self.f.clone())(request))
     }
 }
 

@@ -55,7 +55,7 @@ impl<F> TimeoutLayer<LayerErrorFn<F>> {
     /// function.
     pub fn with_error_fn<E>(timeout: Duration, error_fn: F) -> Self
     where
-        F: Fn() -> E + Send + Sync + 'static,
+        F: FnOnce() -> E + Clone + Send + Sync + 'static,
         E: Send + 'static,
     {
         Self {

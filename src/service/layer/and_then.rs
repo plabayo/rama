@@ -61,7 +61,7 @@ where
 impl<S, F, State, Request, Fut, Output> Service<State, Request> for AndThen<S, F>
 where
     S: Service<State, Request>,
-    F: Fn(S::Response) -> Fut + Send + Sync + 'static,
+    F: FnOnce(S::Response) -> Fut + Clone + Send + Sync + 'static,
     Fut: std::future::Future<Output = Result<Output, S::Error>> + Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
@@ -76,7 +76,7 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         match self.inner.serve(ctx, req).await {
-            Ok(resp) => (self.f)(resp).await,
+            Ok(resp) => (self.f.clone())(resp).await,
             Err(err) => Err(err),
         }
     }
