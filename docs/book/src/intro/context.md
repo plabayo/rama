@@ -30,6 +30,38 @@ of typesafe `State`, executors, spawning etc. On top of that it would make it mo
 also freely pass all this data between services, especially those operating
 across different layers of the network.
 
+## State
+
+rama` supports two kinds of states:
+
+1. type-safe state: this is the `S` generic parameter in [`Context`] and is to be used
+   as much as possible, given its existence and type properties can be validated at compile time
+2. dynamic state: these can be injected as [`Extensions`]s using methods such as [`Context::insert`]
+
+As a rule of thumb one should use the type-safe state (1) in case:
+
+- the state is always expected to exist at the point the middleware/service is called
+- the state is specific to the app or middleware
+- and the state can be constructed in a default/empty state
+
+The latter is important given the state is often created (or at least reserved) prior to
+it is actually being populated by the relevant middleware. This is not the case for app-specific state
+such as Database pools which are created since the start and shared amongs many different tasks.
+
+The rule could be be simplified to "if you need to `.unwrap()` you probably want type-safe state instead".
+It's however just a guideline and not a hard rule. As maintainers of `rama` we'll do our best to respect it though,
+and we recommend you to do the same.
+
+Any state that is optional, and especially optional state injected by middleware, can be inserted using extensions.
+It is however important to try as much as possible to then also consume this state in an approach that deals
+gracefully with its absence. Good examples of this are header-related inputs. Headers might be set or not,
+and so absence of [`Extensions`]s that might be created as a result of these might reasonably not exist.
+It might of course still mean the app returns an error response when it is absent, but it should not unwrap/panic.
+
+[`Context`]: https://ramaproxy.org/docs/rama/service/context/struct.Context.html
+[`Context::insert`]: https://ramaproxy.org/docs/rama/service/context/struct.Context.html#method.insert
+[`Extensions`]: https://ramaproxy.org/docs/rama/service/context/struct.Extensions.html
+
 ## Extensions
 
 Rama makes no use of `http::Extensions`, and instead keeps it all within the extensions API provided by `Context<State>`.
