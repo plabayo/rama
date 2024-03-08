@@ -32,7 +32,7 @@ across different layers of the network.
 
 ## State
 
-rama` supports two kinds of states:
+`rama` supports two kinds of states:
 
 1. type-safe state: this is the `S` generic parameter in [`Context`] and is to be used
    as much as possible, given its existence and type properties can be validated at compile time
