@@ -158,3 +158,5 @@ and reverse proxies alike, named [`g3proxy`].
 ## ❓| FAQ
 
 Available at <https://ramaproxy.org/book/faq.html>.
+
+[![original (OG) rama logo](./docs/book/src/img/old_logo.png)](https://ramaproxy.org/)

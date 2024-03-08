@@ -1,10 +1,18 @@
 # Why Rama
 
-Developing specialised proxies, in Rust, but certainly also in other languages,
-falls currently in two categories:
-
-1. use an "off-the-shelf" solution;
-2. develop it yourself "from scratch".
+<div class="book-article-intro">
+    <img src="./img/old_logo.png" alt="original (OG) rama logo">
+    <div>
+        <p>
+            Developing specialised proxies, in Rust, but certainly also in other languages,
+            falls currently in two categories:
+        </p>
+        <ol>
+            <li>use an "off-the-shelf" solution;</li>
+            <li>develop it yourself "from scratch".</li>
+        </ol>
+    </div>
+</div>
 
 (1) is usually in the form of using something like Nginx, Caddy or Envoy.
 In most cases that means being limited to using what they offer,
@@ -21,3 +29,23 @@ out there, including the ones that you write yourself.
 and this is where Rama comes in and hopes to be. It allows you to develop
 network proxies, specialised for your use case, while still allowing to expose and reuse use
 the parts of of the code not unique to that one little proxy idea.
+
+## Alternatives
+
+While there are a handful of proxies written in Rust, there is only one other Rust framework
+specifically made for proxy services. All other proxies are single purpose code bases,
+some even just for learning purposes.
+
+[Cloudflare] has been working on a proxy service framework, named [`pingora`], since a couple of years already,
+and on the 28th of February of 2024 they also open sourced it.
+
+Rama is not for everyone, but we sure hope it is right for you.
+If not, consider giving [`pingora`] a try, it might very well be the next best thing for you.
+
+Finally, [ByteDance] has an open source proxy framework written in Rust to developer forward
+and reverse proxies alike, named [`g3proxy`].
+
+[Cloudflare]: https://www.cloudflare.com/
+[`pingora`]: https://github.com/cloudflare/pingora
+[ByteDance]: https://www.bytedance.com/en/
+[`g3proxy`]: https://github.com/bytedance/g3
