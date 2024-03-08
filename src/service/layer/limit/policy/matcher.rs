@@ -1,19 +1,54 @@
+use std::sync::Arc;
+
 use crate::service::{context::Extensions, Context, Matcher};
 
 use super::{Policy, PolicyOutput, PolicyResult};
+
+/// Builder for [`MatcherPolicyMap`].
+pub struct MatcherPolicyMapBuilder<M, P> {
+    policies: Vec<(M, P)>,
+}
+
+impl<M, P> MatcherPolicyMapBuilder<M, P> {
+    /// Create a new [`MatcherPolicyMap`].
+    pub fn new() -> Self {
+        Self {
+            policies: Vec::new(),
+        }
+    }
+
+    /// Add a [`Policy`] to the map, which is used when the given [`Matcher`] matches.
+    pub fn add(mut self, matcher: M, policy: P) -> Self {
+        self.policies.push((matcher, policy));
+        self
+    }
+
+    /// Build the [`MatcherPolicyMap`].
+    pub fn build(self) -> MatcherPolicyMap<M, P> {
+        MatcherPolicyMap {
+            policies: Arc::new(self.policies),
+        }
+    }
+}
+
+impl Default for MatcherPolicyMapBuilder<(), ()> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl std::fmt::Debug for MatcherPolicyMapBuilder<(), ()> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MatcherPolicyMapBuilder").finish()
+    }
+}
 
 /// A policy which applies a [`Policy`] based on a [`Matcher`].
 ///
 /// The first matching policy is used.
 /// If no policy matches, the request is allowed to proceed as well.
 pub struct MatcherPolicyMap<M, P> {
-    policies: Vec<(M, P)>,
-}
-
-impl Default for MatcherPolicyMap<(), ()> {
-    fn default() -> Self {
-        MatcherPolicyMap::new()
-    }
+    policies: Arc<Vec<(M, P)>>,
 }
 
 impl std::fmt::Debug for MatcherPolicyMap<(), ()> {
@@ -24,24 +59,12 @@ impl std::fmt::Debug for MatcherPolicyMap<(), ()> {
 
 impl<M, P> MatcherPolicyMap<M, P> {
     /// Create a new [`MatcherPolicyMap`].
-    pub fn new() -> Self {
-        MatcherPolicyMap {
-            policies: Vec::new(),
-        }
-    }
-
-    /// Add a [`Policy`] to the map, which is used when the given [`Matcher`] matches.
-    pub fn add(mut self, matcher: M, policy: P) -> Self {
-        self.policies.push((matcher, policy));
-        self
+    pub fn builder() -> MatcherPolicyMapBuilder<M, P> {
+        MatcherPolicyMapBuilder::new()
     }
 }
 
-impl<M, P> Clone for MatcherPolicyMap<M, P>
-where
-    M: Clone,
-    P: Clone,
-{
+impl<M, P> Clone for MatcherPolicyMap<M, P> {
     fn clone(&self) -> Self {
         MatcherPolicyMap {
             policies: self.policies.clone(),
@@ -87,7 +110,7 @@ where
         request: Request,
     ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
         let mut ext = Extensions::new();
-        for (matcher, policy) in &self.policies {
+        for (matcher, policy) in self.policies.iter() {
             if matcher.matches(Some(&mut ext), &ctx, &request) {
                 let result = policy.check(ctx, request).await;
                 return match result.output {
