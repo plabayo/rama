@@ -73,6 +73,10 @@ pub mod timeout;
 #[doc(inline)]
 pub use timeout::{Timeout, TimeoutLayer};
 
+pub mod limit;
+#[doc(inline)]
+pub use limit::{Limit, LimitLayer};
+
 pub mod add_extension;
 #[doc(inline)]
 pub use add_extension::{AddExtension, AddExtensionLayer};
