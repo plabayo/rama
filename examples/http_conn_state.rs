@@ -28,7 +28,7 @@
 use rama::{
     http::{response::Html, server::HttpServer, Request},
     rt::Executor,
-    service::{context::AsRef, layer::StateWrapperLayer, service_fn, Context, ServiceBuilder},
+    service::{context::AsRef, service_fn, Context, ServiceBuilder},
     tcp::server::TcpListener,
 };
 use std::{
@@ -45,26 +45,37 @@ struct AppMetrics {
     connections: AtomicUsize,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 struct ConnMetrics {
-    requests: AtomicUsize,
+    /// connection index
+    pub index: usize,
+    /// amount of requests seen on this connection
+    pub requests: AtomicUsize,
 }
 
 #[derive(Debug, AsRef, Default)]
 struct AppState {
-    app_metrics: AppMetrics,
+    /// metrics with the scope of the life cycle
+    pub app_metrics: AppMetrics,
 }
 
-#[derive(Debug, AsRef, Default)]
+#[derive(Debug, AsRef)]
 struct ConnState {
     #[as_ref(wrap)]
+    /// reference to app life cycle app state
     app: Arc<AppState>,
+    /// global state injected directly into the connection state, true if app is alive
     alive: Arc<AtomicBool>,
+    /// metrics with the scope of the connection
     conn_metrics: ConnMetrics,
 }
 
 async fn handle_index<S>(ctx: Context<S>, _: Request) -> Result<Html<String>, Infallible>
 where
+    // NOTE: This example is a bit silly, and only serves to show how one can use `AsRef`
+    // trait bounds regardless of how deep the state properties are "nested". In a production
+    // codebase however it probably makes more sense to work with the actual type
+    // for any non-generic middleware / service.
     S: AsRef<AppMetrics> + AsRef<ConnMetrics> + AsRef<Arc<AtomicBool>> + Send + Sync + 'static,
 {
     let app_metrics: &AppMetrics = ctx.state().as_ref();
@@ -83,6 +94,7 @@ where
     } else {
         "no"
     };
+    let conn_index = conn_metrics.index;
 
     Ok(Html(format!(
         r##"
@@ -93,7 +105,7 @@ where
                 <body>
                     <h1>Metrics</h1>
                     <p>Alive: {is_alive}
-                    <p>Connection Count: <code>{conn_count}</code></p>
+                    <p>Connection <code>{conn_index}</code> of <code>{conn_count}</code></p>
                     <p>Request Count: <code>{request_count}</code></p>
                 </body>
             </html>"##
@@ -109,6 +121,7 @@ async fn main() {
 
         let tcp_http_service = HttpServer::auto(exec).service(service_fn(handle_index));
 
+        // example of data that can be stored as part of the state mapping closure
         let alive = Arc::new(AtomicBool::new(true));
 
         TcpListener::build_with_state(AppState::default())
@@ -118,16 +131,21 @@ async fn main() {
             .serve_graceful(
                 guard,
                 ServiceBuilder::new()
-                    .layer(StateWrapperLayer::new(move |app: Arc<AppState>| {
-                        app.app_metrics
+                    .map_state(move |app: Arc<AppState>| {
+                        let index = app
+                            .app_metrics
                             .connections
-                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                            + 1;
                         Arc::new(ConnState {
                             app,
                             alive,
-                            ..Default::default()
+                            conn_metrics: ConnMetrics {
+                                index,
+                                requests: AtomicUsize::new(0),
+                            },
                         })
-                    }))
+                    })
                     .service(tcp_http_service),
             )
             .await;

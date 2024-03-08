@@ -33,9 +33,9 @@ mod stack;
 #[doc(inline)]
 pub use stack::Stack;
 
-mod state;
+mod map_state;
 #[doc(inline)]
-pub use state::{StateWrapperLayer, StateWrapperService};
+pub use map_state::{MapState, MapStateLayer};
 
 mod then;
 #[doc(inline)]
