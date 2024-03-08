@@ -38,6 +38,14 @@
 //!   the provided building blocks and your own custom logic, resulting in a
 //!   tailored and efficient solution.
 //!
+//! # Edge documentation
+//!
+//! In case you are using `rama` as a _git_ dependency directly from the `main` branch or
+//! a (feature) derivative of you can still consult the rust docs of `rama` online. You can find
+//! the "edge" rust docs for the latest `main` _git_ commit of `rama` at:
+//!
+//! > <https://ramaproxy.org/docs/rama/index.html>
+//!
 //! # Getting started
 //!
 //! Add the following to your `Cargo.toml`:
