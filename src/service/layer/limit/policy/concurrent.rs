@@ -252,4 +252,18 @@ mod tests {
         drop(guard_2);
         assert_ready(policy.check(Context::default(), ()).await);
     }
+
+    #[tokio::test]
+    async fn concurrent_policy_clone() {
+        let policy = ConcurrentPolicy::new(2);
+        let policy_clone = policy.clone();
+
+        let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
+        let _guard_2 = assert_ready(policy_clone.check(Context::default(), ()).await);
+
+        assert_abort(policy.check(Context::default(), ()).await);
+
+        drop(guard_1);
+        assert_ready(policy.check(Context::default(), ()).await);
+    }
 }
