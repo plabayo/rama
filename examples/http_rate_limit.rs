@@ -26,6 +26,7 @@ use std::{convert::Infallible, time::Duration};
 
 use http::StatusCode;
 use rama::{
+    error::BoxError,
     http::{matcher::HttpMatcher, response::Json, server::HttpServer, Request},
     rt::Executor,
     service::{
@@ -33,10 +34,7 @@ use rama::{
             limit::policy::{ConcurrentPolicy, MatcherPolicyMap},
             LimitLayer,
         },
-        util::{
-            backoff::{ExponentialBackoffMaker, MakeBackoff},
-            rng::HasherRng,
-        },
+        util::backoff::ExponentialBackoff,
         ServiceBuilder,
     },
     stream::matcher::SocketMatcher,
@@ -47,55 +45,40 @@ use serde_json::json;
 async fn main() {
     let exec = Executor::default();
 
-    // you could of course also use different back offs for different mapped limits,
-    // in this example we keep it simple and have just one limit for all
-    let backoff_maker = ExponentialBackoffMaker::new(
-        Duration::from_millis(50),
-        Duration::from_secs(3),
-        0.99,
-        HasherRng::default(),
-    )
-    .expect("Unable to create ExponentialBackoff");
-
-    // TODO:
-    // - in this example:
-    //   - expose error when one occurred
-    //   - check why rate limit does not seem to be applied
-    // - add test directly to the limit code where we clone and it should still work!
-    //   - bug fix if needed
-
     HttpServer::auto(exec)
         .listen(
             "0.0.0.0:8080",
             ServiceBuilder::new()
-                .map_result(|result| match result {
+                .map_result(|result: Result<Json<_>, BoxError>| match result {
                     Ok(response) => Ok((StatusCode::OK, response)),
-                    Err(_) => Ok((
+                    Err(err) => Ok((
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(json!({
-                            "error": "something went wrong",
+                            "error": err.to_string(),
                         })),
                     )),
                 })
                 .trace_err()
                 .layer(LimitLayer::new(
                     MatcherPolicyMap::builder()
-                        // external addresses are limited to 1 connection at a time
+                        // external addresses are limited to 1 connection at a time,
+                        // when choosing to use backoff, they have to be of same type (generic B),
+                        // but you can make them also optional to not use backoff for some, while using it for others
                         .add(
                             HttpMatcher::socket(SocketMatcher::loopback()).negate(),
-                            ConcurrentPolicy::with_backoff(1, backoff_maker.make_backoff()),
+                            ConcurrentPolicy::with_backoff(1, None),
                         )
                         // test path so you can test also rate limiting on an http level
                         // > NOTE: as you can also make your own Matchers you can limit on w/e
                         // > property you want.
                         .add(
                             HttpMatcher::path("/limit/*"),
-                            ConcurrentPolicy::with_backoff(2, backoff_maker.make_backoff()),
+                            ConcurrentPolicy::with_backoff(2, Some(ExponentialBackoff::default())),
                         )
                         .build(),
                 ))
                 .service_fn(|req: Request| async move {
-                    if req.uri().path().starts_with("/limit/slow") {
+                    if req.uri().path().ends_with("/slow") {
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }
                     Ok::<_, Infallible>(Json(json!({

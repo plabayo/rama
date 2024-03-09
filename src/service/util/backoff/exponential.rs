@@ -1,25 +1,10 @@
-use std::sync::Arc;
 use std::time::Duration;
 use std::{fmt::Display, sync::Mutex};
 use tokio::time;
 
 use crate::service::util::rng::{HasherRng, Rng};
 
-use super::{Backoff, MakeBackoff};
-
-/// A maker type for [`ExponentialBackoff`].
-#[derive(Debug, Clone)]
-pub struct ExponentialBackoffMaker<R = HasherRng> {
-    /// The minimum amount of time to wait before resuming an operation.
-    min: time::Duration,
-    /// The maximum amount of time to wait before resuming an operation.
-    max: time::Duration,
-    /// The ratio of the base timeout that may be randomly added to a backoff.
-    ///
-    /// Must be greater than or equal to 0.0.
-    jitter: f64,
-    rng: R,
-}
+use super::Backoff;
 
 /// A jittered [exponential backoff] strategy.
 ///
@@ -29,23 +14,59 @@ pub struct ExponentialBackoffMaker<R = HasherRng> {
 ///
 /// [exponential backoff]: https://en.wikipedia.org/wiki/Exponential_backoff
 /// [random jitter]: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
-#[derive(Debug, Clone)]
-pub struct ExponentialBackoff<R = HasherRng> {
+#[derive(Debug)]
+pub struct ExponentialBackoff<F, R = HasherRng> {
     min: time::Duration,
     max: time::Duration,
     jitter: f64,
-    state: Arc<Mutex<ExponentialBackoffState<R>>>,
+    rng_creator: F,
+    state: Mutex<ExponentialBackoffState<R>>,
 }
 
-#[derive(Debug, Clone)]
+impl<F, R> Clone for ExponentialBackoff<F, R>
+where
+    R: Rng + Clone,
+    F: Fn() -> R + Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            min: self.min,
+            max: self.max,
+            jitter: self.jitter,
+            rng_creator: self.rng_creator.clone(),
+            state: Mutex::new(ExponentialBackoffState {
+                rng: (self.rng_creator)(),
+                iterations: 0,
+            }),
+        }
+    }
+}
+
+impl Clone for ExponentialBackoff<(), HasherRng> {
+    fn clone(&self) -> Self {
+        Self {
+            min: self.min,
+            max: self.max,
+            jitter: self.jitter,
+            rng_creator: (),
+            state: Mutex::new(ExponentialBackoffState {
+                rng: HasherRng::default(),
+                iterations: 0,
+            }),
+        }
+    }
+}
+
+#[derive(Debug)]
 struct ExponentialBackoffState<R = HasherRng> {
     rng: R,
     iterations: u32,
 }
 
-impl<R> ExponentialBackoffMaker<R>
+impl<F, R> ExponentialBackoff<F, R>
 where
-    R: Rng,
+    R: Rng + Clone,
+    F: Fn() -> R + Clone,
 {
     /// Create a new `ExponentialBackoff`.
     ///
@@ -61,6 +82,19 @@ where
         min: time::Duration,
         max: time::Duration,
         jitter: f64,
+        rng_creator: F,
+    ) -> Result<Self, InvalidBackoff> {
+        let rng = rng_creator();
+        Self::new_inner(min, max, jitter, rng_creator, rng)
+    }
+}
+
+impl<F, R> ExponentialBackoff<F, R> {
+    fn new_inner(
+        min: time::Duration,
+        max: time::Duration,
+        jitter: f64,
+        rng_creator: F,
         rng: R,
     ) -> Result<Self, InvalidBackoff> {
         if min > max {
@@ -79,35 +113,17 @@ where
             return Err(InvalidBackoff("jitter must be finite"));
         }
 
-        Ok(ExponentialBackoffMaker {
+        Ok(ExponentialBackoff {
             min,
             max,
             jitter,
-            rng,
+            rng_creator,
+            state: Mutex::new(ExponentialBackoffState { rng, iterations: 0 }),
         })
     }
 }
 
-impl<R> MakeBackoff for ExponentialBackoffMaker<R>
-where
-    R: Rng + Clone,
-{
-    type Backoff = ExponentialBackoff<R>;
-
-    fn make_backoff(&self) -> Self::Backoff {
-        ExponentialBackoff {
-            max: self.max,
-            min: self.min,
-            jitter: self.jitter,
-            state: Arc::new(Mutex::new(ExponentialBackoffState {
-                rng: self.rng.clone(),
-                iterations: 0,
-            })),
-        }
-    }
-}
-
-impl<R: Rng> ExponentialBackoff<R> {
+impl<F, R: Rng> ExponentialBackoff<F, R> {
     fn base(&self) -> time::Duration {
         debug_assert!(
             self.min <= self.max,
@@ -125,9 +141,9 @@ impl<R: Rng> ExponentialBackoff<R> {
 
     /// Returns a random, uniform duration on `[0, base*self.jitter]` no greater
     /// than `self.max`.
-    fn jitter(&self, base: time::Duration) -> time::Duration {
-        if self.jitter == 0.0 {
-            time::Duration::default()
+    fn jitter(&self, base: time::Duration) -> Option<time::Duration> {
+        if self.jitter <= 0.0 {
+            None
         } else {
             let jitter_factor = self.state.lock().unwrap().rng.next_f64();
             debug_assert!(
@@ -138,31 +154,48 @@ impl<R: Rng> ExponentialBackoff<R> {
             let secs = (base.as_secs() as f64) * rand_jitter;
             let nanos = (base.subsec_nanos() as f64) * rand_jitter;
             let remaining = self.max - base;
-            time::Duration::new(secs as u64, nanos as u32).min(remaining)
+            let result = time::Duration::new(secs as u64, nanos as u32);
+            if remaining.is_zero() || result.is_zero() {
+                None
+            } else {
+                Some(result.min(remaining))
+            }
         }
     }
 }
 
-impl<R> Backoff for ExponentialBackoff<R>
+impl<F, R> Backoff for ExponentialBackoff<F, R>
 where
     R: Rng,
+    F: Send + Sync + 'static,
 {
-    async fn next_backoff(&self) {
+    async fn next_backoff(&self) -> bool {
         let base = self.base();
-        let next = base + self.jitter(base);
+        let jitter = match self.jitter(base) {
+            Some(jitter) => jitter,
+            None => {
+                // reset for next usage!
+                self.state.lock().unwrap().iterations = 0;
+                return false;
+            }
+        };
+
+        let next = base + jitter;
 
         self.state.lock().unwrap().iterations += 1;
 
-        tokio::time::sleep(next).await
+        tokio::time::sleep(next).await;
+        true
     }
 }
 
-impl Default for ExponentialBackoffMaker {
+impl Default for ExponentialBackoff<(), HasherRng> {
     fn default() -> Self {
-        ExponentialBackoffMaker::new(
+        ExponentialBackoff::new_inner(
             Duration::from_millis(50),
-            Duration::from_millis(u64::MAX),
+            Duration::from_secs(5),
             0.99,
+            (),
             HasherRng::default(),
         )
         .expect("Unable to create ExponentialBackoff")
@@ -190,12 +223,10 @@ mod tests {
         fn backoff_base_first(min_ms: u64, max_ms: u64) -> TestResult {
             let min = time::Duration::from_millis(min_ms);
             let max = time::Duration::from_millis(max_ms);
-            let rng = HasherRng::default();
-            let backoff = match ExponentialBackoffMaker::new(min, max, 0.0, rng) {
+            let backoff = match ExponentialBackoff::new(min, max, 0.0, HasherRng::default) {
                 Err(_) => return TestResult::discard(),
                 Ok(backoff) => backoff,
             };
-            let backoff = backoff.make_backoff();
 
             let delay = backoff.base();
             TestResult::from_bool(min == delay)
@@ -204,12 +235,10 @@ mod tests {
         fn backoff_base(min_ms: u64, max_ms: u64, iterations: u32) -> TestResult {
             let min = time::Duration::from_millis(min_ms);
             let max = time::Duration::from_millis(max_ms);
-            let rng = HasherRng::default();
-            let backoff = match ExponentialBackoffMaker::new(min, max, 0.0, rng) {
+            let backoff = match ExponentialBackoff::new(min, max, 0.0, HasherRng::default) {
                 Err(_) => return TestResult::discard(),
                 Ok(backoff) => backoff,
             };
-            let backoff = backoff.make_backoff();
 
             backoff.state.lock().unwrap().iterations = iterations;
             let delay = backoff.base();
@@ -219,18 +248,16 @@ mod tests {
         fn backoff_jitter(base_ms: u64, max_ms: u64, jitter: f64) -> TestResult {
             let base = time::Duration::from_millis(base_ms);
             let max = time::Duration::from_millis(max_ms);
-            let rng = HasherRng::default();
-            let backoff = match ExponentialBackoffMaker::new(base, max, jitter, rng) {
+            let backoff = match ExponentialBackoff::new(base, max, jitter, HasherRng::default) {
                 Err(_) => return TestResult::discard(),
                 Ok(backoff) => backoff,
             };
-            let backoff = backoff.make_backoff();
 
             let j = backoff.jitter(base);
             if jitter == 0.0 || base_ms == 0 || max_ms == base_ms {
-                TestResult::from_bool(j == time::Duration::default())
+                TestResult::from_bool(j.is_none())
             } else {
-                TestResult::from_bool(j > time::Duration::default())
+                TestResult::from_bool(j.is_some())
             }
         }
     }

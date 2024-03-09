@@ -26,10 +26,7 @@
 
 use super::{Policy, PolicyOutput, PolicyResult};
 use crate::service::{util::backoff::Backoff, Context};
-use std::{
-    convert::Infallible,
-    sync::{Arc, Mutex},
-};
+use std::sync::{Arc, Mutex};
 
 /// A policy that limits the number of concurrent requests.
 #[derive(Debug)]
@@ -97,7 +94,7 @@ where
     Request: Send + 'static,
 {
     type Guard = ConcurrentGuard;
-    type Error = Infallible;
+    type Error = LimitReached;
 
     async fn check(
         &self,
@@ -118,11 +115,61 @@ where
             }
         }
 
-        self.backoff.next_backoff().await;
+        let output = if !self.backoff.next_backoff().await {
+            PolicyOutput::Abort(LimitReached)
+        } else {
+            PolicyOutput::Retry
+        };
+
         PolicyResult {
             ctx,
             request,
-            output: PolicyOutput::Retry,
+            output,
+        }
+    }
+}
+
+impl<B, State, Request> Policy<State, Request> for ConcurrentPolicy<Option<B>>
+where
+    B: Backoff,
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Guard = ConcurrentGuard;
+    type Error = LimitReached;
+
+    async fn check(
+        &self,
+        ctx: Context<State>,
+        request: Request,
+    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+        {
+            let mut current = self.current.lock().unwrap();
+            if *current < self.max {
+                *current += 1;
+                return PolicyResult {
+                    ctx,
+                    request,
+                    output: PolicyOutput::Ready(ConcurrentGuard {
+                        current: self.current.clone(),
+                    }),
+                };
+            }
+        }
+        let output = match &self.backoff {
+            Some(backoff) => {
+                if !backoff.next_backoff().await {
+                    PolicyOutput::Abort(LimitReached)
+                } else {
+                    PolicyOutput::Retry
+                }
+            }
+            None => PolicyOutput::Abort(LimitReached),
+        };
+        PolicyResult {
+            ctx,
+            request,
+            output,
         }
     }
 }
