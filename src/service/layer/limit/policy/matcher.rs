@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::service::{context::Extensions, Context, Matcher};
+use crate::service::{Context, Matcher};
 
 use super::{Policy, PolicyOutput, PolicyResult};
 
@@ -48,7 +48,16 @@ impl std::fmt::Debug for MatcherPolicyMapBuilder<(), ()> {
 /// The first matching policy is used.
 /// If no policy matches, the request is allowed to proceed as well.
 /// If you want to enforce a default policy, you can add a policy with a [`Matcher`] that always matches,
-/// such as [`crate::service::matcher::Always`].
+/// such as [`matcher::Always`].
+///
+/// Note that the [`Matcher`]s will not receive the mutable [`Extensions`],
+/// as the [`MatcherPolicyMap`] is not intended to keep track of what is matched on.
+///
+/// It is this policy that you want to use in case you want to rate limit only
+/// external sockets or you want to rate limit specific domains/paths only for http requests.
+///
+/// [`matcher::Always`]: crate::service::matcher::Always
+/// [`Extensions`]: crate::service::context::Extensions
 pub struct MatcherPolicyMap<M, P> {
     policies: Arc<Vec<(M, P)>>,
 }
@@ -130,19 +139,16 @@ where
         ctx: Context<State>,
         request: Request,
     ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
-        let mut ext = Extensions::new();
         for (matcher, policy) in self.policies.iter() {
-            if matcher.matches(Some(&mut ext), &ctx, &request) {
+            if matcher.matches(None, &ctx, &request) {
                 let result = policy.check(ctx, request).await;
                 return match result.output {
                     PolicyOutput::Ready(guard) => {
-                        let mut ctx = result.ctx;
-                        ctx.extend(ext);
                         let guard = MatcherGuard {
                             maybe_guard: Some(guard),
                         };
                         PolicyResult {
-                            ctx,
+                            ctx: result.ctx,
                             request: result.request,
                             output: PolicyOutput::Ready(guard),
                         }
@@ -164,6 +170,125 @@ where
             ctx,
             request,
             output: PolicyOutput::Ready(MatcherGuard { maybe_guard: None }),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::service::{
+        context::Extensions, layer::limit::policy::ConcurrentPolicy, matcher::Always,
+    };
+
+    use super::*;
+
+    fn assert_ready<S, R, G, E>(result: PolicyResult<S, R, G, E>) -> G {
+        match result.output {
+            PolicyOutput::Ready(guard) => guard,
+            _ => panic!("unexpected output, expected ready"),
+        }
+    }
+
+    fn assert_abort<S, R, G, E>(result: PolicyResult<S, R, G, E>) {
+        match result.output {
+            PolicyOutput::Abort(_) => (),
+            _ => panic!("unexpected output, expected abort"),
+        }
+    }
+
+    #[tokio::test]
+    async fn matcher_policy_empty() {
+        let policy = MatcherPolicyMap::<Always, ConcurrentPolicy<()>>::builder().build();
+
+        for i in 0..10 {
+            assert_ready(policy.check(Context::default(), i).await);
+        }
+    }
+
+    #[tokio::test]
+    async fn matcher_policy_always() {
+        let concurrency_policy = ConcurrentPolicy::new(2);
+
+        let policy = MatcherPolicyMap::builder()
+            .add(Always, concurrency_policy)
+            .build();
+
+        let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
+        let guard_2 = assert_ready(policy.check(Context::default(), ()).await);
+
+        assert_abort(policy.check(Context::default(), ()).await);
+
+        drop(guard_1);
+        let _guard_3 = assert_ready(policy.check(Context::default(), ()).await);
+
+        assert_abort(policy.check(Context::default(), ()).await);
+
+        drop(guard_2);
+        assert_ready(policy.check(Context::default(), ()).await);
+    }
+
+    #[derive(Debug, Clone)]
+    enum TestMatchers {
+        Const(u8),
+        Odd,
+    }
+
+    impl<State> Matcher<State, u8> for TestMatchers {
+        fn matches(&self, _ext: Option<&mut Extensions>, _ctx: &Context<State>, req: &u8) -> bool {
+            match self {
+                TestMatchers::Const(n) => *n == *req,
+                TestMatchers::Odd => *req % 2 == 1,
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn matcher_policy_scoped_limits() {
+        let policy = MatcherPolicyMap::builder()
+            .add(TestMatchers::Odd, ConcurrentPolicy::new(2))
+            .add(TestMatchers::Const(42), ConcurrentPolicy::new(1))
+            .build();
+
+        // even numbers (except 42) will always be allowed
+        for i in 1..10 {
+            assert_ready(policy.check(Context::default(), i * 2).await);
+        }
+
+        let odd_guard_1 = assert_ready(policy.check(Context::default(), 1).await);
+
+        let const_guard_1 = assert_ready(policy.check(Context::default(), 42).await);
+
+        let odd_guard_2 = assert_ready(policy.check(Context::default(), 3).await);
+
+        // both the odd and 42 limit is reached
+        assert_abort(policy.check(Context::default(), 5).await);
+        assert_abort(policy.check(Context::default(), 42).await);
+
+        // even numbers except 42 will match nothing and thus have no limit
+        for i in 1..10 {
+            assert_ready(policy.check(Context::default(), i * 2).await);
+        }
+
+        // only once we drop a guard can we make a new odd reuqest
+        drop(odd_guard_1);
+        let _odd_guard_3 = assert_ready(policy.check(Context::default(), 9).await);
+
+        // only once we drop the current 42 guard can we get a new guard,
+        // as the limit is 1 for 42
+        assert_abort(policy.check(Context::default(), 42).await);
+        drop(const_guard_1);
+        assert_ready(policy.check(Context::default(), 42).await);
+
+        // odd limit reached again so no luck here
+        assert_abort(policy.check(Context::default(), 11).await);
+
+        // droping another odd guard makes room for a new odd request
+        drop(odd_guard_2);
+        assert_ready(policy.check(Context::default(), 13).await);
+
+        // even numbers (except 42) will always be allowed
+        for i in 1..10 {
+            assert_ready(policy.check(Context::default(), i * 2).await);
         }
     }
 }
