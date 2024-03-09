@@ -219,6 +219,29 @@ mod tests {
     use super::*;
     use quickcheck::*;
 
+    #[tokio::test]
+    async fn backoff_default() {
+        let backoff = ExponentialBackoff::default();
+        assert!(backoff.next_backoff().await);
+    }
+
+    #[tokio::test]
+    async fn backoff_clone() {
+        let backoff = ExponentialBackoff::default();
+
+        assert!(backoff.state.lock().unwrap().iterations == 0);
+        assert!(backoff.next_backoff().await);
+        assert!(backoff.state.lock().unwrap().iterations == 1);
+
+        let cloned = backoff.clone();
+        assert!(cloned.state.lock().unwrap().iterations == 0);
+        assert!(backoff.state.lock().unwrap().iterations == 1);
+
+        assert!(cloned.next_backoff().await);
+        assert!(cloned.state.lock().unwrap().iterations == 1);
+        assert!(backoff.state.lock().unwrap().iterations == 1);
+    }
+
     quickcheck! {
         fn backoff_base_first(min_ms: u64, max_ms: u64) -> TestResult {
             let min = time::Duration::from_millis(min_ms);
