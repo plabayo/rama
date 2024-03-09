@@ -47,6 +47,8 @@ impl std::fmt::Debug for MatcherPolicyMapBuilder<(), ()> {
 ///
 /// The first matching policy is used.
 /// If no policy matches, the request is allowed to proceed as well.
+/// If you want to enforce a default policy, you can add a policy with a [`Matcher`] that always matches,
+/// such as [`crate::service::matcher::Always`].
 pub struct MatcherPolicyMap<M, P> {
     policies: Arc<Vec<(M, P)>>,
 }
@@ -115,11 +117,13 @@ where
                 let result = policy.check(ctx, request).await;
                 return match result.output {
                     PolicyOutput::Ready(guard) => {
+                        let mut ctx = result.ctx;
+                        ctx.extend(ext);
                         let guard = MatcherGuard {
                             maybe_guard: Some(guard),
                         };
                         PolicyResult {
-                            ctx: result.ctx,
+                            ctx,
                             request: result.request,
                             output: PolicyOutput::Ready(guard),
                         }
