@@ -20,6 +20,12 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the method and path of the request.
 //!
+//! You can trigger a Rate Limit by opening 3 concurrent requests to `/limit/slow`:
+//!
+//! ```sh
+//! curl -v http://127.0.0.1:8080/limit/slow
+//! ```
+//!
 //! Consult your ip address to reach your server from another machine connected to the same network.
 
 use std::{convert::Infallible, time::Duration};
