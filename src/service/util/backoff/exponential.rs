@@ -193,7 +193,7 @@ impl Default for ExponentialBackoff<(), HasherRng> {
     fn default() -> Self {
         ExponentialBackoff::new_inner(
             Duration::from_millis(50),
-            Duration::from_secs(5),
+            Duration::from_secs(3),
             0.99,
             (),
             HasherRng::default(),
