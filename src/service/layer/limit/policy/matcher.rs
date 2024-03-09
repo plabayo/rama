@@ -55,9 +55,11 @@ impl std::fmt::Debug for MatcherPolicyMapBuilder<(), ()> {
 ///
 /// It is this policy that you want to use in case you want to rate limit only
 /// external sockets or you want to rate limit specific domains/paths only for http requests.
+/// See the [`http_rate_limit.rs`] example for a use case.
 ///
 /// [`matcher::Always`]: crate::service::matcher::Always
 /// [`Extensions`]: crate::service::context::Extensions
+/// [`http_listener_hello.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
 pub struct MatcherPolicyMap<M, P> {
     policies: Arc<Vec<(M, P)>>,
 }
