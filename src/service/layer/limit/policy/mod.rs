@@ -1,6 +1,9 @@
 //! Limit policies for [`super::Limit`]
 //! define how requests are handled when the limit is reached
 //! for a given request.
+//!
+//! [`Option`] can be used to disable a limit policy for some scenarios
+//! while enabling it for others.
 
 use crate::service::Context;
 
@@ -61,4 +64,48 @@ pub trait Policy<State, Request>: Send + Sync + 'static {
     ) -> impl std::future::Future<Output = PolicyResult<State, Request, Self::Guard, Self::Error>>
            + Send
            + '_;
+}
+
+impl<State, Request, P> Policy<State, Request> for Option<P>
+where
+    P: Policy<State, Request>,
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Guard = Option<P::Guard>;
+    type Error = P::Error;
+
+    async fn check(
+        &self,
+        ctx: Context<State>,
+        request: Request,
+    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+        match self {
+            Some(policy) => {
+                let result = policy.check(ctx, request).await;
+                match result.output {
+                    PolicyOutput::Ready(guard) => PolicyResult {
+                        ctx: result.ctx,
+                        request: result.request,
+                        output: PolicyOutput::Ready(Some(guard)),
+                    },
+                    PolicyOutput::Abort(err) => PolicyResult {
+                        ctx: result.ctx,
+                        request: result.request,
+                        output: PolicyOutput::Abort(err),
+                    },
+                    PolicyOutput::Retry => PolicyResult {
+                        ctx: result.ctx,
+                        request: result.request,
+                        output: PolicyOutput::Retry,
+                    },
+                }
+            }
+            None => PolicyResult {
+                ctx,
+                request,
+                output: PolicyOutput::Ready(None),
+            },
+        }
+    }
 }

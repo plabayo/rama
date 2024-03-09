@@ -66,14 +66,20 @@ async fn main() {
                         // but you can make them also optional to not use backoff for some, while using it for others
                         .add(
                             HttpMatcher::socket(SocketMatcher::loopback()).negate(),
-                            ConcurrentPolicy::with_backoff(1, None),
+                            Some(ConcurrentPolicy::with_backoff(1, None)),
                         )
+                        // you can also use options for the policy itself, in case you want to disable
+                        // the limit for some
+                        .add(HttpMatcher::path("/admin/*"), None)
                         // test path so you can test also rate limiting on an http level
                         // > NOTE: as you can also make your own Matchers you can limit on w/e
                         // > property you want.
                         .add(
                             HttpMatcher::path("/limit/*"),
-                            ConcurrentPolicy::with_backoff(2, Some(ExponentialBackoff::default())),
+                            Some(ConcurrentPolicy::with_backoff(
+                                2,
+                                Some(ExponentialBackoff::default()),
+                            )),
                         )
                         .build(),
                 ))
