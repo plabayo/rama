@@ -79,6 +79,25 @@ pub struct MatcherGuard<G> {
     maybe_guard: Option<G>,
 }
 
+impl<G> MatcherGuard<G> {
+    /// Return a reference to the inner guard,
+    /// or None if no match was made.
+    pub fn inner(&self) -> Option<&G> {
+        self.maybe_guard.as_ref()
+    }
+
+    /// Consumes the guard, returning the inner guard,
+    /// or None if no match was made.
+    pub fn into_inner(self) -> Option<G> {
+        self.maybe_guard
+    }
+
+    /// Return true if a match was made.
+    pub fn matched(&self) -> bool {
+        self.maybe_guard.is_some()
+    }
+}
+
 impl<G> Clone for MatcherGuard<G>
 where
     G: Clone,
