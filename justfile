@@ -46,3 +46,8 @@ docker-build:
 
 example NAME:
 		cargo run -p rama --example {{NAME}}
+
+report-code-lines:
+	find . -type f -name '*.rs' -exec cat {} + \
+		| grep -v target | tr -d ' ' | grep -v '^$' | grep -v '^//' \
+		| wc -l
