@@ -50,6 +50,31 @@ where
     }
 }
 
+impl<M, P, State, Request> Policy<State, Request> for (Vec<(M, P)>, P)
+where
+    M: Matcher<State, Request>,
+    P: Policy<State, Request>,
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Guard = P::Guard;
+    type Error = P::Error;
+
+    async fn check(
+        &self,
+        ctx: Context<State>,
+        request: Request,
+    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+        let (matchers, default_policy) = self;
+        for (matcher, policy) in matchers.iter() {
+            if matcher.matches(None, &ctx, &request) {
+                return policy.check(ctx, request).await;
+            }
+        }
+        default_policy.check(ctx, request).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;

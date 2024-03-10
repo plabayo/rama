@@ -26,6 +26,12 @@
 //! curl -v http://127.0.0.1:8080/limit/slow
 //! ```
 //!
+//! Or easier by running:
+//!
+//! ```sh
+//! curl -v http://127.0.0.1:8080/api/slow
+//! ```
+//!
 //! Consult your ip address to reach your server from another machine connected to the same network.
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -62,13 +68,16 @@ async fn main() {
                     )),
                 })
                 .trace_err()
+                // using a combination of Vec<M, P> and (Vec<M, P>, P),
+                // you can build statically sound rate limiting policy trees
+                // in a layered fashion. If your needs are less you can keep it simpler :)
                 .layer(LimitLayer::new(Arc::new(vec![
                     // external addresses are limited to 1 connection at a time,
                     // when choosing to use backoff, they have to be of same type (generic B),
                     // but you can make them also optional to not use backoff for some, while using it for others
                     (
                         HttpMatcher::socket(SocketMatcher::loopback()).negate(),
-                        Some(ConcurrentPolicy::with_backoff(1, None)),
+                        Some((vec![], Some(ConcurrentPolicy::with_backoff(1, None)))),
                     ),
                     // you can also use options for the policy itself, in case you want to disable
                     // the limit for some
@@ -78,9 +87,33 @@ async fn main() {
                     // > property you want.
                     (
                         HttpMatcher::path("/limit/*"),
-                        Some(ConcurrentPolicy::with_backoff(
-                            2,
-                            Some(ExponentialBackoff::default()),
+                        Some((
+                            vec![],
+                            Some(ConcurrentPolicy::with_backoff(
+                                2,
+                                Some(ExponentialBackoff::default()),
+                            )),
+                        )),
+                    ),
+                    // this one is the reason why we are using the (Vec<M, P>, P) approach from above,
+                    // as we want to have a default policy for all other requests
+                    (
+                        HttpMatcher::path("/api/*"),
+                        Some((
+                            vec![
+                                (
+                                    HttpMatcher::path("/api/slow"),
+                                    Some(ConcurrentPolicy::with_backoff(
+                                        1,
+                                        Some(ExponentialBackoff::default()),
+                                    )),
+                                ),
+                                (HttpMatcher::path("/api/fast"), None),
+                            ],
+                            Some(ConcurrentPolicy::with_backoff(
+                                5,
+                                Some(ExponentialBackoff::default()),
+                            )),
                         )),
                     ),
                 ])))
