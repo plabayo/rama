@@ -1,139 +1,15 @@
-use std::sync::Arc;
-
 use crate::service::{Context, Matcher};
 
 use super::{Policy, PolicyOutput, PolicyResult};
 
-/// Builder for [`MatcherPolicyMap`].
-pub struct MatcherPolicyMapBuilder<M, P> {
-    policies: Vec<(M, P)>,
-}
-
-impl<M, P> MatcherPolicyMapBuilder<M, P> {
-    /// Create a new [`MatcherPolicyMap`].
-    pub fn new() -> Self {
-        Self {
-            policies: Vec::new(),
-        }
-    }
-
-    /// Add a [`Policy`] to the map, which is used when the given [`Matcher`] matches.
-    pub fn add(mut self, matcher: M, policy: P) -> Self {
-        self.policies.push((matcher, policy));
-        self
-    }
-
-    /// Build the [`MatcherPolicyMap`].
-    pub fn build(self) -> MatcherPolicyMap<M, P> {
-        MatcherPolicyMap {
-            policies: Arc::new(self.policies),
-        }
-    }
-}
-
-impl Default for MatcherPolicyMapBuilder<(), ()> {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl std::fmt::Debug for MatcherPolicyMapBuilder<(), ()> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MatcherPolicyMapBuilder").finish()
-    }
-}
-
-/// A policy which applies a [`Policy`] based on a [`Matcher`].
-///
-/// The first matching policy is used.
-/// If no policy matches, the request is allowed to proceed as well.
-/// If you want to enforce a default policy, you can add a policy with a [`Matcher`] that always matches,
-/// such as [`matcher::Always`].
-///
-/// Note that the [`Matcher`]s will not receive the mutable [`Extensions`],
-/// as the [`MatcherPolicyMap`] is not intended to keep track of what is matched on.
-///
-/// It is this policy that you want to use in case you want to rate limit only
-/// external sockets or you want to rate limit specific domains/paths only for http requests.
-/// See the [`http_rate_limit.rs`] example for a use case.
-///
-/// [`matcher::Always`]: crate::service::matcher::Always
-/// [`Extensions`]: crate::service::context::Extensions
-/// [`http_listener_hello.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
-pub struct MatcherPolicyMap<M, P> {
-    policies: Arc<Vec<(M, P)>>,
-}
-
-impl std::fmt::Debug for MatcherPolicyMap<(), ()> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MatcherPolicyMap").finish()
-    }
-}
-
-impl<M, P> MatcherPolicyMap<M, P> {
-    /// Create a new [`MatcherPolicyMap`].
-    pub fn builder() -> MatcherPolicyMapBuilder<M, P> {
-        MatcherPolicyMapBuilder::new()
-    }
-}
-
-impl<M, P> Clone for MatcherPolicyMap<M, P> {
-    fn clone(&self) -> Self {
-        MatcherPolicyMap {
-            policies: self.policies.clone(),
-        }
-    }
-}
-
-/// The guard that releases the matched limit.
-pub struct MatcherGuard<G> {
-    maybe_guard: Option<G>,
-}
-
-impl<G> MatcherGuard<G> {
-    /// Return a reference to the inner guard,
-    /// or None if no match was made.
-    pub fn inner(&self) -> Option<&G> {
-        self.maybe_guard.as_ref()
-    }
-
-    /// Consumes the guard, returning the inner guard,
-    /// or None if no match was made.
-    pub fn into_inner(self) -> Option<G> {
-        self.maybe_guard
-    }
-
-    /// Return true if a match was made.
-    pub fn matched(&self) -> bool {
-        self.maybe_guard.is_some()
-    }
-}
-
-impl<G> Clone for MatcherGuard<G>
-where
-    G: Clone,
-{
-    fn clone(&self) -> Self {
-        MatcherGuard {
-            maybe_guard: self.maybe_guard.clone(),
-        }
-    }
-}
-
-impl<G> std::fmt::Debug for MatcherGuard<G> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MatcherGuard").finish()
-    }
-}
-
-impl<M, P, State, Request> Policy<State, Request> for MatcherPolicyMap<M, P>
+impl<M, P, State, Request> Policy<State, Request> for Vec<(M, P)>
 where
     M: Matcher<State, Request>,
     P: Policy<State, Request>,
     State: Send + Sync + 'static,
     Request: Send + 'static,
 {
-    type Guard = MatcherGuard<P::Guard>;
+    type Guard = Option<P::Guard>;
     type Error = P::Error;
 
     async fn check(
@@ -141,14 +17,12 @@ where
         ctx: Context<State>,
         request: Request,
     ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
-        for (matcher, policy) in self.policies.iter() {
+        for (matcher, policy) in self.iter() {
             if matcher.matches(None, &ctx, &request) {
                 let result = policy.check(ctx, request).await;
                 return match result.output {
                     PolicyOutput::Ready(guard) => {
-                        let guard = MatcherGuard {
-                            maybe_guard: Some(guard),
-                        };
+                        let guard = Some(guard);
                         PolicyResult {
                             ctx: result.ctx,
                             request: result.request,
@@ -171,13 +45,15 @@ where
         PolicyResult {
             ctx,
             request,
-            output: PolicyOutput::Ready(MatcherGuard { maybe_guard: None }),
+            output: PolicyOutput::Ready(None),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use crate::service::{
         context::Extensions, layer::limit::policy::ConcurrentPolicy, matcher::Always,
     };
@@ -200,7 +76,7 @@ mod tests {
 
     #[tokio::test]
     async fn matcher_policy_empty() {
-        let policy = MatcherPolicyMap::<Always, ConcurrentPolicy<()>>::builder().build();
+        let policy = Vec::<(Always, ConcurrentPolicy<()>)>::new();
 
         for i in 0..10 {
             assert_ready(policy.check(Context::default(), i).await);
@@ -211,9 +87,7 @@ mod tests {
     async fn matcher_policy_always() {
         let concurrency_policy = ConcurrentPolicy::new(2);
 
-        let policy = MatcherPolicyMap::builder()
-            .add(Always, concurrency_policy)
-            .build();
+        let policy = Arc::new(vec![(Always, concurrency_policy)]);
 
         let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
         let guard_2 = assert_ready(policy.check(Context::default(), ()).await);
@@ -246,10 +120,10 @@ mod tests {
 
     #[tokio::test]
     async fn matcher_policy_scoped_limits() {
-        let policy = MatcherPolicyMap::builder()
-            .add(TestMatchers::Odd, ConcurrentPolicy::new(2))
-            .add(TestMatchers::Const(42), ConcurrentPolicy::new(1))
-            .build();
+        let policy = vec![
+            (TestMatchers::Odd, ConcurrentPolicy::new(2)),
+            (TestMatchers::Const(42), ConcurrentPolicy::new(1)),
+        ];
 
         // even numbers (except 42) will always be allowed
         for i in 1..10 {

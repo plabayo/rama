@@ -28,7 +28,7 @@
 //!
 //! Consult your ip address to reach your server from another machine connected to the same network.
 
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use http::StatusCode;
 use rama::{
@@ -36,10 +36,7 @@ use rama::{
     http::{matcher::HttpMatcher, response::Json, server::HttpServer, Request},
     rt::Executor,
     service::{
-        layer::{
-            limit::policy::{ConcurrentPolicy, MatcherPolicyMap},
-            LimitLayer,
-        },
+        layer::{limit::policy::ConcurrentPolicy, LimitLayer},
         util::backoff::ExponentialBackoff,
         ServiceBuilder,
     },
@@ -65,30 +62,28 @@ async fn main() {
                     )),
                 })
                 .trace_err()
-                .layer(LimitLayer::new(
-                    MatcherPolicyMap::builder()
-                        // external addresses are limited to 1 connection at a time,
-                        // when choosing to use backoff, they have to be of same type (generic B),
-                        // but you can make them also optional to not use backoff for some, while using it for others
-                        .add(
-                            HttpMatcher::socket(SocketMatcher::loopback()).negate(),
-                            Some(ConcurrentPolicy::with_backoff(1, None)),
-                        )
-                        // you can also use options for the policy itself, in case you want to disable
-                        // the limit for some
-                        .add(HttpMatcher::path("/admin/*"), None)
-                        // test path so you can test also rate limiting on an http level
-                        // > NOTE: as you can also make your own Matchers you can limit on w/e
-                        // > property you want.
-                        .add(
-                            HttpMatcher::path("/limit/*"),
-                            Some(ConcurrentPolicy::with_backoff(
-                                2,
-                                Some(ExponentialBackoff::default()),
-                            )),
-                        )
-                        .build(),
-                ))
+                .layer(LimitLayer::new(Arc::new(vec![
+                    // external addresses are limited to 1 connection at a time,
+                    // when choosing to use backoff, they have to be of same type (generic B),
+                    // but you can make them also optional to not use backoff for some, while using it for others
+                    (
+                        HttpMatcher::socket(SocketMatcher::loopback()).negate(),
+                        Some(ConcurrentPolicy::with_backoff(1, None)),
+                    ),
+                    // you can also use options for the policy itself, in case you want to disable
+                    // the limit for some
+                    (HttpMatcher::path("/admin/*"), None),
+                    // test path so you can test also rate limiting on an http level
+                    // > NOTE: as you can also make your own Matchers you can limit on w/e
+                    // > property you want.
+                    (
+                        HttpMatcher::path("/limit/*"),
+                        Some(ConcurrentPolicy::with_backoff(
+                            2,
+                            Some(ExponentialBackoff::default()),
+                        )),
+                    ),
+                ])))
                 .service_fn(|req: Request| async move {
                     if req.uri().path().ends_with("/slow") {
                         tokio::time::sleep(Duration::from_secs(10)).await;
