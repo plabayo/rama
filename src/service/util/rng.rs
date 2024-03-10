@@ -1,11 +1,7 @@
-//! [PRNG] utilities for tower middleware.
+//! [PRNG] utilities for middleware.
 //!
 //! This module provides a generic [`Rng`] trait and a [`HasherRng`] that
 //! implements the trait based on [`RandomState`] or any other [`Hasher`].
-//!
-//! These utilities replace tower's internal usage of `rand` with these smaller,
-//! more lightweight methods. Most of the implementations are extracted from
-//! their corresponding `rand` implementations.
 //!
 //! [PRNG]: https://en.wikipedia.org/wiki/Pseudorandom_number_generator
 
@@ -15,7 +11,7 @@ use std::{
     ops::Range,
 };
 
-/// A simple [PRNG] trait for use within tower middleware.
+/// A simple [PRNG] trait for use within middleware.
 ///
 /// [PRNG]: https://en.wikipedia.org/wiki/Pseudorandom_number_generator
 pub trait Rng: Send + Sync + 'static {
