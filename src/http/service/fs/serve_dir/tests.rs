@@ -42,6 +42,10 @@ async fn basic_with_index() {
     assert_eq!(res.headers()[header::CONTENT_TYPE], "text/html");
 
     let body = body_into_text(res.into_body()).await;
+
+    #[cfg(target_os = "windows")]
+    assert_eq!(body, "<b>HTML!</b>\r\n");
+    #[cfg(not(target_os = "windows"))]
     assert_eq!(body, "<b>HTML!</b>\n");
 }
 
@@ -58,6 +62,9 @@ async fn head_request() {
     let res = svc.serve(Context::default(), req).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
+    #[cfg(target_os = "windows")]
+    assert_eq!(res.headers()["content-length"], "24");
+    #[cfg(not(target_os = "windows"))]
     assert_eq!(res.headers()["content-length"], "23");
 
     assert!(res.into_body().frame().await.is_none());
@@ -249,6 +256,9 @@ async fn missing_precompressed_variant_fallbacks_to_uncompressed_for_head_reques
     let res = svc.serve(Context::default(), request).await.unwrap();
 
     assert_eq!(res.headers()["content-type"], "text/plain");
+    #[cfg(target_os = "windows")]
+    assert_eq!(res.headers()["content-length"], "12");
+    #[cfg(not(target_os = "windows"))]
     assert_eq!(res.headers()["content-length"], "11");
     // Uncompressed file is served because compressed version is missing
     assert!(res.headers().get("content-encoding").is_none());
