@@ -43,7 +43,7 @@ use rama::{
     rt::Executor,
     service::{
         layer::{limit::policy::ConcurrentPolicy, LimitLayer},
-        util::backoff::ExponentialBackoff,
+        util::{backoff::ExponentialBackoff, combinators::Either},
         ServiceBuilder,
     },
     stream::matcher::SocketMatcher,
@@ -68,16 +68,18 @@ async fn main() {
                     )),
                 })
                 .trace_err()
-                // using a combination of Vec<M, P> and (Vec<M, P>, P),
-                // you can build statically sound rate limiting policy trees
-                // in a layered fashion. If your needs are less you can keep it simpler :)
+                // using the [`Either`] combinator you can make tree-like structures,
+                // to make as complex rate limiting logic as you wish.
+                //
+                // For more then 2 variants you can use [`Either3`], [`Either4`], and so on.
+                // Keep it as simple as possible for your own sanity however...
                 .layer(LimitLayer::new(Arc::new(vec![
                     // external addresses are limited to 1 connection at a time,
                     // when choosing to use backoff, they have to be of same type (generic B),
                     // but you can make them also optional to not use backoff for some, while using it for others
                     (
                         HttpMatcher::socket(SocketMatcher::loopback()).negate(),
-                        Some((vec![], Some(ConcurrentPolicy::with_backoff(1, None)))),
+                        Some(Either::A(ConcurrentPolicy::with_backoff(1, None))),
                     ),
                     // you can also use options for the policy itself, in case you want to disable
                     // the limit for some
@@ -87,19 +89,16 @@ async fn main() {
                     // > property you want.
                     (
                         HttpMatcher::path("/limit/*"),
-                        Some((
-                            vec![],
-                            Some(ConcurrentPolicy::with_backoff(
-                                2,
-                                Some(ExponentialBackoff::default()),
-                            )),
-                        )),
+                        Some(Either::A(ConcurrentPolicy::with_backoff(
+                            2,
+                            Some(ExponentialBackoff::default()),
+                        ))),
                     ),
                     // this one is the reason why we are using the (Vec<M, P>, P) approach from above,
                     // as we want to have a default policy for all other requests
                     (
                         HttpMatcher::path("/api/*"),
-                        Some((
+                        Some(Either::B((
                             vec![
                                 (
                                     HttpMatcher::path("/api/slow"),
@@ -114,7 +113,7 @@ async fn main() {
                                 5,
                                 Some(ExponentialBackoff::default()),
                             )),
-                        )),
+                        ))),
                     ),
                 ])))
                 .service_fn(|req: Request| async move {

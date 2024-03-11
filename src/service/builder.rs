@@ -3,10 +3,12 @@
 use super::{
     handler::{Factory, ServiceFn},
     layer::{
-        layer_fn, AndThenLayer, Either, Identity, LayerFn, MapErrLayer, MapRequestLayer,
-        MapResponseLayer, MapResultLayer, MapStateLayer, Stack, ThenLayer, TraceErrLayer,
+        layer_fn, AndThenLayer, Identity, LayerFn, MapErrLayer, MapRequestLayer, MapResponseLayer,
+        MapResultLayer, MapStateLayer, Stack, ThenLayer, TraceErrLayer,
     },
-    service_fn, BoxService, Layer, Service,
+    service_fn,
+    util::combinators::Either,
+    BoxService, Layer, Service,
 };
 use std::fmt;
 use std::future::Future;
@@ -67,9 +69,9 @@ impl<L> ServiceBuilder<L> {
         layer: Option<T>,
     ) -> ServiceBuilder<Stack<Either<T, Identity>, L>> {
         let layer = if let Some(layer) = layer {
-            Either::Left(layer)
+            Either::A(layer)
         } else {
-            Either::Right(Identity::new())
+            Either::B(Identity::new())
         };
         self.layer(layer)
     }

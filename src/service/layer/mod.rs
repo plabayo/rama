@@ -17,10 +17,6 @@ mod into_error;
 #[doc(inline)]
 pub use into_error::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
 
-mod either;
-#[doc(inline)]
-pub use either::Either;
-
 mod hijack;
 #[doc(inline)]
 pub use hijack::{HijackLayer, HijackService};
