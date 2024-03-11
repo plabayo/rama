@@ -1,7 +1,7 @@
 use crate::service::{layer::limit, Context, Layer, Service};
 
 macro_rules! create_either {
-    ($id:ident, $guard_id:ident, $($param:ident),+ $(,)?) => {
+    ($id:ident, $($param:ident),+ $(,)?) => {
         #[derive(Debug)]
         /// A type to allow you to use multiple types as a single type.
         ///
@@ -72,30 +72,6 @@ macro_rules! create_either {
             }
         }
 
-        #[derive(Debug)]
-        /// The [`Policy`] guard for one of the `Either*` combinator.
-        ///
-        /// [`Policy`]: crate::service::layer::limit::policy::Policy
-        pub enum $guard_id<$($param),+> {
-            $(
-                /// one of the EitherGuard variants
-                $param($param),
-            )+
-        }
-
-        impl<$($param),+> Clone for $guard_id<$($param),+>
-        where
-            $($param: Clone),+
-        {
-            fn clone(&self) -> Self {
-                match self {
-                    $(
-                        $guard_id::$param(s) => $guard_id::$param(s.clone()),
-                    )+
-                }
-            }
-        }
-
         impl<$($param),+, State, Request, Error> limit::Policy<State, Request> for $id<$($param),+>
         where
             $($param: limit::Policy<State, Request, Error = Error>),+,
@@ -103,7 +79,7 @@ macro_rules! create_either {
             State: Send + Sync + 'static,
             Error: Send + Sync + 'static,
         {
-            type Guard = $guard_id<$($param::Guard),+>;
+            type Guard = $id<$($param::Guard),+>;
             type Error = Error;
 
             async fn check(
@@ -119,7 +95,7 @@ macro_rules! create_either {
                                 limit::policy::PolicyOutput::Ready(guard) => limit::policy::PolicyResult {
                                     ctx: result.ctx,
                                     request: result.request,
-                                    output: limit::policy::PolicyOutput::Ready($guard_id::$param(guard)),
+                                    output: limit::policy::PolicyOutput::Ready($id::$param(guard)),
                                 },
                                 limit::policy::PolicyOutput::Abort(err) => limit::policy::PolicyResult {
                                     ctx: result.ctx,
@@ -140,11 +116,11 @@ macro_rules! create_either {
     };
 }
 
-create_either!(Either, EitherGuard, A, B,);
-create_either!(Either3, EitherGuard3, A, B, C,);
-create_either!(Either4, EitherGuard4, A, B, C, D,);
-create_either!(Either5, EitherGuard5, A, B, C, D, E,);
-create_either!(Either6, EitherGuard6, A, B, C, D, E, F,);
-create_either!(Either7, EitherGuard7, A, B, C, D, E, F, G,);
-create_either!(Either8, EitherGuard8, A, B, C, D, E, F, G, H,);
-create_either!(Either9, EitherGuard9, A, B, C, D, E, F, G, H, I,);
+create_either!(Either, A, B,);
+create_either!(Either3, A, B, C,);
+create_either!(Either4, A, B, C, D,);
+create_either!(Either5, A, B, C, D, E,);
+create_either!(Either6, A, B, C, D, E, F,);
+create_either!(Either7, A, B, C, D, E, F, G,);
+create_either!(Either8, A, B, C, D, E, F, G, H,);
+create_either!(Either9, A, B, C, D, E, F, G, H, I,);
