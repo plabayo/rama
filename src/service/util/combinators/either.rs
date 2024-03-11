@@ -73,7 +73,7 @@ macro_rules! create_either {
         }
 
         #[derive(Debug)]
-        /// The [`Policy`] guard for the [`$id`] combinator.
+        /// The [`Policy`] guard for one of the `Either*` combinator.
         ///
         /// [`Policy`]: crate::service::layer::limit::policy::Policy
         pub enum $guard_id<$($param),+> {
