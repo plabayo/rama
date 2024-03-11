@@ -19,7 +19,7 @@ macro_rules! create_either {
         /// [`Layer`]: crate::service::Layer
         pub enum $id<$($param),+> {
             $(
-                /// option $param
+                /// one of the Either variants
                 $param($param),
             )+
         }
@@ -78,6 +78,7 @@ macro_rules! create_either {
         /// [`Policy`]: crate::service::layer::limit::policy::Policy
         pub enum $guard_id<$($param),+> {
             $(
+                /// one of the EitherGuard variants
                 $param($param),
             )+
         }
