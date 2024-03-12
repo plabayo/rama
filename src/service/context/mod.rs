@@ -228,6 +228,62 @@ impl<S> Context<S> {
         self.extensions.get::<T>()
     }
 
+    /// Inserts a value into the map computed from `f` into if it is [`None`],
+    /// then returns a mutable reference to the contained value.
+    /// ```
+    /// # use rama::service::Context;
+    /// let mut ctx = Context::default();
+    /// let value: &i32 = ctx.get_or_insert_with(|| 42);
+    /// assert_eq!(*value, 42);
+    /// let existing_value: &i32 = ctx.get_or_insert_with(|| 0);
+    /// assert_eq!(*existing_value, 42);
+    /// ```
+    pub fn get_or_insert_with<T: Clone + Send + Sync + 'static>(
+        &mut self,
+        f: impl FnOnce() -> T,
+    ) -> &T {
+        self.extensions.get_or_insert_with(f)
+    }
+
+    /// Retrieves a value of type `T` from the context.
+    ///
+    /// If the value does not exist, the provided value is inserted
+    /// and a reference to it is returned.
+    ///
+    /// See [`Context::get`] for more details.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::Context;
+    /// let mut ctx = Context::default();
+    /// ctx.insert(5i32);
+    ///
+    /// assert_eq!(*ctx.get_or_insert::<i32>(10), 5);
+    /// assert_eq!(*ctx.get_or_insert::<f64>(2.5), 2.5);
+    /// ```
+    pub fn get_or_insert<T: Send + Sync + Clone + 'static>(&mut self, fallback: T) -> &T {
+        self.extensions.get_or_insert(fallback)
+    }
+
+    /// Get an extension or `T`'s [`Default`].
+    ///
+    /// See [`Context::get`] for more details.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::Context;
+    /// # let mut ctx = Context::default();
+    /// # ctx.insert(5i32);
+    ///
+    /// assert_eq!(*ctx.get_or_insert_default::<i32>(), 5i32);
+    /// assert_eq!(*ctx.get_or_insert_default::<f64>(), 0f64);
+    /// ```
+    pub fn get_or_insert_default<T: Clone + Default + Send + Sync + 'static>(&mut self) -> &T {
+        self.extensions.get_or_insert_default()
+    }
+
     /// Insert an extension into the [`Context`].
     ///
     /// If a extension of this type already existed, it will

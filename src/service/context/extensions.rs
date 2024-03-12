@@ -81,6 +81,32 @@ impl Extensions {
         })
     }
 
+    /// Inserts a value into the map computed from `f` into if it is [`None`],
+    /// then returns a mutable reference to the contained value.
+    pub fn get_or_insert_with<T: Send + Sync + Clone + 'static>(
+        &mut self,
+        f: impl FnOnce() -> T,
+    ) -> &T {
+        let map = self.map.get_or_insert_with(Box::default);
+        let entry = map.entry(TypeId::of::<T>());
+        let boxed = entry.or_insert_with(|| Box::new(f()));
+        (**boxed).as_any().downcast_ref().expect("type mismatch")
+    }
+
+    /// Retrieves a value of type `T` from the context.
+    ///
+    /// If the value does not exist, the given value is inserted and a reference to it is returned.
+    pub fn get_or_insert<T: Clone + Send + Sync + 'static>(&mut self, fallback: T) -> &T {
+        self.get_or_insert_with(|| fallback)
+    }
+
+    /// Get an extension or `T`'s [`Default`].
+    ///
+    /// see [`Extensions::get`] for more details.
+    pub fn get_or_insert_default<T: Default + Clone + Send + Sync + 'static>(&mut self) -> &T {
+        self.get_or_insert_with(T::default)
+    }
+
     fn get_inner<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.map
             .as_ref()
