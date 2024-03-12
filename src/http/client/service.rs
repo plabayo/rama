@@ -20,6 +20,12 @@ use std::borrow::Cow;
 /// This client does not support persistent connections, and does not support connection pooling.
 /// It is yet to be defined if it will support this, among also support for upstream proxies,
 /// TLS connections and more.
+///
+/// This client is highly experimental and it is not yet sure how we'll end up releasing it.
+/// The connection with the `ua` concept and other features are also unclear.
+///
+/// <https://docs.rs/hyper-util/latest/hyper_util/client/legacy/struct.Client.html>
+/// might serve for some inspiration for some of the above features.
 pub struct HttpClient;
 
 impl HttpClient {
