@@ -7,13 +7,19 @@
 //! [`service::matcher` module]: crate::service::matcher
 
 mod method;
+#[doc(inline)]
 pub use method::MethodFilter;
 
 mod domain;
+#[doc(inline)]
 pub use domain::DomainFilter;
 
 pub mod uri;
 pub use uri::UriFilter;
+
+mod version;
+#[doc(inline)]
+pub use version::VersionFilter;
 
 mod path;
 pub use path::{PathFilter, UriParams, UriParamsDeserializeError};
@@ -42,6 +48,8 @@ pub enum HttpFilterKind {
     Path(PathFilter),
     /// [`DomainFilter`], a filter based on the (sub)domain of the request's URI.
     Domain(DomainFilter),
+    /// [`VersionFilter`], a filter based on the HTTP version of the request.
+    Version(VersionFilter),
     /// zero or more [`HttpFilterKind`]s that at least one needs to match in order for the filter to return `true`.
     Any(Vec<HttpFilterKind>),
     /// [`UriFilter`], a filter the request's URI, using a substring or regex pattern.
@@ -479,6 +487,46 @@ impl HttpMatcher {
         self
     }
 
+    /// Create a [`VersionFilter`] filter.
+    pub fn version(version: VersionFilter) -> Self {
+        Self {
+            kind: HttpFilterKind::Version(version),
+            negate: false,
+        }
+    }
+
+    /// Add a [`VersionFilter`] filter to filter on top of the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`VersionFilter`] for more information.
+    pub fn and_version(mut self, version: VersionFilter) -> Self {
+        let filter = HttpFilterKind::Version(version);
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`VersionFilter`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`VersionFilter`] for more information.
+    pub fn or_version(mut self, version: VersionFilter) -> Self {
+        let filter = HttpFilterKind::Version(version);
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
     /// Create a [`UriFilter`] filter.
     pub fn uri(re: impl AsRef<str>) -> Self {
         Self {
@@ -636,6 +684,7 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpFilterKi
             HttpFilterKind::Method(method) => method.matches(ext, ctx, req),
             HttpFilterKind::Path(path) => path.matches(ext, ctx, req),
             HttpFilterKind::Domain(domain) => domain.matches(ext, ctx, req),
+            HttpFilterKind::Version(version) => version.matches(ext, ctx, req),
             HttpFilterKind::Uri(uri) => uri.matches(ext, ctx, req),
             HttpFilterKind::Socket(socket) => socket.matches(ext, ctx, req),
             HttpFilterKind::Any(all) => all.iter().matches_or(ext, ctx, req),
