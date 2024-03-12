@@ -72,40 +72,6 @@ impl Extensions {
             map.clear();
         }
     }
-    /// Get an extension or T's [default()](std::default::Default).
-    /// Refer to [Context::get](Self::get) for more detail's
-    pub fn get_or_insert_default<T: Send + Default + Clone + Sync + 'static>(&mut self) -> &mut T {
-        self.get_or_insert_with(|| T::default())
-    }
-    /// Retrieves a value of type `T` from the context. If the value does not exist,
-    /// returns the provided value.
-    /// Refer to [Context::get](Self::get) for more detail's
-    pub fn get_or_insert<T: Send + Clone + Sync + 'static>(&mut self, fallback: T) -> &T {
-        let b = match &self.map {
-            Some(boxed_map) => boxed_map.contains_key(&TypeId::of::<T>()),
-            None => false,
-        };
-        if !b {
-            self.insert(fallback);
-        }
-        // At this point, it is safe to unwrap because we know the value exists
-        self.get::<T>().unwrap()
-    }
-    /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns a mutable reference to the contained value.
-    pub fn get_or_insert_with<T: 'static + Send + Sync + Clone>(
-        &mut self,
-        f: impl FnOnce() -> T,
-    ) -> &mut T {
-        let type_id = TypeId::of::<T>();
-
-        let map = self.map.get_or_insert_with(Default::default);
-
-        let boxed_any = map.entry(type_id).or_insert_with(|| Box::new(f()));
-
-        let any_ref_mut = boxed_any.as_any_mut();
-        any_ref_mut.downcast_mut::<T>().expect("Type mismatch")
-    }
 
     /// Get a reference to a type previously inserted on this `Extensions`.
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
@@ -113,6 +79,32 @@ impl Extensions {
             self.get_inner::<ParentExtensions>()
                 .and_then(|parent| parent.extensions.get::<T>())
         })
+    }
+
+    /// Inserts a value into the map computed from `f` into if it is [`None`],
+    /// then returns a mutable reference to the contained value.
+    pub fn get_or_insert_with<T: Send + Sync + Clone + 'static>(
+        &mut self,
+        f: impl FnOnce() -> T,
+    ) -> &T {
+        let map = self.map.get_or_insert_with(Box::default);
+        let entry = map.entry(TypeId::of::<T>());
+        let boxed = entry.or_insert_with(|| Box::new(f()));
+        (**boxed).as_any().downcast_ref().expect("type mismatch")
+    }
+
+    /// Retrieves a value of type `T` from the context.
+    ///
+    /// If the value does not exist, the given value is inserted and a reference to it is returned.
+    pub fn get_or_insert<T: Clone + Send + Sync + 'static>(&mut self, fallback: T) -> &T {
+        self.get_or_insert_with(|| fallback)
+    }
+
+    /// Get an extension or `T`'s [`Default`].
+    ///
+    /// see [`Extensions::get`] for more details.
+    pub fn get_or_insert_default<T: Default + Clone + Send + Sync + 'static>(&mut self) -> &T {
+        self.get_or_insert_with(T::default)
     }
 
     fn get_inner<T: Send + Sync + 'static>(&self) -> Option<&T> {
@@ -131,13 +123,6 @@ impl Extensions {
             extensions: Arc::new(self),
         });
         ext
-    }
-    /// Checks if a value of type T exists in the extensions map
-    pub fn contains<T: 'static + Send + Sync>(&self) -> bool {
-        match &self.map {
-            Some(boxed_map) => boxed_map.contains_key(&TypeId::of::<T>()),
-            None => false,
-        }
     }
 }
 
