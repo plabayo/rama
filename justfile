@@ -28,7 +28,7 @@ hack:
 	cargo hack check --each-feature --no-dev-deps --workspace
 
 test:
-	cargo test --all-features
+	cargo test --all-features --workspace
 
 qa: lint check clippy doc hack test
 
@@ -46,3 +46,8 @@ docker-build:
 
 example NAME:
 		cargo run -p rama --example {{NAME}}
+
+report-code-lines:
+	find . -type f -name '*.rs' -exec cat {} + \
+		| grep -v target | tr -d ' ' | grep -v '^$' | grep -v '^//' \
+		| wc -l

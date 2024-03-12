@@ -48,9 +48,14 @@ impl MethodFilter {
     }
 }
 
-impl<State, Body> super::Matcher<State, Body> for MethodFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for MethodFilter {
     /// returns true on a match, false otherwise
-    fn matches(&self, _ext: &mut Extensions, _ctx: &Context<State>, req: &Request<Body>) -> bool {
+    fn matches(
+        &self,
+        _ext: Option<&mut Extensions>,
+        _ctx: &Context<State>,
+        req: &Request<Body>,
+    ) -> bool {
         MethodFilter::try_from(req.method())
             .ok()
             .map(|method| self.contains(method))

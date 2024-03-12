@@ -19,11 +19,15 @@
 //! This is because of the `TimeoutLayer` that was added to the server.
 
 use rama::{
-    service::{layer::TimeoutLayer, ServiceBuilder},
-    stream::service::EchoService,
+    service::{
+        layer::{HijackLayer, TimeoutLayer},
+        service_fn, ServiceBuilder,
+    },
+    stream::{matcher::SocketMatcher, service::EchoService},
     tcp::server::TcpListener,
 };
-use std::time::Duration;
+use std::{convert::Infallible, time::Duration};
+use tokio::net::TcpStream;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -41,12 +45,25 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(|guard| async {
-        TcpListener::bind("127.0.0.1:9000")
+        TcpListener::bind("0.0.0.0:9000")
             .await
             .expect("bind TCP Listener")
             .serve_graceful(
                 guard,
                 ServiceBuilder::new()
+                    .layer(HijackLayer::new(
+                        SocketMatcher::loopback().negate(),
+                        service_fn(|stream: TcpStream| async move {
+                            match stream.peer_addr() {
+                                Ok(addr) => tracing::warn!("blocked incoming connection: {}", addr),
+                                Err(err) => tracing::error!(
+                                    error = %err,
+                                    "blocked incoming connection with unknown peer address",
+                                ),
+                            }
+                            Ok::<u64, Infallible>(0)
+                        }),
+                    ))
                     .trace_err()
                     .layer(TimeoutLayer::new(Duration::from_secs(8)))
                     .service(EchoService::new()),

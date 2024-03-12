@@ -1,0 +1,5 @@
+error: `#[as_ref(wrap)]` is only supported for Arc types
+  --> tests/as_ref/fail/wrap_no_arc.rs:13:10
+   |
+13 |     app: AppState,
+   |          ^^^^^^^^

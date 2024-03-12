@@ -199,6 +199,10 @@ mod tests {
         let res = svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
+
+        #[cfg(target_os = "windows")]
+        assert_eq!(res.headers()["content-length"], "24");
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(res.headers()["content-length"], "23");
 
         assert!(res.into_body().frame().await.is_none());
@@ -291,6 +295,9 @@ mod tests {
         let res = svc.serve(Context::default(), request).await.unwrap();
 
         assert_eq!(res.headers()["content-type"], "text/plain");
+        #[cfg(target_os = "windows")]
+        assert_eq!(res.headers()["content-length"], "12");
+        #[cfg(not(target_os = "windows"))]
         assert_eq!(res.headers()["content-length"], "11");
         // Uncompressed file is served because compressed version is missing
         assert!(res.headers().get("content-encoding").is_none());

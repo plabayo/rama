@@ -45,7 +45,7 @@ jobs:
       - name: cargo doc
         env:
           RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
-        run: cargo doc --all-features --no-deps
+        run: cargo doc --all-features --no-deps --workspace
 
   test:
     needs: check
@@ -62,7 +62,41 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --all-features
+          args: --all-features --workspace
+
+  test-windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          override: true
+          profile: minimal
+      - uses: Swatinem/rust-cache@v1
+      - name: Run tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --all-features --workspace
+
+  test-macos:
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          override: true
+          profile: minimal
+      - uses: Swatinem/rust-cache@v1
+      - name: Run tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --all-features --workspace
 
   test-docs:
     needs: check
@@ -79,7 +113,7 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --all-features --doc
+          args: --all-features --doc --workspace
 
   test-examples:
     needs: check
@@ -96,7 +130,41 @@ jobs:
         uses: actions-rs/cargo@v1
         with:
           command: test
-          args: --all-features --examples
+          args: --all-features --examples --workspace
+
+  test-examples-windows:
+    needs: check
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          override: true
+          profile: minimal
+      - uses: Swatinem/rust-cache@v1
+      - name: Run doc tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --all-features --examples --workspace
+
+  test-examples-macos:
+    needs: check
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+          override: true
+          profile: minimal
+      - uses: Swatinem/rust-cache@v1
+      - name: Run doc tests
+        uses: actions-rs/cargo@v1
+        with:
+          command: test
+          args: --all-features --examples --workspace
 
   cargo-hack:
     needs: check
