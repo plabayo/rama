@@ -36,11 +36,26 @@ impl Default for HttpClient {
 }
 
 #[derive(Debug)]
+/// Error type for the [`HttpClient`].
 pub enum HttpClientError {
+    /// The HTTP version is invalid.
     InvalidVersion(Version),
+    /// The host information is missing.
+    ///
+    /// This information is required to be able to establish an L4 connection,
+    /// to serve the request over.
     MissingHost,
+    /// The host information is invalid.
+    ///
+    /// (e.g. could not be parsed as a [`SocketAddr`])
+    ///
+    /// [`SocketAddr`]: std::net::SocketAddr
     InvalidHost(String),
+    /// An IO error occurred.
+    ///
+    /// (e.g. during a handshake process)
     IoError(std::io::Error),
+    /// An HTTP error occurred during the http handshake or transfer process.
     HttpError(Error),
 }
 
@@ -123,6 +138,9 @@ where
                     .uri
                     .scheme()
                     .map(|s| match s.as_str() {
+                        // TODO is this scheme mapping complete enough?
+                        // and should we fail on unknown schemes?
+                        // should this be a shared utility somewhere?
                         "http" => 80,
                         _ => 443,
                     })
@@ -165,7 +183,7 @@ where
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
-                        // TOD: should this error level / handling be configurable?
+                        // TODO: should this error level / handling be configurable?
                         tracing::error!("connection failed: {:?}", err);
                     }
                 });

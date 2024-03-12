@@ -3,4 +3,4 @@
 
 mod service;
 #[doc(inline)]
-pub use service::HttpClient;
+pub use service::{HttpClient, HttpClientError};
