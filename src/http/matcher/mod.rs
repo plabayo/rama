@@ -24,6 +24,10 @@ pub use version::VersionFilter;
 mod path;
 pub use path::{PathFilter, UriParams, UriParamsDeserializeError};
 
+mod header;
+#[doc(inline)]
+pub use header::HeaderFilter;
+
 use crate::{
     http::Request,
     service::{context::Extensions, matcher::IteratorMatcherExt, Context},
@@ -54,6 +58,8 @@ pub enum HttpFilterKind {
     Any(Vec<HttpFilterKind>),
     /// [`UriFilter`], a filter the request's URI, using a substring or regex pattern.
     Uri(UriFilter),
+    /// [`HeaderFilter`], a filter based on the [`Request`]'s headers.
+    Header(HeaderFilter),
     /// [`SocketMatcher`], a filter that matches on the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
@@ -607,6 +613,150 @@ impl HttpMatcher {
         self
     }
 
+    /// Create a [`HeaderFilter`] filter.
+    pub fn header(name: http::header::HeaderName, value: http::header::HeaderValue) -> Self {
+        Self {
+            kind: HttpFilterKind::Header(HeaderFilter::is(name, value)),
+            negate: false,
+        }
+    }
+
+    /// Add a [`HeaderFilter`] to filter on top of the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`HeaderFilter`] for more information.
+    pub fn and_header(
+        mut self,
+        name: http::header::HeaderName,
+        value: http::header::HeaderValue,
+    ) -> Self {
+        let filter = HttpFilterKind::Header(HeaderFilter::is(name, value));
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`HeaderFilter`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`HeaderFilter`] for more information.
+    pub fn or_header(
+        mut self,
+        name: http::header::HeaderName,
+        value: http::header::HeaderValue,
+    ) -> Self {
+        let filter = HttpFilterKind::Header(HeaderFilter::is(name, value));
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`HeaderFilter`] filter when the given header exists
+    /// to filter on the existence of a header.
+    pub fn header_exists(name: http::header::HeaderName) -> Self {
+        Self {
+            kind: HttpFilterKind::Header(HeaderFilter::exists(name)),
+            negate: false,
+        }
+    }
+
+    /// Add a [`HeaderFilter`] to filter when the given header exists
+    /// on top of the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`HeaderFilter`] for more information.
+    pub fn and_header_exists(mut self, name: http::header::HeaderName) -> Self {
+        let filter = HttpFilterKind::Header(HeaderFilter::exists(name));
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`HeaderFilter`] filter to match when the given header exists
+    /// as an alternative to the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`HeaderFilter`] for more information.
+    pub fn or_header_exists(mut self, name: http::header::HeaderName) -> Self {
+        let filter = HttpFilterKind::Header(HeaderFilter::exists(name));
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`HeaderFilter`] filter to filter on it containing the given value.
+    pub fn header_contains(
+        name: http::header::HeaderName,
+        value: http::header::HeaderValue,
+    ) -> Self {
+        Self {
+            kind: HttpFilterKind::Header(HeaderFilter::contains(name, value)),
+            negate: false,
+        }
+    }
+
+    /// Add a [`HeaderFilter`] to filter when it contains the given value
+    /// on top of the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`HeaderFilter`] for more information.
+    pub fn and_header_contains(
+        mut self,
+        name: http::header::HeaderName,
+        value: http::header::HeaderValue,
+    ) -> Self {
+        let filter = HttpFilterKind::Header(HeaderFilter::contains(name, value));
+        match &mut self.kind {
+            HttpFilterKind::All(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::All(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
+    /// Create a [`HeaderFilter`] filter to match if it contains the given value
+    /// as an alternative to the existing set of [`HttpMatcher`] filters.
+    ///
+    /// See [`HeaderFilter`] for more information.
+    pub fn or_header_contains(
+        mut self,
+        name: http::header::HeaderName,
+        value: http::header::HeaderValue,
+    ) -> Self {
+        let filter = HttpFilterKind::Header(HeaderFilter::contains(name, value));
+        match &mut self.kind {
+            HttpFilterKind::Any(v) => {
+                v.push(filter);
+            }
+            _ => {
+                self.kind = HttpFilterKind::Any(vec![self.kind, filter]);
+            }
+        }
+        self
+    }
+
     /// Create a [`SocketMatcher`] filter.
     pub fn socket(socket: SocketMatcher) -> Self {
         Self {
@@ -686,6 +836,7 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpFilterKi
             HttpFilterKind::Domain(domain) => domain.matches(ext, ctx, req),
             HttpFilterKind::Version(version) => version.matches(ext, ctx, req),
             HttpFilterKind::Uri(uri) => uri.matches(ext, ctx, req),
+            HttpFilterKind::Header(header) => header.matches(ext, ctx, req),
             HttpFilterKind::Socket(socket) => socket.matches(ext, ctx, req),
             HttpFilterKind::Any(all) => all.iter().matches_or(ext, ctx, req),
         }
