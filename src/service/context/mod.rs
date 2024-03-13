@@ -16,7 +16,7 @@
 //!
 //! The latter is important given the state is often created (or at least reserved) prior to
 //! it is actually being populated by the relevant middleware. This is not the case for app-specific state
-//! such as Database pools which are created since the start and shared amongs many different tasks.
+//! such as Database pools which are created since the start and shared among many different tasks.
 //!
 //! The rule could be be simplified to "if you need to `.unwrap()` you probably want type-safe state instead".
 //! It's however just a guideline and not a hard rule. As maintainers of [`rama`] we'll do our best to respect it though,
@@ -36,7 +36,7 @@
 //! [`rama`] was built from the ground up to operate on and between different layers of the network stack.
 //! This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
 //!
-//! When creating a [`TcpListener`] with state you are essentialy creating and injecting state, which will remain
+//! When creating a [`TcpListener`] with state you are essentially creating and injecting state, which will remain
 //! as "read-only" for the enire life cycle of that [`TcpListener`] and to be made available for every incoming _tcp_ connection,
 //! as well as the application requests (Http requests). This is great for stuff that is okay to share, but it is not desired
 //! for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus

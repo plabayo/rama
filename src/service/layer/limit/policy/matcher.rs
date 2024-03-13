@@ -170,7 +170,7 @@ mod tests {
             assert_ready(policy.check(Context::default(), i * 2).await);
         }
 
-        // only once we drop a guard can we make a new odd reuqest
+        // only once we drop a guard can we make a new odd request
         drop(odd_guard_1);
         let _odd_guard_3 = assert_ready(policy.check(Context::default(), 9).await);
 
@@ -183,7 +183,7 @@ mod tests {
         // odd limit reached again so no luck here
         assert_abort(policy.check(Context::default(), 11).await);
 
-        // droping another odd guard makes room for a new odd request
+        // dropping another odd guard makes room for a new odd request
         drop(odd_guard_2);
         assert_ready(policy.check(Context::default(), 13).await);
 
