@@ -40,7 +40,7 @@ You can use it to develop:
 - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
 - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
 
-And all kind of other proxies that you can think off. Next to this Rama can also be used
+And all kind of other proxies that you can think of. Next to this Rama can also be used
 for developing [web servers](https://ramaproxy.org/book/web_servers.html). Within a proxy setting this can be useful
 in case you want to hijack certain requests with your custom server, or because you want to use pseudo domains
 to serve an API as part of your proxy. Or you might want to serve your MITM TLS certs. And of course you might also
