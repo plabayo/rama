@@ -36,18 +36,26 @@ You can use it to develop:
 - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
 - 🔓 [TLS Termination proxies](https://ramaproxy.org/book/proxies/tls);
 - 🌐 [HTTP(S) proxies](https://ramaproxy.org/book/proxies/http);
-- 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5);
+- 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5) (will be implemented in `v0.3`);
 - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
 - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
+
+And all kind of other proxies that you can think off. Next to this Rama can also be used
+for developing [web servers](https://ramaproxy.org/book/web_servers.html). Within a proxy setting this can be useful
+in case you want to hijack certain requests with your custom server, or because you want to use pseudo domains
+to serve an API as part of your proxy. Or you might want to serve your MITM TLS certs. And of course you might also
+use it to develop a regular web service, which comes with all the great benefits that rama has to offer for developing proxies.
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 Please refer to [the examples found in the `./examples` dir](./examples)
 to get inspired on how you can use it for your purposes.
 
-- Learn more by reading the Rama book at <https://ramaproxy.org/book>
-- or checkout the framework Rust docs at <https://ramaproxy.org/docs/rama>.
+- Learn more by reading the Rama book at <https://ramaproxy.org/book>;
+- or checkout the framework Rust docs at <https://docs.rs/rama>;
+    - edge docs (for main branch) can be found at <https://ramaproxy.org/docs/rama>.
 
-There is no [crates.io](https://crates.io) release of rama yet. If you already want to start using rama already your can do so by referring to it in your `Cargo.toml` as follows:
+There is no [crates.io](https://crates.io) release of rama yet.
+If you already want to start using rama already your can do so by referring to it in your `Cargo.toml` as follows:
 
 ```
 rama = { git = "https://github.com/plabayo/rama" }
@@ -99,7 +107,9 @@ without any additional terms or conditions.
 
 Special thanks goes to all involved in developing, maintaining and supporting [the Rust programming language](https://www.rust-lang.org/), the [Tokio ecosystem](https://tokio.rs/) and [all other crates](./Cargo.toml) that we depend upon.
 
-Extra credits also go to [Axum](https://github.com/tokio-rs/axum), from which ideas and code were copied as its a project very much in line with the kind of software we want Rama to be, but for a different purpose. Our hats also go off to [Tower](https://github.com/tower-rs/tower), its inventors and all the people and creatures that help make it be every day. The initial code for the SOCKS5 support was copied from EAimTY's codebases.
+Extra credits also go to [Axum](https://github.com/tokio-rs/axum), from which ideas and code were copied as its a project very much in line with the kind of software we want Rama to be, but for a different purpose. Our hats also go off to [Tower][Tower], its inventors and all the people and creatures that help make it be every day. The service concept is derived from [Tower][Tower] and many of our layers are a [Tower][Tower] fork, adapted where required or desired.
+
+[Tower]: https://github.com/tower-rs/tower
 
 ## 💖 | Sponsors
 
@@ -115,6 +125,17 @@ and other open source libraries such as <https://github.com/plabayo/tower-async>
 Sponsors receive perks and depending on your regular contribution it also
 allows you to rely on us for support and consulting.
 
+### Professional Services
+
+🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
+
+These type of contracts are another way for you to be able to support the project and
+at the same time get serviced for your own needs and purposes.
+
+Rama is licensed as both [MIT][mit-license] and [Apache 2.0][apache-license], as such you are free to use
+and modify the source code for any purposes, including commercial goals. That said, we would appreciate it
+if you would consider becoming a sponsor of the project if you do end up using it for commcercial reasons.
+
 ### Contribute to Open Source
 
 Part of the money we receive from sponsors is used to contribute to other projects
@@ -124,9 +145,7 @@ building and maintaining open source software that `rama` depends upon:
 | | name | projects |
 | - | - | - |
 | 💌 | [Tokio](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
-| 💌 | [Sean McArthur](https://github.com/seanmonstar) | (Hyper and Tokio)
 | 💌 | [Ratatui](https://github.com/ratatui-org/ratatui) | (TUI framework)
-| 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
 
 #### Past Contributions
 
@@ -134,6 +153,8 @@ building and maintaining open source software that `rama` depends upon:
 | - | - | - |
 | 💌 | [Tokio](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
 | 💌 | [Ratatui](https://github.com/ratatui-org/ratatui) | (TUI framework)
+| 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
+| 💌 | [Sean McArthur](https://github.com/seanmonstar) | (Hyper and Tokio)
 
 ## 🌱 | Alternatives
 
