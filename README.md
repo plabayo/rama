@@ -151,8 +151,6 @@ building and maintaining open source software that `rama` depends upon:
 
 | | name | projects |
 | - | - | - |
-| 💌 | [Tokio](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
-| 💌 | [Ratatui](https://github.com/ratatui-org/ratatui) | (TUI framework)
 | 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
 | 💌 | [Sean McArthur](https://github.com/seanmonstar) | (Hyper and Tokio)
 
