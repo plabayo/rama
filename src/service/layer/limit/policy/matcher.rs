@@ -1,4 +1,4 @@
-use crate::service::{Context, Matcher};
+use crate::service::{context::Extensions, Context, Matcher};
 
 use super::{Policy, PolicyOutput, PolicyResult};
 
@@ -14,11 +14,13 @@ where
 
     async fn check(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         request: Request,
     ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+        let mut ext = Extensions::new();
         for (matcher, policy) in self.iter() {
-            if matcher.matches(None, &ctx, &request) {
+            if matcher.matches(Some(&mut ext), &ctx, &request) {
+                ctx.extend(ext);
                 let result = policy.check(ctx, request).await;
                 return match result.output {
                     PolicyOutput::Ready(guard) => {
@@ -41,6 +43,7 @@ where
                     },
                 };
             }
+            ext.clear();
         }
         PolicyResult {
             ctx,
@@ -62,14 +65,17 @@ where
 
     async fn check(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         request: Request,
     ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
         let (matchers, default_policy) = self;
+        let mut ext = Extensions::new();
         for (matcher, policy) in matchers.iter() {
-            if matcher.matches(None, &ctx, &request) {
+            if matcher.matches(Some(&mut ext), &ctx, &request) {
+                ctx.extend(ext);
                 return policy.check(ctx, request).await;
             }
+            ext.clear();
         }
         default_policy.check(ctx, request).await
     }
