@@ -87,7 +87,7 @@ impl std::error::Error for NoMatchingMethodFilter {}
 impl TryFrom<&Method> for MethodFilter {
     type Error = NoMatchingMethodFilter;
 
-    fn try_from(m: &Method) -> Result<Self, NoMatchingMethodFilter> {
+    fn try_from(m: &Method) -> Result<Self, Self::Error> {
         match m {
             &Method::DELETE => Ok(MethodFilter::DELETE),
             &Method::GET => Ok(MethodFilter::GET),
@@ -97,7 +97,7 @@ impl TryFrom<&Method> for MethodFilter {
             &Method::POST => Ok(MethodFilter::POST),
             &Method::PUT => Ok(MethodFilter::PUT),
             &Method::TRACE => Ok(MethodFilter::TRACE),
-            other => Err(NoMatchingMethodFilter {
+            other => Err(Self::Error {
                 method: other.clone(),
             }),
         }
