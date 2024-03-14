@@ -4,7 +4,7 @@ use std::fmt;
 ///
 /// See [`UpgradeService`] for more details.
 ///
-/// [`UpgradeService`]: crate::service::layer::upgrade::UpgradeService
+/// [`UpgradeService`]: crate::http::layer::upgrade::UpgradeService
 pub struct UpgradeLayer {}
 
 impl fmt::Debug for UpgradeLayer {
