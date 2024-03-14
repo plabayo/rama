@@ -33,6 +33,40 @@ pub trait Service<S, Request>: Send + Sync + 'static {
     }
 }
 
+impl<S, State, Request> Service<State, Request> for std::sync::Arc<S>
+where
+    S: Service<State, Request>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+
+    #[inline]
+    fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        self.as_ref().serve(ctx, req)
+    }
+}
+
+impl<S, State, Request> Service<State, Request> for Box<S>
+where
+    S: Service<State, Request>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+
+    #[inline]
+    fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        self.as_ref().serve(ctx, req)
+    }
+}
+
 /// Internal trait for dynamic dispatch of Async Traits,
 /// implemented according to the pioneers of this Design Pattern
 /// found at <https://rust-lang.github.io/async-fundamentals-initiative/evaluation/case-studies/builder-provider-api.html#dynamic-dispatch-behind-the-api>
