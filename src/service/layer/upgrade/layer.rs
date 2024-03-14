@@ -3,6 +3,8 @@ use std::fmt;
 /// UpgradeLayer is a middleware that can be used to upgrade a request.
 ///
 /// See [`UpgradeService`] for more details.
+///
+/// [`UpgradeService`]: crate::service::layer::upgrade::UpgradeService
 pub struct UpgradeLayer {}
 
 impl fmt::Debug for UpgradeLayer {
