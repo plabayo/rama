@@ -32,7 +32,7 @@ pub trait ServiceFn<S, Request, A>: private::Sealed<S, Request, A> + Send + Sync
 
 impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, ()> for F
 where
-    F: Fn() -> Fut + Send + Sync + 'static,
+    F: Fn() -> Fut + Send + 'static,
     Fut: Future<Output = Result<Response, Error>> + Send + 'static,
     Response: Send + 'static,
     Error: Send + Sync + 'static,
@@ -51,7 +51,7 @@ where
 
 impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, (Request,)> for F
 where
-    F: Fn(Request) -> Fut + Send + Sync + 'static,
+    F: Fn(Request) -> Fut + Send + 'static,
     Fut: Future<Output = Result<Response, Error>> + Send + 'static,
     Response: Send + 'static,
     Error: Send + Sync + 'static,
@@ -70,7 +70,7 @@ where
 
 impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, (Context<S>, Request)> for F
 where
-    F: Fn(Context<S>, Request) -> Fut + Send + Sync + 'static,
+    F: Fn(Context<S>, Request) -> Fut + Send + 'static,
     Fut: Future<Output = Result<Response, Error>> + Send + 'static,
     Response: Send + 'static,
     Error: Send + Sync + 'static,
@@ -89,7 +89,7 @@ where
 
 impl<F, Fut, S, Request, Response, Error> ServiceFn<S, Request, (Context<S>, (), ())> for F
 where
-    F: Fn(Context<S>) -> Fut + Send + Sync + 'static,
+    F: Fn(Context<S>) -> Fut + Send + 'static,
     Fut: Future<Output = Result<Response, Error>> + Send + 'static,
     Response: Send + 'static,
     Error: Send + Sync + 'static,
@@ -109,7 +109,7 @@ where
 /// The public wrapper type for [`ServiceFn`].
 pub struct ServiceFnBox<F, A> {
     f: F,
-    _marker: PhantomData<A>,
+    _marker: PhantomData<fn(A) -> ()>,
 }
 
 impl<F, A> Clone for ServiceFnBox<F, A>
@@ -132,7 +132,7 @@ impl<F, A> std::fmt::Debug for ServiceFnBox<F, A> {
 
 impl<F, S, Request, A> Service<S, Request> for ServiceFnBox<F, A>
 where
-    A: Send + Sync + 'static,
+    A: Send + 'static,
     F: ServiceFn<S, Request, A>,
 {
     type Response = F::Response;

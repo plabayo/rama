@@ -8,11 +8,11 @@
     </div>
 </div>
 
-There are currently
-[no examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
-on how to create such a proxy using rama. If you are interested in contributing this
-you can create an issue at <https://github.com/plabayo/rama/issues> and we'll
-help you to get this shipped.
+[Examples](https://github.com/plabayo/rama/tree/main/examples):
+
+- [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_connect_proxy.rs):
+  Spawns a minimal http proxy which accepts http/1.1 and h2 connections alike,
+  and proxies them to the target host.
 
 ## Description
 

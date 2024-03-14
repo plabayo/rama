@@ -2,7 +2,7 @@
 //!
 //! See [`UpgradeService`] for more details.
 
-mod service;
+pub mod service;
 #[doc(inline)]
 pub use service::UpgradeService;
 

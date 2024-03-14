@@ -12,6 +12,8 @@ use std::{
 pub struct MethodFilter(u16);
 
 impl MethodFilter {
+    /// Match `CONNECT` requests.
+    pub const CONNECT: Self = Self::from_bits(0b0_0000_0001);
     /// Match `DELETE` requests.
     pub const DELETE: Self = Self::from_bits(0b0_0000_0010);
     /// Match `GET` requests.
@@ -89,6 +91,7 @@ impl TryFrom<&Method> for MethodFilter {
 
     fn try_from(m: &Method) -> Result<Self, Self::Error> {
         match m {
+            &Method::CONNECT => Ok(MethodFilter::CONNECT),
             &Method::DELETE => Ok(MethodFilter::DELETE),
             &Method::GET => Ok(MethodFilter::GET),
             &Method::HEAD => Ok(MethodFilter::HEAD),
@@ -110,6 +113,11 @@ mod tests {
 
     #[test]
     fn from_http_method() {
+        assert_eq!(
+            MethodFilter::try_from(&Method::CONNECT).unwrap(),
+            MethodFilter::CONNECT
+        );
+
         assert_eq!(
             MethodFilter::try_from(&Method::DELETE).unwrap(),
             MethodFilter::DELETE
@@ -149,10 +157,5 @@ mod tests {
             MethodFilter::try_from(&Method::TRACE).unwrap(),
             MethodFilter::TRACE
         );
-
-        assert!(MethodFilter::try_from(&http::Method::CONNECT)
-            .unwrap_err()
-            .to_string()
-            .contains("CONNECT"));
     }
 }

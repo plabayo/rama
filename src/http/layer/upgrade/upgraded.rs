@@ -18,6 +18,14 @@ pin_project! {
     }
 }
 
+impl Upgraded {
+    pub(crate) fn new(upgraded: hyperUpgraded) -> Self {
+        Self {
+            hu: TokioIo::new(upgraded),
+        }
+    }
+}
+
 impl fmt::Debug for Upgraded {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "Upgraded")

@@ -64,7 +64,7 @@ where
     R: Future<Output = Result<O, E>>,
 {
     hnd: F,
-    _t: PhantomData<(T, R, O)>,
+    _t: PhantomData<fn(T, R, O) -> ()>,
 }
 
 impl<F, T, R, O, E> std::fmt::Debug for ServiceFn<F, T, R, O, E>
@@ -106,9 +106,9 @@ where
 impl<State, Request, F, T, R, O, E> Service<State, Request> for ServiceFn<F, T, R, O, E>
 where
     F: Factory<T, R, O, E>,
-    R: Future<Output = Result<O, E>> + Send + Sync + 'static,
+    R: Future<Output = Result<O, E>> + Send + 'static,
     T: FromContextRequest<State, Request>,
-    O: Send + Sync + 'static,
+    O: Send + 'static,
     E: Send + Sync + 'static,
 {
     type Response = O;
@@ -125,7 +125,7 @@ where
 }
 
 /// Convert a context+request into a parameter for the [`ServiceFn`] handler function.
-pub trait FromContextRequest<State, Request>: Send + Sync + 'static {
+pub trait FromContextRequest<State, Request>: Send + 'static {
     /// Convert a context+request into a parameter for the [`ServiceFn`] handler function.
     fn from_context_request(ctx: Context<State>, req: Request) -> Self;
 }
@@ -137,7 +137,7 @@ impl<State, Request> FromContextRequest<State, Request> for () {
 impl<State, Request> FromContextRequest<State, Request> for ((), Request)
 where
     State: Send + Sync + 'static,
-    Request: Send + Sync + 'static,
+    Request: Send + 'static,
 {
     fn from_context_request(_ctx: Context<State>, req: Request) -> Self {
         ((), req)
@@ -147,7 +147,7 @@ where
 impl<State, Request> FromContextRequest<State, Request> for (Context<State>, Request)
 where
     State: Send + Sync + 'static,
-    Request: Send + Sync + 'static,
+    Request: Send + 'static,
 {
     fn from_context_request(ctx: Context<State>, req: Request) -> Self {
         (ctx, req)

@@ -8,7 +8,6 @@ use crate::{
     service::{Context, Service},
 };
 use hyper_util::rt::TokioIo;
-use std::borrow::Cow;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -116,7 +115,7 @@ where
     State: Send + Sync + 'static,
     Body: http_body::Body + Unpin + Send + 'static,
     Body::Data: Send + 'static,
-    Body::Error: std::error::Error + Send + Sync + 'static,
+    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     type Response = Response;
     type Error = HttpClientError;
@@ -133,36 +132,38 @@ where
 
         // get target address
         let address = if let Some(dns_info) = ctx.get::<DnsResolvedSocketAddresses>() {
-            Cow::Borrowed(dns_info.address())
+            dns_info.address().to_string()
         } else {
             let host = match Host::from_request_parts(&ctx, &parts).await {
                 Ok(host) => host.0,
                 Err(_) => return Err(HttpClientError::MissingHost),
             };
-            let port = parts.uri.port().map(|p| p.as_u16()).unwrap_or_else(|| {
-                parts
-                    .uri
-                    .scheme()
-                    .map(|s| match s.as_str() {
-                        // TODO is this scheme mapping complete enough?
-                        // and should we fail on unknown schemes?
-                        // should this be a shared utility somewhere?
-                        "http" => 80,
-                        _ => 443,
-                    })
-                    .unwrap_or(443)
-            });
-            let address_str = format!("{}:{}", host, port);
-            Cow::Owned(match address_str.parse() {
-                Ok(address) => address,
-                Err(_) => return Err(HttpClientError::InvalidHost(address_str)),
-            })
+            if host.contains(':') {
+                host
+            } else {
+                let port = parts.uri.port().map(|p| p.as_u16()).unwrap_or_else(|| {
+                    parts
+                        .uri
+                        .scheme()
+                        .map(|s| match s.as_str() {
+                            // TODO is this scheme mapping complete enough?
+                            // and should we fail on unknown schemes?
+                            // should this be a shared utility somewhere?
+                            "http" => 80,
+                            _ => 443,
+                        })
+                        .unwrap_or(443)
+                });
+                format!("{}:{}", host, port)
+            }
         };
 
         // TODO: should this client support upstream proxies?
 
         // create the tcp connection
-        let tcp_stream = tokio::net::TcpStream::connect(address.as_ref()).await?;
+        tokio::net::TcpStream::connect(&address).await?;
+
+        let tcp_stream = tokio::net::TcpStream::connect(address).await?;
 
         // TODO: figure out how we wish to handle https here
 
