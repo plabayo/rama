@@ -12,13 +12,14 @@ use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+mod data;
 mod endpoints;
 mod report;
 mod state;
 
 pub use state::State;
 
-pub async fn run(address: String) -> anyhow::Result<()> {
+pub async fn run(interface: String, port: u16) -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -30,10 +31,12 @@ pub async fn run(address: String) -> anyhow::Result<()> {
 
     let graceful = rama::graceful::Shutdown::default();
 
+    let http_address = format!("{}:{}", interface, port);
+
     graceful.spawn_task_fn(|guard| async move {
-        tracing::info!("FP Service listening on: {address}");
+        tracing::info!("FP Service listening on: {http_address}");
         TcpListener::build_with_state(State::default())
-            .bind(address)
+            .bind(http_address)
             .await
             .expect("bind TCP Listener")
             .serve_graceful(
@@ -52,8 +55,11 @@ pub async fn run(address: String) -> anyhow::Result<()> {
                     )))
                     .service(
                         HttpServer::auto(Executor::graceful(guard)).service(
-                            ServiceBuilder::new()
-                                .service(WebService::default().get("/", endpoints::get_root)),
+                            ServiceBuilder::new().service(
+                                WebService::default()
+                                    .get("/", endpoints::get_root)
+                                    .get("/assets/style.css", endpoints::get_assets_style),
+                            ),
                         ),
                     ),
             )

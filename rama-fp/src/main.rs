@@ -11,16 +11,14 @@ struct Cli {
     #[arg(short, long, default_value = "8080")]
     port: u16,
 
-    /// the address to listen on
+    /// the interface to listen on
     #[arg(short, long, default_value = "127.0.0.1")]
-    address: String,
+    interface: String,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
-    let address = format!("{}:{}", args.address, args.port);
-
-    service::run(address).await
+    service::run(args.interface, args.port).await
 }

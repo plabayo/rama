@@ -1,0 +1,92 @@
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+* {
+    margin: 0;
+}
+
+body {
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+img,
+picture,
+video,
+canvas,
+svg {
+    display: block;
+    max-width: 100%;
+}
+
+input,
+button,
+textarea,
+select {
+    font: inherit;
+}
+
+p,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    overflow-wrap: break-word;
+}
+
+h1 a {
+    text-decoration: none;
+    font-weight: bold;
+    color: darkblue;
+}
+
+#root,
+#__next {
+    isolation: isolate;
+}
+
+main {
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+main h1 {
+    margin-bottom: 20px;
+}
+
+.report table {
+    margin-bottom: 20px;
+}
+
+.report table {
+    border-collapse: collapse;
+    border-spacing: 0;
+    width: 100%;
+}
+
+.report td {
+    padding: 5px;
+}
+
+.report td.key {
+    width: 200px;
+    font-weight: bold;
+    background-color: lightpink;
+}
+
+.report tr {
+    display: block;
+}
+
+.report tr:nth-child(odd) {
+    background-color: lightgray;
+}
+
+.report tr:not(:last-child) {
+    border-bottom: 1px solid #000;
+}
