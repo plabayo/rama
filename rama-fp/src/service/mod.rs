@@ -6,7 +6,7 @@ use rama::{
         },
         matcher::HttpMatcher,
         server::HttpServer,
-        service::web::WebService,
+        service::web::{k8s_health, WebService},
         Body, HeaderName, HeaderValue, Request, StatusCode,
     },
     rt::Executor,
@@ -29,7 +29,7 @@ mod state;
 
 pub use state::State;
 
-pub async fn run(interface: String, port: u16) -> anyhow::Result<()> {
+pub async fn run(interface: String, port: u16, health_port: u16) -> anyhow::Result<()> {
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -40,6 +40,19 @@ pub async fn run(interface: String, port: u16) -> anyhow::Result<()> {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
+
+    let health_address = format!("{}:{}", interface, health_port);
+
+    graceful.spawn_task_fn(|guard| async move {
+        let exec = Executor::graceful(guard.clone());
+
+        tracing::info!("FP Health Service listening on: {health_address}");
+
+        HttpServer::auto(exec)
+            .listen(health_address, k8s_health())
+            .await
+            .unwrap();
+    });
 
     let http_address = format!("{}:{}", interface, port);
 
