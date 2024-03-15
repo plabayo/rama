@@ -180,4 +180,8 @@ and reverse proxies alike, named [`g3proxy`].
 
 Available at <https://ramaproxy.org/book/faq.html>.
 
+## ⭐ | Stargazers
+
+[![Star History Chart](https://api.star-history.com/svg?repos=plabayo/rama&type=Date)](https://star-history.com/#plabayo/rama&Date)
+
 [![original (OG) rama logo](./docs/book/src/img/old_logo.png)](https://ramaproxy.org/)
