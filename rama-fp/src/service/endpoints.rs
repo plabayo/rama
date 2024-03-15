@@ -24,13 +24,18 @@ fn html<T: Into<String>>(inner: T) -> Html {
 pub async fn get_root(ctx: Context<State>, req: Request) -> Html {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
+    let headers = get_headers(&req);
+
+    let (parts, _) = req.into_parts();
+
     let request_info = get_request_info(
         FetchMode::Navigate,
         ResourceType::Document,
         Initiator::Navigator,
-        &req,
-    );
-    let headers = get_headers(&req);
+        &ctx,
+        &parts,
+    )
+    .await;
 
     let head = r#"<script src="/assets/script.js"></script>"#.to_owned();
 
@@ -130,19 +135,25 @@ pub async fn post_api_xml_http_request_number(
 pub async fn form(ctx: Context<State>, req: Request) -> Html {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
+
+    let headers = get_headers(&req);
+
+    let (parts, _) = req.into_parts();
+
     let request_info = get_request_info(
         FetchMode::SameOrigin,
         ResourceType::Form,
         Initiator::Form,
-        &req,
-    );
-    let headers = get_headers(&req);
+        &ctx,
+        &parts,
+    )
+    .await;
 
     let mut content = String::new();
 
     content.push_str(r##"<a href="/" title="Back to Home">🏠 Back to Home...</a>"##);
 
-    if req.method() == "POST" {
+    if parts.method == "POST" {
         content.push_str(
             r##"<div id="input"><form method="GET" action="/form">
     <input type="hidden" name="source" value="web">
@@ -254,7 +265,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
         <body>
             <main>
                 <h1>
-                    <a href="https://ramaproxy.org" title="rama proxy website">ラマ</a>
+                    <a href="/" title="rama-fp home">ラマ</a>
                     &nbsp;
                     |
                     &nbsp;
@@ -281,12 +292,15 @@ impl From<RequestInfo> for Table {
             title: "ℹ️ Request Info".to_owned(),
             rows: vec![
                 ("User Agent".to_owned(), info.user_agent.unwrap_or_default()),
+                ("Version".to_owned(), info.version),
+                ("Scheme".to_owned(), info.scheme),
+                ("Host".to_owned(), info.host.unwrap_or_default()),
                 ("Method".to_owned(), info.method),
                 ("Fetch Mode".to_owned(), info.fetch_mode.to_string()),
                 ("Resource Type".to_owned(), info.resource_type.to_string()),
                 ("Initiator".to_owned(), info.initiator.to_string()),
                 ("Path".to_owned(), info.path),
-                ("Version".to_owned(), info.version),
+                ("Uri".to_owned(), info.uri),
             ],
         }
     }

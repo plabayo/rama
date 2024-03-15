@@ -1,6 +1,14 @@
+use super::State;
+use rama::{
+    http::{
+        dep::http::request::Parts,
+        service::web::extract::{FromRequestParts, Host},
+        Request,
+    },
+    service::Context,
+    tls::rustls::server::IncomingClientHello,
+};
 use std::str::FromStr;
-
-use rama::http::Request;
 
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
@@ -98,37 +106,61 @@ impl Default for DataSource {
 #[derive(Debug, Clone)]
 pub struct RequestInfo {
     pub user_agent: Option<String>,
+    pub version: String,
+    pub scheme: String,
+    pub host: Option<String>,
     pub method: String,
     pub fetch_mode: FetchMode,
     pub resource_type: ResourceType,
     pub initiator: Initiator,
     pub path: String,
-    pub version: String,
+    pub uri: String,
 }
 
-pub fn get_request_info(
+pub async fn get_request_info(
     fetch_mode: FetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
-    req: &Request,
+    ctx: &Context<State>,
+    parts: &Parts,
 ) -> RequestInfo {
+    let host = Host::from_request_parts(&ctx, &parts)
+        .await
+        .ok()
+        .map(|h| h.0)
+        .or_else(|| parts.uri.host().map(|v| v.to_string()));
+
     RequestInfo {
-        user_agent: req
-            .headers()
+        user_agent: parts
+            .headers
             .get("user-agent")
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_owned()),
-        method: req.method().as_str().to_owned(),
-        fetch_mode: req
-            .headers()
+        version: format!("{:?}", parts.version),
+        scheme: parts
+            .uri
+            .scheme_str()
+            .map(|v| v.to_owned())
+            .unwrap_or_else(|| {
+                if ctx.get::<IncomingClientHello>().is_some() {
+                    "https"
+                } else {
+                    "http"
+                }
+                .to_owned()
+            }),
+        host,
+        method: parts.method.as_str().to_owned(),
+        fetch_mode: parts
+            .headers
             .get("sec-fetch-mode")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.parse().ok())
             .unwrap_or(fetch_mode),
         resource_type,
         initiator,
-        path: req.uri().path().to_owned(),
-        version: format!("{:?}", req.version()),
+        path: parts.uri.path().to_owned(),
+        uri: parts.uri.to_string(),
     }
 }
 
