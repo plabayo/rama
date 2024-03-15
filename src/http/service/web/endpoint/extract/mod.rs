@@ -5,22 +5,31 @@ use crate::service::Context;
 use std::future::Future;
 
 mod extension;
+#[doc(inline)]
 pub use extension::Extension;
 
 mod host;
+#[doc(inline)]
 pub use host::Host;
 
 mod path;
+#[doc(inline)]
 pub use path::Path;
 
 mod query;
+#[doc(inline)]
 pub use query::Query;
 
 mod method;
 mod request;
 
 mod state;
+#[doc(inline)]
 pub use state::State;
+
+mod typed_header;
+#[doc(inline)]
+pub use typed_header::TypedHeader;
 
 mod body;
 pub use body::{Body, Bytes, Json, Text};
