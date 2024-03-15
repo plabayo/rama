@@ -1,8 +1,18 @@
 use rama::{
-    http::{layer::trace::TraceLayer, server::HttpServer, service::web::WebService},
+    http::{
+        dep::http::Response,
+        layer::{
+            compression::CompressionLayer, set_header::SetResponseHeaderLayer, trace::TraceLayer,
+        },
+        matcher::HttpMatcher,
+        server::HttpServer,
+        service::web::WebService,
+        Body, HeaderName, HeaderValue, Request, StatusCode,
+    },
     rt::Executor,
     service::{
-        layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
+        layer::{limit::policy::ConcurrentPolicy, HijackLayer, LimitLayer, TimeoutLayer},
+        service_fn,
         util::backoff::ExponentialBackoff,
         ServiceBuilder,
     },
@@ -57,6 +67,24 @@ pub async fn run(interface: String, port: u16) -> anyhow::Result<()> {
                         HttpServer::auto(Executor::graceful(guard)).service(
                             ServiceBuilder::new()
                                 .layer(TraceLayer::new_for_http())
+                                .layer(CompressionLayer::new())
+                                .layer(SetResponseHeaderLayer::appending(
+                                    HeaderName::from_static("set-cookie"),
+                                    HeaderValue::from_static("rama-fp-version=0.2; Max-Age=60"),
+                                ))
+                                .layer(HijackLayer::new(
+                                    HttpMatcher::header_exists(HeaderName::from_static("cookie"))
+                                        .negate(),
+                                    service_fn(|req: Request| async move {
+                                        Ok::<_, Infallible>(
+                                            Response::builder()
+                                                .status(StatusCode::TEMPORARY_REDIRECT)
+                                                .header("location", req.uri().to_string())
+                                                .body(Body::empty())
+                                                .expect("build redirect response"),
+                                        )
+                                    }),
+                                ))
                                 .service(
                                     WebService::default()
                                         // Navigate
