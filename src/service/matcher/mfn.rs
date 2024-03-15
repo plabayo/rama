@@ -99,7 +99,7 @@ where
 /// The public wrapper type for [`MatchFn`].
 pub struct MatchFnBox<F, A> {
     f: F,
-    _marker: PhantomData<A>,
+    _marker: PhantomData<fn(A) -> ()>,
 }
 
 impl<F, A> Clone for MatchFnBox<F, A>
@@ -122,7 +122,7 @@ impl<F, A> std::fmt::Debug for MatchFnBox<F, A> {
 
 impl<F, S, Request, A> Matcher<S, Request> for MatchFnBox<F, A>
 where
-    A: Send + Sync + 'static,
+    A: Send + 'static,
     F: MatchFn<S, Request, A>,
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<S>, req: &Request) -> bool {

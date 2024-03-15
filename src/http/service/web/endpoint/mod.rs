@@ -68,7 +68,7 @@ pub use service::EndpointServiceFn;
 
 struct EndpointServiceFnWrapper<F, S, T> {
     inner: F,
-    _marker: std::marker::PhantomData<(S, T)>,
+    _marker: std::marker::PhantomData<fn(S, T) -> ()>,
 }
 
 impl<F, S, T> std::fmt::Debug for EndpointServiceFnWrapper<F, S, T> {
@@ -93,7 +93,7 @@ impl<F, S, T> Service<S, Request> for EndpointServiceFnWrapper<F, S, T>
 where
     F: EndpointServiceFn<S, T>,
     S: Send + Sync + 'static,
-    T: Send + Sync + 'static,
+    T: Send + 'static,
 {
     type Response = Response;
     type Error = Infallible;
@@ -107,7 +107,7 @@ impl<F, S, T> IntoEndpointService<S, (F, S, T)> for F
 where
     F: EndpointServiceFn<S, T>,
     S: Send + Sync + 'static,
-    T: Send + Sync + 'static,
+    T: Send + 'static,
 {
     fn into_endpoint_service(
         self,

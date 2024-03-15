@@ -11,5 +11,7 @@ pub fn is_connection_error(e: &io::Error) -> bool {
             | io::ErrorKind::ConnectionAborted
             | io::ErrorKind::ConnectionReset
             | io::ErrorKind::UnexpectedEof
+            | io::ErrorKind::NotConnected
+            | io::ErrorKind::BrokenPipe
     )
 }

@@ -104,7 +104,7 @@ where
 /// The public wrapper type for [`MakeHeaderValueFn`].
 pub struct BoxMakeHeaderValueFn<F, A> {
     f: F,
-    _marker: PhantomData<A>,
+    _marker: PhantomData<fn(A) -> ()>,
 }
 
 impl<F, A> BoxMakeHeaderValueFn<F, A> {
@@ -142,7 +142,7 @@ where
 
 impl<S, B, A, F> MakeHeaderValue<S, B> for BoxMakeHeaderValueFn<F, A>
 where
-    A: Send + Sync + 'static,
+    A: Send + 'static,
     F: MakeHeaderValueFn<S, B, A>,
 {
     fn make_header_value(
@@ -157,7 +157,7 @@ where
 impl<S, T> MakeHeaderValue<S, T> for HeaderValue
 where
     S: Send + Sync + 'static,
-    T: Send + Sync + 'static,
+    T: Send + 'static,
 {
     fn make_header_value(
         &self,
@@ -171,7 +171,7 @@ where
 impl<S, T> MakeHeaderValue<S, T> for Option<HeaderValue>
 where
     S: Send + Sync + 'static,
-    T: Send + Sync + 'static,
+    T: Send + 'static,
 {
     fn make_header_value(
         &self,
