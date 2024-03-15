@@ -1157,6 +1157,8 @@ dependencies = [
  "anyhow",
  "clap",
  "rama",
+ "serde",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",

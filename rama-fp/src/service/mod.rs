@@ -1,5 +1,5 @@
 use rama::{
-    http::{server::HttpServer, service::web::WebService},
+    http::{layer::trace::TraceLayer, server::HttpServer, service::web::WebService},
     rt::Executor,
     service::{
         layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
@@ -55,11 +55,30 @@ pub async fn run(interface: String, port: u16) -> anyhow::Result<()> {
                     )))
                     .service(
                         HttpServer::auto(Executor::graceful(guard)).service(
-                            ServiceBuilder::new().service(
-                                WebService::default()
-                                    .get("/", endpoints::get_root)
-                                    .get("/assets/style.css", endpoints::get_assets_style),
-                            ),
+                            ServiceBuilder::new()
+                                .layer(TraceLayer::new_for_http())
+                                .service(
+                                    WebService::default()
+                                        // Navigate
+                                        .get("/", endpoints::get_root)
+                                        // XHR
+                                        .get("/api/fetch/number", endpoints::get_api_fetch_number)
+                                        .post(
+                                            "/api/fetch/number/:number",
+                                            endpoints::post_api_fetch_number,
+                                        )
+                                        .get(
+                                            "/api/xml/number",
+                                            endpoints::get_api_xml_http_request_number,
+                                        )
+                                        .post(
+                                            "/api/xml/number/:number",
+                                            endpoints::post_api_xml_http_request_number,
+                                        )
+                                        // Assets
+                                        .get("/assets/style.css", endpoints::get_assets_style)
+                                        .get("/assets/script.js", endpoints::get_assets_script),
+                                ),
                         ),
                     ),
             )

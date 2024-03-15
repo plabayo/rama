@@ -45,7 +45,7 @@ rama-fp *ARGS:
 	cargo run -p rama-fp -- {{ARGS}}
 
 watch-rama-fp:
-	cargo watch -x 'run -p rama-fp'
+	RUST_LOG=debug cargo watch -x 'run -p rama-fp'
 
 docker-build:
     docker build -t rama:latest -f Dockerfile .

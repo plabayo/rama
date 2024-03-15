@@ -1,7 +1,15 @@
-use super::data::{
-    get_headers, get_request_info, DataSource, FetchMode, RequestInfo, ResourceType,
+use super::{
+    data::{
+        get_headers, get_request_info, DataSource, FetchMode, Initiator, RequestInfo, ResourceType,
+    },
+    State,
 };
-use rama::http::{Request, Response, StatusCode};
+use rama::{
+    http::{response::Json, service::web::extract::Path, Request, Response, StatusCode},
+    service::Context,
+};
+use serde::Deserialize;
+use serde_json::json;
 
 type Html = rama::http::response::Html<String>;
 
@@ -9,17 +17,28 @@ fn html<T: Into<String>>(inner: T) -> Html {
     inner.into().into()
 }
 
-pub async fn get_root(req: Request) -> Html {
-    let data_source = DataSource::default();
+//------------------------------------------
+// endpoints: navigations
+//------------------------------------------
+
+pub async fn get_root(ctx: Context<State>, req: Request) -> Html {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
-    let request_info = get_request_info(FetchMode::Navigate, ResourceType::Document, &req);
+    let request_info = get_request_info(
+        FetchMode::Navigate,
+        ResourceType::Document,
+        Initiator::Navigator,
+        &req,
+    );
     let headers = get_headers(&req);
+
+    let head = r#"<script src="/assets/script.js"></script>"#.to_owned();
 
     render_report(
         "🕵️ Fingerprint Report",
+        head,
         vec![
-            data_source.into(),
+            ctx.state().data_source.clone().into(),
             request_info.into(),
             Table {
                 title: "🚗 Http Headers".to_owned(),
@@ -28,6 +47,84 @@ pub async fn get_root(req: Request) -> Html {
         ],
     )
 }
+
+//------------------------------------------
+// endpoints: XHR
+//------------------------------------------
+
+#[derive(Deserialize)]
+pub struct APINumberParams {
+    number: usize,
+}
+
+pub async fn get_api_fetch_number(ctx: Context<State>, _req: Request) -> Json<serde_json::Value> {
+    // let request_info = get_request_info(
+    //     FetchMode::SameOrigin,
+    //     ResourceType::Document,
+    //     Initiator::Fetch,
+    //     &req,
+    // );
+    // let headers = get_headers(&req);
+
+    Json(json!({
+        "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+    }))
+}
+
+pub async fn post_api_fetch_number(
+    Path(params): Path<APINumberParams>,
+    _req: Request,
+) -> Json<serde_json::Value> {
+    // let request_info = get_request_info(
+    //     FetchMode::SameOrigin,
+    //     ResourceType::Document,
+    //     Initiator::Fetch,
+    //     &req,
+    // );
+    // let headers = get_headers(&req);
+
+    Json(json!({
+        "number": params.number,
+    }))
+}
+
+pub async fn get_api_xml_http_request_number(
+    ctx: Context<State>,
+    _req: Request,
+) -> Json<serde_json::Value> {
+    // let request_info = get_request_info(
+    //     FetchMode::SameOrigin,
+    //     ResourceType::Document,
+    //     Initiator::XMLHttpRequest,
+    //     &req,
+    // );
+    // let headers = get_headers(&req);
+
+    Json(json!({
+        "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+    }))
+}
+
+pub async fn post_api_xml_http_request_number(
+    Path(params): Path<APINumberParams>,
+    _req: Request,
+) -> Json<serde_json::Value> {
+    // let request_info = get_request_info(
+    //     FetchMode::SameOrigin,
+    //     ResourceType::Document,
+    //     Initiator::XMLHttpRequest,
+    //     &req,
+    // );
+    // let headers = get_headers(&req);
+
+    Json(json!({
+        "number": params.number,
+    }))
+}
+
+//------------------------------------------
+// endpoints: assets
+//------------------------------------------
 
 const STYLE_CSS: &str = include_str!("../assets/style.css");
 
@@ -41,7 +138,23 @@ pub async fn get_assets_style() -> Response {
         .expect("build css response")
 }
 
-fn render_report(title: &'static str, tables: Vec<Table>) -> Html {
+const SCRIPT_JS: &str = include_str!("../assets/script.js");
+
+pub async fn get_assets_script() -> Response {
+    // TODO: do we need to also track this? As What?!
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/javascript")
+        .body(SCRIPT_JS.into())
+        .expect("build js response")
+}
+
+//------------------------------------------
+// render utilities
+//------------------------------------------
+
+fn render_report(title: &'static str, head: String, tables: Vec<Table>) -> Html {
     let mut html = String::from(r##"<div class="report">"##);
     for table in tables {
         html.push_str(&format!("<h2>{}</h2>", table.title));
@@ -55,10 +168,10 @@ fn render_report(title: &'static str, tables: Vec<Table>) -> Html {
         html.push_str("</table>");
     }
     html.push_str("</div>");
-    render_page(title, html)
+    render_page(title, head, html)
 }
 
-fn render_page(title: &'static str, content: String) -> Html {
+fn render_page(title: &'static str, head: String, content: String) -> Html {
     html(format!(
         r#"
         <!DOCTYPE html>
@@ -85,6 +198,8 @@ fn render_page(title: &'static str, content: String) -> Html {
             <meta property="og:image" content="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg">
 
             <link rel="stylesheet" type="text/css" href="/assets/style.css">
+
+            {}
         </head>
         <body>
             <main>
@@ -105,7 +220,7 @@ fn render_page(title: &'static str, content: String) -> Html {
         </body>
         </html>
     "#,
-        title, content
+        head, title, content
     ))
 }
 
@@ -118,6 +233,7 @@ impl From<RequestInfo> for Table {
                 ("Method".to_owned(), info.method),
                 ("Fetch Mode".to_owned(), info.fetch_mode.to_string()),
                 ("Resource Type".to_owned(), info.resource_type.to_string()),
+                ("Initiator".to_owned(), info.initiator.to_string()),
                 ("Path".to_owned(), info.path),
                 ("Version".to_owned(), info.version),
             ],

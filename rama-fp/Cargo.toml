@@ -18,6 +18,8 @@ rama = { version = "0.2", path = ".." }
 tokio = { version = "1.35", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+serde = "1.0"
+serde_json = "1.0"
 
 [[bin]]
 name = "rama-fp"
