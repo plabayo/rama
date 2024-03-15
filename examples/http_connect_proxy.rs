@@ -13,6 +13,8 @@
 //! ```sh
 //! curl -v -x http://127.0.0.1:8080 http://www.example.com/
 //! curl -v -x http://127.0.0.1:8080 https://www.example.com/
+//! curl -v -x http://127.0.0.1:8080 http://echo.example/foo/bar
+//! curl -v -x http://127.0.0.1:8080 -XPOST http://echo.example/lucky/7
 //! ```
 //!
 //! You should see the response from the server.
@@ -28,7 +30,7 @@ use rama::{
         response::Json,
         server::HttpServer,
         service::web::{
-            extract::{FromRequestParts, Host},
+            extract::{FromRequestParts, Host, Path},
             WebService,
         },
         Body, IntoResponse, Request, Response, StatusCode,
@@ -37,6 +39,7 @@ use rama::{
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
     tcp::utils::is_connection_error,
 };
+use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
@@ -55,6 +58,12 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
+    #[derive(Deserialize)]
+    /// API parameters for the lucky number endpoint
+    struct APILuckyParams {
+        number: u32,
+    }
+
     // TODO: what about the hop headers?!
 
     graceful.spawn_task_fn(|guard| async move {
@@ -68,12 +77,19 @@ async fn main() {
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
                         DomainFilter::new("echo.example"),
-                        WebService::default().get("/*", |req: Request| async move {
-                            Json(json!({
-                                "method": req.method().as_str(),
-                                "path": req.uri().path(),
-                            }))
-                        }),
+                        WebService::default()
+                            .post(
+                                "/lucky/:number",
+                                |Path(path): Path<APILuckyParams>| async move {
+                                    format!("Your lucky number is: {}", path.number)
+                                },
+                            )
+                            .get("/*", |req: Request| async move {
+                                Json(json!({
+                                    "method": req.method().as_str(),
+                                    "path": req.uri().path(),
+                                }))
+                            }),
                     ))
                     .layer(UpgradeLayer::new(
                         MethodFilter::CONNECT,
