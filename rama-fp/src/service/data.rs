@@ -1,3 +1,5 @@
+use std::str::FromStr;
+
 use rama::http::Request;
 
 #[derive(Debug, Clone, Default)]
@@ -19,6 +21,21 @@ impl std::fmt::Display for FetchMode {
             Self::NoCors => write!(f, "no-cors"),
             Self::SameOrigin => write!(f, "same-origin"),
             Self::Websocket => write!(f, "websocket"),
+        }
+    }
+}
+
+impl FromStr for FetchMode {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "cors" => Ok(Self::Cors),
+            "navigate" => Ok(Self::Navigate),
+            "no-cors" => Ok(Self::NoCors),
+            "same-origin" => Ok(Self::SameOrigin),
+            "websocket" => Ok(Self::Websocket),
+            _ => Err(s.to_owned()),
         }
     }
 }
@@ -79,7 +96,12 @@ pub fn get_request_info(
             .and_then(|v| v.to_str().ok())
             .map(|v| v.to_owned()),
         method: req.method().as_str().to_owned(),
-        fetch_mode,
+        fetch_mode: req
+            .headers()
+            .get("sec-fetch-mode")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(fetch_mode),
         resource_type,
         path: req.uri().path().to_owned(),
         version: format!("{:?}", req.version()),
