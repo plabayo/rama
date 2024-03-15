@@ -59,8 +59,6 @@ impl std::fmt::Display for ResourceType {
     }
 }
 
-
-
 #[derive(Debug, Clone, Default)]
 #[allow(dead_code)]
 pub enum Initiator {

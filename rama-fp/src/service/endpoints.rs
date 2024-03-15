@@ -37,6 +37,7 @@ pub async fn get_root(ctx: Context<State>, req: Request) -> Html {
     render_report(
         "🕵️ Fingerprint Report",
         head,
+        String::new(),
         vec![
             ctx.state().data_source.clone().into(),
             request_info.into(),
@@ -60,7 +61,7 @@ pub struct APINumberParams {
 pub async fn get_api_fetch_number(ctx: Context<State>, _req: Request) -> Json<serde_json::Value> {
     // let request_info = get_request_info(
     //     FetchMode::SameOrigin,
-    //     ResourceType::Document,
+    //     ResourceType::Xhr,
     //     Initiator::Fetch,
     //     &req,
     // );
@@ -77,7 +78,7 @@ pub async fn post_api_fetch_number(
 ) -> Json<serde_json::Value> {
     // let request_info = get_request_info(
     //     FetchMode::SameOrigin,
-    //     ResourceType::Document,
+    //     ResourceType::Xhr,
     //     Initiator::Fetch,
     //     &req,
     // );
@@ -94,7 +95,7 @@ pub async fn get_api_xml_http_request_number(
 ) -> Json<serde_json::Value> {
     // let request_info = get_request_info(
     //     FetchMode::SameOrigin,
-    //     ResourceType::Document,
+    //     ResourceType::Xhr,
     //     Initiator::XMLHttpRequest,
     //     &req,
     // );
@@ -111,8 +112,8 @@ pub async fn post_api_xml_http_request_number(
 ) -> Json<serde_json::Value> {
     // let request_info = get_request_info(
     //     FetchMode::SameOrigin,
-    //     ResourceType::Document,
-    //     Initiator::XMLHttpRequest,
+    //     ResourceType::Xhr,
+    //     Initiator::XMLhttp://localhost:8080/HttpRequest,
     //     &req,
     // );
     // let headers = get_headers(&req);
@@ -120,6 +121,55 @@ pub async fn post_api_xml_http_request_number(
     Json(json!({
         "number": params.number,
     }))
+}
+
+//------------------------------------------
+// endpoints: form
+//------------------------------------------
+
+pub async fn form(ctx: Context<State>, req: Request) -> Html {
+    // TODO: get TLS Info (for https access only)
+    // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
+    let request_info = get_request_info(
+        FetchMode::SameOrigin,
+        ResourceType::Form,
+        Initiator::Form,
+        &req,
+    );
+    let headers = get_headers(&req);
+
+    let mut content = String::new();
+
+    content.push_str(r##"<a href="/" title="Back to Home">🏠 Back to Home...</a>"##);
+
+    if req.method() == "POST" {
+        content.push_str(
+            r##"<div id="input"><form method="GET" action="/form">
+    <input type="hidden" name="source" value="web">
+    <label for="turtles">Do you like turtles?</label>
+    <select id="turtles" name="turtles">
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+        <option value="maybe">Maybe</option>
+    </select>
+    <button type="submit">Submit</button>
+</form></div>"##,
+        );
+    }
+
+    render_report(
+        "🕵️ Fingerprint Report » Form",
+        String::new(),
+        content,
+        vec![
+            ctx.state().data_source.clone().into(),
+            request_info.into(),
+            Table {
+                title: "🚗 Http Headers".to_owned(),
+                rows: headers,
+            },
+        ],
+    )
 }
 
 //------------------------------------------
@@ -154,8 +204,8 @@ pub async fn get_assets_script() -> Response {
 // render utilities
 //------------------------------------------
 
-fn render_report(title: &'static str, head: String, tables: Vec<Table>) -> Html {
-    let mut html = String::from(r##"<div class="report">"##);
+fn render_report(title: &'static str, head: String, mut html: String, tables: Vec<Table>) -> Html {
+    html.push_str(r##"<div class="report">"##);
     for table in tables {
         html.push_str(&format!("<h2>{}</h2>", table.title));
         html.push_str("<table>");
@@ -210,7 +260,8 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
                     &nbsp;
                     {}
                 </h1>
-                <div>{}</div>
+                <div id="content">{}</div>
+                <div id="input"></div>
                 <div id="banner">
                     <a href="https://ramaproxy.org" title="rama proxy website">
                         <img src="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg" alt="rama banner" />

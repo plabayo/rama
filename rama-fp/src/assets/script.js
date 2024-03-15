@@ -60,7 +60,7 @@ function makeRequestWithXHR(url, method, number) {
         xhr.open(method, url);
         xhr.setRequestHeader('x-custom-header', `rama-fp-v-0.2-${Date.now()}`);
 
-        xhr.onload = function() {
+        xhr.onload = function () {
             if (xhr.status >= 200 && xhr.status < 300) {
                 resolve(xhr.response);
             } else {
@@ -68,7 +68,7 @@ function makeRequestWithXHR(url, method, number) {
             }
         };
 
-        xhr.onerror = function() {
+        xhr.onerror = function () {
             reject(new Error('Request failed'));
         };
 
@@ -98,6 +98,23 @@ async function main() {
         console.log('Requests completed successfully');
         console.log('Result:', result);
         console.log('Result2:', result2);
+
+        // Display a form to submit a rating
+        const formHtml = `
+            <form method="POST" action="/form">
+                <input type="hidden" name="source" value="web">
+                <label for="rating">Rate Rama from 1 to 5:</label>
+                <select name="rating" id="rating">
+                    <option value="1">1</option>
+                    <option value="2">2</option>
+                    <option value="3" selected>3</option>
+                    <option value="4">4</option>
+                    <option value="5">5</option>
+                </select>
+                <button type="submit">Submit</button>
+            </form>
+        `;
+        document.getElementById('input').innerHTML = formHtml;
     } catch (error) {
         console.error('An error occurred:', error);
         alert('whoops');

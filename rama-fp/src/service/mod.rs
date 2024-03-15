@@ -75,6 +75,9 @@ pub async fn run(interface: String, port: u16) -> anyhow::Result<()> {
                                             "/api/xml/number/:number",
                                             endpoints::post_api_xml_http_request_number,
                                         )
+                                        // Form
+                                        .get("/form", endpoints::form)
+                                        .post("/form", endpoints::form)
                                         // Assets
                                         .get("/assets/style.css", endpoints::get_assets_style)
                                         .get("/assets/script.js", endpoints::get_assets_script),
