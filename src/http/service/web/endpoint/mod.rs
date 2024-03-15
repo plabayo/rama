@@ -4,6 +4,7 @@ use crate::{
     service::{BoxService, Context, Service, ServiceBuilder},
 };
 use std::convert::Infallible;
+use std::future::Future;
 
 pub mod extract;
 
@@ -35,6 +36,40 @@ where
     }
 }
 
+impl<State, F, Fut, R> IntoEndpointService<State, (State, F, Context<State>, Fut, R)> for F
+where
+    State: Send + Sync + 'static,
+    F: Fn(Context<State>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+    R: IntoResponse + Send + Sync + 'static,
+{
+    fn into_endpoint_service(
+        self,
+    ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
+        InfallibleServiceFn {
+            inner: self,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+impl<State, F, Fut, R> IntoEndpointService<State, (State, F, Context<State>, Request, Fut, R)> for F
+where
+    State: Send + Sync + 'static,
+    F: Fn(Context<State>, Request) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+    R: IntoResponse + Send + Sync + 'static,
+{
+    fn into_endpoint_service(
+        self,
+    ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
+        InfallibleServiceFn {
+            inner: self,
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
 impl<State, R> IntoEndpointService<State, ()> for R
 where
     State: Send + Sync + 'static,
@@ -60,6 +95,47 @@ where
 
     async fn serve(&self, _: Context<State>, _: Request) -> Result<Self::Response, Self::Error> {
         Ok(self.0.clone().into_response())
+    }
+}
+
+#[derive(Debug)]
+struct InfallibleServiceFn<F, A> {
+    inner: F,
+    _marker: std::marker::PhantomData<fn(A) -> ()>,
+}
+
+impl<F, Fut, R, State> Service<State, Request> for InfallibleServiceFn<F, (Context<State>, Fut, R)>
+where
+    State: Send + Sync + 'static,
+    F: Fn(Context<State>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+    R: IntoResponse + Send + Sync + 'static,
+{
+    type Response = Response;
+    type Error = Infallible;
+
+    async fn serve(&self, ctx: Context<State>, _: Request) -> Result<Self::Response, Self::Error> {
+        Ok((self.inner)(ctx).await.into_response())
+    }
+}
+
+impl<F, Fut, R, State> Service<State, Request>
+    for InfallibleServiceFn<F, (Context<State>, Request, Fut, R)>
+where
+    State: Send + Sync + 'static,
+    F: Fn(Context<State>, Request) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+    R: IntoResponse + Send + Sync + 'static,
+{
+    type Response = Response;
+    type Error = Infallible;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request,
+    ) -> Result<Self::Response, Self::Error> {
+        Ok((self.inner)(ctx, req).await.into_response())
     }
 }
 
@@ -137,6 +213,24 @@ mod private {
     where
         State: Send + Sync + 'static,
         S: Service<State, Request, Response = R, Error = Infallible>,
+        R: IntoResponse + Send + Sync + 'static,
+    {
+    }
+
+    impl<State, F, Fut, R> Sealed<(State, F, Context<State>, Fut, R)> for F
+    where
+        State: Send + Sync + 'static,
+        F: Fn(Context<State>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = R> + Send + 'static,
+        R: IntoResponse + Send + Sync + 'static,
+    {
+    }
+
+    impl<State, F, Fut, R> Sealed<(State, F, Context<State>, Request, Fut, R)> for F
+    where
+        State: Send + Sync + 'static,
+        F: Fn(Context<State>, Request) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = R> + Send + 'static,
         R: IntoResponse + Send + Sync + 'static,
     {
     }

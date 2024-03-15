@@ -41,6 +41,9 @@ watch-check:
 rama +ARGS:
     cargo run -p rama-cli -- {{ARGS}}
 
+rama-fp *ARGS:
+	cargo run -p rama-fp -- {{ARGS}}
+
 docker-build:
     docker build -t rama:latest -f Dockerfile .
 

@@ -13,9 +13,11 @@ default-run = "rama-fp"
 
 [dependencies]
 anyhow = "1.0"
-clap = { version = "4.4", features = [ "derive" ] }
+clap = { version = "4.4", features = ["derive"] }
 rama = { version = "0.2", path = ".." }
-tokio = { version = "1.35", features = [ "rt-multi-thread", "macros" ] }
+tokio = { version = "1.35", features = ["rt-multi-thread", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
 
 [[bin]]
 name = "rama-fp"

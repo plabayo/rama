@@ -1,27 +1,26 @@
-use clap::{Parser, Subcommand};
+use clap::Parser;
 
-mod service;
+pub mod service;
 
 /// a fingerprinting service for ramae                   
 #[derive(Debug, Parser)] // requires `derive` feature
 #[command(name = "rama-fp")]
 #[command(about = "a fingerprinting service for rama", long_about = None)]
 struct Cli {
-    #[command(subcommand)]
-    command: Commands,
-}
+    /// the port to listen on
+    #[arg(short, long, default_value = "8080")]
+    port: u16,
 
-#[derive(Debug, Subcommand)]
-enum Commands {
-    /// Run the FP service
-    Run,
+    /// the address to listen on
+    #[arg(short, long, default_value = "127.0.0.1")]
+    address: String,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
-    match args.command {
-        Commands::Run => service::run().await,
-    }
+    let address = format!("{}:{}", args.address, args.port);
+
+    service::run(address).await
 }
