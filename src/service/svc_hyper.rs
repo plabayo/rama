@@ -1,4 +1,4 @@
-use std::{convert::Infallible, future::Future, pin::Pin};
+use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
 
 use super::{Context, Service};
 use crate::http::{IntoResponse, Request};
@@ -13,7 +13,7 @@ use crate::http::{IntoResponse, Request};
 #[derive(Debug)]
 pub(crate) struct HyperService<S, T> {
     ctx: Context<S>,
-    inner: T,
+    inner: Arc<T>,
 }
 
 impl<S, T> HyperService<S, T> {
@@ -21,7 +21,7 @@ impl<S, T> HyperService<S, T> {
     pub(crate) fn new(ctx: Context<S>, inner: T) -> Self {
         Self {
             ctx: ctx.into_parent(),
-            inner,
+            inner: Arc::new(inner),
         }
     }
 }
@@ -29,7 +29,7 @@ impl<S, T> HyperService<S, T> {
 impl<S, T, Response> hyper::service::Service<HyperRequest> for HyperService<S, T>
 where
     S: Send + Sync + 'static,
-    T: Service<S, Request, Response = Response, Error = Infallible> + Clone,
+    T: Service<S, Request, Response = Response, Error = Infallible>,
     Response: IntoResponse + Send + 'static,
 {
     type Response = crate::http::Response;

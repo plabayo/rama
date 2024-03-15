@@ -17,18 +17,18 @@ pub trait IntoEndpointService<State, T>: private::Sealed<T> {
     /// convert the type into a [`crate::service::Service`].
     fn into_endpoint_service(
         self,
-    ) -> impl Service<State, Request, Response = Response, Error = Infallible> + Clone;
+    ) -> impl Service<State, Request, Response = Response, Error = Infallible>;
 }
 
 impl<State, S, R> IntoEndpointService<State, (State, R)> for S
 where
     State: Send + Sync + 'static,
-    S: Service<State, Request, Response = R, Error = Infallible> + Clone,
+    S: Service<State, Request, Response = R, Error = Infallible>,
     R: IntoResponse + Send + Sync + 'static,
 {
     fn into_endpoint_service(
         self,
-    ) -> impl Service<State, Request, Response = Response, Error = Infallible> + Clone {
+    ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
         ServiceBuilder::new()
             .map_response(|resp: R| resp.into_response())
             .service(self)
@@ -42,12 +42,12 @@ where
 {
     fn into_endpoint_service(
         self,
-    ) -> impl Service<State, Request, Response = Response, Error = Infallible> + Clone {
+    ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
         StaticService(self)
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct StaticService<R>(R);
 
 impl<R, State> Service<State, Request> for StaticService<R>
@@ -60,6 +60,15 @@ where
 
     async fn serve(&self, _: Context<State>, _: Request) -> Result<Self::Response, Self::Error> {
         Ok(self.0.clone().into_response())
+    }
+}
+
+impl<R> Clone for StaticService<R>
+where
+    R: Clone,
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
     }
 }
 
@@ -111,7 +120,7 @@ where
 {
     fn into_endpoint_service(
         self,
-    ) -> impl Service<S, Request, Response = Response, Error = Infallible> + Clone {
+    ) -> impl Service<S, Request, Response = Response, Error = Infallible> {
         EndpointServiceFnWrapper {
             inner: self,
             _marker: std::marker::PhantomData,
@@ -132,7 +141,7 @@ mod private {
     {
     }
 
-    impl<R> Sealed<()> for R where R: IntoResponse + Clone + Send + Sync + 'static {}
+    impl<R> Sealed<()> for R where R: IntoResponse + Send + Sync + 'static {}
 
     impl<F, S, T> Sealed<(F, S, T)> for F where F: EndpointServiceFn<S, T> {}
 }

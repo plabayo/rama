@@ -33,10 +33,7 @@ impl Default for TcpListenerBuilder<()> {
     }
 }
 
-impl<S> Clone for TcpListenerBuilder<S>
-where
-    S: Clone,
-{
+impl<S> Clone for TcpListenerBuilder<S> {
     fn clone(&self) -> Self {
         Self {
             ttl: self.ttl,
@@ -159,9 +156,10 @@ where
     /// the underlying service can choose to spawn a task to handle the accepted stream.
     pub async fn serve<S>(self, service: S)
     where
-        S: Service<State, TcpStream> + Clone,
+        S: Service<State, TcpStream>,
     {
         let ctx = Context::new(self.state, Executor::new());
+        let service = Arc::new(service);
 
         loop {
             let (socket, peer_addr) = match self.inner.accept().await {
@@ -189,7 +187,7 @@ where
     /// See [`Self::serve`] for more details.
     pub async fn serve_fn<F, T, R, O, E>(self, f: F)
     where
-        F: Factory<T, R, O, E> + Clone,
+        F: Factory<T, R, O, E>,
         R: Future<Output = Result<O, E>> + Send + Sync + 'static,
         O: Send + Sync + 'static,
         E: Send + Sync + 'static,
@@ -206,9 +204,10 @@ where
     /// it to the service.
     pub async fn serve_graceful<S>(self, guard: ShutdownGuard, service: S)
     where
-        S: Service<State, TcpStream> + Clone,
+        S: Service<State, TcpStream>,
     {
         let ctx: Context<State> = Context::new(self.state, Executor::graceful(guard.clone()));
+        let service = Arc::new(service);
         let mut cancelled_fut = pin!(guard.cancelled());
 
         loop {
@@ -244,7 +243,7 @@ where
     /// See [`Self::serve_graceful`] for more details.
     pub async fn serve_fn_graceful<F, T, R, O, E>(self, guard: ShutdownGuard, service: F)
     where
-        F: Factory<T, R, O, E> + Clone,
+        F: Factory<T, R, O, E>,
         R: Future<Output = Result<O, E>> + Send + Sync + 'static,
         O: Send + Sync + 'static,
         E: Send + Sync + 'static,

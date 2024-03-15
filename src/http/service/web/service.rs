@@ -12,7 +12,7 @@ use std::{convert::Infallible, future::Future, marker::PhantomData, sync::Arc};
 /// a basic web service
 pub struct WebService<State> {
     endpoints: Vec<Arc<Endpoint<State>>>,
-    not_found: BoxService<State, Request, Response, Infallible>,
+    not_found: Arc<BoxService<State, Request, Response, Infallible>>,
     _phantom: PhantomData<State>,
 }
 
@@ -40,7 +40,9 @@ where
     pub(crate) fn new() -> Self {
         Self {
             endpoints: Vec::new(),
-            not_found: service_fn(|| async { Ok(StatusCode::NOT_FOUND.into_response()) }).boxed(),
+            not_found: Arc::new(
+                service_fn(|| async { Ok(StatusCode::NOT_FOUND.into_response()) }).boxed(),
+            ),
             _phantom: PhantomData,
         }
     }
@@ -154,7 +156,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        self.not_found = service.into_endpoint_service().boxed();
+        self.not_found = Arc::new(service.into_endpoint_service().boxed());
         self
     }
 }

@@ -603,7 +603,7 @@ where
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
     pub fn service<State, S, Response>(self, service: S) -> HttpService<B, S, State>
     where
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {
         HttpService::new(self.builder, service)
@@ -618,7 +618,7 @@ where
     ) -> HttpServeResult
     where
         State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         IO: Stream,
     {
@@ -632,7 +632,7 @@ where
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
     pub async fn listen<S, Response, A>(self, addr: A, service: S) -> HttpServeResult
     where
-        S: Service<(), Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<(), Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -656,7 +656,7 @@ where
         service: S,
     ) -> HttpServeResult
     where
-        S: Service<(), Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<(), Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -681,7 +681,7 @@ where
     ) -> HttpServeResult
     where
         State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -708,7 +708,7 @@ where
     ) -> HttpServeResult
     where
         State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -724,7 +724,7 @@ where
 /// A [`Service`] that can be used to serve IO Byte streams (e.g. a TCP Stream) as HTTP.
 pub struct HttpService<B, S, State> {
     builder: Arc<B>,
-    service: S,
+    service: Arc<S>,
     _phantom: std::marker::PhantomData<State>,
 }
 
@@ -738,16 +738,13 @@ impl<B, S, State> HttpService<B, S, State> {
     fn new(builder: B, service: S) -> Self {
         Self {
             builder: Arc::new(builder),
-            service,
+            service: Arc::new(service),
             _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<B, S, State> Clone for HttpService<B, S, State>
-where
-    S: Clone,
-{
+impl<B, S, State> Clone for HttpService<B, S, State> {
     fn clone(&self) -> Self {
         Self {
             builder: self.builder.clone(),
@@ -761,7 +758,7 @@ impl<B, State, S, Response, IO> Service<State, IO> for HttpService<B, S, State>
 where
     B: HyperConnServer,
     State: Send + Sync + 'static,
-    S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+    S: Service<State, Request, Response = Response, Error = Infallible>,
     Response: IntoResponse + Send + 'static,
     IO: Stream,
 {

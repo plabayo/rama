@@ -6,7 +6,7 @@ use std::pin::Pin;
 
 /// A [`Service`] that produces rama services,
 /// to serve requests with, be it transport layer requests or application layer requests.
-pub trait Service<S, Request>: Send + Sync + 'static {
+pub trait Service<S, Request>: Sized + Send + Sync + 'static {
     /// The type of response returned by the service.
     type Response: Send + 'static;
 
@@ -21,12 +21,8 @@ pub trait Service<S, Request>: Send + Sync + 'static {
         req: Request,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_;
 
-    /// Box this service to allow for dynamic dispatch,
-    /// only possible if the service is [`Clone`].
-    fn boxed(self) -> BoxService<S, Request, Self::Response, Self::Error>
-    where
-        Self: Clone,
-    {
+    /// Box this service to allow for dynamic dispatch.
+    fn boxed(self) -> BoxService<S, Request, Self::Response, Self::Error> {
         BoxService {
             inner: Box::new(self),
         }
@@ -80,20 +76,11 @@ trait DynService<S, Request> {
         ctx: Context<S>,
         req: Request,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + '_>>;
-
-    fn clone_box(
-        &self,
-    ) -> Box<
-        dyn DynService<S, Request, Response = Self::Response, Error = Self::Error>
-            + Send
-            + Sync
-            + 'static,
-    >;
 }
 
 impl<S, Request, T> DynService<S, Request> for T
 where
-    T: Service<S, Request> + Clone,
+    T: Service<S, Request>,
 {
     type Response = T::Response;
     type Error = T::Error;
@@ -104,17 +91,6 @@ where
         req: Request,
     ) -> Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + '_>> {
         Box::pin(self.serve(ctx, req))
-    }
-
-    fn clone_box(
-        &self,
-    ) -> Box<
-        dyn DynService<S, Request, Response = Self::Response, Error = Self::Error>
-            + Send
-            + Sync
-            + 'static,
-    > {
-        Box::new(self.clone())
     }
 }
 
@@ -129,7 +105,7 @@ impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
     /// Create a new [`BoxService`] from the given service.
     pub fn new<T>(service: T) -> Self
     where
-        T: Service<S, Request, Response = Response, Error = Error> + Clone,
+        T: Service<S, Request, Response = Response, Error = Error>,
     {
         Self {
             inner: Box::new(service),
@@ -140,14 +116,6 @@ impl<S, Request, Response, Error> BoxService<S, Request, Response, Error> {
 impl<S, Request, Response, Error> std::fmt::Debug for BoxService<S, Request, Response, Error> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BoxService").finish()
-    }
-}
-
-impl<S, Request, Response, Error> Clone for BoxService<S, Request, Response, Error> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone_box(),
-        }
     }
 }
 
@@ -175,7 +143,7 @@ mod tests {
     use super::*;
     use std::convert::Infallible;
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug)]
     struct AddSvc(usize);
 
     impl Service<(), usize> for AddSvc {
@@ -191,7 +159,7 @@ mod tests {
         }
     }
 
-    #[derive(Debug, Clone)]
+    #[derive(Debug)]
     struct MulSvc(usize);
 
     impl Service<(), usize> for MulSvc {
@@ -267,5 +235,25 @@ mod tests {
                 assert_eq!(response, i * (i + 1));
             }
         }
+    }
+
+    #[tokio::test]
+    async fn service_arc() {
+        let svc = std::sync::Arc::new(AddSvc(1));
+
+        let ctx = Context::default();
+
+        let response = svc.serve(ctx, 1).await.unwrap();
+        assert_eq!(response, 2);
+    }
+
+    #[tokio::test]
+    async fn box_service_arc() {
+        let svc = std::sync::Arc::new(AddSvc(1)).boxed();
+
+        let ctx = Context::default();
+
+        let response = svc.serve(ctx, 1).await.unwrap();
+        assert_eq!(response, 2);
     }
 }

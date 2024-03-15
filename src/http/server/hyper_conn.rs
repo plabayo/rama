@@ -26,7 +26,7 @@ pub trait HyperConnServer: Send + Sync + private::Sealed + 'static {
     where
         IO: Stream,
         State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static;
 }
 
@@ -41,7 +41,7 @@ impl HyperConnServer for Http1Builder {
     where
         IO: Stream,
         State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
@@ -82,7 +82,7 @@ impl HyperConnServer for Http2Builder<Executor> {
     where
         IO: Stream,
         State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
@@ -123,7 +123,7 @@ impl HyperConnServer for AutoBuilder<Executor> {
     where
         IO: Stream,
         State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
