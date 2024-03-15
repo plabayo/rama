@@ -24,15 +24,20 @@ use rama::{
             trace::TraceLayer,
             upgrade::{UpgradeLayer, Upgraded},
         },
-        matcher::MethodFilter,
+        matcher::{DomainFilter, MethodFilter},
+        response::Json,
         server::HttpServer,
-        service::web::extract::{FromRequestParts, Host},
+        service::web::{
+            extract::{FromRequestParts, Host},
+            WebService,
+        },
         Body, IntoResponse, Request, Response, StatusCode,
     },
     rt::Executor,
-    service::{service_fn, Context, Service, ServiceBuilder},
+    service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
     tcp::utils::is_connection_error,
 };
+use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -60,6 +65,16 @@ async fn main() {
                 "127.0.0.1:8080",
                 ServiceBuilder::new()
                     .layer(TraceLayer::new_for_http())
+                    // example of how one might insert an API layer into their proxy
+                    .layer(HijackLayer::new(
+                        DomainFilter::new("echo.example"),
+                        WebService::default().get("/*", |req: Request| async move {
+                            Json(json!({
+                                "method": req.method().as_str(),
+                                "path": req.uri().path(),
+                            }))
+                        }),
+                    ))
                     .layer(UpgradeLayer::new(
                         MethodFilter::CONNECT,
                         service_fn(http_connect_accept),
