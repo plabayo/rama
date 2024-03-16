@@ -8,9 +8,10 @@ use rama::{
     service::Context,
     tls::rustls::server::IncomingClientHello,
 };
+use serde::Serialize;
 use std::str::FromStr;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[allow(dead_code)]
 pub enum FetchMode {
     Cors,
@@ -48,7 +49,7 @@ impl FromStr for FetchMode {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[allow(dead_code)]
 pub enum ResourceType {
     #[default]
@@ -67,7 +68,7 @@ impl std::fmt::Display for ResourceType {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize)]
 #[allow(dead_code)]
 pub enum Initiator {
     #[default]
@@ -88,7 +89,7 @@ impl std::fmt::Display for Initiator {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct DataSource {
     pub name: String,
     pub version: String,
@@ -103,7 +104,7 @@ impl Default for DataSource {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize)]
 pub struct RequestInfo {
     pub user_agent: Option<String>,
     pub version: String,
@@ -171,11 +172,17 @@ pub async fn get_request_info(
     }
 }
 
-pub fn get_headers(req: &Request) -> Vec<(String, String)> {
+#[derive(Debug, Clone, Serialize)]
+pub struct HttpInfo {
+    pub headers: Vec<(String, String)>,
+}
+
+pub fn get_http_info(req: &Request) -> HttpInfo {
     // TODO: get in correct order
     // TODO: get in correct case
     // TODO: get also pseudo headers (or separate?!)
-    req.headers()
+    let headers = req
+        .headers()
         .iter()
         .map(|(name, value)| {
             (
@@ -183,5 +190,7 @@ pub fn get_headers(req: &Request) -> Vec<(String, String)> {
                 value.to_str().map(|v| v.to_owned()).unwrap_or_default(),
             )
         })
-        .collect()
+        .collect();
+
+    HttpInfo { headers }
 }

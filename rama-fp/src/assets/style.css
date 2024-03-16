@@ -97,3 +97,31 @@ main h1 {
     padding: 10px 20px;
     border: 1px solid black;
 }
+
+.button {
+    padding: 10px 20px;
+    border: 1px solid black;
+    background-color: lightgray;
+    cursor: pointer;
+    color: black;
+    font-weight: bold;
+}
+
+.controls {
+    margin: 20px auto;
+    padding: 10px;
+    width: fit-content;
+}
+
+.button:hover {
+    background-color: lightblue;
+}
+
+.button:visited {
+    color: black;
+}
+
+.small {
+    font-size: 0.8em;
+    color: darkgrey;
+}

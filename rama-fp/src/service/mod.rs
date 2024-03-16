@@ -1,12 +1,16 @@
 use rama::{
     http::{
         layer::{compression::CompressionLayer, trace::TraceLayer},
+        matcher::HttpMatcher,
+        response::Redirect,
         server::HttpServer,
         service::web::{k8s_health, WebService},
+        HeaderName, IntoResponse,
     },
     rt::Executor,
     service::{
-        layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
+        layer::{limit::policy::ConcurrentPolicy, HijackLayer, LimitLayer, TimeoutLayer},
+        service_fn,
         util::backoff::ExponentialBackoff,
         ServiceBuilder,
     },
@@ -69,13 +73,18 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let https_address = format!("{}:{}", cfg.interface, cfg.secure_port);
 
     graceful.spawn_task_fn(|guard| async move {
-        let http_service = ServiceBuilder::new()
-            .layer(TraceLayer::new_for_http())
-            .layer(CompressionLayer::new())
+        let inner_http_service = ServiceBuilder::new()
+            .layer(HijackLayer::new(
+                HttpMatcher::header_exists(HeaderName::from_static("referer"))
+                    .and_header_exists(HeaderName::from_static("cookie"))
+                    .negate(),
+                service_fn(|| async move {
+                    Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
+                }),
+            ))
             .service(
                 WebService::default()
-                    // Navigate
-                    .get("/", endpoints::get_root)
+                    .not_found(Redirect::temporary("/consent"))
                     .get("/report", endpoints::get_report)
                     // XHR
                     .get("/api/fetch/number", endpoints::get_api_fetch_number)
@@ -93,10 +102,22 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     )
                     // Form
                     .get("/form", endpoints::form)
-                    .post("/form", endpoints::form)
+                    .post("/form", endpoints::form),
+            );
+
+        let http_service = ServiceBuilder::new()
+            .layer(TraceLayer::new_for_http())
+            .layer(CompressionLayer::new())
+            .service(
+                WebService::default()
+                    // Navigate
+                    .get("/", endpoints::get_root)
+                    .get("/consent", endpoints::get_consent)
                     // Assets
                     .get("/assets/style.css", endpoints::get_assets_style)
-                    .get("/assets/script.js", endpoints::get_assets_script),
+                    .get("/assets/script.js", endpoints::get_assets_script)
+                    // Fingerprint Endpoints
+                    .nest("/", inner_http_service),
             );
 
         let tcp_service_builder = ServiceBuilder::new()

@@ -1,11 +1,16 @@
 use super::{
     data::{
-        get_headers, get_request_info, DataSource, FetchMode, Initiator, RequestInfo, ResourceType,
+        get_http_info, get_request_info, DataSource, FetchMode, Initiator, RequestInfo,
+        ResourceType,
     },
     State,
 };
 use rama::{
-    http::{response::Json, service::web::extract::Path, Body, Request, Response, StatusCode},
+    http::{
+        response::Json,
+        service::web::extract::{FromRequestParts, Path},
+        Body, Request, Response, StatusCode,
+    },
     service::Context,
 };
 use serde::Deserialize;
@@ -21,31 +26,40 @@ fn html<T: Into<String>>(inner: T) -> Html {
 // endpoints: navigations
 //------------------------------------------
 
-pub async fn get_root(ctx: Context<State>, req: Request) -> Response {
-    let (parts, _) = req.into_parts();
-
-    let request_info = get_request_info(
-        FetchMode::Navigate,
-        ResourceType::Document,
-        Initiator::Navigator,
-        &ctx,
-        &parts,
-    )
-    .await;
-
+pub async fn get_root() -> Response {
     Response::builder()
         .status(StatusCode::TEMPORARY_REDIRECT)
-        .header("Location", format!("{}://{}/report", request_info.scheme, request_info.host.unwrap_or_default()))
+        .header("Location", "/consent")
         .header("Set-Cookie", "rama-fp=0.2.0; Max-Age=60")
-        .header("Accept-Ch", "Width, Downlink, Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Full-Version, ECT, Save-Data, Sec-CH-UA-Platform, Sec-CH-Prefers-Reduced-Motion, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Platform-Version, Sec-CH-UA-Prefers-Color-Scheme, Device-Memory, RTT, Sec-GPC")
+        .header("Accept-Ch", "Width, Downlink, Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Full-Version, ETC, Save-Data, Sec-CH-UA-Platform, Sec-CH-Prefers-Reduced-Motion, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Platform-Version, Sec-CH-UA-Prefers-Color-Scheme, Device-Memory, RTT, Sec-GPC")
         .body(Body::empty())
         .expect("build redirect response")
 }
 
+pub async fn get_consent() -> Html {
+    render_page(
+        "🕵️ Fingerprint Consent",
+        String::new(),
+        format!(
+            r##"<div class="consent">
+                <div class="controls">
+                    <a class="button" href="/report">Get Fingerprint Report</a>
+                </div>
+                <div class="small">
+                    <p>
+                        By clicking on the button above, you agree that we will store fingerprint information about your network traffic. We are only interested in the HTTP and TLS traffic sent by you. This information will be stored in a database for later processing.
+                    </p>
+                    <p>
+                        Please note that we do not store IP information and we do not use third-party tracking cookies. However, it is possible that the telecom or hosting services used by you or us may track some personalized information, over which we have no control or desire. You can use utilities like the Unix `dig` command to analyze the traffic and determine what might be tracked.
+                    </p>
+                </div>
+            </div>"##,
+        ),
+    )
+}
+
 pub async fn get_report(ctx: Context<State>, req: Request) -> Html {
-    // TODO: get TLS Info (for https access only)
-    // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
-    let headers = get_headers(&req);
+    let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
 
@@ -69,7 +83,7 @@ pub async fn get_report(ctx: Context<State>, req: Request) -> Html {
             request_info.into(),
             Table {
                 title: "🚗 Http Headers".to_owned(),
-                rows: headers,
+                rows: http_info.headers,
             },
         ],
     )
@@ -84,68 +98,117 @@ pub struct APINumberParams {
     number: usize,
 }
 
-pub async fn get_api_fetch_number(ctx: Context<State>, _req: Request) -> Json<serde_json::Value> {
-    // let request_info = get_request_info(
-    //     FetchMode::SameOrigin,
-    //     ResourceType::Xhr,
-    //     Initiator::Fetch,
-    //     &req,
-    // );
-    // let headers = get_headers(&req);
+pub async fn get_api_fetch_number(ctx: Context<State>, req: Request) -> Json<serde_json::Value> {
+    let http_info = get_http_info(&req);
+
+    let (parts, _) = req.into_parts();
+
+    let request_info = get_request_info(
+        FetchMode::SameOrigin,
+        ResourceType::Xhr,
+        Initiator::Fetch,
+        &ctx,
+        &parts,
+    )
+    .await;
 
     Json(json!({
         "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        "fp": {
+            "headers": http_info.headers,
+            "request_info": request_info,
+        }
     }))
 }
 
-pub async fn post_api_fetch_number(
-    Path(params): Path<APINumberParams>,
-    _req: Request,
-) -> Json<serde_json::Value> {
-    // let request_info = get_request_info(
-    //     FetchMode::SameOrigin,
-    //     ResourceType::Xhr,
-    //     Initiator::Fetch,
-    //     &req,
-    // );
-    // let headers = get_headers(&req);
+pub async fn post_api_fetch_number(ctx: Context<State>, req: Request) -> Json<serde_json::Value> {
+    let http_info = get_http_info(&req);
+
+    let (parts, _) = req.into_parts();
+
+    let number = match Path::<APINumberParams>::from_request_parts(&ctx, &parts).await {
+        Ok(params) => params.number,
+        Err(e) => {
+            tracing::error!("Failed to parse number: {:?}", e);
+            0
+        }
+    };
+
+    let request_info = get_request_info(
+        FetchMode::SameOrigin,
+        ResourceType::Xhr,
+        Initiator::Fetch,
+        &ctx,
+        &parts,
+    )
+    .await;
 
     Json(json!({
-        "number": params.number,
+        "number": number,
+        "fp": {
+            "headers": http_info.headers,
+            "request_info": request_info,
+        }
     }))
 }
 
 pub async fn get_api_xml_http_request_number(
     ctx: Context<State>,
-    _req: Request,
+    req: Request,
 ) -> Json<serde_json::Value> {
-    // let request_info = get_request_info(
-    //     FetchMode::SameOrigin,
-    //     ResourceType::Xhr,
-    //     Initiator::XMLHttpRequest,
-    //     &req,
-    // );
-    // let headers = get_headers(&req);
+    let http_info = get_http_info(&req);
+
+    let (parts, _) = req.into_parts();
+
+    let request_info = get_request_info(
+        FetchMode::SameOrigin,
+        ResourceType::Xhr,
+        Initiator::Fetch,
+        &ctx,
+        &parts,
+    )
+    .await;
 
     Json(json!({
         "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        "fp": {
+            "headers": http_info.headers,
+            "request_info": request_info,
+        }
     }))
 }
 
 pub async fn post_api_xml_http_request_number(
-    Path(params): Path<APINumberParams>,
-    _req: Request,
+    ctx: Context<State>,
+    req: Request,
 ) -> Json<serde_json::Value> {
-    // let request_info = get_request_info(
-    //     FetchMode::SameOrigin,
-    //     ResourceType::Xhr,
-    //     Initiator::XMLhttp://localhost:8080/HttpRequest,
-    //     &req,
-    // );
-    // let headers = get_headers(&req);
+    let http_info = get_http_info(&req);
+
+    let (parts, _) = req.into_parts();
+
+    let number = match Path::<APINumberParams>::from_request_parts(&ctx, &parts).await {
+        Ok(params) => params.number,
+        Err(e) => {
+            tracing::error!("Failed to parse number: {:?}", e);
+            0
+        }
+    };
+
+    let request_info = get_request_info(
+        FetchMode::SameOrigin,
+        ResourceType::Xhr,
+        Initiator::Fetch,
+        &ctx,
+        &parts,
+    )
+    .await;
 
     Json(json!({
-        "number": params.number,
+        "number": number,
+        "fp": {
+            "headers": http_info.headers,
+            "request_info": request_info,
+        }
     }))
 }
 
@@ -157,7 +220,7 @@ pub async fn form(ctx: Context<State>, req: Request) -> Html {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
 
-    let headers = get_headers(&req);
+    let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
 
@@ -198,7 +261,7 @@ pub async fn form(ctx: Context<State>, req: Request) -> Html {
             request_info.into(),
             Table {
                 title: "🚗 Http Headers".to_owned(),
-                rows: headers,
+                rows: http_info.headers,
             },
         ],
     )
@@ -286,7 +349,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
         <body>
             <main>
                 <h1>
-                    <a href="/report" title="rama-fp home">ラマ</a>
+                    <a href="/consent" title="rama-fp home">ラマ</a>
                     &nbsp;
                     |
                     &nbsp;
