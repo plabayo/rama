@@ -18,11 +18,21 @@ struct Cli {
     /// the interface to listen on
     #[arg(short, long, default_value = "127.0.0.1")]
     interface: String,
+
+    /// http version to serve FP Service from
+    #[arg(long, default_value = "auto")]
+    http_version: String,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
-    service::run(args.interface, args.port, args.health_port).await
+    service::run(
+        args.interface,
+        args.port,
+        args.http_version,
+        args.health_port,
+    )
+    .await
 }

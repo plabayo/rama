@@ -35,4 +35,12 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 `rama-fp` is a fingerprint web service and collector to facilate user agent emulation and validation.
 
-Hosted at <https://fp.ramaproxy.org>.
+Hosted at:
+
+- <http://fp.ramaproxy.org>
+- <https://fp.ramaproxy.org>
+
+Also hosted as http/1.1 only:
+
+- <http://h1.fp.ramaproxy.org>
+- <https://h1.fp.ramaproxy.org>
