@@ -31,7 +31,29 @@ pub async fn get_root() -> Response {
         .status(StatusCode::TEMPORARY_REDIRECT)
         .header("Location", "/consent")
         .header("Set-Cookie", "rama-fp=0.2.0; Max-Age=60")
-        .header("Accept-Ch", "Width, Downlink, Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Full-Version, ETC, Save-Data, Sec-CH-UA-Platform, Sec-CH-Prefers-Reduced-Motion, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Platform-Version, Sec-CH-UA-Prefers-Color-Scheme, Device-Memory, RTT, Sec-GPC")
+        .header(
+            "Accept-Ch",
+            [
+                "Width",
+                "Downlink",
+                "Sec-CH-UA",
+                "Sec-CH-UA-Mobile",
+                "Sec-CH-UA-Full-Version",
+                "ETC",
+                "Save-Data",
+                "Sec-CH-UA-Platform",
+                "Sec-CH-Prefers-Reduced-Motion",
+                "Sec-CH-UA-Arch",
+                "Sec-CH-UA-Bitness",
+                "Sec-CH-UA-Model",
+                "Sec-CH-UA-Platform-Version",
+                "Sec-CH-UA-Prefers-Color-Scheme",
+                "Device-Memory",
+                "RTT",
+                "Sec-GPC",
+            ]
+            .join(", "),
+        )
         .body(Body::empty())
         .expect("build redirect response")
 }
