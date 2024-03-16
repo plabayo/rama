@@ -5,7 +5,7 @@ use super::{
     State,
 };
 use rama::{
-    http::{response::Json, service::web::extract::Path, Request, Response, StatusCode},
+    http::{response::Json, service::web::extract::Path, Body, Request, Response, StatusCode},
     service::Context,
 };
 use serde::Deserialize;
@@ -21,7 +21,28 @@ fn html<T: Into<String>>(inner: T) -> Html {
 // endpoints: navigations
 //------------------------------------------
 
-pub async fn get_root(ctx: Context<State>, req: Request) -> Html {
+pub async fn get_root(ctx: Context<State>, req: Request) -> Response {
+    let (parts, _) = req.into_parts();
+
+    let request_info = get_request_info(
+        FetchMode::Navigate,
+        ResourceType::Document,
+        Initiator::Navigator,
+        &ctx,
+        &parts,
+    )
+    .await;
+
+    Response::builder()
+        .status(StatusCode::TEMPORARY_REDIRECT)
+        .header("Location", format!("{}://{}/report", request_info.scheme, request_info.host.unwrap_or_default()))
+        .header("Set-Cookie", "rama-fp=0.2.0; Max-Age=60")
+        .header("Accept-Ch", "Width, Downlink, Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Full-Version, ECT, Save-Data, Sec-CH-UA-Platform, Sec-CH-Prefers-Reduced-Motion, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Platform-Version, Sec-CH-UA-Prefers-Color-Scheme, Device-Memory, RTT, Sec-GPC")
+        .body(Body::empty())
+        .expect("build redirect response")
+}
+
+pub async fn get_report(ctx: Context<State>, req: Request) -> Html {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
     let headers = get_headers(&req);

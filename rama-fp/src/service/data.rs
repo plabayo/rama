@@ -128,7 +128,14 @@ pub async fn get_request_info(
         .await
         .ok()
         .map(|h| h.0)
-        .or_else(|| parts.uri.host().map(|v| v.to_string()));
+        .or_else(|| parts.uri.host().map(|v| v.to_string()))
+        .map(|host| {
+            if !host.contains(':') && parts.uri.port_u16().is_some() {
+                format!("{}:{}", host, parts.uri.port_u16().unwrap())
+            } else {
+                host
+            }
+        });
 
     RequestInfo {
         user_agent: parts

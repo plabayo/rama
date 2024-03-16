@@ -1,10 +1,8 @@
 use rama::{
     http::{
-        dep::http::Response,
         layer::{compression::CompressionLayer, trace::TraceLayer},
         server::HttpServer,
         service::web::{k8s_health, WebService},
-        Body, StatusCode,
     },
     rt::Executor,
     service::{
@@ -77,16 +75,8 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             .service(
                 WebService::default()
                     // Navigate
-                    .get("/", || async move {
-                        Response::builder()
-                        .status(StatusCode::TEMPORARY_REDIRECT)
-                        .header("Location", "/report")
-                        .header("Set-Cookie", "rama-fp=0.2.0; Max-Age=60")
-                        .header("Accept-Ch", "Width, Downlink, Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Full-Version, ECT, Save-Data, Sec-CH-UA-Platform, Sec-CH-Prefers-Reduced-Motion, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Platform-Version, Sec-CH-UA-Prefers-Color-Scheme, Device-Memory, RTT, Sec-GPC")
-                        .body(Body::empty())
-                        .expect("build redirect response")
-                    })
-                    .get("/report", endpoints::get_root)
+                    .get("/", endpoints::get_root)
+                    .get("/report", endpoints::get_report)
                     // XHR
                     .get("/api/fetch/number", endpoints::get_api_fetch_number)
                     .post(
@@ -116,7 +106,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 }
                 Ok::<_, Infallible>(())
             })
-            .layer(TimeoutLayer::new(Duration::from_secs(8)))
+            .layer(TimeoutLayer::new(Duration::from_secs(16)))
             // Why the below layer makes it no longer cloneable?!?!
             .layer(LimitLayer::new(ConcurrentPolicy::with_backoff(
                 2048,
