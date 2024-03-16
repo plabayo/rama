@@ -274,8 +274,6 @@ pub async fn form(ctx: Context<State>, req: Request) -> Html {
 const STYLE_CSS: &str = include_str!("../assets/style.css");
 
 pub async fn get_assets_style() -> Response {
-    // TODO: do we need to also track this? As What?!
-
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/css")
@@ -286,8 +284,6 @@ pub async fn get_assets_style() -> Response {
 const SCRIPT_JS: &str = include_str!("../assets/script.js");
 
 pub async fn get_assets_script() -> Response {
-    // TODO: do we need to also track this? As What?!
-
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/javascript")
