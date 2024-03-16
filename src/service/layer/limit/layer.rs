@@ -14,6 +14,17 @@ impl<P> LimitLayer<P> {
     }
 }
 
+impl<P> Clone for LimitLayer<P>
+where
+    P: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            policy: self.policy.clone(),
+        }
+    }
+}
+
 impl<T, P> Layer<T> for LimitLayer<P>
 where
     P: Clone,

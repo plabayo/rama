@@ -124,7 +124,7 @@ pub async fn get_request_info(
     ctx: &Context<State>,
     parts: &Parts,
 ) -> RequestInfo {
-    let host = Host::from_request_parts(&ctx, &parts)
+    let host = Host::from_request_parts(ctx, parts)
         .await
         .ok()
         .map(|h| h.0)

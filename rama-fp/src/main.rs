@@ -22,17 +22,27 @@ struct Cli {
     /// http version to serve FP Service from
     #[arg(long, default_value = "auto")]
     http_version: String,
+
+    /// directory of the TLS certificate to use
+    #[arg(long)]
+    tls_cert_dir: Option<String>,
+
+    /// the port to listen on for the TLS service
+    #[arg(short, long, default_value = "8443")]
+    secure_port: u16,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
-    service::run(
-        args.interface,
-        args.port,
-        args.http_version,
-        args.health_port,
-    )
+    service::run(service::Config {
+        interface: args.interface,
+        port: args.port,
+        http_version: args.http_version,
+        health_port: args.health_port,
+        tls_cert_dir: args.tls_cert_dir,
+        secure_port: args.secure_port,
+    })
     .await
 }

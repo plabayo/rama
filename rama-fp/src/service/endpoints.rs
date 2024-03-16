@@ -151,7 +151,7 @@ pub async fn form(ctx: Context<State>, req: Request) -> Html {
 
     let mut content = String::new();
 
-    content.push_str(r##"<a href="/" title="Back to Home">🏠 Back to Home...</a>"##);
+    content.push_str(r##"<a href="/report" title="Back to Home">🏠 Back to Home...</a>"##);
 
     if parts.method == "POST" {
         content.push_str(
@@ -265,7 +265,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
         <body>
             <main>
                 <h1>
-                    <a href="/" title="rama-fp home">ラマ</a>
+                    <a href="/report" title="rama-fp home">ラマ</a>
                     &nbsp;
                     |
                     &nbsp;
