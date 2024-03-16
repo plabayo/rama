@@ -20,7 +20,7 @@ use rama::{
             pemfile,
             rustls::{KeyLogFile, ServerConfig},
         },
-        server::TlsAcceptorLayer,
+        server::{TlsAcceptorLayer, TlsClientConfigHandler},
     },
 };
 use std::{convert::Infallible, io::BufReader, sync::Arc, time::Duration};
@@ -147,9 +147,13 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             let server_config = get_server_config(tls_cert_dir.as_str(), cfg.http_version.as_str())
                 .await
                 .expect("read rama-fp TLS server config");
-            let tls_service_builder = tcp_service_builder
-                .clone()
-                .layer(TlsAcceptorLayer::new(server_config));
+            let tls_service_builder =
+                tcp_service_builder
+                    .clone()
+                    .layer(TlsAcceptorLayer::with_client_config_handler(
+                        server_config,
+                        TlsClientConfigHandler::default().store_client_hello(),
+                    ));
 
             let http_version = cfg.http_version.clone();
             guard.spawn_task_fn(|guard| async move {

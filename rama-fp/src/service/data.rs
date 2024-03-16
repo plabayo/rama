@@ -194,3 +194,34 @@ pub fn get_http_info(req: &Request) -> HttpInfo {
 
     HttpInfo { headers }
 }
+
+#[derive(Debug, Clone, Serialize)]
+pub struct TlsInfo {
+    pub server_name: Option<String>,
+    pub signature_schemes: Vec<String>,
+    pub alpn: Option<Vec<Vec<u8>>>,
+    pub cipher_suites: Vec<String>,
+}
+
+// TODO: important to not extract these as strings, but instead as a custom struct,
+// so we can store them in DB as their raw value, for use emulation,
+// because unknown for rustls might be known for boringssl, etc...
+
+pub fn get_tls_info(ctx: &Context<State>) -> Option<TlsInfo> {
+    let client_hello: &IncomingClientHello = ctx.get()?;
+
+    Some(TlsInfo {
+        server_name: client_hello.server_name.clone(),
+        signature_schemes: client_hello
+            .signature_schemes
+            .iter()
+            .map(|v| format!("{:?}", v))
+            .collect(),
+        alpn: client_hello.alpn.clone(),
+        cipher_suites: client_hello
+            .cipher_suites
+            .iter()
+            .map(|v| format!("{:?}", v))
+            .collect(),
+    })
+}

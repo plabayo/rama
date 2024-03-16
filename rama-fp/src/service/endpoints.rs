@@ -1,7 +1,7 @@
 use super::{
     data::{
-        get_http_info, get_request_info, DataSource, FetchMode, Initiator, RequestInfo,
-        ResourceType,
+        get_http_info, get_request_info, get_tls_info, DataSource, FetchMode, Initiator,
+        RequestInfo, ResourceType, TlsInfo,
     },
     State,
 };
@@ -62,21 +62,19 @@ pub async fn get_consent() -> Html {
     render_page(
         "🕵️ Fingerprint Consent",
         String::new(),
-        format!(
-            r##"<div class="consent">
-                <div class="controls">
-                    <a class="button" href="/report">Get Fingerprint Report</a>
-                </div>
-                <div class="small">
-                    <p>
-                        By clicking on the button above, you agree that we will store fingerprint information about your network traffic. We are only interested in the HTTP and TLS traffic sent by you. This information will be stored in a database for later processing.
-                    </p>
-                    <p>
-                        Please note that we do not store IP information and we do not use third-party tracking cookies. However, it is possible that the telecom or hosting services used by you or us may track some personalized information, over which we have no control or desire. You can use utilities like the Unix `dig` command to analyze the traffic and determine what might be tracked.
-                    </p>
-                </div>
-            </div>"##,
-        ),
+        r##"<div class="consent">
+            <div class="controls">
+                <a class="button" href="/report">Get Fingerprint Report</a>
+            </div>
+            <div class="small">
+                <p>
+                    By clicking on the button above, you agree that we will store fingerprint information about your network traffic. We are only interested in the HTTP and TLS traffic sent by you. This information will be stored in a database for later processing.
+                </p>
+                <p>
+                    Please note that we do not store IP information and we do not use third-party tracking cookies. However, it is possible that the telecom or hosting services used by you or us may track some personalized information, over which we have no control or desire. You can use utilities like the Unix `dig` command to analyze the traffic and determine what might be tracked.
+                </p>
+            </div>
+        </div>"##.to_owned(),
     )
 }
 
@@ -96,19 +94,21 @@ pub async fn get_report(ctx: Context<State>, req: Request) -> Html {
 
     let head = r#"<script src="/assets/script.js"></script>"#.to_owned();
 
-    render_report(
-        "🕵️ Fingerprint Report",
-        head,
-        String::new(),
-        vec![
-            ctx.state().data_source.clone().into(),
-            request_info.into(),
-            Table {
-                title: "🚗 Http Headers".to_owned(),
-                rows: http_info.headers,
-            },
-        ],
-    )
+    let mut tables = vec![
+        ctx.state().data_source.clone().into(),
+        request_info.into(),
+        Table {
+            title: "🚗 Http Headers".to_owned(),
+            rows: http_info.headers,
+        },
+    ];
+
+    let tls_info = get_tls_info(&ctx);
+    if let Some(tls_info) = tls_info {
+        tables.push(tls_info.into());
+    }
+
+    render_report("🕵️ Fingerprint Report", head, String::new(), tables)
 }
 
 //------------------------------------------
@@ -134,11 +134,14 @@ pub async fn get_api_fetch_number(ctx: Context<State>, req: Request) -> Json<ser
     )
     .await;
 
+    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+
     Json(json!({
         "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         "fp": {
-            "headers": http_info.headers,
             "request_info": request_info,
+            "tls_info": tls_info,
+            "http_info": http_info,
         }
     }))
 }
@@ -165,11 +168,14 @@ pub async fn post_api_fetch_number(ctx: Context<State>, req: Request) -> Json<se
     )
     .await;
 
+    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+
     Json(json!({
         "number": number,
         "fp": {
-            "headers": http_info.headers,
             "request_info": request_info,
+            "tls_info": tls_info,
+            "http_info": http_info,
         }
     }))
 }
@@ -225,11 +231,14 @@ pub async fn post_api_xml_http_request_number(
     )
     .await;
 
+    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+
     Json(json!({
         "number": number,
         "fp": {
-            "headers": http_info.headers,
             "request_info": request_info,
+            "tls_info": tls_info,
+            "http_info": http_info,
         }
     }))
 }
@@ -274,18 +283,25 @@ pub async fn form(ctx: Context<State>, req: Request) -> Html {
         );
     }
 
+    let mut tables = vec![
+        ctx.state().data_source.clone().into(),
+        request_info.into(),
+        Table {
+            title: "🚗 Http Headers".to_owned(),
+            rows: http_info.headers,
+        },
+    ];
+
+    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+    if let Some(tls_info) = tls_info {
+        tables.push(tls_info.into());
+    }
+
     render_report(
         "🕵️ Fingerprint Report » Form",
         String::new(),
         content,
-        vec![
-            ctx.state().data_source.clone().into(),
-            request_info.into(),
-            Table {
-                title: "🚗 Http Headers".to_owned(),
-                rows: http_info.headers,
-            },
-        ],
+        tables,
     )
 }
 
@@ -386,6 +402,36 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
     "#,
         head, title, content
     ))
+}
+
+impl From<TlsInfo> for Table {
+    fn from(info: TlsInfo) -> Self {
+        Self {
+            title: "🔒 TLS Info".to_owned(),
+            rows: vec![
+                (
+                    "Server Name".to_owned(),
+                    info.server_name.unwrap_or_default(),
+                ),
+                (
+                    "Signature Schemes".to_owned(),
+                    info.signature_schemes.join(", "),
+                ),
+                (
+                    "ALPN".to_owned(),
+                    info.alpn
+                        .map(|v| {
+                            v.iter()
+                                .map(|v| String::from_utf8_lossy(v).to_string())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default(),
+                ),
+                ("Cipher Suites".to_owned(), info.cipher_suites.join(", ")),
+            ],
+        }
+    }
 }
 
 impl From<RequestInfo> for Table {
