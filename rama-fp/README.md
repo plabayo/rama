@@ -37,13 +37,13 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 Hosted (via <https://fly.io>) at:
 
-- <http://fp.ramaproxy.org>
-- <https://fp.ramaproxy.org>
+- <http://fp.ramaproxy.org:80>
+- <https://fp.ramaproxy.org:443>
 
 Also hosted (via <https://fly.io>) as http/1.1 only:
 
-- <http://h1.fp.ramaproxy.org>
-- <https://h1.fp.ramaproxy.org>
+- <http://h1.fp.ramaproxy.org:80>
+- <https://h1.fp.ramaproxy.org:443>
 
 Available at Docker Hub (latest main branch commit):
 

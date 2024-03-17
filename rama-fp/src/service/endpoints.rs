@@ -38,10 +38,10 @@ pub async fn get_consent() -> impl IntoResponse {
                 <p>
                     This fingerprinting service is available using the following links:
                     <ul>
-                        <li><a href="http://fp.ramaproxy.org">http://fp.ramaproxy.org</a>: auto HTTP, plain-text</li>
-                        <li><a href="https://fp.ramaproxy.org">https://fp.ramaproxy.org</a>: auto HTTP, TLS</li>
-                        <li><a href="http://h1.fp.ramaproxy.org">http://h1.fp.ramaproxy.org</a>: HTTP/1.1 and below only, plain-text</li>
-                        <li><a href="https://h1.fp.ramaproxy.org">https://h1.fp.ramaproxy.org</a>: HTTP/1.1 and below only, TLS</li>
+                        <li><a href="http://fp.ramaproxy.org:80">http://fp.ramaproxy.org</a>: auto HTTP, plain-text</li>
+                        <li><a href="https://fp.ramaproxy.org:443">https://fp.ramaproxy.org</a>: auto HTTP, TLS</li>
+                        <li><a href="http://h1.fp.ramaproxy.org:80">http://h1.fp.ramaproxy.org</a>: HTTP/1.1 and below only, plain-text</li>
+                        <li><a href="https://h1.fp.ramaproxy.org:443">https://h1.fp.ramaproxy.org</a>: HTTP/1.1 and below only, TLS</li>
                     </ul>
                 </p>
                 <p>You can learn move about rama at in
