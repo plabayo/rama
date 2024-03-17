@@ -20,6 +20,7 @@ serde_json = "1.0"
 tokio = { version = "1.35", features = ["rt-multi-thread", "macros"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+base64 = { version = "0.22" }
 
 [[bin]]
 name = "rama-fp"

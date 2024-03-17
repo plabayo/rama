@@ -1,3 +1,4 @@
+use base64::Engine as _;
 use rama::{
     http::{
         layer::{compression::CompressionLayer, trace::TraceLayer},
@@ -35,6 +36,8 @@ mod state;
 pub use state::State;
 
 use self::state::ACMEData;
+
+const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
 #[derive(Debug)]
 pub struct Config {
@@ -268,14 +271,16 @@ async fn get_server_config(
     http_version: &str,
 ) -> anyhow::Result<ServerConfig> {
     // server TLS Certs
-    let mut pem = BufReader::new(tls_cert_pem_raw.as_bytes());
+    let tls_cert_pem_raw = BASE64.decode(tls_cert_pem_raw.as_bytes())?;
+    let mut pem = BufReader::new(&tls_cert_pem_raw[..]);
     let mut certs = Vec::new();
     for cert in pemfile::certs(&mut pem) {
         certs.push(cert.expect("parse mTLS client cert"));
     }
 
     // server TLS key
-    let mut key_reader = BufReader::new(tls_key_pem_raw.as_bytes());
+    let tls_key_pem_raw = BASE64.decode(tls_key_pem_raw.as_bytes())?;
+    let mut key_reader = BufReader::new(&tls_key_pem_raw[..]);
     let key = pemfile::private_key(&mut key_reader)
         .expect("read private key")
         .expect("private found");
