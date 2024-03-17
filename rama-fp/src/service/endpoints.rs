@@ -8,7 +8,7 @@ use super::{
 use rama::{
     http::{
         response::Json,
-        service::web::extract::{FromRequestParts, Path},
+        service::web::extract::{self, FromRequestParts, Path},
         Body, Request, Response, StatusCode,
     },
     service::Context,
@@ -109,6 +109,32 @@ pub async fn get_report(ctx: Context<State>, req: Request) -> Html {
     }
 
     render_report("🕵️ Fingerprint Report", head, String::new(), tables)
+}
+
+//------------------------------------------
+// endpoints: ACME
+//------------------------------------------
+
+#[derive(Debug, Deserialize)]
+pub struct AcmeChallengeParams {
+    token: String,
+}
+
+pub async fn get_acme_challenge(
+    extract::State(state): extract::State<State>,
+    Path(params): Path<AcmeChallengeParams>,
+) -> Response {
+    match state.acme.get_challenge(params.token) {
+        Some(challenge) => Response::builder()
+            .status(StatusCode::OK)
+            .header("content-type", "text/plain")
+            .body(challenge.to_owned().into())
+            .expect("build acme challenge response"),
+        None => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Body::empty())
+            .expect("build acme challenge response"),
+    }
 }
 
 //------------------------------------------
@@ -383,7 +409,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
         <body>
             <main>
                 <h1>
-                    <a href="/consent" title="rama-fp home">ラマ</a>
+                    <a href="/" title="rama-fp home">ラマ</a>
                     &nbsp;
                     |
                     &nbsp;

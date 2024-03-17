@@ -34,6 +34,8 @@ mod state;
 
 pub use state::State;
 
+use self::state::ACMEData;
+
 #[derive(Debug)]
 pub struct Config {
     pub interface: String,
@@ -55,6 +57,18 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
     let graceful = rama::graceful::Shutdown::default();
 
+    let acme_data = if let Some(raw_acme_data) = std::env::var("RAMA_FP_ACME_DATA").ok() {
+        let acme_data: Vec<_> = raw_acme_data.split(';').map(|s| {
+            let mut iter = s.trim().splitn(1, ',');
+            let key = iter.next().expect("acme data key");
+            let value = iter.next().expect("acme data value");
+            (key.to_owned(), value.to_owned())
+        }).collect();
+        ACMEData::with_challenges(acme_data)
+    } else {
+        ACMEData::default()
+    };
+
     let http_address = format!("{}:{}", cfg.interface, cfg.port);
     let https_address = format!("{}:{}", cfg.interface, cfg.secure_port);
 
@@ -65,12 +79,12 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     .and_header_exists(HeaderName::from_static("cookie"))
                     .negate(),
                 service_fn(|| async move {
-                    Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
+                    Ok::<_, Infallible>(Redirect::temporary("/").into_response())
                 }),
             ))
             .service(
                 WebService::default()
-                    .not_found(Redirect::temporary("/consent"))
+                    .not_found(Redirect::temporary("/"))
                     .get("/report", endpoints::get_report)
                     // XHR
                     .get("/api/fetch/number", endpoints::get_api_fetch_number)
@@ -99,6 +113,8 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     // Navigate
                     .get("/", endpoints::get_root)
                     .get("/consent", endpoints::get_consent)
+                    // ACME
+                    .get("/.well-known/acme-challenge/:token", endpoints::get_acme_challenge)
                     // Assets
                     .get("/assets/style.css", endpoints::get_assets_style)
                     .get("/assets/script.js", endpoints::get_assets_script)
@@ -124,7 +140,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
         // also spawn a TLS listener if tls_cert_dir is set
         if let Some(tls_cert_dir) = &cfg.tls_cert_dir {
-            let tls_listener = TcpListener::build_with_state(State::default())
+            let tls_listener = TcpListener::build_with_state(State::new(acme_data.clone()))
                 .bind(&https_address)
                 .await
                 .expect("bind TLS Listener");
@@ -188,7 +204,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             });
         }
 
-        let tcp_listener = TcpListener::build_with_state(State::default())
+        let tcp_listener = TcpListener::build_with_state(State::new(acme_data))
             .bind(&http_address)
             .await
             .expect("bind TCP Listener");
