@@ -1,12 +1,15 @@
 use base64::Engine as _;
 use rama::{
     http::{
-        layer::{compression::CompressionLayer, trace::TraceLayer},
+        layer::{
+            catch_panic::CatchPanicLayer, compression::CompressionLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer,
+        },
         matcher::HttpMatcher,
         response::Redirect,
         server::HttpServer,
         service::web::WebService,
-        HeaderName, IntoResponse, StatusCode,
+        HeaderName, HeaderValue, IntoResponse, StatusCode,
     },
     rt::Executor,
     service::{
@@ -113,10 +116,36 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let http_service = ServiceBuilder::new()
             .layer(TraceLayer::new_for_http())
             .layer(CompressionLayer::new())
+            .layer(CatchPanicLayer::new())
+            .layer(SetResponseHeaderLayer::if_not_present(
+                HeaderName::from_static("accept-ch"),
+                [
+                    "Width",
+                    "Downlink",
+                    "Sec-CH-UA",
+                    "Sec-CH-UA-Mobile",
+                    "Sec-CH-UA-Full-Version",
+                    "ETC",
+                    "Save-Data",
+                    "Sec-CH-UA-Platform",
+                    "Sec-CH-Prefers-Reduced-Motion",
+                    "Sec-CH-UA-Arch",
+                    "Sec-CH-UA-Bitness",
+                    "Sec-CH-UA-Model",
+                    "Sec-CH-UA-Platform-Version",
+                    "Sec-CH-UA-Prefers-Color-Scheme",
+                    "Device-Memory",
+                    "RTT",
+                    "Sec-GPC",
+                ]
+                .join(", ")
+                .parse::<HeaderValue>()
+                .expect("parse header value"),
+            ))
             .service(
                 WebService::default()
                     // Navigate
-                    .get("/", endpoints::get_root)
+                    .get("/", Redirect::temporary("/constent"))
                     .get("/consent", endpoints::get_consent)
                     // ACME
                     .get(
