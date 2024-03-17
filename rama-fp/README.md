@@ -35,12 +35,16 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 `rama-fp` is a fingerprint web service and collector to facilate user agent emulation and validation.
 
-Hosted at:
+Hosted (via <https://fly.io>) at:
 
 - <http://fp.ramaproxy.org>
 - <https://fp.ramaproxy.org>
 
-Also hosted as http/1.1 only:
+Also hosted (via <https://fly.io>) as http/1.1 only:
 
 - <http://h1.fp.ramaproxy.org>
 - <https://h1.fp.ramaproxy.org>
+
+Available at Docker Hub (latest main branch commit):
+
+- <https://hub.docker.com/repository/docker/glendc/rama-fp>

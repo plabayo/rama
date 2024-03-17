@@ -53,14 +53,11 @@ rama-fp-generate-self-signed-cert:
 watch-rama-fp *ARGS:
 	RUST_LOG=debug cargo watch -x 'run -p rama-fp -- {{ARGS}}'
 
-fly-update:
-	fly version update
+docker-build-rama-fp:
+	docker build -f rama-fp/infra/Dockerfile -t glendc/rama-fp:latest .
 
-fly-rama-fp:
-	fly deploy
-
-docker-build:
-    docker build -t rama:latest -f Dockerfile .
+docker-push-rama-fp: docker-build-rama-fp
+	docker push glendc/rama-fp:latest
 
 example NAME:
 		cargo run -p rama --example {{NAME}}
