@@ -168,12 +168,12 @@ where
 
 impl<E> std::error::Error for TlsAcceptorError<E>
 where
-    E: std::error::Error + 'static,
+    E: std::fmt::Debug + std::fmt::Display,
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             TlsAcceptorError::Accept(e) => Some(e),
-            TlsAcceptorError::Service(e) => Some(e),
+            TlsAcceptorError::Service(_) => None,
         }
     }
 }

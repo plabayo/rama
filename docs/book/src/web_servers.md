@@ -83,10 +83,15 @@ There's also a premade webservice that can be used as the health service for you
 - [http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs):
   built-in web service that can be used as a k8s health service for proxies deploying as a k8s deployment;
 
-And finally here some code examples that use the high level concepts of Request/State extractors and IntoResponse converters,
+The following are examples that use the high level concepts of Request/State extractors and IntoResponse converters,
 that you'll recognise from `axum`, just as available for `rama `services:
 
 - [http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
   a web service example showcasing how one might do a key value store web service using `Rama`;
 - [http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
+
+As a final example of a web service you can also read the [`rama-fp` source code](https://github.com/plabayo/rama/tree/main/rama-fp/src).
+This is the webservice behind the Rama fingerprinting service, which is used by the maintainers of 🦙 Rama (ラマ) to generate
+the UA emulation data for the Http and TLS layers. It is not meant to fingerprint humans or users. Instead it is meant to help
+automated processes look like a human.

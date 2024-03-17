@@ -1,3 +1,345 @@
-pub async fn run() -> anyhow::Result<()> {
+use base64::Engine as _;
+use rama::{
+    http::{
+        layer::{
+            catch_panic::CatchPanicLayer, compression::CompressionLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer,
+        },
+        matcher::HttpMatcher,
+        response::Redirect,
+        server::HttpServer,
+        service::web::WebService,
+        HeaderName, HeaderValue, IntoResponse, StatusCode,
+    },
+    rt::Executor,
+    service::{
+        layer::{limit::policy::ConcurrentPolicy, HijackLayer, LimitLayer, TimeoutLayer},
+        service_fn,
+        util::backoff::ExponentialBackoff,
+        ServiceBuilder,
+    },
+    tcp::server::TcpListener,
+    tls::rustls::{
+        dep::{
+            pemfile,
+            rustls::{KeyLogFile, ServerConfig},
+        },
+        server::{TlsAcceptorLayer, TlsClientConfigHandler},
+    },
+};
+use std::{convert::Infallible, io::BufReader, sync::Arc, time::Duration};
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+mod data;
+mod endpoints;
+mod report;
+mod state;
+
+pub use state::State;
+
+use self::state::ACMEData;
+
+const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
+
+#[derive(Debug)]
+pub struct Config {
+    pub interface: String,
+    pub port: u16,
+    pub secure_port: u16,
+    pub http_version: String,
+}
+
+pub async fn run(cfg: Config) -> anyhow::Result<()> {
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+
+    let graceful = rama::graceful::Shutdown::default();
+
+    let acme_data = if let Ok(raw_acme_data) = std::env::var("RAMA_FP_ACME_DATA") {
+        let acme_data: Vec<_> = raw_acme_data
+            .split(';')
+            .map(|s| {
+                let mut iter = s.trim().splitn(2, ',');
+                let key = iter.next().expect("acme data key");
+                let value = iter.next().expect("acme data value");
+                (key.to_owned(), value.to_owned())
+            })
+            .collect();
+        ACMEData::with_challenges(acme_data)
+    } else {
+        ACMEData::default()
+    };
+
+    let http_address = format!("{}:{}", cfg.interface, cfg.port);
+    let https_address = format!("{}:{}", cfg.interface, cfg.secure_port);
+
+    let ch_headers = [
+        "Width",
+        "Downlink",
+        "Sec-CH-UA",
+        "Sec-CH-UA-Mobile",
+        "Sec-CH-UA-Full-Version",
+        "ETC",
+        "Save-Data",
+        "Sec-CH-UA-Platform",
+        "Sec-CH-Prefers-Reduced-Motion",
+        "Sec-CH-UA-Arch",
+        "Sec-CH-UA-Bitness",
+        "Sec-CH-UA-Model",
+        "Sec-CH-UA-Platform-Version",
+        "Sec-CH-UA-Prefers-Color-Scheme",
+        "Device-Memory",
+        "RTT",
+        "Sec-GPC",
+    ]
+    .join(", ")
+    .parse::<HeaderValue>()
+    .expect("parse header value");
+
+    graceful.spawn_task_fn(|guard| async move {
+        let inner_http_service = ServiceBuilder::new()
+            .layer(HijackLayer::new(
+                HttpMatcher::header_exists(HeaderName::from_static("referer"))
+                    .and_header_exists(HeaderName::from_static("cookie"))
+                    .negate(),
+                service_fn(|| async move {
+                    Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
+                }),
+            ))
+            .service(
+                WebService::default()
+                    .not_found(Redirect::temporary("/consent"))
+                    .get("/report", endpoints::get_report)
+                    // XHR
+                    .get("/api/fetch/number", endpoints::get_api_fetch_number)
+                    .post(
+                        "/api/fetch/number/:number",
+                        endpoints::post_api_fetch_number,
+                    )
+                    .get(
+                        "/api/xml/number",
+                        endpoints::get_api_xml_http_request_number,
+                    )
+                    .post(
+                        "/api/xml/number/:number",
+                        endpoints::post_api_xml_http_request_number,
+                    )
+                    // Form
+                    .get("/form", endpoints::form)
+                    .post("/form", endpoints::form),
+            );
+
+        let http_service = ServiceBuilder::new()
+            .layer(TraceLayer::new_for_http())
+            .layer(CompressionLayer::new())
+            .layer(CatchPanicLayer::new())
+            .layer(SetResponseHeaderLayer::if_not_present(
+                HeaderName::from_static("accept-ch"),
+                ch_headers.clone(),
+            ))
+            .layer(SetResponseHeaderLayer::if_not_present(
+                HeaderName::from_static("critical-ch"),
+                ch_headers.clone(),
+            ))
+            .layer(SetResponseHeaderLayer::if_not_present(
+                HeaderName::from_static("vary"),
+                ch_headers,
+            ))
+            .service(
+                WebService::default()
+                    // Navigate
+                    .get("/", Redirect::temporary("/constent"))
+                    .get("/consent", endpoints::get_consent)
+                    // ACME
+                    .get(
+                        "/.well-known/acme-challenge/:token",
+                        endpoints::get_acme_challenge,
+                    )
+                    // Assets
+                    .get("/assets/style.css", endpoints::get_assets_style)
+                    .get("/assets/script.js", endpoints::get_assets_script)
+                    // Infrastructure — For Fly.io we can keep it very simple
+                    .get("/infra/health", StatusCode::OK)
+                    // Fingerprint Endpoints
+                    .nest("/", inner_http_service),
+            );
+
+        let tcp_service_builder = ServiceBuilder::new()
+            .map_result(|result| {
+                if let Err(err) = result {
+                    tracing::warn!(error = %err, "rama service failed");
+                }
+                Ok::<_, Infallible>(())
+            })
+            .layer(TimeoutLayer::new(Duration::from_secs(16)))
+            // Why the below layer makes it no longer cloneable?!?!
+            .layer(LimitLayer::new(ConcurrentPolicy::with_backoff(
+                2048,
+                ExponentialBackoff::default(),
+            )));
+
+        // also spawn a TLS listener if tls_cert_dir is set
+        if let Ok(tls_cert_pem_raw) = std::env::var("RAMA_FP_TLS_CRT") {
+            let tls_key_pem_raw = std::env::var("RAMA_FP_TLS_KEY").expect("RAMA_FP_TLS_KEY");
+
+            let tls_listener = TcpListener::build_with_state(State::new(acme_data.clone()))
+                .bind(&https_address)
+                .await
+                .expect("bind TLS Listener");
+
+            let http_service = http_service.clone();
+
+            // create tls service builder
+            let server_config =
+                get_server_config(tls_cert_pem_raw, tls_key_pem_raw, cfg.http_version.as_str())
+                    .await
+                    .expect("read rama-fp TLS server config");
+            let tls_service_builder =
+                tcp_service_builder
+                    .clone()
+                    .layer(TlsAcceptorLayer::with_client_config_handler(
+                        server_config,
+                        TlsClientConfigHandler::default().store_client_hello(),
+                    ));
+
+            let http_version = cfg.http_version.clone();
+            guard.spawn_task_fn(|guard| async move {
+                match http_version.as_str() {
+                    "" | "auto" => {
+                        tracing::info!("FP Secure Service (auto) listening on: {https_address}");
+                        tls_listener
+                            .serve_graceful(
+                                guard.clone(),
+                                tls_service_builder.service(
+                                    HttpServer::auto(Executor::graceful(guard))
+                                        .service(http_service),
+                                ),
+                            )
+                            .await;
+                    }
+                    "h1" | "http1" | "http/1" | "http/1.0" | "http/1.1" => {
+                        tracing::info!(
+                            "FP Secure Service (http/1.1) listening on: {https_address}"
+                        );
+                        tls_listener
+                            .serve_graceful(
+                                guard,
+                                tls_service_builder
+                                    .service(HttpServer::http1().service(http_service)),
+                            )
+                            .await;
+                    }
+                    "h2" | "http2" | "http/2" | "http/2.0" => {
+                        tracing::info!("FP Secure Service (h2) listening on: {https_address}");
+                        tls_listener
+                            .serve_graceful(
+                                guard.clone(),
+                                tls_service_builder.service(
+                                    HttpServer::h2(Executor::graceful(guard)).service(http_service),
+                                ),
+                            )
+                            .await;
+                    }
+                    _version => {
+                        panic!("unsupported http version: {http_version}")
+                    }
+                }
+            });
+        }
+
+        let tcp_listener = TcpListener::build_with_state(State::new(acme_data))
+            .bind(&http_address)
+            .await
+            .expect("bind TCP Listener");
+
+        match cfg.http_version.as_str() {
+            "" | "auto" => {
+                tracing::info!("FP Service (auto) listening on: {http_address}");
+                tcp_listener
+                    .serve_graceful(
+                        guard.clone(),
+                        tcp_service_builder.service(
+                            HttpServer::auto(Executor::graceful(guard)).service(http_service),
+                        ),
+                    )
+                    .await;
+            }
+            "h1" | "http1" | "http/1" | "http/1.0" | "http/1.1" => {
+                tracing::info!("FP Service (http/1.1) listening on: {http_address}");
+                tcp_listener
+                    .serve_graceful(
+                        guard,
+                        tcp_service_builder.service(HttpServer::http1().service(http_service)),
+                    )
+                    .await;
+            }
+            "h2" | "http2" | "http/2" | "http/2.0" => {
+                tracing::info!("FP Service (h2) listening on: {http_address}");
+                tcp_listener
+                    .serve_graceful(
+                        guard.clone(),
+                        tcp_service_builder.service(
+                            HttpServer::h2(Executor::graceful(guard)).service(http_service),
+                        ),
+                    )
+                    .await;
+            }
+            _version => {
+                panic!("unsupported http version: {}", cfg.http_version)
+            }
+        }
+    });
+
+    graceful
+        .shutdown_with_limit(Duration::from_secs(30))
+        .await?;
+
     Ok(())
+}
+
+async fn get_server_config(
+    tls_cert_pem_raw: String,
+    tls_key_pem_raw: String,
+    http_version: &str,
+) -> anyhow::Result<ServerConfig> {
+    // server TLS Certs
+    let tls_cert_pem_raw = BASE64.decode(tls_cert_pem_raw.as_bytes())?;
+    let mut pem = BufReader::new(&tls_cert_pem_raw[..]);
+    let mut certs = Vec::new();
+    for cert in pemfile::certs(&mut pem) {
+        certs.push(cert.expect("parse mTLS client cert"));
+    }
+
+    // server TLS key
+    let tls_key_pem_raw = BASE64.decode(tls_key_pem_raw.as_bytes())?;
+    let mut key_reader = BufReader::new(&tls_key_pem_raw[..]);
+    let key = pemfile::private_key(&mut key_reader)
+        .expect("read private key")
+        .expect("private found");
+
+    let mut server_config = ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)?;
+
+    // support key logging
+    if std::env::var("SSLKEYLOGFILE").is_ok() {
+        server_config.key_log = Arc::new(KeyLogFile::new());
+    }
+
+    // set ALPN protocols
+    server_config.alpn_protocols = match http_version {
+        "" | "auto" => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        "h2" | "http2" | "http/2" | "http/2.0" => vec![b"h2".to_vec()],
+        _ => vec![b"http/1.1".to_vec()],
+    };
+
+    // return the server config
+    Ok(server_config)
 }

@@ -1,0 +1,136 @@
+*,
+*::before,
+*::after {
+    box-sizing: border-box;
+}
+
+* {
+    margin: 0;
+}
+
+body {
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+img,
+picture,
+video,
+canvas,
+svg {
+    display: block;
+    max-width: 100%;
+}
+
+input,
+button,
+textarea,
+select {
+    font: inherit;
+}
+
+p,
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+    overflow-wrap: break-word;
+}
+
+h1 a {
+    text-decoration: none;
+    font-weight: bold;
+    color: darkblue;
+}
+
+#root,
+#__next {
+    isolation: isolate;
+}
+
+main {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 0 15px;
+}
+
+main h1 {
+    margin-bottom: 20px;
+}
+
+.report table {
+    margin-bottom: 20px;
+    table-layout: fixed;
+    border-collapse: collapse;
+    border-spacing: 0;
+    width: 100%;
+}
+
+.report td {
+    padding: 5px;
+    overflow-x: hidden;
+    word-break: break-word;
+}
+
+.report td.key {
+    width: 200px;
+    font-weight: bold;
+    background-color: lightpink;
+}
+
+.report tr {
+    display: block;
+    width: 100%;
+}
+
+.report tr:nth-child(odd) {
+    background-color: lightgray;
+}
+
+.report tr:not(:last-child) {
+    border-bottom: 1px solid #000;
+}
+
+#input {
+    margin: 0 auto;
+    width: fit-content;
+    padding: 10px 20px;
+    border: 1px solid black;
+}
+
+.section {
+    margin: 15px 0;
+    padding: 5px 0;
+    border-top: 1px solid grey;
+    border-bottom: 1px solid grey;
+}
+
+.button {
+    padding: 10px 20px;
+    border: 1px solid black;
+    background-color: lightgray;
+    cursor: pointer;
+    color: black;
+    font-weight: bold;
+}
+
+.controls {
+    margin: 20px auto;
+    padding: 10px;
+    width: fit-content;
+}
+
+.button:hover {
+    background-color: lightblue;
+}
+
+.button:visited {
+    color: black;
+}
+
+.small {
+    font-size: 0.8em;
+    color: darkgrey;
+}
