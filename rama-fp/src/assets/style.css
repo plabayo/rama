@@ -53,6 +53,7 @@ h1 a {
 main {
     max-width: 800px;
     margin: 0 auto;
+    padding: 0 15px;
 }
 
 main h1 {
@@ -61,9 +62,7 @@ main h1 {
 
 .report table {
     margin-bottom: 20px;
-}
-
-.report table {
+    table-layout: fixed;
     border-collapse: collapse;
     border-spacing: 0;
     width: 100%;
@@ -71,6 +70,8 @@ main h1 {
 
 .report td {
     padding: 5px;
+    overflow-x: hidden;
+    word-break: break-word;
 }
 
 .report td.key {
@@ -81,6 +82,7 @@ main h1 {
 
 .report tr {
     display: block;
+    width: 100%;
 }
 
 .report tr:nth-child(odd) {
@@ -96,6 +98,13 @@ main h1 {
     width: fit-content;
     padding: 10px 20px;
     border: 1px solid black;
+}
+
+.section {
+    margin: 15px 0;
+    padding: 5px 0;
+    border-top: 1px solid grey;
+    border-bottom: 1px solid grey;
 }
 
 .button {

@@ -9,7 +9,7 @@ use rama::{
     http::{
         response::Json,
         service::web::extract::{self, FromRequestParts, Path},
-        Body, Request, Response, StatusCode,
+        Body, IntoResponse, Request, Response, StatusCode,
     },
     service::Context,
 };
@@ -30,7 +30,6 @@ pub async fn get_root() -> Response {
     Response::builder()
         .status(StatusCode::TEMPORARY_REDIRECT)
         .header("Location", "/consent")
-        .header("Set-Cookie", "rama-fp=0.2.0; Max-Age=60")
         .header(
             "Accept-Ch",
             [
@@ -58,13 +57,27 @@ pub async fn get_root() -> Response {
         .expect("build redirect response")
 }
 
-pub async fn get_consent() -> Html {
-    render_page(
+pub async fn get_consent() -> impl IntoResponse {
+    ([("Set-Cookie", "rama-fp=0.2.0; Max-Age=60")], render_page(
         "🕵️ Fingerprint Consent",
         String::new(),
         r##"<div class="consent">
             <div class="controls">
                 <a class="button" href="/report">Get Fingerprint Report</a>
+            </div>
+            <div class="section">
+                <p>
+                    This fingerprinting service is available using the following links:
+                    <ul>
+                        <li><a href="http://fp.ramaproxy.org">http://fp.ramaproxy.org</a>: auto HTTP, plain-text</li>
+                        <li><a href="https://fp.ramaproxy.org">https://fp.ramaproxy.org</a>: auto HTTP, TLS</li>
+                        <li><a href="http://h1.fp.ramaproxy.org">http://h1.fp.ramaproxy.org</a>: HTTP/1.1 and below only, plain-text</li>
+                        <li><a href="https://h1.fp.ramaproxy.org">https://h1.fp.ramaproxy.org</a>: HTTP/1.1 and below only, TLS</li>
+                    </ul>
+                </p>
+                <p>You can learn move about rama at in
+                    <a href="https://ramaproxy.org/book">the rama book</a>.
+                </p>
             </div>
             <div class="small">
                 <p>
@@ -74,8 +87,8 @@ pub async fn get_consent() -> Html {
                     Please note that we do not store IP information and we do not use third-party tracking cookies. However, it is possible that the telecom or hosting services used by you or us may track some personalized information, over which we have no control or desire. You can use utilities like the Unix `dig` command to analyze the traffic and determine what might be tracked.
                 </p>
             </div>
-        </div>"##.to_owned(),
-    )
+        </div>"##.to_owned()
+    ))
 }
 
 pub async fn get_report(ctx: Context<State>, req: Request) -> Html {
@@ -416,7 +429,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
                     {}
                 </h1>
                 <div id="content">{}</div>
-                <div id="input"></div>
+                <div id="input" hidden></div>
                 <div id="banner">
                     <a href="https://ramaproxy.org" title="rama proxy website">
                         <img src="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg" alt="rama banner" />

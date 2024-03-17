@@ -61,7 +61,18 @@ Steps:
 ```sh
 sudo certbot certonly --manual -d fp.ramaproxy.org
 ```
-2. update the `RAMA_FP_ACME_DATA` SECRET in <https://fly.io> app config to enable and point to the new key/value ACME validation pair (format is `file_name=file_content`)
+2. update the `RAMA_FP_ACME_DATA` SECRET in <https://fly.io> app config to enable and point to the new key/value ACME validation pair (format is `file_name,file_content`)
 3. redeploy
 4. press `enter` in process started in step (1)
-5. TODO ...
+5. copy key and cert files, found at and to be made available as secrets at:
+  - `RAMA_FP_TLS_CRT`: `/etc/letsencrypt/live/fp.ramaproxy.org/fullchain.pem`
+  - `RAMA_FP_TLS_KEY`: `/etc/letsencrypt/live/fp.ramaproxy.org/privkey.pem`
+
+For now this process has to be repeated every 90 days, for both the `fp.*` and `h1.fp.*` subdomains.
+We can probably automate this already using a manual github action flow, given that `certbot` can be used
+from within docker and we can update secrets and redeploy using fly's API...
+
+But for now, given this only takes 5 minutes we can probably live with this manual process.
+Plus even better if we can add ACME support to rama's TLS capabilities and have it auto renew itself...
+There is no github ticket about this, but feel free to contact _glendc_ by mail or discord if you want
+to tackle this.

@@ -40,9 +40,8 @@ use self::state::ACMEData;
 pub struct Config {
     pub interface: String,
     pub port: u16,
-    pub http_version: String,
-    pub tls_cert_dir: Option<String>,
     pub secure_port: u16,
+    pub http_version: String,
 }
 
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
@@ -82,13 +81,12 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     .and_header_exists(HeaderName::from_static("cookie"))
                     .negate(),
                 service_fn(|| async move {
-                    Ok::<_, Infallible>(Redirect::temporary("/").into_response())
+                    Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
                 }),
             ))
             .service(
                 WebService::default()
-                    .not_found(Redirect::temporary("/"))
-                    .get("/consent", endpoints::get_consent)
+                    .not_found(Redirect::temporary("/consent"))
                     .get("/report", endpoints::get_report)
                     // XHR
                     .get("/api/fetch/number", endpoints::get_api_fetch_number)
@@ -116,6 +114,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 WebService::default()
                     // Navigate
                     .get("/", endpoints::get_root)
+                    .get("/consent", endpoints::get_consent)
                     // ACME
                     .get(
                         "/.well-known/acme-challenge/:token",
@@ -145,7 +144,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             )));
 
         // also spawn a TLS listener if tls_cert_dir is set
-        if let Some(tls_cert_dir) = &cfg.tls_cert_dir {
+        if let Ok(tls_cert_pem_raw) = std::env::var("RAMA_FP_TLS_CRT") {
+            let tls_key_pem_raw = std::env::var("RAMA_FP_TLS_KEY").expect("RAMA_FP_TLS_KEY");
+
             let tls_listener = TcpListener::build_with_state(State::new(acme_data.clone()))
                 .bind(&https_address)
                 .await
@@ -154,9 +155,10 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             let http_service = http_service.clone();
 
             // create tls service builder
-            let server_config = get_server_config(tls_cert_dir.as_str(), cfg.http_version.as_str())
-                .await
-                .expect("read rama-fp TLS server config");
+            let server_config =
+                get_server_config(tls_cert_pem_raw, tls_key_pem_raw, cfg.http_version.as_str())
+                    .await
+                    .expect("read rama-fp TLS server config");
             let tls_service_builder =
                 tcp_service_builder
                     .clone()
@@ -260,20 +262,20 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-async fn get_server_config(tls_cert_dir: &str, http_version: &str) -> anyhow::Result<ServerConfig> {
-    // Client mTLS Cert
-    let cert_path = format!("{tls_cert_dir}/rama-fp.crt");
-    let cert_content = tokio::fs::read(cert_path).await.expect("read TLS cert");
-    let mut pem = BufReader::new(&cert_content[..]);
+async fn get_server_config(
+    tls_cert_pem_raw: String,
+    tls_key_pem_raw: String,
+    http_version: &str,
+) -> anyhow::Result<ServerConfig> {
+    // server TLS Certs
+    let mut pem = BufReader::new(tls_cert_pem_raw.as_bytes());
     let mut certs = Vec::new();
     for cert in pemfile::certs(&mut pem) {
         certs.push(cert.expect("parse mTLS client cert"));
     }
 
-    // Client mTLS (private) Key
-    let key_path = format!("{tls_cert_dir}/rama-fp.key");
-    let key_content = tokio::fs::read(key_path).await.expect("read TLS key");
-    let mut key_reader = BufReader::new(&key_content[..]);
+    // server TLS key
+    let mut key_reader = BufReader::new(tls_key_pem_raw.as_bytes());
     let key = pemfile::private_key(&mut key_reader)
         .expect("read private key")
         .expect("private found");

@@ -117,7 +117,9 @@ async function main() {
                 <button type="submit">Submit</button>
             </form>
         `;
-        document.getElementById('input').innerHTML = formHtml;
+        const inputEl = document.getElementById('input');
+        inputEl.hidden = false;
+        inputEl.innerHTML = formHtml;
     } catch (error) {
         console.error('An error occurred:', error);
         alert('whoops');
