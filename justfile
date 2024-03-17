@@ -50,8 +50,14 @@ rama-fp-generate-self-signed-cert:
 		-keyout rama-fp/infra/rama-fp.key \
 		-out rama-fp/infra/rama-fp.crt
 
-watch-rama-fp:
-	RUST_LOG=debug cargo watch -x 'run -p rama-fp'
+watch-rama-fp *ARGS:
+	RUST_LOG=debug cargo watch -x 'run -p rama-fp -- {{ARGS}}'
+
+fly-update:
+	fly version update
+
+fly-rama-fp:
+	fly deploy
 
 docker-build:
     docker build -t rama:latest -f Dockerfile .

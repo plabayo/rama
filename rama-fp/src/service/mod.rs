@@ -4,8 +4,8 @@ use rama::{
         matcher::HttpMatcher,
         response::Redirect,
         server::HttpServer,
-        service::web::{k8s_health, WebService},
-        HeaderName, IntoResponse,
+        service::web::WebService,
+        HeaderName, IntoResponse, StatusCode,
     },
     rt::Executor,
     service::{
@@ -39,7 +39,6 @@ pub struct Config {
     pub interface: String,
     pub port: u16,
     pub http_version: String,
-    pub health_port: u16,
     pub tls_cert_dir: Option<String>,
     pub secure_port: u16,
 }
@@ -55,19 +54,6 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         .init();
 
     let graceful = rama::graceful::Shutdown::default();
-
-    let health_address = format!("{}:{}", cfg.interface, cfg.health_port);
-
-    graceful.spawn_task_fn(|guard| async move {
-        let exec = Executor::graceful(guard.clone());
-
-        tracing::info!("FP Health Service listening on: {health_address}");
-
-        HttpServer::auto(exec)
-            .listen_graceful(guard, health_address, k8s_health())
-            .await
-            .unwrap();
-    });
 
     let http_address = format!("{}:{}", cfg.interface, cfg.port);
     let https_address = format!("{}:{}", cfg.interface, cfg.secure_port);
@@ -116,6 +102,8 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     // Assets
                     .get("/assets/style.css", endpoints::get_assets_style)
                     .get("/assets/script.js", endpoints::get_assets_script)
+                    // Infrastructure — For Fly.io we can keep it very simple
+                    .get("/infra/health", StatusCode::OK)
                     // Fingerprint Endpoints
                     .nest("/", inner_http_service),
             );

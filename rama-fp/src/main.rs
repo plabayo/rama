@@ -11,10 +11,6 @@ struct Cli {
     #[arg(short, long, default_value = "8080")]
     port: u16,
 
-    /// the port to listen on for health checks
-    #[arg(long, default_value = "9999")]
-    health_port: u16,
-
     /// the interface to listen on
     #[arg(short, long, default_value = "127.0.0.1")]
     interface: String,
@@ -40,7 +36,6 @@ async fn main() -> anyhow::Result<()> {
         interface: args.interface,
         port: args.port,
         http_version: args.http_version,
-        health_port: args.health_port,
         tls_cert_dir: args.tls_cert_dir,
         secure_port: args.secure_port,
     })

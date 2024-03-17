@@ -1,0 +1,26 @@
+# fly.toml app configuration file generated for rama-fp on 2024-03-17T09:26:54+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
+app = 'rama-fp'
+primary_region = 'lhr'
+
+[build]
+    dockerfile = './rama-fp/infra/Dockerfile'
+
+[[services]]
+    internal_port = 8080
+    protocol = "tcp"
+    auto_stop_machines = true
+    auto_start_machines = true
+    min_machines_running = 1
+    processes = ['app']
+
+    [[services.ports]]
+        port = "80"
+
+[[vm]]
+    memory = '1gb'
+    cpu_kind = 'shared'
+    cpus = 1

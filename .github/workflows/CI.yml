@@ -216,3 +216,21 @@ jobs:
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
           rust-toolchain: ${{env.RUST_TOOLCHAIN}}
+
+  deploy-rama-fp-docker:
+    runs-on: ubuntu-latest
+    needs: [test, test-examples, test-docs]
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: glendc/rama-fp:latest
+          file: rama-fp/infra/Dockerfile
