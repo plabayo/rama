@@ -57,11 +57,11 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    let acme_data = if let Some(raw_acme_data) = std::env::var("RAMA_FP_ACME_DATA").ok() {
+    let acme_data = if let Ok(raw_acme_data) = std::env::var("RAMA_FP_ACME_DATA") {
         let acme_data: Vec<_> = raw_acme_data
             .split(';')
             .map(|s| {
-                let mut iter = s.trim().splitn(1, ',');
+                let mut iter = s.trim().splitn(2, ',');
                 let key = iter.next().expect("acme data key");
                 let value = iter.next().expect("acme data value");
                 (key.to_owned(), value.to_owned())

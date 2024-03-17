@@ -48,3 +48,20 @@ Also hosted (via <https://fly.io>) as http/1.1 only:
 Available at Docker Hub (latest main branch commit):
 
 - <https://hub.docker.com/repository/docker/glendc/rama-fp>
+
+### Developer instructions
+
+#### TLS Certificate
+
+For now we manually generate Letsencrypt based TLS certifications.
+
+Steps:
+
+1. use [certbot](https://certbot.eff.org/instructions) to start process on dev host machine:
+```sh
+sudo certbot certonly --manual -d fp.ramaproxy.org
+```
+2. update the `RAMA_FP_ACME_DATA` SECRET in <https://fly.io> app config to enable and point to the new key/value ACME validation pair (format is `file_name=file_content`)
+3. redeploy
+4. press `enter` in process started in step (1)
+5. TODO ...
