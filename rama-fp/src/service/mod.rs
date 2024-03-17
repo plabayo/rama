@@ -58,12 +58,15 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let graceful = rama::graceful::Shutdown::default();
 
     let acme_data = if let Some(raw_acme_data) = std::env::var("RAMA_FP_ACME_DATA").ok() {
-        let acme_data: Vec<_> = raw_acme_data.split(';').map(|s| {
-            let mut iter = s.trim().splitn(1, ',');
-            let key = iter.next().expect("acme data key");
-            let value = iter.next().expect("acme data value");
-            (key.to_owned(), value.to_owned())
-        }).collect();
+        let acme_data: Vec<_> = raw_acme_data
+            .split(';')
+            .map(|s| {
+                let mut iter = s.trim().splitn(1, ',');
+                let key = iter.next().expect("acme data key");
+                let value = iter.next().expect("acme data value");
+                (key.to_owned(), value.to_owned())
+            })
+            .collect();
         ACMEData::with_challenges(acme_data)
     } else {
         ACMEData::default()
@@ -85,6 +88,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             .service(
                 WebService::default()
                     .not_found(Redirect::temporary("/"))
+                    .get("/consent", endpoints::get_consent)
                     .get("/report", endpoints::get_report)
                     // XHR
                     .get("/api/fetch/number", endpoints::get_api_fetch_number)
@@ -112,9 +116,11 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 WebService::default()
                     // Navigate
                     .get("/", endpoints::get_root)
-                    .get("/consent", endpoints::get_consent)
                     // ACME
-                    .get("/.well-known/acme-challenge/:token", endpoints::get_acme_challenge)
+                    .get(
+                        "/.well-known/acme-challenge/:token",
+                        endpoints::get_acme_challenge,
+                    )
                     // Assets
                     .get("/assets/style.css", endpoints::get_assets_style)
                     .get("/assets/script.js", endpoints::get_assets_script)
