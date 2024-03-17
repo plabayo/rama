@@ -2,23 +2,35 @@ app = 'rama-fp-h1'
 primary_region = 'lhr'
 
 [experimental]
-  cmd = ['./rama-fp', '-i', '0.0.0.0', '-p', '8080', '--http-version', 'h1']
+cmd = ['./rama-fp', '-i', '0.0.0.0', '-p', '8080', '--http-version', 'h1']
 
 [build]
-  image = 'glendc/rama-fp:latest'
+image = 'glendc/rama-fp:latest'
 
 [[services]]
-  protocol = 'tcp'
-  internal_port = 8080
-  auto_stop_machines = true
-  auto_start_machines = true
-  min_machines_running = 1
-  processes = ['app']
+protocol = 'tcp'
+internal_port = 8080
+auto_stop_machines = true
+auto_start_machines = true
+min_machines_running = 1
+processes = ['app']
 
 [[services.ports]]
-    port = 80
+port = 80
+
+[[services]]
+internal_port = 8443
+protocol = "tcp"
+force_https = false
+auto_stop_machines = true
+auto_start_machines = true
+min_machines_running = 1
+processes = ['app']
+
+[[services.ports]]
+port = "443"
 
 [[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
+memory = '1gb'
+cpu_kind = 'shared'
+cpus = 1

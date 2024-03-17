@@ -77,6 +77,8 @@ pub async fn get_consent() -> impl IntoResponse {
                 </p>
                 <p>You can learn move about rama at in
                     <a href="https://ramaproxy.org/book">the rama book</a>.
+                    And the source code for this service is available at
+                    <a href="https://github.com/plabayo/rama/tree/main/rama-fp/src">https://github.com/plabayo/rama/tree/main/rama-fp/src</a>.
                 </p>
             </div>
             <div class="small">
