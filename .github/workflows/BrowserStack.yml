@@ -6,7 +6,7 @@ on:
   schedule:
     - cron: "00 18 * * *"
 jobs:
-  test:
+  run:
     timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
@@ -21,7 +21,9 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     - name: Run your tests
-      run: python main.py
+      run: |
+        cd rama-fp/browserstack
+        python main.py
       env:
         BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
         BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
