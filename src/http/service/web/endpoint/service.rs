@@ -77,6 +77,32 @@ macro_rules! impl_endpoint_service_fn_tuple {
 
 all_the_tuples_no_last_special_case!(impl_endpoint_service_fn_tuple);
 
+macro_rules! impl_endpoint_service_fn_tuple_with_context_and_request {
+    ($($ty:ident),+ $(,)?) => {
+        #[allow(non_snake_case)]
+        impl<F, R, O, S, $($ty),+> EndpointServiceFn<S, (F, R, O, (), (), (), (), (), (), (), (), (), (), (), (), $($ty),+, Context<S>, Request)> for F
+            where
+                F: Fn($($ty),+, Context<S>, Request) -> R + Clone + Send + Sync + 'static,
+                R: Future<Output = O> + Send + 'static,
+                O: IntoResponse + Send + Sync + 'static,
+                S: Send + Sync + 'static,
+                $($ty: FromRequestParts<S>),+,
+        {
+            async fn call(&self, ctx: Context<S>, req: Request) -> Response {
+                let (parts, body) = req.into_parts();
+                $(let $ty = match $ty::from_request_parts(&ctx, &parts).await {
+                    Ok(v) => v,
+                    Err(r) => return r.into_response(),
+                });+;
+                let req = Request::from_parts(parts, body);
+                self($($ty),+, ctx, req).await.into_response()
+            }
+        }
+    };
+}
+
+all_the_tuples_no_last_special_case!(impl_endpoint_service_fn_tuple_with_context_and_request);
+
 mod private {
     use super::*;
 
@@ -119,4 +145,22 @@ mod private {
     }
 
     all_the_tuples_no_last_special_case!(impl_endpoint_service_fn_sealed_tuple);
+
+    macro_rules! impl_endpoint_service_fn_sealed_tuple_with_context_and_request {
+        ($($ty:ident),+ $(,)?) => {
+            #[allow(non_snake_case)]
+            impl<F, R, O, S, $($ty),+> Sealed<S, (F, R, O, (), (), (), (), (), (), (), (), (), (), (), (), $($ty),+, Context<S>, Request)> for F
+                where
+                    F: Fn($($ty),+, Context<S>, Request) -> R + Send + Sync + 'static,
+                    R: Future<Output = O> + Send + 'static,
+                    O: IntoResponse + Send + Sync + 'static,
+                    S: Send + Sync + 'static,
+                    $($ty: FromRequestParts<S>),+,
+            {}
+        };
+    }
+
+    all_the_tuples_no_last_special_case!(
+        impl_endpoint_service_fn_sealed_tuple_with_context_and_request
+    );
 }

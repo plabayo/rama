@@ -52,11 +52,13 @@ entrypoints = [
 def run_parallel_session(desired_cap):
     with sync_playwright() as playwright:
         clientPlaywrightVersion = (
-            str(subprocess.getoutput("playwright --version")).strip().split(" ")[1]
+            str(subprocess.getoutput("playwright --version"))
+            .strip()
+            .split(" ")[1]  # noqa: E501
         )
         desired_cap["client.playwrightVersion"] = clientPlaywrightVersion
 
-        cdpUrl = "wss://cdp.browserstack.com/playwright?caps=" + urllib.parse.quote(
+        cdpUrl = "wss://cdp.browserstack.com/playwright?caps=" + urllib.parse.quote(  # noqa: E501
             json.dumps(desired_cap)
         )
         browser = playwright.chromium.connect(cdpUrl)
@@ -65,19 +67,19 @@ def run_parallel_session(desired_cap):
             try:
                 page = browser.new_page()
                 page.on("console", lambda msg: print(msg.text))
-                print(page.evaluate('() => navigator.userAgent'))
+                print(page.evaluate("() => navigator.userAgent"))
 
                 page.goto(entrypoint)
-                print(page.evaluate('() => document.location.href'))
+                print(page.evaluate("() => document.location.href"))
 
                 page.locator('a[href="/report"]').click()
-                print(page.evaluate('() => document.location.href'))
+                print(page.evaluate("() => document.location.href"))
 
                 page.locator('button[type="submit"]').click()
-                print(page.evaluate('() => document.location.href'))
+                print(page.evaluate("() => document.location.href"))
 
                 page.locator('button[type="submit"]').click()
-                print(page.evaluate('() => document.location.href'))
+                print(page.evaluate("() => document.location.href"))
 
                 try:
                     page.close()
@@ -98,7 +100,7 @@ def run_parallel_session(desired_cap):
 def mark_test_status(status, reason, page):
     page.evaluate(
         "_ => {}",
-        'browserstack_executor: {"action": "setSessionStatus", "arguments": {"status":"'
+        'browserstack_executor: {"action": "setSessionStatus", "arguments": {"status":"'  # noqa: E501
         + status
         + '", "reason": "'
         + reason

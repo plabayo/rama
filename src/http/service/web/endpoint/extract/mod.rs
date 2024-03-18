@@ -20,6 +20,7 @@ mod query;
 #[doc(inline)]
 pub use query::Query;
 
+mod context;
 mod method;
 mod request;
 
