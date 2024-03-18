@@ -22,3 +22,6 @@ jobs:
         pip install -r requirements.txt
     - name: Run your tests
       run: python main.py
+      env:
+        BROWSERSTACK_USERNAME: ${{ secrets.BROWSERSTACK_USERNAME }}
+        BROWSERSTACK_ACCESS_KEY: ${{ secrets.BROWSERSTACK_ACCESS_KEY }}
