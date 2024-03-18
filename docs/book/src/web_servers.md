@@ -8,7 +8,7 @@ that you really need.
 
 Examples of the kind of web services you might build with `rama` in function of your proxy service:
 
-- a k8s health service (see code example at <https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.r>);
+- a k8s health service (see code example at <https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs>);
 - a metric exposure service;
 - a minimal api service (e.g. to expose device profiles or certificates);
 - a graphical interface / control panel;
@@ -40,7 +40,7 @@ not a web service framework.
 >
 > In fact we, at [plabayo](https://www.plabayo.tech) develop our company website
 > (<https://www.plabayo.tech/>), Free and Open Source Bulletin Software "rora" (<https://github.com/plabayo/rora>),
-> bucket (<https://bckt.xyz>) and more all by building on top of rama. We do this because we like to know our
+> bucket (<https://github.com/plabayo/bucket>) and more all by building on top of rama. We do this because we like to know our
 > technology stack in as much depth as practically possible, while still caring for our family, and because
 > we as minimalists love the balance we strike by dogfeeding on "rama" not only for proxy purposes but
 > for all our core web server needs as well.

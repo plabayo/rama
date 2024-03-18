@@ -81,7 +81,7 @@ Our recommendation for people who are looking for a web framework is `axum` (<ht
 It is however a bit much to have to pull in Axum just for the minimal web services one might need as part of a proxy service.
 Examples of web services that might run as part of a proxy service are:
 
-- a k8s health service (<https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.r>);
+- a k8s health service (<https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs>);
 - a metric exposure service;
 - a minimal api service (e.g. to expose device profiles or certificates);
 - a graphical interface / control panel;

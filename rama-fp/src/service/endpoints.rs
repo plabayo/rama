@@ -385,7 +385,7 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
             <meta property="og:description" content="rama proxy fingerprinting service" />
             <meta property="og:url" content="https://ramaproxy.org/" />
             <meta property="og:site_name" content="ramaproxy.org" />
-            <meta property="og:image" content="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/banner.svg">
+            <meta property="og:image" content="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg">
 
             <meta http-equiv="Accept-CH" content="Width, Downlink, Sec-CH-UA, Sec-CH-UA-Mobile, Sec-CH-UA-Full-Version, ETC, Save-Data, Sec-CH-UA-Platform, Sec-CH-Prefers-Reduced-Motion, Sec-CH-UA-Arch, Sec-CH-UA-Bitness, Sec-CH-UA-Model, Sec-CH-UA-Platform-Version, Sec-CH-UA-Prefers-Color-Scheme, Device-Memory, RTT, Sec-GPC" />
 

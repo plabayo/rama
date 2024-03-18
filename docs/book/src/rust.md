@@ -28,13 +28,13 @@ Becoming proficient in Rust requires the fulfillment of three pillars:
   - [Learn Rust](https://rust-lang.guide/guide/learn-rust/index.html)
   - [Learn More Rust](https://rust-lang.guide/guide/learn-more-rust/index.html)
   - [Learn Async Rust](https://rust-lang.guide/guide/learn-async-rust/index.html)
-  - [Study using the "Rust for Rustaceans: Idiomatic Programming for Experienced Developers" book](https://rust-lang.guide/guide/study-using-the-rust-for-rustaceans-idiomatic-programming-for-experienced-developers-book.md)
+  - [Study using the "Rust for Rustaceans: Idiomatic Programming for Experienced Developers" book](https://rust-lang.guide/guide/study-using-the-rust-for-rustaceans-idiomatic-programming-for-experienced-developers-book)
 - Pillar II: Develop with Rust (Practical Experience)
-  - [Study using the "Zero to Production in Rust" book](https://rust-lang.guide/guide/study-using-the-zero-to-production-in-rust-book.md)
-  - [Contribute for the first time to an existing project](https://rust-lang.guide/guide/contribute-for-the-first-time-to-an-existing-project.md)
-  - [Contribute an advanced feature to an existing project or start a project from scratch](https://rust-lang.guide/guide/contribute-an-advanced-feature-to-an-existing-project-or-start-a-project-from-scratch.md)
+  - [Study using the "Zero to Production in Rust" book](https://rust-lang.guide/guide/study-using-the-zero-to-production-in-rust-book)
+  - [Contribute for the first time to an existing project](https://rust-lang.guide/guide/contribute-for-the-first-time-to-an-existing-project)
+  - [Contribute an advanced feature to an existing project or start a project from scratch](https://rust-lang.guide/guide/contribute-an-advanced-feature-to-an-existing-project-or-start-a-project-from-scratch)
 - Pillar III: Be part of the Rust Ecosystem:
-  - [Next Steps](https://rust-lang.guide/guide/next-steps.md)
+  - [Next Steps](https://rust-lang.guide/guide/next-steps)
 
 You can find the full version of that chapter at <https://rust-lang.guide/intro/learning-rust.html>.
 
