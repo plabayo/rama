@@ -59,10 +59,10 @@ docker-build-rama-fp:
 docker-push-rama-fp: docker-build-rama-fp
 	docker push glendc/rama-fp:latest
 
-browserstack-rama-fp:
-	cd rama-fp/browserstack && \
-		pip install -r requirements.txt && \
-		python main.py
+lambdatest-rama-fp-mobile:
+	cd rama-fp/lambdatest && \
+		npm ci && \
+		npm run mobile
 
 example NAME:
 		cargo run -p rama --example {{NAME}}

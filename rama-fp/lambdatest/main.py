@@ -3,16 +3,20 @@ import json
 import subprocess
 import itertools
 import urllib
-from playwright.sync_api import sync_playwright
 from concurrent.futures import ThreadPoolExecutor
 
-permutations = [
-    ["latest", "latest-1", "latest-2"],
-    ["chrome", "edge", "playwright-firefox", "playwright-webkit"],
-    (
-        [["windows", v] for v in ["10", "11"]]
-        + [["osx", v] for v in ["Monterey", "Ventura"]]
-    ),
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options as ChromeOptions
+
+
+desktop_permutations = [
+    [
+        'Windows 10',
+        'Windows 11',
+        'MacOS Ventura',
+        'MacOS Monterey',
+    ]
 ]
 
 
@@ -23,8 +27,8 @@ def env(key):
     return value
 
 
-BROWSERSTACK_USERNAME = env("BROWSERSTACK_USERNAME")
-BROWSERSTACK_ACCESS_KEY = env("BROWSERSTACK_ACCESS_KEY")
+LT_USERNAME = env("LT_USERNAME")
+LT_ACCESS_KEY = env("LT_ACCESS_KEY")
 
 desired_caps = [
     {
@@ -58,9 +62,9 @@ def run_parallel_session(desired_cap):
         )
         desired_cap["client.playwrightVersion"] = clientPlaywrightVersion
 
-        cdpUrl = "wss://cdp.browserstack.com/playwright?caps=" + urllib.parse.quote(  # noqa: E501
+        cdpUrl = "wss://cdp.browserstack.com/playwright?caps=" + urllib.parse.quote(
             json.dumps(desired_cap)
-        )
+        )  # noqa: E501
         browser = playwright.chromium.connect(cdpUrl)
 
         for entrypoint in entrypoints:
