@@ -122,7 +122,7 @@ async function main() {
         inputEl.innerHTML = formHtml;
     } catch (error) {
         console.error('An error occurred:', error);
-        alert('whoops');
+        window.location.href = '/';
     }
 }
 
