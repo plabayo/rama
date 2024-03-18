@@ -32,6 +32,6 @@ processes = ['app']
 port = "443"
 
 [[vm]]
-memory = '1gb'
+memory = '256mb'
 cpu_kind = 'shared'
 cpus = 1
