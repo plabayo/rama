@@ -62,7 +62,9 @@ The script can be run locally using the `just browserstack-rama-fp` command,
 for which you do need to have a valid username and access key in your environment variables.
 
 However, we have [a cron job that runs this script daily at 18h](../.github/workflows/BrowserStack.yml), so there is no need to ever run it yourself.
-It can also be triggered manually. Via t[he Github Actions pane](https://github.com/plabayo/rama/actions).
+It can also be triggered manually. Via [the Github Actions pane](https://github.com/plabayo/rama/actions).
+
+> Dashboard: <https://automate.browserstack.com/dashboard/v2>
 
 #### TLS Certificate
 
