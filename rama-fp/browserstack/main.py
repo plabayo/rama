@@ -177,7 +177,10 @@ def run_session(cap):
 
         except Exception as err:
             if driver:
-                mark_test_status("failed", str(err), driver)
+                try:
+                    mark_test_status("failed", str(err), driver)
+                except Exception as err:
+                    print("error marking test status", str(err))
         finally:
             if driver:
                 driver.quit()
