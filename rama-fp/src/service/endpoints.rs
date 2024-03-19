@@ -48,6 +48,13 @@ pub async fn get_consent() -> impl IntoResponse {
                         <li><a href="https://h1.fp.ramaproxy.org:443">https://h1.fp.ramaproxy.org</a>: HTTP/1.1 and below only, TLS</li>
                     </ul>
                 </p>
+                </p>
+                    You can also make use of the echo service for developers at:
+                    <ul>
+                        <li><a href="http://echo.ramaproxy.org:80">/http://echo.ramaproxy.org:80</a>: echo service, plain-text</li>
+                        <li><a href="https://echo.ramaproxy.org:443">/https://echo.ramaproxy.org:443</a>: echo service, TLS</li>
+                    </ul>
+                </p>
                 <p>You can learn move about rama at in
                     <a href="https://ramaproxy.org/book">the rama book</a>.
                     And the source code for this service is available at
@@ -357,7 +364,12 @@ pub async fn echo(ctx: Context<State>, req: Request) -> Json<serde_json::Value> 
 
     let (parts, body) = req.into_parts();
 
-    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+    let tls_info = get_tls_info(&ctx).map(|tls_info| json!({
+        "server_name": tls_info.server_name,
+        "signature_schemes": tls_info.signature_schemes,
+        "alpn": tls_info.alpn.map(|v| v.iter().map(|v| String::from_utf8_lossy(v).to_string()).collect::<Vec<_>>()),
+        "cipher_suites": tls_info.cipher_suites,
+    }));
 
     let request_info = get_request_info(
         FetchMode::SameOrigin,
