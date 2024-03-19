@@ -51,8 +51,8 @@ pub async fn get_consent() -> impl IntoResponse {
                 </p>
                     You can also make use of the echo service for developers at:
                     <ul>
-                        <li><a href="http://echo.ramaproxy.org:80">/http://echo.ramaproxy.org:80</a>: echo service, plain-text</li>
-                        <li><a href="https://echo.ramaproxy.org:443">/https://echo.ramaproxy.org:443</a>: echo service, TLS</li>
+                        <li><a href="http://echo.ramaproxy.org:80">http://echo.ramaproxy.org</a>: echo service, plain-text</li>
+                        <li><a href="https://echo.ramaproxy.org:443">https://echo.ramaproxy.org</a>: echo service, TLS</li>
                     </ul>
                 </p>
                 <p>You can learn move about rama at in
