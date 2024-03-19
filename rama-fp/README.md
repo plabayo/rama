@@ -56,7 +56,8 @@ Available at Docker Hub (latest main branch commit):
 We make use of [BrowserStack](https://www.browserstack.com/) to automatically do the fingerprint flow
 for all domains above and that for the most recent browsers and operating systems.
 
-> Note: browser version is automated, operating version not (so the OS version we do need to update now and then)
+> Note: [this script](./browserstack/main.py) does not seasonal updates,
+> to take into account the latest mobile devices on the market, as this is a hardcoded list.
 
 The script can be run locally using the `just browserstack-rama-fp` command,
 for which you do need to have a valid username and access key in your environment variables.

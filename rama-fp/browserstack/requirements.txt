@@ -1,1 +1,1 @@
-playwright
+selenium

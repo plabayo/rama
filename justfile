@@ -61,7 +61,7 @@ docker-push-rama-fp: docker-build-rama-fp
 
 browserstack-rama-fp:
 	cd rama-fp/browserstack && \
-		pip install -r requirements.txt && \
+		(pip install -r requirements.txt || true) && \
 		python main.py
 
 example NAME:
