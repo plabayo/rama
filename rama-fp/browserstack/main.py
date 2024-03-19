@@ -109,9 +109,9 @@ mobile_desired_caps = [
     for (device, os_version, browser) in mobile_configs
 ]
 
-# desired_caps = desktop_desired_caps + mobile_desired_caps
+desired_caps = desktop_desired_caps + mobile_desired_caps
 # desired_caps = desktop_desired_caps
-desired_caps = mobile_desired_caps
+# desired_caps = mobile_desired_caps
 
 
 entrypoints = [
