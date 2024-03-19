@@ -20,6 +20,8 @@ tiers for the monthly version.
 Alternatively you can also make a one time contribution at
 <https://www.buymeacoffee.com/plabayo>.
 
+Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise 🛍️ at <https://plabayo.threadless.com/>.
+
 ## Professional Services
 
 🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).

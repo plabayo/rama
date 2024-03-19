@@ -142,6 +142,8 @@ but also tooling for developers and automated processing. All these costs money.
 Sponsors receive perks and depending on your regular contribution it also
 allows you to rely on us for support and consulting.
 
+Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise 🛍️ at <https://plabayo.threadless.com/>.
+
 ### Professional Services
 
 🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
