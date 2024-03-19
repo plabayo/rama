@@ -347,7 +347,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
                         endpoints::get_acme_challenge,
                     )
                     // Echo
-                    .not_found(endpoints::echo)
+                    .not_found(endpoints::echo),
             );
 
         let tcp_service_builder = ServiceBuilder::new()

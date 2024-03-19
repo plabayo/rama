@@ -350,7 +350,10 @@ pub async fn get_assets_script() -> Response {
 pub async fn echo(ctx: Context<State>, req: Request) -> Json<serde_json::Value> {
     let http_info: super::data::HttpInfo = get_http_info(&req);
 
-    let query_params = req.uri().query().and_then(|q| serde_urlencoded::from_str::<HashMap<String, String>>(q).ok());
+    let query_params = req
+        .uri()
+        .query()
+        .and_then(|q| serde_urlencoded::from_str::<HashMap<String, String>>(q).ok());
 
     let (parts, body) = req.into_parts();
 

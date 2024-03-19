@@ -1,35 +1,47 @@
+# fly.toml app configuration file generated for rama-echo on 2024-03-19T23:16:07+01:00
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
+
 app = 'rama-echo'
 primary_region = 'lhr'
 
-[build]
-image = "glendc/rama-fp:latest"
-
 [experimental]
-cmd = ["./rama-fp", "-i", "0.0.0.0", "-p", "8080", "--http-version", "auto", "echo"]
+cmd = [
+    './rama-fp',
+    '-i',
+    '0.0.0.0',
+    '-p',
+    '8080',
+    '--http-version',
+    'auto',
+    'echo',
+]
+
+[build]
+image = 'glendc/rama-fp:latest'
 
 [[services]]
+protocol = 'tcp'
 internal_port = 8080
-protocol = "tcp"
-force_https = false
 auto_stop_machines = true
 auto_start_machines = true
 min_machines_running = 1
 processes = ['app']
 
 [[services.ports]]
-port = "80"
+port = 80
 
 [[services]]
+protocol = 'tcp'
 internal_port = 8443
-protocol = "tcp"
-force_https = false
 auto_stop_machines = true
 auto_start_machines = true
 min_machines_running = 1
 processes = ['app']
 
 [[services.ports]]
-port = "443"
+port = 443
 
 [[vm]]
 memory = '256mb'
