@@ -45,6 +45,12 @@ Also hosted (via <https://fly.io>) as http/1.1 only:
 - <http://h1.fp.ramaproxy.org:80>
 - <https://h1.fp.ramaproxy.org:443>
 
+Finally you can also use the Rama FP Service as an echo service for any
+method, path, query, body, and so on:
+
+- <http://echo.ramaproxy.org:80>
+- <https://echo.ramaproxy.org:443>
+
 Available at Docker Hub (latest main branch commit):
 
 - <https://hub.docker.com/repository/docker/glendc/rama-fp>

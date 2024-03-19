@@ -1,3 +1,5 @@
+use std::{collections::HashMap, ops::Deref};
+
 use super::{
     data::{
         get_http_info, get_request_info, get_tls_info, DataSource, FetchMode, Initiator,
@@ -7,11 +9,13 @@ use super::{
 };
 use rama::{
     http::{
+        dep::http_body_util::BodyExt,
         response::Json,
         service::web::extract::{self, FromRequestParts, Path},
         Body, IntoResponse, Request, Response, StatusCode,
     },
     service::Context,
+    stream::SocketInfo,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -337,6 +341,41 @@ pub async fn get_assets_script() -> Response {
         .header("content-type", "text/javascript")
         .body(SCRIPT_JS.into())
         .expect("build js response")
+}
+
+//------------------------------------------
+// endpoints: echo
+//------------------------------------------
+
+pub async fn echo(ctx: Context<State>, req: Request) -> Json<serde_json::Value> {
+    let http_info: super::data::HttpInfo = get_http_info(&req);
+
+    let query_params = req.uri().query().and_then(|q| serde_urlencoded::from_str::<HashMap<String, String>>(q).ok());
+
+    let (parts, body) = req.into_parts();
+
+    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+
+    let request_info = get_request_info(
+        FetchMode::SameOrigin,
+        ResourceType::Document,
+        Initiator::Navigator,
+        &ctx,
+        &parts,
+    )
+    .await;
+
+    Json(json!({
+        "version": request_info.version,
+        "scheme": request_info.scheme,
+        "method": request_info.method,
+        "path": request_info.path,
+        "ip": ctx.get::<SocketInfo>().unwrap().peer_addr(),
+        "headers": http_info.headers,
+        "parsedQueryParams": query_params,
+        "parsedBody": String::from_utf8_lossy(body.collect().await.unwrap().to_bytes().deref()),
+        "tls": tls_info,
+    }))
 }
 
 //------------------------------------------

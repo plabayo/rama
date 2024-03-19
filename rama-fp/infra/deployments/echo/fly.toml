@@ -1,0 +1,37 @@
+app = 'rama-echo'
+primary_region = 'lhr'
+
+[build]
+image = "glendc/rama-fp:latest"
+
+[experimental]
+cmd = ["./rama-fp", "-i", "0.0.0.0", "-p", "8080", "--http-version", "auto", "echo"]
+
+[[services]]
+internal_port = 8080
+protocol = "tcp"
+force_https = false
+auto_stop_machines = true
+auto_start_machines = true
+min_machines_running = 1
+processes = ['app']
+
+[[services.ports]]
+port = "80"
+
+[[services]]
+internal_port = 8443
+protocol = "tcp"
+force_https = false
+auto_stop_machines = true
+auto_start_machines = true
+min_machines_running = 1
+processes = ['app']
+
+[[services.ports]]
+port = "443"
+
+[[vm]]
+memory = '256mb'
+cpu_kind = 'shared'
+cpus = 1

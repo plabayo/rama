@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 
 pub mod service;
 
@@ -21,17 +21,45 @@ struct Cli {
     /// http version to serve FP Service from
     #[arg(long, default_value = "auto")]
     http_version: String,
+
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Debug, Subcommand, Default)]
+enum Commands {
+    /// Run the regular FP Server
+    #[default]
+    Run,
+
+    /// Run an echo server
+    Echo,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Cli::parse();
 
-    service::run(service::Config {
-        interface: args.interface,
-        port: args.port,
-        secure_port: args.secure_port,
-        http_version: args.http_version,
-    })
-    .await
+    match args.command.unwrap_or_default() {
+        Commands::Run => {
+            service::run(service::Config {
+                interface: args.interface,
+                port: args.port,
+                secure_port: args.secure_port,
+                http_version: args.http_version,
+            })
+            .await?;
+        }
+        Commands::Echo => {
+            service::echo(service::Config {
+                interface: args.interface,
+                port: args.port,
+                secure_port: args.secure_port,
+                http_version: args.http_version,
+            })
+            .await?;
+        }
+    }
+
+    Ok(())
 }
