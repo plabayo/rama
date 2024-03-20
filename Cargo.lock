@@ -1101,6 +1101,7 @@ dependencies = [
  "ipnet",
  "mime",
  "mime_guess",
+ "paste",
  "percent-encoding",
  "pin-project-lite",
  "prometheus",

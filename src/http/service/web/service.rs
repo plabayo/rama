@@ -7,9 +7,15 @@ use crate::{
     },
     service::{context::Extensions, service_fn, BoxService, Context, Matcher, Service},
 };
+use paste::paste;
 use std::{convert::Infallible, future::Future, marker::PhantomData, sync::Arc};
 
-/// a basic web service
+/// A basic web service that can be used to serve HTTP requests.
+///
+/// Note that this service boxes all the internal services, so it is not as efficient as it could be.
+/// For those locations where you need do not desire the convenience over performance,
+/// you can instead use a tuple of `(M, S)` tuples, where M is a matcher and S is a service,
+/// e.g. `((MethodFilter::GET, service_a), (MethodFilter::POST, service_b), service_fallback)`.
 pub struct WebService<State> {
     endpoints: Vec<Arc<Endpoint<State>>>,
     not_found: Arc<BoxService<State, Request, Response, Infallible>>,
@@ -235,9 +241,68 @@ where
     }
 }
 
+macro_rules! impl_matcher_service_tuple {
+    ($($T:ident),+ $(,)?) => {
+        paste!{
+            #[allow(non_camel_case_types)]
+            #[allow(non_snake_case)]
+            impl<State, $([<M_ $T>], $T),+, S, Error> Service<State, Request> for ($(([<M_ $T>], $T)),+, S)
+            where
+                State: Send + Sync + 'static,
+                $(
+                    [<M_ $T>]: Matcher<State, Request>,
+                    $T: Service<State, Request, Response = Response, Error = Error>,
+                )+
+                S: Service<State, Request, Response = Response, Error = Error>,
+                Error: Send + Sync + 'static,
+            {
+                type Response = Response;
+                type Error = Error;
+
+                async fn serve(
+                    &self,
+                    mut ctx: Context<State>,
+                    req: Request,
+                ) -> Result<Self::Response, Self::Error> {
+                    let ($(([<M_ $T>], $T)),+, S) = self;
+                    let mut ext = Extensions::new();
+                    $(
+                        if [<M_ $T>].matches(Some(&mut ext), &ctx, &req) {
+                            ctx.extend(ext);
+                            return $T.serve(ctx, req).await;
+                        }
+                        ext.clear();
+                    )+
+                    S.serve(ctx, req).await
+                }
+            }
+        }
+    };
+}
+
+all_the_tuples_no_last_special_case!(impl_matcher_service_tuple);
+
+#[doc(hidden)]
+#[macro_export]
+/// Create a new [`Service`] from a chain of matcher-service tuples.
+///
+/// Think of it like the Rust match statement, but for http services.
+/// Which is nothing more then a convenient wrapper to create a tuple of matcher-service tuples,
+/// with the last tuple being the fallback service. And all services implement
+/// the [`IntoEndpointService`] trait.
+macro_rules! __match_service {
+    ($($M:expr => $S:expr),+, _ => $F:expr $(,)?) => {
+        ($(($M, $S.into_endpoint_service())),+, $F.into_endpoint_service())
+    };
+}
+
+#[doc(inline)]
+pub use __match_service as match_service;
+
 #[cfg(test)]
 mod test {
     use crate::http::dep::http_body_util::BodyExt;
+    use crate::http::matcher::MethodFilter;
     use crate::http::Body;
 
     use super::*;
@@ -255,6 +320,14 @@ mod test {
         S: Service<(), Request, Response = Response, Error = Infallible>,
     {
         let req = Request::post(uri).body(Body::empty()).unwrap();
+        service.serve(Context::default(), req).await.unwrap()
+    }
+
+    async fn connect_response<S>(service: &S, uri: &str) -> Response
+    where
+        S: Service<(), Request, Response = Response, Error = Infallible>,
+    {
+        let req = Request::connect(uri).body(Body::empty()).unwrap();
         service.serve(Context::default(), req).await.unwrap()
     }
 
@@ -357,5 +430,36 @@ mod test {
         assert_eq!(res.status(), StatusCode::OK);
         let body = res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "<h1>Hello, World!</h1>");
+    }
+
+    #[tokio::test]
+    async fn test_matcher_service_tuples() {
+        let svc = match_service! {
+            HttpMatcher::method_get().and_path("/hello") => "hello",
+            HttpMatcher::method_post().and_path("/world") => "world",
+            MethodFilter::CONNECT => "connect",
+            _ => StatusCode::NOT_FOUND,
+        };
+
+        let res = get_response(&svc, "https://www.test.io/hello").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "hello");
+
+        let res = post_response(&svc, "https://www.test.io/world").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "world");
+
+        let res = connect_response(&svc, "https://www.test.io").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "connect");
+
+        let res = get_response(&svc, "https://www.test.io/world").await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+
+        let res = get_response(&svc, "https://www.test.io").await;
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }

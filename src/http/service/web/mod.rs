@@ -1,7 +1,7 @@
 //! basic web service
 
 mod service;
-pub use service::WebService;
+pub use service::{match_service, WebService};
 
 mod endpoint;
 pub use endpoint::{extract, EndpointServiceFn, IntoEndpointService};
