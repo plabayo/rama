@@ -291,9 +291,10 @@ all_the_tuples_no_last_special_case!(impl_matcher_service_tuple);
 /// with the last tuple being the fallback service. And all services implement
 /// the [`IntoEndpointService`] trait.
 macro_rules! __match_service {
-    ($($M:expr => $S:expr),+, _ => $F:expr $(,)?) => {
+    ($($M:expr => $S:expr),+, _ => $F:expr $(,)?) => {{
+        use $crate::http::service::web::IntoEndpointService;
         ($(($M, $S.into_endpoint_service())),+, $F.into_endpoint_service())
-    };
+    }};
 }
 
 #[doc(inline)]
