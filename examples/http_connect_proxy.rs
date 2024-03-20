@@ -11,10 +11,10 @@
 //! The server will start and listen on `:8080`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:8080 http://www.example.com/
-//! curl -v -x http://127.0.0.1:8080 https://www.example.com/
-//! curl -v -x http://127.0.0.1:8080 http://echo.example/foo/bar
-//! curl -v -x http://127.0.0.1:8080 -XPOST http://echo.example/lucky/7
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://www.example.com/
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' https://www.example.com/
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' -XPOST http://echo.example/lucky/7
 //! ```
 //!
 //! You should see the response from the server.
@@ -23,6 +23,7 @@ use rama::{
     http::{
         client::HttpClient,
         layer::{
+            proxy_auth::ProxyAuthLayer,
             trace::TraceLayer,
             upgrade::{UpgradeLayer, Upgraded},
         },
@@ -74,6 +75,7 @@ async fn main() {
                 "127.0.0.1:8080",
                 ServiceBuilder::new()
                     .layer(TraceLayer::new_for_http())
+                    .layer(ProxyAuthLayer::new(("john", "secret")))
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
                         DomainFilter::new("echo.example"),

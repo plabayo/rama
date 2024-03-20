@@ -27,6 +27,7 @@ pub mod map_request_body;
 pub mod map_response_body;
 pub mod normalize_path;
 pub mod propagate_headers;
+pub mod proxy_auth;
 pub mod request_id;
 pub mod sensitive_headers;
 pub mod set_header;
