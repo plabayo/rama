@@ -9,9 +9,9 @@ use std::{
 
 /// A filter that matches one or more HTTP methods.
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub struct MethodFilter(u16);
+pub struct MethodMatcher(u16);
 
-impl MethodFilter {
+impl MethodMatcher {
     /// Match `CONNECT` requests.
     pub const CONNECT: Self = Self::from_bits(0b0_0000_0001);
     /// Match `DELETE` requests.
@@ -44,13 +44,13 @@ impl MethodFilter {
         self.bits() & other.bits() == other.bits()
     }
 
-    /// Performs the OR operation between the [`MethodFilter`] in `self` with `other`.
+    /// Performs the OR operation between the [`MethodMatcher`] in `self` with `other`.
     pub const fn or(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for MethodFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for MethodMatcher {
     /// returns true on a match, false otherwise
     fn matches(
         &self,
@@ -58,48 +58,48 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for MethodFilter
         _ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
-        MethodFilter::try_from(req.method())
+        MethodMatcher::try_from(req.method())
             .ok()
             .map(|method| self.contains(method))
             .unwrap_or_default()
     }
 }
 
-/// Error type used when converting a [`Method`] to a [`MethodFilter`] fails.
+/// Error type used when converting a [`Method`] to a [`MethodMatcher`] fails.
 #[derive(Debug)]
-pub struct NoMatchingMethodFilter {
+pub struct NoMatchingMethodMatcher {
     method: Method,
 }
 
-impl NoMatchingMethodFilter {
-    /// Get the [`Method`] that couldn't be converted to a [`MethodFilter`].
+impl NoMatchingMethodMatcher {
+    /// Get the [`Method`] that couldn't be converted to a [`MethodMatcher`].
     pub fn method(&self) -> &Method {
         &self.method
     }
 }
 
-impl fmt::Display for NoMatchingMethodFilter {
+impl fmt::Display for NoMatchingMethodMatcher {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "no `MethodFilter` for `{}`", self.method.as_str())
+        write!(f, "no `MethodMatcher` for `{}`", self.method.as_str())
     }
 }
 
-impl std::error::Error for NoMatchingMethodFilter {}
+impl std::error::Error for NoMatchingMethodMatcher {}
 
-impl TryFrom<&Method> for MethodFilter {
-    type Error = NoMatchingMethodFilter;
+impl TryFrom<&Method> for MethodMatcher {
+    type Error = NoMatchingMethodMatcher;
 
     fn try_from(m: &Method) -> Result<Self, Self::Error> {
         match m {
-            &Method::CONNECT => Ok(MethodFilter::CONNECT),
-            &Method::DELETE => Ok(MethodFilter::DELETE),
-            &Method::GET => Ok(MethodFilter::GET),
-            &Method::HEAD => Ok(MethodFilter::HEAD),
-            &Method::OPTIONS => Ok(MethodFilter::OPTIONS),
-            &Method::PATCH => Ok(MethodFilter::PATCH),
-            &Method::POST => Ok(MethodFilter::POST),
-            &Method::PUT => Ok(MethodFilter::PUT),
-            &Method::TRACE => Ok(MethodFilter::TRACE),
+            &Method::CONNECT => Ok(MethodMatcher::CONNECT),
+            &Method::DELETE => Ok(MethodMatcher::DELETE),
+            &Method::GET => Ok(MethodMatcher::GET),
+            &Method::HEAD => Ok(MethodMatcher::HEAD),
+            &Method::OPTIONS => Ok(MethodMatcher::OPTIONS),
+            &Method::PATCH => Ok(MethodMatcher::PATCH),
+            &Method::POST => Ok(MethodMatcher::POST),
+            &Method::PUT => Ok(MethodMatcher::PUT),
+            &Method::TRACE => Ok(MethodMatcher::TRACE),
             other => Err(Self::Error {
                 method: other.clone(),
             }),
@@ -114,48 +114,48 @@ mod tests {
     #[test]
     fn from_http_method() {
         assert_eq!(
-            MethodFilter::try_from(&Method::CONNECT).unwrap(),
-            MethodFilter::CONNECT
+            MethodMatcher::try_from(&Method::CONNECT).unwrap(),
+            MethodMatcher::CONNECT
         );
 
         assert_eq!(
-            MethodFilter::try_from(&Method::DELETE).unwrap(),
-            MethodFilter::DELETE
+            MethodMatcher::try_from(&Method::DELETE).unwrap(),
+            MethodMatcher::DELETE
         );
 
         assert_eq!(
-            MethodFilter::try_from(&Method::GET).unwrap(),
-            MethodFilter::GET
+            MethodMatcher::try_from(&Method::GET).unwrap(),
+            MethodMatcher::GET
         );
 
         assert_eq!(
-            MethodFilter::try_from(&Method::HEAD).unwrap(),
-            MethodFilter::HEAD
+            MethodMatcher::try_from(&Method::HEAD).unwrap(),
+            MethodMatcher::HEAD
         );
 
         assert_eq!(
-            MethodFilter::try_from(&Method::OPTIONS).unwrap(),
-            MethodFilter::OPTIONS
+            MethodMatcher::try_from(&Method::OPTIONS).unwrap(),
+            MethodMatcher::OPTIONS
         );
 
         assert_eq!(
-            MethodFilter::try_from(&Method::PATCH).unwrap(),
-            MethodFilter::PATCH
+            MethodMatcher::try_from(&Method::PATCH).unwrap(),
+            MethodMatcher::PATCH
         );
 
         assert_eq!(
-            MethodFilter::try_from(&Method::POST).unwrap(),
-            MethodFilter::POST
+            MethodMatcher::try_from(&Method::POST).unwrap(),
+            MethodMatcher::POST
         );
 
         assert_eq!(
-            MethodFilter::try_from(&Method::PUT).unwrap(),
-            MethodFilter::PUT
+            MethodMatcher::try_from(&Method::PUT).unwrap(),
+            MethodMatcher::PUT
         );
 
         assert_eq!(
-            MethodFilter::try_from(&Method::TRACE).unwrap(),
-            MethodFilter::TRACE
+            MethodMatcher::try_from(&Method::TRACE).unwrap(),
+            MethodMatcher::TRACE
         );
     }
 }

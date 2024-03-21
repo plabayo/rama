@@ -6,9 +6,9 @@ use std::fmt::{self, Debug, Formatter};
 
 /// A filter that matches one or more HTTP methods.
 #[derive(Debug, Copy, Clone, PartialEq)]
-pub struct VersionFilter(u16);
+pub struct VersionMatcher(u16);
 
-impl VersionFilter {
+impl VersionMatcher {
     /// A filter that matches HTTP/0.9 requests.
     pub const HTTP_09: Self = Self::from_bits(0b0_0000_0010);
 
@@ -37,13 +37,13 @@ impl VersionFilter {
         self.bits() & other.bits() == other.bits()
     }
 
-    /// Performs the OR operation between the [`VersionFilter`] in `self` with `other`.
+    /// Performs the OR operation between the [`VersionMatcher`] in `self` with `other`.
     pub const fn or(self, other: Self) -> Self {
         Self(self.0 | other.0)
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for VersionFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for VersionMatcher {
     /// returns true on a match, false otherwise
     fn matches(
         &self,
@@ -51,44 +51,44 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for VersionFilte
         _ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
-        VersionFilter::try_from(req.version())
+        VersionMatcher::try_from(req.version())
             .ok()
             .map(|version| self.contains(version))
             .unwrap_or_default()
     }
 }
 
-/// Error type used when converting a [`Version`] to a [`VersionFilter`] fails.
+/// Error type used when converting a [`Version`] to a [`VersionMatcher`] fails.
 #[derive(Debug)]
-pub struct NoMatchingVersionFilter {
+pub struct NoMatchingVersionMatcher {
     version: Version,
 }
 
-impl NoMatchingVersionFilter {
-    /// Get the [`Version`] that couldn't be converted to a [`VersionFilter`].
+impl NoMatchingVersionMatcher {
+    /// Get the [`Version`] that couldn't be converted to a [`VersionMatcher`].
     pub fn version(&self) -> &Version {
         &self.version
     }
 }
 
-impl fmt::Display for NoMatchingVersionFilter {
+impl fmt::Display for NoMatchingVersionMatcher {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
-        write!(f, "no `VersionFilter` for `{:?}`", self.version)
+        write!(f, "no `VersionMatcher` for `{:?}`", self.version)
     }
 }
 
-impl std::error::Error for NoMatchingVersionFilter {}
+impl std::error::Error for NoMatchingVersionMatcher {}
 
-impl TryFrom<Version> for VersionFilter {
-    type Error = NoMatchingVersionFilter;
+impl TryFrom<Version> for VersionMatcher {
+    type Error = NoMatchingVersionMatcher;
 
     fn try_from(m: Version) -> Result<Self, Self::Error> {
         match m {
-            Version::HTTP_09 => Ok(VersionFilter::HTTP_09),
-            Version::HTTP_10 => Ok(VersionFilter::HTTP_10),
-            Version::HTTP_11 => Ok(VersionFilter::HTTP_11),
-            Version::HTTP_2 => Ok(VersionFilter::HTTP_2),
-            Version::HTTP_3 => Ok(VersionFilter::HTTP_3),
+            Version::HTTP_09 => Ok(VersionMatcher::HTTP_09),
+            Version::HTTP_10 => Ok(VersionMatcher::HTTP_10),
+            Version::HTTP_11 => Ok(VersionMatcher::HTTP_11),
+            Version::HTTP_2 => Ok(VersionMatcher::HTTP_2),
+            Version::HTTP_3 => Ok(VersionMatcher::HTTP_3),
             other => Err(Self::Error { version: other }),
         }
     }
@@ -101,7 +101,7 @@ mod test {
 
     #[test]
     fn test_version_filter() {
-        let filter = VersionFilter::HTTP_11;
+        let filter = VersionMatcher::HTTP_11;
         let req = Request::builder()
             .version(Version::HTTP_11)
             .body(())
@@ -111,9 +111,9 @@ mod test {
 
     #[test]
     fn test_version_filter_any() {
-        let filter = VersionFilter::HTTP_11
-            .or(VersionFilter::HTTP_10)
-            .or(VersionFilter::HTTP_11);
+        let filter = VersionMatcher::HTTP_11
+            .or(VersionMatcher::HTTP_10)
+            .or(VersionMatcher::HTTP_11);
 
         let req = Request::builder()
             .version(Version::HTTP_10)
@@ -136,7 +136,7 @@ mod test {
 
     #[test]
     fn test_version_filter_fail() {
-        let filter = VersionFilter::HTTP_11;
+        let filter = VersionMatcher::HTTP_11;
         let req = Request::builder()
             .version(Version::HTTP_10)
             .body(())

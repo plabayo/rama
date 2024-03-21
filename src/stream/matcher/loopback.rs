@@ -10,17 +10,17 @@ use crate::{
 /// matching only if the ip is a loopback address.
 ///
 /// [`SocketAddr`]: std::net::SocketAddr
-pub struct LoopbackFilter {
+pub struct LoopbackMatcher {
     optional: bool,
 }
 
-impl LoopbackFilter {
+impl LoopbackMatcher {
     /// create a new loopback filter to filter on the ip part a [`SocketAddr`],
     /// matching only if the ip is a loopback address.
     ///
     /// This filter will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
-    /// use the [`LoopbackFilter::optional`] constructor..
+    /// use the [`LoopbackMatcher::optional`] constructor..
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     pub fn new() -> Self {
@@ -31,7 +31,7 @@ impl LoopbackFilter {
     /// matching only if the ip is a loopback address or no socket address could be found.
     ///
     /// This filter will match in case socket address could not be found.
-    /// Use the [`LoopbackFilter::new`] constructor if you want do not want
+    /// Use the [`LoopbackMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
@@ -40,13 +40,13 @@ impl LoopbackFilter {
     }
 }
 
-impl Default for LoopbackFilter {
+impl Default for LoopbackMatcher {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for LoopbackFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for LoopbackMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -59,7 +59,7 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for LoopbackFilt
     }
 }
 
-impl<State, Socket> crate::service::Matcher<State, Socket> for LoopbackFilter
+impl<State, Socket> crate::service::Matcher<State, Socket> for LoopbackMatcher
 where
     Socket: crate::stream::Socket,
 {
@@ -85,7 +85,7 @@ mod test {
 
     #[test]
     fn test_port_filter_http() {
-        let filter = LoopbackFilter::new();
+        let filter = LoopbackMatcher::new();
 
         let mut ctx = Context::default();
         let req = Request::builder()
@@ -124,14 +124,14 @@ mod test {
         assert!(filter.matches(None, &ctx, &req));
 
         // test #7: match: test with missing socket info, but it's seen as optional
-        let filter = LoopbackFilter::optional();
+        let filter = LoopbackMatcher::optional();
         let ctx = Context::default();
         assert!(filter.matches(None, &ctx, &req));
     }
 
     #[test]
     fn test_port_filter_socket_trait() {
-        let filter = LoopbackFilter::new();
+        let filter = LoopbackMatcher::new();
 
         let ctx = Context::default();
 
@@ -185,7 +185,7 @@ mod test {
         assert!(filter.matches(None, &ctx, &socket));
 
         // test #7: match: test with missing socket info, but it's seen as optional
-        let filter = LoopbackFilter::optional();
+        let filter = LoopbackMatcher::optional();
         socket.peer_addr = None;
         assert!(filter.matches(None, &ctx, &socket));
     }

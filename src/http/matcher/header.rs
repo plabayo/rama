@@ -7,24 +7,24 @@ use crate::{
 /// Filter based on the [`Request`]'s headers.
 ///
 /// [`Request`]: crate::http::Request
-pub struct HeaderFilter {
+pub struct HeaderMatcher {
     name: HeaderName,
-    kind: HeaderFilterKind,
+    kind: HeaderMatcherKind,
 }
 
 #[derive(Debug, Clone)]
-enum HeaderFilterKind {
+enum HeaderMatcherKind {
     Exists,
     Is(HeaderValue),
     Contains(HeaderValue),
 }
 
-impl HeaderFilter {
+impl HeaderMatcher {
     /// Create a new header filter to filter on the existence of a header.
     pub fn exists(name: HeaderName) -> Self {
         Self {
             name,
-            kind: HeaderFilterKind::Exists,
+            kind: HeaderMatcherKind::Exists,
         }
     }
 
@@ -32,7 +32,7 @@ impl HeaderFilter {
     pub fn is(name: HeaderName, value: HeaderValue) -> Self {
         Self {
             name,
-            kind: HeaderFilterKind::Is(value),
+            kind: HeaderMatcherKind::Is(value),
         }
     }
 
@@ -40,12 +40,12 @@ impl HeaderFilter {
     pub fn contains(name: HeaderName, value: HeaderValue) -> Self {
         Self {
             name,
-            kind: HeaderFilterKind::Contains(value),
+            kind: HeaderMatcherKind::Contains(value),
         }
     }
 }
 
-impl<State, Body> Matcher<State, Request<Body>> for HeaderFilter {
+impl<State, Body> Matcher<State, Request<Body>> for HeaderMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -54,9 +54,9 @@ impl<State, Body> Matcher<State, Request<Body>> for HeaderFilter {
     ) -> bool {
         let headers = req.headers();
         match self.kind {
-            HeaderFilterKind::Exists => headers.contains_key(&self.name),
-            HeaderFilterKind::Is(ref value) => headers.get(&self.name) == Some(value),
-            HeaderFilterKind::Contains(ref value) => {
+            HeaderMatcherKind::Exists => headers.contains_key(&self.name),
+            HeaderMatcherKind::Is(ref value) => headers.get(&self.name) == Some(value),
+            HeaderMatcherKind::Contains(ref value) => {
                 headers.get_all(&self.name).iter().any(|v| v == value)
             }
         }
@@ -69,7 +69,7 @@ mod test {
 
     #[test]
     fn test_header_filter_exists() {
-        let filter = HeaderFilter::exists("content-type".parse().unwrap());
+        let filter = HeaderMatcher::exists("content-type".parse().unwrap());
         let req = Request::builder()
             .header("content-type", "text/plain")
             .body(())
@@ -79,14 +79,14 @@ mod test {
 
     #[test]
     fn test_header_filter_exists_no_match() {
-        let filter = HeaderFilter::exists("content-type".parse().unwrap());
+        let filter = HeaderMatcher::exists("content-type".parse().unwrap());
         let req = Request::builder().body(()).unwrap();
         assert!(!filter.matches(None, &Context::default(), &req));
     }
 
     #[test]
     fn test_header_filter_is() {
-        let filter = HeaderFilter::is(
+        let filter = HeaderMatcher::is(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -99,7 +99,7 @@ mod test {
 
     #[test]
     fn test_header_filter_is_no_match() {
-        let filter = HeaderFilter::is(
+        let filter = HeaderMatcher::is(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -112,7 +112,7 @@ mod test {
 
     #[test]
     fn test_header_filter_contains() {
-        let filter = HeaderFilter::contains(
+        let filter = HeaderMatcher::contains(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -125,7 +125,7 @@ mod test {
 
     #[test]
     fn test_header_filter_contains_no_match() {
-        let filter = HeaderFilter::contains(
+        let filter = HeaderMatcher::contains(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -138,7 +138,7 @@ mod test {
 
     #[test]
     fn test_header_filter_contains_multiple() {
-        let filter = HeaderFilter::contains(
+        let filter = HeaderMatcher::contains(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -152,7 +152,7 @@ mod test {
 
     #[test]
     fn test_header_filter_contains_multiple_no_match() {
-        let filter = HeaderFilter::contains(
+        let filter = HeaderMatcher::contains(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );

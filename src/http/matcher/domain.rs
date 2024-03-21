@@ -6,12 +6,12 @@ use std::cmp::Ordering;
 
 #[derive(Debug, Clone)]
 /// Filter based on the (sub)domain of the request's URI.
-pub struct DomainFilter {
+pub struct DomainMatcher {
     domain: String,
     sub: bool,
 }
 
-impl DomainFilter {
+impl DomainMatcher {
     /// create a new domain filter to filter on an exact URI host match.
     pub fn new(domain: impl Into<String>) -> Self {
         Self {
@@ -46,7 +46,7 @@ impl DomainFilter {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for DomainFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for DomainMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -68,12 +68,12 @@ mod test {
     #[test]
     fn matchest_host_match() {
         let test_cases = vec![
-            (DomainFilter::new("www.example.com"), "www.example.com"),
-            (DomainFilter::new("www.example.com"), "WwW.ExamplE.COM"),
-            (DomainFilter::sub("example.com"), "www.example.com"),
-            (DomainFilter::sub("example.com"), "m.example.com"),
-            (DomainFilter::sub("example.com"), "www.EXAMPLE.com"),
-            (DomainFilter::sub("example.com"), "M.example.com"),
+            (DomainMatcher::new("www.example.com"), "www.example.com"),
+            (DomainMatcher::new("www.example.com"), "WwW.ExamplE.COM"),
+            (DomainMatcher::sub("example.com"), "www.example.com"),
+            (DomainMatcher::sub("example.com"), "m.example.com"),
+            (DomainMatcher::sub("example.com"), "www.EXAMPLE.com"),
+            (DomainMatcher::sub("example.com"), "M.example.com"),
         ];
         for (filter, host) in test_cases.into_iter() {
             assert!(
@@ -88,11 +88,11 @@ mod test {
     #[test]
     fn matchest_host_no_match() {
         let test_cases = vec![
-            (DomainFilter::new("www.example.com"), "www.example.co"),
-            (DomainFilter::new("www.example.com"), "www.ejemplo.com"),
-            (DomainFilter::new("www.example.com"), "www3.example.com"),
-            (DomainFilter::sub("w.example.com"), "www.example.com"),
-            (DomainFilter::sub("gel.com"), "kegel.com"),
+            (DomainMatcher::new("www.example.com"), "www.example.co"),
+            (DomainMatcher::new("www.example.com"), "www.ejemplo.com"),
+            (DomainMatcher::new("www.example.com"), "www3.example.com"),
+            (DomainMatcher::sub("w.example.com"), "www.example.com"),
+            (DomainMatcher::sub("gel.com"), "kegel.com"),
         ];
         for (filter, host) in test_cases.into_iter() {
             assert!(

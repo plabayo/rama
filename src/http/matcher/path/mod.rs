@@ -8,7 +8,7 @@ mod de;
 
 #[derive(Debug, Clone, Default)]
 /// parameters that are inserted in the [`Context`],
-/// in case the [`PathFilter`] found a match for the given [`Request`].
+/// in case the [`PathMatcher`] found a match for the given [`Request`].
 pub struct UriParams {
     params: Option<HashMap<String, String>>,
     glob: Option<String>,
@@ -87,26 +87,26 @@ enum PathFragment {
 }
 
 #[derive(Debug, Clone)]
-enum PathMatcher {
+enum PathMatcherKind {
     Literal(String),
     FragmentList(Vec<PathFragment>),
 }
 
 #[derive(Debug, Clone)]
 /// Filter based on the URI path.
-pub struct PathFilter {
-    matcher: PathMatcher,
+pub struct PathMatcher {
+    kind: PathMatcherKind,
 }
 
-impl PathFilter {
-    /// Create a new [`PathFilter`] for the given path.
+impl PathMatcher {
+    /// Create a new [`PathMatcher`] for the given path.
     pub fn new(path: impl AsRef<str>) -> Self {
         let path = path.as_ref();
         let path = path.trim().trim_matches('/');
 
         if !path.contains([':', '*']) {
             return Self {
-                matcher: PathMatcher::Literal(path.to_lowercase()),
+                kind: PathMatcherKind::Literal(path.to_lowercase()),
             };
         }
 
@@ -114,7 +114,7 @@ impl PathFilter {
         let fragment_length = path_parts.len();
         if fragment_length == 1 && path_parts[0].is_empty() {
             return Self {
-                matcher: PathMatcher::FragmentList(vec![PathFragment::Glob]),
+                kind: PathMatcherKind::FragmentList(vec![PathFragment::Glob]),
             };
         }
 
@@ -138,21 +138,21 @@ impl PathFilter {
             .collect();
 
         Self {
-            matcher: PathMatcher::FragmentList(fragments),
+            kind: PathMatcherKind::FragmentList(fragments),
         }
     }
 
     pub(crate) fn matches_path(&self, path: &str) -> Option<UriParams> {
         let path = path.trim().trim_matches('/');
-        match &self.matcher {
-            PathMatcher::Literal(literal) => {
+        match &self.kind {
+            PathMatcherKind::Literal(literal) => {
                 if literal.eq_ignore_ascii_case(path) {
                     Some(UriParams::default())
                 } else {
                     None
                 }
             }
-            PathMatcher::FragmentList(fragments) => {
+            PathMatcherKind::FragmentList(fragments) => {
                 let fragments_iter = fragments.iter().map(Some).chain(std::iter::repeat(None));
                 let mut params = UriParams::default();
                 for (segment, fragment) in path
@@ -201,7 +201,7 @@ impl PathFilter {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for PathFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for PathMatcher {
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
@@ -344,7 +344,7 @@ mod test {
             }),
         ];
         for test_case in test_cases.into_iter() {
-            let filter = PathFilter::new(test_case.filter_path);
+            let filter = PathMatcher::new(test_case.filter_path);
             let result = filter.matches_path(test_case.path);
             match (result.as_ref(), test_case.result.as_ref()) {
                 (None, None) => (),

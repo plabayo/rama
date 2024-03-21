@@ -9,17 +9,17 @@ use crate::{
 /// Filter based on the port part of the [`SocketAddr`] of the peer.
 ///
 /// [`SocketAddr`]: std::net::SocketAddr
-pub struct PortFilter {
+pub struct PortMatcher {
     port: u16,
     optional: bool,
 }
 
-impl PortFilter {
+impl PortMatcher {
     /// create a new port filter to filter on the port part a [`SocketAddr`]
     ///
     /// This filter will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
-    /// use the [`PortFilter::optional`] constructor..
+    /// use the [`PortMatcher::optional`] constructor..
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     pub fn new(port: u16) -> Self {
@@ -32,7 +32,7 @@ impl PortFilter {
     /// create a new port filter to filter on the port part a [`SocketAddr`]
     ///
     /// This filter will match in case socket address could not be found.
-    /// Use the [`PortFilter::new`] constructor if you want do not want
+    /// Use the [`PortMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
@@ -44,7 +44,7 @@ impl PortFilter {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for PortFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for PortMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -57,7 +57,7 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for PortFilter {
     }
 }
 
-impl<State, Socket> crate::service::Matcher<State, Socket> for PortFilter
+impl<State, Socket> crate::service::Matcher<State, Socket> for PortMatcher
 where
     Socket: crate::stream::Socket,
 {
@@ -83,7 +83,7 @@ mod test {
 
     #[test]
     fn test_port_filter_http() {
-        let filter = PortFilter::new(8080);
+        let filter = PortMatcher::new(8080);
 
         let mut ctx = Context::default();
         let req = Request::builder()
@@ -108,14 +108,14 @@ mod test {
         assert!(filter.matches(None, &ctx, &req));
 
         // test #5: match: test with missing socket info, but it's seen as optional
-        let filter = PortFilter::optional(8080);
+        let filter = PortMatcher::optional(8080);
         let ctx = Context::default();
         assert!(filter.matches(None, &ctx, &req));
     }
 
     #[test]
     fn test_port_filter_socket_trait() {
-        let filter = PortFilter::new(8080);
+        let filter = PortMatcher::new(8080);
 
         let ctx = Context::default();
 
@@ -157,7 +157,7 @@ mod test {
         assert!(filter.matches(None, &ctx, &socket));
 
         // test #5: match: test with missing socket info, but it's seen as optional
-        let filter = PortFilter::optional(8080);
+        let filter = PortMatcher::optional(8080);
         socket.peer_addr = None;
         assert!(filter.matches(None, &ctx, &socket));
     }
