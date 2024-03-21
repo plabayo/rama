@@ -364,6 +364,7 @@ use std::{fmt, time::Duration};
 
 use tracing::Level;
 
+#[doc(inline)]
 pub use self::{
     body::ResponseBody,
     layer::TraceLayer,

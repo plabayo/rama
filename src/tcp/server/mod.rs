@@ -38,4 +38,5 @@
 //! ```
 
 mod listener;
+#[doc(inline)]
 pub use listener::{TcpListener, TcpListenerBuilder};

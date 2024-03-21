@@ -3,4 +3,5 @@
 //! Examples are services that can operate directly on a `TCP`, `TLS` or `UDP` stream.
 
 mod tracker;
+#[doc(inline)]
 pub use tracker::{BytesRWTrackerHandle, BytesTrackerLayer, BytesTrackerService};

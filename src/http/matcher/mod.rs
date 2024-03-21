@@ -22,6 +22,7 @@ mod version;
 pub use version::VersionFilter;
 
 mod path;
+#[doc(inline)]
 pub use path::{PathFilter, UriParams, UriParamsDeserializeError};
 
 mod header;

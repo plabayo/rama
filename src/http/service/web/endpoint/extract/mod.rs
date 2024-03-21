@@ -33,6 +33,7 @@ mod typed_header;
 pub use typed_header::TypedHeader;
 
 mod body;
+#[doc(inline)]
 pub use body::{Body, Bytes, Json, Text};
 
 mod private {

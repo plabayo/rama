@@ -9,6 +9,7 @@ pub mod policy;
 pub use policy::{Policy, PolicyOutput};
 
 mod layer;
+#[doc(inline)]
 pub use layer::LimitLayer;
 
 /// Limit requests based on a policy

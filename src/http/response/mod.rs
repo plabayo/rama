@@ -8,6 +8,7 @@ mod append_headers;
 mod into_response;
 mod into_response_parts;
 
+#[doc(inline)]
 pub use self::{
     append_headers::AppendHeaders,
     into_response::IntoResponse,
@@ -15,12 +16,15 @@ pub use self::{
 };
 
 mod html;
+#[doc(inline)]
 pub use html::Html;
 
 mod json;
+#[doc(inline)]
 pub use json::Json;
 
 mod redirect;
+#[doc(inline)]
 pub use redirect::Redirect;
 
 /// Type alias for [`http::Response`] whose body type defaults to [`Body`], the most common body

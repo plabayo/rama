@@ -1,6 +1,7 @@
 //! Rama http modules.
 
 pub(crate) mod body;
+#[doc(inline)]
 pub use body::{Body, BodyDataStream};
 
 pub mod utils;

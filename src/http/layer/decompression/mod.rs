@@ -99,9 +99,12 @@ mod body;
 mod layer;
 mod service;
 
+#[doc(inline)]
 pub use self::{body::DecompressionBody, layer::DecompressionLayer, service::Decompression};
 
+#[doc(inline)]
 pub use self::request::layer::RequestDecompressionLayer;
+#[doc(inline)]
 pub use self::request::service::RequestDecompression;
 
 #[cfg(test)]

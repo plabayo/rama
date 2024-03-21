@@ -11,4 +11,5 @@
 //! [`Executor`]: crate::rt::Executor
 
 mod executor;
+#[doc(inline)]
 pub use executor::Executor;

@@ -36,15 +36,19 @@
 //! ```
 
 mod error;
+#[doc(inline)]
 pub use error::DnsError;
 
 mod dns_resolve;
+#[doc(inline)]
 pub use dns_resolve::DynamicDnsResolver;
 
 pub(crate) mod dns_map;
 
 mod service;
+#[doc(inline)]
 pub use service::{DnsResolvedSocketAddresses, DnsService};
 
 mod layer;
+#[doc(inline)]
 pub use layer::DnsLayer;

@@ -8,9 +8,11 @@ use crate::service::{Context, Service};
 use std::time::Duration;
 
 mod error;
+#[doc(inline)]
 pub use error::Elapsed;
 
 mod layer;
+#[doc(inline)]
 pub use layer::TimeoutLayer;
 
 /// Applies a timeout to requests.

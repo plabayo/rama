@@ -139,7 +139,11 @@ mod validate;
 mod validate_fn;
 mod validate_request_header;
 
+#[doc(inline)]
 pub use accept_header::AcceptHeader;
+#[doc(inline)]
 pub use validate::ValidateRequest;
+#[doc(inline)]
 pub use validate_fn::{BoxValidateRequestFn, ValidateRequestFn};
+#[doc(inline)]
 pub use validate_request_header::{ValidateRequestHeader, ValidateRequestHeaderLayer};

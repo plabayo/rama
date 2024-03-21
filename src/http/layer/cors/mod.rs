@@ -67,6 +67,7 @@ mod vary;
 #[cfg(test)]
 mod tests;
 
+#[doc(inline)]
 pub use self::{
     allow_credentials::AllowCredentials, allow_headers::AllowHeaders, allow_methods::AllowMethods,
     allow_origin::AllowOrigin, allow_private_network::AllowPrivateNetwork,

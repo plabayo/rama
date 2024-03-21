@@ -82,6 +82,7 @@ pub use self::{
     predicate::{DefaultPredicate, Predicate},
     service::Compression,
 };
+#[doc(inline)]
 pub use crate::http::layer::util::compression::CompressionLevel;
 
 #[cfg(test)]

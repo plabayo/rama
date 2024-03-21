@@ -36,6 +36,7 @@ mod endpoints;
 mod report;
 mod state;
 
+#[doc(inline)]
 pub use state::State;
 
 use self::state::ACMEData;

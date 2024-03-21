@@ -23,4 +23,5 @@ pub trait Backoff: Send + Sync + 'static {
 }
 
 mod exponential;
+#[doc(inline)]
 pub use exponential::ExponentialBackoff;

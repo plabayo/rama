@@ -15,6 +15,7 @@ use tokio_util::io::ReaderStream;
 mod serve_dir;
 mod serve_file;
 
+#[doc(inline)]
 pub use self::{
     serve_dir::{DefaultServeDirFallback, ServeDir},
     serve_file::ServeFile,

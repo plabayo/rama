@@ -6,6 +6,7 @@ use std::future::Future;
 
 mod bytes;
 use bytes::BytesRWTracker;
+#[doc(inline)]
 pub use bytes::BytesRWTrackerHandle;
 
 /// A [`Service`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.

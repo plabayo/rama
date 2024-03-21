@@ -149,6 +149,7 @@ where
 }
 
 mod service;
+#[doc(inline)]
 pub use service::EndpointServiceFn;
 
 struct EndpointServiceFnWrapper<F, S, T> {
