@@ -15,7 +15,7 @@ pub struct LoopbackMatcher {
 }
 
 impl LoopbackMatcher {
-    /// create a new loopback matcher to filter on the ip part a [`SocketAddr`],
+    /// create a new loopback matcher to match on the ip part a [`SocketAddr`],
     /// matching only if the ip is a loopback address.
     ///
     /// This matcher will not match in case socket address could not be found,
@@ -27,7 +27,7 @@ impl LoopbackMatcher {
         Self { optional: false }
     }
 
-    /// create a new loopback matcher to filter on the ip part a [`SocketAddr`],
+    /// create a new loopback matcher to match on the ip part a [`SocketAddr`],
     /// matching only if the ip is a loopback address or no socket address could be found.
     ///
     /// This matcher will match in case socket address could not be found.

@@ -542,7 +542,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Create a [`UriMatcher`] matcher to filter on top of the existing set of [`HttpMatcher`] matchers.
+    /// Create a [`UriMatcher`] matcher to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`UriMatcher`] for more information.
     pub fn and_uri(mut self, re: impl AsRef<str>) -> Self {
@@ -582,7 +582,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`PathMatcher`] to filter on top of the existing set of [`HttpMatcher`] matchers.
+    /// Add a [`PathMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`PathMatcher`] for more information.
     pub fn and_path(mut self, path: impl AsRef<str>) -> Self {
@@ -622,7 +622,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`HeaderMatcher`] to filter on top of the existing set of [`HttpMatcher`] matchers.
+    /// Add a [`HeaderMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
     pub fn and_header(
@@ -663,7 +663,7 @@ impl HttpMatcher {
     }
 
     /// Create a [`HeaderMatcher`] matcher when the given header exists
-    /// to filter on the existence of a header.
+    /// to match on the existence of a header.
     pub fn header_exists(name: http::header::HeaderName) -> Self {
         Self {
             kind: HttpMatcherKind::Header(HeaderMatcher::exists(name)),
@@ -671,7 +671,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`HeaderMatcher`] to filter when the given header exists
+    /// Add a [`HeaderMatcher`] to match when the given header exists
     /// on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
@@ -705,7 +705,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`HeaderMatcher`] matcher to filter on it containing the given value.
+    /// Create a [`HeaderMatcher`] matcher to match on it containing the given value.
     pub fn header_contains(
         name: http::header::HeaderName,
         value: http::header::HeaderValue,
@@ -716,7 +716,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`HeaderMatcher`] to filter when it contains the given value
+    /// Add a [`HeaderMatcher`] to match when it contains the given value
     /// on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
@@ -766,7 +766,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`SocketMatcher`] matcher to filter on top of the existing set of [`HttpMatcher`] matchers.
+    /// Add a [`SocketMatcher`] matcher to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`SocketMatcher`] for more information.
     pub fn and_socket(mut self, socket: SocketMatcher) -> Self {

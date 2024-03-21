@@ -12,7 +12,7 @@ pub struct DomainMatcher {
 }
 
 impl DomainMatcher {
-    /// create a new domain matcher to filter on an exact URI host match.
+    /// create a new domain matcher to match on an exact URI host match.
     pub fn new(domain: impl Into<String>) -> Self {
         Self {
             domain: domain.into().to_lowercase(),
@@ -20,7 +20,7 @@ impl DomainMatcher {
         }
     }
 
-    /// create a new domain matcher to filter on a subdomain URI host match.
+    /// create a new domain matcher to match on a subdomain URI host match.
     pub fn sub(domain: impl Into<String>) -> Self {
         Self {
             domain: domain.into().to_lowercase(),

@@ -1,4 +1,4 @@
-//! provides a [`UriMatcher`] matcher for filtering requests based on their URI.
+//! provides a [`UriMatcher`] matcher for matching requests based on their URI.
 
 use crate::{
     http::{Request, Uri},

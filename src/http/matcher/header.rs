@@ -20,7 +20,7 @@ enum HeaderMatcherKind {
 }
 
 impl HeaderMatcher {
-    /// Create a new header matcher to filter on the existence of a header.
+    /// Create a new header matcher to match on the existence of a header.
     pub fn exists(name: HeaderName) -> Self {
         Self {
             name,
@@ -28,7 +28,7 @@ impl HeaderMatcher {
         }
     }
 
-    /// Create a new header matcher to filter on an exact header value match.
+    /// Create a new header matcher to match on an exact header value match.
     pub fn is(name: HeaderName, value: HeaderValue) -> Self {
         Self {
             name,
@@ -36,7 +36,7 @@ impl HeaderMatcher {
         }
     }
 
-    /// Create a new header matcher to filter that the header contains the given value.
+    /// Create a new header matcher to match that the header contains the given value.
     pub fn contains(name: HeaderName, value: HeaderValue) -> Self {
         Self {
             name,

@@ -16,7 +16,7 @@ pub struct IpNetMatcher {
 }
 
 impl IpNetMatcher {
-    /// create a new IP network matcher to filter on an IP Network.
+    /// create a new IP network matcher to match on an IP Network.
     ///
     /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
@@ -28,7 +28,7 @@ impl IpNetMatcher {
         }
     }
 
-    /// create a new IP network matcher to filter on an IP network
+    /// create a new IP network matcher to match on an IP network
     ///
     /// This matcher will match in case socket address could not be found.
     /// Use the [`IpNetMatcher::new`] constructor if you want do not want

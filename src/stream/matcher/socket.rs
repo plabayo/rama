@@ -14,7 +14,7 @@ pub struct SocketAddressMatcher {
 }
 
 impl SocketAddressMatcher {
-    /// create a new socket address matcher to filter on a socket address
+    /// create a new socket address matcher to match on a socket address
     ///
     /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
@@ -26,7 +26,7 @@ impl SocketAddressMatcher {
         }
     }
 
-    /// create a new socket address matcher to filter on a socket address
+    /// create a new socket address matcher to match on a socket address
     ///
     /// This matcher will match in case socket address could not be found.
     /// Use the [`SocketAddressMatcher::new`] constructor if you want do not want

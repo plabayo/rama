@@ -40,7 +40,7 @@ impl UriParams {
     }
 
     /// Some str slice will be returned in case a glob value was captured
-    /// for the last part of the Path that was filtered on.
+    /// for the last part of the Path that was matched on.
     pub fn glob(&self) -> Option<&str> {
         self.glob.as_deref()
     }

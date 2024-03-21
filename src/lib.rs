@@ -125,4 +125,5 @@ pub mod tls;
 
 pub mod http;
 
+pub mod proxy;
 pub mod ua;

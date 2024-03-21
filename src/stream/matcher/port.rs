@@ -15,7 +15,7 @@ pub struct PortMatcher {
 }
 
 impl PortMatcher {
-    /// create a new port matcher to filter on the port part a [`SocketAddr`]
+    /// create a new port matcher to match on the port part a [`SocketAddr`]
     ///
     /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
@@ -29,7 +29,7 @@ impl PortMatcher {
         }
     }
 
-    /// create a new port matcher to filter on the port part a [`SocketAddr`]
+    /// create a new port matcher to match on the port part a [`SocketAddr`]
     ///
     /// This matcher will match in case socket address could not be found.
     /// Use the [`PortMatcher::new`] constructor if you want do not want
