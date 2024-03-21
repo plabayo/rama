@@ -100,18 +100,18 @@ mod test {
     use crate::service::Matcher;
 
     #[test]
-    fn test_version_filter() {
-        let filter = VersionMatcher::HTTP_11;
+    fn test_version_matcher() {
+        let matcher = VersionMatcher::HTTP_11;
         let req = Request::builder()
             .version(Version::HTTP_11)
             .body(())
             .unwrap();
-        assert!(filter.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &Context::default(), &req));
     }
 
     #[test]
-    fn test_version_filter_any() {
-        let filter = VersionMatcher::HTTP_11
+    fn test_version_matcher_any() {
+        let matcher = VersionMatcher::HTTP_11
             .or(VersionMatcher::HTTP_10)
             .or(VersionMatcher::HTTP_11);
 
@@ -119,28 +119,28 @@ mod test {
             .version(Version::HTTP_10)
             .body(())
             .unwrap();
-        assert!(filter.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &Context::default(), &req));
 
         let req = Request::builder()
             .version(Version::HTTP_11)
             .body(())
             .unwrap();
-        assert!(filter.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &Context::default(), &req));
 
         let req = Request::builder()
             .version(Version::HTTP_2)
             .body(())
             .unwrap();
-        assert!(!filter.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &Context::default(), &req));
     }
 
     #[test]
-    fn test_version_filter_fail() {
-        let filter = VersionMatcher::HTTP_11;
+    fn test_version_matcher_fail() {
+        let matcher = VersionMatcher::HTTP_11;
         let req = Request::builder()
             .version(Version::HTTP_10)
             .body(())
             .unwrap();
-        assert!(!filter.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &Context::default(), &req));
     }
 }

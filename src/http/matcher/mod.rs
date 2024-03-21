@@ -82,13 +82,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method(mut self, method: MethodMatcher) -> Self {
-        let filter = HttpMatcherKind::Method(method);
+        let matcher = HttpMatcherKind::Method(method);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         };
         self
@@ -98,13 +98,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method(mut self, method: MethodMatcher) -> Self {
-        let filter = HttpMatcherKind::Method(method);
+        let matcher = HttpMatcherKind::Method(method);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         };
         self
@@ -124,13 +124,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_delete(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::DELETE);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::DELETE);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         };
         self
@@ -141,13 +141,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_delete(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::DELETE);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::DELETE);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         };
         self
@@ -167,13 +167,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_get(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::GET);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::GET);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         };
         self
@@ -184,13 +184,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_get(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::GET);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::GET);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         };
         self
@@ -210,13 +210,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_head(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::HEAD);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::HEAD);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         };
         self
@@ -227,13 +227,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_head(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::HEAD);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::HEAD);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         };
         self
@@ -253,13 +253,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_options(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::OPTIONS);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::OPTIONS);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         };
         self
@@ -270,13 +270,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_options(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::OPTIONS);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::OPTIONS);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         };
         self
@@ -296,13 +296,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_patch(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::PATCH);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::PATCH);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         };
         self
@@ -313,13 +313,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_patch(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::PATCH);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::PATCH);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         };
         self
@@ -339,13 +339,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_post(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::POST);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::POST);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         };
         self
@@ -356,13 +356,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_post(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::POST);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::POST);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         };
         self
@@ -382,13 +382,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_put(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::PUT);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::PUT);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         };
         self
@@ -399,13 +399,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_put(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::PUT);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::PUT);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         };
         self
@@ -425,13 +425,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_trace(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::TRACE);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::TRACE);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         };
         self
@@ -442,13 +442,13 @@ impl HttpMatcher {
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_trace(mut self) -> Self {
-        let filter = HttpMatcherKind::Method(MethodMatcher::TRACE);
+        let matcher = HttpMatcherKind::Method(MethodMatcher::TRACE);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         };
         self
@@ -466,13 +466,13 @@ impl HttpMatcher {
     ///
     /// See [`DomainMatcher`] for more information.
     pub fn and_domain(mut self, domain: impl Into<String>) -> Self {
-        let filter = HttpMatcherKind::Domain(DomainMatcher::new(domain));
+        let matcher = HttpMatcherKind::Domain(DomainMatcher::new(domain));
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         }
         self
@@ -482,13 +482,13 @@ impl HttpMatcher {
     ///
     /// See [`DomainMatcher`] for more information.
     pub fn or_domain(mut self, domain: impl Into<String>) -> Self {
-        let filter = HttpMatcherKind::Domain(DomainMatcher::new(domain));
+        let matcher = HttpMatcherKind::Domain(DomainMatcher::new(domain));
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         }
         self
@@ -502,17 +502,17 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`VersionMatcher`] matcher to filter on top of the existing set of [`HttpMatcher`] matchers.
+    /// Add a [`VersionMatcher`] matcher to matcher on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`VersionMatcher`] for more information.
     pub fn and_version(mut self, version: VersionMatcher) -> Self {
-        let filter = HttpMatcherKind::Version(version);
+        let matcher = HttpMatcherKind::Version(version);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         }
         self
@@ -522,13 +522,13 @@ impl HttpMatcher {
     ///
     /// See [`VersionMatcher`] for more information.
     pub fn or_version(mut self, version: VersionMatcher) -> Self {
-        let filter = HttpMatcherKind::Version(version);
+        let matcher = HttpMatcherKind::Version(version);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         }
         self
@@ -546,13 +546,13 @@ impl HttpMatcher {
     ///
     /// See [`UriMatcher`] for more information.
     pub fn and_uri(mut self, re: impl AsRef<str>) -> Self {
-        let filter = HttpMatcherKind::Uri(UriMatcher::new(re));
+        let matcher = HttpMatcherKind::Uri(UriMatcher::new(re));
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         }
         self
@@ -562,13 +562,13 @@ impl HttpMatcher {
     ///    
     /// See [`UriMatcher`] for more information.
     pub fn or_uri(mut self, re: impl AsRef<str>) -> Self {
-        let filter = HttpMatcherKind::Uri(UriMatcher::new(re));
+        let matcher = HttpMatcherKind::Uri(UriMatcher::new(re));
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         }
         self
@@ -586,13 +586,13 @@ impl HttpMatcher {
     ///
     /// See [`PathMatcher`] for more information.
     pub fn and_path(mut self, path: impl AsRef<str>) -> Self {
-        let filter = HttpMatcherKind::Path(PathMatcher::new(path));
+        let matcher = HttpMatcherKind::Path(PathMatcher::new(path));
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         }
         self
@@ -602,13 +602,13 @@ impl HttpMatcher {
     ///
     /// See [`PathMatcher`] for more information.
     pub fn or_path(mut self, path: impl AsRef<str>) -> Self {
-        let filter = HttpMatcherKind::Path(PathMatcher::new(path));
+        let matcher = HttpMatcherKind::Path(PathMatcher::new(path));
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         }
         self
@@ -630,13 +630,13 @@ impl HttpMatcher {
         name: http::header::HeaderName,
         value: http::header::HeaderValue,
     ) -> Self {
-        let filter = HttpMatcherKind::Header(HeaderMatcher::is(name, value));
+        let matcher = HttpMatcherKind::Header(HeaderMatcher::is(name, value));
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         }
         self
@@ -650,13 +650,13 @@ impl HttpMatcher {
         name: http::header::HeaderName,
         value: http::header::HeaderValue,
     ) -> Self {
-        let filter = HttpMatcherKind::Header(HeaderMatcher::is(name, value));
+        let matcher = HttpMatcherKind::Header(HeaderMatcher::is(name, value));
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         }
         self
@@ -676,13 +676,13 @@ impl HttpMatcher {
     ///
     /// See [`HeaderMatcher`] for more information.
     pub fn and_header_exists(mut self, name: http::header::HeaderName) -> Self {
-        let filter = HttpMatcherKind::Header(HeaderMatcher::exists(name));
+        let matcher = HttpMatcherKind::Header(HeaderMatcher::exists(name));
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         }
         self
@@ -693,13 +693,13 @@ impl HttpMatcher {
     ///
     /// See [`HeaderMatcher`] for more information.
     pub fn or_header_exists(mut self, name: http::header::HeaderName) -> Self {
-        let filter = HttpMatcherKind::Header(HeaderMatcher::exists(name));
+        let matcher = HttpMatcherKind::Header(HeaderMatcher::exists(name));
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         }
         self
@@ -725,13 +725,13 @@ impl HttpMatcher {
         name: http::header::HeaderName,
         value: http::header::HeaderValue,
     ) -> Self {
-        let filter = HttpMatcherKind::Header(HeaderMatcher::contains(name, value));
+        let matcher = HttpMatcherKind::Header(HeaderMatcher::contains(name, value));
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         }
         self
@@ -746,13 +746,13 @@ impl HttpMatcher {
         name: http::header::HeaderName,
         value: http::header::HeaderValue,
     ) -> Self {
-        let filter = HttpMatcherKind::Header(HeaderMatcher::contains(name, value));
+        let matcher = HttpMatcherKind::Header(HeaderMatcher::contains(name, value));
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         }
         self
@@ -770,13 +770,13 @@ impl HttpMatcher {
     ///
     /// See [`SocketMatcher`] for more information.
     pub fn and_socket(mut self, socket: SocketMatcher) -> Self {
-        let filter = HttpMatcherKind::Socket(socket);
+        let matcher = HttpMatcherKind::Socket(socket);
         match &mut self.kind {
             HttpMatcherKind::All(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::All(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::All(vec![self.kind, matcher]);
             }
         }
         self
@@ -786,13 +786,13 @@ impl HttpMatcher {
     ///
     /// See [`SocketMatcher`] for more information.
     pub fn or_socket(mut self, socket: SocketMatcher) -> Self {
-        let filter = HttpMatcherKind::Socket(socket);
+        let matcher = HttpMatcherKind::Socket(socket);
         match &mut self.kind {
             HttpMatcherKind::Any(v) => {
-                v.push(filter);
+                v.push(matcher);
             }
             _ => {
-                self.kind = HttpMatcherKind::Any(vec![self.kind, filter]);
+                self.kind = HttpMatcherKind::Any(vec![self.kind, matcher]);
             }
         }
         self

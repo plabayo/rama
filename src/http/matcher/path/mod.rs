@@ -225,26 +225,26 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_path_filter_match_path() {
+    fn test_path_matcher_match_path() {
         struct TestCase {
             path: &'static str,
-            filter_path: &'static str,
+            matcher_path: &'static str,
             result: Option<UriParams>,
         }
 
         impl TestCase {
-            fn some(path: &'static str, filter_path: &'static str, result: UriParams) -> Self {
+            fn some(path: &'static str, matcher_path: &'static str, result: UriParams) -> Self {
                 Self {
                     path,
-                    filter_path,
+                    matcher_path,
                     result: Some(result),
                 }
             }
 
-            fn none(path: &'static str, filter_path: &'static str) -> Self {
+            fn none(path: &'static str, matcher_path: &'static str) -> Self {
                 Self {
                     path,
-                    filter_path,
+                    matcher_path,
                     result: None,
                 }
             }
@@ -344,30 +344,30 @@ mod test {
             }),
         ];
         for test_case in test_cases.into_iter() {
-            let filter = PathMatcher::new(test_case.filter_path);
-            let result = filter.matches_path(test_case.path);
+            let matcher = PathMatcher::new(test_case.matcher_path);
+            let result = matcher.matches_path(test_case.path);
             match (result.as_ref(), test_case.result.as_ref()) {
                 (None, None) => (),
                 (Some(result), Some(expected_result)) => {
                     assert_eq!(
                         result.params,
                         expected_result.params,
-                        "unexpected result params: ({}).filter({}) => {:?} != {:?}",
-                        test_case.filter_path,
+                        "unexpected result params: ({}).matcher({}) => {:?} != {:?}",
+                        test_case.matcher_path,
                         test_case.path,
                         result.params,
                         expected_result.params,
                     );
                     assert_eq!(
                         result.glob, expected_result.glob,
-                        "unexpected result glob: ({}).filter({}) => {:?} != {:?}",
-                        test_case.filter_path, test_case.path, result.glob, expected_result.glob,
+                        "unexpected result glob: ({}).matcher({}) => {:?} != {:?}",
+                        test_case.matcher_path, test_case.path, result.glob, expected_result.glob,
                     );
                 }
                 _ => {
                     panic!(
-                        "unexpected result: ({}).filter({}) => {:?} != {:?}",
-                        test_case.filter_path, test_case.path, result, test_case.result
+                        "unexpected result: ({}).matcher({}) => {:?} != {:?}",
+                        test_case.matcher_path, test_case.path, result, test_case.result
                     )
                 }
             }

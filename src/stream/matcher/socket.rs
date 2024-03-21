@@ -76,8 +76,8 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_socket_filter_http() {
-        let filter = SocketAddressMatcher::new(([127, 0, 0, 1], 8080));
+    fn test_socket_matcher_http() {
+        let matcher = SocketAddressMatcher::new(([127, 0, 0, 1], 8080));
 
         let mut ctx = Context::default();
         let req = Request::builder()
@@ -87,29 +87,29 @@ mod test {
             .unwrap();
 
         // test #1: no match: test with no socket info registered
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &ctx, &req));
 
         // test #2: no match: test with different socket info (port difference)
         ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8081).into()));
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &ctx, &req));
 
         // test #3: no match: test with different socket info (ip addr difference)
         ctx.insert(SocketInfo::new(None, ([127, 0, 0, 2], 8080).into()));
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &ctx, &req));
 
         // test #4: match: test with correct address
         ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
 
         // test #5: match: test with missing socket info, but it's seen as optional
-        let filter = SocketAddressMatcher::optional(([127, 0, 0, 1], 8080));
+        let matcher = SocketAddressMatcher::optional(([127, 0, 0, 1], 8080));
         let ctx = Context::default();
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
     }
 
     #[test]
-    fn test_socket_filter_socket_trait() {
-        let filter = SocketAddressMatcher::new(([127, 0, 0, 1], 8080));
+    fn test_socket_matcher_socket_trait() {
+        let matcher = SocketAddressMatcher::new(([127, 0, 0, 1], 8080));
 
         let ctx = Context::default();
 
@@ -140,19 +140,19 @@ mod test {
         };
 
         // test #1: no match: test with different socket info (port difference)
-        assert!(!filter.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &ctx, &socket));
 
         // test #2: no match: test with different socket info (ip addr difference)
         socket.peer_addr = Some(([127, 0, 0, 2], 8080).into());
-        assert!(!filter.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &ctx, &socket));
 
         // test #3: match: test with correct address
         socket.peer_addr = Some(([127, 0, 0, 1], 8080).into());
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
 
         // test #5: match: test with missing socket info, but it's seen as optional
-        let filter = SocketAddressMatcher::optional(([127, 0, 0, 1], 8080));
+        let matcher = SocketAddressMatcher::optional(([127, 0, 0, 1], 8080));
         socket.peer_addr = None;
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
     }
 }

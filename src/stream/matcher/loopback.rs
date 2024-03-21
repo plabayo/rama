@@ -84,8 +84,8 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_port_filter_http() {
-        let filter = LoopbackMatcher::new();
+    fn test_port_matcher_http() {
+        let matcher = LoopbackMatcher::new();
 
         let mut ctx = Context::default();
         let req = Request::builder()
@@ -95,43 +95,43 @@ mod test {
             .unwrap();
 
         // test #1: no match: test with no socket info registered
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &ctx, &req));
 
         // test #2: no match: test with network address (ipv4)
         ctx.insert(SocketInfo::new(None, ([192, 168, 0, 1], 8080).into()));
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &ctx, &req));
 
         // test #3: no match: test with network address (ipv6)
         ctx.insert(SocketInfo::new(
             None,
             ([1, 1, 1, 1, 1, 1, 1, 1], 8080).into(),
         ));
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &ctx, &req));
 
         // test #4: match: test with loopback address (ipv4)
         ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
 
         // test #5: match: test with another loopback address (ipv4)
         ctx.insert(SocketInfo::new(None, ([127, 3, 2, 1], 8080).into()));
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
 
         // test #6: match: test with loopback address (ipv6)
         ctx.insert(SocketInfo::new(
             None,
             ([0, 0, 0, 0, 0, 0, 0, 1], 8080).into(),
         ));
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
 
         // test #7: match: test with missing socket info, but it's seen as optional
-        let filter = LoopbackMatcher::optional();
+        let matcher = LoopbackMatcher::optional();
         let ctx = Context::default();
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
     }
 
     #[test]
-    fn test_port_filter_socket_trait() {
-        let filter = LoopbackMatcher::new();
+    fn test_port_matcher_socket_trait() {
+        let matcher = LoopbackMatcher::new();
 
         let ctx = Context::default();
 
@@ -162,31 +162,31 @@ mod test {
         };
 
         // test #1: no match: test with no socket info registered
-        assert!(!filter.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &ctx, &socket));
 
         // test #2: no match: test with network address (ipv4)
         socket.peer_addr = Some(([192, 168, 0, 1], 8080).into());
-        assert!(!filter.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &ctx, &socket));
 
         // test #3: no match: test with network address (ipv6)
         socket.peer_addr = Some(([1, 1, 1, 1, 1, 1, 1, 1], 8080).into());
-        assert!(!filter.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &ctx, &socket));
 
         // test #4: match: test with loopback address (ipv4)
         socket.peer_addr = Some(([127, 0, 0, 1], 8080).into());
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
 
         // test #5: match: test with another loopback address (ipv4)
         socket.peer_addr = Some(([127, 3, 2, 1], 8080).into());
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
 
         // test #6: match: test with loopback address (ipv6)
         socket.peer_addr = Some(([0, 0, 0, 0, 0, 0, 0, 1], 8080).into());
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
 
         // test #7: match: test with missing socket info, but it's seen as optional
-        let filter = LoopbackMatcher::optional();
+        let matcher = LoopbackMatcher::optional();
         socket.peer_addr = None;
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
     }
 }

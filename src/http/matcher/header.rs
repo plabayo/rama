@@ -68,25 +68,25 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_header_filter_exists() {
-        let filter = HeaderMatcher::exists("content-type".parse().unwrap());
+    fn test_header_matcher_exists() {
+        let matcher = HeaderMatcher::exists("content-type".parse().unwrap());
         let req = Request::builder()
             .header("content-type", "text/plain")
             .body(())
             .unwrap();
-        assert!(filter.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &Context::default(), &req));
     }
 
     #[test]
-    fn test_header_filter_exists_no_match() {
-        let filter = HeaderMatcher::exists("content-type".parse().unwrap());
+    fn test_header_matcher_exists_no_match() {
+        let matcher = HeaderMatcher::exists("content-type".parse().unwrap());
         let req = Request::builder().body(()).unwrap();
-        assert!(!filter.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &Context::default(), &req));
     }
 
     #[test]
-    fn test_header_filter_is() {
-        let filter = HeaderMatcher::is(
+    fn test_header_matcher_is() {
+        let matcher = HeaderMatcher::is(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -94,12 +94,12 @@ mod test {
             .header("content-type", "text/plain")
             .body(())
             .unwrap();
-        assert!(filter.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &Context::default(), &req));
     }
 
     #[test]
-    fn test_header_filter_is_no_match() {
-        let filter = HeaderMatcher::is(
+    fn test_header_matcher_is_no_match() {
+        let matcher = HeaderMatcher::is(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -107,12 +107,12 @@ mod test {
             .header("content-type", "text/html")
             .body(())
             .unwrap();
-        assert!(!filter.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &Context::default(), &req));
     }
 
     #[test]
-    fn test_header_filter_contains() {
-        let filter = HeaderMatcher::contains(
+    fn test_header_matcher_contains() {
+        let matcher = HeaderMatcher::contains(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -120,12 +120,12 @@ mod test {
             .header("content-type", "text/plain")
             .body(())
             .unwrap();
-        assert!(filter.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &Context::default(), &req));
     }
 
     #[test]
-    fn test_header_filter_contains_no_match() {
-        let filter = HeaderMatcher::contains(
+    fn test_header_matcher_contains_no_match() {
+        let matcher = HeaderMatcher::contains(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -133,12 +133,12 @@ mod test {
             .header("content-type", "text/html")
             .body(())
             .unwrap();
-        assert!(!filter.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &Context::default(), &req));
     }
 
     #[test]
-    fn test_header_filter_contains_multiple() {
-        let filter = HeaderMatcher::contains(
+    fn test_header_matcher_contains_multiple() {
+        let matcher = HeaderMatcher::contains(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -147,12 +147,12 @@ mod test {
             .header("content-type", "text/plain")
             .body(())
             .unwrap();
-        assert!(filter.matches(None, &Context::default(), &req));
+        assert!(matcher.matches(None, &Context::default(), &req));
     }
 
     #[test]
-    fn test_header_filter_contains_multiple_no_match() {
-        let filter = HeaderMatcher::contains(
+    fn test_header_matcher_contains_multiple_no_match() {
+        let matcher = HeaderMatcher::contains(
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
@@ -161,6 +161,6 @@ mod test {
             .header("content-type", "text/xml")
             .body(())
             .unwrap();
-        assert!(!filter.matches(None, &Context::default(), &req));
+        assert!(!matcher.matches(None, &Context::default(), &req));
     }
 }

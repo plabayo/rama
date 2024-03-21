@@ -86,8 +86,8 @@ impl SocketMatcher {
     /// Add a new socket address matcher to the existing [`SocketMatcher`] to also filter on a socket address.
     pub fn and_socket_addr(mut self, addr: impl Into<std::net::SocketAddr>) -> Self {
         match &mut self.kind {
-            SocketMatcherKind::All(filters) => {
-                filters.push(SocketMatcherKind::SocketAddress(SocketAddressMatcher::new(
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::SocketAddress(SocketAddressMatcher::new(
                     addr,
                 )));
             }
@@ -106,8 +106,8 @@ impl SocketMatcher {
     /// See [`SocketAddressMatcher::new`] for more information.
     pub fn or_socket_addr(mut self, addr: impl Into<std::net::SocketAddr>) -> Self {
         match &mut self.kind {
-            SocketMatcherKind::Any(filters) => {
-                filters.push(SocketMatcherKind::SocketAddress(SocketAddressMatcher::new(
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::SocketAddress(SocketAddressMatcher::new(
                     addr,
                 )));
             }
@@ -147,8 +147,8 @@ impl SocketMatcher {
     /// See [`LoopbackMatcher::new`] for more information.
     pub fn and_loopback(mut self) -> Self {
         match &mut self.kind {
-            SocketMatcherKind::All(filters) => {
-                filters.push(SocketMatcherKind::Loopback(LoopbackMatcher::new()));
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::Loopback(LoopbackMatcher::new()));
             }
             _ => {
                 self.kind = SocketMatcherKind::All(vec![
@@ -165,8 +165,8 @@ impl SocketMatcher {
     /// See [`LoopbackMatcher::new`] for more information.
     pub fn or_loopback(mut self) -> Self {
         match &mut self.kind {
-            SocketMatcherKind::Any(filters) => {
-                filters.push(SocketMatcherKind::Loopback(LoopbackMatcher::new()));
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::Loopback(LoopbackMatcher::new()));
             }
             _ => {
                 self.kind = SocketMatcherKind::Any(vec![
@@ -205,8 +205,8 @@ impl SocketMatcher {
     /// See [`PortMatcher::new`] for more information.
     pub fn and_port(mut self, port: u16) -> Self {
         match &mut self.kind {
-            SocketMatcherKind::All(filters) => {
-                filters.push(SocketMatcherKind::Port(PortMatcher::new(port)));
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::Port(PortMatcher::new(port)));
             }
             _ => {
                 self.kind = SocketMatcherKind::All(vec![
@@ -224,8 +224,8 @@ impl SocketMatcher {
     /// See [`PortMatcher::new`] for more information.
     pub fn or_port(mut self, port: u16) -> Self {
         match &mut self.kind {
-            SocketMatcherKind::Any(filters) => {
-                filters.push(SocketMatcherKind::Port(PortMatcher::new(port)));
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::Port(PortMatcher::new(port)));
             }
             _ => {
                 self.kind = SocketMatcherKind::Any(vec![
@@ -263,8 +263,8 @@ impl SocketMatcher {
     /// See [`IpNetMatcher::new`] for more information.
     pub fn and_ip_net(mut self, ip_net: impl ip::IntoIpNet) -> Self {
         match &mut self.kind {
-            SocketMatcherKind::All(filters) => {
-                filters.push(SocketMatcherKind::IpNet(IpNetMatcher::new(ip_net)));
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::IpNet(IpNetMatcher::new(ip_net)));
             }
             _ => {
                 self.kind = SocketMatcherKind::All(vec![
@@ -281,8 +281,8 @@ impl SocketMatcher {
     /// See [`IpNetMatcher::new`] for more information.
     pub fn or_ip_net(mut self, ip_net: impl ip::IntoIpNet) -> Self {
         match &mut self.kind {
-            SocketMatcherKind::Any(filters) => {
-                filters.push(SocketMatcherKind::IpNet(IpNetMatcher::new(ip_net)));
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::IpNet(IpNetMatcher::new(ip_net)));
             }
             _ => {
                 self.kind = SocketMatcherKind::Any(vec![
@@ -311,12 +311,12 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for SocketMatche
         req: &Request<Body>,
     ) -> bool {
         match self {
-            SocketMatcherKind::SocketAddress(filter) => filter.matches(ext, ctx, req),
-            SocketMatcherKind::IpNet(filter) => filter.matches(ext, ctx, req),
-            SocketMatcherKind::Loopback(filter) => filter.matches(ext, ctx, req),
-            SocketMatcherKind::All(filters) => filters.iter().matches_and(ext, ctx, req),
-            SocketMatcherKind::Any(filters) => filters.iter().matches_or(ext, ctx, req),
-            SocketMatcherKind::Port(filter) => filter.matches(ext, ctx, req),
+            SocketMatcherKind::SocketAddress(matcher) => matcher.matches(ext, ctx, req),
+            SocketMatcherKind::IpNet(matcher) => matcher.matches(ext, ctx, req),
+            SocketMatcherKind::Loopback(matcher) => matcher.matches(ext, ctx, req),
+            SocketMatcherKind::All(matchers) => matchers.iter().matches_and(ext, ctx, req),
+            SocketMatcherKind::Any(matchers) => matchers.iter().matches_or(ext, ctx, req),
+            SocketMatcherKind::Port(matcher) => matcher.matches(ext, ctx, req),
         }
     }
 }
@@ -343,12 +343,12 @@ where
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
         match self {
-            SocketMatcherKind::SocketAddress(filter) => filter.matches(ext, ctx, stream),
-            SocketMatcherKind::IpNet(filter) => filter.matches(ext, ctx, stream),
-            SocketMatcherKind::Loopback(filter) => filter.matches(ext, ctx, stream),
-            SocketMatcherKind::Port(filter) => filter.matches(ext, ctx, stream),
-            SocketMatcherKind::All(filters) => filters.iter().matches_and(ext, ctx, stream),
-            SocketMatcherKind::Any(filters) => filters.iter().matches_or(ext, ctx, stream),
+            SocketMatcherKind::SocketAddress(matcher) => matcher.matches(ext, ctx, stream),
+            SocketMatcherKind::IpNet(matcher) => matcher.matches(ext, ctx, stream),
+            SocketMatcherKind::Loopback(matcher) => matcher.matches(ext, ctx, stream),
+            SocketMatcherKind::Port(matcher) => matcher.matches(ext, ctx, stream),
+            SocketMatcherKind::All(matchers) => matchers.iter().matches_and(ext, ctx, stream),
+            SocketMatcherKind::Any(matchers) => matchers.iter().matches_or(ext, ctx, stream),
         }
     }
 }

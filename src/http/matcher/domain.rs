@@ -75,11 +75,11 @@ mod test {
             (DomainMatcher::sub("example.com"), "www.EXAMPLE.com"),
             (DomainMatcher::sub("example.com"), "M.example.com"),
         ];
-        for (filter, host) in test_cases.into_iter() {
+        for (matcher, host) in test_cases.into_iter() {
             assert!(
-                filter.matches_host(host),
+                matcher.matches_host(host),
                 "({:?}).matches_host({})",
-                filter,
+                matcher,
                 host
             );
         }
@@ -94,11 +94,11 @@ mod test {
             (DomainMatcher::sub("w.example.com"), "www.example.com"),
             (DomainMatcher::sub("gel.com"), "kegel.com"),
         ];
-        for (filter, host) in test_cases.into_iter() {
+        for (matcher, host) in test_cases.into_iter() {
             assert!(
-                !filter.matches_host(host),
+                !matcher.matches_host(host),
                 "!({:?}).matches_host({})",
-                filter,
+                matcher,
                 host
             );
         }

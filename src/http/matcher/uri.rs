@@ -79,11 +79,11 @@ mod test {
                 "http://www.example.com/image.png",
             ),
         ];
-        for (filter, uri) in test_cases.into_iter() {
+        for (matcher, uri) in test_cases.into_iter() {
             assert!(
-                filter.matches_uri(&(uri.parse().unwrap())),
+                matcher.matches_uri(&(uri.parse().unwrap())),
                 "({:?}).matches_uri({})",
-                filter,
+                matcher,
                 uri
             );
         }
@@ -98,11 +98,11 @@ mod test {
                 "http://www.example.com/?style.css",
             ),
         ];
-        for (filter, uri) in test_cases.into_iter() {
+        for (matcher, uri) in test_cases.into_iter() {
             assert!(
-                !filter.matches_uri(&(uri.parse().unwrap())),
+                !matcher.matches_uri(&(uri.parse().unwrap())),
                 "!({:?}).matches_uri({})",
-                filter,
+                matcher,
                 uri
             );
         }
