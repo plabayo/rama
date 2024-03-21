@@ -6,32 +6,32 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-/// Filter based on the ip part of the [`SocketAddr`] of the peer,
+/// Matcher based on the ip part of the [`SocketAddr`] of the peer,
 /// matching only if the ip is a loopback address.
 ///
 /// [`SocketAddr`]: std::net::SocketAddr
-pub struct LoopbackFilter {
+pub struct LoopbackMatcher {
     optional: bool,
 }
 
-impl LoopbackFilter {
-    /// create a new loopback filter to filter on the ip part a [`SocketAddr`],
+impl LoopbackMatcher {
+    /// create a new loopback matcher to filter on the ip part a [`SocketAddr`],
     /// matching only if the ip is a loopback address.
     ///
-    /// This filter will not match in case socket address could not be found,
+    /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
-    /// use the [`LoopbackFilter::optional`] constructor..
+    /// use the [`LoopbackMatcher::optional`] constructor..
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     pub fn new() -> Self {
         Self { optional: false }
     }
 
-    /// create a new loopback filter to filter on the ip part a [`SocketAddr`],
+    /// create a new loopback matcher to filter on the ip part a [`SocketAddr`],
     /// matching only if the ip is a loopback address or no socket address could be found.
     ///
-    /// This filter will match in case socket address could not be found.
-    /// Use the [`LoopbackFilter::new`] constructor if you want do not want
+    /// This matcher will match in case socket address could not be found.
+    /// Use the [`LoopbackMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
@@ -40,13 +40,13 @@ impl LoopbackFilter {
     }
 }
 
-impl Default for LoopbackFilter {
+impl Default for LoopbackMatcher {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for LoopbackFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for LoopbackMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -59,7 +59,7 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for LoopbackFilt
     }
 }
 
-impl<State, Socket> crate::service::Matcher<State, Socket> for LoopbackFilter
+impl<State, Socket> crate::service::Matcher<State, Socket> for LoopbackMatcher
 where
     Socket: crate::stream::Socket,
 {
@@ -84,8 +84,8 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_port_filter_http() {
-        let filter = LoopbackFilter::new();
+    fn test_port_matcher_http() {
+        let matcher = LoopbackMatcher::new();
 
         let mut ctx = Context::default();
         let req = Request::builder()
@@ -95,43 +95,43 @@ mod test {
             .unwrap();
 
         // test #1: no match: test with no socket info registered
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &ctx, &req));
 
         // test #2: no match: test with network address (ipv4)
         ctx.insert(SocketInfo::new(None, ([192, 168, 0, 1], 8080).into()));
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &ctx, &req));
 
         // test #3: no match: test with network address (ipv6)
         ctx.insert(SocketInfo::new(
             None,
             ([1, 1, 1, 1, 1, 1, 1, 1], 8080).into(),
         ));
-        assert!(!filter.matches(None, &ctx, &req));
+        assert!(!matcher.matches(None, &ctx, &req));
 
         // test #4: match: test with loopback address (ipv4)
         ctx.insert(SocketInfo::new(None, ([127, 0, 0, 1], 8080).into()));
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
 
         // test #5: match: test with another loopback address (ipv4)
         ctx.insert(SocketInfo::new(None, ([127, 3, 2, 1], 8080).into()));
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
 
         // test #6: match: test with loopback address (ipv6)
         ctx.insert(SocketInfo::new(
             None,
             ([0, 0, 0, 0, 0, 0, 0, 1], 8080).into(),
         ));
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
 
         // test #7: match: test with missing socket info, but it's seen as optional
-        let filter = LoopbackFilter::optional();
+        let matcher = LoopbackMatcher::optional();
         let ctx = Context::default();
-        assert!(filter.matches(None, &ctx, &req));
+        assert!(matcher.matches(None, &ctx, &req));
     }
 
     #[test]
-    fn test_port_filter_socket_trait() {
-        let filter = LoopbackFilter::new();
+    fn test_port_matcher_socket_trait() {
+        let matcher = LoopbackMatcher::new();
 
         let ctx = Context::default();
 
@@ -162,31 +162,31 @@ mod test {
         };
 
         // test #1: no match: test with no socket info registered
-        assert!(!filter.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &ctx, &socket));
 
         // test #2: no match: test with network address (ipv4)
         socket.peer_addr = Some(([192, 168, 0, 1], 8080).into());
-        assert!(!filter.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &ctx, &socket));
 
         // test #3: no match: test with network address (ipv6)
         socket.peer_addr = Some(([1, 1, 1, 1, 1, 1, 1, 1], 8080).into());
-        assert!(!filter.matches(None, &ctx, &socket));
+        assert!(!matcher.matches(None, &ctx, &socket));
 
         // test #4: match: test with loopback address (ipv4)
         socket.peer_addr = Some(([127, 0, 0, 1], 8080).into());
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
 
         // test #5: match: test with another loopback address (ipv4)
         socket.peer_addr = Some(([127, 3, 2, 1], 8080).into());
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
 
         // test #6: match: test with loopback address (ipv6)
         socket.peer_addr = Some(([0, 0, 0, 0, 0, 0, 0, 1], 8080).into());
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
 
         // test #7: match: test with missing socket info, but it's seen as optional
-        let filter = LoopbackFilter::optional();
+        let matcher = LoopbackMatcher::optional();
         socket.peer_addr = None;
-        assert!(filter.matches(None, &ctx, &socket));
+        assert!(matcher.matches(None, &ctx, &socket));
     }
 }

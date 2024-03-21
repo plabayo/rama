@@ -15,7 +15,7 @@ use std::{convert::Infallible, future::Future, marker::PhantomData, sync::Arc};
 /// Note that this service boxes all the internal services, so it is not as efficient as it could be.
 /// For those locations where you need do not desire the convenience over performance,
 /// you can instead use a tuple of `(M, S)` tuples, where M is a matcher and S is a service,
-/// e.g. `((MethodFilter::GET, service_a), (MethodFilter::POST, service_b), service_fallback)`.
+/// e.g. `((MethodMatcher::GET, service_a), (MethodMatcher::POST, service_b), service_fallback)`.
 pub struct WebService<State> {
     endpoints: Vec<Arc<Endpoint<State>>>,
     not_found: Arc<BoxService<State, Request, Response, Infallible>>,
@@ -294,7 +294,7 @@ all_the_tuples_no_last_special_case!(impl_matcher_service_tuple);
 /// # Example
 ///
 /// ```rust
-/// use rama::http::matcher::{HttpMatcher, MethodFilter};
+/// use rama::http::matcher::{HttpMatcher, MethodMatcher};
 /// use rama::http::{Body, Request, Response, StatusCode};
 /// use rama::http::dep::http_body_util::BodyExt;
 /// use rama::service::{Context, Service};
@@ -304,7 +304,7 @@ all_the_tuples_no_last_special_case!(impl_matcher_service_tuple);
 ///   let svc = rama::http::service::web::match_service! {
 ///     HttpMatcher::get("/hello") => "hello",
 ///     HttpMatcher::post("/world") => "world",
-///     MethodFilter::CONNECT => "connect",
+///     MethodMatcher::CONNECT => "connect",
 ///     _ => StatusCode::NOT_FOUND,
 ///   };
 ///
@@ -321,7 +321,7 @@ all_the_tuples_no_last_special_case!(impl_matcher_service_tuple);
 /// Which is short for the following:
 ///
 /// ```rust
-/// use rama::http::matcher::{HttpMatcher, MethodFilter};
+/// use rama::http::matcher::{HttpMatcher, MethodMatcher};
 /// use rama::http::{Body, Request, Response, StatusCode};
 /// use rama::http::dep::http_body_util::BodyExt;
 /// use rama::http::service::web::IntoEndpointService;
@@ -332,7 +332,7 @@ all_the_tuples_no_last_special_case!(impl_matcher_service_tuple);
 ///   let svc = (
 ///     (HttpMatcher::get("/hello"), "hello".into_endpoint_service()),
 ///     (HttpMatcher::post("/world"), "world".into_endpoint_service()),
-///     (MethodFilter::CONNECT, "connect".into_endpoint_service()),
+///     (MethodMatcher::CONNECT, "connect".into_endpoint_service()),
 ///     StatusCode::NOT_FOUND.into_endpoint_service(),
 ///   );
 ///
@@ -361,7 +361,7 @@ pub use __match_service as match_service;
 #[cfg(test)]
 mod test {
     use crate::http::dep::http_body_util::BodyExt;
-    use crate::http::matcher::MethodFilter;
+    use crate::http::matcher::MethodMatcher;
     use crate::http::Body;
 
     use super::*;
@@ -496,7 +496,7 @@ mod test {
         let svc = match_service! {
             HttpMatcher::get("/hello") => "hello",
             HttpMatcher::post("/world") => "world",
-            MethodFilter::CONNECT => "connect",
+            MethodMatcher::CONNECT => "connect",
             _ => StatusCode::NOT_FOUND,
         };
 

@@ -1,4 +1,4 @@
-//! provides a [`UriFilter`] matcher for filtering requests based on their URI.
+//! provides a [`UriMatcher`] matcher for filtering requests based on their URI.
 
 use crate::{
     http::{Request, Uri},
@@ -14,13 +14,13 @@ pub mod dep {
 use dep::regex::Regex;
 
 #[derive(Debug, Clone)]
-/// Filter the request's URI, using a substring or regex pattern.
-pub struct UriFilter {
+/// Matcher the request's URI, using a substring or regex pattern.
+pub struct UriMatcher {
     re: Regex,
 }
 
-impl UriFilter {
-    /// create a new Uri filter using a regex pattern.
+impl UriMatcher {
+    /// create a new Uri matcher using a regex pattern.
     ///
     /// See docs at <https://docs.rs/regex> for more information on regex patterns.
     /// (e.g. to use flags like (?i) for case-insensitive matching)
@@ -38,13 +38,13 @@ impl UriFilter {
     }
 }
 
-impl From<Regex> for UriFilter {
+impl From<Regex> for UriMatcher {
     fn from(re: Regex) -> Self {
         Self { re }
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for UriFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for UriMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -61,29 +61,29 @@ mod test {
 
     #[test]
     fn matchest_uri_match() {
-        let test_cases: Vec<(UriFilter, &str)> = vec![
+        let test_cases: Vec<(UriMatcher, &str)> = vec![
             (
-                UriFilter::new(r"www\.example\.com"),
+                UriMatcher::new(r"www\.example\.com"),
                 "http://www.example.com",
             ),
             (
-                UriFilter::new(r"(?i)www\.example\.com"),
+                UriMatcher::new(r"(?i)www\.example\.com"),
                 "http://WwW.ExamplE.COM",
             ),
             (
-                UriFilter::new(r"(?i)^[^?]+\.(jpeg|png|gif|css)(\?|\z)"),
+                UriMatcher::new(r"(?i)^[^?]+\.(jpeg|png|gif|css)(\?|\z)"),
                 "http://www.example.com/assets/style.css?foo=bar",
             ),
             (
-                UriFilter::new(r"(?i)^[^?]+\.(jpeg|png|gif|css)(\?|\z)"),
+                UriMatcher::new(r"(?i)^[^?]+\.(jpeg|png|gif|css)(\?|\z)"),
                 "http://www.example.com/image.png",
             ),
         ];
-        for (filter, uri) in test_cases.into_iter() {
+        for (matcher, uri) in test_cases.into_iter() {
             assert!(
-                filter.matches_uri(&(uri.parse().unwrap())),
+                matcher.matches_uri(&(uri.parse().unwrap())),
                 "({:?}).matches_uri({})",
-                filter,
+                matcher,
                 uri
             );
         }
@@ -92,17 +92,17 @@ mod test {
     #[test]
     fn matchest_uri_no_match() {
         let test_cases = vec![
-            (UriFilter::new("www.example.com"), "http://WwW.ExamplE.COM"),
+            (UriMatcher::new("www.example.com"), "http://WwW.ExamplE.COM"),
             (
-                UriFilter::new(r"(?i)^[^?]+\.(jpeg|png|gif|css)(\?|\z)"),
+                UriMatcher::new(r"(?i)^[^?]+\.(jpeg|png|gif|css)(\?|\z)"),
                 "http://www.example.com/?style.css",
             ),
         ];
-        for (filter, uri) in test_cases.into_iter() {
+        for (matcher, uri) in test_cases.into_iter() {
             assert!(
-                !filter.matches_uri(&(uri.parse().unwrap())),
+                !matcher.matches_uri(&(uri.parse().unwrap())),
                 "!({:?}).matches_uri({})",
-                filter,
+                matcher,
                 uri
             );
         }

@@ -32,7 +32,7 @@ use rama::{
             trace::TraceLayer,
             upgrade::{UpgradeLayer, Upgraded},
         },
-        matcher::{DomainFilter, HttpMatcher, MethodFilter},
+        matcher::{DomainMatcher, HttpMatcher, MethodMatcher},
         response::Json,
         server::HttpServer,
         service::web::{
@@ -83,7 +83,7 @@ async fn main() {
                     .layer(ProxyAuthLayer::new(("john", "secret")))
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
-                        DomainFilter::new("echo.example"),
+                        DomainMatcher::new("echo.example"),
                         Arc::new(match_service!{
                             HttpMatcher::post("/lucky/:number") => |path: Path<APILuckyParams>| async move {
                                 Json(json!({
@@ -100,7 +100,7 @@ async fn main() {
                         })
                     ))
                     .layer(UpgradeLayer::new(
-                        MethodFilter::CONNECT,
+                        MethodMatcher::CONNECT,
                         service_fn(http_connect_accept),
                         service_fn(http_connect_proxy),
                     ))
