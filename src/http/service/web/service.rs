@@ -436,8 +436,8 @@ mod test {
     #[tokio::test]
     async fn test_matcher_service_tuples() {
         let svc = match_service! {
-            HttpMatcher::method_get().and_path("/hello") => "hello",
-            HttpMatcher::method_post().and_path("/world") => "world",
+            HttpMatcher::get("/hello") => "hello",
+            HttpMatcher::post("/world") => "world",
             MethodFilter::CONNECT => "connect",
             _ => StatusCode::NOT_FOUND,
         };

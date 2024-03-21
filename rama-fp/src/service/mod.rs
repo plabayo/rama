@@ -8,8 +8,8 @@ use rama::{
         matcher::HttpMatcher,
         response::Redirect,
         server::HttpServer,
-        service::web::WebService,
-        HeaderName, HeaderValue, IntoResponse, StatusCode,
+        service::web::match_service,
+        HeaderName, HeaderValue, IntoResponse,
     },
     rt::Executor,
     service::{
@@ -113,28 +113,15 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
                 }),
             ))
-            .service(
-                WebService::default()
-                    .not_found(Redirect::temporary("/consent"))
-                    .get("/report", endpoints::get_report)
-                    // XHR
-                    .get("/api/fetch/number", endpoints::get_api_fetch_number)
-                    .post(
-                        "/api/fetch/number/:number",
-                        endpoints::post_api_fetch_number,
-                    )
-                    .get(
-                        "/api/xml/number",
-                        endpoints::get_api_xml_http_request_number,
-                    )
-                    .post(
-                        "/api/xml/number/:number",
-                        endpoints::post_api_xml_http_request_number,
-                    )
-                    // Form
-                    .get("/form", endpoints::form)
-                    .post("/form", endpoints::form),
-            );
+            .service(match_service!{
+                HttpMatcher::get("/report") => endpoints::get_report,
+                HttpMatcher::get("/api/fetch/number") => endpoints::get_api_fetch_number,
+                HttpMatcher::post("/api/fetch/number/:number") => endpoints::post_api_fetch_number,
+                HttpMatcher::get("/api/xml/number") => endpoints::get_api_xml_http_request_number,
+                HttpMatcher::post("/api/xml/number/:number") => endpoints::post_api_xml_http_request_number,
+                HttpMatcher::method_get().or_method_post().and_path("/form") => endpoints::form,
+                _ => Redirect::temporary("/consent"),
+            });
 
         let http_service = ServiceBuilder::new()
             .layer(TraceLayer::new_for_http())
@@ -153,22 +140,18 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 ch_headers,
             ))
             .service(
-                WebService::default()
+                Arc::new(match_service!{
                     // Navigate
-                    .get("/", Redirect::temporary("/constent"))
-                    .get("/consent", endpoints::get_consent)
+                    HttpMatcher::get("/") => Redirect::temporary("/consent"),
+                    HttpMatcher::get("/consent") => endpoints::get_consent,
                     // ACME
-                    .get(
-                        "/.well-known/acme-challenge/:token",
-                        endpoints::get_acme_challenge,
-                    )
+                    HttpMatcher::get("/.well-known/acme-challenge/:token") => endpoints::get_acme_challenge,
                     // Assets
-                    .get("/assets/style.css", endpoints::get_assets_style)
-                    .get("/assets/script.js", endpoints::get_assets_script)
-                    // Infrastructure — For Fly.io we can keep it very simple
-                    .get("/infra/health", StatusCode::OK)
-                    // Fingerprint Endpoints
-                    .nest("/", inner_http_service),
+                    HttpMatcher::get("/assets/style.css") => endpoints::get_assets_style,
+                    HttpMatcher::get("/assets/script.js") => endpoints::get_assets_script,
+                    // Fingerprinting Endpoints
+                    _ => inner_http_service,
+                })
             );
 
         let tcp_service_builder = ServiceBuilder::new()
@@ -340,14 +323,10 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
             .service(
-                WebService::default()
-                    // ACME
-                    .get(
-                        "/.well-known/acme-challenge/:token",
-                        endpoints::get_acme_challenge,
-                    )
-                    // Echo
-                    .not_found(endpoints::echo),
+                Arc::new(match_service!{
+                    HttpMatcher::get("/.well-known/acme-challenge/:token") => endpoints::get_acme_challenge,
+                    _ => endpoints::echo,
+                })
             );
 
         let tcp_service_builder = ServiceBuilder::new()

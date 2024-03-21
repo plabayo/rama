@@ -1,15 +1,15 @@
 //! k8s web service
 
-use std::{convert::Infallible, marker::PhantomData};
+use std::{convert::Infallible, marker::PhantomData, sync::Arc};
 
 use http::StatusCode;
 
 use crate::{
-    http::{IntoResponse, Request, Response},
+    http::{matcher::HttpMatcher, IntoResponse, Request, Response},
     service::{service_fn, BoxService, Context, Service},
 };
 
-use super::WebService;
+use super::match_service;
 
 /// create a k8s web health service builder
 pub fn k8s_health_builder<S>() -> K8sHealthServiceBuilder<(), (), S> {
@@ -17,7 +17,7 @@ pub fn k8s_health_builder<S>() -> K8sHealthServiceBuilder<(), (), S> {
 }
 
 /// create a default k8s web health service
-pub fn k8s_health<S>() -> WebService<S>
+pub fn k8s_health<S>() -> impl Service<S, Request, Response = Response, Error = Infallible> + Clone
 where
     S: Send + Sync + 'static,
 {
@@ -79,10 +79,14 @@ where
     S: Send + Sync + 'static,
 {
     /// build the k8s health web server
-    pub fn build(self) -> WebService<S> {
-        WebService::default()
-            .get("/k8s/alive", self.alive.to_k8s_service())
-            .get("/k8s/ready", self.ready.to_k8s_service())
+    pub fn build(
+        self,
+    ) -> impl Service<S, Request, Response = Response, Error = Infallible> + Clone {
+        Arc::new(match_service! {
+            HttpMatcher::get("/k8s/alive") => self.alive.to_k8s_service(),
+            HttpMatcher::get("/k8s/ready") => self.ready.to_k8s_service(),
+            _ => StatusCode::NOT_FOUND,
+        })
     }
 }
 

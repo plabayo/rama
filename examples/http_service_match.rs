@@ -59,9 +59,9 @@ async fn main() {
             addr,
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .service(
+            .service(
                     match_service!{
-                        HttpMatcher::method_get().and_path("/") => Html(r##"<h1>Home</h1><a href="/echo">Echo Request</a>"##.to_string()),
+                        HttpMatcher::get("/") => Html(r##"<h1>Home</h1><a href="/echo">Echo Request</a>"##.to_string()),
                         PathFilter::new("/echo") => |req: Request| async move {
                             Json(json!({
                                 "method": req.method().as_str(),

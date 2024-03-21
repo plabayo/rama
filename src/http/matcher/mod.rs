@@ -797,6 +797,46 @@ impl HttpMatcher {
         self
     }
 
+    /// Create a [`PathFilter`] filter to match for a GET request.
+    pub fn get(path: impl AsRef<str>) -> Self {
+        Self::method_get().and_path(path)
+    }
+
+    /// Create a [`PathFilter`] filter to match for a POST request.
+    pub fn post(path: impl AsRef<str>) -> Self {
+        Self::method_post().and_path(path)
+    }
+
+    /// Create a [`PathFilter`] filter to match for a PUT request.
+    pub fn put(path: impl AsRef<str>) -> Self {
+        Self::method_put().and_path(path)
+    }
+
+    /// Create a [`PathFilter`] filter to match for a DELETE request.
+    pub fn delete(path: impl AsRef<str>) -> Self {
+        Self::method_delete().and_path(path)
+    }
+
+    /// Create a [`PathFilter`] filter to match for a PATCH request.
+    pub fn patch(path: impl AsRef<str>) -> Self {
+        Self::method_patch().and_path(path)
+    }
+
+    /// Create a [`PathFilter`] filter to match for a HEAD request.
+    pub fn head(path: impl AsRef<str>) -> Self {
+        Self::method_head().and_path(path)
+    }
+
+    /// Create a [`PathFilter`] filter to match for a OPTIONS request.
+    pub fn options(path: impl AsRef<str>) -> Self {
+        Self::method_options().and_path(path)
+    }
+
+    /// Create a [`PathFilter`] filter to match for a TRACE request.
+    pub fn trace(path: impl AsRef<str>) -> Self {
+        Self::method_trace().and_path(path)
+    }
+
     /// Negate the current filter
     pub fn negate(self) -> Self {
         Self {
