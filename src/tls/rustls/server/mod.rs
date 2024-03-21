@@ -14,10 +14,13 @@
 //! as well as how one might use this concept to provide a tunnel service build with these concepts;
 
 mod service;
+#[doc(inline)]
 pub use service::{TlsAcceptorError, TlsAcceptorService};
 
 mod client_config;
+#[doc(inline)]
 pub use client_config::{IncomingClientHello, ServerConfigProvider, TlsClientConfigHandler};
 
 mod layer;
+#[doc(inline)]
 pub use layer::TlsAcceptorLayer;

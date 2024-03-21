@@ -290,6 +290,64 @@ all_the_tuples_no_last_special_case!(impl_matcher_service_tuple);
 /// Which is nothing more then a convenient wrapper to create a tuple of matcher-service tuples,
 /// with the last tuple being the fallback service. And all services implement
 /// the [`IntoEndpointService`] trait.
+///
+/// # Example
+///
+/// ```rust
+/// use rama::http::matcher::{HttpMatcher, MethodFilter};
+/// use rama::http::{Body, Request, Response, StatusCode};
+/// use rama::http::dep::http_body_util::BodyExt;
+/// use rama::service::{Context, Service};
+///
+/// #[tokio::main]
+/// async fn main() {
+///   let svc = rama::http::service::web::match_service! {
+///     HttpMatcher::get("/hello") => "hello",
+///     HttpMatcher::post("/world") => "world",
+///     MethodFilter::CONNECT => "connect",
+///     _ => StatusCode::NOT_FOUND,
+///   };
+///
+///   let resp = svc.serve(
+///       Context::default(),
+///       Request::post("https://www.test.io/world").body(Body::empty()).unwrap(),
+///   ).await.unwrap();
+///   assert_eq!(resp.status(), StatusCode::OK);
+///   let body = resp.into_body().collect().await.unwrap().to_bytes();
+///   assert_eq!(body, "world");
+/// }
+/// ```
+///
+/// Which is short for the following:
+///
+/// ```rust
+/// use rama::http::matcher::{HttpMatcher, MethodFilter};
+/// use rama::http::{Body, Request, Response, StatusCode};
+/// use rama::http::dep::http_body_util::BodyExt;
+/// use rama::http::service::web::IntoEndpointService;
+/// use rama::service::{Context, Service};
+///
+/// #[tokio::main]
+/// async fn main() {
+///   let svc = (
+///     (HttpMatcher::get("/hello"), "hello".into_endpoint_service()),
+///     (HttpMatcher::post("/world"), "world".into_endpoint_service()),
+///     (MethodFilter::CONNECT, "connect".into_endpoint_service()),
+///     StatusCode::NOT_FOUND.into_endpoint_service(),
+///   );
+///
+///   let resp = svc.serve(
+///      Context::default(),
+///      Request::post("https://www.test.io/world").body(Body::empty()).unwrap(),
+///   ).await.unwrap();
+///   assert_eq!(resp.status(), StatusCode::OK);
+///   let body = resp.into_body().collect().await.unwrap().to_bytes();
+///   assert_eq!(body, "world");
+/// }
+/// ```
+///
+/// As you can see it is pretty much the same, except that you need to explicitly ensure
+/// that each service is an actual Endpoint service.
 macro_rules! __match_service {
     ($($M:expr => $S:expr),+, _ => $F:expr $(,)?) => {{
         use $crate::http::service::web::IntoEndpointService;
