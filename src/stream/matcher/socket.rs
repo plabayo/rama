@@ -18,7 +18,7 @@ impl SocketAddressMatcher {
     ///
     /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
-    /// use the [`SocketAdressMatcher::optional`] constructor..
+    /// use the [`SocketAddressMatcher::optional`] constructor..
     pub fn new(addr: impl Into<SocketAddr>) -> Self {
         Self {
             addr: addr.into(),
@@ -29,7 +29,7 @@ impl SocketAddressMatcher {
     /// create a new socket address matcher to filter on a socket address
     ///
     /// This matcher will match in case socket address could not be found.
-    /// Use the [`SocketAdressMatcher::new`] constructor if you want do not want
+    /// Use the [`SocketAddressMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     pub fn optional(addr: impl Into<SocketAddr>) -> Self {
         Self {
