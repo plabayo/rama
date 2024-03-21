@@ -12,16 +12,16 @@ rust-version = { workspace = true }
 default-run = "rama-fp"
 
 [dependencies]
-anyhow = "1.0"
-base64 = { version = "0.22" }
-clap = { version = "4.4", features = ["derive"] }
+anyhow = { workspace = true }
+base64 = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
 rama = { version = "0.2", path = "..", features = ["full"] }
-serde = "1.0"
-serde_json = "1.0"
-serde_urlencoded = "0.7"
-tokio = { version = "1.35", features = ["rt-multi-thread", "macros"] }
-tracing = "0.1"
-tracing-subscriber = { version = "0.3.17", features = ["env-filter"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_urlencoded = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bin]]
 name = "rama-fp"

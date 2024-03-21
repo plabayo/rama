@@ -14,17 +14,14 @@ rust-version = { workspace = true }
 proc-macro = true
 
 [dependencies]
-proc-macro2 = "1.0"
-quote = "1.0"
-syn = { version = "2.0", features = [
-    "full",
-    "parsing",
-] }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full", "parsing"] }
 
 [dev-dependencies]
 rama = { path = "..", features = ["full"] }
-syn = { version = "2.0", features = ["full", "extra-traits"] }
-trybuild = "1.0.63"
+syn = { workspace = true, features = ["full", "extra-traits"] }
+trybuild = { workspace = true }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []
