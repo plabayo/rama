@@ -8,7 +8,7 @@ mod de;
 
 #[derive(Debug, Clone, Default)]
 /// parameters that are inserted in the [`Context`],
-/// in case the [`PathFilter`] found a match for the given [`Request`].
+/// in case the [`PathMatcher`] found a match for the given [`Request`].
 pub struct UriParams {
     params: Option<HashMap<String, String>>,
     glob: Option<String>,
@@ -40,7 +40,7 @@ impl UriParams {
     }
 
     /// Some str slice will be returned in case a glob value was captured
-    /// for the last part of the Path that was filtered on.
+    /// for the last part of the Path that was matched on.
     pub fn glob(&self) -> Option<&str> {
         self.glob.as_deref()
     }
@@ -87,26 +87,26 @@ enum PathFragment {
 }
 
 #[derive(Debug, Clone)]
-enum PathMatcher {
+enum PathMatcherInner {
     Literal(String),
     FragmentList(Vec<PathFragment>),
 }
 
 #[derive(Debug, Clone)]
-/// Filter based on the URI path.
-pub struct PathFilter {
-    matcher: PathMatcher,
+/// Matcher based on the URI path.
+pub struct PathMatcher {
+    matcher: PathMatcherInner,
 }
 
-impl PathFilter {
-    /// Create a new [`PathFilter`] for the given path.
+impl PathMatcher {
+    /// Create a new [`PathMatcher`] for the given path.
     pub fn new(path: impl AsRef<str>) -> Self {
         let path = path.as_ref();
         let path = path.trim().trim_matches('/');
 
         if !path.contains([':', '*']) {
             return Self {
-                matcher: PathMatcher::Literal(path.to_lowercase()),
+                matcher: PathMatcherInner::Literal(path.to_lowercase()),
             };
         }
 
@@ -114,7 +114,7 @@ impl PathFilter {
         let fragment_length = path_parts.len();
         if fragment_length == 1 && path_parts[0].is_empty() {
             return Self {
-                matcher: PathMatcher::FragmentList(vec![PathFragment::Glob]),
+                matcher: PathMatcherInner::FragmentList(vec![PathFragment::Glob]),
             };
         }
 
@@ -138,21 +138,21 @@ impl PathFilter {
             .collect();
 
         Self {
-            matcher: PathMatcher::FragmentList(fragments),
+            matcher: PathMatcherInner::FragmentList(fragments),
         }
     }
 
     pub(crate) fn matches_path(&self, path: &str) -> Option<UriParams> {
         let path = path.trim().trim_matches('/');
         match &self.matcher {
-            PathMatcher::Literal(literal) => {
+            PathMatcherInner::Literal(literal) => {
                 if literal.eq_ignore_ascii_case(path) {
                     Some(UriParams::default())
                 } else {
                     None
                 }
             }
-            PathMatcher::FragmentList(fragments) => {
+            PathMatcherInner::FragmentList(fragments) => {
                 let fragments_iter = fragments.iter().map(Some).chain(std::iter::repeat(None));
                 let mut params = UriParams::default();
                 for (segment, fragment) in path
@@ -201,7 +201,7 @@ impl PathFilter {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for PathFilter {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for PathMatcher {
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
@@ -225,26 +225,26 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_path_filter_match_path() {
+    fn test_path_matcher_match_path() {
         struct TestCase {
             path: &'static str,
-            filter_path: &'static str,
+            matcher_path: &'static str,
             result: Option<UriParams>,
         }
 
         impl TestCase {
-            fn some(path: &'static str, filter_path: &'static str, result: UriParams) -> Self {
+            fn some(path: &'static str, matcher_path: &'static str, result: UriParams) -> Self {
                 Self {
                     path,
-                    filter_path,
+                    matcher_path,
                     result: Some(result),
                 }
             }
 
-            fn none(path: &'static str, filter_path: &'static str) -> Self {
+            fn none(path: &'static str, matcher_path: &'static str) -> Self {
                 Self {
                     path,
-                    filter_path,
+                    matcher_path,
                     result: None,
                 }
             }
@@ -344,30 +344,30 @@ mod test {
             }),
         ];
         for test_case in test_cases.into_iter() {
-            let filter = PathFilter::new(test_case.filter_path);
-            let result = filter.matches_path(test_case.path);
+            let matcher = PathMatcher::new(test_case.matcher_path);
+            let result = matcher.matches_path(test_case.path);
             match (result.as_ref(), test_case.result.as_ref()) {
                 (None, None) => (),
                 (Some(result), Some(expected_result)) => {
                     assert_eq!(
                         result.params,
                         expected_result.params,
-                        "unexpected result params: ({}).filter({}) => {:?} != {:?}",
-                        test_case.filter_path,
+                        "unexpected result params: ({}).matcher({}) => {:?} != {:?}",
+                        test_case.matcher_path,
                         test_case.path,
                         result.params,
                         expected_result.params,
                     );
                     assert_eq!(
                         result.glob, expected_result.glob,
-                        "unexpected result glob: ({}).filter({}) => {:?} != {:?}",
-                        test_case.filter_path, test_case.path, result.glob, expected_result.glob,
+                        "unexpected result glob: ({}).matcher({}) => {:?} != {:?}",
+                        test_case.matcher_path, test_case.path, result.glob, expected_result.glob,
                     );
                 }
                 _ => {
                     panic!(
-                        "unexpected result: ({}).filter({}) => {:?} != {:?}",
-                        test_case.filter_path, test_case.path, result, test_case.result
+                        "unexpected result: ({}).matcher({}) => {:?} != {:?}",
+                        test_case.matcher_path, test_case.path, result, test_case.result
                     )
                 }
             }
