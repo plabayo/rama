@@ -4,6 +4,7 @@
 [![Docs.rs][docs-badge]][docs-url]
 [![MIT License][license-mit-badge]][license-mit-url]
 [![Apache 2.0 License][license-apache-badge]][license-apache-url]
+[![rust version][rust-version-badge]][rust-version-url]
 [![Build Status][actions-badge]][actions-url]
 
 [![Discord][discord-badge]][discord-url]
@@ -18,6 +19,8 @@
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
+[rust-version-badge]: https://img.shields.io/badge/rustc-1.75+-blue?style=flat-square&logo=rust
+[rust-version-url]: https://www.rust-lang.org
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions
 

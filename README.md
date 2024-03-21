@@ -4,6 +4,7 @@
 [![Docs.rs][docs-badge]][docs-url]
 [![MIT License][license-mit-badge]][license-mit-url]
 [![Apache 2.0 License][license-apache-badge]][license-apache-url]
+[![rust version][rust-version-badge]][rust-version-url]
 [![Build Status][actions-badge]][actions-url]
 
 [![Discord][discord-badge]][discord-url]
@@ -18,6 +19,8 @@
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
+[rust-version-badge]: https://img.shields.io/badge/rustc-1.75+-blue?style=flat-square&logo=rust
+[rust-version-url]: https://www.rust-lang.org
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions
 
@@ -56,6 +59,9 @@ use it to develop a regular web service, which comes with all the great benefits
 > and what might still need to be improved.
 >
 > The service is available at <https://fp.ramaproxy.org>.
+>
+> Developers can also make use of <https://echo.ramaproxy.org>,
+> to test if their requests would reach their target in the way they expect it to.
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 Please refer to [the examples found in the `./examples` dir](./examples)
@@ -78,7 +84,7 @@ rama = { git = "https://github.com/plabayo/rama" }
 >
 > Not everything that exists is documented and not everything that is documented is implemented.
 
-📖 Rama's full documentatuon, references and background material can be found in the form of the "rama book" at <https://ramaproxy.org/>.
+📖 Rama's full documentation, references and background material can be found in the form of the "rama book" at <https://ramaproxy.org/book>.
 
 ## ⛨ | Safety
 
@@ -177,9 +183,10 @@ building and maintaining open source software that `rama` depends upon:
 
 ## 🌱 | Alternatives
 
-While there are a handful of proxies written in Rust, there is only one other Rust framework
-specifically made for proxy services. All other proxies are single purpose code bases,
-some even just for learning purposes.
+While there are a handful of proxies written in Rust, there are only two other Rust frameworks
+specifically made for proxy purposes. All other proxy codebases are single purpose code bases,
+some even just for learning purposes. Or are actually generic http/web libraries/frameworks
+that facilitate proxy features as an extra.
 
 [Cloudflare] has been working on a proxy service framework, named [`pingora`], since a couple of years already,
 and on the 28th of February of 2024 they also open sourced it.
@@ -187,7 +194,7 @@ and on the 28th of February of 2024 they also open sourced it.
 Rama is not for everyone, but we sure hope it is right for you.
 If not, consider giving [`pingora`] a try, it might very well be the next best thing for you.
 
-Finally, [ByteDance] has an open source proxy framework written in Rust to developer forward
+Secondly, [ByteDance] has an open source proxy framework written in Rust to developer forward
 and reverse proxies alike, named [`g3proxy`].
 
 [Cloudflare]: https://www.cloudflare.com/
