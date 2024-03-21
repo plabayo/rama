@@ -7,16 +7,16 @@ use crate::{
 use std::net::SocketAddr;
 
 #[derive(Debug, Clone)]
-/// Filter based on the [`SocketAddr`] of the peer.
+/// Matcher based on the [`SocketAddr`] of the peer.
 pub struct SocketAddressMatcher {
     addr: SocketAddr,
     optional: bool,
 }
 
 impl SocketAddressMatcher {
-    /// create a new socket address filter to filter on a socket address
+    /// create a new socket address matcher to filter on a socket address
     ///
-    /// This filter will not match in case socket address could not be found,
+    /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
     /// use the [`SocketAdressMatcher::optional`] constructor..
     pub fn new(addr: impl Into<SocketAddr>) -> Self {
@@ -26,9 +26,9 @@ impl SocketAddressMatcher {
         }
     }
 
-    /// create a new socket address filter to filter on a socket address
+    /// create a new socket address matcher to filter on a socket address
     ///
-    /// This filter will match in case socket address could not be found.
+    /// This matcher will match in case socket address could not be found.
     /// Use the [`SocketAdressMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     pub fn optional(addr: impl Into<SocketAddr>) -> Self {

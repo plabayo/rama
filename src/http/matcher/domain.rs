@@ -5,14 +5,14 @@ use crate::{
 use std::cmp::Ordering;
 
 #[derive(Debug, Clone)]
-/// Filter based on the (sub)domain of the request's URI.
+/// Matcher based on the (sub)domain of the request's URI.
 pub struct DomainMatcher {
     domain: String,
     sub: bool,
 }
 
 impl DomainMatcher {
-    /// create a new domain filter to filter on an exact URI host match.
+    /// create a new domain matcher to filter on an exact URI host match.
     pub fn new(domain: impl Into<String>) -> Self {
         Self {
             domain: domain.into().to_lowercase(),
@@ -20,7 +20,7 @@ impl DomainMatcher {
         }
     }
 
-    /// create a new domain filter to filter on a subdomain URI host match.
+    /// create a new domain matcher to filter on a subdomain URI host match.
     pub fn sub(domain: impl Into<String>) -> Self {
         Self {
             domain: domain.into().to_lowercase(),

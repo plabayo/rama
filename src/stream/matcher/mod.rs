@@ -28,7 +28,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-/// A filter to match on a [`Socket`].
+/// A matcher to match on a [`Socket`].
 ///
 /// [`Socket`]: crate::stream::Socket
 pub struct SocketMatcher {
@@ -37,32 +37,32 @@ pub struct SocketMatcher {
 }
 
 #[derive(Debug, Clone)]
-/// The different kinds of socket filters.
+/// The different kinds of socket matchers.
 enum SocketMatcherKind {
-    /// [`SocketAddressMatcher`], a filter that matches on the [`SocketAddr`] of the peer.
+    /// [`SocketAddressMatcher`], a matcher that matches on the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     SocketAddress(SocketAddressMatcher),
-    /// [`LoopbackMatcher`], a filter that matches if the peer address is a loopback address.
+    /// [`LoopbackMatcher`], a matcher that matches if the peer address is a loopback address.
     Loopback(LoopbackMatcher),
-    /// [`PortMatcher`], a filter based on the port part of the [`SocketAddr`] of the peer.
+    /// [`PortMatcher`], a matcher based on the port part of the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     Port(PortMatcher),
-    /// [`IpNetMatcher`], a filter to match on whether or not
+    /// [`IpNetMatcher`], a matcher to match on whether or not
     /// the [`IpNet`] contains the [`SocketAddr`] of the peer.
     ///
     /// [`IpNet`]: ipnet::IpNet
     /// [`SocketAddr`]: std::net::SocketAddr
     IpNet(IpNetMatcher),
-    /// zero or more filters that all need to match in order for the filter to return `true`.
+    /// zero or more matchers that all need to match in order for the matcher to return `true`.
     All(Vec<SocketMatcherKind>),
-    /// `true` if no filters are defined, or any of the defined filters match.
+    /// `true` if no matchers are defined, or any of the defined matcher match.
     Any(Vec<SocketMatcherKind>),
 }
 
 impl SocketMatcher {
-    /// Create a new socket address filter to filter on a socket address.
+    /// Create a new socket address matcher to filter on a socket address.
     ///
     /// See [`SocketAddressMatcher::new`] for more information.
     pub fn socket_addr(addr: impl Into<std::net::SocketAddr>) -> Self {
@@ -72,8 +72,8 @@ impl SocketMatcher {
         }
     }
 
-    /// Create a new optional socket address filter to filter on a socket address,
-    /// this filter will match in case socket address could not be found.
+    /// Create a new optional socket address matcher to filter on a socket address,
+    /// this matcher will match in case socket address could not be found.
     ///
     /// See [`SocketAddressMatcher::optional`] for more information.
     pub fn optional_socket_addr(addr: impl Into<std::net::SocketAddr>) -> Self {
@@ -83,7 +83,7 @@ impl SocketMatcher {
         }
     }
 
-    /// Add a new socket address filter to the existing [`SocketMatcher`] to also filter on a socket address.
+    /// Add a new socket address matcher to the existing [`SocketMatcher`] to also filter on a socket address.
     pub fn and_socket_addr(mut self, addr: impl Into<std::net::SocketAddr>) -> Self {
         match &mut self.kind {
             SocketMatcherKind::All(filters) => {
@@ -101,7 +101,7 @@ impl SocketMatcher {
         self
     }
 
-    /// Add a new socket address filter to the existing [`SocketMatcher`] as an alternative filter to match on a socket address.
+    /// Add a new socket address matcher to the existing [`SocketMatcher`] as an alternative filter to match on a socket address.
     ///
     /// See [`SocketAddressMatcher::new`] for more information.
     pub fn or_socket_addr(mut self, addr: impl Into<std::net::SocketAddr>) -> Self {
@@ -121,7 +121,7 @@ impl SocketMatcher {
         self
     }
 
-    /// create a new loopback filter to filter on whether or not the peer address is a loopback address.
+    /// create a new loopback matcher to filter on whether or not the peer address is a loopback address.
     ///
     /// See [`LoopbackMatcher::new`] for more information.
     pub fn loopback() -> Self {
@@ -131,8 +131,8 @@ impl SocketMatcher {
         }
     }
 
-    /// Create a new optional loopback filter to filter on whether or not the peer address is a loopback address,
-    /// this filter will match in case socket address could not be found.
+    /// Create a new optional loopback matcher to filter on whether or not the peer address is a loopback address,
+    /// this matcher will match in case socket address could not be found.
     ///
     /// See [`LoopbackMatcher::optional`] for more information.
     pub fn optional_loopback() -> Self {
@@ -142,7 +142,7 @@ impl SocketMatcher {
         }
     }
 
-    /// Add a new loopback filter to the existing [`SocketMatcher`] to also filter on whether or not the peer address is a loopback address.
+    /// Add a new loopback matcher to the existing [`SocketMatcher`] to also filter on whether or not the peer address is a loopback address.
     ///
     /// See [`LoopbackMatcher::new`] for more information.
     pub fn and_loopback(mut self) -> Self {
@@ -160,7 +160,7 @@ impl SocketMatcher {
         self
     }
 
-    /// Add a new loopback filter to the existing [`SocketMatcher`] as an alternative filter to match on whether or not the peer address is a loopback address.
+    /// Add a new loopback matcher to the existing [`SocketMatcher`] as an alternative filter to match on whether or not the peer address is a loopback address.
     ///
     /// See [`LoopbackMatcher::new`] for more information.
     pub fn or_loopback(mut self) -> Self {
@@ -178,7 +178,7 @@ impl SocketMatcher {
         self
     }
 
-    /// create a new port filter to filter on the port part a [`SocketAddr`](std::net::SocketAddr).
+    /// create a new port matcher to filter on the port part a [`SocketAddr`](std::net::SocketAddr).
     ///
     /// See [`PortMatcher::new`] for more information.
     pub fn port(port: u16) -> Self {
@@ -188,8 +188,8 @@ impl SocketMatcher {
         }
     }
 
-    /// Create a new optional port filter to filter on the port part a [`SocketAddr`](std::net::SocketAddr),
-    /// this filter will match in case socket address could not be found.
+    /// Create a new optional port matcher to filter on the port part a [`SocketAddr`](std::net::SocketAddr),
+    /// this matcher will match in case socket address could not be found.
     ///
     /// See [`PortMatcher::optional`] for more information.
     pub fn optional_port(port: u16) -> Self {
@@ -199,8 +199,8 @@ impl SocketMatcher {
         }
     }
 
-    /// Add a new port filter to the existing [`SocketMatcher`] to
-    /// also filter on the port part of the [`SocketAddr`](std::net::SocketAddr).
+    /// Add a new port matcher to the existing [`SocketMatcher`] to
+    /// also matcher on the port part of the [`SocketAddr`](std::net::SocketAddr).
     ///
     /// See [`PortMatcher::new`] for more information.
     pub fn and_port(mut self, port: u16) -> Self {
@@ -218,7 +218,7 @@ impl SocketMatcher {
         self
     }
 
-    /// Add a new port filter to the existing [`SocketMatcher`] as an alternative filter
+    /// Add a new port matcher to the existing [`SocketMatcher`] as an alternative filter
     /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
     ///     
     /// See [`PortMatcher::new`] for more information.
@@ -237,7 +237,7 @@ impl SocketMatcher {
         self
     }
 
-    /// create a new IP network filter to filter on an IP Network.
+    /// create a new IP network matcher to filter on an IP Network.
     ///
     /// See [`IpNetMatcher::new`] for more information.
     pub fn ip_net(ip_net: impl ip::IntoIpNet) -> Self {
@@ -247,8 +247,8 @@ impl SocketMatcher {
         }
     }
 
-    /// Create a new optional IP network filter to filter on an IP Network,
-    /// this filter will match in case socket address could not be found.
+    /// Create a new optional IP network matcher to filter on an IP Network,
+    /// this matcher will match in case socket address could not be found.
     ///
     /// See [`IpNetMatcher::optional`] for more information.
     pub fn optional_ip_net(ip_net: impl ip::IntoIpNet) -> Self {
@@ -258,7 +258,7 @@ impl SocketMatcher {
         }
     }
 
-    /// Add a new IP network filter to the existing [`SocketMatcher`] to also filter on an IP Network.
+    /// Add a new IP network matcher to the existing [`SocketMatcher`] to also filter on an IP Network.
     ///
     /// See [`IpNetMatcher::new`] for more information.
     pub fn and_ip_net(mut self, ip_net: impl ip::IntoIpNet) -> Self {
@@ -276,7 +276,7 @@ impl SocketMatcher {
         self
     }
 
-    /// Add a new IP network filter to the existing [`SocketMatcher`] as an alternative filter to match on an IP Network.
+    /// Add a new IP network matcher to the existing [`SocketMatcher`] as an alternative filter to match on an IP Network.
     ///
     /// See [`IpNetMatcher::new`] for more information.
     pub fn or_ip_net(mut self, ip_net: impl ip::IntoIpNet) -> Self {
@@ -294,7 +294,7 @@ impl SocketMatcher {
         self
     }
 
-    /// Negate the current filter
+    /// Negate the current matcher
     pub fn negate(self) -> Self {
         Self {
             kind: self.kind,

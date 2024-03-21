@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-/// Filter based on the ip part of the [`SocketAddr`] of the peer,
+/// Matcher based on the ip part of the [`SocketAddr`] of the peer,
 /// matching only if the ip is a loopback address.
 ///
 /// [`SocketAddr`]: std::net::SocketAddr
@@ -15,10 +15,10 @@ pub struct LoopbackMatcher {
 }
 
 impl LoopbackMatcher {
-    /// create a new loopback filter to filter on the ip part a [`SocketAddr`],
+    /// create a new loopback matcher to filter on the ip part a [`SocketAddr`],
     /// matching only if the ip is a loopback address.
     ///
-    /// This filter will not match in case socket address could not be found,
+    /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
     /// use the [`LoopbackMatcher::optional`] constructor..
     ///
@@ -27,10 +27,10 @@ impl LoopbackMatcher {
         Self { optional: false }
     }
 
-    /// create a new loopback filter to filter on the ip part a [`SocketAddr`],
+    /// create a new loopback matcher to filter on the ip part a [`SocketAddr`],
     /// matching only if the ip is a loopback address or no socket address could be found.
     ///
-    /// This filter will match in case socket address could not be found.
+    /// This matcher will match in case socket address could not be found.
     /// Use the [`LoopbackMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     ///

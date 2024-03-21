@@ -36,39 +36,39 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-/// A filter that is used to match an http [`Request`]
+/// A matcher that is used to match an http [`Request`]
 pub struct HttpMatcher {
     kind: HttpMatcherKind,
     negate: bool,
 }
 
 #[derive(Debug, Clone)]
-/// A filter that is used to match an http [`Request`]
+/// A matcher that is used to match an http [`Request`]
 pub enum HttpMatcherKind {
-    /// zero or more [`HttpMatcherKind`]s that all need to match in order for the filter to return `true`.
+    /// zero or more [`HttpMatcherKind`]s that all need to match in order for the matcher to return `true`.
     All(Vec<HttpMatcherKind>),
-    /// [`MethodMatcher`], a filter that matches one or more HTTP methods.
+    /// [`MethodMatcher`], a matcher that matches one or more HTTP methods.
     Method(MethodMatcher),
-    /// [`PathMatcher`], a filter based on the URI path.
+    /// [`PathMatcher`], a matcher based on the URI path.
     Path(PathMatcher),
-    /// [`DomainMatcher`], a filter based on the (sub)domain of the request's URI.
+    /// [`DomainMatcher`], a matcher based on the (sub)domain of the request's URI.
     Domain(DomainMatcher),
-    /// [`VersionMatcher`], a filter based on the HTTP version of the request.
+    /// [`VersionMatcher`], a matcher based on the HTTP version of the request.
     Version(VersionMatcher),
-    /// zero or more [`HttpMatcherKind`]s that at least one needs to match in order for the filter to return `true`.
+    /// zero or more [`HttpMatcherKind`]s that at least one needs to match in order for the matcher to return `true`.
     Any(Vec<HttpMatcherKind>),
-    /// [`UriMatcher`], a filter the request's URI, using a substring or regex pattern.
+    /// [`UriMatcher`], a matcher the request's URI, using a substring or regex pattern.
     Uri(UriMatcher),
-    /// [`HeaderMatcher`], a filter based on the [`Request`]'s headers.
+    /// [`HeaderMatcher`], a matcher based on the [`Request`]'s headers.
     Header(HeaderMatcher),
-    /// [`SocketMatcher`], a filter that matches on the [`SocketAddr`] of the peer.
+    /// [`SocketMatcher`], a matcher that matches on the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     Socket(SocketMatcher),
 }
 
 impl HttpMatcher {
-    /// Create a new filter that matches one or more HTTP methods.
+    /// Create a new matcher that matches one or more HTTP methods.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn method(method: MethodMatcher) -> Self {
@@ -78,7 +78,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Create a filter that also matches one or more HTTP methods on top of the existing [`HttpMatcher`] filters.
+    /// Create a matcher that also matches one or more HTTP methods on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method(mut self, method: MethodMatcher) -> Self {
@@ -94,7 +94,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a filter that can also match one or more HTTP methods as an alternative to the existing [`HttpMatcher`] filters.
+    /// Create a matcher that can also match one or more HTTP methods as an alternative to the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method(mut self, method: MethodMatcher) -> Self {
@@ -110,7 +110,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a new filter that matches [`MethodMatcher::DELETE`] requests.
+    /// Create a new matcher that matches [`MethodMatcher::DELETE`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn method_delete() -> Self {
@@ -120,7 +120,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a new filter that also matches [`MethodMatcher::DELETE`] on top of the existing [`HttpMatcher`] filters.
+    /// Add a new matcher that also matches [`MethodMatcher::DELETE`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_delete(mut self) -> Self {
@@ -136,8 +136,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Add a new filter that can also match [`MethodMatcher::DELETE`]
-    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    /// Add a new matcher that can also match [`MethodMatcher::DELETE`]
+    /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_delete(mut self) -> Self {
@@ -153,7 +153,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a new filter that matches [`MethodMatcher::GET`] requests.
+    /// Create a new matcher that matches [`MethodMatcher::GET`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn method_get() -> Self {
@@ -163,7 +163,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a new filter that also matches [`MethodMatcher::GET`] on top of the existing [`HttpMatcher`] filters.
+    /// Add a new matcher that also matches [`MethodMatcher::GET`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_get(mut self) -> Self {
@@ -179,8 +179,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Add a new filter that can also match [`MethodMatcher::GET`]
-    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    /// Add a new matcher that can also match [`MethodMatcher::GET`]
+    /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_get(mut self) -> Self {
@@ -196,7 +196,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a new filter that matches [`MethodMatcher::HEAD`] requests.
+    /// Create a new matcher that matches [`MethodMatcher::HEAD`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn method_head() -> Self {
@@ -206,7 +206,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a new filter that also matches [`MethodMatcher::HEAD`] on top of the existing [`HttpMatcher`] filters.
+    /// Add a new matcher that also matches [`MethodMatcher::HEAD`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_head(mut self) -> Self {
@@ -222,8 +222,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Add a new filter that can also match [`MethodMatcher::HEAD`]
-    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    /// Add a new matcher that can also match [`MethodMatcher::HEAD`]
+    /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_head(mut self) -> Self {
@@ -239,7 +239,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a new filter that matches [`MethodMatcher::OPTIONS`] requests.
+    /// Create a new matcher that matches [`MethodMatcher::OPTIONS`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn method_options() -> Self {
@@ -249,7 +249,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a new filter that also matches [`MethodMatcher::OPTIONS`] on top of the existing [`HttpMatcher`] filters.
+    /// Add a new matcher that also matches [`MethodMatcher::OPTIONS`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_options(mut self) -> Self {
@@ -265,8 +265,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Add a new filter that can also match [`MethodMatcher::OPTIONS`]
-    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    /// Add a new matcher that can also match [`MethodMatcher::OPTIONS`]
+    /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_options(mut self) -> Self {
@@ -282,7 +282,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a new filter that matches [`MethodMatcher::PATCH`] requests.
+    /// Create a new matcher that matches [`MethodMatcher::PATCH`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn method_patch() -> Self {
@@ -292,7 +292,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a new filter that also matches [`MethodMatcher::PATCH`] on top of the existing [`HttpMatcher`] filters.
+    /// Add a new matcher that also matches [`MethodMatcher::PATCH`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_patch(mut self) -> Self {
@@ -308,8 +308,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Add a new filter that can also match [`MethodMatcher::PATCH`]
-    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    /// Add a new matcher that can also match [`MethodMatcher::PATCH`]
+    /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_patch(mut self) -> Self {
@@ -325,7 +325,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a new filter that matches [`MethodMatcher::POST`] requests.
+    /// Create a new matcher that matches [`MethodMatcher::POST`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn method_post() -> Self {
@@ -335,7 +335,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a new filter that also matches [`MethodMatcher::POST`] on top of the existing [`HttpMatcher`] filters.
+    /// Add a new matcher that also matches [`MethodMatcher::POST`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_post(mut self) -> Self {
@@ -351,8 +351,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Add a new filter that can also match [`MethodMatcher::POST`]
-    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    /// Add a new matcher that can also match [`MethodMatcher::POST`]
+    /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_post(mut self) -> Self {
@@ -368,7 +368,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a new filter that matches [`MethodMatcher::PUT`] requests.
+    /// Create a new matcher that matches [`MethodMatcher::PUT`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn method_put() -> Self {
@@ -378,7 +378,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a new filter that also matches [`MethodMatcher::PUT`] on top of the existing [`HttpMatcher`] filters.
+    /// Add a new matcher that also matches [`MethodMatcher::PUT`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_put(mut self) -> Self {
@@ -394,8 +394,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Add a new filter that can also match [`MethodMatcher::PUT`]
-    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    /// Add a new matcher that can also match [`MethodMatcher::PUT`]
+    /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_put(mut self) -> Self {
@@ -411,7 +411,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a new filter that matches [`MethodMatcher::TRACE`] requests.
+    /// Create a new matcher that matches [`MethodMatcher::TRACE`] requests.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn method_trace() -> Self {
@@ -421,7 +421,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a new filter that also matches [`MethodMatcher::TRACE`] on top of the existing [`HttpMatcher`] filters.
+    /// Add a new matcher that also matches [`MethodMatcher::TRACE`] on top of the existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn and_method_trace(mut self) -> Self {
@@ -437,8 +437,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Add a new filter that can also match [`MethodMatcher::TRACE`]
-    /// as an alternative tothe existing [`HttpMatcher`] filters.
+    /// Add a new matcher that can also match [`MethodMatcher::TRACE`]
+    /// as an alternative tothe existing [`HttpMatcher`] matchers.
     ///
     /// See [`MethodMatcher`] for more information.
     pub fn or_method_trace(mut self) -> Self {
@@ -454,7 +454,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`DomainMatcher`] filter.
+    /// Create a [`DomainMatcher`] matcher.
     pub fn domain(domain: impl Into<String>) -> Self {
         Self {
             kind: HttpMatcherKind::Domain(DomainMatcher::new(domain)),
@@ -462,7 +462,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Create a [`DomainMatcher`] filter to also match on top of the existing set of [`HttpMatcher`] filters.
+    /// Create a [`DomainMatcher`] matcher to also match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`DomainMatcher`] for more information.
     pub fn and_domain(mut self, domain: impl Into<String>) -> Self {
@@ -478,7 +478,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`DomainMatcher`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    /// Create a [`DomainMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`DomainMatcher`] for more information.
     pub fn or_domain(mut self, domain: impl Into<String>) -> Self {
@@ -494,7 +494,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`VersionMatcher`] filter.
+    /// Create a [`VersionMatcher`] matcher.
     pub fn version(version: VersionMatcher) -> Self {
         Self {
             kind: HttpMatcherKind::Version(version),
@@ -502,7 +502,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`VersionMatcher`] filter to filter on top of the existing set of [`HttpMatcher`] filters.
+    /// Add a [`VersionMatcher`] matcher to filter on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`VersionMatcher`] for more information.
     pub fn and_version(mut self, version: VersionMatcher) -> Self {
@@ -518,7 +518,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`VersionMatcher`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    /// Create a [`VersionMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`VersionMatcher`] for more information.
     pub fn or_version(mut self, version: VersionMatcher) -> Self {
@@ -534,7 +534,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`UriMatcher`] filter.
+    /// Create a [`UriMatcher`] matcher.
     pub fn uri(re: impl AsRef<str>) -> Self {
         Self {
             kind: HttpMatcherKind::Uri(UriMatcher::new(re)),
@@ -542,7 +542,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Create a [`UriMatcher`] filter to filter on top of the existing set of [`HttpMatcher`] filters.
+    /// Create a [`UriMatcher`] matcher to filter on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`UriMatcher`] for more information.
     pub fn and_uri(mut self, re: impl AsRef<str>) -> Self {
@@ -558,7 +558,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`UriMatcher`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    /// Create a [`UriMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///    
     /// See [`UriMatcher`] for more information.
     pub fn or_uri(mut self, re: impl AsRef<str>) -> Self {
@@ -574,7 +574,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`PathMatcher`] filter.
+    /// Create a [`PathMatcher`] matcher.
     pub fn path(path: impl AsRef<str>) -> Self {
         Self {
             kind: HttpMatcherKind::Path(PathMatcher::new(path)),
@@ -582,7 +582,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`PathMatcher`] to filter on top of the existing set of [`HttpMatcher`] filters.
+    /// Add a [`PathMatcher`] to filter on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`PathMatcher`] for more information.
     pub fn and_path(mut self, path: impl AsRef<str>) -> Self {
@@ -598,7 +598,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`PathMatcher`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    /// Create a [`PathMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`PathMatcher`] for more information.
     pub fn or_path(mut self, path: impl AsRef<str>) -> Self {
@@ -614,7 +614,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`HeaderMatcher`] filter.
+    /// Create a [`HeaderMatcher`] matcher.
     pub fn header(name: http::header::HeaderName, value: http::header::HeaderValue) -> Self {
         Self {
             kind: HttpMatcherKind::Header(HeaderMatcher::is(name, value)),
@@ -622,7 +622,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`HeaderMatcher`] to filter on top of the existing set of [`HttpMatcher`] filters.
+    /// Add a [`HeaderMatcher`] to filter on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
     pub fn and_header(
@@ -642,7 +642,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`HeaderMatcher`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    /// Create a [`HeaderMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
     pub fn or_header(
@@ -662,7 +662,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`HeaderMatcher`] filter when the given header exists
+    /// Create a [`HeaderMatcher`] matcher when the given header exists
     /// to filter on the existence of a header.
     pub fn header_exists(name: http::header::HeaderName) -> Self {
         Self {
@@ -672,7 +672,7 @@ impl HttpMatcher {
     }
 
     /// Add a [`HeaderMatcher`] to filter when the given header exists
-    /// on top of the existing set of [`HttpMatcher`] filters.
+    /// on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
     pub fn and_header_exists(mut self, name: http::header::HeaderName) -> Self {
@@ -688,8 +688,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`HeaderMatcher`] filter to match when the given header exists
-    /// as an alternative to the existing set of [`HttpMatcher`] filters.
+    /// Create a [`HeaderMatcher`] matcher to match when the given header exists
+    /// as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
     pub fn or_header_exists(mut self, name: http::header::HeaderName) -> Self {
@@ -705,7 +705,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`HeaderMatcher`] filter to filter on it containing the given value.
+    /// Create a [`HeaderMatcher`] matcher to filter on it containing the given value.
     pub fn header_contains(
         name: http::header::HeaderName,
         value: http::header::HeaderValue,
@@ -717,7 +717,7 @@ impl HttpMatcher {
     }
 
     /// Add a [`HeaderMatcher`] to filter when it contains the given value
-    /// on top of the existing set of [`HttpMatcher`] filters.
+    /// on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
     pub fn and_header_contains(
@@ -737,8 +737,8 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`HeaderMatcher`] filter to match if it contains the given value
-    /// as an alternative to the existing set of [`HttpMatcher`] filters.
+    /// Create a [`HeaderMatcher`] matcher to match if it contains the given value
+    /// as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
     pub fn or_header_contains(
@@ -758,7 +758,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`SocketMatcher`] filter.
+    /// Create a [`SocketMatcher`] matcher.
     pub fn socket(socket: SocketMatcher) -> Self {
         Self {
             kind: HttpMatcherKind::Socket(socket),
@@ -766,7 +766,7 @@ impl HttpMatcher {
         }
     }
 
-    /// Add a [`SocketMatcher`] filter to filter on top of the existing set of [`HttpMatcher`] filters.
+    /// Add a [`SocketMatcher`] matcher to filter on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`SocketMatcher`] for more information.
     pub fn and_socket(mut self, socket: SocketMatcher) -> Self {
@@ -782,7 +782,7 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`SocketMatcher`] filter to match as an alternative to the existing set of [`HttpMatcher`] filters.
+    /// Create a [`SocketMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`SocketMatcher`] for more information.
     pub fn or_socket(mut self, socket: SocketMatcher) -> Self {
@@ -798,47 +798,47 @@ impl HttpMatcher {
         self
     }
 
-    /// Create a [`PathMatcher`] filter to match for a GET request.
+    /// Create a [`PathMatcher`] matcher to match for a GET request.
     pub fn get(path: impl AsRef<str>) -> Self {
         Self::method_get().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] filter to match for a POST request.
+    /// Create a [`PathMatcher`] matcher to match for a POST request.
     pub fn post(path: impl AsRef<str>) -> Self {
         Self::method_post().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] filter to match for a PUT request.
+    /// Create a [`PathMatcher`] matcher to match for a PUT request.
     pub fn put(path: impl AsRef<str>) -> Self {
         Self::method_put().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] filter to match for a DELETE request.
+    /// Create a [`PathMatcher`] matcher to match for a DELETE request.
     pub fn delete(path: impl AsRef<str>) -> Self {
         Self::method_delete().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] filter to match for a PATCH request.
+    /// Create a [`PathMatcher`] matcher to match for a PATCH request.
     pub fn patch(path: impl AsRef<str>) -> Self {
         Self::method_patch().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] filter to match for a HEAD request.
+    /// Create a [`PathMatcher`] matcher to match for a HEAD request.
     pub fn head(path: impl AsRef<str>) -> Self {
         Self::method_head().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] filter to match for a OPTIONS request.
+    /// Create a [`PathMatcher`] matcher to match for a OPTIONS request.
     pub fn options(path: impl AsRef<str>) -> Self {
         Self::method_options().and_path(path)
     }
 
-    /// Create a [`PathMatcher`] filter to match for a TRACE request.
+    /// Create a [`PathMatcher`] matcher to match for a TRACE request.
     pub fn trace(path: impl AsRef<str>) -> Self {
         Self::method_trace().and_path(path)
     }
 
-    /// Negate the current filter
+    /// Negate the current matcher
     pub fn negate(self) -> Self {
         Self {
             kind: self.kind,

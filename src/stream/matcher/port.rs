@@ -6,7 +6,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-/// Filter based on the port part of the [`SocketAddr`] of the peer.
+/// Matcher based on the port part of the [`SocketAddr`] of the peer.
 ///
 /// [`SocketAddr`]: std::net::SocketAddr
 pub struct PortMatcher {
@@ -15,9 +15,9 @@ pub struct PortMatcher {
 }
 
 impl PortMatcher {
-    /// create a new port filter to filter on the port part a [`SocketAddr`]
+    /// create a new port matcher to filter on the port part a [`SocketAddr`]
     ///
-    /// This filter will not match in case socket address could not be found,
+    /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
     /// use the [`PortMatcher::optional`] constructor..
     ///
@@ -29,9 +29,9 @@ impl PortMatcher {
         }
     }
 
-    /// create a new port filter to filter on the port part a [`SocketAddr`]
+    /// create a new port matcher to filter on the port part a [`SocketAddr`]
     ///
-    /// This filter will match in case socket address could not be found.
+    /// This matcher will match in case socket address could not be found.
     /// Use the [`PortMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     ///

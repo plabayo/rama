@@ -14,13 +14,13 @@ pub mod dep {
 use dep::regex::Regex;
 
 #[derive(Debug, Clone)]
-/// Filter the request's URI, using a substring or regex pattern.
+/// Matcher the request's URI, using a substring or regex pattern.
 pub struct UriMatcher {
     re: Regex,
 }
 
 impl UriMatcher {
-    /// create a new Uri filter using a regex pattern.
+    /// create a new Uri matcher using a regex pattern.
     ///
     /// See docs at <https://docs.rs/regex> for more information on regex patterns.
     /// (e.g. to use flags like (?i) for case-insensitive matching)

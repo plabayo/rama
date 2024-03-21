@@ -7,7 +7,7 @@ use crate::{
 };
 
 #[derive(Debug, Clone)]
-/// Filter based on whether or not the [`IpNet`] contains the [`SocketAddr`] of the peer.
+/// Matcher based on whether or not the [`IpNet`] contains the [`SocketAddr`] of the peer.
 ///
 /// [`SocketAddr`]: std::net::SocketAddr
 pub struct IpNetMatcher {
@@ -16,9 +16,9 @@ pub struct IpNetMatcher {
 }
 
 impl IpNetMatcher {
-    /// create a new IP network filter to filter on an IP Network.
+    /// create a new IP network matcher to filter on an IP Network.
     ///
-    /// This filter will not match in case socket address could not be found,
+    /// This matcher will not match in case socket address could not be found,
     /// if you want to match in case socket address could not be found,
     /// use the [`IpNetMatcher::optional`] constructor..
     pub fn new(net: impl IntoIpNet) -> Self {
@@ -28,9 +28,9 @@ impl IpNetMatcher {
         }
     }
 
-    /// create a new IP network filter to filter on an IP network
+    /// create a new IP network matcher to filter on an IP network
     ///
-    /// This filter will match in case socket address could not be found.
+    /// This matcher will match in case socket address could not be found.
     /// Use the [`IpNetMatcher::new`] constructor if you want do not want
     /// to match in case socket address could not be found.
     pub fn optional(net: impl IntoIpNet) -> Self {

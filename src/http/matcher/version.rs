@@ -4,24 +4,24 @@ use crate::{
 };
 use std::fmt::{self, Debug, Formatter};
 
-/// A filter that matches one or more HTTP methods.
+/// A matcher that matches one or more HTTP methods.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct VersionMatcher(u16);
 
 impl VersionMatcher {
-    /// A filter that matches HTTP/0.9 requests.
+    /// A matcher that matches HTTP/0.9 requests.
     pub const HTTP_09: Self = Self::from_bits(0b0_0000_0010);
 
-    /// A filter that matches HTTP/1.0 requests.
+    /// A matcher that matches HTTP/1.0 requests.
     pub const HTTP_10: Self = Self::from_bits(0b0_0000_0100);
 
-    /// A filter that matches HTTP/1.1 requests.
+    /// A matcher that matches HTTP/1.1 requests.
     pub const HTTP_11: Self = Self::from_bits(0b0_0000_1000);
 
-    /// A filter that matches HTTP/2.0 (h2) requests.
+    /// A matcher that matches HTTP/2.0 (h2) requests.
     pub const HTTP_2: Self = Self::from_bits(0b0_0001_0000);
 
-    /// A filter that matches HTTP/3.0 (h3) requests.
+    /// A matcher that matches HTTP/3.0 (h3) requests.
     pub const HTTP_3: Self = Self::from_bits(0b0_0010_0000);
 
     const fn bits(&self) -> u16 {

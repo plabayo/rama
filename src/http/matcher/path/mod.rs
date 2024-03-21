@@ -93,7 +93,7 @@ enum PathMatcherKind {
 }
 
 #[derive(Debug, Clone)]
-/// Filter based on the URI path.
+/// Matcher based on the URI path.
 pub struct PathMatcher {
     kind: PathMatcherKind,
 }

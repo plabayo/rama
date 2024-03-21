@@ -7,7 +7,7 @@ use std::{
     fmt::{Debug, Formatter},
 };
 
-/// A filter that matches one or more HTTP methods.
+/// A matcher that matches one or more HTTP methods.
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub struct MethodMatcher(u16);
 
