@@ -36,13 +36,18 @@
 
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
-use http::StatusCode;
 use rama::{
     error::BoxError,
-    http::{matcher::HttpMatcher, response::Json, server::HttpServer, Request},
+    http::{
+        matcher::HttpMatcher, response::Json, server::HttpServer, HeaderName, HeaderValue,
+        IntoResponse, Request, Response, StatusCode,
+    },
     rt::Executor,
     service::{
-        layer::{limit::policy::ConcurrentPolicy, LimitLayer},
+        layer::{
+            limit::policy::{ConcurrentPolicy, LimitReached},
+            LimitLayer,
+        },
         util::{backoff::ExponentialBackoff, combinators::Either},
         ServiceBuilder,
     },
@@ -58,14 +63,28 @@ async fn main() {
         .listen(
             "0.0.0.0:8080",
             ServiceBuilder::new()
-                .map_result(|result: Result<Json<_>, BoxError>| match result {
-                    Ok(response) => Ok((StatusCode::OK, response)),
-                    Err(err) => Ok((
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        Json(json!({
-                            "error": err.to_string(),
-                        })),
-                    )),
+                .map_result(|result: Result<Response, BoxError>| match result {
+                    Ok(response) => Ok(response),
+                    Err(box_error) => {
+                        if box_error.downcast_ref::<LimitReached>().is_some() {
+                            Ok((
+                                [(
+                                    HeaderName::from_static("x-proxy-error"),
+                                    HeaderValue::from_static("rate-limit-reached"),
+                                )],
+                                StatusCode::TOO_MANY_REQUESTS,
+                            )
+                                .into_response())
+                        } else {
+                            Ok((
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                Json(json!({
+                                    "error": box_error.to_string(),
+                                })),
+                            )
+                                .into_response())
+                        }
+                    }
                 })
                 .trace_err()
                 // using the [`Either`] combinator you can make tree-like structures,
@@ -120,10 +139,13 @@ async fn main() {
                     if req.uri().path().ends_with("/slow") {
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }
-                    Ok::<_, Infallible>(Json(json!({
-                        "method": req.method().as_str(),
-                        "path": req.uri().path(),
-                    })))
+                    Ok::<_, Infallible>(
+                        Json(json!({
+                            "method": req.method().as_str(),
+                            "path": req.uri().path(),
+                        }))
+                        .into_response(),
+                    )
                 }),
         )
         .await

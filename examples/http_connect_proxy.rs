@@ -16,8 +16,13 @@
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' -XPOST http://echo.example/lucky/7
 //! ```
+//! The psuedo API can be used as follows:
 //!
-//! You should see the response from the server.
+//! ```sh
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
+//! ```
+//!
+//! You should see in all the above examples the responses from the server.
 
 use rama::{
     http::{
@@ -27,12 +32,12 @@ use rama::{
             trace::TraceLayer,
             upgrade::{UpgradeLayer, Upgraded},
         },
-        matcher::{DomainFilter, MethodFilter},
+        matcher::{DomainFilter, HttpMatcher, MethodFilter},
         response::Json,
         server::HttpServer,
         service::web::{
             extract::{FromRequestParts, Host, Path},
-            WebService,
+            match_service,
         },
         Body, IntoResponse, Request, Response, StatusCode,
     },
@@ -42,7 +47,7 @@ use rama::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -79,19 +84,20 @@ async fn main() {
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
                         DomainFilter::new("echo.example"),
-                        WebService::default()
-                            .post(
-                                "/lucky/:number",
-                                |Path(path): Path<APILuckyParams>| async move {
-                                    format!("Your lucky number is: {}", path.number)
-                                },
-                            )
-                            .get("/*", |req: Request| async move {
+                        Arc::new(match_service!{
+                            HttpMatcher::post("/lucky/:number") => |path: Path<APILuckyParams>| async move {
+                                Json(json!({
+                                    "lucky_number": path.number,
+                                }))
+                            },
+                            HttpMatcher::get("/*") => |req: Request| async move {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path(),
                                 }))
-                            }),
+                            },
+                            _ => StatusCode::NOT_FOUND,
+                        })
                     ))
                     .layer(UpgradeLayer::new(
                         MethodFilter::CONNECT,
