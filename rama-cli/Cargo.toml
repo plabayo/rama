@@ -12,12 +12,12 @@ rust-version = { workspace = true }
 default-run = "rama"
 
 [dependencies]
-anyhow = "1.0"
-clap = { version = "4.4", features = [ "derive" ] }
-crossterm = "0.27"
+anyhow = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+crossterm = { workspace = true }
 rama = { version = "0.2", path = ".." }
-ratatui = "0.25"
-tokio = { version = "1.35", features = [ "rt-multi-thread", "macros" ] }
+ratatui = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [[bin]]
 name = "rama"
