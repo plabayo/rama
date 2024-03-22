@@ -298,6 +298,7 @@ mod tests {
     }
 
     #[derive(Debug, Clone)]
+    #[allow(dead_code)]
     struct UserId(String);
 
     #[tokio::test]

@@ -244,7 +244,7 @@ fn test_enum_matcher() {
 
 #[test]
 fn test_iter_enum_and() {
-    let matchers = vec![
+    let matchers = [
         TestMatchers::Const(ConstMatcher(1)),
         TestMatchers::Odd(OddMatcher),
     ];
@@ -272,7 +272,7 @@ fn test_iter_empty() {
 
 #[test]
 fn test_iter_enum_or() {
-    let matchers = vec![
+    let matchers = [
         TestMatchers::Const(ConstMatcher(0)),
         TestMatchers::Const(ConstMatcher(2)),
         TestMatchers::Odd(OddMatcher),
