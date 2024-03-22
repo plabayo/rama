@@ -2,20 +2,17 @@
 //!
 //! If the request is not authorized a `407 Proxy Authentication Required` response will be sent.
 
+use crate::http::headers::{
+    authorization::{Basic, Credentials},
+    HeaderMapExt, ProxyAuthorization,
+};
 use crate::http::{Request, Response, StatusCode};
 use crate::service::{Context, Layer, Service};
-use crate::{
-    http::headers::{
-        authorization::{Basic, Credentials},
-        HeaderMapExt, ProxyAuthorization,
-    },
-    proxy::UsernameConfig,
-};
 use std::marker::PhantomData;
 
 mod auth;
 #[doc(inline)]
-pub use auth::{ProxyAuthority, ProxyAuthoritySync};
+pub use auth::{FromUsername, ProxyAuthority, ProxyAuthoritySync, ProxyUsernameLabels};
 
 /// Layer that applies the [`ProxyAuthService`] middleware which apply a timeout to requests.
 ///
@@ -40,36 +37,12 @@ impl<A, C, L> ProxyAuthLayer<A, C, L> {
     /// Overwrite the Labels extract type
     ///
     /// This is used if the username contains labels that you need to extract out.
-    /// E.g. by using the [`UsernameConfig`].
+    /// Example implementations are [`ProxyUsernameLabels`] and [`UsernameConfig`].
+    ///
+    /// You can provide your own extractor by implementing the [`FromUsername`] trait.
     ///
     /// [`UsernameConfig`]: crate::proxy::UsernameConfig
     pub fn with_labels<L2>(self) -> ProxyAuthLayer<A, C, L2> {
-        ProxyAuthLayer {
-            proxy_auth: self.proxy_auth,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Overwrite the Labels extract type with a [`UsernameConfig`] extractor,
-    /// to optionally extract [`ProxyFilter`] from the username.
-    ///
-    /// [`UsernameConfig`]: crate::proxy::UsernameConfig
-    /// [`ProxyFilter`]: crate::proxy::ProxyFilter
-    pub fn with_proxy_filter_labels<const S: char>(
-        self,
-    ) -> ProxyAuthLayer<A, C, UsernameConfig<S>> {
-        ProxyAuthLayer {
-            proxy_auth: self.proxy_auth,
-            _phantom: PhantomData,
-        }
-    }
-
-    /// Overwrite the Labels extract type with a [`UsernameConfig`] extractor,
-    /// to optionally extract [`ProxyFilter`] from the username.
-    ///
-    /// [`UsernameConfig`]: crate::proxy::UsernameConfig
-    /// [`ProxyFilter`]: crate::proxy::ProxyFilter
-    pub fn with_proxy_filter_labels_default(self) -> ProxyAuthLayer<A, C, UsernameConfig> {
         ProxyAuthLayer {
             proxy_auth: self.proxy_auth,
             _phantom: PhantomData,

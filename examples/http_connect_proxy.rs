@@ -12,7 +12,7 @@
 //!
 //! ```sh
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://www.example.com/
-//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-cc-us:secret' http://www.example.com/
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-red-blue:secret' http://www.example.com/
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' https://www.example.com/
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' -XPOST http://echo.example/lucky/7
@@ -21,7 +21,7 @@
 //!
 //! ```sh
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
-//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-cc-us:secret' http://echo.example/foo/bar
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-red-blue:secret' http://echo.example/foo/bar
 //! ```
 //!
 //! You should see in all the above examples the responses from the server.
@@ -57,7 +57,7 @@ use rama::{
     http::{
         client::HttpClient,
         layer::{
-            proxy_auth::ProxyAuthLayer,
+            proxy_auth::{ProxyAuthLayer, ProxyUsernameLabels},
             trace::TraceLayer,
             upgrade::{UpgradeLayer, Upgraded},
         },
@@ -70,14 +70,13 @@ use rama::{
         },
         Body, IntoResponse, Request, Response, StatusCode,
     },
-    proxy::ProxyFilter,
     rt::Executor,
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
     tcp::utils::is_connection_error,
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, ops::Deref, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -110,11 +109,9 @@ async fn main() {
                 "127.0.0.1:8080",
                 ServiceBuilder::new()
                     .layer(TraceLayer::new_for_http())
-                    // - specify it as `with_proxy_filter_labels::<'_'>()`
-                    //   in case you want to define a different separator, such as '_'.
-                    // - specify `.with_labels::<T>()` in case you want to use a custom labels extractor.
-                    // - `ProxyAuthLayer::new` can be used for a custom Credentials type.
-                    .layer(ProxyAuthLayer::basic(("john", "secret")).with_proxy_filter_labels_default())
+                    // See [`ProxyAuthLayer::with_labels`] for more information,
+                    // e.g. can also be used to extract upstream proxy filters
+                    .layer(ProxyAuthLayer::basic(("john", "secret")).with_labels::<ProxyUsernameLabels>())
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
                         DomainMatcher::new("echo.example"),
@@ -128,7 +125,7 @@ async fn main() {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path(),
-                                    "filter": ctx.get::<ProxyFilter>().map(|f| format!("{:?}", f)),
+                                    "username_labels": ctx.get::<ProxyUsernameLabels>().map(|labels| labels.deref()),
                                 }))
                             },
                             _ => StatusCode::NOT_FOUND,
