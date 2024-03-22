@@ -23,6 +23,33 @@
 //! ```
 //!
 //! You should see in all the above examples the responses from the server.
+//!
+//! If you want to see the HTTP traffic in action you can of course also use telnet instead:
+//!
+//! ```sh
+//! telnet 127.0.0.1:8080
+//! ```
+//!
+//! and then type:
+//!
+//! ```
+//! CONNECT example.com:80 HTTP/1.1
+//! Host: example.com:80
+//! Proxy-Authorization: basic am9objpzZWNyZXQ=
+//!
+//!
+//! GET / HTTP/1.1
+//! HOST: example.com:80
+//! Connection: close
+//!
+//!
+//! ```
+//!
+//! You should see the same response as when running:
+//!
+//! ```sh
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://www.example.com/
+//! ```
 
 use rama::{
     http::{
