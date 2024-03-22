@@ -2,9 +2,15 @@
 //!
 //! If the request is not authorized a `407 Proxy Authentication Required` response will be sent.
 
-use crate::http::headers::{authorization::Credentials, HeaderMapExt, ProxyAuthorization};
 use crate::http::{Request, Response, StatusCode};
 use crate::service::{Context, Layer, Service};
+use crate::{
+    http::headers::{
+        authorization::{Basic, Credentials},
+        HeaderMapExt, ProxyAuthorization,
+    },
+    proxy::UsernameConfig,
+};
 use std::marker::PhantomData;
 
 mod auth;
@@ -15,43 +21,81 @@ pub use auth::{ProxyAuthority, ProxyAuthoritySync};
 ///
 /// See the [module docs](super) for an example.
 #[derive(Debug, Clone)]
-pub struct ProxyAuthLayer<A, C> {
+pub struct ProxyAuthLayer<A, C = Basic, L = ()> {
     proxy_auth: A,
-    filter_char: Option<char>,
-    _phantom: PhantomData<fn(C) -> ()>,
+    _phantom: PhantomData<fn(C, L) -> ()>,
 }
 
-impl<A, C> ProxyAuthLayer<A, C> {
+impl<A, C> ProxyAuthLayer<A, C, ()> {
     /// Creates a new [`ProxyAuthLayer`].
     pub fn new(proxy_auth: A) -> Self {
         ProxyAuthLayer {
             proxy_auth,
-            filter_char: None,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<A, C, L> ProxyAuthLayer<A, C, L> {
+    /// Overwrite the Labels extract type
+    ///
+    /// This is used if the username contains labels that you need to extract out.
+    /// E.g. by using the [`UsernameConfig`].
+    ///
+    /// [`UsernameConfig`]: crate::proxy::UsernameConfig
+    pub fn with_labels<L2>(self) -> ProxyAuthLayer<A, C, L2> {
+        ProxyAuthLayer {
+            proxy_auth: self.proxy_auth,
             _phantom: PhantomData,
         }
     }
 
-    /// Sets the filter character to be used for the [`ProxyAuthority`] implementation.
+    /// Overwrite the Labels extract type with a [`UsernameConfig`] extractor,
+    /// to optionally extract [`ProxyFilter`] from the username.
     ///
-    /// See [`UsernameConfig`](crate::proxy::UsernameConfig) for more information.
-    ///
-    /// [`ProxyAuthority`]: self::auth::ProxyAuthority
+    /// [`UsernameConfig`]: crate::proxy::UsernameConfig
     /// [`ProxyFilter`]: crate::proxy::ProxyFilter
-    pub fn filter_char(mut self, filter_char: char) -> Self {
-        self.filter_char = Some(filter_char);
-        self
+    pub fn with_proxy_filter_labels<const S: char>(
+        self,
+    ) -> ProxyAuthLayer<A, C, UsernameConfig<S>> {
+        ProxyAuthLayer {
+            proxy_auth: self.proxy_auth,
+            _phantom: PhantomData,
+        }
+    }
+
+    /// Overwrite the Labels extract type with a [`UsernameConfig`] extractor,
+    /// to optionally extract [`ProxyFilter`] from the username.
+    ///
+    /// [`UsernameConfig`]: crate::proxy::UsernameConfig
+    /// [`ProxyFilter`]: crate::proxy::ProxyFilter
+    pub fn with_default_proxy_filter_labels(self) -> ProxyAuthLayer<A, C, UsernameConfig> {
+        ProxyAuthLayer {
+            proxy_auth: self.proxy_auth,
+            _phantom: PhantomData,
+        }
     }
 }
 
-impl<A, C, S> Layer<S> for ProxyAuthLayer<A, C>
+impl<A> ProxyAuthLayer<A, Basic, ()> {
+    /// Creates a new [`ProxyAuthLayer`] with the default [`Basic`] credentials.
+    pub fn basic(proxy_auth: A) -> Self {
+        ProxyAuthLayer {
+            proxy_auth,
+            _phantom: PhantomData,
+        }
+    }
+}
+
+impl<A, C, L, S> Layer<S> for ProxyAuthLayer<A, C, L>
 where
-    A: ProxyAuthority<C> + Clone,
+    A: ProxyAuthority<C, L> + Clone,
     C: Credentials + Clone + Send + Sync + 'static,
 {
-    type Service = ProxyAuthService<A, C, S>;
+    type Service = ProxyAuthService<A, C, S, L>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        ProxyAuthService::new(self.filter_char, self.proxy_auth.clone(), inner)
+        ProxyAuthService::new(self.proxy_auth.clone(), inner)
     }
 }
 
@@ -61,24 +105,16 @@ where
 ///
 /// See the [module docs](self) for an example.
 #[derive(Debug, Clone)]
-pub struct ProxyAuthService<A, C, S> {
-    filter_char: Option<char>,
+pub struct ProxyAuthService<A, C, S, L = ()> {
     proxy_auth: A,
     inner: S,
-    _phantom: PhantomData<fn(C) -> ()>,
+    _phantom: PhantomData<fn(C, L) -> ()>,
 }
 
-impl<A, C, S> ProxyAuthService<A, C, S> {
+impl<A, C, S, L> ProxyAuthService<A, C, S, L> {
     /// Creates a new [`ProxyAuthService`].
-    ///
-    /// The `filter_char` is used to extract the [`ProxyFilter`] data from the username.
-    ///
-    /// See [`UsernameConfig`](crate::proxy::UsernameConfig) for more information.
-    ///
-    /// [`ProxyFilter`]: crate::proxy::ProxyFilter
-    pub fn new(filter_char: Option<char>, proxy_auth: A, inner: S) -> Self {
+    pub fn new(proxy_auth: A, inner: S) -> Self {
         Self {
-            filter_char,
             proxy_auth,
             inner,
             _phantom: PhantomData,
@@ -88,12 +124,13 @@ impl<A, C, S> ProxyAuthService<A, C, S> {
     define_inner_service_accessors!();
 }
 
-impl<A, C, S, State, ReqBody, ResBody> Service<State, Request<ReqBody>>
-    for ProxyAuthService<A, C, S>
+impl<A, C, L, S, State, ReqBody, ResBody> Service<State, Request<ReqBody>>
+    for ProxyAuthService<A, C, S, L>
 where
-    A: ProxyAuthority<C>,
+    A: ProxyAuthority<C, L>,
     C: Credentials + Clone + Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    L: 'static,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
     State: Send + Sync + 'static,
@@ -112,11 +149,7 @@ where
             .map(|h| h.0)
             .or_else(|| ctx.get::<C>().cloned())
         {
-            if let Some(ext) = self
-                .proxy_auth
-                .authorized(self.filter_char, credentials)
-                .await
-            {
+            if let Some(ext) = self.proxy_auth.authorized(credentials).await {
                 ctx.extend(ext);
                 self.inner.serve(ctx, req).await
             } else {
