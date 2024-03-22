@@ -104,7 +104,7 @@ pub enum ProxyTransport {
 /// The credentials to use to authenticate with the proxy.
 pub enum ProxyCredentials {
     /// Basic authentication
-    /// 
+    ///
     /// See <https://datatracker.ietf.org/doc/html/rfc7617> for more information.
     Basic {
         /// The username to use to authenticate with the proxy.
@@ -114,7 +114,7 @@ pub enum ProxyCredentials {
         password: Option<String>,
     },
     /// Bearer token authentication, token content is opaque for the proxy facilities.
-    /// 
+    ///
     /// See <https://datatracker.ietf.org/doc/html/rfc6750> for more information.
     Bearer(String),
 }
