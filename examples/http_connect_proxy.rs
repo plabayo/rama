@@ -114,7 +114,7 @@ async fn main() {
                     //   in case you want to define a different separator, such as '_'.
                     // - specify `.with_labels::<T>()` in case you want to use a custom labels extractor.
                     // - `ProxyAuthLayer::new` can be used for a custom Credentials type.
-                    .layer(ProxyAuthLayer::basic(("john", "secret")).with_default_proxy_filter_labels())
+                    .layer(ProxyAuthLayer::basic(("john", "secret")).with_proxy_filter_labels_default())
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
                         DomainMatcher::new("echo.example"),

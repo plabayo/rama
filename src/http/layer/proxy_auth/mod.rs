@@ -69,7 +69,7 @@ impl<A, C, L> ProxyAuthLayer<A, C, L> {
     ///
     /// [`UsernameConfig`]: crate::proxy::UsernameConfig
     /// [`ProxyFilter`]: crate::proxy::ProxyFilter
-    pub fn with_default_proxy_filter_labels(self) -> ProxyAuthLayer<A, C, UsernameConfig> {
+    pub fn with_proxy_filter_labels_default(self) -> ProxyAuthLayer<A, C, UsernameConfig> {
         ProxyAuthLayer {
             proxy_auth: self.proxy_auth,
             _phantom: PhantomData,
