@@ -3,6 +3,10 @@
 //! See the [`ProxyFilter`] for more information on how to select a proxy,
 //! and the [`ProxyDB`] trait for how to implement a proxy database.
 //!
+//! If you wish to support proxy filters directly from the username,
+//! you can use the [`UsernameConfig`] to extract the proxy filter
+//! from the username and add yourself it to the [`Context`]'s [`Extensions`].
+//!
 //! The [`ProxyDB`] is used by Connection Pools to connect via a proxy,
 //! in case a [`ProxyFilter`] is present in the [`Context`]'s [`Extensions`].
 //!
@@ -13,7 +17,10 @@ use crate::http::Version;
 use serde::Deserialize;
 use std::future::Future;
 
-#[derive(Debug, Default, Clone, Deserialize)]
+pub mod username;
+pub use username::UsernameConfig;
+
+#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
 /// Filter to select a specific kind of proxy.
 ///
 /// If the `id` is specified the other fields are used
@@ -38,7 +45,6 @@ use std::future::Future;
 /// [`ProxyAuthLayer`]: crate::http::layer::proxy_auth::ProxyAuthLayer
 /// [`Context`]: crate::service::Context
 /// [`Extensions`]: crate::service::context::Extensions
-///
 pub struct ProxyFilter {
     /// The ID of the proxy to select.
     pub id: Option<String>,
@@ -50,13 +56,13 @@ pub struct ProxyFilter {
     pub pool_id: Option<String>,
 
     /// Set explicitly to `true` to select a datacenter proxy.
-    pub datacenter: Option<bool>,
+    pub datacenter: bool,
 
     /// Set explicitly to `true` to select a residential proxy.
-    pub residential: Option<bool>,
+    pub residential: bool,
 
     /// Set explicitly to `true` to select a mobile proxy.
-    pub mobile: Option<bool>,
+    pub mobile: bool,
 }
 
 #[derive(Debug, Clone)]
