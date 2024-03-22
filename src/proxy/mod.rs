@@ -1,6 +1,17 @@
 //! Upstream proxy types and utilities.
+//!
+//! See the [`ProxyFilter`] for more information on how to select a proxy,
+//! and the [`ProxyDB`] trait for how to implement a proxy database.
+//!
+//! The [`ProxyDB`] is used by Connection Pools to connect via a proxy,
+//! in case a [`ProxyFilter`] is present in the [`Context`]'s [`Extensions`].
+//!
+//! [`Context`]: crate::service::Context
+//! [`Extensions`]: crate::service::context::Extensions
 
+use crate::http::Version;
 use serde::Deserialize;
+use std::future::Future;
 
 #[derive(Debug, Default, Clone, Deserialize)]
 /// Filter to select a specific kind of proxy.
@@ -46,4 +57,99 @@ pub struct ProxyFilter {
 
     /// Set explicitly to `true` to select a mobile proxy.
     pub mobile: Option<bool>,
+}
+
+#[derive(Debug, Clone)]
+/// The selected proxy to use to connect to the proxy.
+pub struct Proxy {
+    /// The transport of the proxy to use to connect to the proxy.
+    ///
+    /// See [`ProxyTransport`] for more information.
+    pub transport: ProxyTransport,
+
+    /// The protocol of the proxy to use to connect to the proxy.
+    ///
+    /// See [`ProxyProtocol`] for more information.
+    pub protocol: ProxyProtocol,
+
+    /// The address of the proxy to use to connect to the proxy,
+    /// containing the port and the host.
+    pub address: String,
+
+    /// The optional credentials to use to authenticate with the proxy.
+    ///
+    /// See [`ProxyCredentials`] for more information.
+    pub credentials: Option<ProxyCredentials>,
+}
+
+#[derive(Debug, Clone)]
+/// The protocol of the proxy to use to connect to the proxy.
+pub enum ProxyProtocol {
+    /// HTTP proxy
+    Http,
+    /// Socks5 proxy
+    Socks5,
+}
+
+#[derive(Debug, Clone)]
+/// The transport of the proxy to use to connect to the proxy.
+pub enum ProxyTransport {
+    /// Use TCP to connect to the proxy
+    Tcp,
+    /// Use UDP to connect to the proxy
+    Udp,
+}
+
+#[derive(Debug, Clone)]
+/// The credentials to use to authenticate with the proxy.
+pub enum ProxyCredentials {
+    /// Basic authentication
+    Basic {
+        /// The username to use to authenticate with the proxy.
+        username: String,
+        /// The optional password to use to authenticate with the proxy,
+        /// in combiantion with the username.
+        password: Option<String>,
+    },
+    /// Bearer token authentication, token content is opaque for the proxy facilities.
+    Bearer(String),
+}
+
+#[derive(Debug, Clone)]
+/// The context of the request to use to select a proxy,
+/// can be useful to know if a specific protocol or transport is required.
+pub struct RequestContext {
+    /// The version of the HTTP that is required for
+    /// the given [`Request`](crate::http::Request) to be proxied.
+    pub http_version: Version,
+    /// The scheme of the HTTP's [`Uri`](crate::http::Uri) that is defined for
+    /// the given [`Request`](crate::http::Request) to be proxied.
+    pub scheme: String,
+    /// The host of the HTTP's [`Uri`](crate::http::Uri) Authority component that is defined for
+    /// the given [`Request`](crate::http::Request) to be proxied.
+    pub host: String,
+    /// The port of the HTTP's [`Uri`](crate::http::Uri) Authority component that is defined for
+    /// the given [`Request`](crate::http::Request) to be proxied.
+    ///
+    /// It defaults to the standard port of the scheme if not present.
+    pub port: u16,
+}
+
+/// The trait to implement to provide a proxy database to other facilities,
+/// such as connection pools, to provide a proxy based on the given
+/// [`RequestContext`] and [`ProxyFilter`].
+pub trait ProxyDB: Send + Sync + 'static {
+    /// The error type that can be returned by the proxy database
+    ///
+    /// Examples are generic I/O issues or
+    /// even more common if no proxy match could be found.
+    type Error;
+
+    /// Get a [`Proxy`] based on the given [`RequestContext`] and [`ProxyFilter`],
+    /// or return an error in case no [`Proxy`] could be returned.
+    fn get_proxy(
+        &self,
+        ctx: RequestContext,
+        filter: ProxyFilter,
+    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
 }
