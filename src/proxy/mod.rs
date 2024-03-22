@@ -18,7 +18,7 @@ use serde::Deserialize;
 use std::future::Future;
 
 pub mod username;
-pub use username::UsernameConfig;
+pub use username::{parse_username_config, UsernameConfig};
 
 #[derive(Debug, Default, Clone, Deserialize, PartialEq)]
 /// Filter to select a specific kind of proxy.

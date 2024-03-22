@@ -17,6 +17,7 @@ pub use auth::{ProxyAuthority, ProxyAuthoritySync};
 #[derive(Debug, Clone)]
 pub struct ProxyAuthLayer<A, C> {
     proxy_auth: A,
+    filter_char: Option<char>,
     _phantom: PhantomData<fn(C) -> ()>,
 }
 
@@ -25,8 +26,20 @@ impl<A, C> ProxyAuthLayer<A, C> {
     pub fn new(proxy_auth: A) -> Self {
         ProxyAuthLayer {
             proxy_auth,
+            filter_char: None,
             _phantom: PhantomData,
         }
+    }
+
+    /// Sets the filter character to be used for the [`ProxyAuthority`] implementation.
+    ///
+    /// See [`UsernameConfig`](crate::proxy::UsernameConfig) for more information.
+    ///
+    /// [`ProxyAuthority`]: self::auth::ProxyAuthority
+    /// [`ProxyFilter`]: crate::proxy::ProxyFilter
+    pub fn filter_char(mut self, filter_char: char) -> Self {
+        self.filter_char = Some(filter_char);
+        self
     }
 }
 
@@ -38,7 +51,7 @@ where
     type Service = ProxyAuthService<A, C, S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        ProxyAuthService::new(self.proxy_auth.clone(), inner)
+        ProxyAuthService::new(self.filter_char, self.proxy_auth.clone(), inner)
     }
 }
 
@@ -49,6 +62,7 @@ where
 /// See the [module docs](self) for an example.
 #[derive(Debug, Clone)]
 pub struct ProxyAuthService<A, C, S> {
+    filter_char: Option<char>,
     proxy_auth: A,
     inner: S,
     _phantom: PhantomData<fn(C) -> ()>,
@@ -56,8 +70,15 @@ pub struct ProxyAuthService<A, C, S> {
 
 impl<A, C, S> ProxyAuthService<A, C, S> {
     /// Creates a new [`ProxyAuthService`].
-    pub fn new(proxy_auth: A, inner: S) -> Self {
+    ///
+    /// The `filter_char` is used to extract the [`ProxyFilter`] data from the username.
+    ///
+    /// See [`UsernameConfig`](crate::proxy::UsernameConfig) for more information.
+    ///
+    /// [`ProxyFilter`]: crate::proxy::ProxyFilter
+    pub fn new(filter_char: Option<char>, proxy_auth: A, inner: S) -> Self {
         Self {
+            filter_char,
             proxy_auth,
             inner,
             _phantom: PhantomData,
@@ -91,8 +112,12 @@ where
             .map(|h| h.0)
             .or_else(|| ctx.get::<C>().cloned())
         {
-            if let Some(credentials) = self.proxy_auth.authorized(credentials).await {
-                ctx.insert(credentials);
+            if let Some(ext) = self
+                .proxy_auth
+                .authorized(self.filter_char, credentials)
+                .await
+            {
+                ctx.extend(ext);
                 self.inner.serve(ctx, req).await
             } else {
                 Ok(Response::builder()

@@ -12,6 +12,7 @@
 //!
 //! ```sh
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://www.example.com/
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-cc-us:secret' http://www.example.com/
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' https://www.example.com/
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' -XPOST http://echo.example/lucky/7
@@ -20,6 +21,7 @@
 //!
 //! ```sh
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-cc-us:secret' http://echo.example/foo/bar
 //! ```
 //!
 //! You should see in all the above examples the responses from the server.
@@ -68,6 +70,7 @@ use rama::{
         },
         Body, IntoResponse, Request, Response, StatusCode,
     },
+    proxy::ProxyFilter,
     rt::Executor,
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
     tcp::utils::is_connection_error,
@@ -107,7 +110,7 @@ async fn main() {
                 "127.0.0.1:8080",
                 ServiceBuilder::new()
                     .layer(TraceLayer::new_for_http())
-                    .layer(ProxyAuthLayer::new(("john", "secret")))
+                    .layer(ProxyAuthLayer::new(("john", "secret")).filter_char('-'))
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
                         DomainMatcher::new("echo.example"),
@@ -117,10 +120,11 @@ async fn main() {
                                     "lucky_number": path.number,
                                 }))
                             },
-                            HttpMatcher::get("/*") => |req: Request| async move {
+                            HttpMatcher::get("/*") => |ctx: Context<()>, req: Request| async move {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path(),
+                                    "filter": ctx.get::<ProxyFilter>().map(|f| format!("{:?}", f)),
                                 }))
                             },
                             _ => StatusCode::NOT_FOUND,

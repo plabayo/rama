@@ -66,6 +66,79 @@ pub struct UsernameConfig<const C: char = '-'> {
     filter: Option<ProxyFilter>,
 }
 
+/// Parse a username configuration string into a username and a [`ProxyFilter`].
+///
+/// This function can be used for cases where the seperator is not known in advance,
+/// or where using a function like this is more convenient because you
+/// anyway need direct access to the username and the [`ProxyFilter`].
+///
+/// See [`UsernameConfig`] for more information about the format and usage.
+pub fn parse_username_config(
+    username: impl AsRef<str>,
+    seperator: char,
+) -> Result<(String, Option<ProxyFilter>), UsernameConfigError> {
+    let username = username.as_ref();
+
+    if username.is_empty() {
+        return Err(UsernameConfigError::MissingUsername);
+    }
+
+    let mut proxy_filter: ProxyFilter = Default::default();
+
+    let mut username_it = username.split(seperator);
+    let username = match username_it.next() {
+        Some(username) => username,
+        None => return Err(UsernameConfigError::MissingUsername),
+    };
+    if username.is_empty() {
+        // e.g. '-'
+        return Err(UsernameConfigError::MissingUsername);
+    }
+
+    // iterate per two:
+    let mut ctx: Option<&str> = None;
+    for item in username_it {
+        match ctx.take() {
+            Some(key) => {
+                // handle the item as a value, which has to be matched to the previously read key
+                if key.eq_ignore_ascii_case("cc") || key.eq_ignore_ascii_case("country") {
+                    proxy_filter.country = Some(item.to_owned());
+                } else if key.eq_ignore_ascii_case("pool") {
+                    proxy_filter.pool_id = Some(item.to_owned());
+                } else if key.eq_ignore_ascii_case("id") {
+                    proxy_filter.id = Some(item.to_owned());
+                } else {
+                    return Err(UsernameConfigError::UnexpectedKey(key.to_owned()));
+                }
+            }
+            None => {
+                // check for key-only flags first, and otherwise consider it as a key, requiring a matching value
+                if item.eq_ignore_ascii_case("dc") || item.eq_ignore_ascii_case("datacenter") {
+                    proxy_filter.datacenter = true;
+                } else if item.eq_ignore_ascii_case("mobile") {
+                    proxy_filter.mobile = true;
+                } else if item.eq_ignore_ascii_case("residential") {
+                    proxy_filter.residential = true;
+                } else {
+                    ctx = Some(item);
+                }
+            }
+        }
+    }
+
+    // catch keys without values
+    if let Some(key) = ctx {
+        return Err(UsernameConfigError::UnexpectedKey(key.to_owned()));
+    }
+
+    // return the parsed username config, with or without a ProxyFilter
+    Ok(if proxy_filter == ProxyFilter::default() {
+        (username.to_owned(), None)
+    } else {
+        (username.to_owned(), Some(proxy_filter))
+    })
+}
+
 impl<const C: char> UsernameConfig<C> {
     /// Reference to the username part.
     pub fn username(&self) -> &str {
@@ -98,70 +171,8 @@ impl<const C: char> FromStr for UsernameConfig<C> {
     type Err = UsernameConfigError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        if s.is_empty() {
-            return Err(UsernameConfigError::MissingUsername);
-        }
-
-        let mut proxy_filter: ProxyFilter = Default::default();
-
-        let mut username_it = s.split(C);
-        let username = match username_it.next() {
-            Some(username) => username,
-            None => return Err(UsernameConfigError::MissingUsername),
-        };
-        if username.is_empty() {
-            // e.g. '-'
-            return Err(UsernameConfigError::MissingUsername);
-        }
-
-        // iterate per two:
-        let mut ctx: Option<&str> = None;
-        for item in username_it {
-            match ctx.take() {
-                Some(key) => {
-                    // handle the item as a value, which has to be matched to the previously read key
-                    if key.eq_ignore_ascii_case("cc") || key.eq_ignore_ascii_case("country") {
-                        proxy_filter.country = Some(item.to_owned());
-                    } else if key.eq_ignore_ascii_case("pool") {
-                        proxy_filter.pool_id = Some(item.to_owned());
-                    } else if key.eq_ignore_ascii_case("id") {
-                        proxy_filter.id = Some(item.to_owned());
-                    } else {
-                        return Err(UsernameConfigError::UnexpectedKey(key.to_owned()));
-                    }
-                }
-                None => {
-                    // check for key-only flags first, and otherwise consider it as a key, requiring a matching value
-                    if item.eq_ignore_ascii_case("dc") || item.eq_ignore_ascii_case("datacenter") {
-                        proxy_filter.datacenter = true;
-                    } else if item.eq_ignore_ascii_case("mobile") {
-                        proxy_filter.mobile = true;
-                    } else if item.eq_ignore_ascii_case("residential") {
-                        proxy_filter.residential = true;
-                    } else {
-                        ctx = Some(item);
-                    }
-                }
-            }
-        }
-
-        // catch keys without values
-        if let Some(key) = ctx {
-            return Err(UsernameConfigError::UnexpectedKey(key.to_owned()));
-        }
-
-        // return the parsed username config, with or without a ProxyFilter
-        Ok(if proxy_filter == ProxyFilter::default() {
-            UsernameConfig {
-                username: username.to_owned(),
-                filter: None,
-            }
-        } else {
-            UsernameConfig {
-                username: username.to_owned(),
-                filter: Some(proxy_filter),
-            }
-        })
+        let (username, filter) = parse_username_config(s, C)?;
+        Ok(UsernameConfig::<C> { username, filter })
     }
 }
 
