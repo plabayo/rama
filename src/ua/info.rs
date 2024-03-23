@@ -3,8 +3,10 @@
 /// [`UserAgent`]: crate::ua::UserAgent
 #[derive(Debug, Clone)]
 pub struct UserAgentInfo {
-    /// The 'User-Agent' http header value.
-    pub http_user_agent: String,
+    /// The 'User-Agent' http header values known to be used by the [`UserAgent`].
+    /// 
+    /// [`UserAgent`]: crate::ua::UserAgent
+    pub http_user_agents: Vec<String>,
 
     /// The kind of [`UserAgent`]
     ///
