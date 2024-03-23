@@ -3,6 +3,9 @@
 mod info;
 pub use info::{HttpAgent, Platform, TlsAgent, UserAgentInfo, UserAgentKind};
 
+mod parse;
+pub use parse::{parse_http_user_agent, UserAgentParseError};
+
 #[derive(Debug)]
 #[non_exhaustive]
 /// User agent
