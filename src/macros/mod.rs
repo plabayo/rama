@@ -71,6 +71,17 @@ macro_rules! all_the_tuples_no_last_special_case {
     };
 }
 
+// macro_rules! lazy_static {
+//     ($(static $name:ident: $ty:ty = $init:expr;)*) => {
+//         $(
+//             fn $name() -> &$ty {
+//                 static value: OnceLock<$ty> = OnceLock::new();
+//                 value.get_or_init(|| $init)
+//             }
+//         )*
+//     };
+// }
+
 /// Private API.
 #[doc(hidden)]
 #[macro_export]

@@ -14,6 +14,10 @@ mod port;
 #[doc(inline)]
 pub use port::PortMatcher;
 
+mod private_ip;
+#[doc(inline)]
+pub use private_ip::PrivateIpNetMatcher;
+
 mod loopback;
 #[doc(inline)]
 pub use loopback::LoopbackMatcher;
@@ -45,6 +49,8 @@ enum SocketMatcherKind {
     SocketAddress(SocketAddressMatcher),
     /// [`LoopbackMatcher`], a matcher that matches if the peer address is a loopback address.
     Loopback(LoopbackMatcher),
+    /// [`PrivateIpNetMatcher`], a matcher that matches if the peer address is a private address.
+    PrivateIpNet(PrivateIpNetMatcher),
     /// [`PortMatcher`], a matcher based on the port part of the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
@@ -101,6 +107,26 @@ impl SocketMatcher {
         self
     }
 
+    /// Add a new optional socket address matcher to the existing [`SocketMatcher`] to also match on a socket address.
+    ///
+    /// See [`SocketAddressMatcher::optional`] for more information.
+    pub fn and_optional_socket_addr(mut self, addr: impl Into<std::net::SocketAddr>) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::SocketAddress(
+                    SocketAddressMatcher::optional(addr),
+                ));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::All(vec![
+                    self.kind,
+                    SocketMatcherKind::SocketAddress(SocketAddressMatcher::optional(addr)),
+                ]);
+            }
+        }
+        self
+    }
+
     /// Add a new socket address matcher to the existing [`SocketMatcher`] as an alternative matcher to match on a socket address.
     ///
     /// See [`SocketAddressMatcher::new`] for more information.
@@ -115,6 +141,26 @@ impl SocketMatcher {
                 self.kind = SocketMatcherKind::Any(vec![
                     self.kind,
                     SocketMatcherKind::SocketAddress(SocketAddressMatcher::new(addr)),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// Add a new optional socket address matcher to the existing [`SocketMatcher`] as an alternative matcher to match on a socket address.
+    ///
+    /// See [`SocketAddressMatcher::optional`] for more information.
+    pub fn or_optional_socket_addr(mut self, addr: impl Into<std::net::SocketAddr>) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::SocketAddress(
+                    SocketAddressMatcher::optional(addr),
+                ));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::Any(vec![
+                    self.kind,
+                    SocketMatcherKind::SocketAddress(SocketAddressMatcher::optional(addr)),
                 ]);
             }
         }
@@ -160,6 +206,24 @@ impl SocketMatcher {
         self
     }
 
+    /// Add a new loopback matcher to the existing [`SocketMatcher`] to also match on whether or not the peer address is a loopback address.
+    ///
+    /// See [`LoopbackMatcher::optional`] for more information.
+    pub fn and_optional_loopback(mut self) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::Loopback(LoopbackMatcher::optional()));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::All(vec![
+                    self.kind,
+                    SocketMatcherKind::Loopback(LoopbackMatcher::optional()),
+                ]);
+            }
+        }
+        self
+    }
+
     /// Add a new loopback matcher to the existing [`SocketMatcher`] as an alternative matcher to match on whether or not the peer address is a loopback address.
     ///
     /// See [`LoopbackMatcher::new`] for more information.
@@ -172,6 +236,24 @@ impl SocketMatcher {
                 self.kind = SocketMatcherKind::Any(vec![
                     self.kind,
                     SocketMatcherKind::Loopback(LoopbackMatcher::new()),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// Add a new loopback matcher to the existing [`SocketMatcher`] as an alternative matcher to match on whether or not the peer address is a loopback address.
+    ///
+    /// See [`LoopbackMatcher::optional`] for more information.
+    pub fn or_optional_loopback(mut self) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::Loopback(LoopbackMatcher::optional()));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::Any(vec![
+                    self.kind,
+                    SocketMatcherKind::Loopback(LoopbackMatcher::optional()),
                 ]);
             }
         }
@@ -221,6 +303,25 @@ impl SocketMatcher {
     /// Add a new port matcher to the existing [`SocketMatcher`] as an alternative matcher
     /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
     ///     
+    /// See [`PortMatcher::optional`] for more information.
+    pub fn and_optional_port(mut self, port: u16) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::Port(PortMatcher::optional(port)));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::All(vec![
+                    self.kind,
+                    SocketMatcherKind::Port(PortMatcher::optional(port)),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// Add a new port matcher to the existing [`SocketMatcher`] as an alternative matcher
+    /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
+    ///     
     /// See [`PortMatcher::new`] for more information.
     pub fn or_port(mut self, port: u16) -> Self {
         match &mut self.kind {
@@ -231,6 +332,25 @@ impl SocketMatcher {
                 self.kind = SocketMatcherKind::Any(vec![
                     self.kind,
                     SocketMatcherKind::Port(PortMatcher::new(port)),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// Add a new port matcher to the existing [`SocketMatcher`] as an alternative matcher
+    /// to match on the port part of the [`SocketAddr`](std::net::SocketAddr).
+    ///
+    /// See [`PortMatcher::optional`] for more information.
+    pub fn or_optional_port(mut self, port: u16) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::Port(PortMatcher::optional(port)));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::Any(vec![
+                    self.kind,
+                    SocketMatcherKind::Port(PortMatcher::optional(port)),
                 ]);
             }
         }
@@ -278,6 +398,24 @@ impl SocketMatcher {
 
     /// Add a new IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on an IP Network.
     ///
+    /// See [`IpNetMatcher::optional`] for more information.
+    pub fn and_optional_ip_net(mut self, ip_net: impl ip::IntoIpNet) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::IpNet(IpNetMatcher::optional(ip_net)));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::All(vec![
+                    self.kind,
+                    SocketMatcherKind::IpNet(IpNetMatcher::optional(ip_net)),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// Add a new IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on an IP Network.
+    ///
     /// See [`IpNetMatcher::new`] for more information.
     pub fn or_ip_net(mut self, ip_net: impl ip::IntoIpNet) -> Self {
         match &mut self.kind {
@@ -288,6 +426,121 @@ impl SocketMatcher {
                 self.kind = SocketMatcherKind::Any(vec![
                     self.kind,
                     SocketMatcherKind::IpNet(IpNetMatcher::new(ip_net)),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// Add a new IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on an IP Network.
+    ///
+    /// See [`IpNetMatcher::optional`] for more information.
+    pub fn or_optional_ip_net(mut self, ip_net: impl ip::IntoIpNet) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::IpNet(IpNetMatcher::optional(ip_net)));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::Any(vec![
+                    self.kind,
+                    SocketMatcherKind::IpNet(IpNetMatcher::optional(ip_net)),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// create a new local IP network matcher to match on whether or not the peer address is a private address.
+    ///
+    /// See [`PrivateIpNetMatcher::new`] for more information.
+    pub fn private_ip_net() -> Self {
+        Self {
+            kind: SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::new()),
+            negate: false,
+        }
+    }
+
+    /// Create a new optional local IP network matcher to match on whether or not the peer address is a private address,
+    /// this matcher will match in case socket address could not be found.
+    ///
+    /// See [`PrivateIpNetMatcher::optional`] for more information.
+    pub fn optional_private_ip_net() -> Self {
+        Self {
+            kind: SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::optional()),
+            negate: false,
+        }
+    }
+
+    /// Add a new local IP network matcher to the existing [`SocketMatcher`] to also match on whether or not the peer address is a private address.
+    ///
+    /// See [`PrivateIpNetMatcher::new`] for more information.
+    pub fn and_private_ip_net(mut self) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::new()));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::All(vec![
+                    self.kind,
+                    SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::new()),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// Add a new local IP network matcher to the existing [`SocketMatcher`] to also match on whether or not the peer address is a private address.
+    ///
+    /// See [`PrivateIpNetMatcher::optional`] for more information.
+    pub fn and_optional_private_ip_net(mut self) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::All(matchers) => {
+                matchers.push(SocketMatcherKind::PrivateIpNet(
+                    PrivateIpNetMatcher::optional(),
+                ));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::All(vec![
+                    self.kind,
+                    SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::optional()),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// Add a new local IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on whether or not the peer address is a private address.
+    ///
+    /// See [`PrivateIpNetMatcher::new`] for more information.
+    pub fn or_private_ip_net(mut self) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::new()));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::Any(vec![
+                    self.kind,
+                    SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::new()),
+                ]);
+            }
+        }
+        self
+    }
+
+    /// Add a new local IP network matcher to the existing [`SocketMatcher`] as an alternative matcher to match on whether or not the peer address is a private address.
+    ///
+    /// See [`PrivateIpNetMatcher::optional`] for more information.
+    pub fn or_optional_private_ip_net(mut self) -> Self {
+        match &mut self.kind {
+            SocketMatcherKind::Any(matchers) => {
+                matchers.push(SocketMatcherKind::PrivateIpNet(
+                    PrivateIpNetMatcher::optional(),
+                ));
+            }
+            _ => {
+                self.kind = SocketMatcherKind::Any(vec![
+                    self.kind,
+                    SocketMatcherKind::PrivateIpNet(PrivateIpNetMatcher::optional()),
                 ]);
             }
         }
@@ -314,6 +567,7 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for SocketMatche
             SocketMatcherKind::SocketAddress(matcher) => matcher.matches(ext, ctx, req),
             SocketMatcherKind::IpNet(matcher) => matcher.matches(ext, ctx, req),
             SocketMatcherKind::Loopback(matcher) => matcher.matches(ext, ctx, req),
+            SocketMatcherKind::PrivateIpNet(matcher) => matcher.matches(ext, ctx, req),
             SocketMatcherKind::All(matchers) => matchers.iter().matches_and(ext, ctx, req),
             SocketMatcherKind::Any(matchers) => matchers.iter().matches_or(ext, ctx, req),
             SocketMatcherKind::Port(matcher) => matcher.matches(ext, ctx, req),
@@ -346,6 +600,7 @@ where
             SocketMatcherKind::SocketAddress(matcher) => matcher.matches(ext, ctx, stream),
             SocketMatcherKind::IpNet(matcher) => matcher.matches(ext, ctx, stream),
             SocketMatcherKind::Loopback(matcher) => matcher.matches(ext, ctx, stream),
+            SocketMatcherKind::PrivateIpNet(matcher) => matcher.matches(ext, ctx, stream),
             SocketMatcherKind::Port(matcher) => matcher.matches(ext, ctx, stream),
             SocketMatcherKind::All(matchers) => matchers.iter().matches_and(ext, ctx, stream),
             SocketMatcherKind::Any(matchers) => matchers.iter().matches_or(ext, ctx, stream),

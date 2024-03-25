@@ -84,7 +84,7 @@ mod test {
     use super::*;
 
     #[test]
-    fn test_port_matcher_http() {
+    fn test_loopback_matcher_http() {
         let matcher = LoopbackMatcher::new();
 
         let mut ctx = Context::default();
@@ -130,7 +130,7 @@ mod test {
     }
 
     #[test]
-    fn test_port_matcher_socket_trait() {
+    fn test_loopback_matcher_socket_trait() {
         let matcher = LoopbackMatcher::new();
 
         let ctx = Context::default();
