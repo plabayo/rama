@@ -86,7 +86,9 @@ mod tests {
     use std::sync::Arc;
 
     use crate::service::{
-        context::Extensions, layer::limit::policy::ConcurrentPolicy, matcher::Always,
+        context::Extensions,
+        layer::limit::policy::{ConcurrentCounter, ConcurrentPolicy},
+        matcher::Always,
     };
 
     use super::*;
@@ -107,7 +109,7 @@ mod tests {
 
     #[tokio::test]
     async fn matcher_policy_empty() {
-        let policy = Vec::<(Always, ConcurrentPolicy<()>)>::new();
+        let policy = Vec::<(Always, ConcurrentPolicy<(), ConcurrentCounter>)>::new();
 
         for i in 0..10 {
             assert_ready(policy.check(Context::default(), i).await);
@@ -116,7 +118,7 @@ mod tests {
 
     #[tokio::test]
     async fn matcher_policy_always() {
-        let concurrency_policy = ConcurrentPolicy::new(2);
+        let concurrency_policy = ConcurrentPolicy::max(2);
 
         let policy = Arc::new(vec![(Always, concurrency_policy)]);
 
@@ -152,8 +154,8 @@ mod tests {
     #[tokio::test]
     async fn matcher_policy_scoped_limits() {
         let policy = vec![
-            (TestMatchers::Odd, ConcurrentPolicy::new(2)),
-            (TestMatchers::Const(42), ConcurrentPolicy::new(1)),
+            (TestMatchers::Odd, ConcurrentPolicy::max(2)),
+            (TestMatchers::Const(42), ConcurrentPolicy::max(1)),
         ];
 
         // even numbers (except 42) will always be allowed

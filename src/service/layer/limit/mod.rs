@@ -94,7 +94,7 @@ mod tests {
             Ok(req)
         }
 
-        let layer: LimitLayer<ConcurrentPolicy<()>> = LimitLayer::new(ConcurrentPolicy::new(1));
+        let layer: LimitLayer<ConcurrentPolicy<_, _>> = LimitLayer::new(ConcurrentPolicy::max(1));
 
         let service_1 = layer.layer(service_fn(handle_request));
         let service_2 = layer.layer(service_fn(handle_request));

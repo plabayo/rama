@@ -98,7 +98,7 @@ async fn main() {
                     // but you can make them also optional to not use backoff for some, while using it for others
                     (
                         HttpMatcher::socket(SocketMatcher::loopback()).negate(),
-                        Some(Either::A(ConcurrentPolicy::with_backoff(1, None))),
+                        Some(Either::A(ConcurrentPolicy::max_with_backoff(1, None))),
                     ),
                     // you can also use options for the policy itself, in case you want to disable
                     // the limit for some
@@ -108,7 +108,7 @@ async fn main() {
                     // > property you want.
                     (
                         HttpMatcher::path("/limit/*"),
-                        Some(Either::A(ConcurrentPolicy::with_backoff(
+                        Some(Either::A(ConcurrentPolicy::max_with_backoff(
                             2,
                             Some(ExponentialBackoff::default()),
                         ))),
@@ -121,14 +121,14 @@ async fn main() {
                             vec![
                                 (
                                     HttpMatcher::path("/api/slow"),
-                                    Some(ConcurrentPolicy::with_backoff(
+                                    Some(ConcurrentPolicy::max_with_backoff(
                                         1,
                                         Some(ExponentialBackoff::default()),
                                     )),
                                 ),
                                 (HttpMatcher::path("/api/fast"), None),
                             ],
-                            Some(ConcurrentPolicy::with_backoff(
+                            Some(ConcurrentPolicy::max_with_backoff(
                                 5,
                                 Some(ExponentialBackoff::default()),
                             )),

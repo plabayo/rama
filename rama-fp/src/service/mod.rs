@@ -164,7 +164,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             })
             .layer(TimeoutLayer::new(Duration::from_secs(16)))
             // Why the below layer makes it no longer cloneable?!?!
-            .layer(LimitLayer::new(ConcurrentPolicy::with_backoff(
+            .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
                 ExponentialBackoff::default(),
             )));
@@ -339,7 +339,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
             })
             .layer(TimeoutLayer::new(Duration::from_secs(16)))
             // Why the below layer makes it no longer cloneable?!?!
-            .layer(LimitLayer::new(ConcurrentPolicy::with_backoff(
+            .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
                 ExponentialBackoff::default(),
             )));
