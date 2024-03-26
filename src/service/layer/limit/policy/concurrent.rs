@@ -252,14 +252,14 @@ impl ConcurrentCounter {
 }
 
 impl ConcurrentTracker for ConcurrentCounter {
-    type Guard = ConcurrentGuard;
+    type Guard = ConcurrentCounterGuard;
     type Error = LimitReached;
 
     fn try_access(&self) -> Result<Self::Guard, Self::Error> {
         let mut current = self.current.lock().unwrap();
         if *current < self.max {
             *current += 1;
-            Ok(ConcurrentGuard {
+            Ok(ConcurrentCounterGuard {
                 current: self.current.clone(),
             })
         } else {
@@ -268,13 +268,13 @@ impl ConcurrentTracker for ConcurrentCounter {
     }
 }
 
-/// The guard that releases the concurrent request limit.
+/// The guard for [`ConcurrentCounter`] that releases the concurrent request limit.
 #[derive(Debug)]
-pub struct ConcurrentGuard {
+pub struct ConcurrentCounterGuard {
     current: Arc<Mutex<usize>>,
 }
 
-impl Drop for ConcurrentGuard {
+impl Drop for ConcurrentCounterGuard {
     fn drop(&mut self) {
         let mut current = self.current.lock().unwrap();
         *current -= 1;
