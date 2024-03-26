@@ -15,12 +15,10 @@ jobs:
   check-msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: check
@@ -36,12 +34,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: check
@@ -58,13 +54,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check, check-msrv]
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: cargo doc
         env:
           RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
@@ -74,13 +68,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         uses: actions-rs/cargo@v1
         with:
@@ -91,13 +83,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         uses: actions-rs/cargo@v1
         with:
@@ -108,13 +98,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         uses: actions-rs/cargo@v1
         with:
@@ -125,13 +113,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         uses: actions-rs/cargo@v1
         with:
@@ -142,13 +128,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         uses: actions-rs/cargo@v1
         with:
@@ -159,13 +143,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
         uses: actions-rs/cargo@v1
         with:
@@ -176,13 +158,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
         uses: actions-rs/cargo@v1
         with:
@@ -193,13 +173,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
         uses: actions-rs/cargo@v1
         with:
@@ -210,13 +188,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
         uses: actions-rs/cargo@v1
         with:
@@ -227,13 +203,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
         uses: actions-rs/cargo@v1
         with:
@@ -244,13 +218,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
         uses: actions-rs/cargo@v1
         with:
@@ -261,13 +233,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
         uses: actions-rs/cargo@v1
         with:
@@ -278,13 +248,11 @@ jobs:
     needs: [check, check-msrv]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
         uses: actions-rs/cargo@v1
         with:
@@ -295,11 +263,10 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          profile: minimal
       - name: install cargo-hack
         uses: taiki-e/install-action@cargo-hack
       - name: cargo hack check
@@ -309,12 +276,10 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-sort
         run: |
@@ -328,7 +293,7 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v1
 
   semver-checks:
@@ -336,7 +301,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
