@@ -5,7 +5,7 @@ COPY . .
 # Will build and cache the binary and dependent crates in release mode
 RUN --mount=type=cache,target=/usr/local/cargo,from=rust:latest,source=/usr/local/cargo \
     --mount=type=cache,target=target \
-    cargo build -p rama-cli --release && mkdir ./bin && mv ./target/release/rama-cli ./bin/rama-cli
+    cargo build -p rama-cli --release && mkdir ./bin && mv ./target/release/rama ./bin/rama
 
 # Runtime image
 FROM debian:bookworm-slim
@@ -13,7 +13,7 @@ FROM debian:bookworm-slim
 WORKDIR /app
 
 # Get compiled binaries from builder's cargo install directory
-COPY --from=builder /usr/src/app/bin/rama-cli /app/rama
+COPY --from=builder /usr/src/app/bin/rama /app/rama
 
 # Run the app
 CMD ./rama
