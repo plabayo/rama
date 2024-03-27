@@ -1,6 +1,10 @@
 //! User agent modules for Rama.
-//!
-//! TODO: Develop first version of this module
+
+mod info;
+pub use info::{HttpAgent, Platform, TlsAgent, UserAgentInfo, UserAgentKind};
+
+mod parse;
+pub use parse::{parse_http_user_agent, UserAgentParseError};
 
 #[derive(Debug)]
 #[non_exhaustive]
@@ -8,16 +12,3 @@
 ///
 /// TODO: develop first version of this struct
 pub struct UserAgent;
-
-impl UserAgent {
-    /// Create a new user agent
-    pub fn new() -> Self {
-        panic!("TODO:implement")
-    }
-}
-
-impl Default for UserAgent {
-    fn default() -> Self {
-        panic!("TODO:implement")
-    }
-}
