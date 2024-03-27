@@ -74,10 +74,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
   test:
     needs: [check, check-msrv]
@@ -89,10 +86,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
   test-windows-msrv:
     needs: [check, check-msrv]
@@ -104,10 +98,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
   test-windows:
     needs: [check, check-msrv]
@@ -119,10 +110,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
   test-macos-msrv:
     needs: [check, check-msrv]
@@ -134,10 +122,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
   test-macos:
     needs: [check, check-msrv]
@@ -149,10 +134,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
   test-docs:
     needs: [check, check-msrv]
@@ -164,10 +146,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --doc --workspace
+        run: cargo test --doc --all-features --workspace
 
   test-examples-msrv:
     needs: [check, check-msrv]
@@ -179,10 +158,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   test-examples:
     needs: [check, check-msrv]
@@ -194,10 +170,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   test-examples-windows-msrv:
     needs: [check, check-msrv]
@@ -209,10 +182,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   test-examples-windows:
     needs: [check, check-msrv]
@@ -224,10 +194,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   test-examples-macos-msrv:
     needs: [check, check-msrv]
@@ -239,10 +206,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   test-examples-macos:
     needs: [check, check-msrv]
@@ -254,10 +218,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   cargo-hack:
     needs: [check, check-msrv]
