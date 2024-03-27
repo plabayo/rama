@@ -30,6 +30,7 @@ min_machines_running = 1
 processes = ['app']
 
 [[services.ports]]
+handlers = ["proxy_proto"]
 port = 80
 
 [[services]]
@@ -41,6 +42,7 @@ min_machines_running = 1
 processes = ['app']
 
 [[services.ports]]
+handlers = ["proxy_proto"]
 port = 443
 
 [[vm]]

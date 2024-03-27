@@ -1,5 +1,6 @@
 use base64::Engine as _;
 use rama::{
+    error::Error,
     http::{
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
@@ -11,11 +12,14 @@ use rama::{
         service::web::match_service,
         HeaderName, HeaderValue, IntoResponse,
     },
+    proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
-        layer::{limit::policy::ConcurrentPolicy, HijackLayer, LimitLayer, TimeoutLayer},
+        layer::{
+            limit::policy::ConcurrentPolicy, HijackLayer, LimitLayer, MapErrLayer, TimeoutLayer,
+        },
         service_fn,
-        util::backoff::ExponentialBackoff,
+        util::{backoff::ExponentialBackoff, combinators::Either},
         ServiceBuilder,
     },
     stream::layer::http::BodyLimitLayer,
@@ -50,6 +54,7 @@ pub struct Config {
     pub port: u16,
     pub secure_port: u16,
     pub http_version: String,
+    pub ha_proxy: bool,
 }
 
 pub async fn run(cfg: Config) -> anyhow::Result<()> {
@@ -82,6 +87,8 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     let http_address = format!("{}:{}", cfg.interface, cfg.port);
     let https_address = format!("{}:{}", cfg.interface, cfg.secure_port);
 
+    let ha_proxy = cfg.ha_proxy;
+
     let ch_headers = [
         "Width",
         "Downlink",
@@ -105,7 +112,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     .parse::<HeaderValue>()
     .expect("parse header value");
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(move |guard| async move {
         let inner_http_service = ServiceBuilder::new()
             .layer(HijackLayer::new(
                 HttpMatcher::header_exists(HeaderName::from_static("referer"))
@@ -183,6 +190,12 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
             let http_service = http_service.clone();
 
+            let tcp_service_builder = if ha_proxy {
+                tcp_service_builder.clone().layer(Either::A(HaProxyLayer::default()))
+            } else {
+                tcp_service_builder.clone().layer(Either::B(MapErrLayer::new(Error::new)))
+            };
+
             // create tls service builder
             let server_config =
                 get_server_config(tls_cert_pem_raw, tls_key_pem_raw, cfg.http_version.as_str())
@@ -190,7 +203,6 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                     .expect("read rama-fp TLS server config");
             let tls_service_builder =
                 tcp_service_builder
-                    .clone()
                     .layer(TlsAcceptorLayer::with_client_config_handler(
                         server_config,
                         TlsClientConfigHandler::default().store_client_hello(),
@@ -240,6 +252,12 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 }
             });
         }
+
+        let tcp_service_builder = if ha_proxy {
+            tcp_service_builder.layer(Either::A(HaProxyLayer::default()))
+        } else {
+            tcp_service_builder.layer(Either::B(MapErrLayer::new(Error::new)))
+        };
 
         let tcp_listener = TcpListener::build_with_state(State::new(acme_data))
             .bind(&http_address)
@@ -320,8 +338,9 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
 
     let http_address = format!("{}:{}", cfg.interface, cfg.port);
     let https_address = format!("{}:{}", cfg.interface, cfg.secure_port);
+    let ha_proxy = cfg.ha_proxy;
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(move |guard| async move {
         let http_service = ServiceBuilder::new()
             .layer(TraceLayer::new_for_http())
             .layer(CompressionLayer::new())
@@ -360,6 +379,12 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
 
             let http_service = http_service.clone();
 
+            let tcp_service_builder = if ha_proxy {
+                tcp_service_builder.clone().layer(Either::A(HaProxyLayer::default()))
+            } else {
+                tcp_service_builder.clone().layer(Either::B(MapErrLayer::new(Error::new)))
+            };
+
             // create tls service builder
             let server_config =
                 get_server_config(tls_cert_pem_raw, tls_key_pem_raw, cfg.http_version.as_str())
@@ -367,7 +392,6 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
                     .expect("read rama-fp TLS server config");
             let tls_service_builder =
                 tcp_service_builder
-                    .clone()
                     .layer(TlsAcceptorLayer::with_client_config_handler(
                         server_config,
                         TlsClientConfigHandler::default().store_client_hello(),
@@ -422,6 +446,12 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
             .bind(&http_address)
             .await
             .expect("bind TCP Listener");
+
+        let tcp_service_builder = if ha_proxy {
+            tcp_service_builder.layer(Either::A(HaProxyLayer::default()))
+        } else {
+            tcp_service_builder.layer(Either::B(MapErrLayer::new(Error::new)))
+        };
 
         match cfg.http_version.as_str() {
             "" | "auto" => {

@@ -21,6 +21,10 @@ struct Cli {
     #[argh(option, default = "String::from(\"auto\")")]
     http_version: String,
 
+    /// serve as an HaProxy
+    #[argh(switch, short = 'f')]
+    ha_proxy: bool,
+
     #[argh(subcommand)]
     command: Option<Commands>,
 }
@@ -59,6 +63,7 @@ async fn main() -> anyhow::Result<()> {
                 port: args.port,
                 secure_port: args.secure_port,
                 http_version: args.http_version,
+                ha_proxy: args.ha_proxy,
             })
             .await?;
         }
@@ -68,6 +73,7 @@ async fn main() -> anyhow::Result<()> {
                 port: args.port,
                 secure_port: args.secure_port,
                 http_version: args.http_version,
+                ha_proxy: args.ha_proxy,
             })
             .await?;
         }
