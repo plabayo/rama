@@ -6,7 +6,7 @@ use crate::{
     service::{Context, Layer, Service},
     stream::{SocketInfo, Stream},
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
 
 /// Layer to decode the HaProxy Protocol
 #[derive(Debug, Default, Clone)]
@@ -107,14 +107,9 @@ where
             }
         }
 
-        stream.write_all(RESPONSE.as_bytes()).await?;
-        stream.flush().await?;
-
         match self.inner.serve(ctx, stream).await {
             Ok(response) => Ok(response),
             Err(error) => Err(error.into()),
         }
     }
 }
-
-const RESPONSE: &str = "HTTP/1.1 200 OK\r\n\r\n";
