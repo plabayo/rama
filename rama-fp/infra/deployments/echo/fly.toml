@@ -15,6 +15,7 @@ cmd = [
     '8080',
     '--http-version',
     'auto',
+    '-f',
     'echo',
 ]
 

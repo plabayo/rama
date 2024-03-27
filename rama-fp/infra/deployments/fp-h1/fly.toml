@@ -2,7 +2,7 @@ app = 'rama-fp-h1'
 primary_region = 'lhr'
 
 [experimental]
-cmd = ['./rama-fp', '-i', '0.0.0.0', '-p', '8080', '--http-version', 'h1']
+cmd = ['./rama-fp', '-i', '0.0.0.0', '-p', '8080', '--http-version', 'h1', '-f']
 
 [build]
 image = 'glendc/rama-fp:latest'

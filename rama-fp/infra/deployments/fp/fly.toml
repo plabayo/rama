@@ -5,7 +5,7 @@ primary_region = 'lhr'
 image = "glendc/rama-fp:latest"
 
 [experimental]
-cmd = ["./rama-fp", "-i", "0.0.0.0", "-p", "8080", "--http-version", "auto"]
+cmd = ["./rama-fp", "-i", "0.0.0.0", "-p", "8080", "--http-version", "auto", "-f"]
 
 [[services]]
 internal_port = 8080
