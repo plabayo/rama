@@ -76,3 +76,5 @@ pub use limit::{Limit, LimitLayer};
 pub mod add_extension;
 #[doc(inline)]
 pub use add_extension::{AddExtension, AddExtensionLayer};
+
+pub mod http;

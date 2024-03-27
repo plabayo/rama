@@ -3,4 +3,4 @@
 
 mod body_limit;
 #[doc(inline)]
-pub use body_limit::{BodyLimit, BodyLimitLayer, BodyLimitService};
+pub use body_limit::{BodyLimitLayer, BodyLimitService};

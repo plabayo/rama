@@ -1,18 +1,14 @@
+use bytes::Bytes;
+
 use crate::{
-    http::BodyLimit,
+    http::{dep::http_body::Body as HttpBody, Body, BodyLimit, IntoResponse, Request, Response},
     service::{Context, Layer, Service},
-    stream::Stream,
 };
 use std::fmt;
 
 /// Limit the size of the request and/or response bodies.
 ///
-/// As this layer operates on the transport layer ([`Stream`]),
-/// it only is used to add the [`BodyLimit`] value to the [`Context`],
-/// such that the L7 http service can apply the limit when found in that [`Context`].
-///
-/// [`Stream`]: crate::stream::Stream
-/// [`Context`]: crate::service::Context`
+/// The inner [`BodyLimit`] is immediately applied to the request and/or response bodies.
 #[derive(Debug, Clone)]
 pub struct BodyLimitLayer {
     limit: BodyLimit,
@@ -86,22 +82,31 @@ impl<S> BodyLimitService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, IO> Service<State, IO> for BodyLimitService<S>
+impl<S, State, ReqBody> Service<State, Request<ReqBody>> for BodyLimitService<S>
 where
-    S: Service<State, IO>,
+    S: Service<State, Request>,
+    S::Response: IntoResponse,
     State: Send + Sync + 'static,
-    IO: Stream,
+    ReqBody: HttpBody<Data = Bytes> + Send + Sync + 'static,
+    ReqBody::Error: std::error::Error + Send + Sync + 'static,
 {
-    type Response = S::Response;
+    type Response = Response;
     type Error = S::Error;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
-        stream: IO,
+        ctx: Context<State>,
+        req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        ctx.insert(self.limit);
-        self.inner.serve(ctx, stream).await
+        let req = match self.limit.request() {
+            Some(limit) => req.map(|body| Body::with_limit(body, limit)),
+            None => req.map(Body::new),
+        };
+        let resp = self.inner.serve(ctx, req).await?.into_response();
+        Ok(match self.limit.response() {
+            Some(limit) => resp.map(|body| Body::with_limit(body, limit)),
+            None => resp,
+        })
     }
 }
 

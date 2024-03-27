@@ -18,6 +18,7 @@ use rama::{
         util::backoff::ExponentialBackoff,
         ServiceBuilder,
     },
+    stream::layer::http::BodyLimitLayer,
     tcp::server::TcpListener,
     tls::rustls::{
         dep::{
@@ -167,7 +168,9 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
                 ExponentialBackoff::default(),
-            )));
+            )))
+            // Limit the body size to 1MB for both request and response
+            .layer(BodyLimitLayer::symmetric(1024 * 1024));
 
         // also spawn a TLS listener if tls_cert_dir is set
         if let Ok(tls_cert_pem_raw) = std::env::var("RAMA_FP_TLS_CRT") {
@@ -342,7 +345,9 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
             .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
                 ExponentialBackoff::default(),
-            )));
+            )))
+            // Limit the body size to 1MB for both request and response
+            .layer(BodyLimitLayer::symmetric(1024 * 1024));
 
         // also spawn a TLS listener if tls_cert_dir is set
         if let Ok(tls_cert_pem_raw) = std::env::var("RAMA_FP_TLS_CRT") {

@@ -142,7 +142,7 @@ async fn main() {
 
             tcp_service.serve_graceful(guard, ServiceBuilder::new()
                 // protect the http proxy from too large bodies, both from request and response end
-                .layer(BodyLimitLayer::new(2 * 1024 * 1024))
+                .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024))
                 .service(http_service)).await;
     });
 

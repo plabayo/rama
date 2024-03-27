@@ -6,6 +6,7 @@ use rama::{
         Request,
     },
     service::Context,
+    stream::SocketInfo,
     tls::rustls::server::IncomingClientHello,
 };
 use serde::Serialize;
@@ -116,6 +117,7 @@ pub struct RequestInfo {
     pub initiator: Initiator,
     pub path: String,
     pub uri: String,
+    pub peer_addr: Option<String>,
 }
 
 pub async fn get_request_info(
@@ -169,6 +171,7 @@ pub async fn get_request_info(
         initiator,
         path: parts.uri.path().to_owned(),
         uri: parts.uri.to_string(),
+        peer_addr: ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string()),
     }
 }
 

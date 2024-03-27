@@ -4,6 +4,10 @@ pub(crate) mod body;
 #[doc(inline)]
 pub use body::{Body, BodyDataStream};
 
+mod body_limit;
+#[doc(inline)]
+pub use body_limit::BodyLimit;
+
 pub mod utils;
 
 pub mod headers;
