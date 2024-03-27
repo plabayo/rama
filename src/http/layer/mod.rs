@@ -18,6 +18,7 @@
 //! [`Service`]: crate::service::Service
 
 pub mod auth;
+pub mod body_limit;
 pub mod catch_panic;
 pub mod classify;
 pub mod cors;

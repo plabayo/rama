@@ -51,6 +51,15 @@ impl Body {
         try_downcast(body).unwrap_or_else(|body| Self(boxed(body)))
     }
 
+    /// Create a new `Body` with a maximum size limit.
+    pub fn with_limit<B>(body: B, limit: usize) -> Self
+    where
+        B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
+        B::Error: Into<BoxError>,
+    {
+        Self::new(crate::http::dep::http_body_util::Limited::new(body, limit))
+    }
+
     /// Create an empty body.
     pub fn empty() -> Self {
         Self::new(http_body_util::Empty::new())
@@ -68,6 +77,13 @@ impl Body {
         Self::new(StreamBody {
             stream: SyncWrapper::new(stream),
         })
+    }
+
+    /// Create a new [`Body`] from a [`Stream`] with a maximum size limit.
+    pub fn limited(self, limit: usize) -> Self {
+        Self::new(crate::http::dep::http_body_util::Limited::new(
+            self.0, limit,
+        ))
     }
 
     /// Convert the body into a [`Stream`] of data frames.

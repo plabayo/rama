@@ -72,7 +72,8 @@ use rama::{
     },
     rt::Executor,
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
-    tcp::utils::is_connection_error,
+    stream::layer::http::BodyLimitLayer,
+    tcp::{server::TcpListener, utils::is_connection_error},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -102,11 +103,11 @@ async fn main() {
     // TODO: what about the hop headers?!
 
     graceful.spawn_task_fn(|guard| async move {
+        let tcp_service = TcpListener::build().bind("127.0.0.1:8080").await.expect("bind tcp proxy to 127.0.0.1:8080");
+
         let exec = Executor::graceful(guard.clone());
-        HttpServer::auto(exec)
-            .listen_graceful(
-                guard,
-                "127.0.0.1:8080",
+        let http_service = HttpServer::auto(exec)
+            .service(
                 ServiceBuilder::new()
                     .layer(TraceLayer::new_for_http())
                     // See [`ProxyAuthLayer::with_labels`] for more information,
@@ -137,9 +138,12 @@ async fn main() {
                         service_fn(http_connect_proxy),
                     ))
                     .service_fn(http_plain_proxy),
-            )
-            .await
-            .unwrap();
+            );
+
+            tcp_service.serve_graceful(guard, ServiceBuilder::new()
+                // protect the http proxy from too large bodies, both from request and response end
+                .layer(BodyLimitLayer::new(2 * 1024 * 1024))
+                .service(http_service)).await;
     });
 
     graceful
