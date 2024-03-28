@@ -1,6 +1,11 @@
-use std::{fmt, io::Cursor, pin::Pin, task::{ready, Context, Poll}};
 use bytes::Bytes;
 use pin_project_lite::pin_project;
+use std::{
+    fmt,
+    io::Cursor,
+    pin::Pin,
+    task::{ready, Context, Poll},
+};
 use tokio::io::{self, AsyncBufRead, AsyncRead, ReadBuf};
 
 pin_project! {
@@ -166,7 +171,7 @@ where
 
         if !*me.done_first {
             match ready!(me.first.poll_fill_buf(cx)?) {
-                buf if buf.is_empty() => {
+                [] => {
                     *me.done_first = true;
                 }
                 buf => return Poll::Ready(Ok(buf)),
