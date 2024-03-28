@@ -1,10 +1,10 @@
-use std::{io::Cursor, net::SocketAddr, pin::Pin};
+use std::net::SocketAddr;
 
 use crate::{
     error::Error,
     proxy::pp::protocol::{v1, v2, HeaderResult, PartialResult},
     service::{Context, Layer, Service},
-    stream::{SocketInfo, Stream},
+    stream::{ChainReader, HeapReader, SocketInfo, Stream},
 };
 use tokio::io::AsyncReadExt;
 
@@ -47,7 +47,10 @@ impl<S> HaProxyService<S> {
 impl<State, S, IO> Service<State, IO> for HaProxyService<S>
 where
     State: Send + Sync + 'static,
-    S: Service<State, Pin<Box<dyn Stream>>>,
+    S: Service<
+        State,
+        tokio::io::Join<ChainReader<HeapReader, tokio::io::ReadHalf<IO>>, tokio::io::WriteHalf<IO>>,
+    >,
     S::Error: Into<Error>,
     IO: Stream + Unpin,
 {
@@ -115,9 +118,9 @@ where
 
         // put back the data that is read too much
         let (r, w) = tokio::io::split(stream);
-        let buffer = Cursor::new(buffer[consumed..read].to_vec());
-        let r = AsyncReadExt::chain(buffer, r);
-        let stream: Pin<Box<dyn Stream>> = Box::pin(tokio::io::join(r, w));
+        let mem: HeapReader = buffer[consumed..read].into();
+        let r = ChainReader::new(mem, r);
+        let stream = tokio::io::join(r, w);
 
         // read the rest of the data
         match self.inner.serve(ctx, stream).await {
