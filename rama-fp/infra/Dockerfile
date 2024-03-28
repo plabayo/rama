@@ -16,4 +16,4 @@ WORKDIR /app
 COPY --from=builder /usr/src/app/bin/rama-fp /app/rama-fp
 
 # Run the app
-CMD ./rama-fp -i 0.0.0.0 -p 8080 -f
+CMD ./rama-fp -i 0.0.0.0 -p 8080
