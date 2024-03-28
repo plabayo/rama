@@ -14,7 +14,7 @@ use super::ProxyFilter;
 /// ```
 ///
 /// The keys and values are separated by the same character as the username parts.
-/// By default the `-` character is used as seperator, but this can be changed by setting the generic parameter `C`.
+/// By default the `-` character is used as separator, but this can be changed by setting the generic parameter `C`.
 ///
 /// Following keys are recognized:
 ///
@@ -68,14 +68,14 @@ pub struct UsernameConfig<const C: char = '-'> {
 
 /// Parse a username configuration string into a username and a [`ProxyFilter`].
 ///
-/// This function can be used for cases where the seperator is not known in advance,
+/// This function can be used for cases where the separator is not known in advance,
 /// or where using a function like this is more convenient because you
 /// anyway need direct access to the username and the [`ProxyFilter`].
 ///
 /// See [`UsernameConfig`] for more information about the format and usage.
 pub fn parse_username_config(
     username: impl AsRef<str>,
-    seperator: char,
+    separator: char,
 ) -> Result<(String, Option<ProxyFilter>), UsernameConfigError> {
     let username = username.as_ref();
 
@@ -85,7 +85,7 @@ pub fn parse_username_config(
 
     let mut proxy_filter: ProxyFilter = Default::default();
 
-    let mut username_it = username.split(seperator);
+    let mut username_it = username.split(separator);
     let username = match username_it.next() {
         Some(username) => username,
         None => return Err(UsernameConfigError::MissingUsername),

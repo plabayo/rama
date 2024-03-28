@@ -17,7 +17,7 @@
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' -XPOST http://echo.example/lucky/7
 //! ```
-//! The psuedo API can be used as follows:
+//! The pseudo API can be used as follows:
 //!
 //! ```sh
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar

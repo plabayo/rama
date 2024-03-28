@@ -53,7 +53,7 @@ impl BodyLimit {
 
     /// Create a new [`BodyLimit`], with the given limits
     /// respectively to be applied to the request and response bodies.
-    pub fn assymetric(request: usize, response: usize) -> Self {
+    pub fn asymmetric(request: usize, response: usize) -> Self {
         match (request, response) {
             (0, 0) => Self { kind: None },
             (0, response) => Self {

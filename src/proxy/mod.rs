@@ -118,7 +118,7 @@ pub enum ProxyCredentials {
         /// The username to use to authenticate with the proxy.
         username: String,
         /// The optional password to use to authenticate with the proxy,
-        /// in combiantion with the username.
+        /// in combination with the username.
         password: Option<String>,
     },
     /// Bearer token authentication, token content is opaque for the proxy facilities.

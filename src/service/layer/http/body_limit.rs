@@ -46,9 +46,9 @@ impl BodyLimitLayer {
     /// respectively to be applied to the request and response bodies.
     ///
     /// See [`BodyLimitLayer`] for more information.
-    pub fn assymetric(request: usize, response: usize) -> Self {
+    pub fn asymmetric(request: usize, response: usize) -> Self {
         Self {
-            limit: BodyLimit::assymetric(request, response),
+            limit: BodyLimit::asymmetric(request, response),
         }
     }
 }
