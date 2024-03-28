@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{io::Cursor, net::SocketAddr, pin::Pin};
 
 use crate::{
     error::Error,
@@ -47,7 +47,7 @@ impl<S> HaProxyService<S> {
 impl<State, S, IO> Service<State, IO> for HaProxyService<S>
 where
     State: Send + Sync + 'static,
-    S: Service<State, IO>,
+    S: Service<State, Pin<Box<dyn Stream>>>,
     S::Error: Into<Error>,
     IO: Stream + Unpin,
 {
@@ -72,41 +72,54 @@ where
             tracing::debug!("Incomplete header. Read {} bytes so far.", read);
         };
 
-        match header {
-            HeaderResult::V1(Ok(header)) => match header.addresses {
-                v1::Addresses::Tcp4(info) => {
-                    let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                    let socket_info = SocketInfo::new(None, peer_addr);
-                    ctx.insert(socket_info);
-                }
-                v1::Addresses::Tcp6(info) => {
-                    let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                    let socket_info = SocketInfo::new(None, peer_addr);
-                    ctx.insert(socket_info);
-                }
-                v1::Addresses::Unknown => (),
-            },
-            HeaderResult::V2(Ok(header)) => match header.addresses {
-                v2::Addresses::IPv4(info) => {
-                    let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                    let socket_info = SocketInfo::new(None, peer_addr);
-                    ctx.insert(socket_info);
-                }
-                v2::Addresses::IPv6(info) => {
-                    let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                    let socket_info = SocketInfo::new(None, peer_addr);
-                    ctx.insert(socket_info);
-                }
-                v2::Addresses::Unix(_) | v2::Addresses::Unspecified => (),
-            },
+        let consumed = match header {
+            HeaderResult::V1(Ok(header)) => {
+                match header.addresses {
+                    v1::Addresses::Tcp4(info) => {
+                        let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
+                        let socket_info = SocketInfo::new(None, peer_addr);
+                        ctx.insert(socket_info);
+                    }
+                    v1::Addresses::Tcp6(info) => {
+                        let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
+                        let socket_info = SocketInfo::new(None, peer_addr);
+                        ctx.insert(socket_info);
+                    }
+                    v1::Addresses::Unknown => (),
+                };
+                header.header.len()
+            }
+            HeaderResult::V2(Ok(header)) => {
+                match header.addresses {
+                    v2::Addresses::IPv4(info) => {
+                        let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
+                        let socket_info = SocketInfo::new(None, peer_addr);
+                        ctx.insert(socket_info);
+                    }
+                    v2::Addresses::IPv6(info) => {
+                        let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
+                        let socket_info = SocketInfo::new(None, peer_addr);
+                        ctx.insert(socket_info);
+                    }
+                    v2::Addresses::Unix(_) | v2::Addresses::Unspecified => (),
+                };
+                header.header.len()
+            }
             HeaderResult::V1(Err(error)) => {
                 return Err(error.into());
             }
             HeaderResult::V2(Err(error)) => {
                 return Err(error.into());
             }
-        }
+        };
 
+        // put back the data that is read too much
+        let (r, w) = tokio::io::split(stream);
+        let buffer = Cursor::new(buffer[consumed..read].to_vec());
+        let r = AsyncReadExt::chain(buffer, r);
+        let stream: Pin<Box<dyn Stream>> = Box::pin(tokio::io::join(r, w));
+
+        // read the rest of the data
         match self.inner.serve(ctx, stream).await {
             Ok(response) => Ok(response),
             Err(error) => Err(error.into()),
