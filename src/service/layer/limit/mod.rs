@@ -114,4 +114,20 @@ mod tests {
             assert!(result_2.is_err());
         }
     }
+
+    #[tokio::test]
+    async fn test_zero_limit() {
+        async fn handle_request<State, Request>(
+            _ctx: Context<State>,
+            req: Request,
+        ) -> Result<Request, Infallible> {
+            Ok(req)
+        }
+
+        let layer: LimitLayer<ConcurrentPolicy<_, _>> = LimitLayer::new(ConcurrentPolicy::max(0));
+
+        let service_1 = layer.layer(service_fn(handle_request));
+        let result_1 = service_1.serve(Context::default(), "Hello").await;
+        assert!(result_1.is_err());
+    }
 }

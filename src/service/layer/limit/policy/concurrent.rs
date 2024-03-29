@@ -300,6 +300,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_policy_zero() {
+        // for cases where you want to also block specific requests as part of your rate limiting,
+        // bit of a contrived example, but possible
+
+        let policy = ConcurrentPolicy::max(0);
+        assert_abort(policy.check(Context::default(), ()).await);
+    }
+
+    #[tokio::test]
     async fn concurrent_policy() {
         let policy = ConcurrentPolicy::max(2);
 
