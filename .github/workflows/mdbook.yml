@@ -57,7 +57,7 @@ jobs:
           cargo install --locked --version ${MDBOOK_GRAPHVIZ_VERSION} mdbook-graphviz
       - name: Setup Pages
         id: pages
-        uses: actions/configure-pages@v3
+        uses: actions/configure-pages@v4
       - name: Build with mdBook
         working-directory: ./docs/book
         run: mdbook build
@@ -70,7 +70,7 @@ jobs:
           cp -r ../target/doc/* www/docs
           cp index.html www/index.html
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v2
+        uses: actions/upload-pages-artifact@v3
         with:
           path: ./docs/www
 
