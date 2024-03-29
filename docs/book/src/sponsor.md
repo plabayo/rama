@@ -22,9 +22,23 @@ Alternatively you can also make a one time contribution at
 
 Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise 🛍️ at <https://plabayo.threadless.com/>.
 
+### Rama Sponsors
+
+We would like to extend our thanks to the following sponsors for funding Rama (ラマ) development. If you are interested in becoming a sponsor, you can do so by becoming a [sponsor][ghs-url]. One time payments are accepted [at GitHub][ghs-url] as well as at ["Buy me a Coffee"][bmac-url].
+
+If you wish to financially support us through other means you can best
+start a conversation with us by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
+
+#### Premium Partners
+
+* [fly.io](https://fly.io)
+
 ## Professional Services
 
 🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
 
 These type of contracts are another way for you to be able to support the project and
 at the same time get serviced for your own needs and purposes.
+
+[ghs-url]: https://github.com/sponsors/plabayo
+[bmac-url]: https://www.buymeacoffee.com/plabayo
