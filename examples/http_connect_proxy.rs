@@ -14,14 +14,13 @@
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://www.example.com/
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-red-blue:secret' http://www.example.com/
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' https://www.example.com/
-//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example.internal/foo/bar
-//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' -XPOST http://echo.example.internal/lucky/7
 //! ```
 //! The pseudo API can be used as follows:
 //!
 //! ```sh
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example.internal/foo/bar
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-red-blue:secret' http://echo.example.internal/foo/bar
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' -XPOST http://echo.example.internal/lucky/7
 //! ```
 //!
 //! You should see in all the above examples the responses from the server.
@@ -29,7 +28,7 @@
 //! If you want to see the HTTP traffic in action you can of course also use telnet instead:
 //!
 //! ```sh
-//! telnet 127.0.0.1:8080
+//! telnet 127.0.0.1 8080
 //! ```
 //!
 //! and then type:

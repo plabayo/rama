@@ -38,13 +38,11 @@ jobs:
       MDBOOK_VERSION: 0.4.27
       MDBOOK_GRAPHVIZ_VERSION: 0.1.6
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Generate Rust Docs
         env:
           RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
@@ -86,4 +84,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v2
+        uses: actions/deploy-pages@v4
