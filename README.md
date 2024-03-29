@@ -176,6 +176,11 @@ start a conversation with us by sending an email to [glen@plabayo.tech](mailto:g
 #### Premium Partners
 
 * [fly.io](https://fly.io)
+* [BrowserStack](https://browserstack.com)
+
+Rama (ラマ) is bundled with HTTP/TLS emulation data, gathered for all major platforms and browsers using real devices by [BrowserStack](https://browserstack.com). It does this automatically every day by using [our public Fingerprinting service](https://fp.ramaproxy.org) which is hosted together with a database on [fly.io](https://fly.io).
+
+We are grateful to both sponsors for sponsering us these cloud resources.
 
 ### Professional Services
 
