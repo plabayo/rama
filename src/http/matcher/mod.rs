@@ -605,3 +605,131 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcherK
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use http::Version;
+
+    use crate::service::Matcher;
+
+    use super::*;
+
+    #[test]
+    fn test_matcher_ands_combination() {
+        let matcher = HttpMatcher::method_post()
+            .and(HttpMatcher::version(VersionMatcher::HTTP_2))
+            .and(HttpMatcher::domain("www.example.com"));
+        let req = Request::builder()
+            .method("POST")
+            .version(Version::HTTP_2)
+            .uri("www.example.com")
+            .body(())
+            .unwrap();
+        assert!(matcher.matches(None, &Context::default(), &req));
+    }
+
+    #[test]
+    fn test_matcher_negation_with_ands_combination() {
+        let matcher = HttpMatcher::method_post()
+            .negate()
+            .and(HttpMatcher::version(VersionMatcher::HTTP_2))
+            .and(HttpMatcher::domain("www.example.com"));
+        let req = Request::builder()
+            .method("GET")
+            .version(Version::HTTP_2)
+            .uri("www.example.com")
+            .body(())
+            .unwrap();
+        assert!(matcher.matches(None, &Context::default(), &req));
+    }
+
+    #[test]
+    fn test_matcher_ands_combination_negated() {
+        let matcher = HttpMatcher::method_post()
+            .and(HttpMatcher::version(VersionMatcher::HTTP_2))
+            .and(HttpMatcher::domain("www.example.com"))
+            .negate();
+        let req = Request::builder()
+            .method("POST")
+            .version(Version::HTTP_2)
+            .uri("www.example.com")
+            .body(())
+            .unwrap();
+        assert!(!matcher.matches(None, &Context::default(), &req));
+    }
+
+    #[test]
+    fn test_matcher_ors_combination() {
+        let matcher = HttpMatcher::method_post()
+            .or(HttpMatcher::version(VersionMatcher::HTTP_2))
+            .or(HttpMatcher::domain("www.example.com"));
+        let req = Request::builder()
+            .method("POST")
+            .version(Version::HTTP_3)
+            .uri("www.lorem.com")
+            .body(())
+            .unwrap();
+        assert!(matcher.matches(None, &Context::default(), &req));
+    }
+
+    #[test]
+    fn test_matcher_negation_with_ors_combination() {
+        let matcher = HttpMatcher::method_post()
+            .negate()
+            .or(HttpMatcher::version(VersionMatcher::HTTP_2))
+            .or(HttpMatcher::domain("www.example.com"));
+        let req = Request::builder()
+            .method("POST")
+            .version(Version::HTTP_3)
+            .uri("www.example.com")
+            .body(())
+            .unwrap();
+        assert!(matcher.matches(None, &Context::default(), &req));
+    }
+
+    #[test]
+    fn test_matcher_ors_combination_negated() {
+        let matcher = HttpMatcher::method_post()
+            .or(HttpMatcher::version(VersionMatcher::HTTP_2))
+            .or(HttpMatcher::domain("www.example.com"))
+            .negate();
+        let req = Request::builder()
+            .method("POST")
+            .version(Version::HTTP_2)
+            .uri("www.example.com")
+            .body(())
+            .unwrap();
+        assert!(!matcher.matches(None, &Context::default(), &req));
+    }
+
+    #[test]
+    fn test_matcher_or_and_or_and_negation() {
+        let matcher = (HttpMatcher::method_post().or(HttpMatcher::method_get()))
+            .and(
+                HttpMatcher::version(VersionMatcher::HTTP_2)
+                    .or(HttpMatcher::version(VersionMatcher::HTTP_3)),
+            )
+            .and(HttpMatcher::domain("www.example.com").negate());
+        let req = Request::builder()
+            .method("POST")
+            .version(Version::HTTP_2)
+            .uri("www.lorem.com")
+            .body(())
+            .unwrap();
+        assert!(matcher.matches(None, &Context::default(), &req));
+    }
+
+    #[test]
+    fn test_matcher_negation_and_header_contains() {
+        let matcher = HttpMatcher::method_get().negate().and_header_contains(
+            "content-type".parse().unwrap(),
+            "text/plain".parse().unwrap(),
+        );
+        let req = Request::builder()
+            .method("GET")
+            .header("content-type", "text/html")
+            .body(())
+            .unwrap();
+        assert!(!matcher.matches(None, &Context::default(), &req));
+    }
+}
