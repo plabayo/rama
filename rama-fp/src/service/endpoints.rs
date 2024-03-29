@@ -67,6 +67,11 @@ pub async fn get_consent() -> impl IntoResponse {
                 <p>
                     Please note that we do not store IP information and we do not use third-party tracking cookies. However, it is possible that the telecom or hosting services used by you or us may track some personalized information, over which we have no control or desire. You can use utilities like the Unix `dig` command to analyze the traffic and determine what might be tracked.
                 </p>
+                <div>
+                <p>
+                    Hosting for this service is sponsored by
+                    <a href="https://fly.io">fly.io</a>.
+                </p>
             </div>
         </div>"##.to_owned()
     ))

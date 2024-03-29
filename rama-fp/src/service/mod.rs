@@ -136,6 +136,14 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             .layer(TraceLayer::new_for_http())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
+            .layer(SetResponseHeaderLayer::overriding(
+                HeaderName::from_static("server"),
+                HeaderValue::from_static("rama-v0.2-alpha"),
+            ))
+            .layer(SetResponseHeaderLayer::overriding(
+                HeaderName::from_static("x-sponsored-by"),
+                HeaderValue::from_static("fly.io"),
+            ))
             .layer(SetResponseHeaderLayer::if_not_present(
                 HeaderName::from_static("accept-ch"),
                 ch_headers.clone(),
@@ -345,6 +353,14 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
             .layer(TraceLayer::new_for_http())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
+            .layer(SetResponseHeaderLayer::overriding(
+                HeaderName::from_static("server"),
+                HeaderValue::from_static("rama-v0.2-alpha"),
+            ))
+            .layer(SetResponseHeaderLayer::overriding(
+                HeaderName::from_static("x-sponsored-by"),
+                HeaderValue::from_static("fly.io"),
+            ))
             .service(
                 Arc::new(match_service!{
                     HttpMatcher::get("/.well-known/acme-challenge/:token") => endpoints::get_acme_challenge,
