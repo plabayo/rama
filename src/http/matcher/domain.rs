@@ -28,6 +28,16 @@ impl DomainMatcher {
         }
     }
 
+    /// Create an new domain matcher to match private domains.
+    ///
+    /// As proposed in
+    /// <https://itp.cdn.icann.org/en/files/security-and-stability-advisory-committee-ssac-reports/sac-113-en.pdf>.
+    ///
+    /// In specific this means that it will match on any domain with the TLD `.internal`.
+    pub fn private() -> Self {
+        Self::sub("internal")
+    }
+
     pub(crate) fn matches_host(&self, host: &str) -> bool {
         let domain = self.domain.as_str();
         match host.len().cmp(&domain.len()) {
@@ -93,6 +103,41 @@ mod test {
             (DomainMatcher::new("www.example.com"), "www3.example.com"),
             (DomainMatcher::sub("w.example.com"), "www.example.com"),
             (DomainMatcher::sub("gel.com"), "kegel.com"),
+        ];
+        for (matcher, host) in test_cases.into_iter() {
+            assert!(
+                !matcher.matches_host(host),
+                "!({:?}).matches_host({})",
+                matcher,
+                host
+            );
+        }
+    }
+
+    #[test]
+    fn private_domain_match() {
+        let test_cases = vec![
+            (DomainMatcher::private(), "foo.internal"),
+            (DomainMatcher::private(), "www.example.internal"),
+            (DomainMatcher::private(), "www.example.INTERNAL"),
+        ];
+        for (matcher, host) in test_cases.into_iter() {
+            assert!(
+                matcher.matches_host(host),
+                "({:?}).matches_host({})",
+                matcher,
+                host
+            );
+        }
+    }
+
+    #[test]
+    fn private_domain_no_match() {
+        let test_cases = vec![
+            (DomainMatcher::private(), "foo.internals"),
+            (DomainMatcher::private(), "www.example.internals"),
+            (DomainMatcher::private(), "foo.internal.com"),
+            (DomainMatcher::private(), "foo.internal."),
         ];
         for (matcher, host) in test_cases.into_iter() {
             assert!(
