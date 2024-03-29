@@ -21,3 +21,4 @@ In case you are new to proxy technology you might want to read the
 - [🍔 Middlwares and ☘️ Leaf Services](./intro/terminology.md)
 - [Network Layers](./intro/network_layers.md)
 - [☀️ Context<State>](./intro/context.md)
+- [🧱 Modular](./intro/modular.md)
