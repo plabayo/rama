@@ -12,6 +12,7 @@
     - [🍔 Middlwares and ☘️ Leaf Services](./intro/terminology.md)
     - [Network Layers](./intro/network_layers.md)
     - [☀️ Context<State>](./intro/context.md)
+    - [🧱 Modular](./intro/modular.md)
 
 # Intro to Proxies
 
