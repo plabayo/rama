@@ -1,3 +1,4 @@
+import concurrent.futures
 from datetime import datetime
 import os
 import platform
@@ -198,7 +199,9 @@ def mark_test_status(status, reason, driver):
 
 print("start script")
 
-# we only pay for 1 parallel session,
-# so no point in queeing more
-for cap in desired_caps:
-    run_session(cap)
+with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    # Submit the tasks to the executor
+    futures = [executor.submit(run_session, cap) for cap in desired_caps]
+
+    # Wait for all tasks to complete
+    concurrent.futures.wait(futures)
