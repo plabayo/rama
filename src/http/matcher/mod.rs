@@ -619,13 +619,34 @@ mod test {
         let matcher = HttpMatcher::method_post()
             .and(HttpMatcher::version(VersionMatcher::HTTP_2))
             .and(HttpMatcher::domain("www.example.com"));
-        let req = Request::builder()
-            .method("POST")
-            .version(Version::HTTP_2)
-            .uri("www.example.com")
-            .body(())
-            .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+
+        let cases = [
+            ("POST", Version::HTTP_2, "www.example.com", true),
+            ("POST", Version::HTTP_2, "www.lorem.com", false),
+            ("POST", Version::HTTP_3, "www.example.com", false),
+            ("POST", Version::HTTP_3, "www.lorem.com", false),
+            ("GET", Version::HTTP_2, "www.example.com", false),
+            ("GET", Version::HTTP_2, "www.lorem.com", false),
+            ("GET", Version::HTTP_3, "www.example.com", false),
+            ("GET", Version::HTTP_3, "www.lorem.com", false),
+        ];
+
+        for (method, version, uri, expected) in cases {
+            let req = Request::builder()
+                .method(method)
+                .version(version)
+                .uri(uri)
+                .body(())
+                .unwrap();
+
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
     }
 
     #[test]
@@ -634,13 +655,34 @@ mod test {
             .negate()
             .and(HttpMatcher::version(VersionMatcher::HTTP_2))
             .and(HttpMatcher::domain("www.example.com"));
-        let req = Request::builder()
-            .method("GET")
-            .version(Version::HTTP_2)
-            .uri("www.example.com")
-            .body(())
-            .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+
+        let cases = [
+            ("POST", Version::HTTP_2, "www.example.com", false),
+            ("POST", Version::HTTP_2, "www.lorem.com", false),
+            ("POST", Version::HTTP_3, "www.example.com", false),
+            ("POST", Version::HTTP_3, "www.lorem.com", false),
+            ("GET", Version::HTTP_2, "www.example.com", true),
+            ("GET", Version::HTTP_2, "www.lorem.com", false),
+            ("GET", Version::HTTP_3, "www.example.com", false),
+            ("GET", Version::HTTP_3, "www.lorem.com", false),
+        ];
+
+        for (method, version, uri, expected) in cases {
+            let req = Request::builder()
+                .method(method)
+                .version(version)
+                .uri(uri)
+                .body(())
+                .unwrap();
+
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
     }
 
     #[test]
@@ -649,13 +691,34 @@ mod test {
             .and(HttpMatcher::version(VersionMatcher::HTTP_2))
             .and(HttpMatcher::domain("www.example.com"))
             .negate();
-        let req = Request::builder()
-            .method("POST")
-            .version(Version::HTTP_2)
-            .uri("www.example.com")
-            .body(())
-            .unwrap();
-        assert!(!matcher.matches(None, &Context::default(), &req));
+
+        let cases = [
+            ("POST", Version::HTTP_2, "www.example.com", false),
+            ("POST", Version::HTTP_2, "www.lorem.com", true),
+            ("POST", Version::HTTP_3, "www.example.com", true),
+            ("POST", Version::HTTP_3, "www.lorem.com", true),
+            ("GET", Version::HTTP_2, "www.example.com", true),
+            ("GET", Version::HTTP_2, "www.lorem.com", true),
+            ("GET", Version::HTTP_3, "www.example.com", true),
+            ("GET", Version::HTTP_3, "www.lorem.com", true),
+        ];
+
+        for (method, version, uri, expected) in cases {
+            let req = Request::builder()
+                .method(method)
+                .version(version)
+                .uri(uri)
+                .body(())
+                .unwrap();
+
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
     }
 
     #[test]
@@ -663,13 +726,34 @@ mod test {
         let matcher = HttpMatcher::method_post()
             .or(HttpMatcher::version(VersionMatcher::HTTP_2))
             .or(HttpMatcher::domain("www.example.com"));
-        let req = Request::builder()
-            .method("POST")
-            .version(Version::HTTP_3)
-            .uri("www.lorem.com")
-            .body(())
-            .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+
+        let cases = [
+            ("POST", Version::HTTP_2, "www.example.com", true),
+            ("POST", Version::HTTP_2, "www.lorem.com", true),
+            ("POST", Version::HTTP_3, "www.example.com", true),
+            ("POST", Version::HTTP_3, "www.lorem.com", true),
+            ("GET", Version::HTTP_2, "www.example.com", true),
+            ("GET", Version::HTTP_2, "www.lorem.com", true),
+            ("GET", Version::HTTP_3, "www.example.com", true),
+            ("GET", Version::HTTP_3, "www.lorem.com", false),
+        ];
+
+        for (method, version, uri, expected) in cases {
+            let req = Request::builder()
+                .method(method)
+                .version(version)
+                .uri(uri)
+                .body(())
+                .unwrap();
+
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
     }
 
     #[test]
@@ -678,13 +762,34 @@ mod test {
             .negate()
             .or(HttpMatcher::version(VersionMatcher::HTTP_2))
             .or(HttpMatcher::domain("www.example.com"));
-        let req = Request::builder()
-            .method("POST")
-            .version(Version::HTTP_3)
-            .uri("www.example.com")
-            .body(())
-            .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+
+        let cases = [
+            ("POST", Version::HTTP_2, "www.example.com", true),
+            ("POST", Version::HTTP_2, "www.lorem.com", true),
+            ("POST", Version::HTTP_3, "www.example.com", true),
+            ("POST", Version::HTTP_3, "www.lorem.com", false),
+            ("GET", Version::HTTP_2, "www.example.com", true),
+            ("GET", Version::HTTP_2, "www.lorem.com", true),
+            ("GET", Version::HTTP_3, "www.example.com", true),
+            ("GET", Version::HTTP_3, "www.lorem.com", true),
+        ];
+
+        for (method, version, uri, expected) in cases {
+            let req = Request::builder()
+                .method(method)
+                .version(version)
+                .uri(uri)
+                .body(())
+                .unwrap();
+
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
     }
 
     #[test]
@@ -693,13 +798,34 @@ mod test {
             .or(HttpMatcher::version(VersionMatcher::HTTP_2))
             .or(HttpMatcher::domain("www.example.com"))
             .negate();
-        let req = Request::builder()
-            .method("POST")
-            .version(Version::HTTP_2)
-            .uri("www.example.com")
-            .body(())
-            .unwrap();
-        assert!(!matcher.matches(None, &Context::default(), &req));
+
+        let cases = [
+            ("POST", Version::HTTP_2, "www.example.com", false),
+            ("POST", Version::HTTP_2, "www.lorem.com", false),
+            ("POST", Version::HTTP_3, "www.example.com", false),
+            ("POST", Version::HTTP_3, "www.lorem.com", false),
+            ("GET", Version::HTTP_2, "www.example.com", false),
+            ("GET", Version::HTTP_2, "www.lorem.com", false),
+            ("GET", Version::HTTP_3, "www.example.com", false),
+            ("GET", Version::HTTP_3, "www.lorem.com", true),
+        ];
+
+        for (method, version, uri, expected) in cases {
+            let req = Request::builder()
+                .method(method)
+                .version(version)
+                .uri(uri)
+                .body(())
+                .unwrap();
+
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
     }
 
     #[test]
@@ -710,13 +836,44 @@ mod test {
                     .or(HttpMatcher::version(VersionMatcher::HTTP_3)),
             )
             .and(HttpMatcher::domain("www.example.com").negate());
-        let req = Request::builder()
-            .method("POST")
-            .version(Version::HTTP_2)
-            .uri("www.lorem.com")
-            .body(())
-            .unwrap();
-        assert!(matcher.matches(None, &Context::default(), &req));
+
+        let cases = [
+            ("POST", Version::HTTP_2, "www.lorem.com", true),
+            ("POST", Version::HTTP_2, "www.example.com", false),
+            ("POST", Version::HTTP_3, "www.lorem.com", true),
+            ("POST", Version::HTTP_3, "www.example.com", false),
+            ("POST", Version::HTTP_09, "www.lorem.com", false),
+            ("POST", Version::HTTP_09, "www.example.com", false),
+            ("GET", Version::HTTP_2, "www.lorem.com", true),
+            ("GET", Version::HTTP_2, "www.example.com", false),
+            ("GET", Version::HTTP_3, "www.lorem.com", true),
+            ("GET", Version::HTTP_3, "www.example.com", false),
+            ("GET", Version::HTTP_09, "www.lorem.com", false),
+            ("GET", Version::HTTP_09, "www.example.com", false),
+            ("PUT", Version::HTTP_2, "www.lorem.com", false),
+            ("PUT", Version::HTTP_2, "www.example.com", false),
+            ("PUT", Version::HTTP_3, "www.lorem.com", false),
+            ("PUT", Version::HTTP_3, "www.example.com", false),
+            ("PUT", Version::HTTP_09, "www.lorem.com", false),
+            ("PUT", Version::HTTP_09, "www.example.com", false),
+        ];
+
+        for (method, version, uri, expected) in cases {
+            let req = Request::builder()
+                .method(method)
+                .version(version)
+                .uri(uri)
+                .body(())
+                .unwrap();
+
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
     }
 
     #[test]
@@ -725,11 +882,28 @@ mod test {
             "content-type".parse().unwrap(),
             "text/plain".parse().unwrap(),
         );
-        let req = Request::builder()
-            .method("GET")
-            .header("content-type", "text/html")
-            .body(())
-            .unwrap();
-        assert!(!matcher.matches(None, &Context::default(), &req));
+
+        let cases = [
+            ("PUT", "text/plain", true),
+            ("PUT", "text/html", false),
+            ("GET", "text/plain", false),
+            ("GET", "text/html", false),
+        ];
+
+        for (method, header_value, expected) in cases {
+            let req = Request::builder()
+                .method(method)
+                .header("content-type", header_value)
+                .body(())
+                .unwrap();
+
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
     }
 }
