@@ -23,7 +23,12 @@ mod json;
 #[doc(inline)]
 pub use json::Json;
 
+mod form;
+#[doc(inline)]
+pub use form::Form;
+
 mod redirect;
+
 #[doc(inline)]
 pub use redirect::Redirect;
 
