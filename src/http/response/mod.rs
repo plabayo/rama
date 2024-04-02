@@ -28,7 +28,6 @@ mod form;
 pub use form::Form;
 
 mod redirect;
-
 #[doc(inline)]
 pub use redirect::Redirect;
 
