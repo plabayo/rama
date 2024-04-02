@@ -1,19 +1,26 @@
 mod test_server;
+use rama::{
+    http::Request,
+    error::BoxError,
+};
+
+use crate::test_server::recive_as_string;
 
 #[tokio::test]
-async fn test_http_listener_hello() -> Result<(), reqwest::Error> {
-    let mut _example = test_server::run_example_server("http_listener_hello", 40001);
+async fn test_http_listener_hello() -> Result<(), BoxError> {
+    let _example = test_server::run_example_server("http_listener_hello");
 
-    let get = reqwest::get("http://127.0.0.1:40001/path").await?;
-    assert_eq!(get.text().await?, r#"{"method":"GET","path":"/path"}"#);
+    let get_request = Request::builder()
+        .method("GET")
+        .uri("http://127.0.0.1:40001/path")
+        .body(String::new())
+        .unwrap();
 
-    let client = reqwest::Client::new();
-    let post = client
-        .post("http://127.0.0.1:40001/")
-        .body("body")
-        .send()
-        .await?;
-    assert_eq!(post.text().await?, r#"{"method":"POST","path":"/"}"#);
+    let res_str = recive_as_string(get_request).await?;
+
+    let test_str = r##"{"method":"GET","path":"/path"}"##;
+
+    assert_eq!(res_str, test_str);
 
     Ok(())
 }

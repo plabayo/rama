@@ -142,7 +142,6 @@ assert_fs = "1.1.1"
 brotli = { workspace = true }
 escargot = "0.5.10"
 flate2 = { workspace = true }
-reqwest = { version = "0.12.2", features = ["blocking"] }
 rustversion = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

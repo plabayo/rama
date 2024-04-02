@@ -23,21 +23,13 @@ use rama::{
     service::service_fn,
 };
 use serde_json::json;
-use std::env;
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
-    let port = match args.get(1){
-        Some(port) => port,
-        None => "8080",
-    };
-    let addr = format!("127.0.0.1:{}", port);
-
     let exec = Executor::default();
     HttpServer::auto(exec)
         .listen(
-            addr ,
+            "127.0.0.1:40001" ,
             service_fn(|req: Request| async move {
                 Ok(Json(json!({
                     "method": req.method().as_str(),

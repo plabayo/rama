@@ -1,6 +1,9 @@
 
 use std::process::Child;
 
+use http_body_util::BodyExt;
+use rama::{error::BoxError, http::{client::HttpClient, Request}, service::{Context, Service}};
+
 pub struct ExampleServer(Child);
 
 impl std::ops::Drop for ExampleServer {
@@ -12,7 +15,7 @@ impl std::ops::Drop for ExampleServer {
     }
 }
 
-pub fn run_example_server(example_name: &str, port_number: usize) -> ExampleServer {
+pub fn run_example_server(example_name: &str) -> ExampleServer {
     let temp = assert_fs::TempDir::new().unwrap();
     ExampleServer(
         escargot::CargoBuild::new()
@@ -22,8 +25,18 @@ pub fn run_example_server(example_name: &str, port_number: usize) -> ExampleServ
             .run()
             .unwrap()
             .command()
-            .arg(port_number.to_string())
             .spawn()
             .unwrap(),
     )
+}
+
+pub async fn recive_as_string(request: Request<String>) -> Result<String, BoxError>{
+    let client = HttpClient::new();
+    let res = client.serve(Context::default(), request).await?;
+
+    let res_body= res.into_body();
+    let collected_bytes = res_body.collect().await?;
+    let bytes = collected_bytes.to_bytes();
+    let res_str = String::from_utf8_lossy(&bytes);
+    Ok(res_str.to_string())
 }

@@ -117,15 +117,7 @@ where
 async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(|guard| async move {
-        let args: Vec<String> = env::args().collect();
-        let port = match args.get(1){
-            Some(port) => port,
-            None => "8080",
-        };
-        let addr = format!("127.0.0.1:{}", port);
-
-        
+    graceful.spawn_task_fn(|guard| async move { 
         let exec = Executor::graceful(guard.clone());
 
         let tcp_http_service = HttpServer::auto(exec).service(service_fn(handle_index));
@@ -134,7 +126,7 @@ async fn main() {
         let alive = Arc::new(AtomicBool::new(true));
 
         TcpListener::build_with_state(AppState::default())
-            .bind(addr)
+            .bind("127.0.0.1:40002")
             .await
             .expect("bind TCP Listener")
             .serve_graceful(
