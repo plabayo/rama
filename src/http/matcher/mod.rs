@@ -5,6 +5,13 @@
 //! [`service::Matcher`]: crate::service::Matcher
 //! [`http::Request`]: crate::http::Request
 //! [`service::matcher` module]: crate::service::matcher
+use crate::{
+    http::Request,
+    service::{context::Extensions, matcher::IteratorMatcherExt, Context},
+    stream::matcher::SocketMatcher,
+};
+use std::fmt;
+use std::sync::Arc;
 
 mod method;
 #[doc(inline)]
@@ -29,24 +36,34 @@ mod header;
 #[doc(inline)]
 pub use header::HeaderMatcher;
 
-use crate::{
-    http::Request,
-    service::{context::Extensions, matcher::IteratorMatcherExt, Context},
-    stream::matcher::SocketMatcher,
-};
-
-#[derive(Debug, Clone)]
 /// A matcher that is used to match an http [`Request`]
-pub struct HttpMatcher {
-    kind: HttpMatcherKind,
+pub struct HttpMatcher<State, Body> {
+    kind: HttpMatcherKind<State, Body>,
     negate: bool,
 }
 
-#[derive(Debug, Clone)]
+impl<State, Body> Clone for HttpMatcher<State, Body> {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            negate: self.negate,
+        }
+    }
+}
+
+impl<State, Body> fmt::Debug for HttpMatcher<State, Body> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpMatcher")
+            .field("kind", &self.kind)
+            .field("negate", &self.negate)
+            .finish()
+    }
+}
+
 /// A matcher that is used to match an http [`Request`]
-pub enum HttpMatcherKind {
+pub enum HttpMatcherKind<State, Body> {
     /// zero or more [`HttpMatcher`]s that all need to match in order for the matcher to return `true`.
-    All(Vec<HttpMatcher>),
+    All(Vec<HttpMatcher<State, Body>>),
     /// [`MethodMatcher`], a matcher that matches one or more HTTP methods.
     Method(MethodMatcher),
     /// [`PathMatcher`], a matcher based on the URI path.
@@ -56,7 +73,7 @@ pub enum HttpMatcherKind {
     /// [`VersionMatcher`], a matcher based on the HTTP version of the request.
     Version(VersionMatcher),
     /// zero or more [`HttpMatcher`]s that at least one needs to match in order for the matcher to return `true`.
-    Any(Vec<HttpMatcher>),
+    Any(Vec<HttpMatcher<State, Body>>),
     /// [`UriMatcher`], a matcher the request's URI, using a substring or regex pattern.
     Uri(UriMatcher),
     /// [`HeaderMatcher`], a matcher based on the [`Request`]'s headers.
@@ -65,9 +82,45 @@ pub enum HttpMatcherKind {
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     Socket(SocketMatcher),
+    /// A custom matcher that implements [`crate::service::Matcher`].
+    Custom(Arc<dyn crate::service::Matcher<State, Request<Body>>>),
 }
 
-impl HttpMatcher {
+impl<State, Body> Clone for HttpMatcherKind<State, Body> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::All(inner) => Self::All(inner.clone()),
+            Self::Method(inner) => Self::Method(*inner),
+            Self::Path(inner) => Self::Path(inner.clone()),
+            Self::Domain(inner) => Self::Domain(inner.clone()),
+            Self::Version(inner) => Self::Version(*inner),
+            Self::Any(inner) => Self::Any(inner.clone()),
+            Self::Uri(inner) => Self::Uri(inner.clone()),
+            Self::Header(inner) => Self::Header(inner.clone()),
+            Self::Socket(inner) => Self::Socket(inner.clone()),
+            Self::Custom(inner) => Self::Custom(inner.clone()),
+        }
+    }
+}
+
+impl<State, Body> fmt::Debug for HttpMatcherKind<State, Body> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::All(inner) => f.debug_tuple("All").field(inner).finish(),
+            Self::Method(inner) => f.debug_tuple("Method").field(inner).finish(),
+            Self::Path(inner) => f.debug_tuple("Path").field(inner).finish(),
+            Self::Domain(inner) => f.debug_tuple("Domain").field(inner).finish(),
+            Self::Version(inner) => f.debug_tuple("Version").field(inner).finish(),
+            Self::Any(inner) => f.debug_tuple("Any").field(inner).finish(),
+            Self::Uri(inner) => f.debug_tuple("Uri").field(inner).finish(),
+            Self::Header(inner) => f.debug_tuple("Header").field(inner).finish(),
+            Self::Socket(inner) => f.debug_tuple("Socket").field(inner).finish(),
+            Self::Custom(_) => f.debug_tuple("Custom").finish(),
+        }
+    }
+}
+
+impl<State, Body> HttpMatcher<State, Body> {
     /// Create a new matcher that matches one or more HTTP methods.
     ///
     /// See [`MethodMatcher`] for more information.
@@ -497,6 +550,39 @@ impl HttpMatcher {
         Self::method_get().and_path(path)
     }
 
+    /// Create a matcher that matches according to a custom predicate.
+    ///
+    /// See [`crate::service::Matcher`] for more information.
+    pub fn custom<M>(matcher: M) -> Self
+    where
+        M: crate::service::Matcher<State, Request<Body>>,
+    {
+        Self {
+            kind: HttpMatcherKind::Custom(Arc::new(matcher)),
+            negate: false,
+        }
+    }
+
+    /// Add a custom matcher to match on top of the existing set of [`HttpMatcher`] matchers.
+    ///
+    /// See [`crate::service::Matcher`] for more information.
+    pub fn and_custom<M>(self, matcher: M) -> Self
+    where
+        M: crate::service::Matcher<State, Request<Body>>,
+    {
+        self.and(Self::custom(matcher))
+    }
+
+    /// Create a custom matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
+    ///
+    /// See [`crate::service::Matcher`] for more information.
+    pub fn or_custom<M>(self, matcher: M) -> Self
+    where
+        M: crate::service::Matcher<State, Request<Body>>,
+    {
+        self.or(Self::custom(matcher))
+    }
+
     /// Create a [`PathMatcher`] matcher to match for a POST request.
     pub fn post(path: impl AsRef<str>) -> Self {
         Self::method_post().and_path(path)
@@ -533,7 +619,7 @@ impl HttpMatcher {
     }
 
     /// Add a [`HttpMatcher`] to match on top of the existing set of [`HttpMatcher`] matchers.
-    pub fn and(mut self, matcher: HttpMatcher) -> Self {
+    pub fn and(mut self, matcher: HttpMatcher<State, Body>) -> Self {
         match (self.negate, &mut self.kind) {
             (false, HttpMatcherKind::All(v)) => {
                 v.push(matcher);
@@ -547,7 +633,7 @@ impl HttpMatcher {
     }
 
     /// Create a [`HttpMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
-    pub fn or(mut self, matcher: HttpMatcher) -> Self {
+    pub fn or(mut self, matcher: HttpMatcher<State, Body>) -> Self {
         match (self.negate, &mut self.kind) {
             (false, HttpMatcherKind::Any(v)) => {
                 v.push(matcher);
@@ -569,7 +655,11 @@ impl HttpMatcher {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcher {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcher<State, Body>
+where
+    State: Send + Sync + 'static,
+    Body: Send + 'static,
+{
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
@@ -585,7 +675,11 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcher 
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcherKind {
+impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcherKind<State, Body>
+where
+    State: Send + Sync + 'static,
+    Body: Send + 'static,
+{
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
@@ -602,6 +696,7 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcherK
             HttpMatcherKind::Header(header) => header.matches(ext, ctx, req),
             HttpMatcherKind::Socket(socket) => socket.matches(ext, ctx, req),
             HttpMatcherKind::Any(all) => all.iter().matches_or(ext, ctx, req),
+            HttpMatcherKind::Custom(matcher) => matcher.matches(ext, ctx, req),
         }
     }
 }

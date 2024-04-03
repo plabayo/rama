@@ -1,6 +1,5 @@
 use crate::{
-    http::matcher::HttpMatcher,
-    http::{IntoResponse, Request, Response},
+    http::{matcher::HttpMatcher, Body, IntoResponse, Request, Response},
     service::{BoxService, Context, Service, ServiceBuilder},
 };
 use std::convert::Infallible;
@@ -9,7 +8,7 @@ use std::future::Future;
 pub mod extract;
 
 pub(crate) struct Endpoint<State> {
-    pub(crate) matcher: HttpMatcher,
+    pub(crate) matcher: HttpMatcher<State, Body>,
     pub(crate) service: BoxService<State, Request, Response, Infallible>,
 }
 
