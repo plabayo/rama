@@ -116,7 +116,7 @@ where
 async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(|guard| async move { 
+    graceful.spawn_task_fn(|guard| async move {
         let exec = Executor::graceful(guard.clone());
 
         let tcp_http_service = HttpServer::auto(exec).service(service_fn(handle_index));

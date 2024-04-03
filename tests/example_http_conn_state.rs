@@ -28,12 +28,11 @@ async fn test_http_conn_state() -> Result<(), BoxError> {
                     <p>Request Count: <code>1</code></p>
                 </body>
             </html>"##;
-    
-    
+
     let test1_str = format!("{}{}{}", head, 1, bottom);
     let test2_str = format!("{}{}{}", head, 2, bottom);
-    match res_str{
-        str if str == test1_str || str == test2_str => {},
+    match res_str {
+        str if str == test1_str || str == test2_str => {}
         _ => panic!(),
     }
 

@@ -31,7 +31,7 @@ async fn test_post(key: &str, value: &str) -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn test_get(key: &str, value: &str) -> Result<(), BoxError>{
+async fn test_get(key: &str, value: &str) -> Result<(), BoxError> {
     let request = Request::builder()
         .method("GET")
         .uri(format!("http://127.0.0.1:40004/item/{}", key))

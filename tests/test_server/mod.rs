@@ -45,5 +45,3 @@ pub async fn recive_as_string(request: Request<String>) -> Result<(Parts, String
     let res_str = String::from_utf8_lossy(&bytes);
     Ok((parts, res_str.to_string()))
 }
-
-

@@ -1,9 +1,6 @@
 mod test_server;
 use http::StatusCode;
-use rama::{
-    http::Request,
-    error::BoxError,
-};
+use rama::{error::BoxError, http::Request};
 
 use crate::test_server::recive_as_string;
 

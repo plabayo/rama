@@ -1,9 +1,9 @@
 mod test_server;
 
-use rama::{error::BoxError, http::Request};
 use crate::test_server::recive_as_string;
+use rama::{error::BoxError, http::Request};
 
-const URL:&str = "http://127.0.0.1:40006/";
+const URL: &str = "http://127.0.0.1:40006/";
 
 #[tokio::test]
 async fn test_http_prometheus() -> Result<(), BoxError> {
@@ -17,13 +17,13 @@ async fn test_http_prometheus() -> Result<(), BoxError> {
     Ok(())
 }
 
-async fn test_root_path() -> Result<(), BoxError>{
+async fn test_root_path() -> Result<(), BoxError> {
     let request = Request::builder()
         .method("GET")
         .uri(URL)
         .body(String::new())
         .unwrap();
-    
+
     for counter in 1..=2 {
         let (_, res_str) = recive_as_string(request.clone()).await?;
         let test_str = format!("<h1>Hello, #{}!", counter);
@@ -32,10 +32,10 @@ async fn test_root_path() -> Result<(), BoxError>{
     Ok(())
 }
 
-async fn test_metrics() -> Result<(), BoxError>{
+async fn test_metrics() -> Result<(), BoxError> {
     let request = Request::builder()
         .method("GET")
-        .uri(format!("{}{}",URL , "metrics"))
+        .uri(format!("{}{}", URL, "metrics"))
         .body(String::new())
         .unwrap();
     let (_, res_str) = recive_as_string(request.clone()).await?;
