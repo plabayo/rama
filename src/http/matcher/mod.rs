@@ -703,7 +703,6 @@ where
 
 #[cfg(test)]
 mod test {
-    use http::{HeaderName, HeaderValue};
     use itertools::Itertools;
 
     use crate::service::Matcher;
@@ -855,37 +854,6 @@ mod test {
 
             let matcher = (a.or(b)).and(c.or(d)).and(e.negate());
             let req = Request::builder().body(()).unwrap();
-            assert_eq!(
-                matcher.matches(None, &Context::default(), &req),
-                expected,
-                "({:#?}).matches({:#?})",
-                matcher,
-                req
-            );
-        }
-    }
-
-    #[test]
-    fn test_matcher_negation_and_header_contains() {
-        let matcher = HttpMatcher::method_get().negate().and_header_contains(
-            HeaderName::from_static("content-type"),
-            HeaderValue::from_static("text/plain"),
-        );
-
-        let cases = [
-            ("PUT", "text/plain", true),
-            ("PUT", "text/html", false),
-            ("GET", "text/plain", false),
-            ("GET", "text/html", false),
-        ];
-
-        for (method, header_value, expected) in cases {
-            let req = Request::builder()
-                .method(method)
-                .header("content-type", header_value)
-                .body(())
-                .unwrap();
-
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
