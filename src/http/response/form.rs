@@ -1,5 +1,6 @@
 use crate::http::dep::http::header::CONTENT_TYPE;
 use crate::http::dep::http::StatusCode;
+use crate::http::dep::mime;
 use crate::http::response::{IntoResponse, Response};
 use serde::Serialize;
 
@@ -80,7 +81,10 @@ where
                 body,
             )
                 .into_response(),
-            Err(err) => (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response(),
+            Err(err) => {
+                tracing::error!(error = %err, "response error");
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
         }
     }
 }
