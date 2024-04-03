@@ -8,7 +8,7 @@ use rama::{
 use crate::test_server::recive_as_string;
 
 #[tokio::test]
-async fn test_http_listener_hello() -> Result<(), BoxError> {
+async fn test_http_k8s_health() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_k8s_health");
 
     let request = Request::builder()
