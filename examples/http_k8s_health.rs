@@ -4,7 +4,7 @@
 //! [`HttpServer`]: crate::http::server::HttpServer
 //! [`Executor`]: crate::rt::Executor
 //!
-//! This example will create a server that listens on `127.0.0.1:8080.
+//! This example will create a server that listens on `127.0.0.1:40003.
 //!
 //! # Run the example
 //!
@@ -14,7 +14,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:8080`. You can use `curl` to check if the server is ready:
+//! The server will start and listen on `:40003`. You can use `curl` to check if the server is ready:
 //!
 //! ```sh
 //! curl -v http://127.0.0.1:40003/k8s/ready

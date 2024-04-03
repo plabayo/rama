@@ -6,7 +6,7 @@
 //! might require for the life cycle of a connection, without it leaking
 //! into the entire app (service) lifecycle.
 //!
-//! This example will create a server that listens on `127.0.0.1:8080`.
+//! This example will create a server that listens on `127.0.0.1:40000`.
 //!
 //! # Run the example
 //!
@@ -16,10 +16,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:8080`. You can use `curl` to check if the server is running:
+//! The server will start and listen on `:40000`. You can use `curl` to check if the server is running:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:8080
+//! curl -v http://127.0.0.1:40000
 //! ```
 //!
 //! You should see an HTTP Status 200 OK with a HTML payload containing the
