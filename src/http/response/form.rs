@@ -10,9 +10,53 @@ use serde::Serialize;
 /// [`Response`]: crate::http::Response
 ///
 /// # Examples
+/// ## Creating a Form Response
 ///
 /// ```
-
+/// use serde::Serialize;
+/// use rama::http::{
+///     IntoResponse,
+///     response::Form
+/// };
+///
+/// #[derive(Serialize)]
+/// struct Payload {
+///     name: String,
+///     age: i32,
+///     is_student: bool
+/// }
+///
+/// async fn handler() -> impl IntoResponse {
+///     Form(Payload {
+///         name: "john".to_string(),
+///         age: 30,
+///         is_student: false
+///     })
+/// }
+/// ```
+///
+/// ## Extracting Form from a Request
+///
+/// ```
+/// use rama::http::service::web::extract::{
+///     Form
+/// };
+///
+/// #[derive(Debug, serde::Deserialize)]
+/// struct Input {
+///     name: String,
+///     age: u8,
+///     alive: Option<bool>,
+/// }
+///
+/// # fn bury(name: impl AsRef<str>) {}
+///
+/// async fn handler(Form(input): Form<Input>) {
+///     if !input.alive.unwrap_or_default() {
+///         bury(&input.name);
+///     }
+/// }
+/// ```
 #[derive(Debug, Clone, Copy, Default)]
 #[must_use]
 pub struct Form<T>(pub T);
