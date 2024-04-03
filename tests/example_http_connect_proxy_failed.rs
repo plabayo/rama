@@ -1,11 +1,10 @@
 mod test_server;
-use rama::{error::BoxError, http::Request};
 
 use tokio::process::Command;
 
 // this test is failed.
 #[tokio::test]
-async fn test_http_connect_proxy() -> Result<(), BoxError> {
+async fn test_http_connect_proxy()  {
     let _example = test_server::run_example_server("http_connect_proxy");
 
     let output = Command::new("curl")
@@ -20,6 +19,4 @@ async fn test_http_connect_proxy() -> Result<(), BoxError> {
     let test_str = r##"{"method":"GET","path":"/path"}"##;
 
     assert_eq!(res_str, test_str);
-
-    Ok(())
 }

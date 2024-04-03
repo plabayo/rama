@@ -39,7 +39,6 @@ use std::{
     },
     time::Duration,
 };
-use std::env;
 
 #[derive(Debug, Default)]
 struct AppMetrics {

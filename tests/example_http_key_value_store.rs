@@ -1,5 +1,4 @@
 mod test_server;
-use std::any::Any;
 
 use http::StatusCode;
 use rama::{error::BoxError, http::Request};
