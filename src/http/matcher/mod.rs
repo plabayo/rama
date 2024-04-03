@@ -709,29 +709,16 @@ mod test {
 
     use super::*;
 
-    struct TrueMatcher;
+    struct BooleanMatcher(bool);
 
-    impl Matcher<(), Request<()>> for TrueMatcher {
+    impl Matcher<(), Request<()>> for BooleanMatcher {
         fn matches(
             &self,
             _ext: Option<&mut Extensions>,
             _ctx: &Context<()>,
             _req: &Request<()>,
         ) -> bool {
-            true
-        }
-    }
-
-    struct FalseMatcher;
-
-    impl Matcher<(), Request<()>> for FalseMatcher {
-        fn matches(
-            &self,
-            _ext: Option<&mut Extensions>,
-            _ctx: &Context<()>,
-            _req: &Request<()>,
-        ) -> bool {
-            false
+            self.0
         }
     }
 
@@ -739,51 +726,51 @@ mod test {
     fn test_matcher_ands_combination() {
         let cases = [
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
         ];
@@ -805,51 +792,51 @@ mod test {
     fn test_matcher_negation_with_ands_combination() {
         let cases = [
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
         ];
@@ -871,51 +858,51 @@ mod test {
     fn test_matcher_ands_combination_negated() {
         let cases = [
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
         ];
@@ -937,51 +924,51 @@ mod test {
     fn test_matcher_ors_combination() {
         let cases = [
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
         ];
@@ -1003,51 +990,51 @@ mod test {
     fn test_matcher_negation_with_ors_combination() {
         let cases = [
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 true,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
         ];
@@ -1069,51 +1056,51 @@ mod test {
     fn test_matcher_ors_combination_negated() {
         let cases = [
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(true)),
                 false,
             ),
             (
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
-                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
+                HttpMatcher::custom(BooleanMatcher(false)),
                 true,
             ),
         ];
