@@ -703,7 +703,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use http::Version;
+    use http::{HeaderName, HeaderValue, Version};
 
     use crate::service::Matcher;
 
@@ -1182,8 +1182,8 @@ mod test {
     #[test]
     fn test_matcher_negation_and_header_contains() {
         let matcher = HttpMatcher::method_get().negate().and_header_contains(
-            "content-type".parse().unwrap(),
-            "text/plain".parse().unwrap(),
+            HeaderName::from_static("content-type"),
+            HeaderValue::from_static("text/plain"),
         );
 
         let cases = [
