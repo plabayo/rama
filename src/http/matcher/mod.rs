@@ -709,31 +709,88 @@ mod test {
 
     use super::*;
 
+    struct TrueMatcher;
+
+    impl Matcher<(), Request<()>> for TrueMatcher {
+        fn matches(
+            &self,
+            _ext: Option<&mut Extensions>,
+            _ctx: &Context<()>,
+            _req: &Request<()>,
+        ) -> bool {
+            true
+        }
+    }
+
+    struct FalseMatcher;
+
+    impl Matcher<(), Request<()>> for FalseMatcher {
+        fn matches(
+            &self,
+            _ext: Option<&mut Extensions>,
+            _ctx: &Context<()>,
+            _req: &Request<()>,
+        ) -> bool {
+            false
+        }
+    }
+
     #[test]
     fn test_matcher_ands_combination() {
-        let matcher = HttpMatcher::method_post()
-            .and(HttpMatcher::version(VersionMatcher::HTTP_2))
-            .and(HttpMatcher::domain("www.example.com"));
-
         let cases = [
-            ("POST", Version::HTTP_2, "www.example.com", true),
-            ("POST", Version::HTTP_2, "www.lorem.com", false),
-            ("POST", Version::HTTP_3, "www.example.com", false),
-            ("POST", Version::HTTP_3, "www.lorem.com", false),
-            ("GET", Version::HTTP_2, "www.example.com", false),
-            ("GET", Version::HTTP_2, "www.lorem.com", false),
-            ("GET", Version::HTTP_3, "www.example.com", false),
-            ("GET", Version::HTTP_3, "www.lorem.com", false),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
         ];
 
-        for (method, version, uri, expected) in cases {
-            let req = Request::builder()
-                .method(method)
-                .version(version)
-                .uri(uri)
-                .body(())
-                .unwrap();
-
+        for (a, b, c, expected) in cases {
+            let matcher = a.and(b).and(c);
+            let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
@@ -746,30 +803,60 @@ mod test {
 
     #[test]
     fn test_matcher_negation_with_ands_combination() {
-        let matcher = HttpMatcher::method_post()
-            .negate()
-            .and(HttpMatcher::version(VersionMatcher::HTTP_2))
-            .and(HttpMatcher::domain("www.example.com"));
-
         let cases = [
-            ("POST", Version::HTTP_2, "www.example.com", false),
-            ("POST", Version::HTTP_2, "www.lorem.com", false),
-            ("POST", Version::HTTP_3, "www.example.com", false),
-            ("POST", Version::HTTP_3, "www.lorem.com", false),
-            ("GET", Version::HTTP_2, "www.example.com", true),
-            ("GET", Version::HTTP_2, "www.lorem.com", false),
-            ("GET", Version::HTTP_3, "www.example.com", false),
-            ("GET", Version::HTTP_3, "www.lorem.com", false),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
         ];
 
-        for (method, version, uri, expected) in cases {
-            let req = Request::builder()
-                .method(method)
-                .version(version)
-                .uri(uri)
-                .body(())
-                .unwrap();
-
+        for (a, b, c, expected) in cases {
+            let matcher = a.negate().and(b).and(c);
+            let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
@@ -782,30 +869,60 @@ mod test {
 
     #[test]
     fn test_matcher_ands_combination_negated() {
-        let matcher = HttpMatcher::method_post()
-            .and(HttpMatcher::version(VersionMatcher::HTTP_2))
-            .and(HttpMatcher::domain("www.example.com"))
-            .negate();
-
         let cases = [
-            ("POST", Version::HTTP_2, "www.example.com", false),
-            ("POST", Version::HTTP_2, "www.lorem.com", true),
-            ("POST", Version::HTTP_3, "www.example.com", true),
-            ("POST", Version::HTTP_3, "www.lorem.com", true),
-            ("GET", Version::HTTP_2, "www.example.com", true),
-            ("GET", Version::HTTP_2, "www.lorem.com", true),
-            ("GET", Version::HTTP_3, "www.example.com", true),
-            ("GET", Version::HTTP_3, "www.lorem.com", true),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
         ];
 
-        for (method, version, uri, expected) in cases {
-            let req = Request::builder()
-                .method(method)
-                .version(version)
-                .uri(uri)
-                .body(())
-                .unwrap();
-
+        for (a, b, c, expected) in cases {
+            let matcher = a.and(b).and(c).negate();
+            let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
@@ -818,29 +935,60 @@ mod test {
 
     #[test]
     fn test_matcher_ors_combination() {
-        let matcher = HttpMatcher::method_post()
-            .or(HttpMatcher::version(VersionMatcher::HTTP_2))
-            .or(HttpMatcher::domain("www.example.com"));
-
         let cases = [
-            ("POST", Version::HTTP_2, "www.example.com", true),
-            ("POST", Version::HTTP_2, "www.lorem.com", true),
-            ("POST", Version::HTTP_3, "www.example.com", true),
-            ("POST", Version::HTTP_3, "www.lorem.com", true),
-            ("GET", Version::HTTP_2, "www.example.com", true),
-            ("GET", Version::HTTP_2, "www.lorem.com", true),
-            ("GET", Version::HTTP_3, "www.example.com", true),
-            ("GET", Version::HTTP_3, "www.lorem.com", false),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
         ];
 
-        for (method, version, uri, expected) in cases {
-            let req = Request::builder()
-                .method(method)
-                .version(version)
-                .uri(uri)
-                .body(())
-                .unwrap();
-
+        for (a, b, c, expected) in cases {
+            let matcher = a.or(b).or(c);
+            let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
@@ -853,30 +1001,60 @@ mod test {
 
     #[test]
     fn test_matcher_negation_with_ors_combination() {
-        let matcher = HttpMatcher::method_post()
-            .negate()
-            .or(HttpMatcher::version(VersionMatcher::HTTP_2))
-            .or(HttpMatcher::domain("www.example.com"));
-
         let cases = [
-            ("POST", Version::HTTP_2, "www.example.com", true),
-            ("POST", Version::HTTP_2, "www.lorem.com", true),
-            ("POST", Version::HTTP_3, "www.example.com", true),
-            ("POST", Version::HTTP_3, "www.lorem.com", false),
-            ("GET", Version::HTTP_2, "www.example.com", true),
-            ("GET", Version::HTTP_2, "www.lorem.com", true),
-            ("GET", Version::HTTP_3, "www.example.com", true),
-            ("GET", Version::HTTP_3, "www.lorem.com", true),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                true,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
         ];
 
-        for (method, version, uri, expected) in cases {
-            let req = Request::builder()
-                .method(method)
-                .version(version)
-                .uri(uri)
-                .body(())
-                .unwrap();
-
+        for (a, b, c, expected) in cases {
+            let matcher = a.negate().or(b).or(c);
+            let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
@@ -889,30 +1067,60 @@ mod test {
 
     #[test]
     fn test_matcher_ors_combination_negated() {
-        let matcher = HttpMatcher::method_post()
-            .or(HttpMatcher::version(VersionMatcher::HTTP_2))
-            .or(HttpMatcher::domain("www.example.com"))
-            .negate();
-
         let cases = [
-            ("POST", Version::HTTP_2, "www.example.com", false),
-            ("POST", Version::HTTP_2, "www.lorem.com", false),
-            ("POST", Version::HTTP_3, "www.example.com", false),
-            ("POST", Version::HTTP_3, "www.lorem.com", false),
-            ("GET", Version::HTTP_2, "www.example.com", false),
-            ("GET", Version::HTTP_2, "www.lorem.com", false),
-            ("GET", Version::HTTP_3, "www.example.com", false),
-            ("GET", Version::HTTP_3, "www.lorem.com", true),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(TrueMatcher),
+                false,
+            ),
+            (
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                HttpMatcher::custom(FalseMatcher),
+                true,
+            ),
         ];
 
-        for (method, version, uri, expected) in cases {
-            let req = Request::builder()
-                .method(method)
-                .version(version)
-                .uri(uri)
-                .body(())
-                .unwrap();
-
+        for (a, b, c, expected) in cases {
+            let matcher = a.or(b).or(c).negate();
+            let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
