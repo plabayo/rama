@@ -703,7 +703,8 @@ where
 
 #[cfg(test)]
 mod test {
-    use http::{HeaderName, HeaderValue, Version};
+    use http::{HeaderName, HeaderValue};
+    use itertools::Itertools;
 
     use crate::service::Matcher;
 
@@ -722,24 +723,15 @@ mod test {
         }
     }
 
-    const TRUTH_TABLE: [(bool, bool, bool); 8] = [
-        (true, true, true),
-        (true, true, false),
-        (true, false, true),
-        (true, false, false),
-        (false, true, true),
-        (false, true, false),
-        (false, false, true),
-        (false, false, false),
-    ];
-
     #[test]
     fn test_matcher_ands_combination() {
-        for (a, b, c) in TRUTH_TABLE {
-            let matcher = HttpMatcher::custom(BooleanMatcher(a))
-                .and(HttpMatcher::custom(BooleanMatcher(b)))
-                .and(HttpMatcher::custom(BooleanMatcher(c)));
-            let expected = a && b && c;
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = v[0] && v[1] && v[2];
+            let a = HttpMatcher::custom(BooleanMatcher(v[0]));
+            let b = HttpMatcher::custom(BooleanMatcher(v[1]));
+            let c = HttpMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.and(b).and(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
@@ -753,12 +745,13 @@ mod test {
 
     #[test]
     fn test_matcher_negation_with_ands_combination() {
-        for (a, b, c) in TRUTH_TABLE {
-            let matcher = HttpMatcher::custom(BooleanMatcher(a))
-                .negate()
-                .and(HttpMatcher::custom(BooleanMatcher(b)))
-                .and(HttpMatcher::custom(BooleanMatcher(c)));
-            let expected = !a && b && c;
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = !v[0] && v[1] && v[2];
+            let a = HttpMatcher::custom(BooleanMatcher(v[0]));
+            let b = HttpMatcher::custom(BooleanMatcher(v[1]));
+            let c = HttpMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.negate().and(b).and(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
@@ -772,12 +765,13 @@ mod test {
 
     #[test]
     fn test_matcher_ands_combination_negated() {
-        for (a, b, c) in TRUTH_TABLE {
-            let matcher = HttpMatcher::custom(BooleanMatcher(a))
-                .and(HttpMatcher::custom(BooleanMatcher(b)))
-                .and(HttpMatcher::custom(BooleanMatcher(c)))
-                .negate();
-            let expected = !(a && b && c);
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = !(v[0] && v[1] && v[2]);
+            let a = HttpMatcher::custom(BooleanMatcher(v[0]));
+            let b = HttpMatcher::custom(BooleanMatcher(v[1]));
+            let c = HttpMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.and(b).and(c).negate();
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
@@ -791,11 +785,13 @@ mod test {
 
     #[test]
     fn test_matcher_ors_combination() {
-        for (a, b, c) in TRUTH_TABLE {
-            let matcher = HttpMatcher::custom(BooleanMatcher(a))
-                .or(HttpMatcher::custom(BooleanMatcher(b)))
-                .or(HttpMatcher::custom(BooleanMatcher(c)));
-            let expected = a || b || c;
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = v[0] || v[1] || v[2];
+            let a = HttpMatcher::custom(BooleanMatcher(v[0]));
+            let b = HttpMatcher::custom(BooleanMatcher(v[1]));
+            let c = HttpMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.or(b).or(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
@@ -809,12 +805,13 @@ mod test {
 
     #[test]
     fn test_matcher_negation_with_ors_combination() {
-        for (a, b, c) in TRUTH_TABLE {
-            let matcher = HttpMatcher::custom(BooleanMatcher(a))
-                .negate()
-                .or(HttpMatcher::custom(BooleanMatcher(b)))
-                .or(HttpMatcher::custom(BooleanMatcher(c)));
-            let expected = !a || b || c;
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = !v[0] || v[1] || v[2];
+            let a = HttpMatcher::custom(BooleanMatcher(v[0]));
+            let b = HttpMatcher::custom(BooleanMatcher(v[1]));
+            let c = HttpMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.negate().or(b).or(c);
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
@@ -828,12 +825,13 @@ mod test {
 
     #[test]
     fn test_matcher_ors_combination_negated() {
-        for (a, b, c) in TRUTH_TABLE {
-            let matcher = HttpMatcher::custom(BooleanMatcher(a))
-                .or(HttpMatcher::custom(BooleanMatcher(b)))
-                .or(HttpMatcher::custom(BooleanMatcher(c)))
-                .negate();
-            let expected = !(a || b || c);
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = !(v[0] || v[1] || v[2]);
+            let a = HttpMatcher::custom(BooleanMatcher(v[0]));
+            let b = HttpMatcher::custom(BooleanMatcher(v[1]));
+            let c = HttpMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.or(b).or(c).negate();
             let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
@@ -847,42 +845,16 @@ mod test {
 
     #[test]
     fn test_matcher_or_and_or_and_negation() {
-        let matcher = (HttpMatcher::method_post().or(HttpMatcher::method_get()))
-            .and(
-                HttpMatcher::version(VersionMatcher::HTTP_2)
-                    .or(HttpMatcher::version(VersionMatcher::HTTP_3)),
-            )
-            .and(HttpMatcher::domain("www.example.com").negate());
+        for v in [true, false].into_iter().permutations(5) {
+            let expected = (v[0] || v[1]) && (v[2] || v[3]) && !v[4];
+            let a = HttpMatcher::custom(BooleanMatcher(v[0]));
+            let b = HttpMatcher::custom(BooleanMatcher(v[1]));
+            let c = HttpMatcher::custom(BooleanMatcher(v[2]));
+            let d = HttpMatcher::custom(BooleanMatcher(v[3]));
+            let e = HttpMatcher::custom(BooleanMatcher(v[4]));
 
-        let cases = [
-            ("POST", Version::HTTP_2, "www.lorem.com", true),
-            ("POST", Version::HTTP_2, "www.example.com", false),
-            ("POST", Version::HTTP_3, "www.lorem.com", true),
-            ("POST", Version::HTTP_3, "www.example.com", false),
-            ("POST", Version::HTTP_09, "www.lorem.com", false),
-            ("POST", Version::HTTP_09, "www.example.com", false),
-            ("GET", Version::HTTP_2, "www.lorem.com", true),
-            ("GET", Version::HTTP_2, "www.example.com", false),
-            ("GET", Version::HTTP_3, "www.lorem.com", true),
-            ("GET", Version::HTTP_3, "www.example.com", false),
-            ("GET", Version::HTTP_09, "www.lorem.com", false),
-            ("GET", Version::HTTP_09, "www.example.com", false),
-            ("PUT", Version::HTTP_2, "www.lorem.com", false),
-            ("PUT", Version::HTTP_2, "www.example.com", false),
-            ("PUT", Version::HTTP_3, "www.lorem.com", false),
-            ("PUT", Version::HTTP_3, "www.example.com", false),
-            ("PUT", Version::HTTP_09, "www.lorem.com", false),
-            ("PUT", Version::HTTP_09, "www.example.com", false),
-        ];
-
-        for (method, version, uri, expected) in cases {
-            let req = Request::builder()
-                .method(method)
-                .version(version)
-                .uri(uri)
-                .body(())
-                .unwrap();
-
+            let matcher = (a.or(b)).and(c.or(d)).and(e.negate());
+            let req = Request::builder().body(()).unwrap();
             assert_eq!(
                 matcher.matches(None, &Context::default(), &req),
                 expected,
