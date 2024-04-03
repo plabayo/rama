@@ -5,7 +5,7 @@
 //! [`HttpServer`]: crate::http::server::HttpServer
 //! [`Executor`]: crate::rt::Executor
 //!
-//! This example will create a server that listens on `127.0.0.1:8080.
+//! This example will create a server that listens on `127.0.0.1:40006.
 //!
 //! # Run the example
 //!
@@ -15,11 +15,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:8080`. You can use `curl` to check if the server is ready:
+//! The server will start and listen on `:40006`. You can use `curl` to check if the server is ready:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:8080
-//! curl -v http://127.0.0.1:8080/metrics
+//! curl -v http://127.0.0.1:40006
+//! curl -v http://127.0.0.1:40006/metrics
 //! ```
 //!
 //! With the seecoresponse you should see a response with `HTTP/1.1 200` and the `
@@ -56,7 +56,7 @@ async fn main() {
     HttpServer::auto(exec)
         .listen_with_state(
             Metrics::default(),
-            "127.0.0.1:8080",
+            "127.0.0.1:40006",
             // by default the k8s health service is always ready and alive,
             // optionally you can define your own conditional closures to define
             // more accurate health checks
