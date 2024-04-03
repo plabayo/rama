@@ -17,7 +17,7 @@
 //! The server will start and listen on `:8080`. You can use `curl` to check if the server is ready:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:8080/k8s/ready
+//! curl -v http://127.0.0.1:40003/k8s/ready
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 503 Service Unavailable` and an empty body.
@@ -35,7 +35,7 @@ async fn main() {
     let startup_time = std::time::Instant::now();
     HttpServer::auto(exec)
         .listen(
-            "127.0.0.1:8080",
+            "127.0.0.1:40003",
             // by default the k8s health service is always ready and alive,
             // optionally you can define your own conditional closures to define
             // more accurate health checks

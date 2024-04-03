@@ -126,7 +126,7 @@ async fn main() {
         let alive = Arc::new(AtomicBool::new(true));
 
         TcpListener::build_with_state(AppState::default())
-            .bind("127.0.0.1:40002")
+            .bind("127.0.0.1:40000")
             .await
             .expect("bind TCP Listener")
             .serve_graceful(

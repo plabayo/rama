@@ -29,7 +29,7 @@ async fn main() {
     let exec = Executor::default();
     HttpServer::auto(exec)
         .listen(
-            "127.0.0.1:40001" ,
+            "127.0.0.1:40005" ,
             service_fn(|req: Request| async move {
                 Ok(Json(json!({
                     "method": req.method().as_str(),
