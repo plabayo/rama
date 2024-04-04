@@ -266,6 +266,52 @@ mod test {
     }
 
     #[tokio::test]
+    async fn test_form_post_form_urlencoded_missing_data_fail() {
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct Input {
+            name: String,
+            age: u8,
+        }
+
+        let service = WebService::default().post("/", |Form(_): Form<Input>| async move {
+            panic!("should not reach here");
+        });
+
+        let req = http::Request::builder()
+            .uri("/")
+            .method(http::Method::POST)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(r#"age=29"#.into())
+            .unwrap();
+        let resp = service.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn test_form_get_form_urlencoded_fail() {
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct Input {
+            name: String,
+            age: u8,
+        }
+
+        let service = WebService::default().get("/", |Form(_): Form<Input>| async move {
+            panic!("should not reach here");
+        });
+
+        let req = http::Request::builder()
+            .uri("/")
+            .method(http::Method::GET)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .body(r#"name=Devan&age=29"#.into())
+            .unwrap();
+        let resp = service.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
     async fn test_form_get() {
         #[derive(Debug, serde::Deserialize)]
         struct Input {
@@ -285,5 +331,27 @@ mod test {
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_form_get_fail_missing_data() {
+        #[derive(Debug, serde::Deserialize)]
+        #[allow(dead_code)]
+        struct Input {
+            name: String,
+            age: u8,
+        }
+
+        let service = WebService::default().get("/", |Form(_): Form<Input>| async move {
+            panic!("should not reach here");
+        });
+
+        let req = http::Request::builder()
+            .uri("/?name=Devan")
+            .method(http::Method::GET)
+            .body(http::Body::empty())
+            .unwrap();
+        let resp = service.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     }
 }
