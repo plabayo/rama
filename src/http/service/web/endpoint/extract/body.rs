@@ -131,6 +131,29 @@ where
     }
 }
 
+pub use crate::http::response::Form;
+
+impl<S, T> FromRequest<S> for Form<T>
+where
+    S: Send + Sync + 'static,
+    T: serde::de::DeserializeOwned + Send + Sync + 'static,
+{
+    type Rejection = StatusCode;
+
+    async fn from_request(_ctx: Context<S>, req: http::Request) -> Result<Self, Self::Rejection> {
+        let body = req.into_body();
+        match body.collect().await {
+            Ok(c) => {
+                let b = c.to_bytes();
+                let value =
+                    serde_urlencoded::from_bytes(&b).map_err(|_| StatusCode::BAD_REQUEST)?;
+                Ok(Form(value))
+            }
+            Err(_) => Err(StatusCode::BAD_REQUEST),
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
@@ -198,6 +221,27 @@ mod test {
         let req = http::Request::builder()
             .method(http::Method::GET)
             .body(r#"{"name": "glen", "age": 42}"#.into())
+            .unwrap();
+        let resp = service.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_form() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Input {
+            name: String,
+            age: u8,
+        }
+
+        let service = WebService::default().get("/", |Form(body): Form<Input>| async move {
+            assert_eq!(body.name, "Devan");
+            assert_eq!(body.age, 29);
+        });
+
+        let req = http::Request::builder()
+            .method(http::Method::GET)
+            .body(r#"name=Devan&age=29"#.into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);

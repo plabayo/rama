@@ -34,7 +34,7 @@ pub use typed_header::TypedHeader;
 
 mod body;
 #[doc(inline)]
-pub use body::{Body, Bytes, Json, Text};
+pub use body::{Body, Bytes, Form, Json, Text};
 
 mod private {
     #[derive(Debug, Clone, Copy)]
