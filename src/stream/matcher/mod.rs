@@ -30,19 +30,36 @@ use crate::{
     http::Request,
     service::{context::Extensions, matcher::IteratorMatcherExt, Context},
 };
+use std::{fmt, sync::Arc};
 
-#[derive(Debug, Clone)]
 /// A matcher to match on a [`Socket`].
 ///
 /// [`Socket`]: crate::stream::Socket
-pub struct SocketMatcher {
-    kind: SocketMatcherKind,
+pub struct SocketMatcher<State, Socket> {
+    kind: SocketMatcherKind<State, Socket>,
     negate: bool,
 }
 
-#[derive(Debug, Clone)]
+impl<State, Socket> Clone for SocketMatcher<State, Socket> {
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            negate: self.negate,
+        }
+    }
+}
+
+impl<State, Socket> fmt::Debug for SocketMatcher<State, Socket> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SocketMatcher")
+            .field("kind", &self.kind)
+            .field("negate", &self.negate)
+            .finish()
+    }
+}
+
 /// The different kinds of socket matchers.
-enum SocketMatcherKind {
+enum SocketMatcherKind<State, Socket> {
     /// [`SocketAddressMatcher`], a matcher that matches on the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
@@ -62,12 +79,44 @@ enum SocketMatcherKind {
     /// [`SocketAddr`]: std::net::SocketAddr
     IpNet(IpNetMatcher),
     /// zero or more matchers that all need to match in order for the matcher to return `true`.
-    All(Vec<SocketMatcherKind>),
+    All(Vec<SocketMatcherKind<State, Socket>>),
     /// `true` if no matchers are defined, or any of the defined matcher match.
-    Any(Vec<SocketMatcherKind>),
+    Any(Vec<SocketMatcherKind<State, Socket>>),
+    /// A custom matcher that implements [`crate::service::Matcher`].
+    Custom(Arc<dyn crate::service::Matcher<State, Socket>>),
 }
 
-impl SocketMatcher {
+impl<State, Socket> Clone for SocketMatcherKind<State, Socket> {
+    fn clone(&self) -> Self {
+        match self {
+            Self::SocketAddress(matcher) => Self::SocketAddress(matcher.clone()),
+            Self::Loopback(matcher) => Self::Loopback(matcher.clone()),
+            Self::PrivateIpNet(matcher) => Self::PrivateIpNet(matcher.clone()),
+            Self::Port(matcher) => Self::Port(matcher.clone()),
+            Self::IpNet(matcher) => Self::IpNet(matcher.clone()),
+            Self::All(matcher) => Self::All(matcher.clone()),
+            Self::Any(matcher) => Self::Any(matcher.clone()),
+            Self::Custom(matcher) => Self::Custom(matcher.clone()),
+        }
+    }
+}
+
+impl<State, Socket> fmt::Debug for SocketMatcherKind<State, Socket> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SocketAddress(matcher) => f.debug_tuple("SocketAddress").field(matcher).finish(),
+            Self::Loopback(matcher) => f.debug_tuple("Loopback").field(matcher).finish(),
+            Self::PrivateIpNet(matcher) => f.debug_tuple("PrivateIpNet").field(matcher).finish(),
+            Self::Port(matcher) => f.debug_tuple("Port").field(matcher).finish(),
+            Self::IpNet(matcher) => f.debug_tuple("IpNet").field(matcher).finish(),
+            Self::All(matcher) => f.debug_tuple("All").field(matcher).finish(),
+            Self::Any(matcher) => f.debug_tuple("Any").field(matcher).finish(),
+            Self::Custom(_) => f.debug_tuple("Custom").finish(),
+        }
+    }
+}
+
+impl<State, Socket> SocketMatcher<State, Socket> {
     /// Create a new socket address matcher to match on a socket address.
     ///
     /// See [`SocketAddressMatcher::new`] for more information.
@@ -556,7 +605,12 @@ impl SocketMatcher {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for SocketMatcherKind {
+impl<State, Body> crate::service::Matcher<State, Request<Body>>
+    for SocketMatcherKind<State, Request<Body>>
+where
+    State: 'static,
+    Body: 'static,
+{
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
@@ -571,11 +625,17 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for SocketMatche
             SocketMatcherKind::All(matchers) => matchers.iter().matches_and(ext, ctx, req),
             SocketMatcherKind::Any(matchers) => matchers.iter().matches_or(ext, ctx, req),
             SocketMatcherKind::Port(matcher) => matcher.matches(ext, ctx, req),
+            SocketMatcherKind::Custom(matcher) => matcher.matches(ext, ctx, req),
         }
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for SocketMatcher {
+impl<State, Body> crate::service::Matcher<State, Request<Body>>
+    for SocketMatcher<State, Request<Body>>
+where
+    State: 'static,
+    Body: 'static,
+{
     fn matches(
         &self,
         ext: Option<&mut Extensions>,
@@ -591,9 +651,10 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for SocketMatche
     }
 }
 
-impl<State, Socket> crate::service::Matcher<State, Socket> for SocketMatcherKind
+impl<State, Socket> crate::service::Matcher<State, Socket> for SocketMatcherKind<State, Socket>
 where
     Socket: crate::stream::Socket,
+    State: 'static,
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
         match self {
@@ -604,13 +665,15 @@ where
             SocketMatcherKind::Port(matcher) => matcher.matches(ext, ctx, stream),
             SocketMatcherKind::All(matchers) => matchers.iter().matches_and(ext, ctx, stream),
             SocketMatcherKind::Any(matchers) => matchers.iter().matches_or(ext, ctx, stream),
+            SocketMatcherKind::Custom(matcher) => matcher.matches(ext, ctx, stream),
         }
     }
 }
 
-impl<State, Socket> crate::service::Matcher<State, Socket> for SocketMatcher
+impl<State, Socket> crate::service::Matcher<State, Socket> for SocketMatcher<State, Socket>
 where
     Socket: crate::stream::Socket,
+    State: 'static,
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
         let result = self.kind.matches(ext, ctx, stream);

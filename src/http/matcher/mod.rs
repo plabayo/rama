@@ -81,7 +81,7 @@ pub enum HttpMatcherKind<State, Body> {
     /// [`SocketMatcher`], a matcher that matches on the [`SocketAddr`] of the peer.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
-    Socket(SocketMatcher),
+    Socket(SocketMatcher<State, Request<Body>>),
     /// A custom matcher that implements [`crate::service::Matcher`].
     Custom(Arc<dyn crate::service::Matcher<State, Request<Body>>>),
 }
@@ -524,7 +524,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     }
 
     /// Create a [`SocketMatcher`] matcher.
-    pub fn socket(socket: SocketMatcher) -> Self {
+    pub fn socket(socket: SocketMatcher<State, Request<Body>>) -> Self {
         Self {
             kind: HttpMatcherKind::Socket(socket),
             negate: false,
@@ -534,14 +534,14 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// Add a [`SocketMatcher`] matcher to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`SocketMatcher`] for more information.
-    pub fn and_socket(self, socket: SocketMatcher) -> Self {
+    pub fn and_socket(self, socket: SocketMatcher<State, Request<Body>>) -> Self {
         self.and(Self::socket(socket))
     }
 
     /// Create a [`SocketMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`SocketMatcher`] for more information.
-    pub fn or_socket(self, socket: SocketMatcher) -> Self {
+    pub fn or_socket(self, socket: SocketMatcher<State, Request<Body>>) -> Self {
         self.or(Self::socket(socket))
     }
 
