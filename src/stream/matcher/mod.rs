@@ -364,6 +364,39 @@ impl<State, Socket> SocketMatcher<State, Socket> {
         self.or(Self::optional_private_ip_net())
     }
 
+    /// Create a matcher that matches according to a custom predicate.
+    ///
+    /// See [`crate::service::Matcher`] for more information.
+    pub fn custom<M>(matcher: M) -> Self
+    where
+        M: crate::service::Matcher<State, Socket>,
+    {
+        Self {
+            kind: SocketMatcherKind::Custom(Arc::new(matcher)),
+            negate: false,
+        }
+    }
+
+    /// Add a custom matcher to match on top of the existing set of [`SocketMatcher`] matchers.
+    ///
+    /// See [`crate::service::Matcher`] for more information.
+    pub fn and_custom<M>(self, matcher: M) -> Self
+    where
+        M: crate::service::Matcher<State, Socket>,
+    {
+        self.and(Self::custom(matcher))
+    }
+
+    /// Create a custom matcher to match as an alternative to the existing set of [`SocketMatcher`] matchers.
+    ///
+    /// See [`crate::service::Matcher`] for more information.
+    pub fn or_custom<M>(self, matcher: M) -> Self
+    where
+        M: crate::service::Matcher<State, Socket>,
+    {
+        self.or(Self::custom(matcher))
+    }
+
     /// Add a [`SocketMatcher`] to match on top of the existing set of [`SocketMatcher`] matchers.
     pub fn and(mut self, matcher: SocketMatcher<State, Socket>) -> Self {
         match (self.negate, &mut self.kind) {
