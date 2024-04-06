@@ -20,19 +20,21 @@ impl std::ops::Drop for ExampleServer {
 }
 
 pub fn run_example_server(example_name: &str) -> ExampleServer {
-    let temp = assert_fs::TempDir::new().unwrap();
-    ExampleServer(
+    let server = ExampleServer(
         escargot::CargoBuild::new()
             .arg("--all-features")
             .example(example_name)
             .manifest_path("Cargo.toml")
-            .target_dir(temp.path())
+            .target_dir("./target/")
             .run()
             .unwrap()
             .command()
             .spawn()
             .unwrap(),
-    )
+    );
+
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    server
 }
 
 pub async fn recive_as_string(request: Request<String>) -> Result<(Parts, String), BoxError> {

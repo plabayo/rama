@@ -9,9 +9,6 @@ use crate::test_server::recive_as_string;
 async fn test_http_key_value_store() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_key_value_store");
 
-    // because the example couldn't recive request yet.
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
     let (key, value) = ("key3", "value3");
     test_post(key, value).await?;
     test_get(key, value).await?;
