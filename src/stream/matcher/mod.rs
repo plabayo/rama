@@ -513,3 +513,167 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use itertools::Itertools;
+
+    use crate::service::Matcher;
+
+    use super::*;
+
+    struct BooleanMatcher(bool);
+
+    impl Matcher<(), Request<()>> for BooleanMatcher {
+        fn matches(
+            &self,
+            _ext: Option<&mut Extensions>,
+            _ctx: &Context<()>,
+            _req: &Request<()>,
+        ) -> bool {
+            self.0
+        }
+    }
+
+    #[test]
+    fn test_matcher_ands_combination() {
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = v[0] && v[1] && v[2];
+            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
+            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
+            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.and(b).and(c);
+            let req = Request::builder().body(()).unwrap();
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
+    }
+
+    #[test]
+    fn test_matcher_negation_with_ands_combination() {
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = !v[0] && v[1] && v[2];
+            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
+            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
+            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.negate().and(b).and(c);
+            let req = Request::builder().body(()).unwrap();
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
+    }
+
+    #[test]
+    fn test_matcher_ands_combination_negated() {
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = !(v[0] && v[1] && v[2]);
+            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
+            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
+            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.and(b).and(c).negate();
+            let req = Request::builder().body(()).unwrap();
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
+    }
+
+    #[test]
+    fn test_matcher_ors_combination() {
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = v[0] || v[1] || v[2];
+            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
+            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
+            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.or(b).or(c);
+            let req = Request::builder().body(()).unwrap();
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
+    }
+
+    #[test]
+    fn test_matcher_negation_with_ors_combination() {
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = !v[0] || v[1] || v[2];
+            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
+            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
+            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.negate().or(b).or(c);
+            let req = Request::builder().body(()).unwrap();
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
+    }
+
+    #[test]
+    fn test_matcher_ors_combination_negated() {
+        for v in [true, false].into_iter().permutations(3) {
+            let expected = !(v[0] || v[1] || v[2]);
+            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
+            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
+            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
+
+            let matcher = a.or(b).or(c).negate();
+            let req = Request::builder().body(()).unwrap();
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
+    }
+
+    #[test]
+    fn test_matcher_or_and_or_and_negation() {
+        for v in [true, false].into_iter().permutations(5) {
+            let expected = (v[0] || v[1]) && (v[2] || v[3]) && !v[4];
+            let a = SocketMatcher::custom(BooleanMatcher(v[0]));
+            let b = SocketMatcher::custom(BooleanMatcher(v[1]));
+            let c = SocketMatcher::custom(BooleanMatcher(v[2]));
+            let d = SocketMatcher::custom(BooleanMatcher(v[3]));
+            let e = SocketMatcher::custom(BooleanMatcher(v[4]));
+
+            let matcher = (a.or(b)).and(c.or(d)).and(e.negate());
+            let req = Request::builder().body(()).unwrap();
+            assert_eq!(
+                matcher.matches(None, &Context::default(), &req),
+                expected,
+                "({:#?}).matches({:#?})",
+                matcher,
+                req
+            );
+        }
+    }
+}
