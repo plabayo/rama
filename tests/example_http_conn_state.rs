@@ -15,6 +15,8 @@ async fn test_http_conn_state() -> Result<(), BoxError> {
         .unwrap();
 
     let (_, res_str) = recive_as_string(get_request).await?;
+    // TODO: Investigate why this counter is not consistent 1
+    // assert!(res_str.contains("Connection 1"));
     assert!(res_str.contains("Connection "));
 
     Ok(())
