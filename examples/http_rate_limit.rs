@@ -11,11 +11,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:8080`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:40007`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:8080
-//! curl -v http://127.0.0.1:8080/limit/slow
+//! curl -v http://127.0.0.1:40007
+//! curl -v http://127.0.0.1:40007/limit/slow
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the method and path of the request.
@@ -23,13 +23,13 @@
 //! You can trigger a Rate Limit by opening 3 concurrent requests to `/limit/slow`:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:8080/limit/slow
+//! curl -v http://127.0.0.1:40007/limit/slow
 //! ```
 //!
 //! Or easier by running:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:8080/api/slow
+//! curl -v http://127.0.0.1:40007/api/slow
 //! ```
 //!
 //! Consult your ip address to reach your server from another machine connected to the same network.
@@ -61,7 +61,7 @@ async fn main() {
 
     HttpServer::auto(exec)
         .listen(
-            "0.0.0.0:8080",
+            "0.0.0.0:40007",
             ServiceBuilder::new()
                 .map_result(|result: Result<Response, BoxError>| match result {
                     Ok(response) => Ok(response),
