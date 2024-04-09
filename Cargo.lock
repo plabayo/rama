@@ -1782,7 +1782,8 @@ checksum = "830b7e5d4d90034032940e4ace0d9a9a057e7a45cd94e6c007832e39edb82f6d"
 [[package]]
 name = "venndb"
 version = "0.1.1"
-source = "git+https://github.com/plabayo/venndb?rev=72cdd900c4b25545af14478272a0121181df05b3#72cdd900c4b25545af14478272a0121181df05b3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4c3881df2472d61197f73816b62e62e2a9b98d94d2777294b979951499fbf150"
 dependencies = [
  "bitvec",
  "hashbrown",
@@ -1793,7 +1794,8 @@ dependencies = [
 [[package]]
 name = "venndb-macros"
 version = "0.1.1"
-source = "git+https://github.com/plabayo/venndb?rev=72cdd900c4b25545af14478272a0121181df05b3#72cdd900c4b25545af14478272a0121181df05b3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8510feb737c98fbbcae0ce04f7bd13f9181aadecd9b86ac0ab50aa2a87eda48e"
 dependencies = [
  "proc-macro2",
  "quote",
