@@ -33,7 +33,7 @@ use super::ProxyFilter;
 /// ```rust
 /// use rama::proxy::UsernameConfig;
 ///
-/// let username = String::from("john-cc-us-dc");
+/// let username = String::from("john-cc-us-dc-!residential");
 /// let username_cfg: UsernameConfig = username.parse().unwrap();
 ///
 /// // properties can be referenced
@@ -42,7 +42,7 @@ use super::ProxyFilter;
 /// assert_eq!(username_cfg.proxy_filter().unwrap().country.as_deref(), Some("us"));
 /// assert!(username_cfg.proxy_filter().unwrap().pool_id.is_none());
 /// assert_eq!(username_cfg.proxy_filter().unwrap().datacenter, Some(true));
-/// assert!(username_cfg.proxy_filter().unwrap().residential.is_none());
+/// assert_eq!(username_cfg.proxy_filter().unwrap().residential, Some(false));
 /// assert!(username_cfg.proxy_filter().unwrap().mobile.is_none());
 ///
 /// // the parsed config can also be formatted into a username string once again
@@ -58,7 +58,7 @@ use super::ProxyFilter;
 /// assert_eq!(filter.country.as_deref(), Some("us"));
 /// assert!(filter.pool_id.is_none());
 /// assert_eq!(filter.datacenter, Some(true));
-/// assert!(filter.residential.is_none());
+/// assert_eq!(filter.residential, Some(false));
 /// assert!(filter.mobile.is_none());
 /// ```
 pub struct UsernameConfig<const C: char = '-'> {
@@ -95,9 +95,6 @@ pub fn parse_username_config(
         return Err(UsernameConfigError::MissingUsername);
     }
 
-    // TODO: support negated keys, e.g. 'john-!cc-us'
-    // as otherwise it is for example impossible to allow DC proxies without it being an ISP one
-
     // iterate per two:
     let mut ctx: Option<&str> = None;
     for item in username_it {
@@ -115,13 +112,20 @@ pub fn parse_username_config(
                 }
             }
             None => {
+                // allow bool-keys to be negated
+                let (key, bval) = if let Some(key) = item.strip_prefix('!') {
+                    (key, false)
+                } else {
+                    (item, true)
+                };
+
                 // check for key-only flags first, and otherwise consider it as a key, requiring a matching value
-                if item.eq_ignore_ascii_case("dc") || item.eq_ignore_ascii_case("datacenter") {
-                    proxy_filter.datacenter = Some(true);
-                } else if item.eq_ignore_ascii_case("mobile") {
-                    proxy_filter.mobile = Some(true);
-                } else if item.eq_ignore_ascii_case("residential") {
-                    proxy_filter.residential = Some(true);
+                if key.eq_ignore_ascii_case("dc") || key.eq_ignore_ascii_case("datacenter") {
+                    proxy_filter.datacenter = Some(bval);
+                } else if key.eq_ignore_ascii_case("mobile") {
+                    proxy_filter.mobile = Some(bval);
+                } else if key.eq_ignore_ascii_case("residential") {
+                    proxy_filter.residential = Some(bval);
                 } else {
                     ctx = Some(item);
                 }
@@ -192,14 +196,20 @@ impl<const C: char> fmt::Display for UsernameConfig<C> {
             if let Some(pool_id) = &filter.pool_id {
                 write!(f, "{0}pool{0}{1}", C, pool_id)?;
             }
-            if filter.datacenter == Some(true) {
-                write!(f, "{0}dc", C)?;
+            match filter.datacenter {
+                Some(true) => write!(f, "{0}dc", C)?,
+                Some(false) => write!(f, "{0}!dc", C)?,
+                None => {}
             }
-            if filter.residential == Some(true) {
-                write!(f, "{0}residential", C)?;
+            match filter.residential {
+                Some(true) => write!(f, "{0}residential", C)?,
+                Some(false) => write!(f, "{0}!residential", C)?,
+                None => {}
             }
-            if filter.mobile == Some(true) {
-                write!(f, "{0}mobile", C)?;
+            match filter.mobile {
+                Some(true) => write!(f, "{0}mobile", C)?,
+                Some(false) => write!(f, "{0}!mobile", C)?,
+                None => {}
             }
         }
         Ok(())
@@ -262,6 +272,20 @@ mod test {
                 },
             ),
             (
+                "john-!dc",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: None,
+                        country: None,
+                        pool_id: None,
+                        datacenter: Some(false),
+                        residential: None,
+                        mobile: None,
+                    }),
+                },
+            ),
+            (
                 "john-cc-us-dc",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
@@ -318,6 +342,20 @@ mod test {
                 },
             ),
             (
+                "john-cc-us-dc-pool-1-residential-!mobile",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: None,
+                        country: Some(String::from("us")),
+                        pool_id: Some(String::from("1")),
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(false),
+                    }),
+                },
+            ),
+            (
                 "john-cc-us-dc-pool-1-residential-mobile-id-1",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
@@ -346,6 +384,20 @@ mod test {
                 },
             ),
             (
+                "john-cc-us-!dc-pool-1-residential-mobile-id-1-cc-uk",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        country: Some(String::from("uk")),
+                        pool_id: Some(String::from("1")),
+                        datacenter: Some(false),
+                        residential: Some(true),
+                        mobile: Some(true),
+                    }),
+                },
+            ),
+            (
                 "john-cc-us-dc-pool-1-residential-mobile-id-1-cc-uk-pool-2",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
@@ -355,6 +407,20 @@ mod test {
                         pool_id: Some(String::from("2")),
                         datacenter: Some(true),
                         residential: Some(true),
+                        mobile: Some(true),
+                    }),
+                },
+            ),
+            (
+                "john-cc-us-dc-pool-1-!residential-mobile-id-1-cc-uk-pool-2",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        country: Some(String::from("uk")),
+                        pool_id: Some(String::from("2")),
+                        datacenter: Some(true),
+                        residential: Some(false),
                         mobile: Some(true),
                     }),
                 },
@@ -398,6 +464,20 @@ mod test {
                         datacenter: Some(true),
                         residential: Some(true),
                         mobile: Some(true),
+                    }),
+                },
+            ),
+            (
+                "john-cc-us-dc-pool-1-residential-mobile-id-1-cc-uk-pool-2-!dc-!residential-!mobile",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        country: Some(String::from("uk")),
+                        pool_id: Some(String::from("2")),
+                        datacenter: Some(false),
+                        residential: Some(false),
+                        mobile: Some(false),
                     }),
                 },
             ),
