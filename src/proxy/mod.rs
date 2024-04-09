@@ -58,55 +58,104 @@ pub struct ProxyFilter {
     pub pool_id: Option<String>,
 
     /// Set explicitly to `true` to select a datacenter proxy.
-    pub datacenter: bool,
+    pub datacenter: Option<bool>,
 
     /// Set explicitly to `true` to select a residential proxy.
-    pub residential: bool,
+    pub residential: Option<bool>,
 
     /// Set explicitly to `true` to select a mobile proxy.
-    pub mobile: bool,
+    pub mobile: Option<bool>,
 }
 
-#[derive(Debug, Clone)]
-/// The selected proxy to use to connect to the proxy.
-pub struct Proxy {
-    /// The transport of the proxy to use to connect to the proxy.
-    ///
-    /// See [`ProxyTransport`] for more information.
-    pub transport: ProxyTransport,
+mod default_proxy {
+    use super::*;
+    use venndb::VennDB;
 
-    /// The protocol of the proxy to use to connect to the proxy.
-    ///
-    /// See [`ProxyProtocol`] for more information.
-    pub protocol: ProxyProtocol,
+    #[derive(Debug, Clone, VennDB)]
+    /// The selected proxy to use to connect to the proxy.
+    pub struct Proxy {
+        #[venndb(key)]
+        /// Unique identifier of the proxy.
+        pub id: String,
 
-    /// The address of the proxy to use to connect to the proxy,
-    /// containing the port and the host.
-    pub address: String,
+        /// True if the proxy supports TCP connections.
+        pub tcp: bool,
 
-    /// The optional credentials to use to authenticate with the proxy.
-    ///
-    /// See [`ProxyCredentials`] for more information.
-    pub credentials: Option<ProxyCredentials>,
+        /// True if the proxy supports UDP connections.
+        pub udp: bool,
+
+        /// http-proxy enabled
+        pub http: bool,
+
+        /// socks5-proxy enabled
+        pub socks5: bool,
+
+        /// Proxy is located in a datacenter.
+        pub datacenter: bool,
+
+        /// Proxy's IP is labeled as residential.
+        pub residential: bool,
+
+        /// Proxy's IP originates from a mobile network.
+        pub mobile: bool,
+
+        /// The address of the proxy to use to connect to the proxy,
+        /// containing the port and the host.
+        pub address: String,
+
+        #[venndb(filter)]
+        /// Pool ID of the proxy.
+        ///
+        /// TODO: sanatize these?!
+        pub pool_id: String,
+
+        #[venndb(filter)]
+        /// Country of the proxy.
+        ///
+        /// TODO: sanatize these?!
+        pub country: String,
+
+        /// The optional credentials to use to authenticate with the proxy.
+        ///
+        /// See [`ProxyCredentials`] for more information.
+        pub credentials: Option<ProxyCredentials>,
+    }
+
+    impl Proxy {
+        /// Check if the proxy is a match for the given[`RequestContext`] and [`ProxyFilter`].
+        ///
+        /// TODO: add unit tests for this?!
+        pub fn is_match(&self, ctx: &RequestContext, filter: &ProxyFilter) -> bool {
+            if (ctx.http_version == Version::HTTP_3 && !self.socks5 && !self.udp)
+                || (ctx.http_version != Version::HTTP_3 && !self.tcp)
+            {
+                return false;
+            }
+
+            return filter
+                .country
+                .as_ref()
+                .map(|c| c == &self.country)
+                .unwrap_or(true)
+                && filter
+                    .pool_id
+                    .as_ref()
+                    .map(|p| p == &self.pool_id)
+                    .unwrap_or(true)
+                && filter
+                    .datacenter
+                    .map(|d| d == self.datacenter)
+                    .unwrap_or(true)
+                && filter
+                    .residential
+                    .map(|r| r == self.residential)
+                    .unwrap_or(true)
+                && filter.mobile.map(|m| m == self.mobile).unwrap_or(true);
+        }
+    }
 }
 
-#[derive(Debug, Clone)]
-/// The protocol of the proxy to use to connect to the proxy.
-pub enum ProxyProtocol {
-    /// HTTP proxy
-    Http,
-    /// Socks5 proxy
-    Socks5,
-}
-
-#[derive(Debug, Clone)]
-/// The transport of the proxy to use to connect to the proxy.
-pub enum ProxyTransport {
-    /// Use TCP to connect to the proxy
-    Tcp,
-    /// Use UDP to connect to the proxy
-    Udp,
-}
+pub use default_proxy::{Proxy, ProxyDB as MemoryProxyDB};
 
 #[derive(Debug, Clone)]
 /// The credentials to use to authenticate with the proxy.
@@ -164,4 +213,105 @@ pub trait ProxyDB: Send + Sync + 'static {
         ctx: RequestContext,
         filter: ProxyFilter,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
+}
+
+impl ProxyDB for MemoryProxyDB {
+    type Error = MemoryProxyDBError;
+
+    async fn get_proxy(
+        &self,
+        ctx: RequestContext,
+        filter: ProxyFilter,
+    ) -> Result<Proxy, Self::Error> {
+        match &filter.id {
+            Some(id) => match self.get_by_id(id) {
+                None => Err(MemoryProxyDBError::not_found()),
+                Some(proxy) => {
+                    if proxy.is_match(&ctx, &filter) {
+                        Ok(proxy.clone())
+                    } else {
+                        Err(MemoryProxyDBError::mismatch())
+                    }
+                }
+            },
+            None => {
+                let mut query = self.query();
+
+                if let Some(pool_id) = filter.pool_id {
+                    query.pool_id(pool_id);
+                }
+                if let Some(country) = filter.country {
+                    query.country(country);
+                }
+
+                if let Some(value) = filter.datacenter {
+                    query.datacenter(value);
+                }
+                if let Some(value) = filter.residential {
+                    query.residential(value);
+                }
+                if let Some(value) = filter.mobile {
+                    query.mobile(value);
+                }
+
+                if ctx.http_version == Version::HTTP_3 {
+                    query.udp(true);
+                    query.socks5(true);
+                } else {
+                    // TODO: is there ever a need to allow non-http/3
+                    // reqs to request socks5??? Probably yes,
+                    // e.g. non-http protocols, but we need to
+                    // implement that somehow then. As such... TODO
+                    query.tcp(true);
+                }
+
+                match query.execute().map(|result| result.any()).cloned() {
+                    None => Err(MemoryProxyDBError::not_found()),
+                    Some(proxy) => Ok(proxy),
+                }
+            }
+        }
+    }
+}
+
+/// The error type that can be returned by [`MemoryProxyDB`] when no proxy match could be found.
+#[derive(Debug)]
+pub struct MemoryProxyDBError {
+    kind: MemoryProxyDBErrorKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The kind of error that [`MemoryProxyDBError`] represents.
+pub enum MemoryProxyDBErrorKind {
+    /// No proxy match could be found.
+    NotFound,
+    /// A proxy looked up by key had a config that did not match the given filters/requirements.
+    Mismatch,
+}
+
+impl std::fmt::Display for MemoryProxyDBError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "No proxy match could be found")
+    }
+}
+
+impl std::error::Error for MemoryProxyDBError {}
+
+impl MemoryProxyDBError {
+    fn not_found() -> Self {
+        MemoryProxyDBError {
+            kind: MemoryProxyDBErrorKind::NotFound,
+        }
+    }
+
+    fn mismatch() -> Self {
+        MemoryProxyDBError {
+            kind: MemoryProxyDBErrorKind::Mismatch,
+        }
+    }
+
+    /// Returns the kind of error that [`MemoryProxyDBError`] represents.
+    pub fn kind(&self) -> MemoryProxyDBErrorKind {
+        self.kind
+    }
 }

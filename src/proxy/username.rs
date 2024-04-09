@@ -41,9 +41,9 @@ use super::ProxyFilter;
 /// assert!(username_cfg.proxy_filter().unwrap().id.is_none());
 /// assert_eq!(username_cfg.proxy_filter().unwrap().country.as_deref(), Some("us"));
 /// assert!(username_cfg.proxy_filter().unwrap().pool_id.is_none());
-/// assert!(username_cfg.proxy_filter().unwrap().datacenter);
-/// assert!(!username_cfg.proxy_filter().unwrap().residential);
-/// assert!(!username_cfg.proxy_filter().unwrap().mobile);
+/// assert_eq!(username_cfg.proxy_filter().unwrap().datacenter, Some(true));
+/// assert!(username_cfg.proxy_filter().unwrap().residential.is_none());
+/// assert!(username_cfg.proxy_filter().unwrap().mobile.is_none());
 ///
 /// // the parsed config can also be formatted into a username string once again
 /// let username_str = username_cfg.to_string();
@@ -57,9 +57,9 @@ use super::ProxyFilter;
 /// assert!(filter.id.is_none());
 /// assert_eq!(filter.country.as_deref(), Some("us"));
 /// assert!(filter.pool_id.is_none());
-/// assert!(filter.datacenter);
-/// assert!(!filter.residential);
-/// assert!(!filter.mobile);
+/// assert_eq!(filter.datacenter, Some(true));
+/// assert!(filter.residential.is_none());
+/// assert!(filter.mobile.is_none());
 /// ```
 pub struct UsernameConfig<const C: char = '-'> {
     username: String,
@@ -95,6 +95,9 @@ pub fn parse_username_config(
         return Err(UsernameConfigError::MissingUsername);
     }
 
+    // TODO: support negated keys, e.g. 'john-!cc-us'
+    // as otherwise it is for example impossible to allow DC proxies without it being an ISP one
+
     // iterate per two:
     let mut ctx: Option<&str> = None;
     for item in username_it {
@@ -114,11 +117,11 @@ pub fn parse_username_config(
             None => {
                 // check for key-only flags first, and otherwise consider it as a key, requiring a matching value
                 if item.eq_ignore_ascii_case("dc") || item.eq_ignore_ascii_case("datacenter") {
-                    proxy_filter.datacenter = true;
+                    proxy_filter.datacenter = Some(true);
                 } else if item.eq_ignore_ascii_case("mobile") {
-                    proxy_filter.mobile = true;
+                    proxy_filter.mobile = Some(true);
                 } else if item.eq_ignore_ascii_case("residential") {
-                    proxy_filter.residential = true;
+                    proxy_filter.residential = Some(true);
                 } else {
                     ctx = Some(item);
                 }
@@ -189,13 +192,13 @@ impl<const C: char> fmt::Display for UsernameConfig<C> {
             if let Some(pool_id) = &filter.pool_id {
                 write!(f, "{0}pool{0}{1}", C, pool_id)?;
             }
-            if filter.datacenter {
+            if filter.datacenter == Some(true) {
                 write!(f, "{0}dc", C)?;
             }
-            if filter.residential {
+            if filter.residential == Some(true) {
                 write!(f, "{0}residential", C)?;
             }
-            if filter.mobile {
+            if filter.mobile == Some(true) {
                 write!(f, "{0}mobile", C)?;
             }
         }
@@ -252,9 +255,9 @@ mod test {
                         id: None,
                         country: None,
                         pool_id: None,
-                        datacenter: true,
-                        residential: false,
-                        mobile: false,
+                        datacenter: Some(true),
+                        residential: None,
+                        mobile: None,
                     }),
                 },
             ),
@@ -266,9 +269,9 @@ mod test {
                         id: None,
                         country: Some(String::from("us")),
                         pool_id: None,
-                        datacenter: true,
-                        residential: false,
-                        mobile: false,
+                        datacenter: Some(true),
+                        residential: None,
+                        mobile: None,
                     }),
                 },
             ),
@@ -280,9 +283,9 @@ mod test {
                         id: None,
                         country: Some(String::from("us")),
                         pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: false,
-                        mobile: false,
+                        datacenter: Some(true),
+                        residential: None,
+                        mobile: None,
                     }),
                 },
             ),
@@ -294,9 +297,9 @@ mod test {
                         id: None,
                         country: Some(String::from("us")),
                         pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: false,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: None,
                     }),
                 },
             ),
@@ -308,9 +311,9 @@ mod test {
                         id: None,
                         country: Some(String::from("us")),
                         pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
                     }),
                 },
             ),
@@ -322,9 +325,9 @@ mod test {
                         id: Some(String::from("1")),
                         country: Some(String::from("us")),
                         pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
                     }),
                 },
             ),
@@ -336,9 +339,9 @@ mod test {
                         id: Some(String::from("1")),
                         country: Some(String::from("uk")),
                         pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
                     }),
                 },
             ),
@@ -350,9 +353,9 @@ mod test {
                         id: Some(String::from("1")),
                         country: Some(String::from("uk")),
                         pool_id: Some(String::from("2")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
                     }),
                 },
             ),
@@ -364,9 +367,9 @@ mod test {
                         id: Some(String::from("1")),
                         country: Some(String::from("uk")),
                         pool_id: Some(String::from("2")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
                     }),
                 },
             ),
@@ -378,9 +381,9 @@ mod test {
                         id: Some(String::from("1")),
                         country: Some(String::from("uk")),
                         pool_id: Some(String::from("2")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
                     }),
                 },
             ),
@@ -392,9 +395,9 @@ mod test {
                         id: Some(String::from("1")),
                         country: Some(String::from("uk")),
                         pool_id: Some(String::from("2")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
                     }),
                 },
             ),
@@ -469,9 +472,9 @@ mod test {
                 id: Some(String::from("1")),
                 country: Some(String::from("uk")),
                 pool_id: Some(String::from("2")),
-                datacenter: true,
-                residential: true,
-                mobile: true,
+                datacenter: Some(true),
+                residential: Some(true),
+                mobile: Some(true),
             })
         );
     }
