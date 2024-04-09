@@ -155,7 +155,10 @@ mod default_proxy {
     }
 }
 
-pub use default_proxy::{Proxy, ProxyDB as MemoryProxyDB};
+pub use default_proxy::{
+    Proxy, ProxyDB as MemoryProxyDB, ProxyDBError as MemoryProxyDBInsertError,
+    ProxyDBErrorKind as MemoryProxyDBInsertErrorKind, ProxyDBQuery as MemoryProxyDBQuery,
+};
 
 #[derive(Debug, Clone)]
 /// The credentials to use to authenticate with the proxy.

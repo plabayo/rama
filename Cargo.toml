@@ -137,7 +137,7 @@ tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-venndb = "0.1.0"
+venndb = { git = "https://github.com/plabayo/venndb", rev = "72cdd900c4b25545af14478272a0121181df05b3" }
 
 [dev-dependencies]
 brotli = { workspace = true }
