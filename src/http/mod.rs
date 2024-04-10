@@ -91,5 +91,5 @@ pub use self::dep::http::header::HeaderName;
 pub use self::dep::http::header::HeaderValue;
 pub use self::dep::http::method::Method;
 pub use self::dep::http::status::StatusCode;
-pub use self::dep::http::uri::Uri;
+pub use self::dep::http::uri::{Scheme, Uri};
 pub use self::dep::http::version::Version;

@@ -13,7 +13,7 @@
 //! [`Context`]: crate::service::Context
 //! [`Extensions`]: crate::service::context::Extensions
 
-use crate::http::Version;
+use crate::{http::Version, url::Scheme};
 use serde::Deserialize;
 use std::future::Future;
 
@@ -186,9 +186,9 @@ pub struct RequestContext {
     /// The version of the HTTP that is required for
     /// the given [`Request`](crate::http::Request) to be proxied.
     pub http_version: Version,
-    /// The scheme of the HTTP's [`Uri`](crate::http::Uri) that is defined for
+    /// The [`Scheme`] of the HTTP's [`Uri`](crate::http::Uri) that is defined for
     /// the given [`Request`](crate::http::Request) to be proxied.
-    pub scheme: String,
+    pub scheme: Scheme,
     /// The host of the HTTP's [`Uri`](crate::http::Uri) Authority component that is defined for
     /// the given [`Request`](crate::http::Request) to be proxied.
     pub host: String,
@@ -196,7 +196,7 @@ pub struct RequestContext {
     /// the given [`Request`](crate::http::Request) to be proxied.
     ///
     /// It defaults to the standard port of the scheme if not present.
-    pub port: u16,
+    pub port: Option<u16>,
 }
 
 /// The trait to implement to provide a proxy database to other facilities,

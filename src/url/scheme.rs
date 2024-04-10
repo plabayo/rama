@@ -13,6 +13,8 @@ use std::str::FromStr;
 ///
 /// [repo]: https://github.com/plabayo/rama
 pub enum Scheme {
+    /// An empty/missing scheme.
+    Empty,
     /// The `http` scheme.
     Http,
     /// The `https` scheme.
@@ -39,11 +41,43 @@ impl FromStr for Scheme {
                 "https" => Scheme::Https,
                 "ws" => Scheme::Ws,
                 "wss" => Scheme::Wss,
+                "" => Scheme::Empty,
                 _ => return Err(UnknownSchemeError),
             }
         })
     }
 }
+
+impl TryFrom<crate::http::Scheme> for Scheme {
+    type Error = UnknownSchemeError;
+
+    #[inline]
+    fn try_from(s: crate::http::Scheme) -> Result<Self, UnknownSchemeError> {
+        Self::try_from(&s)
+    }
+}
+
+impl TryFrom<&crate::http::Scheme> for Scheme {
+    type Error = UnknownSchemeError;
+
+    fn try_from(s: &crate::http::Scheme) -> Result<Self, UnknownSchemeError> {
+        Ok(if s == &crate::http::Scheme::HTTP {
+            Scheme::Http
+        } else if s == &crate::http::Scheme::HTTPS {
+            Scheme::Https
+        } else if s == "ws" {
+            Scheme::Ws
+        } else if s == "wss" {
+            Scheme::Wss
+        } else if s == "" {
+            Scheme::Empty
+        } else {
+            return Err(UnknownSchemeError);
+        })
+    }
+}
+
+// TODO: add tests for `FromStr` and `TryFrom<crate::http::Scheme>`
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
