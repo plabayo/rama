@@ -13,7 +13,7 @@
 //! [`Context`]: crate::service::Context
 //! [`Extensions`]: crate::service::context::Extensions
 
-use crate::{http::Version, url::Scheme};
+use crate::{http::Version, uri::Scheme};
 use serde::Deserialize;
 use std::future::Future;
 
@@ -50,6 +50,9 @@ pub mod pp;
 pub struct ProxyFilter {
     /// The ID of the proxy to select.
     pub id: Option<String>,
+
+    /// The city of the proxy.
+    pub city: Option<String>,
 
     /// The country of the proxy.
     pub country: Option<String>,
@@ -110,6 +113,12 @@ mod default_proxy {
         pub pool_id: String,
 
         #[venndb(filter)]
+        /// City of the proxy.
+        ///
+        /// TODO: sanatize these?!
+        pub city: String,
+
+        #[venndb(filter)]
         /// Country of the proxy.
         ///
         /// TODO: sanatize these?!
@@ -137,6 +146,11 @@ mod default_proxy {
                 .as_ref()
                 .map(|c| c == &self.country)
                 .unwrap_or(true)
+                && filter
+                    .city
+                    .as_ref()
+                    .map(|c| c == &self.city)
+                    .unwrap_or(true)
                 && filter
                     .pool_id
                     .as_ref()
@@ -245,6 +259,9 @@ impl ProxyDB for MemoryProxyDB {
                 }
                 if let Some(country) = filter.country {
                     query.country(country);
+                }
+                if let Some(city) = filter.city {
+                    query.city(city);
                 }
 
                 if let Some(value) = filter.datacenter {

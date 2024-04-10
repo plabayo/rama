@@ -136,7 +136,6 @@ tokio-graceful = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
-url = "2.5.0"
 uuid = { workspace = true, features = ["v4"] }
 venndb = "0.1.1"
 
