@@ -101,14 +101,13 @@ pub fn parse_username_config(
         match ctx.take() {
             Some(key) => {
                 // handle the item as a value, which has to be matched to the previously read key
-                if key.eq_ignore_ascii_case("cc") || key.eq_ignore_ascii_case("country") {
-                    proxy_filter.country = Some(item.to_owned());
-                } else if key.eq_ignore_ascii_case("pool") {
-                    proxy_filter.pool_id = Some(item.to_owned());
-                } else if key.eq_ignore_ascii_case("id") {
-                    proxy_filter.id = Some(item.to_owned());
-                } else {
-                    return Err(UsernameConfigError::UnexpectedKey(key.to_owned()));
+                match_ignore_ascii_case_str! {
+                    match(key) {
+                        "cc" | "country" => proxy_filter.country = Some(item.to_owned()),
+                        "pool" => proxy_filter.pool_id = Some(item.to_owned()),
+                        "id" => proxy_filter.id = Some(item.to_owned()),
+                        _ => return Err(UsernameConfigError::UnexpectedKey(key.to_owned())),
+                    }
                 }
             }
             None => {
@@ -120,14 +119,13 @@ pub fn parse_username_config(
                 };
 
                 // check for key-only flags first, and otherwise consider it as a key, requiring a matching value
-                if key.eq_ignore_ascii_case("dc") || key.eq_ignore_ascii_case("datacenter") {
-                    proxy_filter.datacenter = Some(bval);
-                } else if key.eq_ignore_ascii_case("mobile") {
-                    proxy_filter.mobile = Some(bval);
-                } else if key.eq_ignore_ascii_case("residential") {
-                    proxy_filter.residential = Some(bval);
-                } else {
-                    ctx = Some(item);
+                match_ignore_ascii_case_str! {
+                    match(key) {
+                        "dc" | "datacenter" => proxy_filter.datacenter = Some(bval),
+                        "residential" => proxy_filter.residential = Some(bval),
+                        "mobile" => proxy_filter.mobile = Some(bval),
+                        _ => ctx = Some(item),
+                    }
                 }
             }
         }
