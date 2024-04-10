@@ -1,7 +1,7 @@
 use crate::{
+    dns::layer::DnsResolvedSocketAddresses,
     error::Error,
     http::{
-        layer::dns::DnsResolvedSocketAddresses,
         service::web::extract::{FromRequestParts, Host},
         Request, Response, Version,
     },

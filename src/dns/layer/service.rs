@@ -68,7 +68,7 @@ impl DnsResolvedSocketAddresses {
 /// [`Service`]: crate::service::Service
 /// [`Extensions`]: crate::service::context::Extensions
 /// [`Host`]: crate::http::headers::Host
-/// [`DynamicDnsResolver`]: crate::http::layer::dns::DynamicDnsResolver
+/// [`DynamicDnsResolver`]: crate::dns::layer::DynamicDnsResolver
 #[derive(Debug, Clone)]
 pub struct DnsService<S, R> {
     inner: S,
