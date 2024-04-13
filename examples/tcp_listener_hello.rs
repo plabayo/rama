@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:9000`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:49000`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:9000
+//! curl -v http://127.0.0.1:49000
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with the source code of this example.
@@ -25,7 +25,7 @@ use rama::{
 use tokio::io::AsyncWriteExt;
 
 const SRC: &str = include_str!("./tcp_listener_hello.rs");
-const ADDR: &str = "127.0.0.1:9000";
+const ADDR: &str = "127.0.0.1:49000";
 
 #[tokio::main]
 async fn main() {
