@@ -24,5 +24,10 @@
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
 
+# Configuring Rama
+
+- [Intro](./configuration/intro.md)
+- [Squid Directives](./configuration/squid-directives.md)
+
 [❓ FAQ](./faq.md)
 [💖 Sponsor](./sponsor.md)
