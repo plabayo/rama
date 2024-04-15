@@ -17,7 +17,7 @@ anyhow = "1.0"
 async-compression = "0.4"
 base64 = "0.22"
 bitflags = "2.4"
-brotli = "4"
+brotli = "5"
 bytes = "1"
 argh = "0.1"
 crossterm = "0.27"
@@ -70,6 +70,7 @@ tracing-subscriber = "0.3.17"
 trybuild = "1.0.63"
 uuid = "1.6"
 zstd = "0.13"
+venndb = "0.2"
 
 [package]
 name = "rama"
@@ -137,7 +138,7 @@ tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-venndb = "0.1.1"
+venndb = { workspace = true }
 
 [dev-dependencies]
 brotli = { workspace = true }
