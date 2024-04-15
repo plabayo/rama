@@ -19,7 +19,8 @@ pub use username::{parse_username_config, UsernameConfig};
 pub mod pp;
 
 mod proxydb;
+#[doc(inline)]
 pub use proxydb::{
     MemoryProxyDB, MemoryProxyDBError, MemoryProxyDBErrorKind, Proxy, ProxyCredentials, ProxyDB,
-    ProxyFilter, RequestContext,
+    ProxyFilter, RequestContext, StringFilter,
 };

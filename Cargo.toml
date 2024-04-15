@@ -71,6 +71,7 @@ trybuild = "1.0.63"
 uuid = "1.6"
 zstd = "0.13"
 venndb = "0.2"
+unicode-normalization = "0.1.23"
 
 [package]
 name = "rama"
@@ -137,6 +138,7 @@ tokio-graceful = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
+unicode-normalization = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 venndb = { workspace = true }
 

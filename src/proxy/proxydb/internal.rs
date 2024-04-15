@@ -1,4 +1,4 @@
-use super::{ProxyCredentials, ProxyFilter, RequestContext};
+use super::{ProxyCredentials, ProxyFilter, RequestContext, StringFilter};
 use crate::http::Version;
 use venndb::VennDB;
 
@@ -36,27 +36,19 @@ pub struct Proxy {
 
     #[venndb(filter)]
     /// Pool ID of the proxy.
-    ///
-    /// TODO: sanatize these?!
-    pub pool_id: String,
+    pub pool_id: Option<StringFilter>,
 
     #[venndb(filter)]
     /// Country of the proxy.
-    ///
-    /// TODO: sanatize these?!
-    pub country: String,
+    pub country: Option<StringFilter>,
 
     #[venndb(filter)]
     /// City of the proxy.
-    ///
-    /// TODO: sanatize these?!
-    pub city: String,
+    pub city: Option<StringFilter>,
 
     #[venndb(filter)]
     /// Mobile carrier of the proxy.
-    ///
-    /// TODO: sanatize these?!
-    pub carrier: String,
+    pub carrier: Option<StringFilter>,
 
     /// The optional credentials to use to authenticate with the proxy.
     ///
@@ -78,22 +70,22 @@ impl Proxy {
         return filter
             .country
             .as_ref()
-            .map(|c| c == &self.country)
+            .map(|c| Some(c) == self.country.as_ref())
             .unwrap_or(true)
             && filter
                 .city
                 .as_ref()
-                .map(|c| c == &self.city)
+                .map(|c| Some(c) == self.city.as_ref())
                 .unwrap_or(true)
             && filter
                 .pool_id
                 .as_ref()
-                .map(|p| p == &self.pool_id)
+                .map(|p| Some(p) == self.pool_id.as_ref())
                 .unwrap_or(true)
             && filter
                 .carrier
                 .as_ref()
-                .map(|c| c == &self.carrier)
+                .map(|c| Some(c) == self.carrier.as_ref())
                 .unwrap_or(true)
             && filter
                 .datacenter

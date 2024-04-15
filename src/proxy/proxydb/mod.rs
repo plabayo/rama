@@ -6,6 +6,10 @@ use std::future::Future;
 mod internal;
 pub use internal::Proxy;
 
+mod str;
+#[doc(inline)]
+pub use str::StringFilter;
+
 #[derive(Debug, Clone)]
 /// The credentials to use to authenticate with the proxy.
 pub enum ProxyCredentials {
@@ -74,13 +78,13 @@ pub struct ProxyFilter {
     pub id: Option<String>,
 
     /// The ID of the pool from which to select the proxy.
-    pub pool_id: Option<String>,
+    pub pool_id: Option<StringFilter>,
 
     /// The country of the proxy.
-    pub country: Option<String>,
+    pub country: Option<StringFilter>,
 
     /// The city of the proxy.
-    pub city: Option<String>,
+    pub city: Option<StringFilter>,
 
     /// Set explicitly to `true` to select a datacenter proxy.
     pub datacenter: Option<bool>,
@@ -92,13 +96,8 @@ pub struct ProxyFilter {
     pub mobile: Option<bool>,
 
     /// The mobile carrier desired.
-    pub carrier: Option<String>,
+    pub carrier: Option<StringFilter>,
 }
-
-// TODO:
-// - define NormalizedString
-// - support a good way to do a catch all, e.g. residential router proxies can support
-//   probably aby country/city/carrier
 
 /// The trait to implement to provide a proxy database to other facilities,
 /// such as connection pools, to provide a proxy based on the given
