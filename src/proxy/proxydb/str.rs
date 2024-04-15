@@ -13,6 +13,11 @@ use unicode_normalization::UnicodeNormalization;
 pub struct StringFilter(String);
 
 impl StringFilter {
+    /// Create a string filter which will match anything
+    pub fn any() -> Self {
+        "*".into()
+    }
+
     /// Create a new string filter.
     pub fn new(value: impl AsRef<str>) -> Self {
         Self(value.as_ref().trim().to_lowercase().nfc().collect())
@@ -105,6 +110,12 @@ impl<'de> Deserialize<'de> for StringFilter {
     }
 }
 
+impl venndb::Any for StringFilter {
+    fn is_any(&self) -> bool {
+        self.0 == "*"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -153,5 +164,16 @@ mod tests {
         let json = "\"  Hello World\"";
         let filter: StringFilter = serde_json::from_str(json).unwrap();
         assert_eq!(filter, "hello world".into());
+    }
+
+    #[test]
+    fn test_string_filter_any() {
+        use venndb::Any;
+
+        let filter = StringFilter::any();
+        assert!(filter.is_any());
+
+        let filter: StringFilter = "hello".into();
+        assert!(!filter.is_any());
     }
 }

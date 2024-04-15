@@ -34,19 +34,19 @@ pub struct Proxy {
     /// containing the port and the host.
     pub address: String,
 
-    #[venndb(filter)]
+    #[venndb(filter, any)]
     /// Pool ID of the proxy.
     pub pool_id: Option<StringFilter>,
 
-    #[venndb(filter)]
+    #[venndb(filter, any)]
     /// Country of the proxy.
     pub country: Option<StringFilter>,
 
-    #[venndb(filter)]
+    #[venndb(filter, any)]
     /// City of the proxy.
     pub city: Option<StringFilter>,
 
-    #[venndb(filter)]
+    #[venndb(filter, any)]
     /// Mobile carrier of the proxy.
     pub carrier: Option<StringFilter>,
 
