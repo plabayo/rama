@@ -64,10 +64,10 @@ use rama::{
         response::Json,
         server::HttpServer,
         service::web::{
-            extract::{FromRequestParts, Host, Path},
+            extract::{Host, Path},
             match_service,
         },
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
     rt::Executor,
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
@@ -152,7 +152,7 @@ async fn main() {
 }
 
 async fn http_connect_accept<S>(
-    mut ctx: Context<S>,
+    ctx: Context<S>,
     req: Request,
 ) -> Result<(Response, Context<S>, Request), Response>
 where
@@ -161,18 +161,13 @@ where
     // TODO: should we support http connect better?
     // e.g. by always adding the host
 
-    let (parts, body) = req.into_parts();
-    let host = match Host::from_request_parts(&ctx, &parts).await {
-        Ok(host) => host,
-        Err(err) => {
-            tracing::error!(error = %err, "error extracting host");
-            return Err(err.into_response());
+    match ctx.get::<RequestContext>().and_then(|rc| rc.host.as_ref()) {
+        Some(host) => tracing::info!("accept CONNECT to {host}"),
+        None => {
+            tracing::error!("error extracting host");
+            return Err(StatusCode::BAD_REQUEST.into_response());
         }
-    };
-    let req = Request::from_parts(parts, body);
-
-    tracing::info!("accept CONNECT to {}", host.0);
-    ctx.insert(host);
+    }
 
     Ok((StatusCode::OK.into_response(), ctx, req))
 }

@@ -1,10 +1,6 @@
 use super::State;
 use rama::{
-    http::{
-        dep::http::request::Parts,
-        service::web::extract::{FromRequestParts, Host},
-        Request,
-    },
+    http::{dep::http::request::Parts, Request, RequestContext},
     service::Context,
     stream::SocketInfo,
     tls::rustls::server::IncomingClientHello,
@@ -127,18 +123,12 @@ pub async fn get_request_info(
     ctx: &Context<State>,
     parts: &Parts,
 ) -> RequestInfo {
-    let host = Host::from_request_parts(ctx, parts)
-        .await
-        .ok()
-        .map(|h| h.0)
-        .or_else(|| parts.uri.host().map(|v| v.to_string()))
-        .map(|host| {
-            if !host.contains(':') && parts.uri.port_u16().is_some() {
-                format!("{}:{}", host, parts.uri.port_u16().unwrap())
-            } else {
-                host
-            }
-        });
+    let host = ctx.get::<RequestContext>().and_then(|rc| {
+        rc.host.as_ref().map(|host| match rc.port {
+            Some(port) => format!("{host}:{port}"),
+            None => host.clone(),
+        })
+    });
 
     RequestInfo {
         user_agent: parts

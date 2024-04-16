@@ -1,5 +1,5 @@
-use super::{ProxyCredentials, ProxyFilter, RequestContext, StringFilter};
-use crate::http::Version;
+use super::{ProxyCredentials, ProxyFilter, StringFilter};
+use crate::http::{RequestContext, Version};
 use venndb::VennDB;
 
 #[derive(Debug, Clone, VennDB)]

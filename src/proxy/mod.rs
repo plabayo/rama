@@ -22,5 +22,5 @@ mod proxydb;
 #[doc(inline)]
 pub use proxydb::{
     MemoryProxyDB, MemoryProxyDBError, MemoryProxyDBErrorKind, Proxy, ProxyCredentials, ProxyDB,
-    ProxyFilter, RequestContext, StringFilter,
+    ProxyFilter, StringFilter,
 };

@@ -1,11 +1,9 @@
 use crate::{
     dns::layer::DnsResolvedSocketAddresses,
     error::Error,
-    http::{
-        service::web::extract::{FromRequestParts, Host},
-        Request, Response, Version,
-    },
+    http::{Request, RequestContext, Response, Version},
     service::{Context, Service},
+    uri::Scheme,
 };
 use hyper_util::rt::TokioIo;
 
@@ -134,27 +132,21 @@ where
         let address = if let Some(dns_info) = ctx.get::<DnsResolvedSocketAddresses>() {
             dns_info.address().to_string()
         } else {
-            let host = match Host::from_request_parts(&ctx, &parts).await {
-                Ok(host) => host.0,
-                Err(_) => return Err(HttpClientError::MissingHost),
-            };
-            if host.contains(':') {
-                host
-            } else {
-                let port = parts.uri.port().map(|p| p.as_u16()).unwrap_or_else(|| {
-                    parts
-                        .uri
-                        .scheme()
-                        .map(|s| match s.as_str() {
-                            // TODO is this scheme mapping complete enough?
-                            // and should we fail on unknown schemes?
-                            // should this be a shared utility somewhere?
-                            "http" => 80,
-                            _ => 443,
-                        })
-                        .unwrap_or(443)
+            let host = ctx
+                .get::<RequestContext>()
+                .and_then(|rc| match rc.host.as_ref() {
+                    Some(host) => {
+                        let port = rc.port.unwrap_or(match rc.scheme {
+                            Scheme::Wss | Scheme::Https => 443,
+                            _ => 80,
+                        });
+                        Some(format!("{host}:{port}"))
+                    }
+                    None => None,
                 });
-                format!("{}:{}", host, port)
+            match host {
+                Some(host) => host,
+                None => return Err(HttpClientError::MissingHost),
             }
         };
 

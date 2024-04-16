@@ -1,7 +1,9 @@
-use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
-
 use super::{Context, Service};
-use crate::http::{BodyLimit, IntoResponse, Request};
+use crate::http::{
+    service::web::extract::{FromRequestParts, Host},
+    BodyLimit, IntoResponse, Request, RequestContext,
+};
+use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
 
 /// Wrapper service that implements [`hyper::service::Service`].
 ///
@@ -49,6 +51,23 @@ where
         };
 
         Box::pin(async move {
+            let (parts, body) = req.into_parts();
+            let host = Host::from_request_parts(&ctx, &parts)
+                .await
+                .ok()
+                .map(|h| h.0);
+            let req = Request::from_parts(parts, body);
+
+            let request_context = RequestContext {
+                http_version: req.version(),
+                scheme: req.uri().scheme().into(),
+                host,
+                port: req.uri().port().map(|p| p.as_u16()),
+            };
+
+            let mut ctx = ctx;
+            ctx.insert(request_context);
+
             let resp = inner.serve(ctx, req).await.into_response();
             Ok(match body_limit.and_then(|limit| limit.response()) {
                 Some(limit) => resp.map(|body| crate::http::Body::with_limit(body, limit)),

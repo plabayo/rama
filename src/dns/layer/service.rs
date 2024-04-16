@@ -2,9 +2,8 @@ use super::{dns_map::DnsMap, DnsError, DynamicDnsResolver};
 use crate::{
     http::{
         layer::header_config::extract_header_config,
-        service::web::extract::{FromRequestParts, Host},
         utils::{HeaderValueErr, HeaderValueGetter},
-        HeaderName, Request,
+        HeaderName, Request, RequestContext,
     },
     service::{Context, Service},
 };
@@ -109,13 +108,7 @@ where
         mut ctx: Context<State>,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        let (parts, body) = request.into_parts();
-        let host = Host::from_request_parts(&ctx, &parts)
-            .await
-            .ok()
-            .map(|h| h.0);
-        let request = Request::from_parts(parts, body);
-
+        let host = ctx.get::<RequestContext>().and_then(|rc| rc.host.clone());
         if let Some(addresses) = self.lookup_host(&request, host).await? {
             let mut addresses_it = addresses.into_iter();
             match addresses_it.next() {

@@ -1,5 +1,4 @@
-use crate::http::Version;
-use crate::uri::Scheme;
+use crate::http::{RequestContext, Version};
 use serde::Deserialize;
 use std::future::Future;
 
@@ -29,25 +28,6 @@ pub enum ProxyCredentials {
     Bearer(String),
 }
 
-#[derive(Debug, Clone)]
-/// The context of the request to use to select a proxy,
-/// can be useful to know if a specific protocol or transport is required.
-pub struct RequestContext {
-    /// The version of the HTTP that is required for
-    /// the given [`Request`](crate::http::Request) to be proxied.
-    pub http_version: Version,
-    /// The [`Scheme`] of the HTTP's [`Uri`](crate::http::Uri) that is defined for
-    /// the given [`Request`](crate::http::Request) to be proxied.
-    pub scheme: Scheme,
-    /// The host of the HTTP's [`Uri`](crate::http::Uri) Authority component that is defined for
-    /// the given [`Request`](crate::http::Request) to be proxied.
-    pub host: String,
-    /// The port of the HTTP's [`Uri`](crate::http::Uri) Authority component that is defined for
-    /// the given [`Request`](crate::http::Request) to be proxied.
-    ///
-    /// It defaults to the standard port of the scheme if not present.
-    pub port: Option<u16>,
-}
 #[derive(Debug, Default, Clone, Deserialize, PartialEq)]
 /// Filter to select a specific kind of proxy.
 ///

@@ -5,8 +5,9 @@
 //! ```rust
 //! use rama::dns::layer::{DnsLayer, DynamicDnsResolver, DnsResolvedSocketAddresses};
 //! use rama::http::service::web::{WebService, extract::{Host, Extension}};
-//! use rama::http::{Body, Request, StatusCode};
+//! use rama::http::{Body, Request, RequestContext, Version, StatusCode};
 //! use rama::service::{Context, Service, Layer};
+//! use rama::uri::Scheme;
 //! use std::net::SocketAddr;
 //!
 //! #[tokio::main]
@@ -23,9 +24,17 @@
 //!             StatusCode::OK
 //!         }),
 //!     );
-//!    
+//!
+//!     let mut ctx = Context::default();
+//!     ctx.insert(RequestContext{
+//!         http_version: Version::HTTP_11,
+//!         scheme: Scheme::Http,
+//!         host: Some("www.example.com".to_owned()),
+//!         port: None,
+//!     });
+//!
 //!     let resp = service.serve(
-//!         Context::default(),
+//!         ctx,
 //!         Request::builder()
 //!             .uri("http://www.example.com")
 //!             .header("x-dns-map", "www.example.com=127.0.0.1:8080")
