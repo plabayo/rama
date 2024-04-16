@@ -123,12 +123,9 @@ pub async fn get_request_info(
     ctx: &Context<State>,
     parts: &Parts,
 ) -> RequestInfo {
-    let host = ctx.get::<RequestContext>().and_then(|rc| {
-        rc.host.as_ref().map(|host| match rc.port {
-            Some(port) => format!("{host}:{port}"),
-            None => host.clone(),
-        })
-    });
+    let host = ctx
+        .get::<RequestContext>()
+        .and_then(RequestContext::authority);
 
     RequestInfo {
         user_agent: parts

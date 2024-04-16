@@ -152,7 +152,7 @@ async fn main() {
 }
 
 async fn http_connect_accept<S>(
-    ctx: Context<S>,
+    mut ctx: Context<S>,
     req: Request,
 ) -> Result<(Response, Context<S>, Request), Response>
 where
@@ -161,7 +161,11 @@ where
     // TODO: should we support http connect better?
     // e.g. by always adding the host
 
-    match ctx.get::<RequestContext>().and_then(|rc| rc.host.as_ref()) {
+    match ctx
+        .get_or_insert_with::<RequestContext>(|| RequestContext::from(&req))
+        .host
+        .as_ref()
+    {
         Some(host) => tracing::info!("accept CONNECT to {host}"),
         None => {
             tracing::error!("error extracting host");

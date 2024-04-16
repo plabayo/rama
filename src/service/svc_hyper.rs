@@ -1,8 +1,5 @@
 use super::{Context, Service};
-use crate::http::{
-    service::web::extract::{FromRequestParts, Host},
-    BodyLimit, IntoResponse, Request, RequestContext,
-};
+use crate::http::{BodyLimit, IntoResponse, Request, RequestContext};
 use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
 
 /// Wrapper service that implements [`hyper::service::Service`].
@@ -51,19 +48,7 @@ where
         };
 
         Box::pin(async move {
-            let (parts, body) = req.into_parts();
-            let host = Host::from_request_parts(&ctx, &parts)
-                .await
-                .ok()
-                .map(|h| h.0);
-            let req = Request::from_parts(parts, body);
-
-            let request_context = RequestContext {
-                http_version: req.version(),
-                scheme: req.uri().scheme().into(),
-                host,
-                port: req.uri().port().map(|p| p.as_u16()),
-            };
+            let request_context = RequestContext::from(&req);
 
             let mut ctx = ctx;
             ctx.insert(request_context);

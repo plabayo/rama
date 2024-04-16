@@ -108,7 +108,11 @@ where
         mut ctx: Context<State>,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        let host = ctx.get::<RequestContext>().and_then(|rc| rc.host.clone());
+        let host = ctx
+            .get_or_insert_with::<RequestContext>(|| RequestContext::from(&request))
+            .host
+            .clone();
+
         if let Some(addresses) = self.lookup_host(&request, host).await? {
             let mut addresses_it = addresses.into_iter();
             match addresses_it.next() {
