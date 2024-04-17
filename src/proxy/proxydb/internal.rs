@@ -65,7 +65,7 @@ impl Proxy {
     ///
     /// TODO: add unit tests for this?!
     pub fn is_match(&self, ctx: &RequestContext, filter: &ProxyFilter) -> bool {
-        if (ctx.http_version == Version::HTTP_3 && !self.socks5 && !self.udp)
+        if (ctx.http_version == Version::HTTP_3 && (!self.socks5 || !self.udp))
             || (ctx.http_version != Version::HTTP_3 && !self.tcp)
         {
             return false;
@@ -123,8 +123,8 @@ impl ProxyCsvRowReader {
     }
 
     /// Create a new [`ProxyCsvRowReader`] from the given CSV data.
-    pub fn raw(data: String) -> Self {
-        let lines: Vec<_> = data.lines().rev().map(str::to_owned).collect();
+    pub fn raw(data: impl AsRef<str>) -> Self {
+        let lines: Vec<_> = data.as_ref().lines().rev().map(str::to_owned).collect();
         ProxyCsvRowReader {
             data: ProxyCsvRowReaderData::Raw(lines),
         }
@@ -276,4 +276,22 @@ impl From<std::io::Error> for ProxyCsvRowReaderError {
 #[cfg(test)]
 mod tests {
     // TODO: add tests for ProxyCsvRowReader + Proxy::is_match
+
+    #[test]
+    fn test_parse_csv_bool() {
+        for (input, output) in &[
+            ("1", Some(true)),
+            ("true", Some(true)),
+            ("True", Some(true)),
+            ("TRUE", Some(true)),
+            ("0", Some(false)),
+            ("false", Some(false)),
+            ("False", Some(false)),
+            ("FALSE", Some(false)),
+            ("", Some(false)),
+            ("invalid", None),
+        ] {
+            assert_eq!(super::parse_csv_bool(input), *output);
+        }
+    }
 }

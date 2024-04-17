@@ -187,6 +187,15 @@ pub trait ProxyDB: Send + Sync + 'static {
         ctx: RequestContext,
         filter: ProxyFilter,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
+
+    /// Same as [`Self::get_proxy`] but with a predicate
+    /// to filter out found proxies that do not match the given predicate.
+    fn get_proxy_if(
+        &self,
+        ctx: RequestContext,
+        filter: ProxyFilter,
+        predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
+    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
 }
 
 /// A fast in-memory ProxyDatabase that is the default choice for Rama.
@@ -216,6 +225,54 @@ impl MemoryProxyDB {
             })?,
         })
     }
+
+    /// Return the number of proxies in the database.
+    pub fn len(&self) -> usize {
+        self.data.len()
+    }
+
+    fn query_from_filter(
+        &self,
+        ctx: RequestContext,
+        filter: ProxyFilter,
+    ) -> internal::ProxyDBQuery {
+        let mut query = self.data.query();
+
+        if let Some(pool_id) = filter.pool_id {
+            query.pool_id(pool_id);
+        }
+        if let Some(country) = filter.country {
+            query.country(country);
+        }
+        if let Some(city) = filter.city {
+            query.city(city);
+        }
+
+        if let Some(value) = filter.datacenter {
+            query.datacenter(value);
+        }
+        if let Some(value) = filter.residential {
+            query.residential(value);
+        }
+        if let Some(value) = filter.mobile {
+            query.mobile(value);
+        }
+
+        if ctx.http_version == Version::HTTP_3 {
+            query.udp(true);
+            query.socks5(true);
+        } else {
+            // NOTE: we do not test whether http/socks5 is supported,
+            // as we assume that the proxy supports at least one of them.
+            // It might be good to update venndb to also allow such variant checks...
+            // For now however I think that's a safe assumption to make
+            // as either way rama will not support something other then the
+            // HTTP/Socks5 proxies for the time being.
+            query.tcp(true);
+        }
+
+        query
+    }
 }
 
 impl ProxyDB for MemoryProxyDB {
@@ -238,40 +295,40 @@ impl ProxyDB for MemoryProxyDB {
                 }
             },
             None => {
-                let mut query = self.data.query();
-
-                if let Some(pool_id) = filter.pool_id {
-                    query.pool_id(pool_id);
-                }
-                if let Some(country) = filter.country {
-                    query.country(country);
-                }
-                if let Some(city) = filter.city {
-                    query.city(city);
-                }
-
-                if let Some(value) = filter.datacenter {
-                    query.datacenter(value);
-                }
-                if let Some(value) = filter.residential {
-                    query.residential(value);
-                }
-                if let Some(value) = filter.mobile {
-                    query.mobile(value);
-                }
-
-                if ctx.http_version == Version::HTTP_3 {
-                    query.udp(true);
-                    query.socks5(true);
-                } else {
-                    // TODO: is there ever a need to allow non-http/3
-                    // reqs to request socks5??? Probably yes,
-                    // e.g. non-http protocols, but we need to
-                    // implement that somehow then. As such... TODO
-                    query.tcp(true);
-                }
-
+                let query = self.query_from_filter(ctx, filter);
                 match query.execute().map(|result| result.any()).cloned() {
+                    None => Err(MemoryProxyDBError::not_found()),
+                    Some(proxy) => Ok(proxy),
+                }
+            }
+        }
+    }
+
+    async fn get_proxy_if(
+        &self,
+        ctx: RequestContext,
+        filter: ProxyFilter,
+        predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
+    ) -> Result<Proxy, Self::Error> {
+        match &filter.id {
+            Some(id) => match self.data.get_by_id(id) {
+                None => Err(MemoryProxyDBError::not_found()),
+                Some(proxy) => {
+                    if proxy.is_match(&ctx, &filter) && predicate(proxy) {
+                        Ok(proxy.clone())
+                    } else {
+                        Err(MemoryProxyDBError::mismatch())
+                    }
+                }
+            },
+            None => {
+                let query = self.query_from_filter(ctx, filter);
+                match query
+                    .execute()
+                    .and_then(|result| result.filter(predicate))
+                    .map(|result| result.any())
+                    .cloned()
+                {
                     None => Err(MemoryProxyDBError::not_found()),
                     Some(proxy) => Ok(proxy),
                 }
@@ -342,6 +399,8 @@ impl MemoryProxyDBError {
 
 #[cfg(test)]
 mod tests {
+    use itertools::Itertools;
+
     use super::*;
 
     #[test]
@@ -385,5 +444,227 @@ mod tests {
     fn test_proxy_credentials_display_bearer() {
         let credentials = ProxyCredentials::Bearer("foo".to_owned());
         assert_eq!(credentials.to_string(), "Bearer foo");
+    }
+
+    const RAW_CSV_DATA: &str = include_str!("./test_proxydb_rows.csv");
+
+    async fn memproxydb() -> MemoryProxyDB {
+        let mut reader = ProxyCsvRowReader::raw(RAW_CSV_DATA);
+        let mut rows = Vec::new();
+        while let Some(proxy) = reader.next().await.unwrap() {
+            rows.push(proxy);
+        }
+        MemoryProxyDB::try_from_rows(rows).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_load_memproxydb_from_rows() {
+        let db = memproxydb().await;
+        assert_eq!(db.len(), 64);
+    }
+
+    fn h2_req_context() -> RequestContext {
+        RequestContext {
+            http_version: Version::HTTP_2,
+            scheme: crate::uri::Scheme::Https,
+            host: Some("example.com".to_owned()),
+            port: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_memproxydb_get_proxy_by_id_found() {
+        let db = memproxydb().await;
+        let ctx = h2_req_context();
+        let filter = ProxyFilter {
+            id: Some("1549558402".to_owned()),
+            ..Default::default()
+        };
+        let proxy = db.get_proxy(ctx, filter).await.unwrap();
+        assert_eq!(proxy.id, "1549558402");
+    }
+
+    #[tokio::test]
+    async fn test_memproxydb_get_proxy_by_id_found_correct_filters() {
+        let db = memproxydb().await;
+        let ctx = h2_req_context();
+        let filter = ProxyFilter {
+            id: Some("1549558402".to_owned()),
+            pool_id: Some(StringFilter::new("poolA")),
+            country: Some(StringFilter::new("AU")),
+            city: Some(StringFilter::new("Adelaide")),
+            datacenter: Some(false),
+            residential: Some(false),
+            mobile: Some(true),
+            carrier: Some(StringFilter::new("AT&T")),
+        };
+        let proxy = db.get_proxy(ctx, filter).await.unwrap();
+        assert_eq!(proxy.id, "1549558402");
+    }
+
+    #[tokio::test]
+    async fn test_memproxydb_get_proxy_by_id_not_found() {
+        let db = memproxydb().await;
+        let ctx = h2_req_context();
+        let filter = ProxyFilter {
+            id: Some("notfound".to_owned()),
+            ..Default::default()
+        };
+        let err = db.get_proxy(ctx, filter).await.unwrap_err();
+        assert_eq!(err.kind(), MemoryProxyDBErrorKind::NotFound);
+    }
+
+    #[tokio::test]
+    async fn test_memproxydb_get_proxy_by_id_mismatch_filter() {
+        let db = memproxydb().await;
+        let ctx = h2_req_context();
+        let filters = [
+            ProxyFilter {
+                id: Some("1549558402".to_owned()),
+                pool_id: Some(StringFilter::new("poolB")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some("1549558402".to_owned()),
+                country: Some(StringFilter::new("US")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some("1549558402".to_owned()),
+                city: Some(StringFilter::new("New York")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some("1549558402".to_owned()),
+                datacenter: Some(true),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some("1549558402".to_owned()),
+                residential: Some(true),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some("1549558402".to_owned()),
+                mobile: Some(false),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some("1549558402".to_owned()),
+                carrier: Some(StringFilter::new("Verizon")),
+                ..Default::default()
+            },
+        ];
+        for filter in filters.iter() {
+            let err = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap_err();
+            assert_eq!(err.kind(), MemoryProxyDBErrorKind::Mismatch);
+        }
+    }
+
+    fn h3_req_context() -> RequestContext {
+        RequestContext {
+            http_version: Version::HTTP_3,
+            scheme: crate::uri::Scheme::Https,
+            host: Some("example.com".to_owned()),
+            port: Some(8443),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_memproxydb_get_proxy_by_id_mismatch_req_context() {
+        let db = memproxydb().await;
+        let ctx = h3_req_context();
+        let filter = ProxyFilter {
+            id: Some("1549558402".to_owned()),
+            ..Default::default()
+        };
+        // this proxy does not support socks5 UDP, which is what we need
+        let err = db.get_proxy(ctx, filter).await.unwrap_err();
+        assert_eq!(err.kind(), MemoryProxyDBErrorKind::Mismatch);
+    }
+
+    #[tokio::test]
+    async fn test_memorydb_get_h3_capable_proxies() {
+        let db = memproxydb().await;
+        let ctx = h3_req_context();
+        let filter = ProxyFilter::default();
+        let mut found_ids = Vec::new();
+        for _ in 0..5000 {
+            let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
+            if found_ids.contains(&proxy.id) {
+                continue;
+            }
+            assert!(proxy.udp);
+            assert!(proxy.socks5);
+            found_ids.push(proxy.id.clone());
+        }
+        assert_eq!(found_ids.len(), 14);
+        assert_eq!(
+            found_ids.iter().sorted().join(","),
+            r##"1333564166,2012271852,2432027317,2503805829,2800824798,2862707252,2865590509,3012515011,3439682932,3813409672,3904077149,4064485987,777999237,878701584"##
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memorydb_get_h2_capable_proxies() {
+        let db = memproxydb().await;
+        let ctx = h2_req_context();
+        let filter = ProxyFilter::default();
+        let mut found_ids = Vec::new();
+        for _ in 0..5000 {
+            let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
+            if found_ids.contains(&proxy.id) {
+                continue;
+            }
+            assert!(proxy.tcp);
+            found_ids.push(proxy.id.clone());
+        }
+        assert_eq!(found_ids.len(), 30);
+        assert_eq!(
+            found_ids.iter().sorted().join(","),
+            r#"1043547900,1333564166,1393984890,1549558402,1629940602,17693162,2012271852,2339597854,2436687663,2503805829,2503885092,260229916,2692540368,295238804,2998884635,3012515011,3400641131,35672966,3813409672,3904077149,3916451868,393695089,4064485987,4076081397,4077606290,4157991939,838438595,878701584,913889340,915185154"#,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memorydb_get_any_country_proxies() {
+        let db = memproxydb().await;
+        let ctx = h2_req_context();
+        let filter = ProxyFilter {
+            // there are no explicit BE proxies,
+            // so these will only match the proxies that have a wildcard country
+            country: Some("BE".into()),
+            ..Default::default()
+        };
+        let mut found_ids = Vec::new();
+        for _ in 0..5000 {
+            let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
+            if found_ids.contains(&proxy.id) {
+                continue;
+            }
+            found_ids.push(proxy.id.clone());
+        }
+        assert_eq!(found_ids.len(), 30);
+        assert_eq!(
+            found_ids.iter().sorted().join(","),
+            r#"1043547900,1333564166,1393984890,1549558402,1629940602,17693162,2012271852,2339597854,2436687663,2503805829,2503885092,260229916,2692540368,295238804,2998884635,3012515011,3400641131,35672966,3813409672,3904077149,3916451868,393695089,4064485987,4076081397,4077606290,4157991939,838438595,878701584,913889340,915185154"#,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memorydb_get_h3_capable_mobile_residential_be_asterix_proxies() {
+        let db = memproxydb().await;
+        let ctx = h3_req_context();
+        let filter = ProxyFilter {
+            country: Some("BE".into()),
+            mobile: Some(true),
+            residential: Some(true),
+            ..Default::default()
+        };
+        // 2012271852,1,TRUE,true,1,TRUE,true,true,209.19.77.203:6481,poolJ,*,*,Sprint,Basic dXNlcjM6cGFzczE5
+        for _ in 0..50 {
+            let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
+            assert_eq!(proxy.id, "2012271852");
+        }
     }
 }
