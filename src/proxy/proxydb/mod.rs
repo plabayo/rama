@@ -4,7 +4,9 @@ use serde::Deserialize;
 use std::{future::Future, str::FromStr};
 
 mod internal;
-pub use internal::{Proxy, ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind};
+pub use internal::{
+    proxy_is_valid, Proxy, ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind,
+};
 
 mod str;
 #[doc(inline)]
@@ -214,6 +216,9 @@ impl MemoryProxyDB {
                 internal::ProxyDBErrorKind::DuplicateKey => {
                     MemoryProxyDBInsertError::duplicate_key(err.into_input())
                 }
+                internal::ProxyDBErrorKind::InvalidRow => {
+                    MemoryProxyDBInsertError::invalid_proxy(err.into_input())
+                }
             })?,
         })
     }
@@ -227,6 +232,9 @@ impl MemoryProxyDB {
             data: internal::ProxyDB::from_iter(proxies).map_err(|err| match err.kind() {
                 internal::ProxyDBErrorKind::DuplicateKey => {
                     MemoryProxyDBInsertError::duplicate_key(err.into_input())
+                }
+                internal::ProxyDBErrorKind::InvalidRow => {
+                    MemoryProxyDBInsertError::invalid_proxy(err.into_input())
                 }
             })?,
         })
@@ -392,13 +400,12 @@ impl MemoryProxyDBInsertError {
         }
     }
 
-    // TOOD: enable
-    // fn invalid_proxy(proxies: Vec<Proxy>) -> Self {
-    //     MemoryProxyDBInsertError {
-    //         kind: MemoryProxyDBInsertErrorKind::InvalidProxy,
-    //         proxies,
-    //     }
-    // }
+    fn invalid_proxy(proxies: Vec<Proxy>) -> Self {
+        MemoryProxyDBInsertError {
+            kind: MemoryProxyDBInsertErrorKind::InvalidProxy,
+            proxies,
+        }
+    }
 
     /// Returns the kind of error that [`MemoryProxyDBInsertError`] represents.
     pub fn kind(&self) -> MemoryProxyDBInsertErrorKind {
@@ -544,11 +551,11 @@ mod tests {
         let db = memproxydb().await;
         let ctx = h2_req_context();
         let filter = ProxyFilter {
-            id: Some("1549558402".to_owned()),
+            id: Some("3031533634".to_owned()),
             ..Default::default()
         };
         let proxy = db.get_proxy(ctx, filter).await.unwrap();
-        assert_eq!(proxy.id, "1549558402");
+        assert_eq!(proxy.id, "3031533634");
     }
 
     #[tokio::test]
@@ -556,17 +563,17 @@ mod tests {
         let db = memproxydb().await;
         let ctx = h2_req_context();
         let filter = ProxyFilter {
-            id: Some("1549558402".to_owned()),
-            pool_id: Some(StringFilter::new("poolA")),
-            country: Some(StringFilter::new("AU")),
-            city: Some(StringFilter::new("Adelaide")),
-            datacenter: Some(false),
+            id: Some("3031533634".to_owned()),
+            pool_id: Some(StringFilter::new("poolF")),
+            country: Some(StringFilter::new("JP")),
+            city: Some(StringFilter::new("Yokohama")),
+            datacenter: Some(true),
             residential: Some(false),
             mobile: Some(true),
-            carrier: Some(StringFilter::new("AT&T")),
+            carrier: Some(StringFilter::new("Verizon")),
         };
         let proxy = db.get_proxy(ctx, filter).await.unwrap();
-        assert_eq!(proxy.id, "1549558402");
+        assert_eq!(proxy.id, "3031533634");
     }
 
     #[tokio::test]
@@ -587,38 +594,38 @@ mod tests {
         let ctx = h2_req_context();
         let filters = [
             ProxyFilter {
-                id: Some("1549558402".to_owned()),
+                id: Some("3031533634".to_owned()),
                 pool_id: Some(StringFilter::new("poolB")),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("1549558402".to_owned()),
+                id: Some("3031533634".to_owned()),
                 country: Some(StringFilter::new("US")),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("1549558402".to_owned()),
+                id: Some("3031533634".to_owned()),
                 city: Some(StringFilter::new("New York")),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("1549558402".to_owned()),
-                datacenter: Some(true),
+                id: Some("3031533634".to_owned()),
+                datacenter: Some(false),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("1549558402".to_owned()),
+                id: Some("3031533634".to_owned()),
                 residential: Some(true),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("1549558402".to_owned()),
+                id: Some("3031533634".to_owned()),
                 mobile: Some(false),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("1549558402".to_owned()),
-                carrier: Some(StringFilter::new("Verizon")),
+                id: Some("3031533634".to_owned()),
+                carrier: Some(StringFilter::new("AT&T")),
                 ..Default::default()
             },
         ];
@@ -642,7 +649,7 @@ mod tests {
         let db = memproxydb().await;
         let ctx = h3_req_context();
         let filter = ProxyFilter {
-            id: Some("1549558402".to_owned()),
+            id: Some("3031533634".to_owned()),
             ..Default::default()
         };
         // this proxy does not support socks5 UDP, which is what we need
@@ -665,10 +672,10 @@ mod tests {
             assert!(proxy.socks5);
             found_ids.push(proxy.id);
         }
-        assert_eq!(found_ids.len(), 14);
+        assert_eq!(found_ids.len(), 40);
         assert_eq!(
             found_ids.iter().sorted().join(","),
-            r##"1333564166,2012271852,2432027317,2503805829,2800824798,2862707252,2865590509,3012515011,3439682932,3813409672,3904077149,4064485987,777999237,878701584"##
+            r##"1125300915,1259341971,1316455915,153202126,1571861931,1684342915,1742367441,1844412609,1916851007,20647117,2107229589,2261612122,2497865606,2521901221,2560727338,2593294918,2596743625,2745456299,2880295577,2909724448,2950022859,2951529660,3187902553,3269411602,3269465574,3269921904,3481200027,3498810974,362091157,3679054656,3732488183,3836943127,39048766,3951672504,3976711563,4187178960,56402588,724884866,738626121,906390012"##
         );
     }
 
@@ -686,10 +693,10 @@ mod tests {
             assert!(proxy.tcp);
             found_ids.push(proxy.id);
         }
-        assert_eq!(found_ids.len(), 30);
+        assert_eq!(found_ids.len(), 50);
         assert_eq!(
             found_ids.iter().sorted().join(","),
-            r#"1043547900,1333564166,1393984890,1549558402,1629940602,17693162,2012271852,2339597854,2436687663,2503805829,2503885092,260229916,2692540368,295238804,2998884635,3012515011,3400641131,35672966,3813409672,3904077149,3916451868,393695089,4064485987,4076081397,4077606290,4157991939,838438595,878701584,913889340,915185154"#,
+            r#"1125300915,1259341971,1264821985,129108927,1316455915,1425588737,1571861931,1810781137,1836040682,1844412609,1885107293,2021561518,2079461709,2107229589,2141152822,2438596154,2497865606,2521901221,2551759475,2560727338,2593294918,2798907087,2854473221,2880295577,2909724448,2912880381,292096733,2951529660,3031533634,3187902553,3269411602,3269465574,339020035,3481200027,3498810974,3503691556,362091157,3679054656,371209663,3861736957,39048766,3976711563,4062553709,49590203,56402588,724884866,738626121,767809962,846528631,906390012"#,
         );
     }
 
@@ -714,7 +721,7 @@ mod tests {
         assert_eq!(found_ids.len(), 5);
         assert_eq!(
             found_ids.iter().sorted().join(","),
-            r#"2012271852,2436687663,2503885092,260229916,35672966"#,
+            r#"2141152822,2593294918,2912880381,371209663,767809962"#,
         );
     }
 
@@ -730,7 +737,7 @@ mod tests {
         };
         for _ in 0..50 {
             let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
-            assert_eq!(proxy.id, "2012271852");
+            assert_eq!(proxy.id, "2593294918");
         }
     }
 }

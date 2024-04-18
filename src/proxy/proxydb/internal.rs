@@ -8,6 +8,7 @@ use tokio::{
 use venndb::VennDB;
 
 #[derive(Debug, Clone, VennDB)]
+#[venndb(validator = proxy_is_valid)]
 /// The selected proxy to use to connect to the proxy.
 pub struct Proxy {
     #[venndb(key)]
@@ -58,6 +59,14 @@ pub struct Proxy {
     ///
     /// See [`ProxyCredentials`] for more information.
     pub credentials: Option<ProxyCredentials>,
+}
+
+/// Validate the proxy is valid according to rules that are not enforced by the type system.
+pub fn proxy_is_valid(proxy: &Proxy) -> bool {
+    !proxy.id.is_empty()
+        && !proxy.authority.is_empty()
+        && (proxy.datacenter || proxy.residential || proxy.mobile)
+        && ((proxy.http && proxy.tcp) || (proxy.socks5 && (proxy.tcp || proxy.udp)))
 }
 
 impl Proxy {
@@ -1311,7 +1320,7 @@ mod tests {
     #[test]
     fn test_proxy_db_happy_path_basic() {
         let mut db = ProxyDB::new();
-        let proxy = parse_csv_row("id,1,,1,,,,,authority,,,,,").unwrap();
+        let proxy = parse_csv_row("id,1,,1,,1,,,authority,,,,,").unwrap();
         db.append(proxy).unwrap();
 
         let mut query = db.query();
@@ -1325,7 +1334,7 @@ mod tests {
     async fn test_proxy_db_happy_path_any_country() {
         let mut db = ProxyDB::new();
         let mut reader =
-            ProxyCsvRowReader::raw("1,1,,1,,,,,authority,,US,,,\n2,1,,1,,,,,authority,,*,,,");
+            ProxyCsvRowReader::raw("1,1,,1,,1,,,authority,,US,,,\n2,1,,1,,1,,,authority,,*,,,");
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();
         }
@@ -1358,7 +1367,7 @@ mod tests {
     async fn test_proxy_db_happy_path_any_country_city() {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw(
-            "1,1,,1,,,,,authority,,US,New York,,\n2,1,,1,,,,,authority,,*,*,,",
+            "1,1,,1,,1,,,authority,,US,New York,,\n2,1,,1,,1,,,authority,,*,*,,",
         );
         while let Some(proxy) = reader.next().await.unwrap() {
             db.append(proxy).unwrap();

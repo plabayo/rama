@@ -70,7 +70,7 @@ tracing-subscriber = "0.3.17"
 trybuild = "1.0.63"
 uuid = "1.6"
 zstd = "0.13"
-venndb = { version = "=0.3.0" }
+venndb = { version = "0.4.0" }
 unicode-normalization = "0.1.23"
 
 [package]
