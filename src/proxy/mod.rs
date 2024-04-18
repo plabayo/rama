@@ -21,7 +21,7 @@ pub mod pp;
 mod proxydb;
 #[doc(inline)]
 pub use proxydb::{
-    MemoryProxyDB, MemoryProxyDBError, MemoryProxyDBErrorKind, Proxy, ProxyCredentials,
-    ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind, ProxyDB, ProxyFilter,
-    StringFilter,
+    MemoryProxyDB, MemoryProxyDBInsertError, MemoryProxyDBInsertErrorKind, MemoryProxyDBQueryError,
+    MemoryProxyDBQueryErrorKind, Proxy, ProxyCredentials, ProxyCsvRowReader,
+    ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind, ProxyDB, ProxyFilter, StringFilter,
 };

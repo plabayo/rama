@@ -204,24 +204,30 @@ pub struct MemoryProxyDB {
     data: internal::ProxyDB,
 }
 
+// TODO: add proxy validation prior to creation of db!
+
 impl MemoryProxyDB {
     /// Create a new in-memory proxy database with the given proxies.
-    pub fn try_from_rows(proxies: Vec<Proxy>) -> Result<Self, MemoryProxyDBError> {
+    pub fn try_from_rows(proxies: Vec<Proxy>) -> Result<Self, MemoryProxyDBInsertError> {
         Ok(MemoryProxyDB {
             data: internal::ProxyDB::from_rows(proxies).map_err(|err| match err.kind() {
-                internal::ProxyDBErrorKind::DuplicateKey => MemoryProxyDBError::duplicate(),
+                internal::ProxyDBErrorKind::DuplicateKey => {
+                    MemoryProxyDBInsertError::duplicate_key(err.into_input())
+                }
             })?,
         })
     }
 
     /// Create a new in-memory proxy database with the given proxies from an iterator.
-    pub fn try_from_iter<I>(proxies: I) -> Result<Self, MemoryProxyDBError>
+    pub fn try_from_iter<I>(proxies: I) -> Result<Self, MemoryProxyDBInsertError>
     where
         I: IntoIterator<Item = Proxy>,
     {
         Ok(MemoryProxyDB {
             data: internal::ProxyDB::from_iter(proxies).map_err(|err| match err.kind() {
-                internal::ProxyDBErrorKind::DuplicateKey => MemoryProxyDBError::duplicate(),
+                internal::ProxyDBErrorKind::DuplicateKey => {
+                    MemoryProxyDBInsertError::duplicate_key(err.into_input())
+                }
             })?,
         })
     }
@@ -281,7 +287,7 @@ impl MemoryProxyDB {
 }
 
 impl ProxyDB for MemoryProxyDB {
-    type Error = MemoryProxyDBError;
+    type Error = MemoryProxyDBQueryError;
 
     async fn get_proxy(
         &self,
@@ -290,19 +296,19 @@ impl ProxyDB for MemoryProxyDB {
     ) -> Result<Proxy, Self::Error> {
         match &filter.id {
             Some(id) => match self.data.get_by_id(id) {
-                None => Err(MemoryProxyDBError::not_found()),
+                None => Err(MemoryProxyDBQueryError::not_found()),
                 Some(proxy) => {
                     if proxy.is_match(&ctx, &filter) {
                         Ok(proxy.clone())
                     } else {
-                        Err(MemoryProxyDBError::mismatch())
+                        Err(MemoryProxyDBQueryError::mismatch())
                     }
                 }
             },
             None => {
                 let query = self.query_from_filter(ctx, filter);
                 match query.execute().map(|result| result.any()).cloned() {
-                    None => Err(MemoryProxyDBError::not_found()),
+                    None => Err(MemoryProxyDBQueryError::not_found()),
                     Some(proxy) => Ok(proxy),
                 }
             }
@@ -317,12 +323,12 @@ impl ProxyDB for MemoryProxyDB {
     ) -> Result<Proxy, Self::Error> {
         match &filter.id {
             Some(id) => match self.data.get_by_id(id) {
-                None => Err(MemoryProxyDBError::not_found()),
+                None => Err(MemoryProxyDBQueryError::not_found()),
                 Some(proxy) => {
                     if proxy.is_match(&ctx, &filter) && predicate(proxy) {
                         Ok(proxy.clone())
                     } else {
-                        Err(MemoryProxyDBError::mismatch())
+                        Err(MemoryProxyDBQueryError::mismatch())
                     }
                 }
             },
@@ -334,7 +340,7 @@ impl ProxyDB for MemoryProxyDB {
                     .map(|result| result.any())
                     .cloned()
                 {
-                    None => Err(MemoryProxyDBError::not_found()),
+                    None => Err(MemoryProxyDBQueryError::not_found()),
                     Some(proxy) => Ok(proxy),
                 }
             }
@@ -342,62 +348,118 @@ impl ProxyDB for MemoryProxyDB {
     }
 }
 
-/// The error type that can be returned by [`MemoryProxyDB`] when no proxy match could be found.
+/// The error type that can be returned by [`MemoryProxyDB`] when some of the proxies
+/// could not be inserted due to a proxy that had a duplicate key or was invalid for some other reason.
 #[derive(Debug)]
-pub struct MemoryProxyDBError {
-    kind: MemoryProxyDBErrorKind,
+pub struct MemoryProxyDBInsertError {
+    kind: MemoryProxyDBInsertErrorKind,
+    proxies: Vec<Proxy>,
+}
+
+impl std::fmt::Display for MemoryProxyDBInsertError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.kind {
+            MemoryProxyDBInsertErrorKind::DuplicateKey => write!(
+                f,
+                "A proxy with the same key already exists in the database"
+            ),
+            MemoryProxyDBInsertErrorKind::InvalidProxy => {
+                write!(f, "A proxy in the list is invalid for some reason")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MemoryProxyDBInsertError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// The kind of error that [`MemoryProxyDBInsertError`] represents.
+pub enum MemoryProxyDBInsertErrorKind {
+    /// Duplicate key found in the proxies.
+    DuplicateKey,
+    /// Invalid proxy found in the proxies.
+    ///
+    /// This could be due to a proxy that is not valid for some reason.
+    /// E.g. a proxy that neither supports http or socks5.
+    InvalidProxy,
+}
+
+impl MemoryProxyDBInsertError {
+    fn duplicate_key(proxies: Vec<Proxy>) -> Self {
+        MemoryProxyDBInsertError {
+            kind: MemoryProxyDBInsertErrorKind::DuplicateKey,
+            proxies,
+        }
+    }
+
+    // TOOD: enable
+    // fn invalid_proxy(proxies: Vec<Proxy>) -> Self {
+    //     MemoryProxyDBInsertError {
+    //         kind: MemoryProxyDBInsertErrorKind::InvalidProxy,
+    //         proxies,
+    //     }
+    // }
+
+    /// Returns the kind of error that [`MemoryProxyDBInsertError`] represents.
+    pub fn kind(&self) -> MemoryProxyDBInsertErrorKind {
+        self.kind
+    }
+
+    /// Returns the proxies that were not inserted.
+    pub fn proxies(&self) -> &[Proxy] {
+        &self.proxies
+    }
+
+    /// Consumes the error and returns the proxies that were not inserted.
+    pub fn into_proxies(self) -> Vec<Proxy> {
+        self.proxies
+    }
+}
+
+/// The error type that can be returned by [`MemoryProxyDB`] when no proxy could be returned.
+#[derive(Debug)]
+pub struct MemoryProxyDBQueryError {
+    kind: MemoryProxyDBQueryErrorKind,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// The kind of error that [`MemoryProxyDBError`] represents.
-pub enum MemoryProxyDBErrorKind {
+/// The kind of error that [`MemoryProxyDBQueryError`] represents.
+pub enum MemoryProxyDBQueryErrorKind {
     /// No proxy match could be found.
     NotFound,
     /// A proxy looked up by key had a config that did not match the given filters/requirements.
     Mismatch,
-    /// A proxy with the same key already exists in the database.
-    Duplicate,
 }
 
-impl std::fmt::Display for MemoryProxyDBError {
+impl std::fmt::Display for MemoryProxyDBQueryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self.kind {
-            MemoryProxyDBErrorKind::NotFound => write!(f, "No proxy match could be found"),
-            MemoryProxyDBErrorKind::Mismatch => write!(
+            MemoryProxyDBQueryErrorKind::NotFound => write!(f, "No proxy match could be found"),
+            MemoryProxyDBQueryErrorKind::Mismatch => write!(
                 f,
                 "Proxy config did not match the given filters/requirements"
-            ),
-            MemoryProxyDBErrorKind::Duplicate => write!(
-                f,
-                "A proxy with the same key already exists in the database"
             ),
         }
     }
 }
 
-impl std::error::Error for MemoryProxyDBError {}
+impl std::error::Error for MemoryProxyDBQueryError {}
 
-impl MemoryProxyDBError {
+impl MemoryProxyDBQueryError {
     fn not_found() -> Self {
-        MemoryProxyDBError {
-            kind: MemoryProxyDBErrorKind::NotFound,
+        MemoryProxyDBQueryError {
+            kind: MemoryProxyDBQueryErrorKind::NotFound,
         }
     }
 
     fn mismatch() -> Self {
-        MemoryProxyDBError {
-            kind: MemoryProxyDBErrorKind::Mismatch,
+        MemoryProxyDBQueryError {
+            kind: MemoryProxyDBQueryErrorKind::Mismatch,
         }
     }
 
-    fn duplicate() -> Self {
-        MemoryProxyDBError {
-            kind: MemoryProxyDBErrorKind::Duplicate,
-        }
-    }
-
-    /// Returns the kind of error that [`MemoryProxyDBError`] represents.
-    pub fn kind(&self) -> MemoryProxyDBErrorKind {
+    /// Returns the kind of error that [`MemoryProxyDBQueryError`] represents.
+    pub fn kind(&self) -> MemoryProxyDBQueryErrorKind {
         self.kind
     }
 }
@@ -516,7 +578,7 @@ mod tests {
             ..Default::default()
         };
         let err = db.get_proxy(ctx, filter).await.unwrap_err();
-        assert_eq!(err.kind(), MemoryProxyDBErrorKind::NotFound);
+        assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::NotFound);
     }
 
     #[tokio::test]
@@ -562,7 +624,7 @@ mod tests {
         ];
         for filter in filters.iter() {
             let err = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap_err();
-            assert_eq!(err.kind(), MemoryProxyDBErrorKind::Mismatch);
+            assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::Mismatch);
         }
     }
 
@@ -585,7 +647,7 @@ mod tests {
         };
         // this proxy does not support socks5 UDP, which is what we need
         let err = db.get_proxy(ctx, filter).await.unwrap_err();
-        assert_eq!(err.kind(), MemoryProxyDBErrorKind::Mismatch);
+        assert_eq!(err.kind(), MemoryProxyDBQueryErrorKind::Mismatch);
     }
 
     #[tokio::test]

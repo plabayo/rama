@@ -1353,4 +1353,48 @@ mod tests {
         assert_eq!(proxies.len(), 1);
         assert_eq!(proxies[0].id, "2");
     }
+
+    #[tokio::test]
+    async fn test_proxy_db_happy_path_any_country_city() {
+        let mut db = ProxyDB::new();
+        let mut reader = ProxyCsvRowReader::raw(
+            "1,1,,1,,,,,authority,,US,New York,,\n2,1,,1,,,,,authority,,*,*,,",
+        );
+        while let Some(proxy) = reader.next().await.unwrap() {
+            db.append(proxy).unwrap();
+        }
+
+        let mut query = db.query();
+        query.tcp(true).http(true).country("US").city("new york");
+
+        let proxies: Vec<_> = query
+            .execute()
+            .unwrap()
+            .iter()
+            .sorted_by(|a, b| a.id.cmp(&b.id))
+            .collect();
+        assert_eq!(proxies.len(), 2);
+        assert_eq!(proxies[0].id, "1");
+        assert_eq!(proxies[1].id, "2");
+
+        query.reset().country("US").city("Los Angeles");
+        let proxies: Vec<_> = query
+            .execute()
+            .unwrap()
+            .iter()
+            .sorted_by(|a, b| a.id.cmp(&b.id))
+            .collect();
+        assert_eq!(proxies.len(), 1);
+        assert_eq!(proxies[0].id, "2");
+
+        query.reset().city("Ghent");
+        let proxies: Vec<_> = query
+            .execute()
+            .unwrap()
+            .iter()
+            .sorted_by(|a, b| a.id.cmp(&b.id))
+            .collect();
+        assert_eq!(proxies.len(), 1);
+        assert_eq!(proxies[0].id, "2");
+    }
 }
