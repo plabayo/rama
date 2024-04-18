@@ -281,12 +281,6 @@ impl MemoryProxyDB {
             query.udp(true);
             query.socks5(true);
         } else {
-            // NOTE: we do not test whether http/socks5 is supported,
-            // as we assume that the proxy supports at least one of them.
-            // It might be good to update venndb to also allow such variant checks...
-            // For now however I think that's a safe assumption to make
-            // as either way rama will not support something other then the
-            // HTTP/Socks5 proxies for the time being.
             query.tcp(true);
         }
 
