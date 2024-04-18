@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::{convert::Infallible, ops::Deref, str::FromStr};
 use unicode_normalization::UnicodeNormalization;
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 /// A string filter that normalizes the string prior to consumption.
 ///
 /// Normalizations:
@@ -31,6 +31,23 @@ impl StringFilter {
     /// Convert the string filter into the inner string.
     pub fn into_inner(self) -> String {
         self.0
+    }
+}
+
+impl PartialEq for StringFilter {
+    fn eq(&self, other: &Self) -> bool {
+        match (self.0.as_str(), other.0.as_str()) {
+            ("*", _) | (_, "*") => true,
+            _ => self.0 == other.0,
+        }
+    }
+}
+
+impl Eq for StringFilter {}
+
+impl std::hash::Hash for StringFilter {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash(state);
     }
 }
 
@@ -175,5 +192,36 @@ mod tests {
 
         let filter: StringFilter = "hello".into();
         assert!(!filter.is_any());
+    }
+
+    #[test]
+    fn test_string_filter_eq_cases() {
+        for (a, b) in [
+            ("hello", "hello"),
+            ("hello", "HELLO"),
+            ("HELLO", "hello"),
+            ("HELLO", "HELLO"),
+            (" foo", "foo "),
+            ("foo ", " foo"),
+            (" FOO ", " foo"),
+            ("*", "*"),
+            ("*", "foo"),
+            ("foo", "*"),
+            ("  * ", "foo"),
+            ("foo", "  * "),
+        ] {
+            let a: StringFilter = a.into();
+            let b: StringFilter = b.into();
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn test_string_filter_neq() {
+        for (a, b) in [("hello", "world"), ("world", "hello")] {
+            let a: StringFilter = a.into();
+            let b: StringFilter = b.into();
+            assert_ne!(a, b);
+        }
     }
 }

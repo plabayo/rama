@@ -12,7 +12,7 @@ pub use str::StringFilter;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// The credentials to use to authenticate with the proxy.
 pub enum ProxyCredentials {
     /// Basic authentication
@@ -229,6 +229,11 @@ impl MemoryProxyDB {
     /// Return the number of proxies in the database.
     pub fn len(&self) -> usize {
         self.data.len()
+    }
+
+    /// Rerturns if the database is empty.
+    pub fn is_empty(&self) -> bool {
+        self.data.is_empty()
     }
 
     fn query_from_filter(
@@ -596,7 +601,7 @@ mod tests {
             }
             assert!(proxy.udp);
             assert!(proxy.socks5);
-            found_ids.push(proxy.id.clone());
+            found_ids.push(proxy.id);
         }
         assert_eq!(found_ids.len(), 14);
         assert_eq!(
@@ -617,7 +622,7 @@ mod tests {
                 continue;
             }
             assert!(proxy.tcp);
-            found_ids.push(proxy.id.clone());
+            found_ids.push(proxy.id);
         }
         assert_eq!(found_ids.len(), 30);
         assert_eq!(
@@ -642,12 +647,12 @@ mod tests {
             if found_ids.contains(&proxy.id) {
                 continue;
             }
-            found_ids.push(proxy.id.clone());
+            found_ids.push(proxy.id);
         }
-        assert_eq!(found_ids.len(), 30);
+        assert_eq!(found_ids.len(), 5);
         assert_eq!(
             found_ids.iter().sorted().join(","),
-            r#"1043547900,1333564166,1393984890,1549558402,1629940602,17693162,2012271852,2339597854,2436687663,2503805829,2503885092,260229916,2692540368,295238804,2998884635,3012515011,3400641131,35672966,3813409672,3904077149,3916451868,393695089,4064485987,4076081397,4077606290,4157991939,838438595,878701584,913889340,915185154"#,
+            r#"2012271852,2436687663,2503885092,260229916,35672966"#,
         );
     }
 
@@ -661,7 +666,6 @@ mod tests {
             residential: Some(true),
             ..Default::default()
         };
-        // 2012271852,1,TRUE,true,1,TRUE,true,true,209.19.77.203:6481,poolJ,*,*,Sprint,Basic dXNlcjM6cGFzczE5
         for _ in 0..50 {
             let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
             assert_eq!(proxy.id, "2012271852");
