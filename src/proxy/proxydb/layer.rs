@@ -111,7 +111,7 @@ pub struct ProxyDBService<S, D, P = ()> {
     predicate: P,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Default)]
 /// The modus operandi to decide how to deal with a missing [`ProxyFilter`] in the [`Context`]
 /// when selecting a [`Proxy`] from the [`ProxyDB`].
 ///
@@ -125,6 +125,8 @@ pub enum ProxySelectMode {
     Default,
     /// The [`ProxyFilter`] is required, and if not present, an error is returned.
     Required,
+    /// The [`ProxyFilter`] is optional, and if not present, the provided fallback [`ProxyFilter`] is used.
+    Fallback(ProxyFilter),
 }
 
 #[derive(Debug)]
@@ -196,7 +198,7 @@ where
         Self {
             inner: self.inner.clone(),
             db: self.db.clone(),
-            mode: self.mode,
+            mode: self.mode.clone(),
             predicate: self.predicate.clone(),
         }
     }
@@ -260,6 +262,9 @@ where
                     .cloned()
                     .ok_or(ProxySelectError::MissingFilter)?,
             ),
+            ProxySelectMode::Fallback(ref filter) => {
+                ctx.get::<ProxyFilter>().cloned().or(Some(filter.clone()))
+            }
         };
 
         if let Some(filter) = maybe_filter {
@@ -305,6 +310,9 @@ where
                     .cloned()
                     .ok_or(ProxySelectError::MissingFilter)?,
             ),
+            ProxySelectMode::Fallback(ref filter) => {
+                ctx.get::<ProxyFilter>().cloned().or(Some(filter.clone()))
+            }
         };
 
         if let Some(filter) = maybe_filter {
@@ -343,7 +351,7 @@ where
     fn clone(&self) -> Self {
         Self {
             db: self.db.clone(),
-            mode: self.mode,
+            mode: self.mode.clone(),
             predicate: self.predicate.clone(),
         }
     }
@@ -385,7 +393,12 @@ where
     type Service = ProxyDBService<S, D, P>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        ProxyDBService::with_predicate(inner, self.db.clone(), self.mode, self.predicate.clone())
+        ProxyDBService::with_predicate(
+            inner,
+            self.db.clone(),
+            self.mode.clone(),
+            self.predicate.clone(),
+        )
     }
 }
 
@@ -550,6 +563,67 @@ mod tests {
 
         for (filter, expected_ids, req_info) in [
             (None, "1125300915,1259341971,1264821985,129108927,1316455915,1425588737,1571861931,1810781137,1836040682,1844412609,1885107293,2021561518,2079461709,2107229589,2141152822,2438596154,2497865606,2521901221,2551759475,2560727338,2593294918,2798907087,2854473221,2880295577,2909724448,2912880381,292096733,2951529660,3031533634,3187902553,3269411602,3269465574,339020035,3481200027,3498810974,3503691556,362091157,3679054656,371209663,3861736957,39048766,3976711563,4062553709,49590203,56402588,724884866,738626121,767809962,846528631,906390012", (Version::HTTP_11, "GET", "http://example.com")),
+            (
+                Some(ProxyFilter {
+                    country: Some("BE".into()),
+                    mobile: Some(true),
+                    residential: Some(true),
+                    ..Default::default()
+                }),
+                "2593294918",
+                (Version::HTTP_3, "GET", "https://example.com"),
+            ),
+        ] {
+            let mut seen_ids = Vec::new();
+            for _ in 0..5000 {
+                let mut ctx = Context::default();
+                if let Some(filter) = filter.clone() {
+                    ctx.insert(filter);
+                }
+
+                let req = Request::builder()
+                    .version(req_info.0)
+                    .method(req_info.1)
+                    .uri(req_info.2)
+                    .body(Body::empty())
+                    .unwrap();
+
+                let proxy = service.serve(ctx, req).await.unwrap();
+                if !seen_ids.contains(&proxy.id) {
+                    seen_ids.push(proxy.id);
+                }
+            }
+
+            let seen_ids = seen_ids.into_iter().sorted().join(",");
+            assert_eq!(seen_ids, expected_ids);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proxy_db_service_fallback() {
+        let db = memproxydb().await;
+
+        let service = ServiceBuilder::new()
+            .layer(ProxyDBLayer::new(
+                Arc::new(db),
+                // useful if you want to have a fallback that doesn't blow your budget
+                ProxySelectMode::Fallback(ProxyFilter {
+                    datacenter: Some(true),
+                    residential: Some(false),
+                    mobile: Some(false),
+                    ..Default::default()
+                }),
+            ))
+            .service_fn(|ctx: Context<()>, _: Request| async move {
+                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+            });
+
+        for (filter, expected_ids, req_info) in [
+            (
+                None,
+                "1316455915,2521901221,3679054656,3861736957,3976711563,4062553709,49590203",
+                (Version::HTTP_11, "GET", "http://example.com"),
+            ),
             (
                 Some(ProxyFilter {
                     country: Some("BE".into()),
