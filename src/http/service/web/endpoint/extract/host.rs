@@ -2,13 +2,9 @@ use std::ops::Deref;
 
 use super::FromRequestParts;
 use crate::http::{
-    dep::http::request::Parts,
-    header::{HeaderMap, FORWARDED},
-    StatusCode,
+    dep::http::request::Parts, headers::extract::extract_host_from_headers, StatusCode,
 };
 use crate::service::Context;
-
-const X_FORWARDED_HOST_HEADER_KEY: &str = "X-Forwarded-Host";
 
 /// Extractor that resolves the hostname of the request.
 ///
@@ -30,24 +26,8 @@ where
     type Rejection = StatusCode;
 
     async fn from_request_parts(_ctx: &Context<S>, parts: &Parts) -> Result<Self, Self::Rejection> {
-        if let Some(host) = parse_forwarded(&parts.headers) {
-            return Ok(Host(host.to_owned()));
-        }
-
-        if let Some(host) = parts
-            .headers
-            .get(X_FORWARDED_HOST_HEADER_KEY)
-            .and_then(|host| host.to_str().ok())
-        {
-            return Ok(Host(host.to_owned()));
-        }
-
-        if let Some(host) = parts
-            .headers
-            .get(http::header::HOST)
-            .and_then(|host| host.to_str().ok())
-        {
-            return Ok(Host(host.to_owned()));
+        if let Some(host) = extract_host_from_headers(&parts.headers) {
+            return Ok(Host(host));
         }
 
         if let Some(host) = parts.uri.host() {
@@ -56,23 +36,6 @@ where
 
         Err(StatusCode::BAD_REQUEST)
     }
-}
-
-#[allow(warnings)]
-fn parse_forwarded(headers: &HeaderMap) -> Option<&str> {
-    // if there are multiple `Forwarded` `HeaderMap::get` will return the first one
-    let forwarded_values = headers.get(FORWARDED)?.to_str().ok()?;
-
-    // get the first set of values
-    let first_value = forwarded_values.split(',').nth(0)?;
-
-    // find the value of the `host` field
-    first_value.split(';').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        key.trim()
-            .eq_ignore_ascii_case("host")
-            .then(|| value.trim().trim_matches('"'))
-    })
 }
 
 impl Deref for Host {
@@ -88,6 +51,7 @@ mod tests {
     use super::*;
 
     use crate::http::dep::http_body_util::BodyExt as _;
+    use crate::http::header::X_FORWARDED_HOST_HEADER_KEY;
     use crate::http::service::web::WebService;
     use crate::http::{Body, HeaderName, Request};
     use crate::service::Service;
@@ -146,44 +110,5 @@ mod tests {
     #[tokio::test]
     async fn uri_host() {
         test_host_from_request("example.com", vec![]).await;
-    }
-
-    #[test]
-    fn forwarded_parsing() {
-        // the basic case
-        let headers = header_map(&[(FORWARDED, "host=192.0.2.60;proto=http;by=203.0.113.43")]);
-        let value = parse_forwarded(&headers).unwrap();
-        assert_eq!(value, "192.0.2.60");
-
-        // is case insensitive
-        let headers = header_map(&[(FORWARDED, "host=192.0.2.60;proto=http;by=203.0.113.43")]);
-        let value = parse_forwarded(&headers).unwrap();
-        assert_eq!(value, "192.0.2.60");
-
-        // ipv6
-        let headers = header_map(&[(FORWARDED, "host=\"[2001:db8:cafe::17]:4711\"")]);
-        let value = parse_forwarded(&headers).unwrap();
-        assert_eq!(value, "[2001:db8:cafe::17]:4711");
-
-        // multiple values in one header
-        let headers = header_map(&[(FORWARDED, "host=192.0.2.60, host=127.0.0.1")]);
-        let value = parse_forwarded(&headers).unwrap();
-        assert_eq!(value, "192.0.2.60");
-
-        // multiple header values
-        let headers = header_map(&[
-            (FORWARDED, "host=192.0.2.60"),
-            (FORWARDED, "host=127.0.0.1"),
-        ]);
-        let value = parse_forwarded(&headers).unwrap();
-        assert_eq!(value, "192.0.2.60");
-    }
-
-    fn header_map(values: &[(HeaderName, &str)]) -> HeaderMap {
-        let mut headers = HeaderMap::new();
-        for (key, value) in values {
-            headers.append(key, value.parse().unwrap());
-        }
-        headers
     }
 }

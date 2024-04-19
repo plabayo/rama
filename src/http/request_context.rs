@@ -1,4 +1,6 @@
-use super::{dep::http::request::Parts, Request, Version};
+use super::{
+    dep::http::request::Parts, headers::extract::extract_host_from_headers, Request, Version,
+};
 use crate::uri::Scheme;
 
 #[derive(Debug, Clone)]
@@ -65,7 +67,8 @@ impl From<&Parts> for RequestContext {
         let uri = &parts.uri;
 
         let scheme = uri.scheme().into();
-        let host = uri.host().map(str::to_owned);
+        let host =
+            extract_host_from_headers(&parts.headers).or_else(|| uri.host().map(str::to_owned));
         let port = uri.port().map(u16::from);
         let http_version = parts.version;
 
@@ -83,7 +86,8 @@ impl<Body> From<&Request<Body>> for RequestContext {
         let uri = req.uri();
 
         let scheme = uri.scheme().into();
-        let host = uri.host().map(str::to_owned);
+        let host =
+            extract_host_from_headers(req.headers()).or_else(|| uri.host().map(str::to_owned));
         let port = uri.port().map(u16::from);
         let http_version = req.version();
 
