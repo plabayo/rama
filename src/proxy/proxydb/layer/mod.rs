@@ -9,6 +9,85 @@
 //! [`ProxyDB`]: crate::proxy::ProxyDB
 //! [`Context`]: crate::service::Context
 //! [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
+//!
+//! # Example
+//!
+//! ```rust
+//! use rama::{
+//!    http::{Body, Version, Request},
+//!    proxy::{
+//!         MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader, Proxy,
+//!         layer::{ProxyDBLayer, ProxySelectMode},
+//!         ProxyFilter,
+//!    },
+//!    service::{Context, ServiceBuilder, Service, Layer},
+//! };
+//! use itertools::Itertools;
+//! use std::{convert::Infallible, sync::Arc};
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let db = MemoryProxyDB::try_from_iter([
+//!         Proxy {
+//!             id: "42".to_owned(),
+//!             tcp: true,
+//!             udp: true,
+//!             http: true,
+//!             socks5: true,
+//!             datacenter: false,
+//!             residential: true,
+//!             mobile: true,
+//!             authority: "12.34.12.34:8080".to_owned(),
+//!             pool_id: None,
+//!             country: Some("*".into()),
+//!             city: Some("*".into()),
+//!             carrier: Some("*".into()),
+//!             credentials: None,
+//!         },
+//!         Proxy {
+//!             id: "100".to_owned(),
+//!             tcp: true,
+//!             udp: false,
+//!             http: true,
+//!             socks5: false,
+//!             datacenter: true,
+//!             residential: false,
+//!             mobile: false,
+//!             authority: "123.123.123.123:8080".to_owned(),
+//!             pool_id: None,
+//!             country: Some("US".into()),
+//!             city: None,
+//!             carrier: None,
+//!             credentials: None,
+//!         },
+//!     ])
+//!     .unwrap();
+//!     
+//!     let service = ServiceBuilder::new()
+//!         .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Default))
+//!         .service_fn(|ctx: Context<()>, _: Request| async move {
+//!             Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+//!         });
+//!     
+//!     let mut ctx = Context::default();
+//!     ctx.insert(ProxyFilter {
+//!         country: Some("BE".into()),
+//!         mobile: Some(true),
+//!         residential: Some(true),
+//!         ..Default::default()
+//!     });
+//!     
+//!     let req = Request::builder()
+//!         .version(Version::HTTP_3)
+//!         .method("GET")
+//!         .uri("https://example.com")
+//!         .body(Body::empty())
+//!         .unwrap();
+//!     
+//!     let proxy = service.serve(ctx, req).await.unwrap();
+//!     assert_eq!(proxy.id, "42");
+//! }
+//! ```
 
 use crate::{
     http::{Request, RequestContext},
@@ -307,5 +386,405 @@ where
 
     fn layer(&self, inner: S) -> Self::Service {
         ProxyDBService::with_predicate(inner, self.db.clone(), self.mode, self.predicate.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        http::{Body, Version},
+        proxy::{MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader},
+        service::ServiceBuilder,
+    };
+    use itertools::Itertools;
+    use std::{convert::Infallible, sync::Arc};
+
+    #[tokio::test]
+    async fn test_proxy_db_default_happy_path_example() {
+        let db = MemoryProxyDB::try_from_iter([
+            Proxy {
+                id: "42".to_owned(),
+                tcp: true,
+                udp: true,
+                http: true,
+                socks5: true,
+                datacenter: false,
+                residential: true,
+                mobile: true,
+                authority: "12.34.12.34:8080".to_owned(),
+                pool_id: None,
+                country: Some("*".into()),
+                city: Some("*".into()),
+                carrier: Some("*".into()),
+                credentials: None,
+            },
+            Proxy {
+                id: "100".to_owned(),
+                tcp: true,
+                udp: false,
+                http: true,
+                socks5: false,
+                datacenter: true,
+                residential: false,
+                mobile: false,
+                authority: "123.123.123.123:8080".to_owned(),
+                pool_id: None,
+                country: Some("US".into()),
+                city: None,
+                carrier: None,
+                credentials: None,
+            },
+        ])
+        .unwrap();
+
+        let service = ServiceBuilder::new()
+            .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Default))
+            .service_fn(|ctx: Context<()>, _: Request| async move {
+                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+            });
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyFilter {
+            country: Some("BE".into()),
+            mobile: Some(true),
+            residential: Some(true),
+            ..Default::default()
+        });
+
+        let req = Request::builder()
+            .version(Version::HTTP_3)
+            .method("GET")
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let proxy = service.serve(ctx, req).await.unwrap();
+        assert_eq!(proxy.id, "42");
+    }
+
+    const RAW_CSV_DATA: &str = include_str!("../test_proxydb_rows.csv");
+
+    async fn memproxydb() -> MemoryProxyDB {
+        let mut reader = ProxyCsvRowReader::raw(RAW_CSV_DATA);
+        let mut rows = Vec::new();
+        while let Some(proxy) = reader.next().await.unwrap() {
+            rows.push(proxy);
+        }
+        MemoryProxyDB::try_from_rows(rows).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_proxy_db_service_optional() {
+        let db = memproxydb().await;
+
+        let service = ServiceBuilder::new()
+            .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Optional))
+            .service_fn(|ctx: Context<()>, _: Request| async move {
+                Ok::<_, Infallible>(ctx.get::<Proxy>().cloned())
+            });
+
+        for (filter, expected_id, req) in [
+            (
+                None,
+                None,
+                Request::builder()
+                    .version(Version::HTTP_11)
+                    .method("GET")
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+            (
+                Some(ProxyFilter {
+                    id: Some("3031533634".to_owned()),
+                    ..Default::default()
+                }),
+                Some("3031533634".to_owned()),
+                Request::builder()
+                    .version(Version::HTTP_11)
+                    .method("GET")
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+            (
+                Some(ProxyFilter {
+                    country: Some("BE".into()),
+                    mobile: Some(true),
+                    residential: Some(true),
+                    ..Default::default()
+                }),
+                Some("2593294918".to_owned()),
+                Request::builder()
+                    .version(Version::HTTP_3)
+                    .method("GET")
+                    .uri("https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        ] {
+            let mut ctx = Context::default();
+            if let Some(filter) = filter {
+                ctx.insert(filter);
+            }
+
+            let maybe_proxy = service.serve(ctx, req).await.unwrap();
+
+            assert_eq!(
+                maybe_proxy.map(|p| p.id).unwrap_or_default(),
+                expected_id.unwrap_or_default()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proxy_db_service_default() {
+        let db = memproxydb().await;
+
+        let service = ServiceBuilder::new()
+            .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Default))
+            .service_fn(|ctx: Context<()>, _: Request| async move {
+                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+            });
+
+        for (filter, expected_ids, req_info) in [
+            (None, "1125300915,1259341971,1264821985,129108927,1316455915,1425588737,1571861931,1810781137,1836040682,1844412609,1885107293,2021561518,2079461709,2107229589,2141152822,2438596154,2497865606,2521901221,2551759475,2560727338,2593294918,2798907087,2854473221,2880295577,2909724448,2912880381,292096733,2951529660,3031533634,3187902553,3269411602,3269465574,339020035,3481200027,3498810974,3503691556,362091157,3679054656,371209663,3861736957,39048766,3976711563,4062553709,49590203,56402588,724884866,738626121,767809962,846528631,906390012", (Version::HTTP_11, "GET", "http://example.com")),
+            (
+                Some(ProxyFilter {
+                    country: Some("BE".into()),
+                    mobile: Some(true),
+                    residential: Some(true),
+                    ..Default::default()
+                }),
+                "2593294918",
+                (Version::HTTP_3, "GET", "https://example.com"),
+            ),
+        ] {
+            let mut seen_ids = Vec::new();
+            for _ in 0..5000 {
+                let mut ctx = Context::default();
+                if let Some(filter) = filter.clone() {
+                    ctx.insert(filter);
+                }
+
+                let req = Request::builder()
+                    .version(req_info.0)
+                    .method(req_info.1)
+                    .uri(req_info.2)
+                    .body(Body::empty())
+                    .unwrap();
+
+                let proxy = service.serve(ctx, req).await.unwrap();
+                if !seen_ids.contains(&proxy.id) {
+                    seen_ids.push(proxy.id);
+                }
+            }
+
+            let seen_ids = seen_ids.into_iter().sorted().join(",");
+            assert_eq!(seen_ids, expected_ids);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proxy_db_service_required() {
+        let db = memproxydb().await;
+
+        let service = ServiceBuilder::new()
+            .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Required))
+            .service_fn(|ctx: Context<()>, _: Request| async move {
+                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+            });
+
+        for (filter, expected, req) in [
+            (
+                None,
+                Err(ProxySelectError::MissingFilter::<MemoryProxyDBQueryError, Infallible>),
+                Request::builder()
+                    .version(Version::HTTP_11)
+                    .method("GET")
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+            (
+                Some(ProxyFilter {
+                    country: Some("BE".into()),
+                    mobile: Some(true),
+                    residential: Some(true),
+                    ..Default::default()
+                }),
+                Ok("2593294918".to_owned()),
+                Request::builder()
+                    .version(Version::HTTP_3)
+                    .method("GET")
+                    .uri("https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+            (
+                Some(ProxyFilter {
+                    id: Some("FooBar".into()),
+                    ..Default::default()
+                }),
+                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
+                    MemoryProxyDBQueryError::not_found(),
+                )),
+                Request::builder()
+                    .version(Version::HTTP_3)
+                    .method("GET")
+                    .uri("https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+            (
+                Some(ProxyFilter {
+                    id: Some("1316455915".into()),
+                    country: Some("BE".into()),
+                    mobile: Some(true),
+                    residential: Some(true),
+                    ..Default::default()
+                }),
+                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
+                    MemoryProxyDBQueryError::mismatch(),
+                )),
+                Request::builder()
+                    .version(Version::HTTP_3)
+                    .method("GET")
+                    .uri("https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        ] {
+            let mut ctx = Context::default();
+            if let Some(filter) = filter {
+                ctx.insert(filter);
+            }
+
+            let proxy_result = service.serve(ctx, req).await;
+            match expected {
+                Ok(expected_id) => {
+                    assert_eq!(proxy_result.unwrap().id, expected_id);
+                }
+                Err(expected_err) => match (proxy_result.unwrap_err(), expected_err) {
+                    (ProxySelectError::MissingFilter, ProxySelectError::MissingFilter) => {}
+                    (ProxySelectError::ProxyDBError(a), ProxySelectError::ProxyDBError(b)) => {
+                        assert_eq!(a.kind(), b.kind())
+                    }
+                    (err, _) => panic!("Expected MissingFilter error: {:?}", err),
+                },
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn test_proxy_db_service_required_with_predicate() {
+        let db = memproxydb().await;
+
+        let service = ServiceBuilder::new()
+            .layer(ProxyDBLayer::with_predicate(
+                Arc::new(db),
+                ProxySelectMode::Required,
+                |proxy: &Proxy| proxy.mobile,
+            ))
+            .service_fn(|ctx: Context<()>, _: Request| async move {
+                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+            });
+
+        for (filter, expected, req) in [
+            (
+                None,
+                Err(ProxySelectError::MissingFilter::<MemoryProxyDBQueryError, Infallible>),
+                Request::builder()
+                    .version(Version::HTTP_11)
+                    .method("GET")
+                    .uri("http://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+            (
+                Some(ProxyFilter {
+                    country: Some("BE".into()),
+                    mobile: Some(true),
+                    residential: Some(true),
+                    ..Default::default()
+                }),
+                Ok("2593294918".to_owned()),
+                Request::builder()
+                    .version(Version::HTTP_3)
+                    .method("GET")
+                    .uri("https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+            (
+                Some(ProxyFilter {
+                    id: Some("FooBar".into()),
+                    ..Default::default()
+                }),
+                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
+                    MemoryProxyDBQueryError::not_found(),
+                )),
+                Request::builder()
+                    .version(Version::HTTP_3)
+                    .method("GET")
+                    .uri("https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+            (
+                Some(ProxyFilter {
+                    id: Some("1316455915".into()),
+                    country: Some("BE".into()),
+                    mobile: Some(true),
+                    residential: Some(true),
+                    ..Default::default()
+                }),
+                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
+                    MemoryProxyDBQueryError::mismatch(),
+                )),
+                Request::builder()
+                    .version(Version::HTTP_3)
+                    .method("GET")
+                    .uri("https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+            // match found, but due to custom predicate it won't check, given it is not mobile
+            (
+                Some(ProxyFilter {
+                    id: Some("1316455915".into()),
+                    ..Default::default()
+                }),
+                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
+                    MemoryProxyDBQueryError::mismatch(),
+                )),
+                Request::builder()
+                    .version(Version::HTTP_3)
+                    .method("GET")
+                    .uri("https://example.com")
+                    .body(Body::empty())
+                    .unwrap(),
+            ),
+        ] {
+            let mut ctx = Context::default();
+            if let Some(filter) = filter {
+                ctx.insert(filter);
+            }
+
+            let proxy_result = service.serve(ctx, req).await;
+            match expected {
+                Ok(expected_id) => {
+                    assert_eq!(proxy_result.unwrap().id, expected_id);
+                }
+                Err(expected_err) => match (proxy_result.unwrap_err(), expected_err) {
+                    (ProxySelectError::MissingFilter, ProxySelectError::MissingFilter) => {}
+                    (ProxySelectError::ProxyDBError(a), ProxySelectError::ProxyDBError(b)) => {
+                        assert_eq!(a.kind(), b.kind())
+                    }
+                    (err, _) => panic!("Expected MissingFilter error: {:?}", err),
+                },
+            }
+        }
     }
 }

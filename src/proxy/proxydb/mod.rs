@@ -494,13 +494,15 @@ impl std::fmt::Display for MemoryProxyDBQueryError {
 impl std::error::Error for MemoryProxyDBQueryError {}
 
 impl MemoryProxyDBQueryError {
-    fn not_found() -> Self {
+    /// Create a new error that indicates no proxy match could be found.
+    pub fn not_found() -> Self {
         MemoryProxyDBQueryError {
             kind: MemoryProxyDBQueryErrorKind::NotFound,
         }
     }
 
-    fn mismatch() -> Self {
+    /// Create a new error that indicates a proxy looked up by key had a config that did not match the given filters/requirements.
+    pub fn mismatch() -> Self {
         MemoryProxyDBQueryError {
             kind: MemoryProxyDBQueryErrorKind::Mismatch,
         }
