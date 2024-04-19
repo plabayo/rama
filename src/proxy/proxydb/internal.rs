@@ -1406,4 +1406,16 @@ mod tests {
         assert_eq!(proxies.len(), 1);
         assert_eq!(proxies[0].id, "2");
     }
+
+    #[tokio::test]
+    async fn test_proxy_db_invalid_row_cases() {
+        let mut db = ProxyDB::new();
+        let mut reader = ProxyCsvRowReader::raw("id1,1,,,,,,,authority,,,,\nid2,,1,,,,,,authority,,,,\nid3,,1,1,,,,,authority,,,,\nid4,,1,1,,,1,,authority,,,,\nid5,,1,1,,,1,,authority,,,,");
+        while let Some(proxy) = reader.next().await.unwrap() {
+            assert_eq!(
+                ProxyDBErrorKind::InvalidRow,
+                db.append(proxy).unwrap_err().kind
+            );
+        }
+    }
 }

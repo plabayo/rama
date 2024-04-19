@@ -301,17 +301,17 @@ impl ProxyDB for MemoryProxyDB {
                 None => Err(MemoryProxyDBQueryError::not_found()),
                 Some(proxy) => {
                     if proxy.is_match(&ctx, &filter) {
-                        Ok(proxy.clone())
+                        Ok(combine_proxy_filter(proxy, filter))
                     } else {
                         Err(MemoryProxyDBQueryError::mismatch())
                     }
                 }
             },
             None => {
-                let query = self.query_from_filter(ctx, filter);
-                match query.execute().map(|result| result.any()).cloned() {
+                let query = self.query_from_filter(ctx, filter.clone());
+                match query.execute().map(|result| result.any()) {
                     None => Err(MemoryProxyDBQueryError::not_found()),
-                    Some(proxy) => Ok(proxy),
+                    Some(proxy) => Ok(combine_proxy_filter(proxy, filter)),
                 }
             }
         }
@@ -328,25 +328,43 @@ impl ProxyDB for MemoryProxyDB {
                 None => Err(MemoryProxyDBQueryError::not_found()),
                 Some(proxy) => {
                     if proxy.is_match(&ctx, &filter) && predicate(proxy) {
-                        Ok(proxy.clone())
+                        Ok(combine_proxy_filter(proxy, filter))
                     } else {
                         Err(MemoryProxyDBQueryError::mismatch())
                     }
                 }
             },
             None => {
-                let query = self.query_from_filter(ctx, filter);
+                let query = self.query_from_filter(ctx, filter.clone());
                 match query
                     .execute()
                     .and_then(|result| result.filter(predicate))
                     .map(|result| result.any())
-                    .cloned()
                 {
                     None => Err(MemoryProxyDBQueryError::not_found()),
-                    Some(proxy) => Ok(proxy),
+                    Some(proxy) => Ok(combine_proxy_filter(proxy, filter)),
                 }
             }
         }
+    }
+}
+
+fn combine_proxy_filter(proxy: &Proxy, filter: ProxyFilter) -> Proxy {
+    Proxy {
+        id: proxy.id.clone(),
+        tcp: proxy.tcp,
+        udp: proxy.udp,
+        http: proxy.http,
+        socks5: proxy.socks5,
+        datacenter: proxy.datacenter,
+        residential: proxy.residential,
+        mobile: proxy.mobile,
+        authority: proxy.authority.clone(),
+        pool_id: filter.pool_id,
+        country: filter.country,
+        city: filter.city,
+        carrier: filter.carrier,
+        credentials: proxy.credentials.clone(),
     }
 }
 
@@ -734,4 +752,8 @@ mod tests {
             assert_eq!(proxy.id, "2593294918");
         }
     }
+
+    // TODO: test
+    // - that proxy filter values are applied to get proxy (instead of proxy fields, e.g. country)
+    // - get_proxy_if
 }
