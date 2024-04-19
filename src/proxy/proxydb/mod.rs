@@ -206,8 +206,6 @@ pub struct MemoryProxyDB {
     data: internal::ProxyDB,
 }
 
-// TODO: add proxy validation prior to creation of db!
-
 impl MemoryProxyDB {
     /// Create a new in-memory proxy database with the given proxies.
     pub fn try_from_rows(proxies: Vec<Proxy>) -> Result<Self, MemoryProxyDBInsertError> {
@@ -756,9 +754,89 @@ mod tests {
         }
     }
 
-    // TODO: test
-    // - that proxy filter values are applied to get proxy (instead of proxy fields, e.g. country)
-    // - get_proxy_if
+    #[tokio::test]
+    async fn test_memorydb_get_blocked_proxies() {
+        let db = memproxydb().await;
+        let ctx = h2_req_context();
+        let filter = ProxyFilter::default();
+
+        let mut blocked_proxies = vec![
+            "1125300915",
+            "1259341971",
+            "1264821985",
+            "129108927",
+            "1316455915",
+            "1425588737",
+            "1571861931",
+            "1810781137",
+            "1836040682",
+            "1844412609",
+            "1885107293",
+            "2021561518",
+            "2079461709",
+            "2107229589",
+            "2141152822",
+            "2438596154",
+            "2497865606",
+            "2521901221",
+            "2551759475",
+            "2560727338",
+            "2593294918",
+            "2798907087",
+            "2854473221",
+            "2880295577",
+            "2909724448",
+            "2912880381",
+            "292096733",
+            "2951529660",
+            "3031533634",
+            "3187902553",
+            "3269411602",
+            "3269465574",
+            "339020035",
+            "3481200027",
+            "3498810974",
+            "3503691556",
+            "362091157",
+            "3679054656",
+            "371209663",
+            "3861736957",
+            "39048766",
+            "3976711563",
+            "4062553709",
+            "49590203",
+            "56402588",
+            "724884866",
+            "738626121",
+            "767809962",
+            "846528631",
+            "906390012",
+        ];
+
+        {
+            let blocked_proxies = blocked_proxies.clone();
+
+            assert_eq!(
+                MemoryProxyDBQueryErrorKind::NotFound,
+                db.get_proxy_if(ctx.clone(), filter.clone(), move |proxy| {
+                    !blocked_proxies.contains(&proxy.id.as_str())
+                })
+                .await
+                .unwrap_err()
+                .kind()
+            );
+        }
+
+        let last_proxy_id = blocked_proxies.pop().unwrap();
+
+        let proxy = db
+            .get_proxy_if(ctx, filter.clone(), move |proxy| {
+                !blocked_proxies.contains(&proxy.id.as_str())
+            })
+            .await
+            .unwrap();
+        assert_eq!(proxy.id, last_proxy_id);
+    }
 
     #[tokio::test]
     async fn test_db_proxy_filter_any_use_filter_property() {
