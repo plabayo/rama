@@ -1,6 +1,6 @@
 //! Extract utilities to develop endpoint services efortless.
 
-use crate::http::{self, dep::http::request::Parts, IntoResponse};
+use crate::http::{self, dep::http::request::Parts, dep::mime, header, HeaderMap, IntoResponse};
 use crate::service::Context;
 use std::future::Future;
 
@@ -34,7 +34,7 @@ pub use typed_header::TypedHeader;
 
 mod body;
 #[doc(inline)]
-pub use body::{Body, Bytes, Json, Text};
+pub use body::{Body, Bytes, Form, Json, Text};
 
 mod private {
     #[derive(Debug, Clone, Copy)]
@@ -93,4 +93,22 @@ where
         let (parts, _) = req.into_parts();
         Self::from_request_parts(&ctx, &parts).await
     }
+}
+
+fn has_any_content_type(headers: &HeaderMap, expected_content_types: &[&mime::Mime]) -> bool {
+    let content_type = if let Some(content_type) = headers.get(header::CONTENT_TYPE) {
+        content_type
+    } else {
+        return false;
+    };
+
+    let content_type = if let Ok(content_type) = content_type.to_str() {
+        content_type
+    } else {
+        return false;
+    };
+
+    expected_content_types
+        .iter()
+        .any(|ct| content_type.starts_with(ct.as_ref()))
 }

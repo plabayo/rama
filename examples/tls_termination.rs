@@ -19,18 +19,16 @@
 //! The server will start and listen on `:8443`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v https://127.0.0.1:8443
+//! curl -k -v https://127.0.0.1:8443
 //! ```
 //!
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
 
+use pki_types::CertificateDer;
 // these dependencies are re-exported by rama for your convenience,
 // as to make it easy to use them and ensure that the versions remain compatible
 // (given most do not have a stable release yet)
-use rama::tls::rustls::dep::{
-    pki_types::{CertificateDer, PrivatePkcs8KeyDer},
-    rustls::ServerConfig,
-};
+use rama::tls::rustls::dep::{pki_types::PrivatePkcs8KeyDer, rustls::ServerConfig};
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
@@ -39,6 +37,7 @@ use rama::{
     tcp::{server::TcpListener, service::Forwarder},
     tls::rustls::server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
 };
+use rcgen::KeyPair;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::time::Duration;
@@ -61,7 +60,9 @@ async fn main() {
 
     // Create an issuer CA cert.
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-    let mut ca_params = rcgen::CertificateParams::new(Vec::new());
+    let ca_key_pair = KeyPair::generate_for(alg).expect("generate ca key pair");
+
+    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("create ca params");
     ca_params
         .distinguished_name
         .push(rcgen::DnType::OrganizationName, "Rustls Server Acceptor");
@@ -74,18 +75,19 @@ async fn main() {
         rcgen::KeyUsagePurpose::DigitalSignature,
         rcgen::KeyUsagePurpose::CrlSign,
     ];
-    ca_params.alg = alg;
-    let ca_cert = rcgen::Certificate::from_params(ca_params).unwrap();
+    let ca_cert = ca_params.self_signed(&ca_key_pair).expect("create ca cert");
 
     // Create a server end entity cert issued by the CA.
-    let mut server_ee_params = rcgen::CertificateParams::new(vec!["localhost".to_string()]);
+    let server_key_pair = KeyPair::generate_for(alg).expect("generate server key pair");
+    let mut server_ee_params = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+        .expect("create server ee params");
     server_ee_params.is_ca = rcgen::IsCa::NoCa;
     server_ee_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-    server_ee_params.alg = alg;
-    let server_cert = rcgen::Certificate::from_params(server_ee_params).unwrap();
-    let server_cert_der =
-        CertificateDer::from(server_cert.serialize_der_with_signer(&ca_cert).unwrap());
-    let server_key_der = PrivatePkcs8KeyDer::from(server_cert.serialize_private_key_der());
+    let server_cert = server_ee_params
+        .signed_by(&server_key_pair, &ca_cert, &ca_key_pair)
+        .expect("create server cert");
+    let server_cert_der: CertificateDer = server_cert.into();
+    let server_key_der = PrivatePkcs8KeyDer::from(server_key_pair.serialize_der());
 
     // create tls proxy
     shutdown.spawn_task_fn(|guard| async move {
@@ -103,7 +105,7 @@ async fn main() {
         let tls_server_config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(
-                vec![server_cert_der.clone()],
+                vec![server_cert_der],
                 PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned()).into(),
             )
             .expect("create tls server config");

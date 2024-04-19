@@ -14,14 +14,13 @@
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://www.example.com/
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-red-blue:secret' http://www.example.com/
 //! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' https://www.example.com/
-//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
-//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' -XPOST http://echo.example/lucky/7
 //! ```
-//! The psuedo API can be used as follows:
+//! The pseudo API can be used as follows:
 //!
 //! ```sh
-//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example/foo/bar
-//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-red-blue:secret' http://echo.example/foo/bar
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' http://echo.example.internal/foo/bar
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john-red-blue:secret' http://echo.example.internal/foo/bar
+//! curl -v -x http://127.0.0.1:8080 --proxy-user 'john:secret' -XPOST http://echo.example.internal/lucky/7
 //! ```
 //!
 //! You should see in all the above examples the responses from the server.
@@ -29,7 +28,7 @@
 //! If you want to see the HTTP traffic in action you can of course also use telnet instead:
 //!
 //! ```sh
-//! telnet 127.0.0.1:8080
+//! telnet 127.0.0.1 8080
 //! ```
 //!
 //! and then type:
@@ -65,14 +64,15 @@ use rama::{
         response::Json,
         server::HttpServer,
         service::web::{
-            extract::{FromRequestParts, Host, Path},
+            extract::{Host, Path},
             match_service,
         },
-        Body, IntoResponse, Request, Response, StatusCode,
+        Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
     rt::Executor,
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
-    tcp::utils::is_connection_error,
+    stream::layer::http::BodyLimitLayer,
+    tcp::{server::TcpListener, utils::is_connection_error},
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -102,11 +102,11 @@ async fn main() {
     // TODO: what about the hop headers?!
 
     graceful.spawn_task_fn(|guard| async move {
+        let tcp_service = TcpListener::build().bind("127.0.0.1:8080").await.expect("bind tcp proxy to 127.0.0.1:8080");
+
         let exec = Executor::graceful(guard.clone());
-        HttpServer::auto(exec)
-            .listen_graceful(
-                guard,
-                "127.0.0.1:8080",
+        let http_service = HttpServer::auto(exec)
+            .service(
                 ServiceBuilder::new()
                     .layer(TraceLayer::new_for_http())
                     // See [`ProxyAuthLayer::with_labels`] for more information,
@@ -114,7 +114,7 @@ async fn main() {
                     .layer(ProxyAuthLayer::basic(("john", "secret")).with_labels::<ProxyUsernameLabels>())
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
-                        DomainMatcher::new("echo.example"),
+                        DomainMatcher::new("echo.example.internal"),
                         Arc::new(match_service!{
                             HttpMatcher::post("/lucky/:number") => |path: Path<APILuckyParams>| async move {
                                 Json(json!({
@@ -137,9 +137,12 @@ async fn main() {
                         service_fn(http_connect_proxy),
                     ))
                     .service_fn(http_plain_proxy),
-            )
-            .await
-            .unwrap();
+            );
+
+            tcp_service.serve_graceful(guard, ServiceBuilder::new()
+                // protect the http proxy from too large bodies, both from request and response end
+                .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024))
+                .service(http_service)).await;
     });
 
     graceful
@@ -158,18 +161,17 @@ where
     // TODO: should we support http connect better?
     // e.g. by always adding the host
 
-    let (parts, body) = req.into_parts();
-    let host = match Host::from_request_parts(&ctx, &parts).await {
-        Ok(host) => host,
-        Err(err) => {
-            tracing::error!(error = %err, "error extracting host");
-            return Err(err.into_response());
+    match ctx
+        .get_or_insert_with::<RequestContext>(|| RequestContext::from(&req))
+        .host
+        .as_ref()
+    {
+        Some(host) => tracing::info!("accept CONNECT to {host}"),
+        None => {
+            tracing::error!("error extracting host");
+            return Err(StatusCode::BAD_REQUEST.into_response());
         }
-    };
-    let req = Request::from_parts(parts, body);
-
-    tracing::info!("accept CONNECT to {}", host.0);
-    ctx.insert(host);
+    }
 
     Ok((StatusCode::OK.into_response(), ctx, req))
 }

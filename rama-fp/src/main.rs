@@ -1,61 +1,79 @@
-use clap::{Parser, Subcommand};
+use argh::FromArgs;
 
 pub mod service;
 
-/// a fingerprinting service for ramae                   
-#[derive(Debug, Parser)] // requires `derive` feature
-#[command(name = "rama-fp")]
-#[command(about = "a fingerprinting service for rama", long_about = None)]
+#[derive(Debug, FromArgs)]
+/// a fingerprinting service for rama
 struct Cli {
     /// the interface to listen on
-    #[arg(short, long, default_value = "127.0.0.1")]
+    #[argh(option, short = 'i', default = "String::from(\"127.0.0.1\")")]
     interface: String,
 
     /// the port to listen on
-    #[arg(short, long, default_value = "8080")]
+    #[argh(option, short = 'p', default = "8080")]
     port: u16,
 
     /// the port to listen on for the TLS service
-    #[arg(short, long, default_value = "8443")]
+    #[argh(option, short = 's', default = "8443")]
     secure_port: u16,
+
     /// http version to serve FP Service from
-    #[arg(long, default_value = "auto")]
+    #[argh(option, default = "String::from(\"auto\")")]
     http_version: String,
 
-    #[command(subcommand)]
+    /// serve as an HaProxy
+    #[argh(switch, short = 'f')]
+    ha_proxy: bool,
+
+    #[argh(subcommand)]
     command: Option<Commands>,
 }
 
-#[derive(Debug, Subcommand, Default)]
+#[derive(Debug, FromArgs)]
+#[argh(subcommand)]
 enum Commands {
-    /// Run the regular FP Server
-    #[default]
-    Run,
-
-    /// Run an echo server
-    Echo,
+    Run(RunSubCommand),
+    Echo(EchoSubCommand),
 }
+
+impl Default for Commands {
+    fn default() -> Self {
+        Commands::Run(RunSubCommand {})
+    }
+}
+
+#[derive(FromArgs, Debug)]
+/// Run the regular FP Server
+#[argh(subcommand, name = "run")]
+struct RunSubCommand {}
+
+#[derive(FromArgs, Debug)]
+/// Run an echo server
+#[argh(subcommand, name = "echo")]
+struct EchoSubCommand {}
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let args = Cli::parse();
+    let args: Cli = argh::from_env();
 
     match args.command.unwrap_or_default() {
-        Commands::Run => {
+        Commands::Run(_) => {
             service::run(service::Config {
                 interface: args.interface,
                 port: args.port,
                 secure_port: args.secure_port,
                 http_version: args.http_version,
+                ha_proxy: args.ha_proxy,
             })
             .await?;
         }
-        Commands::Echo => {
+        Commands::Echo(_) => {
             service::echo(service::Config {
                 interface: args.interface,
                 port: args.port,
                 secure_port: args.secure_port,
                 http_version: args.http_version,
+                ha_proxy: args.ha_proxy,
             })
             .await?;
         }

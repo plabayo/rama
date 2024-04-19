@@ -15,7 +15,6 @@ use rama::{
         Body, IntoResponse, Request, Response, StatusCode,
     },
     service::Context,
-    stream::SocketInfo,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -67,6 +66,11 @@ pub async fn get_consent() -> impl IntoResponse {
                 </p>
                 <p>
                     Please note that we do not store IP information and we do not use third-party tracking cookies. However, it is possible that the telecom or hosting services used by you or us may track some personalized information, over which we have no control or desire. You can use utilities like the Unix `dig` command to analyze the traffic and determine what might be tracked.
+                </p>
+                <div>
+                <p>
+                    Hosting for this service is sponsored by
+                    <a href="https://fly.io">fly.io</a>.
                 </p>
             </div>
         </div>"##.to_owned()
@@ -385,7 +389,7 @@ pub async fn echo(ctx: Context<State>, req: Request) -> Json<serde_json::Value> 
         "scheme": request_info.scheme,
         "method": request_info.method,
         "path": request_info.path,
-        "ip": ctx.get::<SocketInfo>().unwrap().peer_addr(),
+        "ip": request_info.peer_addr,
         "headers": http_info.headers,
         "parsedQueryParams": query_params,
         "parsedBody": String::from_utf8_lossy(body.collect().await.unwrap().to_bytes().deref()),
@@ -516,6 +520,10 @@ impl From<RequestInfo> for Table {
                 ("Initiator".to_owned(), info.initiator.to_string()),
                 ("Path".to_owned(), info.path),
                 ("Uri".to_owned(), info.uri),
+                (
+                    "Peer Address".to_owned(),
+                    info.peer_addr.unwrap_or_default(),
+                ),
             ],
         }
     }

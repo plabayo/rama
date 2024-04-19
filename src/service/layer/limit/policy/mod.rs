@@ -34,7 +34,7 @@ use crate::service::Context;
 
 mod concurrent;
 #[doc(inline)]
-pub use concurrent::{ConcurrentPolicy, LimitReached};
+pub use concurrent::{ConcurrentCounter, ConcurrentPolicy, ConcurrentTracker, LimitReached};
 
 mod matcher;
 

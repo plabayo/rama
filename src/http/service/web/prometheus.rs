@@ -10,7 +10,7 @@
 use crate::http::{header, Body, Response, StatusCode};
 use prometheus::{Encoder, TextEncoder};
 
-/// Create a new [`WebService`] endpoint that serves [`prometheus`]` metrics.
+/// Create a new [`WebService`] endpoint that serves [`prometheus`] metrics.
 ///
 /// [`WebService`]: crate::http::service::web::WebService
 /// [`prometheus`]: https://crates.io/crates/prometheus

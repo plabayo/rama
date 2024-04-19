@@ -1,11 +1,8 @@
 use super::State;
 use rama::{
-    http::{
-        dep::http::request::Parts,
-        service::web::extract::{FromRequestParts, Host},
-        Request,
-    },
+    http::{dep::http::request::Parts, Request, RequestContext},
     service::Context,
+    stream::SocketInfo,
     tls::rustls::server::IncomingClientHello,
 };
 use serde::Serialize;
@@ -116,6 +113,7 @@ pub struct RequestInfo {
     pub initiator: Initiator,
     pub path: String,
     pub uri: String,
+    pub peer_addr: Option<String>,
 }
 
 pub async fn get_request_info(
@@ -125,18 +123,9 @@ pub async fn get_request_info(
     ctx: &Context<State>,
     parts: &Parts,
 ) -> RequestInfo {
-    let host = Host::from_request_parts(ctx, parts)
-        .await
-        .ok()
-        .map(|h| h.0)
-        .or_else(|| parts.uri.host().map(|v| v.to_string()))
-        .map(|host| {
-            if !host.contains(':') && parts.uri.port_u16().is_some() {
-                format!("{}:{}", host, parts.uri.port_u16().unwrap())
-            } else {
-                host
-            }
-        });
+    let host = ctx
+        .get::<RequestContext>()
+        .and_then(RequestContext::authority);
 
     RequestInfo {
         user_agent: parts
@@ -169,6 +158,7 @@ pub async fn get_request_info(
         initiator,
         path: parts.uri.path().to_owned(),
         uri: parts.uri.to_string(),
+        peer_addr: ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string()),
     }
 }
 

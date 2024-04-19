@@ -71,6 +71,43 @@ macro_rules! all_the_tuples_no_last_special_case {
     };
 }
 
+macro_rules! match_ignore_ascii_case_str {
+    (match ($s:expr) { $caseA:literal $(| $caseAVar:literal)* $(if $condA:expr)? => $retA:expr $(, $caseB:literal $(| $caseBVar:literal)* $(if $condB:expr)? => $retB:expr)* $(,)?}) => {
+        match_ignore_ascii_case_str!(match ($s) {
+            $caseA $(| $caseAVar)* $(if $condA)? => $retA,
+            $($caseB $(| $caseBVar)* $(if $condB)? => $retB,)*
+            _ => panic!("{}", format!("failed to match {}", $s)),
+        })
+    };
+    (match ($s:expr) { $caseA:literal $(| $caseAVar:literal)* $(if $condA:expr)? => $retA:expr $(, $caseB:literal $(| $caseBVar:literal)* $(if $condB:expr)? => $retB:expr)*, _ => $fallback:expr $(,)? }) => {
+        {
+            let s = ($s).trim();
+            if $($condA &&)? (s.eq_ignore_ascii_case($caseA) $(|| s.eq_ignore_ascii_case($caseAVar))*) {
+                $retA
+            }
+            $(
+                else if $($condB &&)? (s.eq_ignore_ascii_case($caseB) $(|| s.eq_ignore_ascii_case($caseBVar))*) {
+                    $retB
+                }
+            )*
+            else {
+                $fallback
+            }
+        }
+    };
+}
+
+// macro_rules! lazy_static {
+//     ($(static $name:ident: $ty:ty = $init:expr;)*) => {
+//         $(
+//             fn $name() -> &$ty {
+//                 static value: OnceLock<$ty> = OnceLock::new();
+//                 value.get_or_init(|| $init)
+//             }
+//         )*
+//     };
+// }
+
 /// Private API.
 #[doc(hidden)]
 #[macro_export]
@@ -124,4 +161,95 @@ macro_rules! define_inner_service_accessors {
             self.inner
         }
     };
+}
+
+#[cfg(test)]
+mod test {
+    #[test]
+    fn match_ignore_ascii_case_str_happy_simple() {
+        let s = "hello";
+        let result = match_ignore_ascii_case_str!(match (s) {
+            "hello" => true,
+            _ => false,
+        });
+        assert!(result);
+    }
+
+    #[test]
+    fn match_ignore_ascii_case_str_happy_mixed_case() {
+        let s = "HeLLo";
+        let result = match_ignore_ascii_case_str!(match (s) {
+            "hello" => true,
+            _ => false,
+        });
+        assert!(result);
+    }
+
+    #[test]
+    fn match_ignore_ascii_case_str_happy_multiple_cases() {
+        let s = "HeLLo";
+        let result = match_ignore_ascii_case_str!(match (s) {
+            "world" => 1,
+            "hello" => 2,
+            "!" => 3,
+            _ => 4,
+        });
+        assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn match_ignore_ascii_case_str_happy_variants() {
+        let result = match_ignore_ascii_case_str!(match ("world") {
+            "?" => 1,
+            "you" | "world" | "there" => 2,
+            "!" => 3,
+            _ => 4,
+        });
+        assert_eq!(result, 2);
+    }
+
+    #[test]
+    fn match_ignore_ascii_case_str_happy_fallback() {
+        let s = "HeLLo";
+        let result = match_ignore_ascii_case_str!(match (s) {
+            "world" => 1,
+            "!" => 2,
+            _ => 3,
+        });
+        assert_eq!(result, 3);
+    }
+
+    #[test]
+    fn match_ignore_ascii_case_str_condition() {
+        let s = "HeLLo";
+        let result = match_ignore_ascii_case_str!(match (s) {
+            "world" => 1,
+            "hello" if s.len() == 4 => 2,
+            "hello" => 3,
+            "!" => 4,
+            _ => 5,
+        });
+        assert_eq!(result, 3);
+    }
+
+    #[test]
+    fn match_ignore_ascii_case_str_happy_variants_condition() {
+        let result = match_ignore_ascii_case_str!(match ("world") {
+            "?" => 1,
+            "you" | "world" | "there" if false => 2,
+            "you" | "world" | "there" if "world".len() == 5 => 3,
+            "!" => 4,
+            _ => 5,
+        });
+
+        assert_eq!(result, 3);
+    }
+
+    #[test]
+    #[should_panic]
+    fn match_ignore_ascii_case_str_panic() {
+        match_ignore_ascii_case_str!(match ("hello") {
+            "world" => (),
+        })
+    }
 }

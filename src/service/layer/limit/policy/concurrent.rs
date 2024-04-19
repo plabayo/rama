@@ -17,7 +17,7 @@
 //! let service = service_fn(|_, _| async {
 //!     Ok::<_, Infallible>(())
 //! });
-//! let mut service = Limit::new(service, ConcurrentPolicy::new(2));
+//! let mut service = Limit::new(service, ConcurrentPolicy::max(2));
 //!
 //! let response = service.serve(Context::default(), ()).await;
 //! assert!(response.is_ok());
@@ -30,93 +30,95 @@ use std::sync::{Arc, Mutex};
 
 /// A policy that limits the number of concurrent requests.
 #[derive(Debug)]
-pub struct ConcurrentPolicy<B> {
-    max: usize,
-    current: Arc<Mutex<usize>>,
+pub struct ConcurrentPolicy<B, C> {
+    tracker: C,
     backoff: B,
 }
 
-impl<B> Clone for ConcurrentPolicy<B>
+impl<B, C> Clone for ConcurrentPolicy<B, C>
 where
     B: Clone,
+    C: Clone,
 {
     fn clone(&self) -> Self {
         ConcurrentPolicy {
-            max: self.max,
-            current: self.current.clone(),
+            tracker: self.tracker.clone(),
             backoff: self.backoff.clone(),
         }
     }
 }
 
-impl ConcurrentPolicy<()> {
-    /// Create a new concurrent policy,
-    /// which aborts the request if the limit is reached.
-    pub fn new(max: usize) -> Self {
+impl<B, C> ConcurrentPolicy<B, C> {
+    /// Create a new [`ConcurrentPolicy`], using the given [`ConcurrentTracker`],
+    /// and the given [`Backoff`] policy.
+    ///
+    /// The [`Backoff`] policy is used to backoff when the concurrent request limit is reached.
+    pub fn with_backoff(backoff: B, tracker: C) -> Self {
+        ConcurrentPolicy { tracker, backoff }
+    }
+}
+
+impl<C> ConcurrentPolicy<(), C> {
+    /// Create a new [`ConcurrentPolicy`], using the given [`ConcurrentTracker`].
+    pub fn new(tracker: C) -> Self {
         ConcurrentPolicy {
-            max,
-            current: Arc::new(Mutex::new(0)),
+            tracker,
             backoff: (),
         }
     }
 }
 
-impl<B> ConcurrentPolicy<B> {
+impl ConcurrentPolicy<(), ConcurrentCounter> {
+    /// Create a new concurrent policy,
+    /// which aborts the request if the `max` limit is reached.
+    pub fn max(max: usize) -> Self {
+        ConcurrentPolicy {
+            tracker: ConcurrentCounter::new(max),
+            backoff: (),
+        }
+    }
+}
+
+impl<B> ConcurrentPolicy<B, ConcurrentCounter> {
     /// Create a new concurrent policy,
     /// which backs off if the limit is reached,
     /// using the given backoff policy.
-    pub fn with_backoff(max: usize, backoff: B) -> Self {
+    pub fn max_with_backoff(max: usize, backoff: B) -> Self {
         ConcurrentPolicy {
-            max,
-            current: Arc::new(Mutex::new(0)),
+            tracker: ConcurrentCounter::new(max),
             backoff,
         }
     }
 }
 
-/// The guard that releases the concurrent request limit.
-#[derive(Debug)]
-pub struct ConcurrentGuard {
-    current: Arc<Mutex<usize>>,
-}
-
-impl Drop for ConcurrentGuard {
-    fn drop(&mut self) {
-        let mut current = self.current.lock().unwrap();
-        *current -= 1;
-    }
-}
-
-impl<B, State, Request> Policy<State, Request> for ConcurrentPolicy<B>
+impl<B, C, State, Request> Policy<State, Request> for ConcurrentPolicy<B, C>
 where
     B: Backoff,
     State: Send + Sync + 'static,
     Request: Send + 'static,
+    C: ConcurrentTracker,
 {
-    type Guard = ConcurrentGuard;
-    type Error = LimitReached;
+    type Guard = C::Guard;
+    type Error = C::Error;
 
     async fn check(
         &self,
         ctx: Context<State>,
         request: Request,
     ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
-        {
-            let mut current = self.current.lock().unwrap();
-            if *current < self.max {
-                *current += 1;
+        let tracker_err = match self.tracker.try_access() {
+            Ok(guard) => {
                 return PolicyResult {
                     ctx,
                     request,
-                    output: PolicyOutput::Ready(ConcurrentGuard {
-                        current: self.current.clone(),
-                    }),
-                };
+                    output: PolicyOutput::Ready(guard),
+                }
             }
-        }
+            Err(err) => err,
+        };
 
         let output = if !self.backoff.next_backoff().await {
-            PolicyOutput::Abort(LimitReached)
+            PolicyOutput::Abort(tracker_err)
         } else {
             PolicyOutput::Retry
         };
@@ -129,42 +131,40 @@ where
     }
 }
 
-impl<B, State, Request> Policy<State, Request> for ConcurrentPolicy<Option<B>>
+impl<B, C, State, Request> Policy<State, Request> for ConcurrentPolicy<Option<B>, C>
 where
     B: Backoff,
+    C: ConcurrentTracker,
     State: Send + Sync + 'static,
     Request: Send + 'static,
 {
-    type Guard = ConcurrentGuard;
-    type Error = LimitReached;
+    type Guard = C::Guard;
+    type Error = C::Error;
 
     async fn check(
         &self,
         ctx: Context<State>,
         request: Request,
     ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
-        {
-            let mut current = self.current.lock().unwrap();
-            if *current < self.max {
-                *current += 1;
+        let tracker_err = match self.tracker.try_access() {
+            Ok(guard) => {
                 return PolicyResult {
                     ctx,
                     request,
-                    output: PolicyOutput::Ready(ConcurrentGuard {
-                        current: self.current.clone(),
-                    }),
-                };
+                    output: PolicyOutput::Ready(guard),
+                }
             }
-        }
+            Err(err) => err,
+        };
         let output = match &self.backoff {
             Some(backoff) => {
                 if !backoff.next_backoff().await {
-                    PolicyOutput::Abort(LimitReached)
+                    PolicyOutput::Abort(tracker_err)
                 } else {
                     PolicyOutput::Retry
                 }
             }
-            None => PolicyOutput::Abort(LimitReached),
+            None => PolicyOutput::Abort(tracker_err),
         };
         PolicyResult {
             ctx,
@@ -187,33 +187,97 @@ impl std::fmt::Display for LimitReached {
 
 impl std::error::Error for LimitReached {}
 
-impl<State, Request> Policy<State, Request> for ConcurrentPolicy<()>
+impl<State, Request, C> Policy<State, Request> for ConcurrentPolicy<(), C>
 where
     State: Send + Sync + 'static,
     Request: Send + 'static,
+    C: ConcurrentTracker,
 {
-    type Guard = ConcurrentGuard;
-    type Error = LimitReached;
+    type Guard = C::Guard;
+    type Error = C::Error;
 
     async fn check(
         &self,
         ctx: Context<State>,
         request: Request,
     ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
-        let mut current = self.current.lock().unwrap();
-        let output = if *current < self.max {
-            *current += 1;
-            PolicyOutput::Ready(ConcurrentGuard {
-                current: self.current.clone(),
-            })
-        } else {
-            PolicyOutput::Abort(LimitReached)
+        let output = match self.tracker.try_access() {
+            Ok(guard) => PolicyOutput::Ready(guard),
+            Err(err) => PolicyOutput::Abort(err),
         };
         PolicyResult {
             ctx,
             request,
             output,
         }
+    }
+}
+
+/// The tracker trait that can be implemented to provide custom concurrent request tracking.
+///
+/// By default [`ConcurrentCounter`] is provided, but in case you need multi-instance tracking,
+/// you can support that by implementing the [`ConcurrentTracker`] trait.
+pub trait ConcurrentTracker: Send + Sync + 'static {
+    /// The guard that is used to consume a resource and that is expected
+    /// to release the resource when dropped.
+    type Guard: Send + 'static;
+
+    /// The error that is returned when the concurrent request limit is reached,
+    /// which is also returned in case a used backoff failed.
+    type Error: Send + Sync + 'static;
+
+    /// Try to access the resource, returning a guard if successful,
+    /// or an error if the limit is reached.
+    ///
+    /// When the limit is reached and a backoff is used in the parent structure,
+    /// the backoff should tried to be used before returning the error.
+    fn try_access(&self) -> Result<Self::Guard, Self::Error>;
+}
+
+/// The default [`ConcurrentTracker`] that uses a counter to track the concurrent requests.
+#[derive(Debug, Clone)]
+pub struct ConcurrentCounter {
+    max: usize,
+    current: Arc<Mutex<usize>>,
+}
+
+impl ConcurrentCounter {
+    /// Create a new concurrent counter with the given maximum limit.
+    pub fn new(max: usize) -> Self {
+        ConcurrentCounter {
+            max,
+            current: Arc::new(Mutex::new(0)),
+        }
+    }
+}
+
+impl ConcurrentTracker for ConcurrentCounter {
+    type Guard = ConcurrentCounterGuard;
+    type Error = LimitReached;
+
+    fn try_access(&self) -> Result<Self::Guard, Self::Error> {
+        let mut current = self.current.lock().unwrap();
+        if *current < self.max {
+            *current += 1;
+            Ok(ConcurrentCounterGuard {
+                current: self.current.clone(),
+            })
+        } else {
+            Err(LimitReached)
+        }
+    }
+}
+
+/// The guard for [`ConcurrentCounter`] that releases the concurrent request limit.
+#[derive(Debug)]
+pub struct ConcurrentCounterGuard {
+    current: Arc<Mutex<usize>>,
+}
+
+impl Drop for ConcurrentCounterGuard {
+    fn drop(&mut self) {
+        let mut current = self.current.lock().unwrap();
+        *current -= 1;
     }
 }
 
@@ -236,8 +300,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_policy_zero() {
+        // for cases where you want to also block specific requests as part of your rate limiting,
+        // bit of a contrived example, but possible
+
+        let policy = ConcurrentPolicy::max(0);
+        assert_abort(policy.check(Context::default(), ()).await);
+    }
+
+    #[tokio::test]
     async fn concurrent_policy() {
-        let policy = ConcurrentPolicy::new(2);
+        let policy = ConcurrentPolicy::max(2);
 
         let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
         let guard_2 = assert_ready(policy.check(Context::default(), ()).await);
@@ -255,7 +328,7 @@ mod tests {
 
     #[tokio::test]
     async fn concurrent_policy_clone() {
-        let policy = ConcurrentPolicy::new(2);
+        let policy = ConcurrentPolicy::max(2);
         let policy_clone = policy.clone();
 
         let guard_1 = assert_ready(policy.check(Context::default(), ()).await);

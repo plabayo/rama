@@ -13,10 +13,8 @@ default-run = "rama"
 
 [dependencies]
 anyhow = { workspace = true }
-clap = { workspace = true, features = ["derive"] }
-crossterm = { workspace = true }
+argh = { workspace = true }
 rama = { version = "0.2", path = ".." }
-ratatui = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 
 [[bin]]

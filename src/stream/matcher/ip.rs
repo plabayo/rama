@@ -171,7 +171,7 @@ mod test {
     }
 
     #[test]
-    fn test_socket_matcher_http() {
+    fn test_ip_net_matcher_http() {
         let matcher = IpNetMatcher::new([127, 0, 0, 1]);
 
         let mut ctx = Context::default();
@@ -255,7 +255,7 @@ mod test {
     }
 
     #[test]
-    fn test_socket_matcher_socket_trait() {
+    fn test_ip_net_matcher_socket_trait() {
         let matcher = IpNetMatcher::new([127, 0, 0, 1]);
 
         let ctx = Context::default();

@@ -14,7 +14,7 @@
 //! The server will start and listen on `:8443`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v https://127.0.0.1:8443
+//! curl -k -v https://127.0.0.1:8443
 //! ```
 //!
 //! This won't work as the client is not authorized. You can use `curl` to interact with the service:
@@ -49,6 +49,7 @@ use rama::{
     tcp::server::TcpListener,
     tls::rustls::server::TlsAcceptorLayer,
 };
+use rcgen::KeyPair;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{sync::Arc, time::Duration};
@@ -174,15 +175,16 @@ async fn main() {
 fn generate_tls_cert_client() -> (CertificateDer<'static>, PrivatePkcs8KeyDer<'static>) {
     // Create a client end entity cert.
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-    let mut client_ee_params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]);
+    let client_key_pair = KeyPair::generate_for(alg).expect("generate client key pair");
+    let mut client_ee_params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()])
+        .expect("create client EE Params");
     client_ee_params.is_ca = rcgen::IsCa::NoCa;
     client_ee_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ClientAuth];
-    client_ee_params.alg = alg;
-    let client_cert =
-        rcgen::Certificate::from_params(client_ee_params).expect("create client cert");
-    let client_cert_der =
-        CertificateDer::from(client_cert.serialize_der().expect("serialize client cert"));
-    let client_key_der = PrivatePkcs8KeyDer::from(client_cert.serialize_private_key_der());
+    let client_cert = client_ee_params
+        .self_signed(&client_key_pair)
+        .expect("create client self-signed cert");
+    let client_cert_der = client_cert.into();
+    let client_key_der = PrivatePkcs8KeyDer::from(client_key_pair.serialize_der());
 
     (client_cert_der, client_key_der)
 }
@@ -194,8 +196,10 @@ fn generate_tls_cert_server() -> (
     PrivatePkcs8KeyDer<'static>,
 ) {
     // Create an issuer CA cert.
-    let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-    let mut ca_params = rcgen::CertificateParams::new(vec!["Example CA".to_owned()]);
+    let alg: &rcgen::SignatureAlgorithm = &rcgen::PKCS_ECDSA_P256_SHA256;
+    let ca_key_pair = KeyPair::generate_for(alg).expect("generate CA server key pair");
+    let mut ca_params =
+        rcgen::CertificateParams::new(vec!["Example CA".to_owned()]).expect("create CA Params");
     ca_params
         .distinguished_name
         .push(rcgen::DnType::OrganizationName, "Rustls Server Acceptor");
@@ -203,27 +207,25 @@ fn generate_tls_cert_server() -> (
         .distinguished_name
         .push(rcgen::DnType::CommonName, "Example CA");
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params.alg = alg;
-    let ca_cert = rcgen::Certificate::from_params(ca_params).expect("create ca (server) cert");
-    let ca_cert_der =
-        CertificateDer::from(ca_cert.serialize_der().expect("serialize ca (server) cert"));
+    let ca_cert = ca_params
+        .self_signed(&ca_key_pair)
+        .expect("create ca (server) self-signed cert");
+    let ca_cert_der = ca_cert.der().clone();
 
     // Create a server end entity cert issued by the CA.
-    let mut server_ee_params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()]);
+    let mut server_ee_params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()])
+        .expect("create server EE Params");
     server_ee_params.is_ca = rcgen::IsCa::NoCa;
     server_ee_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
     server_ee_params
         .distinguished_name
         .push(rcgen::DnType::CommonName, "Example Server");
-    server_ee_params.alg = alg;
-    let server_cert =
-        rcgen::Certificate::from_params(server_ee_params).expect("create server RC cert");
-    let server_cert_der = CertificateDer::from(
-        server_cert
-            .serialize_der_with_signer(&ca_cert)
-            .expect("serialize server cert"),
-    );
-    let server_key_der = PrivatePkcs8KeyDer::from(server_cert.serialize_private_key_der());
+    let server_key_pair = KeyPair::generate_for(alg).expect("generate tls server key pair");
+    let server_cert = server_ee_params
+        .signed_by(&server_key_pair, &ca_cert, &ca_key_pair)
+        .expect("create server self-signed cert");
+    let server_cert_der = server_cert.into();
+    let server_key_der = PrivatePkcs8KeyDer::from(server_key_pair.serialize_der());
 
     (ca_cert_der, server_cert_der, server_key_der)
 }

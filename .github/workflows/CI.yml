@@ -4,6 +4,7 @@ env:
   CARGO_TERM_COLOR: always
   RUST_TOOLCHAIN: stable
   RUST_TOOLCHAIN_MSRV: 1.75.0
+  RUST_TOOLCHAIN_BETA: beta
 
 on:
   push:
@@ -15,12 +16,10 @@ jobs:
   check-msrv:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: check
@@ -36,12 +35,10 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
       - name: check
@@ -58,13 +55,11 @@ jobs:
     runs-on: ubuntu-latest
     needs: [check, check-msrv]
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: cargo doc
         env:
           RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
@@ -74,232 +69,238 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
+        run: cargo test --all-features --workspace
+
+  test-beta:
+    needs: [check, check-msrv]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          command: test
-          args: --all-features --workspace
+          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all-features --workspace
 
   test:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
   test-windows-msrv:
     needs: [check, check-msrv]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
+        run: cargo test --all-features --workspace
+
+  test-windows-beta:
+    needs: [check, check-msrv]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          command: test
-          args: --all-features --workspace
+          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all-features --workspace
 
   test-windows:
     needs: [check, check-msrv]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
   test-macos-msrv:
     needs: [check, check-msrv]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
+        run: cargo test --all-features --workspace
+
+  test-macos-beta:
+    needs: [check, check-msrv]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          command: test
-          args: --all-features --workspace
+          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --all-features --workspace
 
   test-macos:
     needs: [check, check-msrv]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --workspace
+        run: cargo test --all-features --workspace
 
   test-docs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
+        run: cargo test --doc --all-features --workspace
+
+  test-examples-beta:
+    needs: [check, check-msrv]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          command: test
-          args: --all-features --doc --workspace
+          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run doc tests
+        run: cargo test --all-features --examples --workspace
 
   test-examples-msrv:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   test-examples:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
+        run: cargo test --all-features --examples --workspace
+
+  test-examples-windows-beta:
+    needs: [check, check-msrv]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          command: test
-          args: --all-features --examples --workspace
+          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run doc tests
+        run: cargo test --all-features --examples --workspace
 
   test-examples-windows-msrv:
     needs: [check, check-msrv]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   test-examples-windows:
     needs: [check, check-msrv]
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
+        run: cargo test --all-features --examples --workspace
+
+  test-examples-macos-beta:
+    needs: [check, check-msrv]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          command: test
-          args: --all-features --examples --workspace
+          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
+      - uses: Swatinem/rust-cache@v2
+      - name: Run doc tests
+        run: cargo test --all-features --examples --workspace
 
   test-examples-macos-msrv:
     needs: [check, check-msrv]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   test-examples-macos:
     needs: [check, check-msrv]
     runs-on: macos-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
-      - uses: Swatinem/rust-cache@v1
+      - uses: Swatinem/rust-cache@v2
       - name: Run doc tests
-        uses: actions-rs/cargo@v1
-        with:
-          command: test
-          args: --all-features --examples --workspace
+        run: cargo test --all-features --examples --workspace
 
   cargo-hack:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          profile: minimal
       - name: install cargo-hack
         uses: taiki-e/install-action@cargo-hack
       - name: cargo hack check
@@ -309,12 +310,10 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
-          override: true
-          profile: minimal
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-sort
         run: |
@@ -328,7 +327,7 @@ jobs:
     needs: [check, check-msrv]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v1
 
   semver-checks:
@@ -336,7 +335,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
       - name: Check semver
         uses: obi1kenobi/cargo-semver-checks-action@v2
         with:
@@ -344,7 +343,14 @@ jobs:
 
   deploy-rama-fp-docker:
     runs-on: ubuntu-latest
-    needs: [test, test-examples, test-msrv, test-examples-msrv, test-docs]
+    needs:
+      - test
+      - test-examples
+      - test-msrv
+      - test-beta
+      - test-examples-msrv
+      - test-examples-beta
+      - test-docs
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Login to Docker Hub
@@ -395,3 +401,28 @@ jobs:
           flyctl deploy --remote-only
         env:
           FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-cli-docker:
+    runs-on: ubuntu-latest
+    needs:
+      - test
+      - test-examples
+      - test-msrv
+      - test-beta
+      - test-examples-msrv
+      - test-examples-beta
+      - test-docs
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          push: true
+          tags: glendc/rama:latest
+          file: rama-cli/infra/Dockerfile

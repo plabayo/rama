@@ -121,7 +121,9 @@ pub mod stream;
 
 pub mod tcp;
 
+pub mod dns;
 pub mod tls;
+pub mod uri;
 
 pub mod http;
 

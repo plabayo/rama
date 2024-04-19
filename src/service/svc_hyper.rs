@@ -1,7 +1,6 @@
-use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
-
 use super::{Context, Service};
-use crate::http::{IntoResponse, Request};
+use crate::http::{BodyLimit, IntoResponse, Request, RequestContext};
+use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
 
 /// Wrapper service that implements [`hyper::service::Service`].
 ///
@@ -41,11 +40,25 @@ where
         let ctx = self.ctx.clone();
         let inner = self.inner.clone();
 
-        let req = req.map(crate::http::Body::new);
+        let body_limit = ctx.get::<BodyLimit>().cloned();
+
+        let req = match body_limit.and_then(|limit| limit.request()) {
+            Some(limit) => req.map(|body| crate::http::Body::with_limit(body, limit)),
+            None => req.map(crate::http::Body::new),
+        };
 
         Box::pin(async move {
-            let resp = inner.serve(ctx, req).await?;
-            Ok(resp.into_response())
+            let request_context = RequestContext::from(&req);
+
+            let mut ctx = ctx;
+            ctx.insert(request_context);
+
+            let resp = inner.serve(ctx, req).await.into_response();
+            Ok(match body_limit.and_then(|limit| limit.response()) {
+                Some(limit) => resp.map(|body| crate::http::Body::with_limit(body, limit)),
+                // If there is no limit, we can just return the response as is.
+                None => resp,
+            })
         })
     }
 }
