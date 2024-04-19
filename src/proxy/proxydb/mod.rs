@@ -8,6 +8,8 @@ pub use internal::{
     proxy_is_valid, Proxy, ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind,
 };
 
+pub mod layer;
+
 mod str;
 #[doc(inline)]
 pub use str::StringFilter;
@@ -198,6 +200,32 @@ pub trait ProxyDB: Send + Sync + 'static {
         filter: ProxyFilter,
         predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
+}
+
+impl<T> ProxyDB for std::sync::Arc<T>
+where
+    T: ProxyDB,
+{
+    type Error = T::Error;
+
+    #[inline]
+    fn get_proxy(
+        &self,
+        ctx: RequestContext,
+        filter: ProxyFilter,
+    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
+        (**self).get_proxy(ctx, filter)
+    }
+
+    #[inline]
+    fn get_proxy_if(
+        &self,
+        ctx: RequestContext,
+        filter: ProxyFilter,
+        predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
+    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
+        (**self).get_proxy_if(ctx, filter, predicate)
+    }
 }
 
 /// A fast in-memory ProxyDatabase that is the default choice for Rama.
