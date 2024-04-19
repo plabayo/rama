@@ -463,7 +463,7 @@ mod tests {
         assert_eq!(proxy.id, "42");
     }
 
-    const RAW_CSV_DATA: &str = include_str!("../test_proxydb_rows.csv");
+    const RAW_CSV_DATA: &str = include_str!("./test_proxydb_rows.csv");
 
     async fn memproxydb() -> MemoryProxyDB {
         let mut reader = ProxyCsvRowReader::raw(RAW_CSV_DATA);
