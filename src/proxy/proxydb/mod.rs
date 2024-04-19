@@ -266,6 +266,9 @@ impl MemoryProxyDB {
         if let Some(city) = filter.city {
             query.city(city);
         }
+        if let Some(value) = filter.carrier {
+            query.carrier(value);
+        }
 
         if let Some(value) = filter.datacenter {
             query.datacenter(value);
@@ -756,4 +759,157 @@ mod tests {
     // TODO: test
     // - that proxy filter values are applied to get proxy (instead of proxy fields, e.g. country)
     // - get_proxy_if
+
+    #[tokio::test]
+    async fn test_db_proxy_filter_any_use_filter_property() {
+        let db = MemoryProxyDB::try_from_iter([Proxy {
+            id: "1".to_owned(),
+            tcp: true,
+            udp: true,
+            http: true,
+            socks5: true,
+            datacenter: true,
+            residential: true,
+            mobile: true,
+            authority: "example.com".to_owned(),
+            pool_id: Some("*".into()),
+            country: Some("*".into()),
+            city: Some("*".into()),
+            carrier: Some("*".into()),
+            credentials: None,
+        }])
+        .unwrap();
+
+        let ctx = h2_req_context();
+
+        for filter in [
+            ProxyFilter {
+                id: Some("1".to_owned()),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(StringFilter::new("*")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(StringFilter::new("hq")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                country: Some(StringFilter::new("*")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                country: Some(StringFilter::new("US")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                city: Some(StringFilter::new("*")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                city: Some(StringFilter::new("NY")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                carrier: Some(StringFilter::new("*")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                carrier: Some(StringFilter::new("Telenet")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(StringFilter::new("hq")),
+                country: Some(StringFilter::new("US")),
+                city: Some(StringFilter::new("NY")),
+                carrier: Some(StringFilter::new("AT&T")),
+                ..Default::default()
+            },
+        ] {
+            let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
+            assert!(filter.id.map(|id| proxy.id == id).unwrap_or(true));
+            assert!(filter
+                .pool_id
+                .map(|pool_id| proxy.pool_id == Some(pool_id))
+                .unwrap_or(true));
+            assert!(filter
+                .country
+                .map(|country| proxy.country == Some(country))
+                .unwrap_or(true));
+            assert!(filter
+                .city
+                .map(|city| proxy.city == Some(city))
+                .unwrap_or(true));
+            assert!(filter
+                .carrier
+                .map(|carrier| proxy.carrier == Some(carrier))
+                .unwrap_or(true));
+        }
+    }
+
+    #[tokio::test]
+    async fn test_db_proxy_filter_any_only_matches_any_value() {
+        let db = MemoryProxyDB::try_from_iter([Proxy {
+            id: "1".to_owned(),
+            tcp: true,
+            udp: true,
+            http: true,
+            socks5: true,
+            datacenter: true,
+            residential: true,
+            mobile: true,
+            authority: "example.com".to_owned(),
+            pool_id: Some("hq".into()),
+            country: Some("US".into()),
+            city: Some("NY".into()),
+            carrier: Some("AT&T".into()),
+            credentials: None,
+        }])
+        .unwrap();
+
+        let ctx = h2_req_context();
+
+        for filter in [
+            ProxyFilter {
+                pool_id: Some(StringFilter::new("*")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                country: Some(StringFilter::new("*")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                city: Some(StringFilter::new("*")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                carrier: Some(StringFilter::new("*")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(StringFilter::new("*")),
+                country: Some(StringFilter::new("*")),
+                city: Some(StringFilter::new("*")),
+                carrier: Some(StringFilter::new("*")),
+                ..Default::default()
+            },
+        ] {
+            let err = match db.get_proxy(ctx.clone(), filter.clone()).await {
+                Ok(proxy) => {
+                    panic!(
+                        "expected error for filter {:?}, not found proxy: {:?}",
+                        filter, proxy
+                    );
+                }
+                Err(err) => err,
+            };
+            assert_eq!(
+                MemoryProxyDBQueryErrorKind::NotFound,
+                err.kind(),
+                "filter: {:?}",
+                filter
+            );
+        }
+    }
 }
