@@ -5,7 +5,7 @@ use std::{fmt, str::FromStr};
 use super::ProxyFilter;
 
 #[derive(Debug, Clone)]
-/// A username from which the [`ProxyFilter`]` is extracted and parsed.
+/// A username from which the [`ProxyFilter`] is extracted and parsed.
 ///
 /// The username is expected to be in the following format:
 ///
