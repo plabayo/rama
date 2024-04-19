@@ -106,7 +106,7 @@ pub struct RequestInfo {
     pub user_agent: Option<String>,
     pub version: String,
     pub scheme: String,
-    pub host: Option<String>,
+    pub authority: Option<String>,
     pub method: String,
     pub fetch_mode: FetchMode,
     pub resource_type: ResourceType,
@@ -123,7 +123,7 @@ pub async fn get_request_info(
     ctx: &Context<State>,
     parts: &Parts,
 ) -> RequestInfo {
-    let host = ctx
+    let authority = ctx
         .get::<RequestContext>()
         .and_then(RequestContext::authority);
 
@@ -146,7 +146,7 @@ pub async fn get_request_info(
                 }
                 .to_owned()
             }),
-        host,
+        authority,
         method: parts.method.as_str().to_owned(),
         fetch_mode: parts
             .headers
