@@ -1231,9 +1231,9 @@ dependencies = [
 
 [[package]]
 name = "rustls"
-version = "0.23.4"
+version = "0.23.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8c4d6d8ad9f2492485e13453acbb291dd08f64441b6609c491f1c2cd2c6b4fe1"
+checksum = "afabcee0551bd1aa3e18e5adbf2c0544722014b899adb31bd186ec638d3da97e"
 dependencies = [
  "log",
  "once_cell",
@@ -1681,9 +1681,9 @@ dependencies = [
 
 [[package]]
 name = "toml_edit"
-version = "0.22.11"
+version = "0.22.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fb686a972ccef8537b39eead3968b0e8616cb5040dbb9bba93007c8e07c9215f"
+checksum = "d3328d4f68a705b2a4498da1d580585d39a6510f98318a2cec3018a7ec61ddef"
 dependencies = [
  "indexmap",
  "serde",
