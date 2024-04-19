@@ -47,29 +47,16 @@ impl Encoding {
     }
 
     fn parse(s: &str, _supported_encoding: impl SupportedEncodings) -> Option<Encoding> {
-        if (s.eq_ignore_ascii_case("gzip") || s.eq_ignore_ascii_case("x-gzip"))
-            && _supported_encoding.gzip()
-        {
-            return Some(Encoding::Gzip);
+        match_ignore_ascii_case_str! {
+            match (s) {
+                "gzip" | "x-gzip" if _supported_encoding.gzip() => Some(Encoding::Gzip),
+                "deflate" if _supported_encoding.deflate() => Some(Encoding::Deflate),
+                "br" if _supported_encoding.br() => Some(Encoding::Brotli),
+                "zstd" if _supported_encoding.zstd() => Some(Encoding::Zstd),
+                "identity" => Some(Encoding::Identity),
+                _ => None,
+            }
         }
-
-        if s.eq_ignore_ascii_case("deflate") && _supported_encoding.deflate() {
-            return Some(Encoding::Deflate);
-        }
-
-        if s.eq_ignore_ascii_case("br") && _supported_encoding.br() {
-            return Some(Encoding::Brotli);
-        }
-
-        if s.eq_ignore_ascii_case("zstd") && _supported_encoding.zstd() {
-            return Some(Encoding::Zstd);
-        }
-
-        if s.eq_ignore_ascii_case("identity") {
-            return Some(Encoding::Identity);
-        }
-
-        None
     }
 
     #[cfg(feature = "compression")]

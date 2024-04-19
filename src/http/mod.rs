@@ -8,6 +8,10 @@ mod body_limit;
 #[doc(inline)]
 pub use body_limit::BodyLimit;
 
+mod request_context;
+#[doc(inline)]
+pub use request_context::RequestContext;
+
 pub mod utils;
 
 pub mod headers;
@@ -91,5 +95,5 @@ pub use self::dep::http::header::HeaderName;
 pub use self::dep::http::header::HeaderValue;
 pub use self::dep::http::method::Method;
 pub use self::dep::http::status::StatusCode;
-pub use self::dep::http::uri::Uri;
+pub use self::dep::http::uri::{Scheme, Uri};
 pub use self::dep::http::version::Version;

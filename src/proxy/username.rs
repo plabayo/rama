@@ -5,7 +5,7 @@ use std::{fmt, str::FromStr};
 use super::ProxyFilter;
 
 #[derive(Debug, Clone)]
-/// A username from which the [`ProxyFilter`]` is extracted and parsed.
+/// A username from which the [`ProxyFilter`] is extracted and parsed.
 ///
 /// The username is expected to be in the following format:
 ///
@@ -19,9 +19,9 @@ use super::ProxyFilter;
 /// Following keys are recognized:
 ///
 /// - `id`: The ID of the proxy to select, requires a value as ID;
-/// - `cc` or `country`: The country of the proxy, requires a value as country;
+/// - `country` or `country`: The country of the proxy, requires a value as country;
 /// - `pool`: The ID of the pool from which to select the proxy, requires a value as pool ID;
-/// - `dc` or `datacenter`: no value paired, sets the datacenter flag to `true`;
+/// - `datacenter` or `datacenter`: no value paired, sets the datacenter flag to `true`;
 /// - `residential`: no value paired, sets the residential flag to `true`;
 /// - `mobile`: no value paired, sets the mobile flag to `true`.
 ///
@@ -33,17 +33,18 @@ use super::ProxyFilter;
 /// ```rust
 /// use rama::proxy::UsernameConfig;
 ///
-/// let username = String::from("john-cc-us-dc");
+/// let username = String::from("john-country-us-datacenter-!residential");
 /// let username_cfg: UsernameConfig = username.parse().unwrap();
 ///
 /// // properties can be referenced
 /// assert_eq!(username_cfg.username(), "john");
 /// assert!(username_cfg.proxy_filter().unwrap().id.is_none());
-/// assert_eq!(username_cfg.proxy_filter().unwrap().country.as_deref(), Some("us"));
 /// assert!(username_cfg.proxy_filter().unwrap().pool_id.is_none());
-/// assert!(username_cfg.proxy_filter().unwrap().datacenter);
-/// assert!(!username_cfg.proxy_filter().unwrap().residential);
-/// assert!(!username_cfg.proxy_filter().unwrap().mobile);
+/// assert_eq!(username_cfg.proxy_filter().unwrap().country.as_deref(), Some("us"));
+/// assert_eq!(username_cfg.proxy_filter().unwrap().datacenter, Some(true));
+/// assert_eq!(username_cfg.proxy_filter().unwrap().residential, Some(false));
+/// assert!(username_cfg.proxy_filter().unwrap().mobile.is_none());
+/// assert!(username_cfg.proxy_filter().unwrap().carrier.is_none());
 ///
 /// // the parsed config can also be formatted into a username string once again
 /// let username_str = username_cfg.to_string();
@@ -55,11 +56,12 @@ use super::ProxyFilter;
 ///
 /// let filter = filter.unwrap();
 /// assert!(filter.id.is_none());
-/// assert_eq!(filter.country.as_deref(), Some("us"));
 /// assert!(filter.pool_id.is_none());
-/// assert!(filter.datacenter);
-/// assert!(!filter.residential);
-/// assert!(!filter.mobile);
+/// assert_eq!(filter.country.as_deref(), Some("us"));
+/// assert_eq!(filter.datacenter, Some(true));
+/// assert_eq!(filter.residential, Some(false));
+/// assert!(filter.mobile.is_none());
+/// assert!(filter.carrier.is_none());
 /// ```
 pub struct UsernameConfig<const C: char = '-'> {
     username: String,
@@ -70,7 +72,7 @@ pub struct UsernameConfig<const C: char = '-'> {
 ///
 /// This function can be used for cases where the separator is not known in advance,
 /// or where using a function like this is more convenient because you
-/// anyway need direct access to the username and the [`ProxyFilter`].
+/// anyway need direct acountryess to the username and the [`ProxyFilter`].
 ///
 /// See [`UsernameConfig`] for more information about the format and usage.
 pub fn parse_username_config(
@@ -101,26 +103,33 @@ pub fn parse_username_config(
         match ctx.take() {
             Some(key) => {
                 // handle the item as a value, which has to be matched to the previously read key
-                if key.eq_ignore_ascii_case("cc") || key.eq_ignore_ascii_case("country") {
-                    proxy_filter.country = Some(item.to_owned());
-                } else if key.eq_ignore_ascii_case("pool") {
-                    proxy_filter.pool_id = Some(item.to_owned());
-                } else if key.eq_ignore_ascii_case("id") {
-                    proxy_filter.id = Some(item.to_owned());
-                } else {
-                    return Err(UsernameConfigError::UnexpectedKey(key.to_owned()));
+                match_ignore_ascii_case_str! {
+                    match(key) {
+                        "id" => proxy_filter.id = Some(item.to_owned()),
+                        "pool" => proxy_filter.pool_id = Some(item.into()),
+                        "country" => proxy_filter.country = Some(item.into()),
+                        "city" => proxy_filter.city = Some(item.into()),
+                        "carrier" => proxy_filter.carrier = Some(item.into()),
+                        _ => return Err(UsernameConfigError::UnexpectedKey(key.to_owned())),
+                    }
                 }
             }
             None => {
-                // check for key-only flags first, and otherwise consider it as a key, requiring a matching value
-                if item.eq_ignore_ascii_case("dc") || item.eq_ignore_ascii_case("datacenter") {
-                    proxy_filter.datacenter = true;
-                } else if item.eq_ignore_ascii_case("mobile") {
-                    proxy_filter.mobile = true;
-                } else if item.eq_ignore_ascii_case("residential") {
-                    proxy_filter.residential = true;
+                // allow bool-keys to be negated
+                let (key, bval) = if let Some(key) = item.strip_prefix('!') {
+                    (key, false)
                 } else {
-                    ctx = Some(item);
+                    (item, true)
+                };
+
+                // check for key-only flags first, and otherwise consider it as a key, requiring a matching value
+                match_ignore_ascii_case_str! {
+                    match(key) {
+                        "datacenter" => proxy_filter.datacenter = Some(bval),
+                        "residential" => proxy_filter.residential = Some(bval),
+                        "mobile" => proxy_filter.mobile = Some(bval),
+                        _ => ctx = Some(item),
+                    }
                 }
             }
         }
@@ -184,19 +193,25 @@ impl<const C: char> fmt::Display for UsernameConfig<C> {
                 write!(f, "{0}id{0}{1}", C, id)?;
             }
             if let Some(country) = &filter.country {
-                write!(f, "{0}cc{0}{1}", C, country)?;
+                write!(f, "{0}country{0}{1}", C, country)?;
             }
             if let Some(pool_id) = &filter.pool_id {
                 write!(f, "{0}pool{0}{1}", C, pool_id)?;
             }
-            if filter.datacenter {
-                write!(f, "{0}dc", C)?;
+            match filter.datacenter {
+                Some(true) => write!(f, "{0}datacenter", C)?,
+                Some(false) => write!(f, "{0}!datacenter", C)?,
+                None => {}
             }
-            if filter.residential {
-                write!(f, "{0}residential", C)?;
+            match filter.residential {
+                Some(true) => write!(f, "{0}residential", C)?,
+                Some(false) => write!(f, "{0}!residential", C)?,
+                None => {}
             }
-            if filter.mobile {
-                write!(f, "{0}mobile", C)?;
+            match filter.mobile {
+                Some(true) => write!(f, "{0}mobile", C)?,
+                Some(false) => write!(f, "{0}!mobile", C)?,
+                None => {}
             }
         }
         Ok(())
@@ -204,7 +219,7 @@ impl<const C: char> fmt::Display for UsernameConfig<C> {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-/// Error that can occur when parsing a [`UsernameConfig`].
+/// Error that can ocountryur when parsing a [`UsernameConfig`].
 pub enum UsernameConfigError {
     /// The username is missing.
     MissingUsername,
@@ -233,6 +248,7 @@ impl std::error::Error for UsernameConfigError {}
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::proxy::StringFilter;
 
     #[test]
     fn test_username_config() {
@@ -245,156 +261,306 @@ mod test {
                 },
             ),
             (
-                "john-dc",
+                "john-datacenter",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
                         id: None,
+                        pool_id: None,
                         country: None,
+                        city: None,
+                        datacenter: Some(true),
+                        residential: None,
+                        mobile: None,
+                        carrier: None,
+                    }),
+                },
+            ),
+            (
+                "john-!datacenter",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: None,
                         pool_id: None,
-                        datacenter: true,
-                        residential: false,
-                        mobile: false,
+                        country: None,
+                        city: None,
+                        datacenter: Some(false),
+                        residential: None,
+                        mobile: None,
+                        carrier: None,
                     }),
                 },
             ),
             (
-                "john-cc-us-dc",
+                "john-country-us-datacenter",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
                         id: None,
-                        country: Some(String::from("us")),
                         pool_id: None,
-                        datacenter: true,
-                        residential: false,
-                        mobile: false,
+                        country: Some(StringFilter::from("us")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: None,
+                        mobile: None,
+                        carrier: None,
                     }),
                 },
             ),
             (
-                "john-cc-us-dc-pool-1",
+                "john-city-tokyo-residential",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
                         id: None,
-                        country: Some(String::from("us")),
-                        pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: false,
-                        mobile: false,
+                        pool_id: None,
+                        country: None,
+                        city: Some("tokyo".into()),
+                        datacenter: None,
+                        residential: Some(true),
+                        mobile: None,
+                        carrier: None,
                     }),
                 },
             ),
             (
-                "john-cc-us-dc-pool-1-residential",
+                "john-country-us-datacenter-pool-1",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
                         id: None,
-                        country: Some(String::from("us")),
-                        pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: false,
+                        pool_id: Some(StringFilter::from("1")),
+                        country: Some(StringFilter::from("us")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: None,
+                        mobile: None,
+                        carrier: None,
                     }),
                 },
             ),
             (
-                "john-cc-us-dc-pool-1-residential-mobile",
+                "john-country-us-datacenter-pool-1-residential",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
                         id: None,
-                        country: Some(String::from("us")),
-                        pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        pool_id: Some(StringFilter::from("1")),
+                        country: Some(StringFilter::from("us")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: None,
+                        carrier: None,
                     }),
                 },
             ),
             (
-                "john-cc-us-dc-pool-1-residential-mobile-id-1",
+                "john-country-us-datacenter-pool-1-residential-mobile",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
-                        id: Some(String::from("1")),
-                        country: Some(String::from("us")),
-                        pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        id: None,
+                        pool_id: Some(StringFilter::from("1")),
+                        country: Some(StringFilter::from("us")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
+                        carrier: None,
                     }),
                 },
             ),
             (
-                "john-cc-us-dc-pool-1-residential-mobile-id-1-cc-uk",
+                "john-country-us-datacenter-pool-1-residential-!mobile",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
-                        id: Some(String::from("1")),
-                        country: Some(String::from("uk")),
-                        pool_id: Some(String::from("1")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        id: None,
+                        pool_id: Some(StringFilter::from("1")),
+                        country: Some(StringFilter::from("us")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(false),
+                        carrier: None,
                     }),
                 },
             ),
             (
-                "john-cc-us-dc-pool-1-residential-mobile-id-1-cc-uk-pool-2",
+                "john-country-us-city-california-datacenter-pool-1-!residential-mobile",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
-                        id: Some(String::from("1")),
-                        country: Some(String::from("uk")),
-                        pool_id: Some(String::from("2")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        id: None,
+                        pool_id: Some(StringFilter::from("1")),
+                        country: Some(StringFilter::from("us")),
+                        city: Some(StringFilter::from("california")),
+                        datacenter: Some(true),
+                        residential: Some(false),
+                        mobile: Some(true),
+                        carrier: None,
                     }),
                 },
             ),
             (
-                "john-cc-us-dc-pool-1-residential-mobile-id-1-cc-uk-pool-2-dc",
+                "john-country-us-datacenter-pool-1-residential-mobile-id-1",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
                         id: Some(String::from("1")),
-                        country: Some(String::from("uk")),
-                        pool_id: Some(String::from("2")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        pool_id: Some(StringFilter::from("1")),
+                        country: Some(StringFilter::from("us")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
+                        carrier: None,
                     }),
                 },
             ),
             (
-                "john-cc-us-dc-pool-1-residential-mobile-id-1-cc-uk-pool-2-dc-residential",
+                "john-country-us-datacenter-pool-1-residential-mobile-carrier-bar-id-1",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
                         id: Some(String::from("1")),
-                        country: Some(String::from("uk")),
-                        pool_id: Some(String::from("2")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        pool_id: Some(StringFilter::from("1")),
+                        country: Some(StringFilter::from("us")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
+                        carrier: Some(StringFilter::from("bar")),
                     }),
                 },
             ),
             (
-                "john-cc-us-dc-pool-1-residential-mobile-id-1-cc-uk-pool-2-dc-residential-mobile",
+                "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk",
                 UsernameConfig::<'-'> {
                     username: String::from("john"),
                     filter: Some(ProxyFilter {
                         id: Some(String::from("1")),
-                        country: Some(String::from("uk")),
-                        pool_id: Some(String::from("2")),
-                        datacenter: true,
-                        residential: true,
-                        mobile: true,
+                        pool_id: Some(StringFilter::from("1")),
+                        country: Some(StringFilter::from("uk")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
+                        carrier: None,
+                    }),
+                },
+            ),
+            (
+                "john-country-us-!datacenter-pool-1-residential-mobile-id-1-country-uk",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        pool_id: Some(StringFilter::from("1")),
+                        country: Some(StringFilter::from("uk")),
+                        city: None,
+                        datacenter: Some(false),
+                        residential: Some(true),
+                        mobile: Some(true),
+                        carrier: None,
+                    }),
+                },
+            ),
+            (
+                "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        pool_id: Some(StringFilter::from("2")),
+                        country: Some(StringFilter::from("uk")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
+                        carrier: None,
+                    }),
+                },
+            ),
+            (
+                "john-country-us-datacenter-pool-1-!residential-mobile-id-1-country-uk-pool-2",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        pool_id: Some(StringFilter::from("2")),
+                        country: Some(StringFilter::from("uk")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(false),
+                        mobile: Some(true),
+                        carrier: None,
+                    }),
+                },
+            ),
+            (
+                "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2-datacenter",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        pool_id: Some(StringFilter::from("2")),
+                        country: Some(StringFilter::from("uk")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
+                        carrier: None,
+                    }),
+                },
+            ),
+            (
+                "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2-datacenter-residential",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        pool_id: Some(StringFilter::from("2")),
+                        country: Some(StringFilter::from("uk")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
+                        carrier: None,
+                    }),
+                },
+            ),
+            (
+                "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2-datacenter-residential-mobile",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        pool_id: Some(StringFilter::from("2")),
+                        country: Some(StringFilter::from("uk")),
+                        city: None,
+                        datacenter: Some(true),
+                        residential: Some(true),
+                        mobile: Some(true),
+                        carrier: None,
+                    }),
+                },
+            ),
+            (
+                "john-country-us-datacenter-pool-1-residential-mobile-id-1-country-uk-pool-2-!datacenter-!residential-!mobile",
+                UsernameConfig::<'-'> {
+                    username: String::from("john"),
+                    filter: Some(ProxyFilter {
+                        id: Some(String::from("1")),
+                        pool_id: Some(StringFilter::from("2")),
+                        country: Some(StringFilter::from("uk")),
+                        city: None,
+                        datacenter: Some(false),
+                        residential: Some(false),
+                        mobile: Some(false),
+                        carrier: None,
                     }),
                 },
             ),
@@ -411,7 +577,8 @@ mod test {
 
     #[test]
     fn test_username_config_error() {
-        let username_cfg: Result<UsernameConfig, UsernameConfigError> = "john-cc-us-dc-".parse();
+        let username_cfg: Result<UsernameConfig, UsernameConfigError> =
+            "john-country-us-datacenter-".parse();
         assert_eq!(
             UsernameConfigError::UnexpectedKey("".to_owned()),
             username_cfg.unwrap_err()
@@ -430,7 +597,7 @@ mod test {
         );
 
         let username_cfg: Result<UsernameConfig, UsernameConfigError> =
-            "john-cc-us-dc-pool".parse();
+            "john-country-us-datacenter-pool".parse();
         assert_eq!(
             UsernameConfigError::UnexpectedKey("pool".to_owned()),
             username_cfg.unwrap_err()
@@ -442,15 +609,15 @@ mod test {
             username_cfg.unwrap_err()
         );
 
-        let username_cfg: Result<UsernameConfig, UsernameConfigError> = "john-foo-cc".parse();
+        let username_cfg: Result<UsernameConfig, UsernameConfigError> = "john-foo-country".parse();
         assert_eq!(
             UsernameConfigError::UnexpectedKey("foo".to_owned()),
             username_cfg.unwrap_err()
         );
 
-        let username_cfg: Result<UsernameConfig, UsernameConfigError> = "john-cc".parse();
+        let username_cfg: Result<UsernameConfig, UsernameConfigError> = "john-country".parse();
         assert_eq!(
-            UsernameConfigError::UnexpectedKey("cc".to_owned()),
+            UsernameConfigError::UnexpectedKey("country".to_owned()),
             username_cfg.unwrap_err()
         );
     }
@@ -458,7 +625,7 @@ mod test {
     #[test]
     fn test_username_config_custom_separator() {
         let username =
-            "john_cc_us_dc_pool_1_residential_mobile_id_1_cc_uk_pool_2_dc_residential_mobile";
+            "john_country_us_datacenter_pool_1_residential_mobile_id_1_country_uk_pool_2_datacenter_residential_mobile";
         let username_cfg: UsernameConfig<'_'> = username.parse().unwrap();
         let (username, filter) = username_cfg.into_parts();
 
@@ -467,11 +634,13 @@ mod test {
             filter,
             Some(ProxyFilter {
                 id: Some(String::from("1")),
-                country: Some(String::from("uk")),
-                pool_id: Some(String::from("2")),
-                datacenter: true,
-                residential: true,
-                mobile: true,
+                pool_id: Some(StringFilter::from("2")),
+                country: Some(StringFilter::from("uk")),
+                city: None,
+                datacenter: Some(true),
+                residential: Some(true),
+                mobile: Some(true),
+                carrier: None,
             })
         );
     }
