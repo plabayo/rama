@@ -520,7 +520,6 @@ impl From<RequestInfo> for Table {
                 ("Fetch Mode".to_owned(), info.fetch_mode.to_string()),
                 ("Resource Type".to_owned(), info.resource_type.to_string()),
                 ("Initiator".to_owned(), info.initiator.to_string()),
-                ("Uri".to_owned(), info.uri),
                 (
                     "Peer Address".to_owned(),
                     info.peer_addr.unwrap_or_default(),
