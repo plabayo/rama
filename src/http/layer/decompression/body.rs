@@ -12,7 +12,7 @@ use async_compression::tokio::bufread::GzipDecoder;
 use async_compression::tokio::bufread::ZlibDecoder;
 use async_compression::tokio::bufread::ZstdDecoder;
 use bytes::{Buf, Bytes};
-use futures_util::ready;
+use futures_lite::ready;
 use pin_project_lite::pin_project;
 use std::task::Context;
 use std::{io, marker::PhantomData, pin::Pin, task::Poll};

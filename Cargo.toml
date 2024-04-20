@@ -22,9 +22,8 @@ bytes = "1"
 argh = "0.1"
 crossterm = "0.27"
 flate2 = "1.0"
-futures = "0.3.29"
+futures-lite = "2.3.0"
 futures-core = "0.3"
-futures-util = { version = "0.3", default-features = false }
 h2 = "0.4"
 headers = "0.4"
 http = "1"
@@ -101,9 +100,8 @@ async-compression = { workspace = true, features = ["tokio", "brotli", "zlib", "
 base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
-futures = { workspace = true }
 futures-core = { workspace = true }
-futures-util = { workspace = true, features = ["alloc"] }
+futures-lite = { workspace = true }
 h2 = { workspace = true }
 headers = { workspace = true }
 http = { workspace = true }

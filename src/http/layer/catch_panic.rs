@@ -84,7 +84,7 @@
 //! # }
 //! ```
 
-use futures_util::future::FutureExt;
+use futures_lite::future::FutureExt;
 use std::{any::Any, panic::AssertUnwindSafe};
 
 use crate::http::{Body, HeaderValue, Request, Response, StatusCode};

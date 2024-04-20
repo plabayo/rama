@@ -11,7 +11,7 @@
 //! use rama::service::{self, ServiceBuilder, service_fn, Service};
 //! use rama::http::layer::map_response_body::MapResponseBodyLayer;
 //! use rama::error::BoxError;
-//! use futures::ready;
+//! use futures_lite::ready;
 //!
 //! // A wrapper for a `http_body::Body` that prints the size of data chunks
 //! pin_project_lite::pin_project! {

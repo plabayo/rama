@@ -265,9 +265,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use futures_util::TryFutureExt;
     use std::convert::Infallible;
-    use std::future::Future;
 
     use crate::service::{Context, Service};
 
@@ -296,20 +294,21 @@ mod test {
 
     impl<S, State, Request> Service<State, Request> for ToUpper<S>
     where
+        Request: Send + 'static,
         S: Service<State, Request>,
         S::Response: AsRef<str>,
+        State: Send + Sync + 'static,
     {
         type Response = String;
         type Error = S::Error;
 
-        fn serve(
+        async fn serve(
             &self,
             ctx: Context<State>,
             req: Request,
-        ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-            self.0
-                .serve(ctx, req)
-                .map_ok(|res| res.as_ref().to_uppercase())
+        ) -> Result<Self::Response, Self::Error> {
+            let res = self.0.serve(ctx, req).await;
+            res.map(|msg| msg.as_ref().to_uppercase())
         }
     }
 

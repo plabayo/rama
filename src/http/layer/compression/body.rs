@@ -10,7 +10,7 @@ use crate::http::HeaderMap;
 use async_compression::tokio::bufread::{BrotliEncoder, GzipEncoder, ZlibEncoder, ZstdEncoder};
 
 use bytes::{Buf, Bytes};
-use futures_util::ready;
+use futures_lite::ready;
 use pin_project_lite::pin_project;
 use std::{
     io,

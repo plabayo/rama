@@ -400,6 +400,8 @@ mod tests {
         assert_eq!(handle.read(), 9);
         assert_eq!(handle.written(), 9);
 
-        futures::future::join_all(vec![task_1, task_2]).await;
+        let (t1, t2) = futures_lite::future::zip(task_1, task_2).await;
+        t1.unwrap();
+        t2.unwrap();
     }
 }
