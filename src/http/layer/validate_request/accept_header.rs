@@ -1,9 +1,6 @@
 use super::ValidateRequest;
 use crate::{
-    http::dep::{
-        http_body::Body,
-        mime::{Mime, MimeIter},
-    },
+    http::dep::mime::{Mime, MimeIter},
     http::{header, Request, Response, StatusCode},
     service::Context,
 };
@@ -23,7 +20,7 @@ impl<ResBody> AcceptHeader<ResBody> {
     /// Panics if `header_value` is not in the form: `type/subtype`, such as `application/json`
     pub(super) fn new(header_value: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self {
             header_value: Arc::new(
@@ -57,7 +54,7 @@ impl<S, B, ResBody> ValidateRequest<S, B> for AcceptHeader<ResBody>
 where
     S: Send + Sync + 'static,
     B: Send + Sync + 'static,
-    ResBody: Body + Default + Send + 'static,
+    ResBody: Default + Send + 'static,
 {
     type ResponseBody = ResBody;
 

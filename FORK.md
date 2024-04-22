@@ -11,7 +11,7 @@ as a distant relative.
   - Service / Layer traits
   - ServiceBuilder (note that we keep ours more minimal on purpose)
   - Some layers such as timeout, filter, most of util ones
-- <https://github.com/tower-rs/tower-http/tree/18219fca9ba728899e54e70f11026dd7dddf6d7e>
+- <https://github.com/tower-rs/tower-http/tree/bb0d1b2b2a8f75d283d9c94f327d8e4aa214381e>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
