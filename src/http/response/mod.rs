@@ -142,3 +142,7 @@ where
         Self(value.into_response())
     }
 }
+
+mod response_ext;
+#[doc(inline)]
+pub use response_ext::ResponseExt;
