@@ -1,14 +1,12 @@
 use crate::{
     dns::layer::DnsResolvedSocketAddresses,
-    error::Error,
-    http::{
-        header::{InvalidHeaderName, InvalidHeaderValue},
-        Request, RequestContext, Response, Version,
-    },
+    http::{Request, RequestContext, Response, Version},
     service::{Context, Service},
     uri::Scheme,
 };
 use hyper_util::rt::TokioIo;
+
+use super::HttpClientError;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -38,118 +36,6 @@ impl HttpClient {
 impl Default for HttpClient {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-#[derive(Debug)]
-/// Error type for the [`HttpClient`].
-pub enum HttpClientError {
-    /// The HTTP version is invalid.
-    InvalidVersion(Version),
-    /// Invalid Scheme.
-    InvalidScheme(String),
-    /// Invalid Uri error.
-    InvalidUri(String),
-    /// The host information is missing.
-    ///
-    /// This information is required to be able to establish an L4 connection,
-    /// to serve the request over.
-    MissingHost,
-    /// The host information is invalid.
-    ///
-    /// (e.g. could not be parsed as a [`SocketAddr`])
-    ///
-    /// [`SocketAddr`]: std::net::SocketAddr
-    InvalidHost(String),
-    /// MissingHeaderName error.
-    MissingHeaderName,
-    /// InvalidHeaderName error.
-    InvalidHeaderName(InvalidHeaderName),
-    /// InvalidHeaderValue error.
-    InvalidHeaderValue(InvalidHeaderValue),
-    /// An IO error occurred.
-    ///
-    /// (e.g. during a handshake process)
-    IoError(std::io::Error),
-    /// An HTTP error occurred during the http handshake or transfer process.
-    HttpError(Error),
-}
-
-impl From<std::io::Error> for HttpClientError {
-    fn from(err: std::io::Error) -> Self {
-        HttpClientError::IoError(err)
-    }
-}
-
-impl From<hyper::Error> for HttpClientError {
-    fn from(err: hyper::Error) -> Self {
-        HttpClientError::HttpError(err.into())
-    }
-}
-
-impl From<InvalidHeaderName> for HttpClientError {
-    fn from(err: InvalidHeaderName) -> Self {
-        HttpClientError::InvalidHeaderName(err)
-    }
-}
-
-impl From<InvalidHeaderValue> for HttpClientError {
-    fn from(err: InvalidHeaderValue) -> Self {
-        HttpClientError::InvalidHeaderValue(err)
-    }
-}
-
-impl std::fmt::Display for HttpClientError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HttpClientError::InvalidVersion(version) => {
-                write!(f, "Invalid HTTP version: {:?}", version)
-            }
-            HttpClientError::InvalidScheme(scheme) => {
-                write!(f, "Invalid scheme: {}", scheme)
-            }
-            HttpClientError::InvalidUri(uri) => {
-                write!(f, "Invalid URI: {}", uri)
-            }
-            HttpClientError::MissingHost => {
-                write!(f, "Missing host header")
-            }
-            HttpClientError::InvalidHost(host) => {
-                write!(f, "Invalid host: {}", host)
-            }
-            HttpClientError::MissingHeaderName => {
-                write!(f, "Missing header name")
-            }
-            HttpClientError::InvalidHeaderName(err) => {
-                write!(f, "Invalid header name: {}", err)
-            }
-            HttpClientError::InvalidHeaderValue(err) => {
-                write!(f, "Invalid header value: {}", err)
-            }
-            HttpClientError::IoError(err) => {
-                write!(f, "IO error: {}", err)
-            }
-            HttpClientError::HttpError(err) => {
-                write!(f, "HTTP error: {}", err)
-            }
-        }
-    }
-}
-
-impl std::error::Error for HttpClientError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            HttpClientError::InvalidVersion(_) => None,
-            HttpClientError::InvalidScheme(_) => None,
-            HttpClientError::InvalidUri(_) => None,
-            HttpClientError::MissingHeaderName => None,
-            HttpClientError::InvalidHeaderName(_) => None,
-            HttpClientError::InvalidHeaderValue(_) => None,
-            HttpClientError::MissingHost => None,
-            HttpClientError::InvalidHost(_) => None,
-            HttpClientError::IoError(err) => Some(err),
-            HttpClientError::HttpError(err) => Some(err.as_ref()),
-        }
     }
 }
 
@@ -191,16 +77,16 @@ where
                 });
             match host {
                 Some(host) => host,
-                None => return Err(HttpClientError::MissingHost),
+                None => return Err(HttpClientError::request()),
             }
         };
 
         // TODO: should this client support upstream proxies?
 
         // create the tcp connection
-        tokio::net::TcpStream::connect(&address).await?;
-
-        let tcp_stream = tokio::net::TcpStream::connect(address).await?;
+        let tcp_stream = tokio::net::TcpStream::connect(&address)
+            .await
+            .map_err(HttpClientError::io_err)?;
 
         // TODO: figure out how we wish to handle https here
 
@@ -211,7 +97,9 @@ where
             Version::HTTP_2 => {
                 let executor = ctx.executor().clone();
                 let (mut sender, conn) =
-                    hyper::client::conn::http2::handshake(executor, tcp_stream).await?;
+                    hyper::client::conn::http2::handshake(executor, tcp_stream)
+                        .await
+                        .map_err(HttpClientError::io_err)?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
@@ -220,10 +108,15 @@ where
                     }
                 });
 
-                sender.send_request(req).await?
+                sender
+                    .send_request(req)
+                    .await
+                    .map_err(HttpClientError::io_err)?
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-                let (mut sender, conn) = hyper::client::conn::http1::handshake(tcp_stream).await?;
+                let (mut sender, conn) = hyper::client::conn::http1::handshake(tcp_stream)
+                    .await
+                    .map_err(HttpClientError::io_err)?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
@@ -232,9 +125,17 @@ where
                     }
                 });
 
-                sender.send_request(req).await?
+                sender
+                    .send_request(req)
+                    .await
+                    .map_err(HttpClientError::io_err)?
             }
-            version => return Err(HttpClientError::InvalidVersion(version)),
+            version => {
+                return Err(HttpClientError::request_err(format!(
+                    "unsupported Http version: {:?}",
+                    version
+                )))
+            }
         };
 
         let resp = resp.map(crate::http::Body::new);

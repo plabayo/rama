@@ -202,7 +202,9 @@ mod private {
             let scheme: Scheme = self.scheme().into();
             match scheme {
                 Scheme::Http | Scheme::Https => Ok(self),
-                _ => Err(HttpClientError::InvalidScheme(scheme.to_string())),
+                _ => Err(HttpClientError::request_err(format!(
+                    "Unsupported scheme: {scheme}"
+                ))),
             }
         }
     }
@@ -211,7 +213,10 @@ mod private {
         fn into_url(self) -> Result<Uri, HttpClientError> {
             match self.parse::<Uri>() {
                 Ok(uri) => uri.into_url(),
-                Err(_) => Err(HttpClientError::InvalidUri(self.to_owned())),
+                Err(_) => Err(HttpClientError::request_err(format!(
+                    "Invalid URL: {}",
+                    self
+                ))),
             }
         }
     }
@@ -242,14 +247,16 @@ mod private {
         fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
             match self {
                 Some(name) => Ok(name),
-                None => Err(HttpClientError::MissingHeaderName),
+                None => Err(HttpClientError::request_err("Header name is required")),
             }
         }
     }
 
     impl IntoHeaderNameSealed for &str {
         fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
-            let name = self.parse::<crate::http::HeaderName>()?;
+            let name = self
+                .parse::<crate::http::HeaderName>()
+                .map_err(HttpClientError::request_err)?;
             Ok(name)
         }
     }
@@ -268,7 +275,8 @@ mod private {
 
     impl IntoHeaderNameSealed for &[u8] {
         fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
-            let name = crate::http::HeaderName::from_bytes(self)?;
+            let name =
+                crate::http::HeaderName::from_bytes(self).map_err(HttpClientError::request_err)?;
             Ok(name)
         }
     }
@@ -285,7 +293,9 @@ mod private {
 
     impl IntoHeaderValueSealed for &str {
         fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError> {
-            let value = self.parse::<crate::http::HeaderValue>()?;
+            let value = self
+                .parse::<crate::http::HeaderValue>()
+                .map_err(HttpClientError::request_err)?;
             Ok(value)
         }
     }
@@ -304,7 +314,8 @@ mod private {
 
     impl IntoHeaderValueSealed for &[u8] {
         fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError> {
-            let value = crate::http::HeaderValue::from_bytes(self)?;
+            let value =
+                crate::http::HeaderValue::from_bytes(self).map_err(HttpClientError::request_err)?;
             Ok(value)
         }
     }
@@ -433,7 +444,7 @@ where
                     RequestBuilderState::Error(original_err) => {
                         RequestBuilderState::Error(original_err)
                     }
-                    _ => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+                    _ => RequestBuilderState::Error(HttpClientError::request_err(err)),
                 };
                 return self;
             }
@@ -450,7 +461,7 @@ where
         self.state = match self.state {
             RequestBuilderState::PreBody(builder) => match builder.body(body.into()) {
                 Ok(req) => RequestBuilderState::PostBody(req),
-                Err(err) => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
             },
             RequestBuilderState::PostBody(mut req) => {
                 *req.body_mut() = body.into();
@@ -487,12 +498,10 @@ where
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
-                        Err(err) => {
-                            RequestBuilderState::Error(HttpClientError::HttpError(err.into()))
-                        }
+                        Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
                     }
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
             },
             RequestBuilderState::PostBody(mut req) => match serde_urlencoded::to_string(form) {
                 Ok(body) => {
@@ -510,7 +519,7 @@ where
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -539,12 +548,10 @@ where
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
-                        Err(err) => {
-                            RequestBuilderState::Error(HttpClientError::HttpError(err.into()))
-                        }
+                        Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
                     }
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
             },
             RequestBuilderState::PostBody(mut req) => match serde_json::to_vec(json) {
                 Ok(body) => {
@@ -560,7 +567,7 @@ where
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -597,7 +604,7 @@ where
         let request = match self.state {
             RequestBuilderState::PreBody(builder) => builder
                 .body(Body::empty())
-                .map_err(|err| HttpClientError::HttpError(err.into()))?,
+                .map_err(HttpClientError::request_err)?,
             RequestBuilderState::PostBody(request) => request,
             RequestBuilderState::Error(err) => return Err(err),
         };
