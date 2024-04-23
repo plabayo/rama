@@ -120,7 +120,7 @@ where
             Ok(uri) => uri,
             Err(err) => {
                 return RequestBuilder {
-                    http_client_service: &self,
+                    http_client_service: self,
                     state: RequestBuilderState::Error(err),
                     _phantom: std::marker::PhantomData,
                 }
@@ -132,7 +132,7 @@ where
             .uri(uri);
 
         RequestBuilder {
-            http_client_service: &self,
+            http_client_service: self,
             state: RequestBuilderState::PreBody(builder),
             _phantom: std::marker::PhantomData,
         }
