@@ -51,33 +51,30 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         // TODO: should this service be able to support persistent connection?
         // TODO: should this service be able to support connection pooling?
 
-        let (parts, body) = req.into_parts();
-
         // get target address
         let address = if let Some(dns_info) = ctx.get::<DnsResolvedSocketAddresses>() {
             dns_info.address().to_string()
         } else {
-            let host = ctx
-                .get::<RequestContext>()
-                .and_then(|rc| match rc.host.as_ref() {
-                    Some(host) => {
-                        let port = rc.port.unwrap_or(match rc.scheme {
-                            Scheme::Wss | Scheme::Https => 443,
-                            _ => 80,
-                        });
-                        Some(format!("{host}:{port}"))
-                    }
-                    None => None,
-                });
+            let rc = ctx.get_or_insert_with(|| RequestContext::new(&req));
+            let host = match rc.host.as_ref() {
+                Some(host) => {
+                    let port = rc.port.unwrap_or(match rc.scheme {
+                        Scheme::Wss | Scheme::Https => 443,
+                        _ => 80,
+                    });
+                    Some(format!("{host}:{port}"))
+                }
+                None => None,
+            };
             match host {
                 Some(host) => host,
-                None => return Err(HttpClientError::request()),
+                None => return Err(HttpClientError::request_err("missing host")),
             }
         };
 
@@ -92,7 +89,6 @@ where
 
         let tcp_stream = TokioIo::new(Box::pin(tcp_stream));
 
-        let req = Request::from_parts(parts, body);
         let resp = match req.version() {
             Version::HTTP_2 => {
                 let executor = ctx.executor().clone();

@@ -1,5 +1,6 @@
 use super::HttpClientError;
 use crate::{
+    error::BoxError,
     http::{Body, Method, Request, Response, Uri},
     service::{Context, Service},
 };
@@ -9,6 +10,11 @@ use std::future::Future;
 /// to facilitate the creation and sending of http requests,
 /// in a more ergonomic way.
 pub trait HttpClientExt<State>: Sized {
+    /// The response type returned by the `execute` method.
+    type ExecuteResponse;
+    /// The error type returned by the `execute` method.
+    type ExecuteError;
+
     /// Convenience method to make a `GET` request to a URL.
     ///
     /// # Errors
@@ -84,13 +90,17 @@ pub trait HttpClientExt<State>: Sized {
         &self,
         ctx: Context<State>,
         request: Request,
-    ) -> impl Future<Output = Result<Response, HttpClientError>>;
+    ) -> impl Future<Output = Result<Self::ExecuteResponse, Self::ExecuteError>>;
 }
 
 impl<State, S> HttpClientExt<State> for S
 where
-    S: Service<State, Request, Response = Response, Error = HttpClientError>,
+    S: Service<State, Request, Response = Response>,
+    S::Error: Into<BoxError>,
 {
+    type ExecuteResponse = Response;
+    type ExecuteError = S::Error;
+
     fn get(&self, url: impl IntoUrl) -> RequestBuilder<Self, State> {
         self.request(Method::GET, url)
     }
@@ -142,7 +152,7 @@ where
         &self,
         ctx: Context<State>,
         request: Request,
-    ) -> impl Future<Output = Result<Response, HttpClientError>> {
+    ) -> impl Future<Output = Result<Self::ExecuteResponse, Self::ExecuteError>> {
         Service::serve(self, ctx, request)
     }
 }
@@ -351,7 +361,8 @@ enum RequestBuilderState {
 
 impl<'a, State, S> RequestBuilder<'a, S, State>
 where
-    S: Service<State, Request, Response = Response, Error = HttpClientError>,
+    S: Service<State, Request, Response = Response>,
+    S::Error: Into<BoxError>,
 {
     /// Add a `Header` to this [`Request`]`.
     pub fn header<K, V>(mut self, key: K, value: V) -> Self
@@ -609,6 +620,9 @@ where
             RequestBuilderState::Error(err) => return Err(err),
         };
 
-        self.http_client_service.serve(ctx, request).await
+        match self.http_client_service.serve(ctx, request).await {
+            Ok(response) => Ok(response),
+            Err(err) => Err(HttpClientError::io_err(err)),
+        }
     }
 }

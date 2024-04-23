@@ -27,7 +27,7 @@ pub struct RequestContext {
 
 impl RequestContext {
     /// Create a new [`RequestContext`] from the given [`Request`](crate::http::Request)
-    pub fn new(req: &Request) -> Self {
+    pub fn new<Body>(req: &Request<Body>) -> Self {
         req.into()
     }
 

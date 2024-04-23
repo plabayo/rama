@@ -97,6 +97,24 @@ pub trait Policy<S, Req, Res, E>: Send + Sync + 'static {
     fn clone_input(&self, ctx: &Context<S>, req: &Req) -> Option<(Context<S>, Req)>;
 }
 
+impl<P, S, Req, Res, E> Policy<S, Req, Res, E> for std::sync::Arc<P>
+where
+    P: Policy<S, Req, Res, E>,
+{
+    fn retry(
+        &self,
+        ctx: Context<S>,
+        req: Req,
+        result: Result<Res, E>,
+    ) -> impl Future<Output = PolicyResult<S, Req, Res, E>> + Send + '_ {
+        (**self).retry(ctx, req, result)
+    }
+
+    fn clone_input(&self, ctx: &Context<S>, req: &Req) -> Option<(Context<S>, Req)> {
+        (**self).clone_input(ctx, req)
+    }
+}
+
 /// The full result of a limit policy.
 pub enum PolicyResult<S, Req, Res, E> {
     /// The result should not be retried,

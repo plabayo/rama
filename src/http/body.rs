@@ -131,14 +131,14 @@ body_from_impl!(Bytes);
 
 impl http_body::Body for Body {
     type Data = Bytes;
-    type Error = Error;
+    type Error = BodyError;
 
     #[inline]
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.0).poll_frame(cx)
+        Pin::new(&mut self.0).poll_frame(cx).map_err(BodyError::new)
     }
 
     #[inline]
@@ -179,14 +179,16 @@ impl Stream for BodyDataStream {
 
 impl http_body::Body for BodyDataStream {
     type Data = Bytes;
-    type Error = Error;
+    type Error = BodyError;
 
     #[inline]
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.inner).poll_frame(cx)
+        Pin::new(&mut self.inner)
+            .poll_frame(cx)
+            .map_err(BodyError::new)
     }
 
     #[inline]
@@ -214,7 +216,7 @@ where
     S::Error: Into<BoxError>,
 {
     type Data = Bytes;
-    type Error = Error;
+    type Error = BodyError;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -223,9 +225,35 @@ where
         let stream = self.project().stream.get_pin_mut();
         match futures_util::ready!(stream.try_poll_next(cx)) {
             Some(Ok(chunk)) => Poll::Ready(Some(Ok(Frame::data(chunk.into())))),
-            Some(Err(err)) => Poll::Ready(Some(Err(Error::new(err)))),
+            Some(Err(err)) => Poll::Ready(Some(Err(BodyError::new(err)))),
             None => Poll::Ready(None),
         }
+    }
+}
+
+#[derive(Debug)]
+/// An error that can occur while polling the body.
+pub struct BodyError {
+    inner: Error,
+}
+
+impl BodyError {
+    fn new(inner: impl Into<BoxError>) -> Self {
+        Self {
+            inner: Error::new(inner),
+        }
+    }
+}
+
+impl std::fmt::Display for BodyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.inner.fmt(f)
+    }
+}
+
+impl std::error::Error for BodyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.inner.source()
     }
 }
 
