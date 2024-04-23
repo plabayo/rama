@@ -1,7 +1,10 @@
 use crate::{
     dns::layer::DnsResolvedSocketAddresses,
     error::Error,
-    http::{Request, RequestContext, Response, Version},
+    http::{
+        header::{InvalidHeaderName, InvalidHeaderValue},
+        Request, RequestContext, Response, Version,
+    },
     service::{Context, Service},
     uri::Scheme,
 };
@@ -43,6 +46,10 @@ impl Default for HttpClient {
 pub enum HttpClientError {
     /// The HTTP version is invalid.
     InvalidVersion(Version),
+    /// Invalid Scheme.
+    InvalidScheme(String),
+    /// Invalid Uri error.
+    InvalidUri(String),
     /// The host information is missing.
     ///
     /// This information is required to be able to establish an L4 connection,
@@ -54,6 +61,12 @@ pub enum HttpClientError {
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     InvalidHost(String),
+    /// MissingHeaderName error.
+    MissingHeaderName,
+    /// InvalidHeaderName error.
+    InvalidHeaderName(InvalidHeaderName),
+    /// InvalidHeaderValue error.
+    InvalidHeaderValue(InvalidHeaderValue),
     /// An IO error occurred.
     ///
     /// (e.g. during a handshake process)
@@ -74,17 +87,44 @@ impl From<hyper::Error> for HttpClientError {
     }
 }
 
+impl From<InvalidHeaderName> for HttpClientError {
+    fn from(err: InvalidHeaderName) -> Self {
+        HttpClientError::InvalidHeaderName(err)
+    }
+}
+
+impl From<InvalidHeaderValue> for HttpClientError {
+    fn from(err: InvalidHeaderValue) -> Self {
+        HttpClientError::InvalidHeaderValue(err)
+    }
+}
+
 impl std::fmt::Display for HttpClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             HttpClientError::InvalidVersion(version) => {
                 write!(f, "Invalid HTTP version: {:?}", version)
             }
+            HttpClientError::InvalidScheme(scheme) => {
+                write!(f, "Invalid scheme: {}", scheme)
+            }
+            HttpClientError::InvalidUri(uri) => {
+                write!(f, "Invalid URI: {}", uri)
+            }
             HttpClientError::MissingHost => {
                 write!(f, "Missing host header")
             }
             HttpClientError::InvalidHost(host) => {
                 write!(f, "Invalid host: {}", host)
+            }
+            HttpClientError::MissingHeaderName => {
+                write!(f, "Missing header name")
+            }
+            HttpClientError::InvalidHeaderName(err) => {
+                write!(f, "Invalid header name: {}", err)
+            }
+            HttpClientError::InvalidHeaderValue(err) => {
+                write!(f, "Invalid header value: {}", err)
             }
             HttpClientError::IoError(err) => {
                 write!(f, "IO error: {}", err)
@@ -100,6 +140,11 @@ impl std::error::Error for HttpClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             HttpClientError::InvalidVersion(_) => None,
+            HttpClientError::InvalidScheme(_) => None,
+            HttpClientError::InvalidUri(_) => None,
+            HttpClientError::MissingHeaderName => None,
+            HttpClientError::InvalidHeaderName(_) => None,
+            HttpClientError::InvalidHeaderValue(_) => None,
             HttpClientError::MissingHost => None,
             HttpClientError::InvalidHost(_) => None,
             HttpClientError::IoError(err) => Some(err),
