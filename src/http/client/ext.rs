@@ -461,6 +461,112 @@ where
         self
     }
 
+    /// Set the given value as a URL-Encoded Form [`Body`] in the [`Request`].
+    pub fn form<T: serde::Serialize + ?Sized>(mut self, form: &T) -> Self {
+        self.state = match self.state {
+            RequestBuilderState::PreBody(mut builder) => match serde_urlencoded::to_string(form) {
+                Ok(body) => {
+                    let builder = match builder.headers_mut() {
+                        Some(headers) => {
+                            if !headers.contains_key(crate::http::header::CONTENT_TYPE) {
+                                headers.insert(
+                                    crate::http::header::CONTENT_TYPE,
+                                    crate::http::HeaderValue::from_static(
+                                        "application/x-www-form-urlencoded",
+                                    ),
+                                );
+                            }
+                            builder
+                        }
+                        None => builder.header(
+                            crate::http::header::CONTENT_TYPE,
+                            crate::http::HeaderValue::from_static(
+                                "application/x-www-form-urlencoded",
+                            ),
+                        ),
+                    };
+                    match builder.body(body.into()) {
+                        Ok(req) => RequestBuilderState::PostBody(req),
+                        Err(err) => {
+                            RequestBuilderState::Error(HttpClientError::HttpError(err.into()))
+                        }
+                    }
+                }
+                Err(err) => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+            },
+            RequestBuilderState::PostBody(mut req) => match serde_urlencoded::to_string(form) {
+                Ok(body) => {
+                    if !req
+                        .headers()
+                        .contains_key(crate::http::header::CONTENT_TYPE)
+                    {
+                        req.headers_mut().insert(
+                            crate::http::header::CONTENT_TYPE,
+                            crate::http::HeaderValue::from_static(
+                                "application/x-www-form-urlencoded",
+                            ),
+                        );
+                    }
+                    *req.body_mut() = body.into();
+                    RequestBuilderState::PostBody(req)
+                }
+                Err(err) => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+            },
+            RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
+        };
+        self
+    }
+
+    /// Set the given value as a JSON [`Body`] in the [`Request`].
+    pub fn json<T: serde::Serialize + ?Sized>(mut self, json: &T) -> Self {
+        self.state = match self.state {
+            RequestBuilderState::PreBody(mut builder) => match serde_json::to_vec(json) {
+                Ok(body) => {
+                    let builder = match builder.headers_mut() {
+                        Some(headers) => {
+                            if !headers.contains_key(crate::http::header::CONTENT_TYPE) {
+                                headers.insert(
+                                    crate::http::header::CONTENT_TYPE,
+                                    crate::http::HeaderValue::from_static("application/json"),
+                                );
+                            }
+                            builder
+                        }
+                        None => builder.header(
+                            crate::http::header::CONTENT_TYPE,
+                            crate::http::HeaderValue::from_static("application/json"),
+                        ),
+                    };
+                    match builder.body(body.into()) {
+                        Ok(req) => RequestBuilderState::PostBody(req),
+                        Err(err) => {
+                            RequestBuilderState::Error(HttpClientError::HttpError(err.into()))
+                        }
+                    }
+                }
+                Err(err) => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+            },
+            RequestBuilderState::PostBody(mut req) => match serde_json::to_vec(json) {
+                Ok(body) => {
+                    if !req
+                        .headers()
+                        .contains_key(crate::http::header::CONTENT_TYPE)
+                    {
+                        req.headers_mut().insert(
+                            crate::http::header::CONTENT_TYPE,
+                            crate::http::HeaderValue::from_static("application/json"),
+                        );
+                    }
+                    *req.body_mut() = body.into();
+                    RequestBuilderState::PostBody(req)
+                }
+                Err(err) => RequestBuilderState::Error(HttpClientError::HttpError(err.into())),
+            },
+            RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
+        };
+        self
+    }
+
     /// Set the http [`Version`] of this [`Request`].
     ///
     /// [`Version`]: crate::http::Version
