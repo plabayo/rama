@@ -8,6 +8,10 @@ mod body_limit;
 #[doc(inline)]
 pub use body_limit::BodyLimit;
 
+mod body_ext;
+#[doc(inline)]
+pub use body_ext::BodyExtractExt;
+
 mod request_context;
 #[doc(inline)]
 pub use request_context::RequestContext;
