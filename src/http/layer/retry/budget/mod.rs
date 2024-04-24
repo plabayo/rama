@@ -30,22 +30,21 @@
 //! use std::sync::Arc;
 //!
 //! use rama::service::Context;
-//! use rama::service::layer::retry::{budget::{Budget, TpsBudget}, Policy, PolicyResult};
-//!
-//! type Req = String;
-//! type Res = String;
+//! use rama::http::Request;
+//! use rama::http::layer::retry::{budget::{Budget, TpsBudget}, Policy, PolicyResult, RetryBody};
 //!
 //! #[derive(Clone, Debug)]
 //! struct RetryPolicy {
 //!     budget: Arc<TpsBudget>,
 //! }
 //!
-//! impl<State, E> Policy<State, Req, Res, E> for RetryPolicy
+//! impl<S, R, E> Policy<S, R, E> for RetryPolicy
 //!     where
-//!         State: Send + Sync + 'static,
+//!         S: Send + Sync + 'static,
+//!         R: Send + 'static,
 //!         E: Send + Sync + 'static,
 //! {
-//!     async fn retry(&self, ctx: Context<State>, req: Req, result: Result<Res, E>) -> PolicyResult<State, Req, Res, E> {
+//!     async fn retry(&self, ctx: Context<S>, req: Request<RetryBody>, result: Result<R, E>) -> PolicyResult<S, R, E> {
 //!         match result {
 //!             Ok(_) => {
 //!                 // Treat all `Response`s as success,
@@ -70,7 +69,7 @@
 //!         }
 //!     }
 //!
-//!     fn clone_input(&self, ctx: &Context<State>, req: &Req) -> Option<(Context<State>, Req)> {
+//!     fn clone_input(&self, ctx: &Context<S>, req: &Request<RetryBody>) -> Option<(Context<S>, Request<RetryBody>)> {
 //!         Some((ctx.clone(), req.clone()))
 //!     }
 //! }

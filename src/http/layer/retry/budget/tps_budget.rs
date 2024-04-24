@@ -17,7 +17,7 @@ use super::Budget;
 /// [`TpsBudget`] uses a token bucket to decide if the request should be retried.
 ///
 /// [`TpsBudget`] works by checking how much retries have been made in a certain period of time.
-/// Minimum allowed number of retries are effectively reset on an interval. Allowed number of
+/// Minimm allowed number of retries are effectively reset on an interval. Allowed number of
 /// retries depends on failed request count in recent time frame.
 ///
 /// For more info about [`Budget`], please see the [module-level documentation].

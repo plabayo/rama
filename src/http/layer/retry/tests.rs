@@ -1,5 +1,7 @@
 use super::*;
-use crate::service::ServiceBuilder;
+use crate::http::{response::IntoResponse, BodyExtractExt};
+use crate::http::{Request, Response};
+use crate::service::{Service, ServiceBuilder};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc, Mutex,
@@ -13,19 +15,19 @@ async fn retry_errors() {
         error_counter: Arc<AtomicUsize>,
     }
 
-    impl Service<State, Req> for Svc {
-        type Response = Res;
+    impl Service<State, Request<RetryBody>> for Svc {
+        type Response = Response;
         type Error = Error;
 
         async fn serve(
             &self,
             _ctx: Context<State>,
-            req: Req,
+            req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
-            assert_eq!(req, "hello");
+            assert_eq!(req.try_into_string().await.unwrap(), "hello");
             if self.errored.swap(true, Ordering::SeqCst) {
                 self.response_counter.fetch_add(1, Ordering::SeqCst);
-                Ok("world")
+                Ok("world".into_response())
             } else {
                 self.error_counter.fetch_add(1, Ordering::SeqCst);
                 Err(Error::from("retry me"))
@@ -44,8 +46,11 @@ async fn retry_errors() {
             error_counter: error_counter.clone(),
         });
 
-    let resp = svc.serve(Context::default(), "hello").await.unwrap();
-    assert_eq!(resp, "world");
+    let resp = svc
+        .serve(Context::default(), request("hello"))
+        .await
+        .unwrap();
+    assert_eq!(resp.try_into_string().await.unwrap(), "world");
     assert_eq!(response_counter.load(Ordering::SeqCst), 1);
     assert_eq!(error_counter.load(Ordering::SeqCst), 1);
 }
@@ -56,16 +61,16 @@ async fn retry_limit() {
         error_counter: Arc<AtomicUsize>,
     }
 
-    impl Service<State, Req> for Svc {
-        type Response = Res;
+    impl Service<State, Request<RetryBody>> for Svc {
+        type Response = Response;
         type Error = Error;
 
         async fn serve(
             &self,
             _ctx: Context<State>,
-            req: Req,
+            req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
-            assert_eq!(req, "hello");
+            assert_eq!(req.try_into_string().await.unwrap(), "hello");
             self.error_counter.fetch_add(1, Ordering::SeqCst);
             Err(Error::from("error forever"))
         }
@@ -79,8 +84,11 @@ async fn retry_limit() {
             error_counter: error_counter.clone(),
         });
 
-    let err = svc.serve(Context::default(), "hello").await.unwrap_err();
-    assert_eq!(err.to_string(), "error forever");
+    let err = svc
+        .serve(Context::default(), request("hello"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), "service error: error forever");
     assert_eq!(error_counter.load(Ordering::SeqCst), 3);
 }
 
@@ -90,16 +98,16 @@ async fn retry_error_inspection() {
         errored: AtomicBool,
     }
 
-    impl Service<State, Req> for Svc {
-        type Response = Res;
+    impl Service<State, Request<RetryBody>> for Svc {
+        type Response = Response;
         type Error = Error;
 
         async fn serve(
             &self,
             _ctx: Context<State>,
-            req: Req,
+            req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
-            assert_eq!(req, "hello");
+            assert_eq!(req.try_into_string().await.unwrap(), "hello");
             if self.errored.swap(true, Ordering::SeqCst) {
                 Err(Error::from("reject"))
             } else {
@@ -114,24 +122,27 @@ async fn retry_error_inspection() {
             errored: AtomicBool::new(false),
         });
 
-    let err = svc.serve(Context::default(), "hello").await.unwrap_err();
-    assert_eq!(err.to_string(), "reject");
+    let err = svc
+        .serve(Context::default(), request("hello"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), "service error: reject");
 }
 
 #[tokio::test]
 async fn retry_cannot_clone_request() {
     struct Svc;
 
-    impl Service<State, Req> for Svc {
-        type Response = Res;
+    impl Service<State, Request<RetryBody>> for Svc {
+        type Response = Response;
         type Error = Error;
 
         async fn serve(
             &self,
             _ctx: Context<State>,
-            req: Req,
+            req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
-            assert_eq!(req, "hello");
+            assert_eq!(req.try_into_string().await.unwrap(), "hello");
             Err(Error::from("failed"))
         }
     }
@@ -140,25 +151,28 @@ async fn retry_cannot_clone_request() {
         .layer(RetryLayer::new(CannotClone))
         .service(Svc);
 
-    let err = svc.serve(Context::default(), "hello").await.unwrap_err();
-    assert_eq!(err.to_string(), "failed");
+    let err = svc
+        .serve(Context::default(), request("hello"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), "service error: failed");
 }
 
 #[tokio::test]
 async fn success_with_cannot_clone() {
     struct Svc;
 
-    impl Service<State, Req> for Svc {
-        type Response = Res;
+    impl Service<State, Request<RetryBody>> for Svc {
+        type Response = Response;
         type Error = Error;
 
         async fn serve(
             &self,
             _ctx: Context<State>,
-            req: Req,
+            req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
-            assert_eq!(req, "hello");
-            Ok("world")
+            assert_eq!(req.try_into_string().await.unwrap(), "hello");
+            Ok("world".into_response())
         }
     }
 
@@ -166,8 +180,11 @@ async fn success_with_cannot_clone() {
         .layer(RetryLayer::new(CannotClone))
         .service(Svc);
 
-    let resp = svc.serve(Context::default(), "hello").await.unwrap();
-    assert_eq!(resp, "world");
+    let resp = svc
+        .serve(Context::default(), request("hello"))
+        .await
+        .unwrap();
+    assert_eq!(resp.try_into_string().await.unwrap(), "world");
 }
 
 #[tokio::test]
@@ -177,22 +194,22 @@ async fn retry_mutating_policy() {
         response_counter: Arc<AtomicUsize>,
     }
 
-    impl Service<State, Req> for Svc {
-        type Response = Res;
+    impl Service<State, Request<RetryBody>> for Svc {
+        type Response = Response;
         type Error = Error;
 
         async fn serve(
             &self,
             _ctx: Context<State>,
-            req: Req,
+            req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
             self.response_counter.fetch_add(1, Ordering::SeqCst);
             if self.responded.swap(true, Ordering::SeqCst) {
-                assert_eq!(req, "retrying");
+                assert_eq!(req.try_into_string().await.unwrap(), "retrying");
             } else {
-                assert_eq!(req, "hello");
+                assert_eq!(req.try_into_string().await.unwrap(), "hello");
             }
-            Ok("world")
+            Ok("world".into_response())
         }
     }
 
@@ -207,27 +224,36 @@ async fn retry_mutating_policy() {
             response_counter: response_counter.clone(),
         });
 
-    let err = svc.serve(Context::default(), "hello").await.unwrap_err();
-    assert_eq!(err.to_string(), "out of retries");
+    let err = svc
+        .serve(Context::default(), request("hello"))
+        .await
+        .unwrap_err();
+    assert_eq!(err.to_string(), "service error: out of retries");
     assert_eq!(response_counter.load(Ordering::SeqCst), 3);
 }
 
 type State = ();
-type Req = &'static str;
-type Res = &'static str;
 type InnerError = &'static str;
-type Error = Box<dyn std::error::Error + Send + Sync>;
+type Error = crate::error::BoxError;
+
+fn request(s: &'static str) -> Request<RetryBody> {
+    Request::builder()
+        .method("POST")
+        .uri("http://localhost")
+        .body(RetryBody::new(s.into()))
+        .unwrap()
+}
 
 #[derive(Clone)]
 struct RetryErrors;
 
-impl Policy<State, Req, Res, Error> for RetryErrors {
+impl Policy<State, Response, Error> for RetryErrors {
     async fn retry(
         &self,
         ctx: Context<State>,
-        req: Req,
-        result: Result<Res, Error>,
-    ) -> PolicyResult<State, Req, Res, Error> {
+        req: Request<RetryBody>,
+        result: Result<Response, Error>,
+    ) -> PolicyResult<State, Response, Error> {
         if result.is_err() {
             PolicyResult::Retry { ctx, req }
         } else {
@@ -235,21 +261,25 @@ impl Policy<State, Req, Res, Error> for RetryErrors {
         }
     }
 
-    fn clone_input(&self, ctx: &Context<State>, req: &Req) -> Option<(Context<State>, Req)> {
-        Some((ctx.clone(), *req))
+    fn clone_input(
+        &self,
+        ctx: &Context<State>,
+        req: &Request<RetryBody>,
+    ) -> Option<(Context<State>, Request<RetryBody>)> {
+        Some((ctx.clone(), req.clone()))
     }
 }
 
 #[derive(Clone)]
 struct Limit(Arc<Mutex<usize>>);
 
-impl Policy<State, Req, Res, Error> for Limit {
+impl Policy<State, Response, Error> for Limit {
     async fn retry(
         &self,
         ctx: Context<State>,
-        req: Req,
-        result: Result<Res, Error>,
-    ) -> PolicyResult<State, Req, Res, Error> {
+        req: Request<RetryBody>,
+        result: Result<Response, Error>,
+    ) -> PolicyResult<State, Response, Error> {
         let mut attempts = self.0.lock().unwrap();
         if result.is_err() && *attempts > 0 {
             *attempts -= 1;
@@ -259,21 +289,25 @@ impl Policy<State, Req, Res, Error> for Limit {
         }
     }
 
-    fn clone_input(&self, ctx: &Context<State>, req: &Req) -> Option<(Context<State>, Req)> {
-        Some((ctx.clone(), *req))
+    fn clone_input(
+        &self,
+        ctx: &Context<State>,
+        req: &Request<RetryBody>,
+    ) -> Option<(Context<State>, Request<RetryBody>)> {
+        Some((ctx.clone(), req.clone()))
     }
 }
 
 #[derive(Clone)]
 struct UnlessErr(InnerError);
 
-impl Policy<State, Req, Res, Error> for UnlessErr {
+impl Policy<State, Response, Error> for UnlessErr {
     async fn retry(
         &self,
         ctx: Context<State>,
-        req: Req,
-        result: Result<Res, Error>,
-    ) -> PolicyResult<State, Req, Res, Error> {
+        req: Request<RetryBody>,
+        result: Result<Response, Error>,
+    ) -> PolicyResult<State, Response, Error> {
         if result
             .as_ref()
             .err()
@@ -286,25 +320,33 @@ impl Policy<State, Req, Res, Error> for UnlessErr {
         }
     }
 
-    fn clone_input(&self, ctx: &Context<State>, req: &Req) -> Option<(Context<State>, Req)> {
-        Some((ctx.clone(), *req))
+    fn clone_input(
+        &self,
+        ctx: &Context<State>,
+        req: &Request<RetryBody>,
+    ) -> Option<(Context<State>, Request<RetryBody>)> {
+        Some((ctx.clone(), req.clone()))
     }
 }
 
 #[derive(Clone)]
 struct CannotClone;
 
-impl Policy<State, Req, Res, Error> for CannotClone {
+impl Policy<State, Response, Error> for CannotClone {
     async fn retry(
         &self,
         _: Context<State>,
-        _: Req,
-        _: Result<Res, Error>,
-    ) -> PolicyResult<State, Req, Res, Error> {
+        _: Request<RetryBody>,
+        _: Result<Response, Error>,
+    ) -> PolicyResult<State, Response, Error> {
         unreachable!("retry cannot be called since request isn't cloned");
     }
 
-    fn clone_input(&self, _ctx: &Context<State>, _req: &Req) -> Option<(Context<State>, Req)> {
+    fn clone_input(
+        &self,
+        _ctx: &Context<State>,
+        _req: &Request<RetryBody>,
+    ) -> Option<(Context<State>, Request<RetryBody>)> {
         None
     }
 }
@@ -316,16 +358,16 @@ struct MutatingPolicy {
     remaining: Arc<Mutex<usize>>,
 }
 
-impl Policy<State, Req, Res, Error> for MutatingPolicy
+impl Policy<State, Response, Error> for MutatingPolicy
 where
     Error: From<&'static str>,
 {
     async fn retry(
         &self,
         ctx: Context<State>,
-        _req: Req,
-        _result: Result<Res, Error>,
-    ) -> PolicyResult<State, Req, Res, Error> {
+        _req: Request<RetryBody>,
+        _result: Result<Response, Error>,
+    ) -> PolicyResult<State, Response, Error> {
         let mut remaining = self.remaining.lock().unwrap();
         if *remaining == 0 {
             PolicyResult::Abort(Err("out of retries".into()))
@@ -333,12 +375,16 @@ where
             *remaining -= 1;
             PolicyResult::Retry {
                 ctx,
-                req: "retrying",
+                req: request("retrying"),
             }
         }
     }
 
-    fn clone_input(&self, ctx: &Context<State>, req: &Req) -> Option<(Context<State>, Req)> {
-        Some((ctx.clone(), *req))
+    fn clone_input(
+        &self,
+        ctx: &Context<State>,
+        req: &Request<RetryBody>,
+    ) -> Option<(Context<State>, Request<RetryBody>)> {
+        Some((ctx.clone(), req.clone()))
     }
 }

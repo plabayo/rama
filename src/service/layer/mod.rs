@@ -65,9 +65,6 @@ mod map_result;
 #[doc(inline)]
 pub use map_result::{MapResult, MapResultLayer};
 
-pub mod retry;
-pub use retry::{Retry, RetryLayer};
-
 pub mod timeout;
 pub use timeout::{Timeout, TimeoutLayer};
 
