@@ -8,16 +8,23 @@
 //! # Expected output
 //!
 //! You should see the output printed and the example should exit with a success status code.
+//! In your logs you will also find each request traced twice, once for the client and once for the server.
 
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     http::{
-        client::{HttpClient, HttpClientExt as _},
-        layer::trace::TraceLayer,
+        client::{HttpClient, HttpClientExt},
+        headers::{authorization::Basic, Authorization, HeaderMapExt},
+        layer::{
+            auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
+            compression::CompressionLayer,
+            decompression::DecompressionLayer,
+            trace::TraceLayer,
+        },
         response::Json,
         server::HttpServer,
         service::web::WebService,
-        Body, BodyExtractExt, Request,
+        Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
     },
     rt::Executor,
     service::{Context, Service, ServiceBuilder},
@@ -49,8 +56,21 @@ async fn main() {
     // use the high level API for this service stack.
     //
     // E.g. `::post(<uri>).header(k, v).form(<data>).send().await?`
-    let client = ServiceBuilder::new().service(HttpClient::new());
-    // TODO: enable layers to be added such as trace layer...
+    let client = ServiceBuilder::new()
+        .layer(TraceLayer::new_for_http())
+        .layer(CompressionLayer::new())
+        .layer(DecompressionLayer::new())
+        // you can try to change these credentails or omit them completely,
+        // to see the unauthorized responses, in other words: see the auth middleware in action
+        //
+        // NOTE: the high level http client has also a `::basic` method
+        // that can be used to add basic auth headers only for that specific request
+        .layer(
+            AddAuthorizationLayer::basic("john", "123")
+                .as_sensitive(true)
+                .if_not_present(),
+        )
+        .service(HttpClient::new());
 
     // Low Level Http Client example with easy to use Response body extractor
 
@@ -102,6 +122,17 @@ async fn main() {
         .unwrap();
     tracing::info!("resp: {:?}", resp);
     assert_eq!(resp, "Hello, Rama!");
+
+    // Example to show how to set basic auth directly while making request,
+    // this will now fail as the credentials are not authorized...
+
+    let resp = client
+        .get(format!("http://{ADDRESS}/info"))
+        .basic_auth("joe", "456")
+        .send(Context::default())
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 }
 
 fn setup_tracing() {
@@ -123,6 +154,9 @@ async fn run_server(addr: &str) {
             addr,
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
+                .layer(CompressionLayer::new())
+                .layer(DecompressionLayer::new())
+                .layer(AsyncRequireAuthorizationLayer::new(auth_request))
                 .service(
                     WebService::default()
                         .get("/", "Hello, World!")
@@ -140,4 +174,18 @@ async fn run_server(addr: &str) {
         )
         .await
         .unwrap();
+}
+
+async fn auth_request<S>(ctx: Context<S>, req: Request) -> Result<(Context<S>, Request), Response> {
+    if req
+        .headers()
+        .typed_get::<Authorization<Basic>>()
+        .map(|auth| auth.username() == "john" && auth.password() == "123")
+        .unwrap_or_default()
+    {
+        tracing::info!("authorized request for {} from {}", req.uri(), "john");
+        Ok((ctx, req))
+    } else {
+        Err(StatusCode::UNAUTHORIZED.into_response())
+    }
 }

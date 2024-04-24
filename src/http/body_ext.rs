@@ -19,17 +19,27 @@ impl<Body> BodyExtractExt for crate::http::Response<Body>
 where
     Body: crate::http::dep::http_body::Body + Send + 'static,
     Body::Data: Send + 'static,
-    Body::Error: std::error::Error + Send + Sync + 'static,
+    Body::Error: Send + Sync + 'static,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
     ) -> Result<T, Error> {
-        let body = self.into_body().collect().await?;
+        // TODO: use actual collect error instead of ignoring it
+        let body = self
+            .into_body()
+            .collect()
+            .await
+            .map_err(|_| Error::new("Failed to collect body"))?;
         Ok(serde_json::from_slice(body.to_bytes().as_ref())?)
     }
 
     async fn try_into_string(self) -> Result<String, Error> {
-        let body = self.into_body().collect().await?;
+        // TODO: use actual collect error instead of ignoring it
+        let body = self
+            .into_body()
+            .collect()
+            .await
+            .map_err(|_| Error::new("Failed to collect body"))?;
         let bytes = body.to_bytes();
         Ok(String::from_utf8(bytes.to_vec())?)
     }
@@ -39,17 +49,27 @@ impl<Body> BodyExtractExt for crate::http::Request<Body>
 where
     Body: crate::http::dep::http_body::Body + Send + 'static,
     Body::Data: Send + 'static,
-    Body::Error: std::error::Error + Send + Sync + 'static,
+    Body::Error: Send + Sync + 'static,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
     ) -> Result<T, Error> {
-        let body = self.into_body().collect().await?;
+        // TODO: use actual collect error instead of ignoring it
+        let body = self
+            .into_body()
+            .collect()
+            .await
+            .map_err(|_| Error::new("Failed to collect body"))?;
         Ok(serde_json::from_slice(body.to_bytes().as_ref())?)
     }
 
     async fn try_into_string(self) -> Result<String, Error> {
-        let body = self.into_body().collect().await?;
+        // TODO: use actual collect error instead of ignoring it
+        let body = self
+            .into_body()
+            .collect()
+            .await
+            .map_err(|_| Error::new("Failed to collect body"))?;
         let bytes = body.to_bytes();
         Ok(String::from_utf8(bytes.to_vec())?)
     }
@@ -64,6 +84,7 @@ impl<B: Into<crate::http::Body> + Send + 'static> BodyExtractExt for B {
     }
 
     async fn try_into_string(self) -> Result<String, Error> {
+        // TODO: use actual collect error instead of ignoring it
         let body = self.into().collect().await?;
         let bytes = body.to_bytes();
         Ok(String::from_utf8(bytes.to_vec())?)

@@ -1,7 +1,7 @@
 use super::HttpClientError;
 use crate::{
     error::BoxError,
-    http::{Body, Method, Request, Response, Uri},
+    http::{Method, Request, Response, Uri},
     service::{Context, Service},
 };
 use std::future::Future;
@@ -22,7 +22,7 @@ pub trait HttpClientExt<State>: Sized {
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::http::Uri
-    fn get(&self, url: impl IntoUrl) -> RequestBuilder<Self, State>;
+    fn get(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `POST` request to a URL.
     ///
@@ -31,7 +31,7 @@ pub trait HttpClientExt<State>: Sized {
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::http::Uri
-    fn post(&self, url: impl IntoUrl) -> RequestBuilder<Self, State>;
+    fn post(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PUT` request to a URL.
     ///
@@ -40,7 +40,7 @@ pub trait HttpClientExt<State>: Sized {
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::http::Uri
-    fn put(&self, url: impl IntoUrl) -> RequestBuilder<Self, State>;
+    fn put(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PATCH` request to a URL.
     ///
@@ -49,7 +49,7 @@ pub trait HttpClientExt<State>: Sized {
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::http::Uri
-    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<Self, State>;
+    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `DELETE` request to a URL.
     ///
@@ -58,14 +58,14 @@ pub trait HttpClientExt<State>: Sized {
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
     /// [`Url`]: crate::http::Uri
-    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<Self, State>;
+    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `HEAD` request to a URL.
     ///
     /// # Errors
     ///
     /// This method fails whenever the supplied `Url` cannot be parsed.
-    fn head(&self, url: impl IntoUrl) -> RequestBuilder<Self, State>;
+    fn head(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Start building a [`Request`] with the [`Method`] and [`Url`].
     ///
@@ -79,7 +79,11 @@ pub trait HttpClientExt<State>: Sized {
     /// # Errors
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
-    fn request(&self, method: Method, url: impl IntoUrl) -> RequestBuilder<Self, State>;
+    fn request(
+        &self,
+        method: Method,
+        url: impl IntoUrl,
+    ) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Executes a `Request`.
     ///
@@ -93,39 +97,43 @@ pub trait HttpClientExt<State>: Sized {
     ) -> impl Future<Output = Result<Self::ExecuteResponse, Self::ExecuteError>>;
 }
 
-impl<State, S> HttpClientExt<State> for S
+impl<State, S, Body> HttpClientExt<State> for S
 where
-    S: Service<State, Request, Response = Response>,
+    S: Service<State, Request, Response = Response<Body>>,
     S::Error: Into<BoxError>,
 {
-    type ExecuteResponse = Response;
+    type ExecuteResponse = Response<Body>;
     type ExecuteError = S::Error;
 
-    fn get(&self, url: impl IntoUrl) -> RequestBuilder<Self, State> {
+    fn get(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
         self.request(Method::GET, url)
     }
 
-    fn post(&self, url: impl IntoUrl) -> RequestBuilder<Self, State> {
+    fn post(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
         self.request(Method::POST, url)
     }
 
-    fn put(&self, url: impl IntoUrl) -> RequestBuilder<Self, State> {
+    fn put(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
         self.request(Method::PUT, url)
     }
 
-    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<Self, State> {
+    fn patch(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
         self.request(Method::PATCH, url)
     }
 
-    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<Self, State> {
+    fn delete(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
         self.request(Method::DELETE, url)
     }
 
-    fn head(&self, url: impl IntoUrl) -> RequestBuilder<Self, State> {
+    fn head(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
         self.request(Method::HEAD, url)
     }
 
-    fn request(&self, method: Method, url: impl IntoUrl) -> RequestBuilder<Self, State> {
+    fn request(
+        &self,
+        method: Method,
+        url: impl IntoUrl,
+    ) -> RequestBuilder<Self, State, Self::ExecuteResponse> {
         let uri = match url.into_url() {
             Ok(uri) => uri,
             Err(err) => {
@@ -334,13 +342,13 @@ mod private {
 /// A builder to construct the properties of a [`Request`].
 ///
 /// Constructed using [`HttpClientExt`].
-pub struct RequestBuilder<'a, S, State> {
+pub struct RequestBuilder<'a, S, State, Response> {
     http_client_service: &'a S,
     state: RequestBuilderState,
-    _phantom: std::marker::PhantomData<fn(State) -> ()>,
+    _phantom: std::marker::PhantomData<fn(State, Response) -> ()>,
 }
 
-impl<'a, S, State> std::fmt::Debug for RequestBuilder<'a, S, State>
+impl<'a, S, State, Response> std::fmt::Debug for RequestBuilder<'a, S, State, Response>
 where
     S: std::fmt::Debug,
 {
@@ -359,9 +367,9 @@ enum RequestBuilderState {
     Error(HttpClientError),
 }
 
-impl<'a, State, S> RequestBuilder<'a, S, State>
+impl<'a, S, State, Body> RequestBuilder<'a, S, State, Response<Body>>
 where
-    S: Service<State, Request, Response = Response>,
+    S: Service<State, Request, Response = Response<Body>>,
     S::Error: Into<BoxError>,
 {
     /// Add a `Header` to this [`Request`]`.
@@ -468,7 +476,7 @@ where
     }
 
     /// Set the [`Request`]'s [`Body`].
-    pub fn body<T: Into<Body>>(mut self, body: T) -> Self {
+    pub fn body<T: Into<crate::http::Body>>(mut self, body: T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(builder) => match builder.body(body.into()) {
                 Ok(req) => RequestBuilderState::PostBody(req),
@@ -611,10 +619,10 @@ where
     /// # Errors
     ///
     /// This method fails if there was an error while sending [`Request`].
-    pub async fn send(self, ctx: Context<State>) -> Result<Response, HttpClientError> {
+    pub async fn send(self, ctx: Context<State>) -> Result<Response<Body>, HttpClientError> {
         let request = match self.state {
             RequestBuilderState::PreBody(builder) => builder
-                .body(Body::empty())
+                .body(crate::http::Body::empty())
                 .map_err(HttpClientError::request_err)?,
             RequestBuilderState::PostBody(request) => request,
             RequestBuilderState::Error(err) => return Err(err),
