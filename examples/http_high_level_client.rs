@@ -2,7 +2,7 @@
 //! layer stack in a high level manner using the HttpClientExt.
 //!
 //! ```sh
-//! cargo run --example http_high_level_client
+//! cargo run --features=full --example http_high_level_client
 //! ```
 //!
 //! # Expected output
@@ -72,7 +72,10 @@ async fn main() {
         )
         .service(HttpClient::new());
 
-    // Low Level Http Client example with easy to use Response body extractor
+    //--------------------------------------------------------------------------------
+    // Low Level (Regular) http client (stack) service example.
+    // It does make use of the `BodyExtractExt` trait to extract the body as string.
+    //--------------------------------------------------------------------------------
 
     let resp = client
         .serve(
@@ -88,6 +91,11 @@ async fn main() {
     let body = resp.try_into_string().await.unwrap();
     tracing::info!("body: {:?}", body);
     assert_eq!(body, "Hello, World!");
+
+    //--------------------------------------------------------------------------------
+    // The examples below are high level http client examples
+    // using the `HttpClientExt` trait.
+    //--------------------------------------------------------------------------------
 
     // Get Json Response Example
 
