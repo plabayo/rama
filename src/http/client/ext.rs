@@ -476,6 +476,8 @@ where
     }
 
     /// Set the [`Request`]'s [`Body`].
+    ///
+    /// [`Body`]: crate::http::Body
     pub fn body<T: Into<crate::http::Body>>(mut self, body: T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(builder) => match builder.body(body.into()) {
@@ -492,6 +494,8 @@ where
     }
 
     /// Set the given value as a URL-Encoded Form [`Body`] in the [`Request`].
+    ///
+    /// [`Body`]: crate::http::Body
     pub fn form<T: serde::Serialize + ?Sized>(mut self, form: &T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => match serde_urlencoded::to_string(form) {
@@ -546,6 +550,8 @@ where
     }
 
     /// Set the given value as a JSON [`Body`] in the [`Request`].
+    ///
+    /// [`Body`]: crate::http::Body
     pub fn json<T: serde::Serialize + ?Sized>(mut self, json: &T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => match serde_json::to_vec(json) {
