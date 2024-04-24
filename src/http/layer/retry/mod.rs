@@ -6,13 +6,15 @@ use crate::http::dep::http_body_util::BodyExt;
 use crate::http::Request;
 use crate::service::{Context, Service};
 
-pub mod budget;
 mod layer;
 mod policy;
 
 mod body;
 #[doc(inline)]
 pub use body::RetryBody;
+
+pub mod managed;
+pub use managed::ManagedPolicy;
 
 #[cfg(test)]
 mod tests;
@@ -123,7 +125,7 @@ where
     State: Send + Sync + 'static,
     Body: HttpBody + Send + 'static,
     Body::Data: Send + 'static,
-    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    Body::Error: Into<BoxError>,
 {
     type Response = S::Response;
     type Error = RetryError;

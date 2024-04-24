@@ -19,6 +19,7 @@ use rama::{
             auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
             compression::CompressionLayer,
             decompression::DecompressionLayer,
+            retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
         },
         response::Json,
@@ -27,7 +28,7 @@ use rama::{
         Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
     },
     rt::Executor,
-    service::{Context, Service, ServiceBuilder},
+    service::{util::backoff::ExponentialBackoff, Context, Service, ServiceBuilder},
 };
 
 use serde_json::json;
@@ -45,12 +46,6 @@ async fn main() {
     tokio::spawn(async move {
         run_server(ADDRESS).await;
     });
-
-    // TODO: remove this dirty sleep once retry policy is implemented
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-
-    // TODO: find an ergonomic way to clone a request for Retry Middleware...
-    // TODO: find an ergonomic default for the Retry Policy Middleware...
 
     // Thanks to the import of [`rama::http::client::HttpClientExt`] we can now also
     // use the high level API for this service stack.
@@ -70,6 +65,9 @@ async fn main() {
                 .as_sensitive(true)
                 .if_not_present(),
         )
+        .layer(RetryLayer::new(
+            ManagedPolicy::retry_all().with_backoff(ExponentialBackoff::default()),
+        ))
         .service(HttpClient::new());
 
     //--------------------------------------------------------------------------------
@@ -155,6 +153,9 @@ fn setup_tracing() {
 }
 
 async fn run_server(addr: &str) {
+    // artificial delay to show the client retries
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+
     tracing::info!("running service at: {addr}");
     let exec = Executor::default();
     HttpServer::auto(exec)

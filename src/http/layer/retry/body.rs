@@ -33,7 +33,16 @@ impl crate::http::dep::http_body::Body for RetryBody {
     }
 
     fn is_end_stream(&self) -> bool {
-        true
+        self.bytes.is_none()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        http_body::SizeHint::with_exact(
+            self.bytes
+                .as_ref()
+                .map(|b| b.len() as u64)
+                .unwrap_or_default(),
+        )
     }
 }
 
