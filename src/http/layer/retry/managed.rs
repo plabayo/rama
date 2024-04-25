@@ -522,6 +522,7 @@ mod tests {
             HasherRng::default,
         )
         .unwrap();
+
         let policy = ManagedPolicy::default()
             .with_backoff(backoff)
             .with_clone(clone_fn)

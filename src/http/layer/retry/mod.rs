@@ -178,3 +178,196 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::{
+        http::{
+            layer::retry::managed::DoNotRetry, BodyExtractExt, IntoResponse, Response, StatusCode,
+        },
+        service::{
+            util::{backoff::ExponentialBackoff, rng::HasherRng},
+            Context, ServiceBuilder,
+        },
+    };
+    use std::{
+        sync::{atomic::AtomicUsize, Arc},
+        time::Duration,
+    };
+
+    #[tokio::test]
+    async fn test_service_with_managed_retry() {
+        let backoff = ExponentialBackoff::new(
+            Duration::from_millis(1),
+            Duration::from_millis(5),
+            0.1,
+            HasherRng::default,
+        )
+        .unwrap();
+
+        #[derive(Debug)]
+        struct State {
+            retry_counter: AtomicUsize,
+        }
+
+        async fn retry<E>(
+            ctx: Context<State>,
+            result: Result<Response, E>,
+        ) -> (Context<State>, Result<Response, E>, bool) {
+            if ctx.get::<DoNotRetry>().is_some() {
+                panic!("unexpected retry: should be disabled");
+            }
+
+            match result {
+                Ok(ref res) => {
+                    if res.status().is_server_error() {
+                        ctx.state()
+                            .retry_counter
+                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                        (ctx, result, true)
+                    } else {
+                        (ctx, result, false)
+                    }
+                }
+                Err(_) => {
+                    ctx.state()
+                        .retry_counter
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    (ctx, result, true)
+                }
+            }
+        }
+
+        let retry_policy = ManagedPolicy::new(retry).with_backoff(backoff);
+
+        let service = ServiceBuilder::new()
+            .layer(RetryLayer::new(retry_policy))
+            .service_fn(|_ctx, req: Request<RetryBody>| async {
+                let txt = req.try_into_string().await.unwrap();
+                match txt.as_str() {
+                    "internal" => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+                    "error" => Err(crate::error::BoxError::from("custom error")),
+                    _ => Ok(txt.into_response()),
+                }
+            });
+
+        fn request(s: &'static str) -> Request {
+            Request::builder().body(s.into()).unwrap()
+        }
+
+        fn ctx() -> Context<State> {
+            Context::with_state(Arc::new(State {
+                retry_counter: AtomicUsize::new(0),
+            }))
+        }
+
+        fn ctx_do_not_retry() -> Context<State> {
+            let mut ctx = ctx();
+            ctx.insert(DoNotRetry::default());
+            ctx
+        }
+
+        async fn assert_serve_ok<E: std::fmt::Debug>(
+            msg: &'static str,
+            input: &'static str,
+            output: &'static str,
+            ctx: Context<State>,
+            retried: bool,
+            service: &impl Service<State, Request, Response = Response, Error = E>,
+        ) {
+            let state = ctx.state_clone();
+
+            let fut = service.serve(ctx, request(input));
+            let res = fut.await.unwrap();
+
+            let body = res.try_into_string().await.unwrap();
+            assert_eq!(body, output, "{msg}");
+            if retried {
+                assert!(
+                    state
+                        .retry_counter
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        > 0,
+                    "{msg}"
+                );
+            } else {
+                assert_eq!(
+                    state
+                        .retry_counter
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "{msg}"
+                );
+            }
+        }
+
+        async fn assert_serve_err<E: std::fmt::Debug>(
+            msg: &'static str,
+            input: &'static str,
+            ctx: Context<State>,
+            retried: bool,
+            service: &impl Service<State, Request, Response = Response, Error = E>,
+        ) {
+            let state = ctx.state_clone();
+
+            let fut = service.serve(ctx, request(input));
+            let res = fut.await;
+
+            assert!(res.is_err(), "{msg}");
+            if retried {
+                assert!(
+                    state
+                        .retry_counter
+                        .load(std::sync::atomic::Ordering::SeqCst)
+                        > 0,
+                    "{msg}"
+                );
+            } else {
+                assert_eq!(
+                    state
+                        .retry_counter
+                        .load(std::sync::atomic::Ordering::SeqCst),
+                    0,
+                    "{msg}"
+                )
+            }
+        }
+
+        assert_serve_ok(
+            "ok response should be aborted as response without retry",
+            "hello",
+            "hello",
+            ctx(),
+            false,
+            &service,
+        )
+        .await;
+        assert_serve_ok(
+            "internal will trigger 500 with a retry",
+            "internal",
+            "",
+            ctx(),
+            true,
+            &service,
+        )
+        .await;
+        assert_serve_err(
+            "error will trigger an actual non-http error with a retry",
+            "error",
+            ctx(),
+            true,
+            &service,
+        )
+        .await;
+
+        assert_serve_ok(
+            "normally internal will trigger a 500 with retry, but using DoNotRetry will disable retrying",
+            "internal",
+            "",
+            ctx_do_not_retry(),
+            false,
+            &service,
+        ).await;
+    }
+}
