@@ -66,7 +66,7 @@ async fn main() {
                 .if_not_present(),
         )
         .layer(RetryLayer::new(
-            ManagedPolicy::retry_all().with_backoff(ExponentialBackoff::default()),
+            ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
         ))
         .service(HttpClient::new());
 

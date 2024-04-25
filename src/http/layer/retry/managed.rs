@@ -13,7 +13,7 @@ use std::future::Future;
 
 /// A managed retry [`Policy`],
 /// which allows for an easier interface to configure retrying requests.
-pub struct ManagedPolicy<B, C, R> {
+pub struct ManagedPolicy<B = Undefined, C = Undefined, R = Undefined> {
     backoff: B,
     clone: C,
     retry: R,
@@ -82,10 +82,8 @@ where
     }
 }
 
-impl ManagedPolicy<Undefined, Undefined, Undefined> {
-    /// Create a new [`ManagedPolicy`] which retries all requests,
-    /// with an unlimited budget, and default cloning.
-    pub fn retry_all() -> Self {
+impl Default for ManagedPolicy<Undefined, Undefined, Undefined> {
+    fn default() -> Self {
         ManagedPolicy {
             backoff: Undefined,
             clone: Undefined,
@@ -98,8 +96,8 @@ impl<F> ManagedPolicy<Undefined, Undefined, F> {
     /// Create a new [`ManagedPolicy`] which uses the provided
     /// function to determine if a request should be retried.
     ///
-    /// The default cloning is used and no budget is enforced.
-    pub fn retry_when(retry: F) -> Self {
+    /// The default cloning is used and no backoff is applied.
+    pub fn new(retry: F) -> Self {
         ManagedPolicy {
             backoff: Undefined,
             clone: Undefined,
