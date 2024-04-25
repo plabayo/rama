@@ -11,6 +11,11 @@ impl RetryBody {
         RetryBody { bytes: Some(bytes) }
     }
 
+    #[cfg(test)]
+    pub(crate) fn empty() -> Self {
+        RetryBody { bytes: None }
+    }
+
     /// Turn this body into bytes.
     pub fn into_bytes(self) -> Option<Bytes> {
         self.bytes
