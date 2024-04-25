@@ -47,7 +47,7 @@ In fact you can even
 as part of your proxy, an emulated UA or just a plain old http client, made for you. Because you... deserve it!
 
 In short... Rama (ラマ) is a framework to help you move and transform network packets. The primary
-focus is distortion focuses, but you'll see, it can do so much more. And [with your help](./crate.md) it will only become better.
+focus is distortion proxies, but you'll see, it can do so much more. And [with your help](./crate.md) it will only become better.
 
 If you are new to proxy technology you might want to start with reading [the proxies intro chapter (a World of Proxies)](./proxies/intro.md) first. You can learn more about the design, architecture and philosophy behind rama
 [in the rama introduction chapters](./intro.md).
