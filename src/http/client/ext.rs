@@ -165,7 +165,7 @@ where
     }
 }
 
-/// A trait to try to convert some type into a [`Url`]`.
+/// A trait to try to convert some type into a [`Url`].
 ///
 /// This trait is “sealed”, such that only types within rama can implement it.
 ///
@@ -372,7 +372,7 @@ where
     S: Service<State, Request, Response = Response<Body>>,
     S::Error: Into<BoxError>,
 {
-    /// Add a `Header` to this [`Request`]`.
+    /// Add a `Header` to this [`Request`].
     pub fn header<K, V>(mut self, key: K, value: V) -> Self
     where
         K: IntoHeaderName,
@@ -620,7 +620,7 @@ where
         }
     }
 
-    /// Constructs the [`Request`] and sends it to the target [`Uri`], returning a future [`Response`]`.
+    /// Constructs the [`Request`] and sends it to the target [`Uri`], returning a future [`Response`].
     ///
     /// # Errors
     ///
