@@ -9,7 +9,7 @@ use std::future::Future;
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,
 /// in a more ergonomic way.
-pub trait HttpClientExt<State>: Sized {
+pub trait HttpClientExt<State>: Sized + Send + Sync + 'static {
     /// The response type returned by the `execute` method.
     type ExecuteResponse;
     /// The error type returned by the `execute` method.
@@ -638,5 +638,78 @@ where
             Ok(response) => Ok(response),
             Err(err) => Err(HttpClientError::io_err(err)),
         }
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use http::StatusCode;
+
+    use super::*;
+    use crate::{
+        http::{
+            layer::{
+                compression::CompressionLayer,
+                decompression::DecompressionLayer,
+                retry::{ManagedPolicy, RetryLayer},
+                trace::TraceLayer,
+            },
+            IntoResponse,
+        },
+        service::{util::backoff::ExponentialBackoff, BoxService, ServiceBuilder},
+    };
+    use std::convert::Infallible;
+
+    async fn fake_client_fn<S, Body>(
+        _ctx: Context<S>,
+        _request: Request<Body>,
+    ) -> Result<Response, Infallible>
+    where
+        S: Send + Sync + 'static,
+        Body: crate::http::dep::http_body::Body + Send + 'static,
+        Body::Data: Send + 'static,
+        Body::Error: Send + 'static,
+    {
+        Ok(StatusCode::OK.into_response())
+    }
+
+    fn map_internal_client_error<E, Body>(
+        result: Result<Response<Body>, E>,
+    ) -> Result<Response, crate::error::Error>
+    where
+        E: Into<crate::error::Error>,
+        Body: crate::http::dep::http_body::Body<Data = bytes::Bytes> + Send + Sync + 'static,
+        Body::Error: Into<BoxError>,
+    {
+        match result {
+            Ok(response) => Ok(response.map(crate::http::Body::new)),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    type HttpClientError = crate::error::Error;
+    type HttpClient<S> = BoxService<S, Request, Response, HttpClientError>;
+
+    fn client<S: Send + Sync + 'static>() -> HttpClient<S> {
+        ServiceBuilder::new()
+            .map_result(map_internal_client_error)
+            .layer(TraceLayer::new_for_http())
+            .layer(CompressionLayer::new())
+            .layer(DecompressionLayer::new())
+            .layer(RetryLayer::new(
+                ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
+            ))
+            .service_fn(fake_client_fn)
+            .boxed()
+    }
+
+    #[tokio::test]
+    async fn test_client_happy_path() {
+        let response = client()
+            .get("http://localhost:8080")
+            .send(Context::default())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
     }
 }
