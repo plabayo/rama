@@ -7,7 +7,7 @@
         The reasons behind the creation of rama can be read in <a href="/why_rama.html">the "Why Rama" chapter</a>.
         In this chapter we'll start to dive deeper into the architecture, design and philosophy behind rama.
         At the end of this chapter you should know enough in order to start diving into
-        <a href="https://github.com/plabayo/rama/tree/main/examples">the examples found in the `./examples` dir</a>.
+        <a href="https://github.com/plabayo/rama/tree/main/examples">the examples found in the `/examples` dir</a>.
     </div>
 </div>
 

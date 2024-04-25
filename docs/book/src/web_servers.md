@@ -65,7 +65,7 @@ first and foremost a proxy framework.
 
 ## Examples
 
-All rama [examples can be found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples).
+All rama [examples can be found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples).
 
 Here are some low level web service examples without fancy features:
 

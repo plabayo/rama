@@ -55,7 +55,7 @@ async fn main() {
         .layer(TraceLayer::new_for_http())
         .layer(CompressionLayer::new())
         .layer(DecompressionLayer::new())
-        // you can try to change these credentails or omit them completely,
+        // you can try to change these credentials or omit them completely,
         // to see the unauthorized responses, in other words: see the auth middleware in action
         //
         // NOTE: the high level http client has also a `::basic` method

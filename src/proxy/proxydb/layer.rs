@@ -115,7 +115,7 @@ pub struct ProxyDBService<S, D, P = ()> {
 /// The modus operandi to decide how to deal with a missing [`ProxyFilter`] in the [`Context`]
 /// when selecting a [`Proxy`] from the [`ProxyDB`].
 ///
-/// More advanced behavour can be achieved by combining one of these modi
+/// More advanced behaviour can be achieved by combining one of these modi
 /// with another (custom) layer prepending the parent.
 pub enum ProxySelectMode {
     #[default]
