@@ -53,7 +53,6 @@ async fn main() {
     // E.g. `::post(<uri>).header(k, v).form(<data>).send().await?`
     let client = ServiceBuilder::new()
         .layer(TraceLayer::new_for_http())
-        .layer(CompressionLayer::new())
         .layer(DecompressionLayer::new())
         // you can try to change these credentials or omit them completely,
         // to see the unauthorized responses, in other words: see the auth middleware in action
@@ -169,7 +168,6 @@ async fn run_server(addr: &str) {
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
                 .layer(CompressionLayer::new())
-                .layer(DecompressionLayer::new())
                 .layer(AsyncRequireAuthorizationLayer::new(auth_request))
                 .service(
                     WebService::default()

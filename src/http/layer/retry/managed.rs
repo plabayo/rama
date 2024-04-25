@@ -126,29 +126,33 @@ impl<F> ManagedPolicy<Undefined, Undefined, F> {
     }
 }
 
-impl<B, C, R> ManagedPolicy<B, C, R> {
+impl<C, R> ManagedPolicy<Undefined, C, R> {
     /// add a backoff to this [`ManagedPolicy`].
-    pub fn with_backoff<B2>(self, backoff: B2) -> ManagedPolicy<B2, C, R> {
+    pub fn with_backoff<B>(self, backoff: B) -> ManagedPolicy<B, C, R> {
         ManagedPolicy {
             backoff,
             clone: self.clone,
             retry: self.retry,
         }
     }
+}
 
+impl<B, R> ManagedPolicy<B, Undefined, R> {
     /// add a cloning function to this [`ManagedPolicy`].
     /// to determine if a request should be cloned
-    pub fn with_clone<C2>(self, clone: C2) -> ManagedPolicy<B, C2, R> {
+    pub fn with_clone<C>(self, clone: C) -> ManagedPolicy<B, C, R> {
         ManagedPolicy {
             backoff: self.backoff,
             clone,
             retry: self.retry,
         }
     }
+}
 
+impl<B, C> ManagedPolicy<B, C, Undefined> {
     /// add a retry function to this [`ManagedPolicy`].
     /// to determine if a request should be retried.
-    pub fn with_retry<R2>(self, retry: R2) -> ManagedPolicy<B, C, R2> {
+    pub fn with_retry<R>(self, retry: R) -> ManagedPolicy<B, C, R> {
         ManagedPolicy {
             backoff: self.backoff,
             clone: self.clone,

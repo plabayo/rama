@@ -649,7 +649,6 @@ mod test {
     use crate::{
         http::{
             layer::{
-                compression::CompressionLayer,
                 decompression::DecompressionLayer,
                 retry::{ManagedPolicy, RetryLayer},
                 trace::TraceLayer,
@@ -694,7 +693,6 @@ mod test {
         ServiceBuilder::new()
             .map_result(map_internal_client_error)
             .layer(TraceLayer::new_for_http())
-            .layer(CompressionLayer::new())
             .layer(DecompressionLayer::new())
             .layer(RetryLayer::new(
                 ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
