@@ -14,7 +14,7 @@
 use rama::{
     http::{
         client::{HttpClient, HttpClientExt},
-        headers::{authorization::Basic, Authorization, HeaderMapExt},
+        headers::{authorization::Basic, Accept, Authorization, HeaderMapExt},
         layer::{
             auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
             compression::CompressionLayer,
@@ -101,10 +101,13 @@ async fn main() {
     struct Info {
         name: String,
         example: String,
+        magic: u64,
     }
 
     let info: Info = client
         .get(format!("http://{ADDRESS}/info"))
+        .header("x-magic", "42")
+        .typed_header(Accept::json())
         .send(Context::default())
         .await
         .unwrap()
@@ -114,12 +117,14 @@ async fn main() {
     tracing::info!("info: {:?}", info);
     assert_eq!(info.name, "Rama");
     assert_eq!(info.example, "http_high_level_client.rs");
+    assert_eq!(info.magic, 42);
 
     // Json Post + String Response Example
 
     let resp = client
         .post(format!("http://{ADDRESS}/introduce"))
         .json(&json!({"name": "Rama"}))
+        .typed_header(Accept::text())
         .send(Context::default())
         .await
         .unwrap()
@@ -171,7 +176,22 @@ async fn run_server(addr: &str) {
                         .get("/", "Hello, World!")
                         .get(
                             "/info",
-                            Json(json!({"name": "Rama", "example": "http_high_level_client.rs"})),
+                            |req: Request| async move {
+                                req.headers()
+                                    .get("x-magic")
+                                    .and_then(|v| v.to_str().ok())
+                                    .and_then(|v| v.parse::<u64>().ok())
+                                    .map_or_else(
+                                        || Json(json!({"name": "Rama", "example": "http_high_level_client.rs"})),
+                                        |magic| {
+                                            Json(json!({
+                                                "name": "Rama",
+                                                "example": "http_high_level_client.rs",
+                                                "magic": magic
+                                            }))
+                                        },
+                                    )
+                            }
                         )
                         .post(
                             "/introduce",

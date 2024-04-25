@@ -1,7 +1,7 @@
 use super::HttpClientError;
 use crate::{
     error::BoxError,
-    http::{Method, Request, Response, Uri},
+    http::{headers::HeaderExt, Method, Request, Response, Uri},
     service::{Context, Service},
 };
 use std::future::Future;
@@ -423,6 +423,16 @@ where
         }
     }
 
+    /// Add a typed [`Header`] to this [`Request`].
+    ///
+    /// [`Header`]: crate::http::headers::Header
+    pub fn typed_header<H>(self, header: H) -> Self
+    where
+        H: crate::http::headers::Header,
+    {
+        self.header(H::name().clone(), header.encode_to_value())
+    }
+
     /// Add all `Headers` from the [`HeaderMap`] to this [`Request`].
     ///
     /// [`HeaderMap`]: crate::http::HeaderMap
@@ -439,14 +449,9 @@ where
         U: AsRef<str>,
         P: AsRef<str>,
     {
-        use crate::http::headers::authorization::Credentials;
-
         let header =
             crate::http::headers::Authorization::basic(username.as_ref(), password.as_ref());
-        let mut value = header.0.encode();
-        value.set_sensitive(true);
-
-        self.header(crate::http::header::AUTHORIZATION, value)
+        self.typed_header(header)
     }
 
     /// Enable HTTP bearer authentication.
@@ -454,8 +459,6 @@ where
     where
         T: AsRef<str>,
     {
-        use crate::http::headers::authorization::Credentials;
-
         let header = match crate::http::headers::Authorization::bearer(token.as_ref()) {
             Ok(header) => header,
             Err(err) => {
@@ -469,10 +472,7 @@ where
             }
         };
 
-        let mut value = header.0.encode();
-        value.set_sensitive(true);
-
-        self.header(crate::http::header::AUTHORIZATION, value)
+        self.typed_header(header)
     }
 
     /// Set the [`Request`]'s [`Body`].

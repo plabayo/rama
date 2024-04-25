@@ -23,12 +23,12 @@ pub enum Scheme {
     /// The `ws` scheme.
     ///
     /// (Websocket over HTTP)
-    /// <https://tools.ietf.org/html/rfc6455>
+    /// <https://datatracker.ietf.org/doc/html/rfc6455>
     Ws,
     /// The `wss` scheme.
     ///
     /// (Websocket over HTTPS)
-    /// <https://tools.ietf.org/html/rfc6455>
+    /// <https://datatracker.ietf.org/doc/html/rfc6455>
     Wss,
     /// Custom scheme.
     Custom(String),

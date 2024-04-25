@@ -6,7 +6,7 @@
 
 use super::{Policy, PolicyResult, RetryBody};
 use crate::{
-    http::Request,
+    http::{Request, Response},
     service::{util::backoff::Backoff, Context},
 };
 use std::future::Future;
@@ -23,7 +23,7 @@ impl<B, C, R, State, Response, Error> Policy<State, Response, Error> for Managed
 where
     B: Backoff,
     C: CloneInput<State>,
-    R: RetryRule<Error>,
+    R: RetryRule<Response, Error>,
     State: Send + Sync + 'static,
     Response: Send + 'static,
     Error: Send + Sync + 'static,
@@ -34,28 +34,12 @@ where
         req: Request<RetryBody>,
         result: Result<Response, Error>,
     ) -> PolicyResult<State, Response, Error> {
-        match result {
-            Ok(response) => {
-                // Treat all `Response`s as success,
-                // so deposit budget and don't retry...
-                PolicyResult::Abort(Ok(response))
-            }
-            Err(err) => match self.retry.retry(err).await {
-                (err, true) => {
-                    if self.backoff.next_backoff().await {
-                        // Try again!
-                        PolicyResult::Retry { ctx, req }
-                    } else {
-                        // Don't retry, we've reached the backoff limit.
-                        PolicyResult::Abort(Err(err))
-                    }
-                }
-                (err, false) => {
-                    // Treat all errors as failures...
-                    // But we limit the number of attempts...
-                    PolicyResult::Abort(Err(err))
-                }
-            },
+        let (result, retry) = self.retry.retry(result).await;
+        if retry && self.backoff.next_backoff().await {
+            PolicyResult::Retry { ctx, req }
+        } else {
+            self.backoff.reset().await;
+            PolicyResult::Abort(result)
         }
     }
 
@@ -147,30 +131,48 @@ impl<B, C, R> ManagedPolicy<B, C, R> {
 
 /// A trait that is used to umbrella-cover all possible
 /// implementation kinds for the retry rule functionality.
-pub trait RetryRule<E>: private::Sealed<((), E)> + Send + Sync + 'static {
-    /// Check if the given error should be retried,
-    /// and return the error if it should be retried.
-    fn retry(&self, error: E) -> impl Future<Output = (E, bool)> + Send + '_;
+pub trait RetryRule<R, E>: private::Sealed<(R, E)> + Send + Sync + 'static {
+    /// Check if the given result should be retried.
+    fn retry(&self, result: Result<R, E>)
+        -> impl Future<Output = (Result<R, E>, bool)> + Send + '_;
 }
 
-impl<E> RetryRule<E> for Undefined
+impl<Body, E> RetryRule<Response<Body>, E> for Undefined
 where
     E: std::fmt::Debug + Send + Sync + 'static,
+    Body: Send + 'static,
 {
-    async fn retry(&self, error: E) -> (E, bool) {
-        tracing::debug!("retrying error: {:?}", error);
-        (error, true)
+    async fn retry(&self, result: Result<Response<Body>, E>) -> (Result<Response<Body>, E>, bool) {
+        match &result {
+            Ok(response) => {
+                let status = response.status();
+                if status.is_server_error() {
+                    tracing::debug!(
+                        "retrying server error http status code: {status} ({})",
+                        status.as_u16()
+                    );
+                    (result, true)
+                } else {
+                    (result, false)
+                }
+            }
+            Err(error) => {
+                tracing::debug!("retrying error: {:?}", error);
+                (result, true)
+            }
+        }
     }
 }
 
-impl<F, Fut, E> RetryRule<E> for F
+impl<F, Fut, R, E> RetryRule<R, E> for F
 where
-    F: Fn(E) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = (E, bool)> + Send + 'static,
+    F: Fn(Result<R, E>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (Result<R, E>, bool)> + Send + 'static,
+    R: Send + 'static,
     E: Send + Sync + 'static,
 {
-    async fn retry(&self, error: E) -> (E, bool) {
-        self(error).await
+    async fn retry(&self, result: Result<R, E>) -> (Result<R, E>, bool) {
+        self(result).await
     }
 }
 
@@ -232,6 +234,8 @@ impl Backoff for Undefined {
     async fn next_backoff(&self) -> bool {
         true
     }
+
+    async fn reset(&self) {}
 }
 
 mod private {
@@ -247,10 +251,10 @@ mod private {
             + 'static
     {
     }
-    impl<F, Fut, E> Sealed<((), E)> for F
+    impl<F, Fut, R, E> Sealed<(R, E)> for F
     where
-        F: Fn(E) -> Fut + Send + Sync + 'static,
-        Fut: Future<Output = (E, bool)> + Send + 'static,
+        F: Fn(Result<R, E>) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = (Result<R, E>, bool)> + Send + 'static,
     {
     }
 }
