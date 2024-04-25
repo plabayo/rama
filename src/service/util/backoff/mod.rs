@@ -20,6 +20,12 @@ pub trait Backoff: Send + Sync + 'static {
     ///
     /// It is expected that the backoff implementation resets itself prior to returning false.
     fn next_backoff(&self) -> impl std::future::Future<Output = bool> + Send + '_;
+
+    /// Reset the backoff to its initial state.
+    ///
+    /// Note that [`Backoff::next_backoff`] resets automatically when it returns false,
+    /// so this method should only be used when the backoff needs to be reset before it has completed.
+    fn reset(&self) -> impl std::future::Future<Output = ()> + Send + '_;
 }
 
 mod exponential;

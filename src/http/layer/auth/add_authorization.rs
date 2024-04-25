@@ -60,6 +60,7 @@ const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::
 #[derive(Debug, Clone)]
 pub struct AddAuthorizationLayer {
     value: HeaderValue,
+    if_not_present: bool,
 }
 
 impl AddAuthorizationLayer {
@@ -73,7 +74,10 @@ impl AddAuthorizationLayer {
     pub fn basic(username: &str, password: &str) -> Self {
         let encoded = BASE64.encode(format!("{}:{}", username, password));
         let value = HeaderValue::try_from(format!("Basic {}", encoded)).unwrap();
-        Self { value }
+        Self {
+            value,
+            if_not_present: false,
+        }
     }
 
     /// Authorize requests using a "bearer token". Commonly used for OAuth 2.
@@ -86,7 +90,10 @@ impl AddAuthorizationLayer {
     pub fn bearer(token: &str) -> Self {
         let value =
             HeaderValue::try_from(format!("Bearer {}", token)).expect("token is not valid header");
-        Self { value }
+        Self {
+            value,
+            if_not_present: false,
+        }
     }
 
     /// Mark the header as [sensitive].
@@ -99,6 +106,14 @@ impl AddAuthorizationLayer {
         self.value.set_sensitive(sensitive);
         self
     }
+
+    /// Preserve the existing `Authorization` header if it exists.
+    ///
+    /// This can be useful if you want to use different authorization headers for different requests.
+    pub fn if_not_present(mut self) -> Self {
+        self.if_not_present = true;
+        self
+    }
 }
 
 impl<S> Layer<S> for AddAuthorizationLayer {
@@ -108,6 +123,7 @@ impl<S> Layer<S> for AddAuthorizationLayer {
         AddAuthorization {
             inner,
             value: self.value.clone(),
+            if_not_present: self.if_not_present,
         }
     }
 }
@@ -125,6 +141,7 @@ impl<S> Layer<S> for AddAuthorizationLayer {
 pub struct AddAuthorization<S> {
     inner: S,
     value: HeaderValue,
+    if_not_present: bool,
 }
 
 impl<S> AddAuthorization<S> {
@@ -162,6 +179,14 @@ impl<S> AddAuthorization<S> {
         self.value.set_sensitive(sensitive);
         self
     }
+
+    /// Preserve the existing `Authorization` header if it exists.
+    ///
+    /// This can be useful if you want to use different authorization headers for different requests.
+    pub fn if_not_present(mut self) -> Self {
+        self.if_not_present = true;
+        self
+    }
 }
 
 impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for AddAuthorization<S>
@@ -179,8 +204,10 @@ where
         ctx: Context<State>,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        req.headers_mut()
-            .insert(http::header::AUTHORIZATION, self.value.clone());
+        if !self.if_not_present || !req.headers().contains_key(http::header::AUTHORIZATION) {
+            req.headers_mut()
+                .insert(http::header::AUTHORIZATION, self.value.clone());
+        }
         self.inner.serve(ctx, req).await
     }
 }

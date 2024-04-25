@@ -1,6 +1,6 @@
+use super::RetryBody;
+use crate::{http::Request, service::Context};
 use std::future::Future;
-
-use crate::service::Context;
 
 /// A "retry policy" to classify if a request should be retried.
 ///
@@ -8,20 +8,19 @@ use crate::service::Context;
 ///
 /// ```
 /// use rama::service::Context;
-/// use rama::service::layer::retry::{Policy, PolicyResult};
+/// use rama::http::Request;
+/// use rama::http::layer::retry::{Policy, PolicyResult, RetryBody};
 /// use std::sync::{Arc, Mutex};
-///
-/// type Req = String;
-/// type Res = String;
 ///
 /// struct Attempts(Arc<Mutex<usize>>);
 ///
-/// impl<State, E> Policy<State, Req, Res, E> for Attempts
+/// impl<S, R, E> Policy<S, R, E> for Attempts
 ///     where
-///         State: Send + Sync + 'static,
+///         S: Send + Sync + 'static,
+///         R: Send + 'static,
 ///         E: Send + Sync + 'static,
 /// {
-///     async fn retry(&self, ctx: Context<State>, req: Req, result: Result<Res, E>) -> PolicyResult<State, Req, Res, E> {
+///     async fn retry(&self, ctx: Context<S>, req: Request<RetryBody>, result: Result<R, E>) -> PolicyResult<S, R, E> {
 ///         match result {
 ///             Ok(_) => {
 ///                 // Treat all `Response`s as success,
@@ -44,12 +43,12 @@ use crate::service::Context;
 ///         }
 ///     }
 ///
-///     fn clone_input(&self, ctx: &Context<State>, req: &Req) -> Option<(Context<State>, Req)> {
+///     fn clone_input(&self, ctx: &Context<S>, req: &Request<RetryBody>) -> Option<(Context<S>, Request<RetryBody>)> {
 ///         Some((ctx.clone(), req.clone()))
 ///     }
 /// }
 /// ```
-pub trait Policy<S, Req, Res, E>: Send + Sync + 'static {
+pub trait Policy<S, R, E>: Send + Sync + 'static {
     /// Check the policy if a certain request should be retried.
     ///
     /// This method is passed a reference to the original request, and either
@@ -86,39 +85,63 @@ pub trait Policy<S, Req, Res, E>: Send + Sync + 'static {
     fn retry(
         &self,
         ctx: Context<S>,
-        req: Req,
-        result: Result<Res, E>,
-    ) -> impl Future<Output = PolicyResult<S, Req, Res, E>> + Send + '_;
+        req: Request<RetryBody>,
+        result: Result<R, E>,
+    ) -> impl Future<Output = PolicyResult<S, R, E>> + Send + '_;
 
     /// Tries to clone a request before being passed to the inner service.
     ///
     /// If the request cannot be cloned, return [`None`]. Moreover, the retry
     /// function will not be called if the [`None`] is returned.
-    fn clone_input(&self, ctx: &Context<S>, req: &Req) -> Option<(Context<S>, Req)>;
+    fn clone_input(
+        &self,
+        ctx: &Context<S>,
+        req: &Request<RetryBody>,
+    ) -> Option<(Context<S>, Request<RetryBody>)>;
+}
+
+impl<P, S, R, E> Policy<S, R, E> for std::sync::Arc<P>
+where
+    P: Policy<S, R, E>,
+{
+    fn retry(
+        &self,
+        ctx: Context<S>,
+        req: Request<RetryBody>,
+        result: Result<R, E>,
+    ) -> impl Future<Output = PolicyResult<S, R, E>> + Send + '_ {
+        (**self).retry(ctx, req, result)
+    }
+
+    fn clone_input(
+        &self,
+        ctx: &Context<S>,
+        req: &Request<RetryBody>,
+    ) -> Option<(Context<S>, Request<RetryBody>)> {
+        (**self).clone_input(ctx, req)
+    }
 }
 
 /// The full result of a limit policy.
-pub enum PolicyResult<S, Req, Res, E> {
+pub enum PolicyResult<S, R, E> {
     /// The result should not be retried,
     /// and the result should be returned to the caller.
-    Abort(Result<Res, E>),
+    Abort(Result<R, E>),
     /// The result should be retried,
     /// and the request should be passed to the inner service again.
     Retry {
         /// The context of the request.
         ctx: Context<S>,
         /// The request to be retried, with the above context.
-        req: Req,
+        req: Request<RetryBody>,
     },
 }
 
-impl<State, Request, Response, Error> std::fmt::Debug
-    for PolicyResult<State, Request, Response, Error>
+impl<S, R, E> std::fmt::Debug for PolicyResult<S, R, E>
 where
-    State: std::fmt::Debug,
-    Request: std::fmt::Debug,
-    Response: std::fmt::Debug,
-    Error: std::fmt::Debug,
+    S: std::fmt::Debug,
+    R: std::fmt::Debug,
+    E: std::fmt::Debug,
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

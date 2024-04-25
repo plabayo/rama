@@ -76,6 +76,9 @@ pub use headers::{
     TransferEncoding, Upgrade, UserAgent, Vary,
 };
 
+mod common;
+pub use common::Accept;
+
 pub mod authorization {
     //! Authorization header and types.
 
@@ -84,3 +87,9 @@ pub mod authorization {
 }
 
 pub mod extract;
+
+mod ext;
+pub use ext::HeaderExt;
+
+pub(crate) mod util;
+pub use util::quality_value::{Quality, QualityValue};

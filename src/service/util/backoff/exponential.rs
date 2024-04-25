@@ -174,8 +174,7 @@ where
         let jitter = match self.jitter(base) {
             Some(jitter) => jitter,
             None => {
-                // reset for next usage!
-                self.state.lock().unwrap().iterations = 0;
+                self.reset().await;
                 return false;
             }
         };
@@ -186,6 +185,10 @@ where
 
         tokio::time::sleep(next).await;
         true
+    }
+
+    async fn reset(&self) {
+        self.state.lock().unwrap().iterations = 0;
     }
 }
 
@@ -223,6 +226,15 @@ mod tests {
     async fn backoff_default() {
         let backoff = ExponentialBackoff::default();
         assert!(backoff.next_backoff().await);
+    }
+
+    #[tokio::test]
+    async fn backoff_reset() {
+        let backoff = ExponentialBackoff::default();
+        assert!(backoff.next_backoff().await);
+        assert!(backoff.state.lock().unwrap().iterations == 1);
+        backoff.reset().await;
+        assert!(backoff.state.lock().unwrap().iterations == 0);
     }
 
     #[tokio::test]

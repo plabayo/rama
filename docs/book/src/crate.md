@@ -16,7 +16,7 @@ cargo add rama
 ## Examples
 
 Examples to help you get started can be found in
-[the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+[the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to know how to use rama for your purposes.
 
 ## ⛨ | Safety
