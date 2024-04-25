@@ -54,7 +54,7 @@ In fact you can even
 as part of your proxy, an emulated UA or just a plain old http client, made for you. Because you... deserve it!
 
 In short... Rama (ラマ) is a framework to help you move and transform network packets. The primary
-focus is distortion proxies, but you'll see, it can do so much more. And [with your help](#contributing) it will only become better.
+focus is distortion proxies, but you'll see, it can do so much more. And [with your help](#--contributing) it will only become better.
 
 > <sup>(\*)</sup> The [Distortion proxies](https://ramaproxy.org/book/proxies/distort) support
 > comes with UA emulation capabilities. Part of this uses actual browser fingerprint information
