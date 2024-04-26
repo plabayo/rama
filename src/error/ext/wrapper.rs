@@ -33,6 +33,7 @@ impl std::error::Error for BoxedError {
 }
 
 #[repr(transparent)]
+/// An error type that wraps a message.
 pub(crate) struct MessageError<M>(pub(crate) M);
 
 impl<M> Debug for MessageError<M>

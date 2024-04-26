@@ -5,6 +5,7 @@ mod context;
 
 mod wrapper;
 pub use wrapper::BoxedError;
+pub(crate) use wrapper::MessageError;
 
 /// Extends the `Result` and `Option` types with methods for adding context to errors.
 ///
