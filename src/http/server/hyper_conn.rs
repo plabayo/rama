@@ -1,4 +1,5 @@
 use super::HttpServeResult;
+use crate::error::{error, Error};
 use crate::http::{IntoResponse, Request};
 use crate::rt::Executor;
 use crate::service::Service;
@@ -10,7 +11,7 @@ use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::{rt::TokioIo, server::conn::auto::Builder as AutoBuilder};
 use std::convert::Infallible;
-use std::error::Error;
+use std::error::Error as _;
 use std::pin::pin;
 use tokio::select;
 
@@ -143,33 +144,31 @@ impl HyperConnServer for AutoBuilder<Executor> {
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
-                        return map_boxed_hyper_result(result);
+                        return map_boxed_hyper_result(result.map_err(|err| error!(err)));
                     }
                 }
             }
         } else {
-            map_boxed_hyper_result(conn.await)
+            map_boxed_hyper_result(conn.await.map_err(|err| error!(err)))
         }
     }
 }
 
 /// A utility function to map boxed, potentially hyper errors, to our own error type.
-fn map_boxed_hyper_result(
-    result: Result<(), Box<dyn std::error::Error + Send + Sync>>,
-) -> HttpServeResult {
+fn map_boxed_hyper_result(result: Result<(), Error>) -> HttpServeResult {
     match result {
         Ok(_) => Ok(()),
         Err(err) => match err.downcast::<hyper::Error>() {
-            Ok(err) => map_hyper_err_to_result(*err),
+            Ok(err) => map_hyper_err_to_result(err),
             Err(err) => match err.downcast::<std::io::Error>() {
                 Ok(err) => {
                     if is_connection_error(&err) {
                         Ok(())
                     } else {
-                        Err(err.into())
+                        Err(Error::new(err))
                     }
                 }
-                Err(err) => Err(crate::error::Error::new(err)),
+                Err(err) => Err(Error::new(err)),
             },
         },
     }
@@ -201,7 +200,7 @@ fn map_hyper_err_to_result(err: hyper::Error) -> HttpServeResult {
         }
     }
 
-    Err(err.into())
+    Err(Error::new(err))
 }
 
 mod private {

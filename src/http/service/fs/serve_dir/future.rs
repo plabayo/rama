@@ -6,7 +6,8 @@ use crate::http::{
 };
 use crate::service::{Context, Service};
 use crate::{
-    error::BoxError, http::layer::util::content_encoding::Encoding,
+    error::{error, StdError},
+    http::layer::util::content_encoding::Encoding,
     http::service::fs::AsyncReadBody,
 };
 use bytes::Bytes;
@@ -20,7 +21,7 @@ where
     State: Send + Sync + 'static,
     F: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
     ResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    ResBody::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    ResBody::Error: StdError + Send + Sync + 'static,
 {
     match open_file_result {
         Ok(OpenFileOutput::FileOpened(file_output)) => Ok(build_response(*file_output)),
@@ -98,13 +99,13 @@ pub(super) async fn serve_fallback<F, State, B, FResBody>(
 where
     F: Service<State, Request<B>, Response = Response<FResBody>, Error = Infallible>,
     FResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    FResBody::Error: Into<BoxError>,
+    FResBody::Error: StdError + Send + Sync + 'static,
 {
     let response = fallback.serve(ctx, req).await.unwrap();
     Ok(response
         .map(|body| {
-            body.map_err(|err| match err.into().downcast::<io::Error>() {
-                Ok(err) => *err,
+            body.map_err(|err| match error!(err).downcast::<io::Error>() {
+                Ok(err) => err,
                 Err(err) => io::Error::new(io::ErrorKind::Other, err),
             })
             .boxed()

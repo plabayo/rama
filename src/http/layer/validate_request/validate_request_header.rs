@@ -172,7 +172,7 @@ mod tests {
     use super::*;
 
     use crate::http::{header, Body, StatusCode};
-    use crate::{error::BoxError, service::ServiceBuilder};
+    use crate::{error::Error, service::ServiceBuilder};
 
     #[tokio::test]
     async fn valid_accept_header() {
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NOT_ACCEPTABLE);
     }
 
-    async fn echo<B>(req: Request<B>) -> Result<Response<B>, BoxError> {
+    async fn echo<B>(req: Request<B>) -> Result<Response<B>, Error> {
         Ok(Response::new(req.into_body()))
     }
 }

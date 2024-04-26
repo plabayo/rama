@@ -86,7 +86,7 @@ impl AllowOrigin {
     /// [`CorsLayer::allow_origin`]: super::CorsLayer::allow_origin
     pub fn async_predicate<F, Fut>(f: F) -> Self
     where
-        F: FnOnce(HeaderValue, &RequestParts) -> Fut + Send + Sync + 'static + Clone,
+        F: FnOnce(HeaderValue, &RequestParts) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = bool> + Send + Sync + 'static,
     {
         Self(OriginInner::AsyncPredicate(Arc::new(move |v, p| {

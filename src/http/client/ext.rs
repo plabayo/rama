@@ -1,6 +1,6 @@
 use super::HttpClientError;
 use crate::{
-    error::BoxError,
+    error::{error, Error, StdError},
     http::{headers::HeaderExt, Method, Request, Response, Uri},
     service::{Context, Service},
 };
@@ -100,7 +100,7 @@ pub trait HttpClientExt<State>: Sized + Send + Sync + 'static {
 impl<State, S, Body> HttpClientExt<State> for S
 where
     S: Service<State, Request, Response = Response<Body>>,
-    S::Error: Into<BoxError>,
+    S::Error: StdError + Send + Sync + 'static,
 {
     type ExecuteResponse = Response<Body>;
     type ExecuteError = S::Error;
@@ -220,7 +220,7 @@ mod private {
             let scheme: Scheme = self.scheme().into();
             match scheme {
                 Scheme::Http | Scheme::Https => Ok(self),
-                _ => Err(HttpClientError::request_err(format!(
+                _ => Err(HttpClientError::request_err(error!(
                     "Unsupported scheme: {scheme}"
                 ))),
             }
@@ -231,7 +231,7 @@ mod private {
         fn into_url(self) -> Result<Uri, HttpClientError> {
             match self.parse::<Uri>() {
                 Ok(uri) => uri.into_url(),
-                Err(_) => Err(HttpClientError::request_err(format!(
+                Err(_) => Err(HttpClientError::request_err(error!(
                     "Invalid URL: {}",
                     self
                 ))),
@@ -265,7 +265,9 @@ mod private {
         fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
             match self {
                 Some(name) => Ok(name),
-                None => Err(HttpClientError::request_err("Header name is required")),
+                None => Err(HttpClientError::request_err(error!(
+                    "Header name is required"
+                ))),
             }
         }
     }
@@ -370,7 +372,7 @@ enum RequestBuilderState {
 impl<'a, S, State, Body> RequestBuilder<'a, S, State, Response<Body>>
 where
     S: Service<State, Request, Response = Response<Body>>,
-    S::Error: Into<BoxError>,
+    S::Error: StdError + Send + Sync + 'static,
 {
     /// Add a `Header` to this [`Request`].
     pub fn header<K, V>(mut self, key: K, value: V) -> Self
@@ -629,14 +631,14 @@ where
         let request = match self.state {
             RequestBuilderState::PreBody(builder) => builder
                 .body(crate::http::Body::empty())
-                .map_err(HttpClientError::request_err)?,
+                .map_err(|err| HttpClientError::request_err(Error::new(err)))?,
             RequestBuilderState::PostBody(request) => request,
             RequestBuilderState::Error(err) => return Err(err),
         };
 
         match self.http_client_service.serve(ctx, request).await {
             Ok(response) => Ok(response),
-            Err(err) => Err(HttpClientError::io_err(err)),
+            Err(err) => Err(HttpClientError::io_err(Error::new(err))),
         }
     }
 }
@@ -667,7 +669,7 @@ mod test {
         S: Send + Sync + 'static,
         Body: crate::http::dep::http_body::Body + Send + 'static,
         Body::Data: Send + 'static,
-        Body::Error: Send + 'static,
+        Body::Error: StdError + Send + Sync + 'static,
     {
         Ok(StatusCode::OK.into_response())
     }
@@ -676,13 +678,13 @@ mod test {
         result: Result<Response<Body>, E>,
     ) -> Result<Response, crate::error::Error>
     where
-        E: Into<crate::error::Error>,
+        E: StdError + Send + Sync + 'static,
         Body: crate::http::dep::http_body::Body<Data = bytes::Bytes> + Send + Sync + 'static,
-        Body::Error: Into<BoxError>,
+        Body::Error: StdError + Send + Sync + 'static,
     {
         match result {
             Ok(response) => Ok(response.map(crate::http::Body::new)),
-            Err(err) => Err(err.into()),
+            Err(err) => Err(crate::error::Error::new(err)),
         }
     }
 

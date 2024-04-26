@@ -2,7 +2,7 @@
 //!
 //! See [`Limit`].
 
-use crate::error::BoxError;
+use crate::error::{Error, StdError};
 use crate::service::{Context, Service};
 
 pub mod policy;
@@ -43,14 +43,14 @@ where
 impl<T, P, State, Request> Service<State, Request> for Limit<T, P>
 where
     T: Service<State, Request>,
-    T::Error: Into<BoxError>,
+    T::Error: StdError + Send + Sync + 'static,
     P: policy::Policy<State, Request>,
-    P::Error: Into<BoxError>,
+    P::Error: StdError + Send + Sync + 'static,
     Request: Send + Sync + 'static,
     State: Send + Sync + 'static,
 {
     type Response = T::Response;
-    type Error = BoxError;
+    type Error = Error;
 
     async fn serve(
         &self,
@@ -65,9 +65,9 @@ where
             match result.output {
                 policy::PolicyOutput::Ready(guard) => {
                     let _ = guard;
-                    return self.inner.serve(ctx, request).await.map_err(Into::into);
+                    return self.inner.serve(ctx, request).await.map_err(Error::new);
                 }
-                policy::PolicyOutput::Abort(err) => return Err(err.into()),
+                policy::PolicyOutput::Abort(err) => return Err(Error::new(err)),
                 policy::PolicyOutput::Retry => (),
             }
         }

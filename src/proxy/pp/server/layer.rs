@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use crate::{
-    error::Error,
+    error::{Error, StdError},
     proxy::pp::protocol::{v1, v2, HeaderResult, PartialResult},
     service::{Context, Layer, Service},
     stream::{ChainReader, HeapReader, SocketInfo, Stream},
@@ -51,7 +51,7 @@ where
         State,
         tokio::io::Join<ChainReader<HeapReader, tokio::io::ReadHalf<IO>>, tokio::io::WriteHalf<IO>>,
     >,
-    S::Error: Into<Error>,
+    S::Error: StdError + Send + Sync + 'static,
     IO: Stream + Unpin,
 {
     type Response = S::Response;
@@ -65,7 +65,7 @@ where
         let mut buffer = [0; 512];
         let mut read = 0;
         let header = loop {
-            read += stream.read(&mut buffer[read..]).await?;
+            read += stream.read(&mut buffer[read..]).await.map_err(Error::new)?;
 
             let header = HeaderResult::parse(&buffer[..read]);
             if header.is_complete() {
@@ -109,10 +109,10 @@ where
                 header.header.len()
             }
             HeaderResult::V1(Err(error)) => {
-                return Err(error.into());
+                return Err(Error::new(error));
             }
             HeaderResult::V2(Err(error)) => {
-                return Err(error.into());
+                return Err(Error::new(error));
             }
         };
 
@@ -125,7 +125,7 @@ where
         // read the rest of the data
         match self.inner.serve(ctx, stream).await {
             Ok(response) => Ok(response),
-            Err(error) => Err(error.into()),
+            Err(error) => Err(Error::new(error)),
         }
     }
 }

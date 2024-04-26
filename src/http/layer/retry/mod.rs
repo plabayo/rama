@@ -1,6 +1,6 @@
 //! Middleware for retrying "failed" requests.
 
-use crate::error::BoxError;
+use crate::error::{error, Error, StdError};
 use crate::http::dep::http_body::Body as HttpBody;
 use crate::http::dep::http_body_util::BodyExt;
 use crate::http::Request;
@@ -84,7 +84,7 @@ impl<P, S> Retry<P, S> {
 /// Error type for [`Retry`]
 pub struct RetryError {
     kind: RetryErrorKind,
-    inner: Option<BoxError>,
+    inner: Option<Error>,
 }
 
 #[derive(Debug)]
@@ -121,11 +121,11 @@ impl<P, S, State, Body> Service<State, Request<Body>> for Retry<P, S>
 where
     P: Policy<State, S::Response, S::Error>,
     S: Service<State, Request<RetryBody>>,
-    S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    S::Error: StdError + Send + Sync + 'static,
     State: Send + Sync + 'static,
     Body: HttpBody + Send + 'static,
     Body::Data: Send + 'static,
-    Body::Error: Into<BoxError>,
+    Body::Error: StdError + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = RetryError;
@@ -141,7 +141,7 @@ where
         let (parts, body) = request.into_parts();
         let body = body.collect().await.map_err(|e| RetryError {
             kind: RetryErrorKind::BodyConsume,
-            inner: Some(e.into()),
+            inner: Some(Error::new(e)),
         })?;
         let body = RetryBody::new(body.to_bytes());
         let mut request = Request::from_parts(parts, body);
@@ -157,7 +157,7 @@ where
                             PolicyResult::Abort(result) => {
                                 return result.map_err(|e| RetryError {
                                     kind: RetryErrorKind::Service,
-                                    inner: Some(e.into()),
+                                    inner: Some(error!(e).context("retry policy abort")),
                                 })
                             }
                             PolicyResult::Retry { ctx, req } => (ctx, req),
@@ -171,7 +171,7 @@ where
                 None => {
                     return resp.map_err(|e| RetryError {
                         kind: RetryErrorKind::Service,
-                        inner: Some(e.into()),
+                        inner: Some(error!(e).context("retry clone unavailable")),
                     })
                 }
             }
@@ -247,7 +247,7 @@ mod test {
                 let txt = req.try_into_string().await.unwrap();
                 match txt.as_str() {
                     "internal" => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-                    "error" => Err(crate::error::BoxError::from("custom error")),
+                    "error" => Err(error!("custom error")),
                     _ => Ok(txt.into_response()),
                 }
             });

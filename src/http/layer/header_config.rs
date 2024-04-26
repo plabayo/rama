@@ -47,7 +47,7 @@ use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
 
 use crate::{
-    error::Error,
+    error::{Error, StdError},
     http::{
         utils::{HeaderValueErr, HeaderValueGetter},
         Request,
@@ -126,7 +126,7 @@ where
     T: DeserializeOwned + Clone + Send + Sync + 'static,
     State: Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    E: Into<Error> + Send + Sync + 'static,
+    E: StdError + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = Error;
@@ -143,14 +143,14 @@ where
                     && matches!(err, crate::http::utils::HeaderValueErr::HeaderMissing(_))
                 {
                     tracing::debug!(error = %err, "failed to extract header config");
-                    return self.inner.serve(ctx, request).await.map_err(Into::into);
+                    return self.inner.serve(ctx, request).await.map_err(Error::new);
                 } else {
-                    return Err(err.into());
+                    return Err(Error::new(err));
                 }
             }
         };
         ctx.insert(config);
-        self.inner.serve(ctx, request).await.map_err(Into::into)
+        self.inner.serve(ctx, request).await.map_err(Error::new)
     }
 }
 

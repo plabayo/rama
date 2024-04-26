@@ -468,7 +468,7 @@ impl fmt::Display for Latency {
 mod tests {
     use super::*;
 
-    use crate::error::BoxError;
+    use crate::error::{Ok, Result};
     use crate::http::dep::http_body_util::BodyExt as _;
     use crate::http::layer::classify::ServerErrorsFailureClass;
     use crate::http::{Body, HeaderMap, Request, Response};
@@ -615,17 +615,17 @@ mod tests {
         assert_eq!(0, ON_FAILURE().load(Ordering::SeqCst), "failure");
     }
 
-    async fn echo(req: Request) -> Result<Response, BoxError> {
+    async fn echo(req: Request) -> Result<Response> {
         Ok(Response::new(req.into_body()))
     }
 
-    async fn streaming_body(_req: Request) -> Result<Response, BoxError> {
+    async fn streaming_body(_req: Request) -> Result<Response> {
         use futures::stream::iter;
 
         let stream = iter(vec![
-            Ok::<_, BoxError>(Bytes::from("one")),
-            Ok::<_, BoxError>(Bytes::from("two")),
-            Ok::<_, BoxError>(Bytes::from("three")),
+            Ok(Bytes::from("one")),
+            Ok(Bytes::from("two")),
+            Ok(Bytes::from("three")),
         ]);
 
         let body = Body::from_stream(stream);

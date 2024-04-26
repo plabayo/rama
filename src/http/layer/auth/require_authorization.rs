@@ -262,7 +262,7 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::error::BoxError;
+    use crate::error::Error;
     use crate::http::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::http::{header, Body};
     use crate::service::{Context, Service, ServiceBuilder};
@@ -410,7 +410,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
-    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, BoxError> {
+    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, Error> {
         Ok(Response::new(req.into_body()))
     }
 }

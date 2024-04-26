@@ -37,7 +37,7 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use rama::{
-    error::BoxError,
+    error::Error,
     http::{
         matcher::HttpMatcher, response::Json, server::HttpServer, HeaderName, HeaderValue,
         IntoResponse, Request, Response, StatusCode,
@@ -63,7 +63,7 @@ async fn main() {
         .listen(
             "0.0.0.0:8080",
             ServiceBuilder::new()
-                .map_result(|result: Result<Response, BoxError>| match result {
+                .map_result(|result: Result<Response, Error>| match result {
                     Ok(response) => Ok(response),
                     Err(box_error) => {
                         if box_error.downcast_ref::<LimitReached>().is_some() {

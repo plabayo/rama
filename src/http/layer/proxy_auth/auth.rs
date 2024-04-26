@@ -1,5 +1,5 @@
 use crate::{
-    error::BoxError,
+    error::{error, Error},
     http::headers::{
         authorization::{Basic, Credentials},
         Authorization,
@@ -239,13 +239,13 @@ impl<const C: char> DerefMut for ProxyUsernameLabels<C> {
 
 impl<const C: char> FromUsername for ProxyUsernameLabels<C> {
     type Output = Self;
-    type Error = BoxError;
+    type Error = Error;
 
     fn from_username(username: &str) -> Result<(String, Option<Self::Output>), Self::Error> {
         let mut it = username.split(C);
         let username = match it.next() {
             Some(username) => username.to_owned(),
-            None => return Err("no username found".into()),
+            None => return Err(error!("no username found")),
         };
         let labels: Vec<_> = it.map(str::to_owned).collect();
         if labels.is_empty() {

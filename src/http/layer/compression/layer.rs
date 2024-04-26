@@ -119,6 +119,7 @@ impl CompressionLayer {
 mod tests {
     use super::*;
 
+    use crate::error::ErrorContext;
     use crate::http::dep::http_body_util::BodyExt;
     use crate::http::{header::ACCEPT_ENCODING, Body, Request, Response};
     use crate::service::{Context, Service, ServiceBuilder};
@@ -139,7 +140,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accept_encoding_configuration_works() -> Result<(), crate::error::BoxError> {
+    async fn accept_encoding_configuration_works() -> Result<(), crate::error::Error> {
         let deflate_only_layer = CompressionLayer::new()
             .quality(CompressionLevel::Best)
             .no_br()
@@ -153,9 +154,13 @@ mod tests {
         // Call the service with the deflate only layer
         let request = Request::builder()
             .header(ACCEPT_ENCODING, "gzip, deflate, br")
-            .body(Body::empty())?;
+            .body(Body::empty())
+            .context("create request")?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service
+            .serve(Context::default(), request)
+            .await
+            .context("serve request")?;
 
         assert_eq!(response.headers()["content-encoding"], "deflate");
 
@@ -178,9 +183,13 @@ mod tests {
         // Call the service with the br only layer
         let request = Request::builder()
             .header(ACCEPT_ENCODING, "gzip, deflate, br")
-            .body(Body::empty())?;
+            .body(Body::empty())
+            .context("create request")?;
 
-        let response = service.serve(Context::default(), request).await?;
+        let response = service
+            .serve(Context::default(), request)
+            .await
+            .context("serve request")?;
 
         assert_eq!(response.headers()["content-encoding"], "br");
 

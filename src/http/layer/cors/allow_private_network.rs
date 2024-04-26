@@ -113,7 +113,7 @@ impl Default for AllowPrivateNetworkInner {
 mod tests {
     use super::AllowPrivateNetwork;
 
-    use crate::error::BoxError;
+    use crate::error::Error;
     use crate::http::dep::http::{
         header::ORIGIN, request::Parts, HeaderName, HeaderValue, Request, Response,
     };
@@ -192,7 +192,7 @@ mod tests {
         assert!(res.headers().get(&ALLOW_PRIVATE_NETWORK).is_none());
     }
 
-    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, BoxError> {
+    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, Error> {
         Ok(Response::new(req.into_body()))
     }
 }

@@ -13,7 +13,7 @@ use tokio::io::AsyncRead;
 use tokio_util::io::StreamReader;
 
 use super::content_encoding::SupportedEncodings;
-use crate::error::BoxError;
+use crate::error::{Error, StdError};
 use crate::http::dep::http_body::{Body, Frame};
 use crate::http::HeaderValue;
 
@@ -158,11 +158,11 @@ impl<M: DecorateAsyncRead> WrapBody<M> {
 impl<B, M> Body for WrapBody<M>
 where
     B: Body,
-    B::Error: Into<BoxError>,
+    B::Error: StdError + Send + Sync + 'static,
     M: DecorateAsyncRead<Input = AsyncReadBody<B>>,
 {
     type Data = Bytes;
-    type Error = BoxError;
+    type Error = Error;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -188,13 +188,13 @@ where
                         .take();
 
                     if let Some(body_error) = body_error {
-                        return Poll::Ready(Some(Err(body_error.into())));
+                        return Poll::Ready(Some(Err(Error::new(body_error))));
                     } else if err.raw_os_error() == Some(SENTINEL_ERROR_CODE) {
                         // SENTINEL_ERROR_CODE only gets used when storing
                         // an underlying body error
                         unreachable!()
                     } else {
-                        return Poll::Ready(Some(Err(err.into())));
+                        return Poll::Ready(Some(Err(Error::new(err))));
                     }
                 }
             }
@@ -205,7 +205,7 @@ where
             option.map(|result| {
                 result
                     .map(|frame| frame.map_data(|mut data| data.copy_to_bytes(data.remaining())))
-                    .map_err(|err| err.into())
+                    .map_err(Error::new)
             })
         })
     }

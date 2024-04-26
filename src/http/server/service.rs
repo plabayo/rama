@@ -6,6 +6,7 @@ use crate::http::{IntoResponse, Request};
 use crate::rt::Executor;
 use crate::service::{Context, Service};
 use crate::stream::Stream;
+use crate::error::ErrorContext;
 use crate::tcp::server::TcpListener;
 use hyper::server::conn::http2::Builder as H2ConnBuilder;
 use hyper::{rt::Timer, server::conn::http1::Builder as Http1ConnBuilder};
@@ -637,7 +638,8 @@ where
         A: ToSocketAddrs,
     {
         TcpListener::bind(addr)
-            .await?
+            .await
+            .context("bind tcp socket")?
             .serve(self.service(service))
             .await;
         Ok(())
@@ -661,7 +663,8 @@ where
         A: ToSocketAddrs,
     {
         TcpListener::bind(addr)
-            .await?
+            .await
+            .context("bind tcp socket")?
             .serve_graceful(guard, self.service(service))
             .await;
         Ok(())
@@ -687,7 +690,8 @@ where
     {
         TcpListener::build_with_state(state)
             .bind(addr)
-            .await?
+            .await
+            .context("bind tcp socket")?
             .serve(self.service(service))
             .await;
         Ok(())
@@ -714,7 +718,8 @@ where
     {
         TcpListener::build_with_state(state)
             .bind(addr)
-            .await?
+            .await
+            .context("bind tcp socket")?
             .serve_graceful(guard, self.service(service))
             .await;
         Ok(())

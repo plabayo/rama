@@ -1,3 +1,4 @@
+use crate::error::Error;
 use bytes::Bytes;
 
 #[derive(Debug, Clone)]
@@ -24,7 +25,7 @@ impl RetryBody {
 
 impl crate::http::dep::http_body::Body for RetryBody {
     type Data = Bytes;
-    type Error = crate::error::BoxError;
+    type Error = Error;
 
     fn poll_frame(
         mut self: std::pin::Pin<&mut Self>,

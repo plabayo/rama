@@ -1,7 +1,7 @@
+use crate::error::StdError;
+use crate::service::{Context, Layer, Service};
 use std::fmt;
 use std::future::Future;
-
-use crate::service::{Context, Layer, Service};
 
 /// Layer to map the result of a service.
 pub struct Then<S, F> {
@@ -61,7 +61,7 @@ where
 impl<S, F, State, Request, Response, Error, Fut> Service<State, Request> for Then<S, F>
 where
     S: Service<State, Request>,
-    S::Error: Into<Error>,
+    S::Error: StdError + Send + Sync + 'static,
     F: FnOnce(Result<S::Response, S::Error>) -> Fut + Clone + Send + Sync + 'static,
     Fut: Future<Output = Result<Response, Error>> + Send + 'static,
     State: Send + Sync + 'static,

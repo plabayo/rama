@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use crate::error::BoxError;
+use crate::error::{Error, StdError};
 
 #[derive(Debug)]
 /// An opaque error type that encapsulates all possible errors that can occur when using the
@@ -8,7 +8,7 @@ use crate::error::BoxError;
 ///
 /// [`HttpClient`]: crate::http::client::HttpClient
 pub struct HttpClientError {
-    inner: Option<BoxError>,
+    inner: Option<Error>,
     kind: HttpClientErrorKind,
 }
 
@@ -25,9 +25,9 @@ impl HttpClientError {
             kind: HttpClientErrorKind::Request,
         }
     }
-    pub(crate) fn request_err(err: impl Into<BoxError>) -> Self {
+    pub(crate) fn request_err(err: Error) -> Self {
         Self {
-            inner: Some(err.into()),
+            inner: Some(Error::new(err)),
             kind: HttpClientErrorKind::Request,
         }
     }
@@ -39,9 +39,9 @@ impl HttpClientError {
         }
     }
 
-    pub(crate) fn io_err(err: impl Into<BoxError>) -> Self {
+    pub(crate) fn io_err(err: Error) -> Self {
         Self {
-            inner: Some(err.into()),
+            inner: Some(Error::new(err)),
             kind: HttpClientErrorKind::IO,
         }
     }

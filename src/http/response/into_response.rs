@@ -1,6 +1,7 @@
 use super::{IntoResponseParts, Response, ResponseParts};
+use crate::error::StdError;
 use crate::http::dep::mime;
-use crate::{error::BoxError, http::Body};
+use crate::http::Body;
 use bytes::{buf::Chain, Buf, Bytes, BytesMut};
 use http::{
     header::{self, HeaderMap, HeaderName, HeaderValue},
@@ -64,7 +65,7 @@ where
 impl<B> IntoResponse for Response<B>
 where
     B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    B::Error: Into<BoxError>,
+    B::Error: StdError + Send + Sync + 'static,
 {
     fn into_response(self) -> Response {
         self.map(Body::new)

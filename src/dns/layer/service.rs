@@ -1,5 +1,6 @@
 use super::{dns_map::DnsMap, DnsError, DynamicDnsResolver};
 use crate::{
+    error::StdError,
     http::{
         layer::header_config::extract_header_config,
         utils::{HeaderValueErr, HeaderValueGetter},
@@ -96,7 +97,7 @@ impl<State, Body, E, S, R> Service<State, Request<Body>> for DnsService<S, R>
 where
     State: Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    E: Into<crate::error::Error> + Send + Sync + 'static,
+    E: StdError + Send + Sync + 'static,
     S: Service<State, Request<Body>, Error = E>,
     R: DynamicDnsResolver,
 {

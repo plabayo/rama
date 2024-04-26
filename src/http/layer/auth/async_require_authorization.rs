@@ -10,7 +10,7 @@
 //! use rama::http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
 //! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::BoxError;
+//! use rama::error::Error;
 //!
 //! #[derive(Clone, Copy)]
 //! struct MyAuth;
@@ -49,7 +49,7 @@
 //! #[derive(Clone, Debug)]
 //! struct UserId(String);
 //!
-//! async fn handle<S>(ctx: Context<S>, _request: Request) -> Result<Response, BoxError> {
+//! async fn handle<S>(ctx: Context<S>, _request: Request) -> Result<Response, Error> {
 //!     // Access the `UserId` that was set in `on_authorized`. If `handle` gets called the
 //!     // request was authorized and `UserId` will be present.
 //!     let user_id = ctx
@@ -62,7 +62,7 @@
 //! }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), BoxError> {
+//! # async fn main() -> Result<(), Error> {
 //! let service = ServiceBuilder::new()
 //!     // Authorize requests using `MyAuth`
 //!     .layer(AsyncRequireAuthorizationLayer::new(MyAuth))
@@ -79,7 +79,7 @@
 //! use rama::http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
 //! use rama::http::{Body, Request, Response, StatusCode};
 //! use rama::service::{Service, ServiceBuilder};
-//! use rama::error::BoxError;
+//! use rama::error::Error;
 //!
 //! async fn check_auth<B>(request: &Request<B>) -> Option<UserId> {
 //!     // ...
@@ -89,13 +89,13 @@
 //! #[derive(Debug)]
 //! struct UserId(String);
 //!
-//! async fn handle(request: Request) -> Result<Response, BoxError> {
+//! async fn handle(request: Request) -> Result<Response, Error> {
 //!     # todo!();
 //!     // ...
 //! }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), BoxError> {
+//! # async fn main() -> Result<(), Error> {
 //! let service = ServiceBuilder::new()
 //!     .layer(AsyncRequireAuthorizationLayer::new(|request: Request| async move {
 //!         if let Some(user_id) = check_auth(&request).await {
@@ -255,7 +255,7 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::error::BoxError;
+    use crate::error::Error;
     use crate::http::{header, Body, StatusCode};
     use crate::service::ServiceBuilder;
 
@@ -333,7 +333,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
-    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, BoxError> {
+    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, Error> {
         Ok(Response::new(req.into_body()))
     }
 }

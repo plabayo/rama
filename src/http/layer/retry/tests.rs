@@ -30,7 +30,7 @@ async fn retry_errors() {
                 Ok("world".into_response())
             } else {
                 self.error_counter.fetch_add(1, Ordering::SeqCst);
-                Err(Error::from("retry me"))
+                Err(error!("retry me"))
             }
         }
     }
@@ -72,7 +72,7 @@ async fn retry_limit() {
         ) -> Result<Self::Response, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             self.error_counter.fetch_add(1, Ordering::SeqCst);
-            Err(Error::from("error forever"))
+            Err(error!("error forever"))
         }
     }
 
@@ -109,9 +109,9 @@ async fn retry_error_inspection() {
         ) -> Result<Self::Response, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
             if self.errored.swap(true, Ordering::SeqCst) {
-                Err(Error::from("reject"))
+                Err(error!("reject"))
             } else {
-                Err(Error::from("retry me"))
+                Err(error!("retry me"))
             }
         }
     }
@@ -143,7 +143,7 @@ async fn retry_cannot_clone_request() {
             req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
-            Err(Error::from("failed"))
+            Err(error!("failed"))
         }
     }
 
@@ -234,7 +234,7 @@ async fn retry_mutating_policy() {
 
 type State = ();
 type InnerError = &'static str;
-type Error = crate::error::BoxError;
+type Error = crate::error::Error;
 
 fn request(s: &'static str) -> Request<RetryBody> {
     Request::builder()
@@ -358,10 +358,7 @@ struct MutatingPolicy {
     remaining: Arc<Mutex<usize>>,
 }
 
-impl Policy<State, Response, Error> for MutatingPolicy
-where
-    Error: From<&'static str>,
-{
+impl Policy<State, Response, Error> for MutatingPolicy {
     async fn retry(
         &self,
         ctx: Context<State>,
@@ -370,7 +367,7 @@ where
     ) -> PolicyResult<State, Response, Error> {
         let mut remaining = self.remaining.lock().unwrap();
         if *remaining == 0 {
-            PolicyResult::Abort(Err("out of retries".into()))
+            PolicyResult::Abort(Err(error!("out of retries")))
         } else {
             *remaining -= 1;
             PolicyResult::Retry {

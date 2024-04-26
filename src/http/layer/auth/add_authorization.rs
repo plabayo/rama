@@ -11,14 +11,14 @@
 //! use rama::http::layer::auth::AddAuthorizationLayer;
 //! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::BoxError;
+//! use rama::error::Result;
 //!
-//! # async fn handle(request: Request) -> Result<Response, BoxError> {
+//! # async fn handle(request: Request) -> Result<Response> {
 //! #     Ok(Response::new(Body::default()))
 //! # }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), BoxError> {
+//! # async fn main() -> Result<()> {
 //! # let service_that_requires_auth = ValidateRequestHeader::basic(
 //! #     service_fn(handle),
 //! #     "username",
@@ -219,7 +219,7 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::error::BoxError;
+    use crate::error::Error;
     use crate::http::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::http::{Body, Request, Response, StatusCode};
     use crate::service::{Context, Service, ServiceBuilder};
@@ -281,7 +281,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
     }
 
-    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, BoxError> {
+    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, Error> {
         Ok(Response::new(req.into_body()))
     }
 }

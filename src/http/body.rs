@@ -1,5 +1,6 @@
 //! HTTP body utilities.
 
+use crate::error::{BoxError, Error, StdError};
 use crate::http::dep::{
     http_body::{Body as _, Frame},
     http_body_util::BodyExt,
@@ -12,16 +13,14 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 use sync_wrapper::SyncWrapper;
 
-use crate::error::{BoxError, Error};
-
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, Error>;
+type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 fn boxed<B>(body: B) -> BoxBody
 where
     B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     B::Error: Into<BoxError>,
 {
-    try_downcast(body).unwrap_or_else(|body| body.map_err(Error::new).boxed())
+    try_downcast(body).unwrap_or_else(|body| body.map_err(Into::into).boxed())
 }
 
 pub(crate) fn try_downcast<T, K>(k: K) -> Result<T, K>
@@ -131,14 +130,14 @@ body_from_impl!(Bytes);
 
 impl http_body::Body for Body {
     type Data = Bytes;
-    type Error = BodyError;
+    type Error = BoxError;
 
     #[inline]
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.0).poll_frame(cx).map_err(BodyError::new)
+        Pin::new(&mut self.0).poll_frame(cx)
     }
 
     #[inline]
@@ -161,15 +160,18 @@ pub struct BodyDataStream {
 }
 
 impl Stream for BodyDataStream {
-    type Item = Result<Bytes, Error>;
+    type Item = Result<Bytes, BoxError>;
 
     #[inline]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            match futures_util::ready!(Pin::new(&mut self.inner).poll_frame(cx)?) {
-                Some(frame) => match frame.into_data() {
-                    Ok(data) => return Poll::Ready(Some(Ok(data))),
-                    Err(_frame) => {}
+            match futures_util::ready!(Pin::new(&mut self.inner).poll_frame(cx)) {
+                Some(result) => match result {
+                    Err(err) => return Poll::Ready(Some(Err(Error::new(err)))),
+                    Ok(frame) => match frame.into_data() {
+                        Ok(data) => return Poll::Ready(Some(Ok(data))),
+                        Err(_frame) => {}
+                    },
                 },
                 None => return Poll::Ready(None),
             }
@@ -179,7 +181,7 @@ impl Stream for BodyDataStream {
 
 impl http_body::Body for BodyDataStream {
     type Data = Bytes;
-    type Error = BodyError;
+    type Error = BoxError;
 
     #[inline]
     fn poll_frame(
@@ -188,7 +190,7 @@ impl http_body::Body for BodyDataStream {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         Pin::new(&mut self.inner)
             .poll_frame(cx)
-            .map_err(BodyError::new)
+            .map_err(Error::new)
     }
 
     #[inline]
@@ -213,10 +215,10 @@ impl<S> http_body::Body for StreamBody<S>
 where
     S: TryStream,
     S::Ok: Into<Bytes>,
-    S::Error: Into<BoxError>,
+    S::Error: StdError + Send + Sync + 'static,
 {
     type Data = Bytes;
-    type Error = BodyError;
+    type Error = BoxError;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -228,32 +230,6 @@ where
             Some(Err(err)) => Poll::Ready(Some(Err(BodyError::new(err)))),
             None => Poll::Ready(None),
         }
-    }
-}
-
-#[derive(Debug)]
-/// An error that can occur while polling the body.
-pub struct BodyError {
-    inner: Error,
-}
-
-impl BodyError {
-    fn new(inner: impl Into<BoxError>) -> Self {
-        Self {
-            inner: Error::new(inner),
-        }
-    }
-}
-
-impl std::fmt::Display for BodyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.inner.fmt(f)
-    }
-}
-
-impl std::error::Error for BodyError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.inner.source()
     }
 }
 

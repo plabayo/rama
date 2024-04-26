@@ -97,7 +97,7 @@ where
     Request: Send + 'static,
     S: Send + Sync + 'static,
     F: MakeLayerError<Error = E>,
-    E: Into<T::Error> + Send + 'static,
+    E: Into<T::Error> + Send + Sync + 'static,
     T: Service<S, Request>,
 {
     type Response = T::Response;

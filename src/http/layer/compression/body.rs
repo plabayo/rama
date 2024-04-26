@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
 
-use crate::error::BoxError;
+use crate::error::{Error, StdError};
 use crate::http::dep::http_body::{Body, Frame};
 use crate::http::layer::util::compression::{
     AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
@@ -119,10 +119,10 @@ impl<B: Body> BodyInner<B> {
 impl<B> Body for CompressionBody<B>
 where
     B: Body,
-    B::Error: Into<BoxError>,
+    B::Error: StdError + Send + Sync + 'static,
 {
     type Data = Bytes;
-    type Error = BoxError;
+    type Error = Error;
 
     fn poll_frame(
         self: Pin<&mut Self>,
@@ -138,7 +138,7 @@ where
                     let frame = frame.map_data(|mut buf| buf.copy_to_bytes(buf.remaining()));
                     Poll::Ready(Some(Ok(frame)))
                 }
-                Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
+                Some(Err(err)) => Poll::Ready(Some(Err(Error::new(err)))),
                 None => Poll::Ready(None),
             },
         }

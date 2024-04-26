@@ -5,6 +5,7 @@ use crate::http::layer::{
 };
 use crate::http::{header, Body, HeaderValue, Method, Request, Response, StatusCode};
 use crate::service::{Context, Service};
+use crate::error::StdError;
 use bytes::Bytes;
 use percent_encoding::percent_decode;
 use std::{
@@ -381,7 +382,7 @@ impl<F> ServeDir<F> {
         F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible>
             + Clone,
         FResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-        FResBody::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        FResBody::Error: StdError + Send + Sync + 'static,
     {
         if req.method() != Method::GET && req.method() != Method::HEAD {
             if self.call_fallback_on_method_not_allowed {
@@ -461,7 +462,7 @@ where
     ReqBody: Send + 'static,
     F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
     FResBody: HttpBody<Data = Bytes> + Send + Sync + 'static,
-    FResBody::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    FResBody::Error: StdError + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = Infallible;

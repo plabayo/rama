@@ -1,5 +1,6 @@
 use crate::{
     dns::layer::DnsResolvedSocketAddresses,
+    error::{error, Error},
     http::{Request, RequestContext, Response, Version},
     service::{Context, Service},
     uri::Scheme,
@@ -74,7 +75,7 @@ where
             };
             match host {
                 Some(host) => host,
-                None => return Err(HttpClientError::request_err("missing host")),
+                None => return Err(HttpClientError::request_err(error!("missing host"))),
             }
         };
 
@@ -83,7 +84,7 @@ where
         // create the tcp connection
         let tcp_stream = tokio::net::TcpStream::connect(&address)
             .await
-            .map_err(HttpClientError::io_err)?;
+            .map_err(|err| HttpClientError::io_err(Error::new(err)))?;
 
         // TODO: figure out how we wish to handle https here
 
@@ -95,7 +96,7 @@ where
                 let (mut sender, conn) =
                     hyper::client::conn::http2::handshake(executor, tcp_stream)
                         .await
-                        .map_err(HttpClientError::io_err)?;
+                        .map_err(|err| HttpClientError::io_err(Error::new(err)))?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
@@ -107,12 +108,12 @@ where
                 sender
                     .send_request(req)
                     .await
-                    .map_err(HttpClientError::io_err)?
+                    .map_err(|err| HttpClientError::io_err(Error::new(err)))?
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
                 let (mut sender, conn) = hyper::client::conn::http1::handshake(tcp_stream)
                     .await
-                    .map_err(HttpClientError::io_err)?;
+                    .map_err(|err| HttpClientError::io_err(Error::new(err)))?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
@@ -124,10 +125,10 @@ where
                 sender
                     .send_request(req)
                     .await
-                    .map_err(HttpClientError::io_err)?
+                    .map_err(|err| HttpClientError::io_err(Error::new(err)))?
             }
             version => {
-                return Err(HttpClientError::request_err(format!(
+                return Err(HttpClientError::request_err(error!(
                     "unsupported Http version: {:?}",
                     version
                 )))

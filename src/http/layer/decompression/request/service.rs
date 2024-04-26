@@ -1,5 +1,5 @@
 use super::layer::RequestDecompressionLayer;
-use crate::error::BoxError;
+use crate::error::{Error, StdError};
 use crate::http::dep::http_body::Body;
 use crate::http::dep::http_body_util::{combinators::UnsyncBoxBody, BodyExt, Empty};
 use crate::http::layer::{
@@ -36,12 +36,12 @@ where
     State: Send + Sync + 'static,
     ReqBody: Body + Send + 'static,
     ResBody: Body<Data = D> + Send + 'static,
-    S::Error: Into<BoxError>,
-    <ResBody as Body>::Error: Into<BoxError>,
+    S::Error: StdError + Send + Sync + 'static,
+    <ResBody as Body>::Error: StdError + Send + Sync + 'static,
     D: Buf + 'static,
 {
-    type Response = Response<UnsyncBoxBody<D, BoxError>>;
-    type Error = BoxError;
+    type Response = Response<UnsyncBoxBody<D, Error>>;
+    type Error = Error;
 
     async fn serve(
         &self,
@@ -85,14 +85,14 @@ where
         self.inner
             .serve(ctx, req)
             .await
-            .map(|res| res.map(|body| body.map_err(Into::into).boxed_unsync()))
-            .map_err(Into::into)
+            .map(|res| res.map(|body| body.map_err(Error::new).boxed_unsync()))
+            .map_err(Error::new)
     }
 }
 
 async fn unsupported_encoding<D>(
     accept: AcceptEncoding,
-) -> Result<Response<UnsyncBoxBody<D, BoxError>>, BoxError>
+) -> Result<Response<UnsyncBoxBody<D, Error>>, Error>
 where
     D: Buf + 'static,
 {
@@ -104,7 +104,7 @@ where
                 .unwrap_or(HeaderValue::from_static("identity")),
         )
         .status(StatusCode::UNSUPPORTED_MEDIA_TYPE)
-        .body(Empty::new().map_err(Into::into).boxed_unsync())
+        .body(Empty::new().map_err(Error::new).boxed_unsync())
         .unwrap();
     Ok(res)
 }
