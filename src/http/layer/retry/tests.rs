@@ -1,5 +1,5 @@
 use super::*;
-use crate::error::{error, BoxedError};
+use crate::error::{error, OpaqueError};
 use crate::http::{response::IntoResponse, BodyExtractExt};
 use crate::http::{Request, Response};
 use crate::service::{Service, ServiceBuilder};
@@ -18,7 +18,7 @@ async fn retry_errors() {
 
     impl Service<State, Request<RetryBody>> for Svc {
         type Response = Response;
-        type Error = BoxedError;
+        type Error = OpaqueError;
 
         async fn serve(
             &self,
@@ -64,7 +64,7 @@ async fn retry_limit() {
 
     impl Service<State, Request<RetryBody>> for Svc {
         type Response = Response;
-        type Error = BoxedError;
+        type Error = OpaqueError;
 
         async fn serve(
             &self,
@@ -101,7 +101,7 @@ async fn retry_error_inspection() {
 
     impl Service<State, Request<RetryBody>> for Svc {
         type Response = Response;
-        type Error = BoxedError;
+        type Error = OpaqueError;
 
         async fn serve(
             &self,
@@ -136,7 +136,7 @@ async fn retry_cannot_clone_request() {
 
     impl Service<State, Request<RetryBody>> for Svc {
         type Response = Response;
-        type Error = BoxedError;
+        type Error = OpaqueError;
 
         async fn serve(
             &self,
@@ -165,7 +165,7 @@ async fn success_with_cannot_clone() {
 
     impl Service<State, Request<RetryBody>> for Svc {
         type Response = Response;
-        type Error = BoxedError;
+        type Error = OpaqueError;
 
         async fn serve(
             &self,
@@ -197,7 +197,7 @@ async fn retry_mutating_policy() {
 
     impl Service<State, Request<RetryBody>> for Svc {
         type Response = Response;
-        type Error = BoxedError;
+        type Error = OpaqueError;
 
         async fn serve(
             &self,
@@ -235,7 +235,7 @@ async fn retry_mutating_policy() {
 
 type State = ();
 type InnerError = &'static str;
-type Error = crate::error::BoxedError;
+type Error = crate::error::OpaqueError;
 
 fn request(s: &'static str) -> Request<RetryBody> {
     Request::builder()

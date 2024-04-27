@@ -2,37 +2,44 @@ use crate::error::BoxError;
 use std::fmt::{self, Debug, Display};
 
 #[repr(transparent)]
-/// A boxed error type that can be used as a trait object.
+/// A type-erased error type that can be used as a trait object.
 ///
 /// Note this type is not intended to be used directly,
 /// it is used by `rama` to hide the concrete error type.
-pub struct BoxedError(BoxError);
+pub struct OpaqueError(BoxError);
 
-impl BoxedError {
-    pub(crate) fn from_std(error: impl std::error::Error + Send + Sync + 'static) -> Self {
+impl OpaqueError {
+    /// create an [`OpaqueError`] from an std error
+    pub fn from_std(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self(Box::new(error))
     }
 
-    pub(crate) fn from_boxed(inner: BoxError) -> Self {
+    /// create an [`OpaqueError`] from a display object
+    pub fn from_display(msg: impl Display + Debug + Send + Sync + 'static) -> Self {
+        Self::from_std(MessageError(msg))
+    }
+
+    /// create an [`OpaqueError`] from a boxed error
+    pub fn from_boxed(inner: BoxError) -> Self {
         Self(inner)
     }
 }
 
-impl Debug for BoxedError {
+impl Debug for OpaqueError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         Debug::fmt(&self.0, f)
     }
 }
 
-impl Display for BoxedError {
+impl Display for OpaqueError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         Display::fmt(&self.0, f)
     }
 }
 
-impl std::error::Error for BoxedError {
+impl std::error::Error for OpaqueError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.0.source()
+        Some(self.0.as_ref())
     }
 }
 

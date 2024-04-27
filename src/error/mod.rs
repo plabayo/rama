@@ -12,30 +12,10 @@ use std::error::Error as StdError;
 pub type BoxError = Box<dyn StdError + Send + Sync>;
 
 mod ext;
-pub use ext::{BoxedError, ErrorContext, ErrorExt};
+pub use ext::{ErrorContext, ErrorExt, OpaqueError};
 
 mod macros;
 pub use crate::__error as error;
-
-#[doc(hidden)]
-pub mod __private {
-    use super::*;
-    use std::fmt::{Debug, Display};
-
-    pub fn error<E>(error: E) -> BoxedError
-    where
-        E: std::error::Error + Send + Sync + 'static,
-    {
-        BoxedError::from_std(error)
-    }
-
-    pub fn str_error<M>(message: M) -> BoxedError
-    where
-        M: Display + Debug + Send + Sync + 'static,
-    {
-        BoxedError::from_std(ext::MessageError(message))
-    }
-}
 
 #[cfg(test)]
 mod test {

@@ -1,7 +1,7 @@
 //! HTTP body utilities.
 
 use crate::{
-    error::BoxedError,
+    error::OpaqueError,
     http::dep::{
         http_body::{Body as _, Frame},
         http_body_util::BodyExt,
@@ -134,7 +134,7 @@ body_from_impl!(Bytes);
 
 impl http_body::Body for Body {
     type Data = Bytes;
-    type Error = BoxedError;
+    type Error = OpaqueError;
 
     #[inline]
     fn poll_frame(
@@ -143,7 +143,7 @@ impl http_body::Body for Body {
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         Pin::new(&mut self.0)
             .poll_frame(cx)
-            .map_err(BoxedError::from_boxed)
+            .map_err(OpaqueError::from_boxed)
     }
 
     #[inline]

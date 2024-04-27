@@ -4,12 +4,12 @@
 #[doc(hidden)]
 macro_rules! __error {
     ($msg:literal $(,)?) => ({
-        $crate::error::__private::str_error($msg)
+        $crate::error::OpaqueError::from_display($msg)
     });
     ($fmt:literal, $($arg:tt),+ $(,)?) => ({
-        $crate::error::__private::str_error(format!($fmt, $($arg)*))
+        $crate::error::OpaqueError::from_display(format!($fmt, $($arg)*))
     });
     ($err:expr $(,)?) => ({
-        $crate::error::__private::error($err)
+        $crate::error::OpaqueError::from_std($err)
     });
 }

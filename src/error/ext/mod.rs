@@ -4,8 +4,7 @@ mod chain;
 mod context;
 
 mod wrapper;
-pub use wrapper::BoxedError;
-pub(crate) use wrapper::MessageError;
+pub use wrapper::OpaqueError;
 
 /// Extends the `Result` and `Option` types with methods for adding context to errors.
 ///
@@ -37,7 +36,7 @@ impl<T, E> ErrorContext for Result<T, E>
 where
     E: std::error::Error + Send + Sync + 'static,
 {
-    type Context = Result<T, BoxedError>;
+    type Context = Result<T, OpaqueError>;
 
     fn context<M>(self, context: M) -> Self::Context
     where
@@ -56,7 +55,7 @@ where
 }
 
 impl<T> ErrorContext for Option<T> {
-    type Context = Result<T, BoxedError>;
+    type Context = Result<T, OpaqueError>;
 
     fn context<M>(self, context: M) -> Self::Context
     where
@@ -103,15 +102,18 @@ impl<T> ErrorContext for Option<T> {
 /// assert!(root_cause.downcast_ref::<CustomError>().is_some());
 pub trait ErrorExt: private::SealedErrorExt {
     /// Wrap the error in a context.
-    fn context<M>(self, context: M) -> BoxedError
+    fn context<M>(self, context: M) -> OpaqueError
     where
         M: Display + Send + Sync + 'static;
 
     /// Lazily wrap the error with a context.
-    fn with_context<C, F>(self, context: F) -> BoxedError
+    fn with_context<C, F>(self, context: F) -> OpaqueError
     where
         C: Display + Send + Sync + 'static,
         F: FnOnce() -> C;
+
+    /// Convert the error into an [`OpaqueError`].
+    fn into_opaque(self) -> OpaqueError;
 
     /// Iterate over the chain of errors.
     fn chain(&self) -> impl Iterator<Item = &(dyn std::error::Error + 'static)>;
@@ -123,25 +125,29 @@ pub trait ErrorExt: private::SealedErrorExt {
 }
 
 impl<Error: std::error::Error + Send + Sync + 'static> ErrorExt for Error {
-    fn context<M>(self, context: M) -> BoxedError
+    fn context<M>(self, context: M) -> OpaqueError
     where
         M: Display + Send + Sync + 'static,
     {
-        BoxedError::from_std(context::ContextError {
+        OpaqueError::from_std(context::ContextError {
             context,
             error: self,
         })
     }
 
-    fn with_context<C, F>(self, context: F) -> BoxedError
+    fn with_context<C, F>(self, context: F) -> OpaqueError
     where
         C: Display + Send + Sync + 'static,
         F: FnOnce() -> C,
     {
-        BoxedError::from_std(context::ContextError {
+        OpaqueError::from_std(context::ContextError {
             context: context(),
             error: self,
         })
+    }
+
+    fn into_opaque(self) -> OpaqueError {
+        OpaqueError::from_std(self)
     }
 
     fn chain(&self) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
@@ -199,14 +205,15 @@ mod tests {
     fn custom_error_context_chain_len() {
         let error = CustomError.context("context");
         let n = error.chain().count();
-        assert_eq!(2, n);
+        assert_eq!(3, n);
     }
 
     #[test]
     fn custom_error_context_context_context_chain_len() {
+        //...........................1.......+.....2.......+.......2......+......2
         let error = CustomError.context("a").context("b").context("c");
         let n = error.chain().count();
-        assert_eq!(4, n);
+        assert_eq!(7, n);
     }
 
     #[test]
@@ -220,6 +227,16 @@ mod tests {
     fn custom_error_context_context_context_root_cause_downcast() {
         let error = CustomError.context("a").context("b").context("c");
         let root_cause = error.root_cause();
+        assert!(root_cause.downcast_ref::<CustomError>().is_some());
+    }
+
+    #[test]
+    fn custom_error_into_opaque() {
+        let error = CustomError;
+        let opaque = error.into_opaque();
+        assert_eq!(opaque.to_string(), "Custom error");
+
+        let root_cause = opaque.root_cause();
         assert!(root_cause.downcast_ref::<CustomError>().is_some());
     }
 }
