@@ -7,13 +7,13 @@
 //!
 //! ```
 //! use std::{iter::once, convert::Infallible};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //! use rama::service::{Context, ServiceBuilder, Service};
 //! use rama::http::{Body, Request, Response, StatusCode};
 //! use rama::http::layer::normalize_path::NormalizePathLayer;
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
 //!     // `req.uri().path()` will not have trailing slashes
 //!     # Ok(Response::new(Body::default()))

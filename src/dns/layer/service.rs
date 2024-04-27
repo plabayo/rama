@@ -96,7 +96,7 @@ impl<State, Body, E, S, R> Service<State, Request<Body>> for DnsService<S, R>
 where
     State: Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    E: Into<crate::error::Error> + Send + Sync + 'static,
+    E: Into<crate::error::BoxError> + Send + Sync + 'static,
     S: Service<State, Request<Body>, Error = E>,
     R: DynamicDnsResolver,
 {

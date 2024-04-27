@@ -12,10 +12,10 @@
 //! use rama::http::layer::set_header::SetResponseHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! # let render_html = service_fn(|request: Request| async move {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(request.into_body()))
 //! # });
@@ -50,10 +50,10 @@
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use crate::rama::http::dep::http_body::Body as _;
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! # let render_html = service_fn(|request: Request| async move {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::from("1234567890")))
 //! # });

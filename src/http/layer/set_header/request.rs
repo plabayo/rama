@@ -12,10 +12,10 @@
 //! use rama::http::layer::set_header::SetRequestHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! # let http_client = service_fn(|_: Request| async move {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
@@ -47,10 +47,10 @@
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama::http::layer::set_header::SetRequestHeaderLayer;
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! # let http_client = service_fn(|| async move {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });

@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use crate::{
-    error::Error,
+    error::BoxError,
     proxy::pp::protocol::{v1, v2, HeaderResult, PartialResult},
     service::{Context, Layer, Service},
     stream::{ChainReader, HeapReader, SocketInfo, Stream},
@@ -51,11 +51,11 @@ where
         State,
         tokio::io::Join<ChainReader<HeapReader, tokio::io::ReadHalf<IO>>, tokio::io::WriteHalf<IO>>,
     >,
-    S::Error: Into<Error>,
+    S::Error: Into<BoxError>,
     IO: Stream + Unpin,
 {
     type Response = S::Response;
-    type Error = Error;
+    type Error = BoxError;
 
     async fn serve(
         &self,

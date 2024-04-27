@@ -36,7 +36,7 @@ use rama::tls::rustls::dep::{
 
 // rama provides everything out of the box to build mtls web services and proxies
 use rama::{
-    error::Error,
+    error::BoxError,
     graceful::Shutdown,
     http::{
         layer::trace::TraceLayer,
@@ -231,7 +231,7 @@ fn generate_tls_cert_server() -> (
 }
 
 /// L4 Proxy Service
-async fn serve_conn(ctx: Context<TunnelState>, mut source: TcpStream) -> Result<(), Error> {
+async fn serve_conn(ctx: Context<TunnelState>, mut source: TcpStream) -> Result<(), BoxError> {
     let state = ctx.state();
 
     let target = TcpStream::connect(SERVER_ADDR).await?;

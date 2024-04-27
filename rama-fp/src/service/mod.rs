@@ -1,6 +1,5 @@
 use base64::Engine as _;
 use rama::{
-    error::Error,
     http::{
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
@@ -201,7 +200,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             let tcp_service_builder = if ha_proxy {
                 tcp_service_builder.clone().layer(Either::A(HaProxyLayer::default()))
             } else {
-                tcp_service_builder.clone().layer(Either::B(MapErrLayer::new(Error::new)))
+                tcp_service_builder.clone().layer(Either::B(MapErrLayer::new(Into::into)))
             };
 
             // create tls service builder
@@ -264,7 +263,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         let tcp_service_builder = if ha_proxy {
             tcp_service_builder.layer(Either::A(HaProxyLayer::default()))
         } else {
-            tcp_service_builder.layer(Either::B(MapErrLayer::new(Error::new)))
+            tcp_service_builder.layer(Either::B(MapErrLayer::new(Into::into)))
         };
 
         let tcp_listener = TcpListener::build_with_state(State::new(acme_data))
@@ -398,7 +397,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
             let tcp_service_builder = if ha_proxy {
                 tcp_service_builder.clone().layer(Either::A(HaProxyLayer::default()))
             } else {
-                tcp_service_builder.clone().layer(Either::B(MapErrLayer::new(Error::new)))
+                tcp_service_builder.clone().layer(Either::B(MapErrLayer::new(Into::into)))
             };
 
             // create tls service builder
@@ -466,7 +465,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
         let tcp_service_builder = if ha_proxy {
             tcp_service_builder.layer(Either::A(HaProxyLayer::default()))
         } else {
-            tcp_service_builder.layer(Either::B(MapErrLayer::new(Error::new)))
+            tcp_service_builder.layer(Either::B(MapErrLayer::new(Into::into)))
         };
 
         match cfg.http_version.as_str() {

@@ -8,11 +8,11 @@
 //! };
 //! use rama::http::{Body, Request, Response, header::HeaderName};
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //! use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! # let handler = service_fn(|request: Request| async move {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(request.into_body()))
 //! # });

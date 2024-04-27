@@ -2,7 +2,7 @@
 
 pub(crate) mod body;
 #[doc(inline)]
-pub use body::{Body, BodyDataStream, BodyError};
+pub use body::{Body, BodyDataStream};
 
 mod body_limit;
 #[doc(inline)]

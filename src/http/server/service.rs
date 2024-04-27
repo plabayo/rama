@@ -763,7 +763,7 @@ where
     IO: Stream,
 {
     type Response = ();
-    type Error = crate::error::Error;
+    type Error = crate::error::BoxError;
 
     fn serve(
         &self,
