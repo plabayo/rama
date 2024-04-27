@@ -169,7 +169,7 @@ fn map_boxed_hyper_result(
                         Err(err.into())
                     }
                 }
-                Err(err) => Err(crate::error::Error::new(err)),
+                Err(err) => Err(err),
             },
         },
     }

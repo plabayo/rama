@@ -674,9 +674,9 @@ mod test {
 
     fn map_internal_client_error<E, Body>(
         result: Result<Response<Body>, E>,
-    ) -> Result<Response, crate::error::Error>
+    ) -> Result<Response, crate::error::BoxError>
     where
-        E: Into<crate::error::Error>,
+        E: Into<crate::error::BoxError>,
         Body: crate::http::dep::http_body::Body<Data = bytes::Bytes> + Send + Sync + 'static,
         Body::Error: Into<BoxError>,
     {
@@ -686,7 +686,7 @@ mod test {
         }
     }
 
-    type HttpClientError = crate::error::Error;
+    type HttpClientError = crate::error::BoxError;
     type HttpClient<S> = BoxService<S, Request, Response, HttpClientError>;
 
     fn client<S: Send + Sync + 'static>() -> HttpClient<S> {

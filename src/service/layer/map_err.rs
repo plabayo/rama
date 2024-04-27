@@ -6,7 +6,7 @@ use std::fmt;
 /// This method can be used to change the [`Error`] type of the service
 /// into a different type. It is similar to the [`Result::map_err`] method.
 ///
-/// [`Error`]: crate::error::Error
+/// [`Error`]: crate::error::BoxError
 #[derive(Clone)]
 pub struct MapErr<S, F> {
     inner: S,

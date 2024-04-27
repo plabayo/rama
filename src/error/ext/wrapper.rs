@@ -12,6 +12,10 @@ impl BoxedError {
     pub(crate) fn from_std(error: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self(Box::new(error))
     }
+
+    pub(crate) fn from_boxed(inner: BoxError) -> Self {
+        Self(inner)
+    }
 }
 
 impl Debug for BoxedError {

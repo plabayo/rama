@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::error::{BoxError, BoxedError, ErrorContext};
 use crate::http::dep::http_body_util::BodyExt;
 use std::future::Future;
 
@@ -9,39 +9,38 @@ pub trait BodyExtractExt: private::Sealed {
     /// Try to deserialize the (contained) body as a JSON object.
     fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
-    ) -> impl Future<Output = Result<T, Error>> + Send;
+    ) -> impl Future<Output = Result<T, BoxedError>> + Send;
 
     /// Try to turn the (contained) body in an utf-8 string.
-    fn try_into_string(self) -> impl Future<Output = Result<String, Error>> + Send;
+    fn try_into_string(self) -> impl Future<Output = Result<String, BoxedError>> + Send;
 }
 
 impl<Body> BodyExtractExt for crate::http::Response<Body>
 where
     Body: crate::http::dep::http_body::Body + Send + 'static,
     Body::Data: Send + 'static,
-    Body::Error: Send + Sync + 'static,
+    Body::Error: Into<BoxError>,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
-    ) -> Result<T, Error> {
-        // TODO: use actual collect error instead of ignoring it
+    ) -> Result<T, BoxedError> {
         let body = self
             .into_body()
             .collect()
             .await
-            .map_err(|_| Error::new("Failed to collect body"))?;
-        Ok(serde_json::from_slice(body.to_bytes().as_ref())?)
+            .map_err(|err| BoxedError::from_boxed(err.into()))?;
+        serde_json::from_slice(body.to_bytes().as_ref())
+            .context("deserialize response body as JSON")
     }
 
-    async fn try_into_string(self) -> Result<String, Error> {
-        // TODO: use actual collect error instead of ignoring it
+    async fn try_into_string(self) -> Result<String, BoxedError> {
         let body = self
             .into_body()
             .collect()
             .await
-            .map_err(|_| Error::new("Failed to collect body"))?;
+            .map_err(|err| BoxedError::from_boxed(err.into()))?;
         let bytes = body.to_bytes();
-        Ok(String::from_utf8(bytes.to_vec())?)
+        String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
 }
 
@@ -49,45 +48,44 @@ impl<Body> BodyExtractExt for crate::http::Request<Body>
 where
     Body: crate::http::dep::http_body::Body + Send + 'static,
     Body::Data: Send + 'static,
-    Body::Error: Send + Sync + 'static,
+    Body::Error: Into<BoxError>,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
-    ) -> Result<T, Error> {
-        // TODO: use actual collect error instead of ignoring it
+    ) -> Result<T, BoxedError> {
         let body = self
             .into_body()
             .collect()
             .await
-            .map_err(|_| Error::new("Failed to collect body"))?;
-        Ok(serde_json::from_slice(body.to_bytes().as_ref())?)
+            .map_err(|err| BoxedError::from_boxed(err.into()))?;
+        serde_json::from_slice(body.to_bytes().as_ref()).context("deserialize request body as JSON")
     }
 
-    async fn try_into_string(self) -> Result<String, Error> {
+    async fn try_into_string(self) -> Result<String, BoxedError> {
         // TODO: use actual collect error instead of ignoring it
         let body = self
             .into_body()
             .collect()
             .await
-            .map_err(|_| Error::new("Failed to collect body"))?;
+            .map_err(|err| BoxedError::from_boxed(err.into()))?;
         let bytes = body.to_bytes();
-        Ok(String::from_utf8(bytes.to_vec())?)
+        String::from_utf8(bytes.to_vec()).context("parse request body as utf-8 string")
     }
 }
 
 impl<B: Into<crate::http::Body> + Send + 'static> BodyExtractExt for B {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
-    ) -> Result<T, Error> {
-        let body = self.into().collect().await?;
-        Ok(serde_json::from_slice(body.to_bytes().as_ref())?)
+    ) -> Result<T, BoxedError> {
+        let body = self.into().collect().await.context("collect body")?;
+        serde_json::from_slice(body.to_bytes().as_ref()).context("deserialize body as JSON")
     }
 
-    async fn try_into_string(self) -> Result<String, Error> {
+    async fn try_into_string(self) -> Result<String, BoxedError> {
         // TODO: use actual collect error instead of ignoring it
-        let body = self.into().collect().await?;
+        let body = self.into().collect().await.context("collect body")?;
         let bytes = body.to_bytes();
-        Ok(String::from_utf8(bytes.to_vec())?)
+        String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
     }
 }
 
