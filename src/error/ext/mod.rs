@@ -17,7 +17,7 @@ pub(crate) use wrapper::MessageError;
 /// let result = "hello".parse::<i32>().context("parse integer");
 /// assert_eq!("parse integer: invalid digit found in string", result.unwrap_err().to_string());
 /// ```
-pub trait ErrorContext {
+pub trait ErrorContext: private::SealedErrorContext {
     /// The resulting contexct type after adding context to the contained error.
     type Context;
 
@@ -101,7 +101,7 @@ impl<T> ErrorContext for Option<T> {
 /// let error = CustomError.context("whoops");
 /// let root_cause = error.root_cause();
 /// assert!(root_cause.downcast_ref::<CustomError>().is_some());
-pub trait ErrorExt {
+pub trait ErrorExt: private::SealedErrorExt {
     /// Wrap the error in a context.
     fn context<M>(self, context: M) -> BoxedError
     where
@@ -147,6 +147,17 @@ impl<Error: std::error::Error + Send + Sync + 'static> ErrorExt for Error {
     fn chain(&self) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
         chain::Chain::new(self)
     }
+}
+
+mod private {
+    pub trait SealedErrorContext {}
+
+    impl<T, E> SealedErrorContext for Result<T, E> where E: std::error::Error + Send + Sync + 'static {}
+    impl<T> SealedErrorContext for Option<T> {}
+
+    pub trait SealedErrorExt {}
+
+    impl<Error: std::error::Error + Send + Sync + 'static> SealedErrorExt for Error {}
 }
 
 #[cfg(test)]

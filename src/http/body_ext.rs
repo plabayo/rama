@@ -62,7 +62,6 @@ where
     }
 
     async fn try_into_string(self) -> Result<String, BoxedError> {
-        // TODO: use actual collect error instead of ignoring it
         let body = self
             .into_body()
             .collect()
@@ -82,7 +81,6 @@ impl<B: Into<crate::http::Body> + Send + 'static> BodyExtractExt for B {
     }
 
     async fn try_into_string(self) -> Result<String, BoxedError> {
-        // TODO: use actual collect error instead of ignoring it
         let body = self.into().collect().await.context("collect body")?;
         let bytes = body.to_bytes();
         String::from_utf8(bytes.to_vec()).context("parse body as utf-8 string")
