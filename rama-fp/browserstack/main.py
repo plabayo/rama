@@ -12,12 +12,15 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 
+# capability source:
+# > https://www.browserstack.com/docs/automate/capabilities
+
 desktop_permutations = [
     ["latest", "latest-1", "latest-2"],
     ["Chrome", "Edge", "Firefox", "Safari"],
     (
         [["Windows", v] for v in ["10", "11"]]
-        + [["OS X", v] for v in ["Monterey", "Ventura"]]
+        + [["OS X", v] for v in ["Monterey", "Ventura", "Sonoma"]]
     ),
 ]
 
