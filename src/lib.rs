@@ -116,6 +116,8 @@ mod test_helpers;
 pub mod graceful;
 pub mod latency;
 
+pub(crate) mod future;
+
 pub mod rt;
 
 pub mod error;

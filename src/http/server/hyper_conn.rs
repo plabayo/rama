@@ -1,4 +1,5 @@
 use super::HttpServeResult;
+use crate::future::Fuse;
 use crate::http::{IntoResponse, Request};
 use crate::rt::Executor;
 use crate::service::Service;
@@ -50,7 +51,7 @@ impl HyperConnServer for Http1Builder {
         let mut conn = pin!(self.serve_connection(stream, service).with_upgrades());
 
         if let Some(guard) = guard {
-            let mut cancelled_fut = pin!(guard.cancelled());
+            let mut cancelled_fut = pin!(Fuse::new(guard.cancelled()));
 
             loop {
                 select! {
@@ -91,7 +92,7 @@ impl HyperConnServer for Http2Builder<Executor> {
         let mut conn = pin!(self.serve_connection(stream, service));
 
         if let Some(guard) = guard {
-            let mut cancelled_fut = pin!(guard.cancelled());
+            let mut cancelled_fut = pin!(Fuse::new(guard.cancelled()));
 
             loop {
                 select! {
@@ -132,7 +133,7 @@ impl HyperConnServer for AutoBuilder<Executor> {
         let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
 
         if let Some(guard) = guard {
-            let mut cancelled_fut = pin!(guard.cancelled());
+            let mut cancelled_fut = pin!(Fuse::new(guard.cancelled()));
 
             loop {
                 select! {
