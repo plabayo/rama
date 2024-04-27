@@ -620,7 +620,7 @@ mod tests {
     }
 
     async fn streaming_body(_req: Request) -> Result<Response, BoxError> {
-        use futures::stream::iter;
+        use futures_lite::stream::iter;
 
         let stream = iter(vec![
             Ok::<_, BoxError>(Bytes::from("one")),

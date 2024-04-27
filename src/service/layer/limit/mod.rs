@@ -82,7 +82,7 @@ mod tests {
     use crate::service::{service_fn, Context, Layer, Service};
     use std::convert::Infallible;
 
-    use futures_util::future::join_all;
+    use futures_lite::future::zip;
 
     #[tokio::test]
     async fn test_limit() {
@@ -102,9 +102,7 @@ mod tests {
         let future_1 = service_1.serve(Context::default(), "Hello");
         let future_2 = service_2.serve(Context::default(), "Hello");
 
-        let mut results = join_all(vec![future_1, future_2]).await;
-        let result_1 = results.pop().unwrap();
-        let result_2 = results.pop().unwrap();
+        let (result_1, result_2) = zip(future_1, future_2).await;
 
         // check that one request succeeded and the other failed
         if result_1.is_err() {

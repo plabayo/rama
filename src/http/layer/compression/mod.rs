@@ -5,17 +5,18 @@
 //! Example showing how to respond with the compressed contents of a file.
 //!
 //! ```rust
-//! use bytes::{Bytes, BytesMut};
-//! use rama::http::{Body, Request, Response, header::ACCEPT_ENCODING};
+//! use bytes::Bytes;
+//! use futures_lite::stream::StreamExt;
+//! use rama::error::BoxError;
 //! use rama::http::dep::http_body::Frame;
-//! use rama::http::dep::http_body_util::{BodyExt, StreamBody, combinators::BoxBody as InnerBoxBody};
+//! use rama::http::dep::http_body_util::{BodyExt , StreamBody};
+//! use rama::http::dep::http_body_util::combinators::BoxBody as InnerBoxBody;
+//! use rama::http::layer::compression::CompressionLayer;
+//! use rama::http::{Body, Request, Response, header::ACCEPT_ENCODING};
+//! use rama::service::{Context, Service, ServiceBuilder};
 //! use std::convert::Infallible;
 //! use tokio::fs::{self, File};
 //! use tokio_util::io::ReaderStream;
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::BoxError;
-//! use rama::http::layer::compression::CompressionLayer;
-//! use futures_util::TryStreamExt;
 //!
 //! type BoxBody = InnerBoxBody<Bytes, std::io::Error>;
 //!
@@ -27,11 +28,14 @@
 //!     // Convert the file into a `Stream` of `Bytes`.
 //!     let stream = ReaderStream::new(file);
 //!     // Convert the stream into a stream of data `Frame`s.
-//!     let stream = stream.map_ok(Frame::data);
+//!     let stream = stream.map(|res| match res {
+//!         Ok(v) => Ok(Frame::data(v)),
+//!         Err(e) => Err(e),
+//!     });
 //!     // Convert the `Stream` into a `Body`.
 //!     let body = StreamBody::new(stream);
 //!     // Erase the type because its very hard to name in the function signature.
-//!     let body = body.boxed();
+//!     let body = BodyExt::boxed(body);
 //!     // Create response.
 //!     Ok(Response::new(body))
 //! }
@@ -406,7 +410,7 @@ mod tests {
         let compressed_with_level = {
             use async_compression::tokio::bufread::BrotliEncoder;
 
-            let stream = Box::pin(futures::stream::once(async move {
+            let stream = Box::pin(futures_lite::stream::once({
                 Ok::<_, std::io::Error>(DATA.as_bytes())
             }));
             let reader = StreamReader::new(stream);

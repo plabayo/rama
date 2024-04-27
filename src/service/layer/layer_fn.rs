@@ -56,26 +56,27 @@ mod tests {
     #[tokio::test]
     async fn test_layer_fn() {
         use crate::service::{service_fn, Context, Service};
-        use futures_util::TryFutureExt;
         use std::convert::Infallible;
-        use std::future::Future;
 
         #[derive(Debug)]
         struct ToUpper<S>(S);
 
         impl<S, State, Request> Service<State, Request> for ToUpper<S>
         where
+            Request: Send + 'static,
             S: Service<State, Request, Response = &'static str>,
+            State: Send + Sync + 'static,
         {
             type Response = String;
             type Error = S::Error;
 
-            fn serve(
+            async fn serve(
                 &self,
                 ctx: Context<State>,
                 req: Request,
-            ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-                self.0.serve(ctx, req).map_ok(|res| res.to_uppercase())
+            ) -> Result<Self::Response, Self::Error> {
+                let res = self.0.serve(ctx, req).await;
+                res.map(|msg| msg.to_uppercase())
             }
         }
 

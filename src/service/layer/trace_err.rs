@@ -1,7 +1,5 @@
 use crate::service::{Context, Layer, Service};
-use futures_util::FutureExt;
 use std::fmt;
-use std::future::Future;
 
 /// Service which traces the error using [`tracing`],
 /// of the inner [`Service`].
@@ -56,31 +54,32 @@ impl<S> TraceErr<S> {
 
 impl<S, State, Request> Service<State, Request> for TraceErr<S>
 where
+    Request: Send + 'static,
     S: Service<State, Request>,
     S::Error: std::fmt::Display + Send + Sync + 'static,
+    State: Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
 
     #[inline]
-    fn serve(
+    async fn serve(
         &self,
         ctx: Context<State>,
         req: Request,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> Result<Self::Response, Self::Error> {
         let level = self.level;
-        self.inner.serve(ctx, req).map(move |res| {
-            if let Err(ref err) = res {
-                match level {
-                    tracing::Level::TRACE => tracing::trace!(error = %err, "rama service failed"),
-                    tracing::Level::DEBUG => tracing::debug!(error = %err, "rama service failed"),
-                    tracing::Level::INFO => tracing::info!(error = %err, "rama service failed"),
-                    tracing::Level::WARN => tracing::warn!(error = %err, "rama service failed"),
-                    tracing::Level::ERROR => tracing::error!(error = %err, "rama service failed"),
-                }
+        let res = self.inner.serve(ctx, req).await;
+        if let Err(ref err) = res {
+            match level {
+                tracing::Level::TRACE => tracing::trace!(error = %err, "rama service failed"),
+                tracing::Level::DEBUG => tracing::debug!(error = %err, "rama service failed"),
+                tracing::Level::INFO => tracing::info!(error = %err, "rama service failed"),
+                tracing::Level::WARN => tracing::warn!(error = %err, "rama service failed"),
+                tracing::Level::ERROR => tracing::error!(error = %err, "rama service failed"),
             }
-            res
-        })
+        }
+        res
     }
 }
 

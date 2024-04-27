@@ -5,7 +5,6 @@ use crate::service::Service;
 use crate::service::{Context, HyperService};
 use crate::stream::Stream;
 use crate::tcp::utils::is_connection_error;
-use futures::FutureExt;
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::{rt::TokioIo, server::conn::auto::Builder as AutoBuilder};
@@ -51,7 +50,7 @@ impl HyperConnServer for Http1Builder {
         let mut conn = pin!(self.serve_connection(stream, service).with_upgrades());
 
         if let Some(guard) = guard {
-            let mut cancelled_fut = pin!(guard.cancelled().fuse());
+            let mut cancelled_fut = pin!(guard.cancelled());
 
             loop {
                 select! {
@@ -92,7 +91,7 @@ impl HyperConnServer for Http2Builder<Executor> {
         let mut conn = pin!(self.serve_connection(stream, service));
 
         if let Some(guard) = guard {
-            let mut cancelled_fut = pin!(guard.cancelled().fuse());
+            let mut cancelled_fut = pin!(guard.cancelled());
 
             loop {
                 select! {
@@ -133,7 +132,7 @@ impl HyperConnServer for AutoBuilder<Executor> {
         let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
 
         if let Some(guard) = guard {
-            let mut cancelled_fut = pin!(guard.cancelled().fuse());
+            let mut cancelled_fut = pin!(guard.cancelled());
 
             loop {
                 select! {
