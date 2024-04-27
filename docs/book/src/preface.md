@@ -23,6 +23,8 @@
 [bmac-url]: https://www.buymeacoffee.com/plabayo
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
 [ghs-url]: https://github.com/sponsors/plabayo
+[paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
+[paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
 🦙 Rama (ラマ) is a modular proxy framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](./why_rama.md).
@@ -73,6 +75,7 @@ to get inspired on how you can use it for your purposes.
 [![Discord][discord-badge]][discord-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
 [![GitHub Sponsors][ghs-badge]][ghs-url]
+[![Paypal Donation][paypal-badge]][paypal-url]
 
 Please consult [the official docs.rs documentation][docs-url] or explore
 [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
