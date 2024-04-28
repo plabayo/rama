@@ -69,10 +69,10 @@
 //!
 //! Examples of the kind of web services you might build with rama in function of your proxy service:
 //!
-//! a k8s health service (see code example at [/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs));
-//! a metric exposure service;
-//! a minimal api service (e.g. to expose device profiles or certificates);
-//! a graphical interface / control panel;
+//! - a k8s health service ([/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs));
+//! - a metric exposure service;
+//! - a minimal api service (e.g. to expose device profiles or certificates);
+//! - a graphical interface / control panel;
 //!
 //! > 📖 Learn more about developing web services in the Rama book: <https://ramaproxy.org/book/web_servers.html>.
 //!
@@ -88,7 +88,7 @@
 //! - [/examples/http_service_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs): is an example similar to the previous
 //!   example but shows how you can also operate on the underlying transport (TCP) layer, prior to passing it to your
 //!   http service;
-//!   
+//!
 //! There's also a premade webservice that can be used as the health service for your proxy k8s workloads:
 //!
 //! - [/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs):
