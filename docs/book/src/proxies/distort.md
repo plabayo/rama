@@ -9,7 +9,7 @@
 </div>
 
 There are currently
-[no examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+[no examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 on how to create such a proxy using rama. If you are interested in contributing this
 you can create an issue at <https://github.com/plabayo/rama/issues> and we'll
 help you to get this shipped.

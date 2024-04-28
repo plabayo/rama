@@ -16,16 +16,35 @@ cargo add rama
 ## Examples
 
 Examples to help you get started can be found in
-[the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+[the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to know how to use rama for your purposes.
 
 ## ⛨ | Safety
 
 This crate uses `#![forbid(unsafe_code)]` to ensure everything is implemented in 100% safe Rust.
 
-## 🦀 | Minimum supported Rust version
+## 🦀 | Compatibility
+
+Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production
+on a variety of Linux systems. Windows support is not officially guaranteed,
+but is [tested using Github Actions](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) with success.
+
+| platform | tested | test platform |
+|----------|--------|---------------|
+| MacOS    | ✅     | M2 (developer laptop) and macos-12 Intel ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+| Windows  | ✅     | Windows 2022 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+| Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+
+Please [open a ticket](https://github.com/plabayo/rama/issues) in case you have compatibility issues for your setup/platform.
+Our goal is not to support all possible platformns in the world, but we do want to
+support as many as we reasonably can.
+
+### Minimum supported Rust version
 
 Rama's MSRV is `1.75`.
+
+[Using GitHub Actions we also test](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) if `rama` on that version still works on
+the stable and beta versions of _rust_ as well.
 
 ## 🧭 | Roadmap
 

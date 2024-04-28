@@ -11,10 +11,10 @@
 //! use rama::http::{Request, Response, Body, header::HeaderName};
 //! use rama::http::layer::catch_panic::CatchPanicLayer;
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
 //!     panic!("something went wrong...")
 //! }
@@ -43,10 +43,10 @@
 //! use rama::http::{Body, Request, StatusCode, Response, header::{self, HeaderName}};
 //! use rama::http::layer::catch_panic::CatchPanicLayer;
 //! use rama::service::{Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
 //!     panic!("something went wrong...")
 //! }
@@ -84,7 +84,7 @@
 //! # }
 //! ```
 
-use futures_util::future::FutureExt;
+use futures_lite::future::FutureExt;
 use std::{any::Any, panic::AssertUnwindSafe};
 
 use crate::http::{Body, HeaderValue, Request, Response, StatusCode};

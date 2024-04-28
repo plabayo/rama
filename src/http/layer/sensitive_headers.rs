@@ -8,7 +8,7 @@
 //! use rama::http::layer::sensitive_headers::SetSensitiveHeadersLayer;
 //! use rama::http::{Body, Request, Response, header::AUTHORIZATION};
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //! use std::{iter::once, convert::Infallible};
 //!
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
@@ -17,7 +17,7 @@
 //! }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! let mut service = ServiceBuilder::new()
 //!     // Mark the `Authorization` header as sensitive so it doesn't show in logs
 //!     //

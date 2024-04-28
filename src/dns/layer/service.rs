@@ -2,9 +2,8 @@ use super::{dns_map::DnsMap, DnsError, DynamicDnsResolver};
 use crate::{
     http::{
         layer::header_config::extract_header_config,
-        service::web::extract::{FromRequestParts, Host},
         utils::{HeaderValueErr, HeaderValueGetter},
-        HeaderName, Request,
+        HeaderName, Request, RequestContext,
     },
     service::{Context, Service},
 };
@@ -68,7 +67,7 @@ impl DnsResolvedSocketAddresses {
 /// [`Service`]: crate::service::Service
 /// [`Extensions`]: crate::service::context::Extensions
 /// [`Host`]: crate::http::headers::Host
-/// [`DynamicDnsResolver`]: crate::http::layer::dns::DynamicDnsResolver
+/// [`DynamicDnsResolver`]: crate::dns::layer::DynamicDnsResolver
 #[derive(Debug, Clone)]
 pub struct DnsService<S, R> {
     inner: S,
@@ -97,7 +96,7 @@ impl<State, Body, E, S, R> Service<State, Request<Body>> for DnsService<S, R>
 where
     State: Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    E: Into<crate::error::Error> + Send + Sync + 'static,
+    E: Into<crate::error::BoxError> + Send + Sync + 'static,
     S: Service<State, Request<Body>, Error = E>,
     R: DynamicDnsResolver,
 {
@@ -109,12 +108,10 @@ where
         mut ctx: Context<State>,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        let (parts, body) = request.into_parts();
-        let host = Host::from_request_parts(&ctx, &parts)
-            .await
-            .ok()
-            .map(|h| h.0);
-        let request = Request::from_parts(parts, body);
+        let host = ctx
+            .get_or_insert_with::<RequestContext>(|| RequestContext::from(&request))
+            .host
+            .clone();
 
         if let Some(addresses) = self.lookup_host(&request, host).await? {
             let mut addresses_it = addresses.into_iter();

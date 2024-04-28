@@ -1,6 +1,6 @@
 /// Error type returned by the [`DnsService`].
 ///
-/// [`DnsService`]: crate::http::layer::dns::DnsService
+/// [`DnsService`]: crate::dns::layer::DnsService
 #[derive(Debug)]
 pub enum DnsError<E> {
     /// The hostname was not found in the request, while it was required.
@@ -15,7 +15,7 @@ pub enum DnsError<E> {
     /// the [`DnsService`].
     ///
     /// [`Service`]: crate::service::Service
-    /// [`DnsService`]: crate::http::layer::dns::DnsService
+    /// [`DnsService`]: crate::dns::layer::DnsService
     ServiceError(E),
 }
 

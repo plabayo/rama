@@ -21,7 +21,7 @@
 //! use rama::service::ServiceBuilder;
 //! use rama::http::{Body, Request, Response};
 //! use rama::http::layer::timeout::TimeoutLayer;
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
 //! async fn handle(_: Request) -> Result<Response, Infallible> {
 //!     // ...
@@ -29,7 +29,7 @@
 //! }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! let svc = ServiceBuilder::new()
 //!     // Timeout requests after 30 seconds
 //!     .layer(TimeoutLayer::new(Duration::from_secs(30)))

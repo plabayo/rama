@@ -1,8 +1,8 @@
 //! Types used by compression and decompression middleware.
 
 use bytes::{Buf, Bytes, BytesMut};
-use futures_core::Stream;
-use futures_util::ready;
+use futures_lite::ready;
+use futures_lite::Stream;
 use pin_project_lite::pin_project;
 use std::{
     io,

@@ -1,13 +1,12 @@
 use crate::{
-    error::Error,
-    http::{
-        layer::dns::DnsResolvedSocketAddresses,
-        service::web::extract::{FromRequestParts, Host},
-        Request, Response, Version,
-    },
+    dns::layer::DnsResolvedSocketAddresses,
+    http::{Request, RequestContext, Response, Version},
     service::{Context, Service},
+    uri::Scheme,
 };
 use hyper_util::rt::TokioIo;
+
+use super::HttpClientError;
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
@@ -25,6 +24,8 @@ use hyper_util::rt::TokioIo;
 ///
 /// <https://docs.rs/hyper-util/latest/hyper_util/client/legacy/struct.Client.html>
 /// might serve for some inspiration for some of the above features.
+///
+/// TODO: modify and improve this prior to 0.2 release
 pub struct HttpClient;
 
 impl HttpClient {
@@ -40,76 +41,6 @@ impl Default for HttpClient {
     }
 }
 
-#[derive(Debug)]
-/// Error type for the [`HttpClient`].
-pub enum HttpClientError {
-    /// The HTTP version is invalid.
-    InvalidVersion(Version),
-    /// The host information is missing.
-    ///
-    /// This information is required to be able to establish an L4 connection,
-    /// to serve the request over.
-    MissingHost,
-    /// The host information is invalid.
-    ///
-    /// (e.g. could not be parsed as a [`SocketAddr`])
-    ///
-    /// [`SocketAddr`]: std::net::SocketAddr
-    InvalidHost(String),
-    /// An IO error occurred.
-    ///
-    /// (e.g. during a handshake process)
-    IoError(std::io::Error),
-    /// An HTTP error occurred during the http handshake or transfer process.
-    HttpError(Error),
-}
-
-impl From<std::io::Error> for HttpClientError {
-    fn from(err: std::io::Error) -> Self {
-        HttpClientError::IoError(err)
-    }
-}
-
-impl From<hyper::Error> for HttpClientError {
-    fn from(err: hyper::Error) -> Self {
-        HttpClientError::HttpError(err.into())
-    }
-}
-
-impl std::fmt::Display for HttpClientError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            HttpClientError::InvalidVersion(version) => {
-                write!(f, "Invalid HTTP version: {:?}", version)
-            }
-            HttpClientError::MissingHost => {
-                write!(f, "Missing host header")
-            }
-            HttpClientError::InvalidHost(host) => {
-                write!(f, "Invalid host: {}", host)
-            }
-            HttpClientError::IoError(err) => {
-                write!(f, "IO error: {}", err)
-            }
-            HttpClientError::HttpError(err) => {
-                write!(f, "HTTP error: {}", err)
-            }
-        }
-    }
-}
-
-impl std::error::Error for HttpClientError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            HttpClientError::InvalidVersion(_) => None,
-            HttpClientError::MissingHost => None,
-            HttpClientError::InvalidHost(_) => None,
-            HttpClientError::IoError(err) => Some(err),
-            HttpClientError::HttpError(err) => Some(err.as_ref()),
-        }
-    }
-}
-
 impl<State, Body> Service<State, Request<Body>> for HttpClient
 where
     State: Send + Sync + 'static,
@@ -122,59 +53,51 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         // TODO: should this service be able to support persistent connection?
         // TODO: should this service be able to support connection pooling?
 
-        let (parts, body) = req.into_parts();
-
         // get target address
         let address = if let Some(dns_info) = ctx.get::<DnsResolvedSocketAddresses>() {
             dns_info.address().to_string()
         } else {
-            let host = match Host::from_request_parts(&ctx, &parts).await {
-                Ok(host) => host.0,
-                Err(_) => return Err(HttpClientError::MissingHost),
+            let rc = ctx.get_or_insert_with(|| RequestContext::new(&req));
+            let host = match rc.host.as_ref() {
+                Some(host) => {
+                    let port = rc.port.unwrap_or(match rc.scheme {
+                        Scheme::Wss | Scheme::Https => 443,
+                        _ => 80,
+                    });
+                    Some(format!("{host}:{port}"))
+                }
+                None => None,
             };
-            if host.contains(':') {
-                host
-            } else {
-                let port = parts.uri.port().map(|p| p.as_u16()).unwrap_or_else(|| {
-                    parts
-                        .uri
-                        .scheme()
-                        .map(|s| match s.as_str() {
-                            // TODO is this scheme mapping complete enough?
-                            // and should we fail on unknown schemes?
-                            // should this be a shared utility somewhere?
-                            "http" => 80,
-                            _ => 443,
-                        })
-                        .unwrap_or(443)
-                });
-                format!("{}:{}", host, port)
+            match host {
+                Some(host) => host,
+                None => return Err(HttpClientError::request_err("missing host")),
             }
         };
 
         // TODO: should this client support upstream proxies?
 
         // create the tcp connection
-        tokio::net::TcpStream::connect(&address).await?;
-
-        let tcp_stream = tokio::net::TcpStream::connect(address).await?;
+        let tcp_stream = tokio::net::TcpStream::connect(&address)
+            .await
+            .map_err(HttpClientError::io_err)?;
 
         // TODO: figure out how we wish to handle https here
 
         let tcp_stream = TokioIo::new(Box::pin(tcp_stream));
 
-        let req = Request::from_parts(parts, body);
         let resp = match req.version() {
             Version::HTTP_2 => {
                 let executor = ctx.executor().clone();
                 let (mut sender, conn) =
-                    hyper::client::conn::http2::handshake(executor, tcp_stream).await?;
+                    hyper::client::conn::http2::handshake(executor, tcp_stream)
+                        .await
+                        .map_err(HttpClientError::io_err)?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
@@ -183,10 +106,15 @@ where
                     }
                 });
 
-                sender.send_request(req).await?
+                sender
+                    .send_request(req)
+                    .await
+                    .map_err(HttpClientError::io_err)?
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-                let (mut sender, conn) = hyper::client::conn::http1::handshake(tcp_stream).await?;
+                let (mut sender, conn) = hyper::client::conn::http1::handshake(tcp_stream)
+                    .await
+                    .map_err(HttpClientError::io_err)?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
@@ -195,9 +123,17 @@ where
                     }
                 });
 
-                sender.send_request(req).await?
+                sender
+                    .send_request(req)
+                    .await
+                    .map_err(HttpClientError::io_err)?
             }
-            version => return Err(HttpClientError::InvalidVersion(version)),
+            version => {
+                return Err(HttpClientError::request_err(format!(
+                    "unsupported Http version: {:?}",
+                    version
+                )))
+            }
         };
 
         let resp = resp.map(crate::http::Body::new);

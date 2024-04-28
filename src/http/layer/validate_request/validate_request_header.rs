@@ -1,7 +1,6 @@
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
 use crate::service::{Layer, Service};
 use crate::{
-    http::dep::http_body::Body,
     http::{Request, Response},
     service::Context,
 };
@@ -47,7 +46,7 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
     /// [`Accept`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Accept
     pub fn accept(value: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self::custom(AcceptHeader::new(value))
     }
@@ -121,7 +120,7 @@ impl<S, ResBody> ValidateRequestHeader<S, AcceptHeader<ResBody>> {
     /// See `AcceptHeader::new` for when this method panics.
     pub fn accept(inner: S, value: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self::custom(inner, AcceptHeader::new(value))
     }

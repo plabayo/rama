@@ -294,7 +294,7 @@ mod test {
 
         let ext = ProxyAuthority::<_, UsernameConfig>::authorized(
             &auths,
-            Authorization::basic("john-cc-us", "secret").0,
+            Authorization::basic("john-country-us", "secret").0,
         )
         .await
         .unwrap();
@@ -302,7 +302,7 @@ mod test {
         assert_eq!(&auth, c);
 
         let filter: &ProxyFilter = ext.get().unwrap();
-        assert_eq!(filter.country, Some("us".to_owned()));
+        assert_eq!(filter.country, Some("us".into()));
     }
 
     #[tokio::test]

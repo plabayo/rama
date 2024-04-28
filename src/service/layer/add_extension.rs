@@ -9,7 +9,7 @@
 //!
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
 //! use rama::service::layer::add_extension::AddExtensionLayer;
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
 //! # struct DatabaseConnectionPool;
 //! # impl DatabaseConnectionPool {
@@ -32,7 +32,7 @@
 //! }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! // Construct the shared state.
 //! let state = State {
 //!     pool: DatabaseConnectionPool::new(),

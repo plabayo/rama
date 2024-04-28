@@ -1,10 +1,6 @@
 use super::State;
 use rama::{
-    http::{
-        dep::http::request::Parts,
-        service::web::extract::{FromRequestParts, Host},
-        Request,
-    },
+    http::{dep::http::request::Parts, Request, RequestContext},
     service::Context,
     stream::SocketInfo,
     tls::rustls::server::IncomingClientHello,
@@ -110,7 +106,7 @@ pub struct RequestInfo {
     pub user_agent: Option<String>,
     pub version: String,
     pub scheme: String,
-    pub host: Option<String>,
+    pub authority: Option<String>,
     pub method: String,
     pub fetch_mode: FetchMode,
     pub resource_type: ResourceType,
@@ -127,18 +123,9 @@ pub async fn get_request_info(
     ctx: &Context<State>,
     parts: &Parts,
 ) -> RequestInfo {
-    let host = Host::from_request_parts(ctx, parts)
-        .await
-        .ok()
-        .map(|h| h.0)
-        .or_else(|| parts.uri.host().map(|v| v.to_string()))
-        .map(|host| {
-            if !host.contains(':') && parts.uri.port_u16().is_some() {
-                format!("{}:{}", host, parts.uri.port_u16().unwrap())
-            } else {
-                host
-            }
-        });
+    let authority = ctx
+        .get::<RequestContext>()
+        .and_then(RequestContext::authority);
 
     RequestInfo {
         user_agent: parts
@@ -159,7 +146,7 @@ pub async fn get_request_info(
                 }
                 .to_owned()
             }),
-        host,
+        authority,
         method: parts.method.as_str().to_owned(),
         fetch_mode: parts
             .headers

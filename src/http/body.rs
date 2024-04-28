@@ -1,27 +1,30 @@
 //! HTTP body utilities.
 
-use crate::http::dep::{
-    http_body::{Body as _, Frame},
-    http_body_util::BodyExt,
+use crate::{
+    error::OpaqueError,
+    http::dep::{
+        http_body::{Body as _, Frame},
+        http_body_util::BodyExt,
+    },
 };
 use bytes::Bytes;
-use futures_util::stream::Stream;
-use futures_util::TryStream;
+use futures_core::TryStream;
+use futures_lite::stream::Stream;
 use pin_project_lite::pin_project;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use sync_wrapper::SyncWrapper;
 
-use crate::error::{BoxError, Error};
+use crate::error::BoxError;
 
-type BoxBody = http_body_util::combinators::BoxBody<Bytes, Error>;
+type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 fn boxed<B>(body: B) -> BoxBody
 where
     B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     B::Error: Into<BoxError>,
 {
-    try_downcast(body).unwrap_or_else(|body| body.map_err(Error::new).boxed())
+    try_downcast(body).unwrap_or_else(|body| body.map_err(Into::into).boxed())
 }
 
 pub(crate) fn try_downcast<T, K>(k: K) -> Result<T, K>
@@ -131,14 +134,16 @@ body_from_impl!(Bytes);
 
 impl http_body::Body for Body {
     type Data = Bytes;
-    type Error = Error;
+    type Error = OpaqueError;
 
     #[inline]
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.0).poll_frame(cx)
+        Pin::new(&mut self.0)
+            .poll_frame(cx)
+            .map_err(OpaqueError::from_boxed)
     }
 
     #[inline]
@@ -161,12 +166,12 @@ pub struct BodyDataStream {
 }
 
 impl Stream for BodyDataStream {
-    type Item = Result<Bytes, Error>;
+    type Item = Result<Bytes, BoxError>;
 
     #[inline]
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         loop {
-            match futures_util::ready!(Pin::new(&mut self.inner).poll_frame(cx)?) {
+            match futures_lite::ready!(Pin::new(&mut self.inner).poll_frame(cx)?) {
                 Some(frame) => match frame.into_data() {
                     Ok(data) => return Poll::Ready(Some(Ok(data))),
                     Err(_frame) => {}
@@ -179,14 +184,14 @@ impl Stream for BodyDataStream {
 
 impl http_body::Body for BodyDataStream {
     type Data = Bytes;
-    type Error = Error;
+    type Error = BoxError;
 
     #[inline]
     fn poll_frame(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
-        Pin::new(&mut self.inner).poll_frame(cx)
+        Pin::new(&mut self.inner).poll_frame(cx).map_err(Into::into)
     }
 
     #[inline]
@@ -214,16 +219,16 @@ where
     S::Error: Into<BoxError>,
 {
     type Data = Bytes;
-    type Error = Error;
+    type Error = BoxError;
 
     fn poll_frame(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let stream = self.project().stream.get_pin_mut();
-        match futures_util::ready!(stream.try_poll_next(cx)) {
+        match futures_lite::ready!(stream.try_poll_next(cx)) {
             Some(Ok(chunk)) => Poll::Ready(Some(Ok(Frame::data(chunk.into())))),
-            Some(Err(err)) => Poll::Ready(Some(Err(Error::new(err)))),
+            Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
             None => Poll::Ready(None),
         }
     }

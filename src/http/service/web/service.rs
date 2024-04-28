@@ -3,7 +3,7 @@ use crate::{
     http::{
         matcher::{HttpMatcher, UriParams},
         service::fs::ServeDir,
-        IntoResponse, Request, Response, StatusCode, Uri,
+        Body, IntoResponse, Request, Response, StatusCode, Uri,
     },
     service::{context::Extensions, service_fn, BoxService, Context, Matcher, Service},
 };
@@ -145,7 +145,7 @@ where
     }
 
     /// add a route to the web service which matches the given matcher, using the given service.
-    pub fn on<I, T>(mut self, matcher: HttpMatcher, service: I) -> Self
+    pub fn on<I, T>(mut self, matcher: HttpMatcher<State, Body>, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
     {

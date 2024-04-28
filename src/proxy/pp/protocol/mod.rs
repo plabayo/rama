@@ -2,7 +2,8 @@
 //! Supports both text and binary versions of the header protocol.
 //!
 //! Forked from <https://github.com/misalcedo/ppp> (Apache-2.0 license),
-//! a crate originally developed by Miguel D. Salcedo.
+//! a crate originally developed by Miguel D. Salcedo. The fork happened
+//! on commit `28c5db92fda7337fc1ef36e6f19db96d511cd319`.
 
 mod ip;
 

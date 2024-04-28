@@ -4,13 +4,13 @@
 //!
 //! ```rust
 //! use std::convert::Infallible;
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //! use rama::service::{Context, Service, ServiceBuilder};
 //! use rama::http::{Body, Request, Response, header::HeaderName};
 //! use rama::http::layer::propagate_headers::PropagateHeaderLayer;
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
 //!     // ...
 //!     # Ok(Response::new(Body::default()))

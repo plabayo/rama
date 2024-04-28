@@ -58,7 +58,6 @@ use crate::http::layer::validate_request::{
     ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer,
 };
 use crate::http::{
-    dep::http_body::Body,
     header::{self, HeaderValue},
     Request, Response, StatusCode,
 };
@@ -76,7 +75,7 @@ impl<S, ResBody> ValidateRequestHeader<S, Basic<ResBody>> {
     /// with this method. However use of HTTPS/TLS is not enforced by this middleware.
     pub fn basic(inner: S, username: &str, value: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self::custom(inner, Basic::new(username, value))
     }
@@ -92,7 +91,7 @@ impl<ResBody> ValidateRequestHeaderLayer<Basic<ResBody>> {
     /// with this method. However use of HTTPS/TLS is not enforced by this middleware.
     pub fn basic(username: &str, password: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self::custom(Basic::new(username, password))
     }
@@ -108,7 +107,7 @@ impl<S, ResBody> ValidateRequestHeader<S, Bearer<ResBody>> {
     /// Panics if the token is not a valid [`HeaderValue`].
     pub fn bearer(inner: S, token: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self::custom(inner, Bearer::new(token))
     }
@@ -124,7 +123,7 @@ impl<ResBody> ValidateRequestHeaderLayer<Bearer<ResBody>> {
     /// Panics if the token is not a valid [`HeaderValue`].
     pub fn bearer(token: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self::custom(Bearer::new(token))
     }
@@ -141,7 +140,7 @@ pub struct Bearer<ResBody> {
 impl<ResBody> Bearer<ResBody> {
     fn new(token: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         Self {
             header_value: format!("Bearer {}", token)
@@ -171,7 +170,7 @@ impl<ResBody> fmt::Debug for Bearer<ResBody> {
 
 impl<S, B, ResBody> ValidateRequest<S, B> for Bearer<ResBody>
 where
-    ResBody: Body + Default + Send + 'static,
+    ResBody: Default + Send + 'static,
     B: Send + 'static,
     S: Send + Sync + 'static,
 {
@@ -204,7 +203,7 @@ pub struct Basic<ResBody> {
 impl<ResBody> Basic<ResBody> {
     fn new(username: &str, password: &str) -> Self
     where
-        ResBody: Body + Default,
+        ResBody: Default,
     {
         let encoded = BASE64.encode(format!("{}:{}", username, password));
         let header_value = format!("Basic {}", encoded).parse().unwrap();
@@ -234,7 +233,7 @@ impl<ResBody> fmt::Debug for Basic<ResBody> {
 
 impl<S, B, ResBody> ValidateRequest<S, B> for Basic<ResBody>
 where
-    ResBody: Body + Default + Send + 'static,
+    ResBody: Default + Send + 'static,
     B: Send + 'static,
     S: Send + Sync + 'static,
 {

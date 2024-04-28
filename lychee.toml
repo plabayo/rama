@@ -1,1 +1,2 @@
 exclude_path = ["./target", "./docs/book/book"]
+exclude = ["^https://api.star-history.com"]

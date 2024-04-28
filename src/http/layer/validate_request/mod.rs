@@ -6,14 +6,14 @@
 //! use rama::http::layer::validate_request::ValidateRequestHeaderLayer;
 //! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
-//! async fn handle(request: Request) -> Result<Response, Error> {
+//! async fn handle(request: Request) -> Result<Response, BoxError> {
 //!     Ok(Response::new(Body::empty()))
 //! }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! let mut service = ServiceBuilder::new()
 //!     // Require the `Accept` header to be `application/json`, `*/*` or `application/*`
 //!     .layer(ValidateRequestHeaderLayer::accept("application/json"))
@@ -52,7 +52,7 @@
 //! use rama::http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
 //! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
 //! #[derive(Clone, Copy)]
 //! pub struct MyHeader { /* ...  */ }
@@ -74,14 +74,14 @@
 //!     }
 //! }
 //!
-//! async fn handle(request: Request) -> Result<Response, Error> {
+//! async fn handle(request: Request) -> Result<Response, BoxError> {
 //!     # Ok(Response::builder().body(Body::empty()).unwrap())
 //!     // ...
 //! }
 //!
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! let service = ServiceBuilder::new()
 //!     // Validate requests using `MyHeader`
 //!     .layer(ValidateRequestHeaderLayer::custom(MyHeader { /* ... */ }))
@@ -106,15 +106,15 @@
 //! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
 //! use rama::http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
 //! use rama::service::{Context, Service, ServiceBuilder, service_fn};
-//! use rama::error::Error;
+//! use rama::error::BoxError;
 //!
-//! async fn handle(request: Request) -> Result<Response, Error> {
+//! async fn handle(request: Request) -> Result<Response, BoxError> {
 //!     # Ok(Response::builder().body(Body::empty()).unwrap())
 //!     // ...
 //! }
 //!
 //! # #[tokio::main]
-//! # async fn main() -> Result<(), Error> {
+//! # async fn main() -> Result<(), BoxError> {
 //! let service = ServiceBuilder::new()
 //!     .layer(ValidateRequestHeaderLayer::custom_fn(|request: Request| async move {
 //!         // Validate the request

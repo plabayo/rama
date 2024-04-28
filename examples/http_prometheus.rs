@@ -1,4 +1,4 @@
-//! An example to show how to expose your [`prometheus`]` metrics over HTTP
+//! An example to show how to expose your [`prometheus`] metrics over HTTP
 //! using the [`HttpServer`] and [`Executor`] from Rama.
 //!
 //! [`prometheus`]: https://crates.io/crates/prometheus

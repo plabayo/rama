@@ -1,3 +1,4 @@
+import concurrent.futures
 from datetime import datetime
 import os
 import platform
@@ -11,12 +12,15 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 
+# capability source:
+# > https://www.browserstack.com/docs/automate/capabilities
+
 desktop_permutations = [
     ["latest", "latest-1", "latest-2"],
     ["Chrome", "Edge", "Firefox", "Safari"],
     (
         [["Windows", v] for v in ["10", "11"]]
-        + [["OS X", v] for v in ["Monterey", "Ventura"]]
+        + [["OS X", v] for v in ["Monterey", "Ventura", "Sonoma"]]
     ),
 ]
 
@@ -198,7 +202,9 @@ def mark_test_status(status, reason, driver):
 
 print("start script")
 
-# we only pay for 1 parallel session,
-# so no point in queeing more
-for cap in desired_caps:
-    run_session(cap)
+with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+    # Submit the tasks to the executor
+    futures = [executor.submit(run_session, cap) for cap in desired_caps]
+
+    # Wait for all tasks to complete
+    concurrent.futures.wait(futures)

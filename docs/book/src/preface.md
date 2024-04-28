@@ -23,6 +23,8 @@
 [bmac-url]: https://www.buymeacoffee.com/plabayo
 [ghs-badge]: https://img.shields.io/badge/sponsor-30363D?style=for-the-badge&logo=GitHub-Sponsors&logoColor=#EA4AAA
 [ghs-url]: https://github.com/sponsors/plabayo
+[paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
+[paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
 🦙 Rama (ラマ) is a modular proxy framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](./why_rama.md).
@@ -42,6 +44,13 @@ in case you want to hijack certain requests with your custom server, or because 
 to serve an API as part of your proxy. Or you might want to serve your MITM TLS certs. And of course you might also
 use it to develop a regular web service, which comes with all the great benefits that rama has to offer for developing proxies.
 
+In fact you can even
+[use rama as a high-level highly customisable http client](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs),
+as part of your proxy, an emulated UA or just a plain old http client, made for you. Because you... deserve it!
+
+In short... Rama (ラマ) is a framework to help you move and transform network packets. The primary
+focus is distortion proxies, but you'll see, it can do so much more. And [with your help](./crate.md) it will only become better.
+
 If you are new to proxy technology you might want to start with reading [the proxies intro chapter (a World of Proxies)](./proxies/intro.md) first. You can learn more about the design, architecture and philosophy behind rama
 [in the rama introduction chapters](./intro.md).
 
@@ -57,7 +66,7 @@ If you are new to proxy technology you might want to start with reading [the pro
 > The service is available at <https://fp.ramaproxy.org>.
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
-Please refer to [the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to get inspired on how you can use it for your purposes.
 
 > 🫶 Rama is gratis FOSS and the repo with the full source code can be found
@@ -66,9 +75,10 @@ to get inspired on how you can use it for your purposes.
 [![Discord][discord-badge]][discord-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
 [![GitHub Sponsors][ghs-badge]][ghs-url]
+[![Paypal Donation][paypal-badge]][paypal-url]
 
 Please consult [the official docs.rs documentation][docs-url] or explore
-[the examples found in the `./examples` dir](https://github.com/plabayo/rama/tree/main/examples)
+[the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to know how to use rama for your purposes.
 
 > 💡 You can find the edge docs of the rama framework code at <https://ramaproxy.org/docs/rama/index.html>,
