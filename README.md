@@ -102,7 +102,7 @@ Developing proxies are the primary focus of Rama (ラマ). It can however also b
 
 Examples of the kind of web services you might build with rama in function of your proxy service:
 
-a k8s health service (see code example at <https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs>);
+a k8s health service (see code example at [/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs));
 a metric exposure service;
 a minimal api service (e.g. to expose device profiles or certificates);
 a graphical interface / control panel;
