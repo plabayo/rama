@@ -14,6 +14,7 @@
     - [Network Layers](./intro/network_layers.md)
     - [☀️ Context<State>](./intro/context.md)
     - [🧱 Modular](./intro/modular.md)
+    - [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)
 
 # Intro to Proxies
 
