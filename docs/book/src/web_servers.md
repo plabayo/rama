@@ -68,26 +68,26 @@ All rama [examples can be found in the `/examples` dir](https://github.com/plaba
 
 Here are some low level web service examples without fancy features:
 
-- <https://github.com/plabayo/rama/blob/main/examples/http_listener_hello.rs>: is the most basic example on how to provide
+- [/examples/http_listener_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_listener_hello.rs): is the most basic example on how to provide
   a root service with no needs for endpoints or anything else (e.g. good enough for some use cases related
   to health services or metrics exposures);
-  - <https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs> is an even more minimal example
+  - [/examples/http_health_check.rs](https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs) is an even more minimal example
     of a health check service returning a _200 OK_ for any incoming request.
-- <https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs>: is an example similar to the previous
+- [/examples/http_service_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs): is an example similar to the previous
   example but shows how you can also operate on the underlying transport (TCP) layer, prior to passing it to your
   http service;
   
 There's also a premade webservice that can be used as the health service for your proxy k8s workloads:
 
-- [http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs):
+- [/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs):
   built-in web service that can be used as a k8s health service for proxies deploying as a k8s deployment;
 
 The following are examples that use the high level concepts of Request/State extractors and IntoResponse converters,
 that you'll recognise from `axum`, just as available for `rama`services:
 
-- [http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
+- [/examples/http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
   a web service example showcasing how one might do a key value store web service using `Rama`;
-- [http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
+- [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
 
 For a production-like example of a web service you can also read the [`rama-fp` source code](https://github.com/plabayo/rama/tree/main/rama-fp/src).

@@ -113,12 +113,12 @@ a graphical interface / control panel;
 
 Here are some low level web service examples without fancy features:
 
-- <https://github.com/plabayo/rama/blob/main/examples/http_listener_hello.rs>: is the most basic example on how to provide
+- [/examples/http_listener_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_listener_hello.rs): is the most basic example on how to provide
   a root service with no needs for endpoints or anything else (e.g. good enough for some use cases related
   to health services or metrics exposures);
-  - <https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs> is an even more minimal example
+  - [/examples/http_health_check.rs](https://github.com/plabayo/rama/blob/main/examples/http_health_check.rs) is an even more minimal example
     of a health check service returning a _200 OK_ for any incoming request.
-- <https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs>: is an example similar to the previous
+- [/examples/http_service_hello.rs](https://github.com/plabayo/rama/blob/main/examples/http_service_hello.rs): is an example similar to the previous
   example but shows how you can also operate on the underlying transport (TCP) layer, prior to passing it to your
   http service;
 
