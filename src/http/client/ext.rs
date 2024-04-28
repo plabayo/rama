@@ -9,7 +9,9 @@ use std::future::Future;
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,
 /// in a more ergonomic way.
-pub trait HttpClientExt<State>: Sized + Send + Sync + 'static {
+pub trait HttpClientExt<State>:
+    private::HttpClientExtSealed<State> + Sized + Send + Sync + 'static
+{
     /// The response type returned by the `execute` method.
     type ExecuteResponse;
     /// The error type returned by the `execute` method.
@@ -336,6 +338,15 @@ mod private {
                 crate::http::HeaderValue::from_bytes(self).map_err(HttpClientError::request_err)?;
             Ok(value)
         }
+    }
+
+    pub trait HttpClientExtSealed<State> {}
+
+    impl<State, S, Body> HttpClientExtSealed<State> for S
+    where
+        S: Service<State, Request, Response = Response<Body>>,
+        S::Error: Into<BoxError>,
+    {
     }
 }
 
