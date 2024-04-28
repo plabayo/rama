@@ -24,6 +24,8 @@ use super::HttpClientError;
 ///
 /// <https://docs.rs/hyper-util/latest/hyper_util/client/legacy/struct.Client.html>
 /// might serve for some inspiration for some of the above features.
+///
+/// TODO: modify and improve this prior to 0.2 release
 pub struct HttpClient;
 
 impl HttpClient {
