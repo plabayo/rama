@@ -1,7 +1,7 @@
 # Web Servers
 
 Rama is a modular proxy framework, and we want to make it very clear upfront
-that it is not our goal to also be a framework for developing web services.
+that it is not our primary goal to use it for developing web services, at least not for the majority of people.
 There is however overlap, and for cases where you do need web-service like functionality
 in function of your proxy process you'll notice that rama on itself provides everything
 that you really need.

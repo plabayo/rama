@@ -4,7 +4,7 @@
 >
 > — Some random dictionary.
 
-We advertise _rama_ as a modular proxy framework to move and transform network packets. It's in fact our tagline. Next to that you can read in [Why Rama](../why_rama.md) that one reason for _rama_ to exist is to allow you to easily
+We advertise _rama_ as a modular service framework to move and transform network packets. It's in fact our tagline. Next to that you can read in [Why Rama](../why_rama.md) that one reason for _rama_ to exist is to allow you to easily
 create proxies without having to do everything yourself but while still being
 able to write your own code where you wish.
 

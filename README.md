@@ -34,7 +34,7 @@
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
-🦙 Rama (ラマ) is a modular proxy framework for the 🦀 Rust language to move and transform your network packets.
+🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
@@ -59,12 +59,14 @@ and data extracted using [`rama-fp`](https://github.com/plabayo/rama/tree/main/r
 on real devices, which [uses the public fingerprinting service](./rama-fp/browserstack/main.py) to aid in automated fingerprint collection
 on both the Http and Tls layers. By design we do not consider Tcp and Udp fingerprinting.
 
+Next to proxies, Rama can also be used to develop [Web Services](#--web-services) and [Http Clients](#--http-clients).
+
 - Learn more by reading the Rama book at <https://ramaproxy.org/book>;
 - or checkout the framework Rust docs at <https://docs.rs/rama>;
     - edge docs (for main branch) can be found at <https://ramaproxy.org/docs/rama>.
 
 There is no [crates.io](https://crates.io) release of rama yet.
-If you already want to start using rama already your can do so by referring to it in your `Cargo.toml` as follows:
+If you already want to start using rama you can do so by referring to it in your `Cargo.toml` as follows:
 
 ```toml
 rama = { git = "https://github.com/plabayo/rama" }
@@ -94,7 +96,7 @@ rama = { git = "https://github.com/plabayo/rama" }
 Developing proxies are the primary focus of Rama (ラマ). It can however also be used to develop web services to serve web pages, Http API's and static content. This comes with many of the same benefits that you get when developing proxies using Rama:
 
 * Use Async Method Traits;
-* Reuse modular Tower-like middleware using extensions as well as strongly typed state;
+* Reuse modular [Tower](https://github.com/tower-rs/tower)-like middleware using extensions as well as strongly typed state;
 * Have the ability to be in full control of your web stack from Transport Layer (Tcp, Udp), through Tls and Http;
 * If all you care about is the Http layer then that is fine to.
 * Be able to trust that your incoming Application Http data has not been modified (e.g. Http header casing and order is preserved);
@@ -146,19 +148,19 @@ automated processes look like a human.
 
 ## 🧑‍💻 | Http Clients
 
-In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pilar of Rama's architecture is build around [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes as input a user-defined `State` (e.g. containing your database Pool) and a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request and state to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlwares).
+In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pilar of Rama's architecture is build on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes as input a user-defined `State` (e.g. containing your database Pool) and a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request and state to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
 
 [rama-service]: https://ramaproxy.org/docs/rama/service/trait.Service.html
 
 It's a powerful concept, originally introduced to Rust by [the Tower ecosystem](https://github.com/tower-rs/tower) and allows you build complex stacks specialised to your needs in a modular and easy manner. Even cooler is that this works for both clients and servers alike.
 
-Rama provides an an [`HttpClient`](https://ramaproxy.org/docs/rama/http/client/struct.HttpClient.html) which sends your _Http_ `Request` over the network and returns the `Response` if it receives and read one or an `Error` otherwise. Combined with [the many Layers (middleware)](https://ramaproxy.org/docs/rama/http/layer/index.html) that `Rama` provides and perhaps also some developed by you it is possible to create a powerful _Http_ client suited to your needs.
+Rama provides an [`HttpClient`](https://ramaproxy.org/docs/rama/http/client/struct.HttpClient.html) which sends your _Http_ `Request` over the network and returns the `Response` if it receives and read one or an `Error` otherwise. Combined with [the many Layers (middleware)](https://ramaproxy.org/docs/rama/http/layer/index.html) that `Rama` provides and perhaps also some developed by you it is possible to create a powerful _Http_ client suited to your needs.
 
 As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramaproxy.org/docs/rama/http/client/trait.HttpClientExt.html) trait in your Rust module to be able to use your _Http_ Client [`Service`][rama-service] stack using a high level API to build and send requests with ease.
 
 ### 🧑‍💻 | Http Client Example
 
-> The full example can be found at [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
+> The full "high levelexample can be found at [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
 
 ```rust,ignore
 use rama::http::client::HttpClientExt;
@@ -298,7 +300,8 @@ Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise �
 
 ### Rama Sponsors
 
-We would like to extend our thanks to the following sponsors for funding Rama (ラマ) development. If you are interested in becoming a sponsor, you can do so by becoming a [sponsor][ghs-url]. One time payments are accepted [at GitHub][ghs-url] as well as at ["Buy me a Coffee"][bmac-url].
+We would like to extend our thanks to the following sponsors for funding Rama (ラマ) development. If you are interested in becoming a sponsor, you can do so by becoming a [sponsor][ghs-url]. One time payments are accepted [at GitHub][ghs-url] as well as at ["Buy me a Coffee"][bmac-url]. One-time and monthly financial contributions are also possible via Paypal, should you feel more at ease with that at ["Paypal Donations"][paypal-url].
+
 
 If you wish to financially support us through other means you can best
 start a conversation with us by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).

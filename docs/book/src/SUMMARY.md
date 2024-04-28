@@ -10,7 +10,7 @@
 - [Intro to `rama`](./intro.md)
     - [🗼 Services all the way down 🐢](./intro/services_all_the_way_down.md)
     - [Service Stack](./intro/service_stack.md)
-    - [🍔 Middlwares and ☘️ Leaf Services](./intro/terminology.md)
+    - [🍔 Middlewares and ☘️ Leaf Services](./intro/terminology.md)
     - [Network Layers](./intro/network_layers.md)
     - [☀️ Context<State>](./intro/context.md)
     - [🧱 Modular](./intro/modular.md)

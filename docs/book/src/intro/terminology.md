@@ -1,4 +1,4 @@
-# 🍔 Middlwares and ☘️ Leaf Services
+# 🍔 Middlewares and ☘️ Leaf Services
 
 In a quick intermezzo, let's align on some terminology:
 

@@ -76,7 +76,7 @@ unicode-normalization = "0.1.23"
 name = "rama"
 readme = "README.md"
 documentation = "https://docs.rs/rama"
-description = "modular proxy framework"
+description = "modular service framework"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
