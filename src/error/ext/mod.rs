@@ -1,5 +1,6 @@
 use std::fmt::Display;
 
+mod backtrace;
 mod chain;
 mod context;
 
@@ -112,6 +113,9 @@ pub trait ErrorExt: private::SealedErrorExt {
         C: Display + Send + Sync + 'static,
         F: FnOnce() -> C;
 
+    /// Add a backtrace to the error.
+    fn backtrace(self) -> OpaqueError;
+
     /// Convert the error into an [`OpaqueError`].
     fn into_opaque(self) -> OpaqueError;
 
@@ -144,6 +148,10 @@ impl<Error: std::error::Error + Send + Sync + 'static> ErrorExt for Error {
             context: context(),
             error: self,
         })
+    }
+
+    fn backtrace(self) -> OpaqueError {
+        OpaqueError::from_std(backtrace::BacktraceError::new(self))
     }
 
     fn into_opaque(self) -> OpaqueError {
@@ -238,5 +246,15 @@ mod tests {
 
         let root_cause = opaque.root_cause();
         assert!(root_cause.downcast_ref::<CustomError>().is_some());
+    }
+
+    #[test]
+    fn custom_error_backtrace() {
+        let error = CustomError;
+        let error = error.backtrace();
+
+        assert!(error
+            .to_string()
+            .starts_with("Initial error: Custom error\nError context:\n"));
     }
 }
