@@ -1,3 +1,4 @@
+use crate::http::{self, layer::retry};
 use crate::service::{layer::limit, Context, Layer, Service};
 
 macro_rules! create_either {
@@ -9,12 +10,14 @@ macro_rules! create_either {
         ///
         /// - the [`Service`] trait;
         /// - the [`Layer`] trait;
-        /// - the [`Policy`] trait;
+        /// - the [`limit::Policy`] trait;
+        /// - the [`retry::Policy`] trait;
         ///
         /// and will delegate the functionality to the type that is wrapped in the `Either` type.
         /// To keep it easy all wrapped types are expected to work with the same inputs and outputs.
         ///
-        /// [`Policy`]: crate::service::layer::limit::policy::Policy
+        /// [`limit::Policy`]: crate::service::layer::limit::Policy
+        /// [`retry::Policy`]: crate::http::layer::retry::Policy
         /// [`Service`]: crate::service::Service
         /// [`Layer`]: crate::service::Layer
         pub enum $id<$($param),+> {
@@ -109,6 +112,39 @@ macro_rules! create_either {
                                 },
                             }
                         }
+                    )+
+                }
+            }
+        }
+
+        impl<$($param),+, State, Response, Error> retry::Policy<State, Response, Error> for $id<$($param),+>
+        where
+            $($param: retry::Policy<State, Response, Error>),+,
+            State: Send + Sync + 'static,
+            Response: Send + 'static,
+            Error: Send + Sync + 'static,
+        {
+            async fn retry(
+                &self,
+                ctx: Context<State>,
+                req: http::Request<retry::RetryBody>,
+                result: Result<Response, Error>,
+            ) -> retry::PolicyResult<State, Response, Error> {
+                match self {
+                    $(
+                        $id::$param(policy) => policy.retry(ctx, req, result).await,
+                    )+
+                }
+            }
+
+            fn clone_input(
+                &self,
+                ctx: &Context<State>,
+                req: &http::Request<retry::RetryBody>,
+            ) -> Option<(Context<State>, http::Request<retry::RetryBody>)> {
+                match self {
+                    $(
+                        $id::$param(policy) => policy.clone_input(ctx, req),
                     )+
                 }
             }
