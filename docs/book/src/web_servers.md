@@ -13,7 +13,6 @@ Examples of the kind of web services you might build with `rama` in function of 
 - a minimal api service (e.g. to expose device profiles or certificates);
 - a graphical interface / control panel;
 
-
 ## Axum
 
 We recommend the usage of <https://docs.rs/axum/latest/axum/> in case you need a web server
@@ -84,7 +83,7 @@ There's also a premade webservice that can be used as the health service for you
   built-in web service that can be used as a k8s health service for proxies deploying as a k8s deployment;
 
 The following are examples that use the high level concepts of Request/State extractors and IntoResponse converters,
-that you'll recognise from `axum`, just as available for `rama `services:
+that you'll recognise from `axum`, just as available for `rama`services:
 
 - [http_key_value_store.rs](https://github.com/plabayo/rama/tree/main/examples/http_key_value_store.rs):
   a web service example showcasing how one might do a key value store web service using `Rama`;

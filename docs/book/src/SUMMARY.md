@@ -2,6 +2,7 @@
 [Why Rama](./why_rama.md)
 [Built with Rust](./rust.md)
 [Web Servers](./web_servers.md)
+[Http Clients](./http_clients.md)
 
 # Introduction
 
