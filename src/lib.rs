@@ -22,13 +22,19 @@
 //! and data extracted using [`rama-fp`](https://github.com/plabayo/rama/tree/main/rama-fp/). The service is publicly exposed at
 //! <https://fp.ramaproxy.org>, made possible by our sponsor host <https://fly.io/>.
 //!
-//! > 🔁 <https://echo.ramaproxy.org/> is available and allows you to
-//! > make requests using any headers and any path/query to get an insight
+//! > 🔁 <https://echo.ramaproxy.org/> is another service publicly exposed
+//! > In contrast to the Fingerprinting Service it is aimed at developers
+//! > and allows you to send any http request you wish in order to get an insight
 //! > on the Tls Info and Http Request Info the server receives
 //! > from you when making that request.
 //! >
+//! > ```bash
+//! > curl -XPOST https://echo.ramaproxy.org/ -H 'x-magic: 42' --data ping
+//! > ```
+//! >
 //! > Feel free to make use of while crafting distorted http requests,
-//! > but please do so with moderation.
+//! > but please do so with moderation. In case you have ideas on how to improve
+//! > the service, please let us know [by opening an issue](https://github.com/plabayo/rama/issues).
 //!
 //! [BrowserStack](https://browserstack.com) sponsors Rama by providing automated cross-platform browser testing
 //! on real devices, which [uses the public fingerprinting service](./rama-fp/browserstack/main.py) to aid in automated fingerprint collection
