@@ -6,7 +6,7 @@
 //! Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 //! to get inspired on how you can use it for your purposes.
 //!
-//! The primary focus of Rama is to aid you in your development of [proxies]((https://ramaproxy.org/book/proxies/intro.html):
+//! The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
 //!
 //! - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
 //! - 🔓 [TLS Termination proxies](https://ramaproxy.org/book/proxies/tls);
@@ -14,7 +14,7 @@
 //! - 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5) (will be implemented in `v0.3`);
 //! - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
 //! - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
-//! 
+//!
 //! > 💡 Check out [the "Intro to Proxies" chapters in the Rama book](https://ramaproxy.org/book/proxies/intro.html)
 //! > to learn more about the different kind of proxies. It might help in case you are new to developing proxies.
 //!
