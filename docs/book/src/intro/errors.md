@@ -196,11 +196,11 @@ Requires <https://github.com/plabayo/rama/issues/162>
 to be implemented and resolved.
 
 [`BoxError`]: https://ramaproxy.org/docs/rama/error/type.BoxError.html
-[`OpaqueError`]: https://ramaproxy.org/docs/rama/error/type.OpaqueError.html
+[`OpaqueError`]: https://ramaproxy.org/docs/rama/error/struct.OpaqueError.html
 [`OpaqueError::from_display`]: https://ramaproxy.org/docs/rama/error/struct.OpaqueError.html#method.from_display
 [`ErrorExt`]: https://ramaproxy.org/docs/rama/error/trait.ErrorExt.html
 [`ErrorExt::chain`]: https://ramaproxy.org/docs/rama/error/trait.ErrorExt.html#tymethod.chain
-[`ErrorExt::has_error`]: https://ramaproxy.org/docs/rama/error/trait.ErrorExt.html#tymethod.has_error
+[`ErrorExt::has_error`]: https://ramaproxy.org/docs/rama/error/trait.ErrorExt.html#method.has_error
 [`ErrorExt::root_cause`]: https://ramaproxy.org/docs/rama/error/trait.ErrorExt.html#method.root_cause
 [`ErrorExt::backtrace`]: https://ramaproxy.org/docs/rama/error/trait.ErrorExt.html#tymethod.backtrace
 [`ErrorContext`]: https://ramaproxy.org/docs/rama/error/trait.ErrorContext.html

@@ -109,26 +109,116 @@ impl<T> ErrorContext for Option<T> {
 /// assert!(root_cause.downcast_ref::<CustomError>().is_some());
 pub trait ErrorExt: private::SealedErrorExt {
     /// Wrap the error in a context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama::error::ErrorExt;
+    ///
+    /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").context("do I/O");
+    /// assert_eq!(error.to_string(), "do I/O: oh no!");
+    /// ```
     fn context<M>(self, context: M) -> OpaqueError
     where
         M: Display + Send + Sync + 'static;
 
     /// Lazily wrap the error with a context.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama::error::ErrorExt;
+    ///
+    /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").with_context(|| format!(
+    ///    "do I/O ({})", 42,
+    /// ));
+    /// assert_eq!(error.to_string(), "do I/O (42): oh no!");
+    /// ```
     fn with_context<C, F>(self, context: F) -> OpaqueError
     where
         C: Display + Send + Sync + 'static,
         F: FnOnce() -> C;
 
-    /// Add a backtrace to the error.
+    /// Add a [`Backtrace`][std::backtrace::Backtrace] to the error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama::error::ErrorExt;
+    ///
+    /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").backtrace();
+    /// println!("{}", error);
+    /// ```
     fn backtrace(self) -> OpaqueError;
 
     /// Convert the error into an [`OpaqueError`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama::error::ErrorExt;
+    ///
+    /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").into_opaque();
+    /// assert_eq!(error.to_string(), "oh no!");
+    /// ```
     fn into_opaque(self) -> OpaqueError;
 
     /// Iterate over the chain of errors.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama::error::ErrorExt;
+    ///
+    /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").context("do I/O");
+    ///
+    /// for cause in error.chain() {
+    ///    if cause.downcast_ref::<std::io::Error>().is_some() {
+    ///       println!("I/O error: {}", cause);
+    ///    }
+    /// }
+    /// ```
     fn chain(&self) -> ErrorChain<'_>;
 
     /// Tries to get the most top level error cause of the given type.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama::error::{BoxError, ErrorExt};
+    ///
+    /// #[derive(Debug)]
+    /// struct CustomError;
+    ///
+    /// impl std::fmt::Display for CustomError {
+    ///    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    ///        write!(f, "Custom error")
+    ///    }
+    /// }
+    ///
+    /// impl std::error::Error for CustomError {}
+    ///
+    /// #[derive(Debug)]
+    /// struct WrapperError(BoxError);
+    ///
+    /// impl std::fmt::Display for WrapperError {
+    ///    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    ///        write!(f, "Wrapper error")
+    ///    }
+    /// }
+    ///
+    /// impl std::error::Error for WrapperError {
+    ///    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    ///        Some(self.0.as_ref())
+    ///    }
+    /// }
+    ///
+    /// let error = CustomError.context("whoops");
+    /// let opaque = WrapperError(Box::new(error)).into_opaque();
+    ///
+    /// assert!(opaque.has_error::<CustomError>().is_some());
+    /// assert!(opaque.has_error::<WrapperError>().is_some());
+    /// ```
     fn has_error<E>(&self) -> Option<&E>
     where
         E: std::error::Error + 'static,
@@ -139,6 +229,43 @@ pub trait ErrorExt: private::SealedErrorExt {
     }
 
     /// Get the root cause of the error.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rama::error::{BoxError, ErrorExt};
+    ///
+    /// #[derive(Debug)]
+    /// struct CustomError;
+    ///
+    /// impl std::fmt::Display for CustomError {
+    ///    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    ///        write!(f, "Custom error")
+    ///    }
+    /// }
+    ///
+    /// impl std::error::Error for CustomError {}
+    ///
+    /// #[derive(Debug)]
+    /// struct WrapperError(BoxError);
+    ///
+    /// impl std::fmt::Display for WrapperError {
+    ///    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+    ///        write!(f, "Wrapper error")
+    ///    }
+    /// }
+    ///
+    /// impl std::error::Error for WrapperError {
+    ///    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+    ///        Some(self.0.as_ref())
+    ///    }
+    /// }
+    ///
+    /// let error = CustomError.context("whoops");
+    /// let opaque = WrapperError(Box::new(error)).into_opaque();
+    ///
+    /// assert!(opaque.root_cause().downcast_ref::<CustomError>().is_some());
+    /// ```
     fn root_cause(&self) -> &(dyn std::error::Error + 'static) {
         self.chain().last().unwrap()
     }
