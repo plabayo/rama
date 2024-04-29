@@ -10,7 +10,7 @@
     </div>
 </div>
 
-Now it is very well possible that you learned about Rama because as a proxy framework it perfectly fits your needs,
+Now it is very well possible that you learned about Rama because as a service framework it perfectly fits your needs,
 or because your deep interest in proxy technology. Yet you might not be very familiar with Rust, or might not
 know the language all. Or perhaps you did play around with Rust but aren't comfortable enough to start using
 a crate such as Rama.
@@ -40,4 +40,4 @@ You can find the full version of that chapter at <https://rust-lang.guide/intro/
 
 Rama is developed with a multithreaded Async work-stealing runtime in mind, using Tokio. For ergonomic reasons it makes heavy
 use of generics on top of that. Combining this with the fact that Rust still has some surfaces it has to smooth out,
-makes it that you want to make sure you have a solid foundation in Rust, prior to being able to fully understand the Rama codebase.
+makes it that you want to make sure you have a solid foundation of Rust, prior to being able to fully understand the Rama codebase.

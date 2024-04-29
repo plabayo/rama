@@ -11,8 +11,10 @@
     </div>
 </div>
 
-In case you are new to proxy technology you might want to read the 
+In case you want to use Rama to build a proxy service but are new to proxy technology you might want to read the
 [introduction to proxies chapter](./proxies/intro.md) first.
+
+And of course as a reminder, if you want to use Rama but are still learning Rust you can use  "[the free Rust 101 Learning Guide](https://rust-lang.guide/)" as your study companion. Next to that, [Glen](mailto:glen@plabayo.tech) can also be hired as a mentor or teacher to give you paid 1-on-1 lessons and other similar consultancy services. You can find his contact details at <https://www.glendc.com/>.
 
 ## Index
 
@@ -22,3 +24,5 @@ In case you are new to proxy technology you might want to read the
 - [Network Layers](./intro/network_layers.md)
 - [☀️ Context<State>](./intro/context.md)
 - [🧱 Modular](./intro/modular.md)
+- [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)
+- [🚫 Errors](./intro/errors.md)

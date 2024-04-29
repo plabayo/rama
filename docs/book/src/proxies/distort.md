@@ -30,7 +30,7 @@ digraph {
 
 </div>
 
-The HTTP/TLS content, version, config and flow can be adapted by the distortion proxy,
+The Http/Tls content, version, config and flow can be adapted by the distortion proxy,
 often in function of a specific web client it wishes to emulate. The IP Address can be changed
 by the use of an upstream proxy.
 

@@ -8,19 +8,16 @@ It was chosen to honor our connection with Peru, the homeland of this magnificen
 and translated into Japanese because we gratefully have built _rama_
 upon the broad shoulders of [Tokio and its community](https://tokio.rs/).
 
-Note that the Tokio runtime and its ecosystems sparked initial experimental versions of Rama,
-but that we since then, after plenty of non-published iterations, have broken free from that ecosystem,
-and are now supporting other ecosystems as well. In fact, by default we link not into any async runtime,
-and rely only on the `std` library for for any future/async primitives.
-
 ## On which platform can I run rama?
 
-In theory you should be able to run on any platform which is supported by [our MSVR](https://github.com/plabayo/rama/tree/main?tab=readme-ov-file#--minimum-supported-rust-version) and which is supported by [Tokio](https://tokio.rs).
+In theory you should be able to run on any platform which is supported by [our MSVR](https://github.com/plabayo/rama/tree/main?tab=readme-ov-file#minimum-supported-rust-version) and which is supported by [Tokio](https://tokio.rs).
 
 That said, you might need to disable certain feature flags such as the support for `boringssl`,
 something used in the underlying clients. It also must be noted that we only develop from MacOS (Apple Silicon),
 and use the default Ubuntu VM's for our CI at GitHub Actions. Any other platform is therefore
 to be considered untested, even though the most common ones probably should work.
+
+See [the Compatibility info in the README](https://github.com/plabayo/rama/tree/main?tab=readme-ov-file#--compatibility) for more information.
 
 Please [open an issue](https://github.com/plabayo/rama/issues) in case you have troubles using rama on your platform.
 
@@ -76,30 +73,22 @@ Yes you can, there are even some examples:
 - [http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
 
-That said, `rama` is a modular proxy framework, and not a web framework.
-Our recommendation for people who are looking for a web framework is `axum` (<https://github.com/tokio-rs/axum>).
-It is however a bit much to have to pull in Axum just for the minimal web services one might need as part of a proxy service.
-Examples of web services that might run as part of a proxy service are:
+Given Rama's prime focus is to aid in the development of proxy services it is
+even more natural to write web services that run as part of a proxy service, e.g.:
 
 - a k8s health service ([/examples/http_k8s_health.rs](https://github.com/plabayo/rama/tree/main/examples/http_k8s_health.rs));
 - a metric exposure service;
 - a minimal api service (e.g. to expose device profiles or certificates);
 - a graphical interface / control panel;
 
-The goal of `rama` is to be the framework to build up proxies of all kinds.
-And as such we do want to provide a great experience for the web services that you do need to build as part of your proxy goals.
-
-Even more so, at plabayo we love to dogfeed on our own projects, and
-as such we also use `rama` for "pure" regular web services. It is however not a general thing we recommend.
-
 Please consult [./web_servers.md](./web_servers.md) for more information.
 
 ## Help! I get trait-related compile errors that I do not understand!!
 
 Rama's code is written in a very generic manner, which combined with the fact that it is written with a tokio
-multithreaded environment and at the same time with the goal to provide you with high level ergonomical features, results in a pretty complicated set of trait bounds and restrictions of all kinds.
+multithreaded work-stealing environment and at the same time with the goal to provide you with high level ergonomical features, results in a pretty complicated set of trait bounds and restrictions of all kinds.
 
-As such it is very easy to write that, especially when you're new to `rama` which will give a compiler error for which you have no clue how to resolve it. Sometimes the answer can be found in the compiler output if you know at what line to spot, but at times the answer might honestly not be there at all.
+As such it is very easy to write code — especially when you're new to `rama` — which will give a compiler error for which you have no clue how to resolve it. Sometimes the answer can be found in the compiler output if you know at what line to spot, but at times the answer might honestly not be there at all.
 
 Axum had similar issues at the past and they solved it as far as we know by:
 
@@ -107,6 +96,8 @@ Axum had similar issues at the past and they solved it as far as we know by:
 - Provide debug macros for code stacks to more easily figure out what is missing;
 
 For `rama` we try to box as little as possible, and we do not provide such `debug` macros.
+
+> 💡 You can learn more about about [Dynamic- vs Static dispatch here](./intro/dynamic_dispatch.md).
 
 Most commonly you might get this error, especially the difficult ones, for high level http service handlers. In which case the problem is usually on of these:
 
