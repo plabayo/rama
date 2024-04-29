@@ -1,6 +1,4 @@
 #![cfg_attr(nightly_error_messages, feature(diagnostic_namespace))]
-//! # rama
-//!
 //! 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 //! The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 //!
@@ -22,7 +20,7 @@
 //! and data extracted using [`rama-fp`](https://github.com/plabayo/rama/tree/main/rama-fp/). The service is publicly exposed at
 //! <https://fp.ramaproxy.org>, made possible by our sponsor host <https://fly.io/>.
 //!
-//! > 🔁 <https://echo.ramaproxy.org/> is another service publicly exposed
+//! > 🔁 <https://echo.ramaproxy.org/> is another service publicly exposed.
 //! > In contrast to the Fingerprinting Service it is aimed at developers
 //! > and allows you to send any http request you wish in order to get an insight
 //! > on the Tls Info and Http Request Info the server receives

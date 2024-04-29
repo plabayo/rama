@@ -55,7 +55,7 @@ comes with User-Agent (UA) emulation capabilities. The emulations are made possi
 and data extracted using [`rama-fp`](https://github.com/plabayo/rama/tree/main/rama-fp/). The service is publicly exposed at
 <https://fp.ramaproxy.org>, made possible by our sponsor host <https://fly.io/>.
 
-> 🔁 <https://echo.ramaproxy.org/> is another service publicly exposed
+> 🔁 <https://echo.ramaproxy.org/> is another service publicly exposed.
 > In contrast to the Fingerprinting Service it is aimed at developers
 > and allows you to send any http request you wish in order to get an insight
 > on the Tls Info and Http Request Info the server receives
