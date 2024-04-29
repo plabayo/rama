@@ -64,11 +64,15 @@ It might of course still mean the app returns an error response when it is absen
 
 ## State Wraps
 
+> 📖 [rustdoc link](https://ramaproxy.org/docs/rama/service/context/struct.Context.html#method.map_state)
+
 `rama` was built from the ground up to operate on and between different layers of the network stack.
 This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
 
-When creating a [`TcpListener`] with state you are essentially creating and injecting state, which will remain
-as "read-only" for the enire life cycle of that [`TcpListener`] and to be made available for every incoming _tcp_ connection,
+When creating a [`TcpListener`](https://ramaproxy.org/docs/rama/tcp/server/struct.TcpListener.html)
+with state you are essentially creating and injecting state, which will remain
+as "read-only" for the enire life cycle of that [`TcpListener`](https://ramaproxy.org/docs/rama/tcp/server/struct.TcpListener.html)
+and to be made available for every incoming _tcp_ connection,
 as well as the application requests (Http requests). This is great for stuff that is okay to share, but it is not desired
 for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus
 you do not wish to keep a global cache for this, as it would either be shared or get overly complicated to ensure
@@ -76,9 +80,9 @@ you keep things separate and clean.
 
 The solution is to wrap your state.
 
-> Example: [http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
+> See for reference: [/examples/http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
 
-The above example shows how can use the [`#as_ref(wrap)`] property within an `#[derive(AsRef)]` derived "state" struct,
+The above example shows how can use the `#as_ref(wrap)` property within an `#[derive(AsRef)]` derived "state" struct,
 to wrap in a type-safe manner the "app-global" state within the "conn-specific" (tcp) state. This allows you to have
 state freshly created for each connection while still having ease of access to the global state.
 
