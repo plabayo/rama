@@ -178,7 +178,6 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 Ok::<_, Infallible>(())
             })
             .layer(TimeoutLayer::new(Duration::from_secs(16)))
-            // Why the below layer makes it no longer cloneable?!?!
             .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
                 ExponentialBackoff::default(),
