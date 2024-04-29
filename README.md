@@ -41,7 +41,7 @@ Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime
 Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to get inspired on how you can use it for your purposes.
 
-The primary focus of Rama is to aid you in your development of proxies:
+The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
 
 - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
 - 🔓 [TLS Termination proxies](https://ramaproxy.org/book/proxies/tls);
@@ -49,6 +49,9 @@ The primary focus of Rama is to aid you in your development of proxies:
 - 🧦 [SOCKS5 proxies](https://ramaproxy.org/book/proxies/socks5) (will be implemented in `v0.3`);
 - 🔎 [MITM proxies](https://ramaproxy.org/book/proxies/mitm);
 - 🕵️‍♀️ [Distortion proxies](https://ramaproxy.org/book/proxies/distort).
+
+> 💡 Check out [the "Intro to Proxies" chapters in the Rama book](https://ramaproxy.org/book/proxies/intro.html)
+> to learn more about the different kind of proxies. It might help in case you are new to developing proxies.
 
 The [Distortion proxies](https://ramaproxy.org/book/proxies/distort) support
 comes with User-Agent (UA) emulation capabilities. The emulations are made possible by patterns
@@ -157,7 +160,7 @@ This is the webservice behind the Rama fingerprinting service, which is used by 
 the UA emulation data for the Http and TLS layers. It is not meant to fingerprint humans or users. Instead it is meant to help
 automated processes look like a human.
 
-> This example showcases how you can make use of the [`match_service`](https://ramaproxy.org/docs/rama/http/service/web/macro.match_service.html)
+> 💡 This example showcases how you can make use of the [`match_service`](https://ramaproxy.org/docs/rama/http/service/web/macro.match_service.html)
 > macro to create a `Box`-free service router. Another example of this approach can be seen in the
 > [http_service_match.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_match.rs) example.
 
@@ -175,7 +178,7 @@ As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramapr
 
 ### 🧑‍💻 | Http Client Example
 
-> The full "high levelexample can be found at [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
+> 💡 The full "high levelexample can be found at [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
 
 ```rust,ignore
 use rama::http::client::HttpClientExt;
