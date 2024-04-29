@@ -55,6 +55,14 @@ comes with User-Agent (UA) emulation capabilities. The emulations are made possi
 and data extracted using [`rama-fp`](https://github.com/plabayo/rama/tree/main/rama-fp/). The service is publicly exposed at
 <https://fp.ramaproxy.org>, made possible by our sponsor host <https://fly.io/>.
 
+> 🔁 <https://echo.ramaproxy.org/> is available and allows you to
+> make requests using any headers and any path/query to get an insight
+> on the Tls Info and Http Request Info the server receives
+> from you when making that request.
+>
+> Feel free to make use of while crafting distorted http requests,
+> but please do so with moderation.
+
 [BrowserStack](https://browserstack.com) sponsors Rama by providing automated cross-platform browser testing
 on real devices, which [uses the public fingerprinting service](./rama-fp/browserstack/main.py) to aid in automated fingerprint collection
 on both the Http and Tls layers. By design we do not consider Tcp and Udp fingerprinting.
