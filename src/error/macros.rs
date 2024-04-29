@@ -1,4 +1,3 @@
-
 /// A macro to create a new error from a string literal,
 /// formatted string, or an existing error.
 ///
