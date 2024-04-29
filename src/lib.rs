@@ -29,7 +29,7 @@
 //! > from you when making that request.
 //! >
 //! > ```bash
-//! > curl -XPOST https://echo.ramaproxy.org/ -H 'x-magic: 42' --data ping
+//! > curl -XPOST https://echo.ramaproxy.org/foo?bar=baz -H 'x-magic: 42' --data 'whatever forever'
 //! > ```
 //! >
 //! > Feel free to make use of while crafting distorted http requests,
