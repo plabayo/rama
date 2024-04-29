@@ -6,6 +6,8 @@ use std::fmt::{self, Debug, Display};
 ///
 /// Note this type is not intended to be used directly,
 /// it is used by `rama` to hide the concrete error type.
+///
+/// See the [module level documentation](crate::error) for more information.
 pub struct OpaqueError(BoxError);
 
 impl OpaqueError {

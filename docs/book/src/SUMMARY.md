@@ -15,6 +15,7 @@
     - [☀️ Context<State>](./intro/context.md)
     - [🧱 Modular](./intro/modular.md)
     - [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)
+    - [🚫 Errors](./intro/errors.md)
 
 # Intro to Proxies
 

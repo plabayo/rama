@@ -1,13 +1,17 @@
 use std::fmt::Display;
 
 mod backtrace;
-mod chain;
 mod context;
+
+mod chain;
+pub use chain::Chain as ErrorChain;
 
 mod wrapper;
 pub use wrapper::OpaqueError;
 
 /// Extends the `Result` and `Option` types with methods for adding context to errors.
+///
+/// See the [module level documentation](crate::error) for more information.
 ///
 /// # Examples
 ///
@@ -82,6 +86,8 @@ impl<T> ErrorContext for Option<T> {
 
 /// Extends the `Error` type with methods for working with errorss.
 ///
+/// See the [module level documentation](crate::error) for more information.
+///
 /// # Examples
 ///
 /// ```
@@ -120,7 +126,17 @@ pub trait ErrorExt: private::SealedErrorExt {
     fn into_opaque(self) -> OpaqueError;
 
     /// Iterate over the chain of errors.
-    fn chain(&self) -> impl Iterator<Item = &(dyn std::error::Error + 'static)>;
+    fn chain(&self) -> ErrorChain<'_>;
+
+    /// Tries to get the most top level error cause of the given type.
+    fn has_error<E>(&self) -> Option<&E>
+    where
+        E: std::error::Error + 'static,
+    {
+        self.chain()
+            .rev()
+            .find_map(|error| error.downcast_ref::<E>())
+    }
 
     /// Get the root cause of the error.
     fn root_cause(&self) -> &(dyn std::error::Error + 'static) {
@@ -158,8 +174,8 @@ impl<Error: std::error::Error + Send + Sync + 'static> ErrorExt for Error {
         OpaqueError::from_std(self)
     }
 
-    fn chain(&self) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
-        chain::Chain::new(self)
+    fn chain(&self) -> ErrorChain<'_> {
+        ErrorChain::new(self)
     }
 }
 
@@ -177,6 +193,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::BoxError;
 
     #[test]
     fn message_error_context() {
@@ -201,6 +218,30 @@ mod tests {
     }
 
     impl std::error::Error for CustomError {}
+
+    #[derive(Debug)]
+    struct WrapperError(BoxError);
+
+    impl std::fmt::Display for WrapperError {
+        fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            write!(f, "Wrapper error")
+        }
+    }
+
+    impl std::error::Error for WrapperError {
+        fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+            Some(self.0.as_ref())
+        }
+    }
+
+    #[test]
+    fn context_opaque_custom_error_has() {
+        let error = WrapperError(Box::new(CustomError.context("context"))).into_opaque();
+        assert!(error.has_error::<CustomError>().is_some());
+        assert!(error.has_error::<WrapperError>().is_some());
+        assert!(error.has_error::<OpaqueError>().is_some());
+        assert!(error.has_error::<std::io::Error>().is_none());
+    }
 
     #[test]
     fn custom_error_root_cause() {
