@@ -42,4 +42,4 @@ Only object safe traits can be the base trait of a trait object. You can learn m
 
 The approach taken to allow for this was widely published in the rust blog at <https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html>, which originally was mentioned at <https://rust-lang.github.io/async-fundamentals-initiative/evaluation/case-studies/builder-provider-api.html#dynamic-dispatch-behind-the-api>.
 
-The result is that `rama` has a [`BoxService`](https://ramaproxy.org/docs/rama/service/struct.BoxService.html), which can easily be created using the [`Service::boxed`](https://ramaproxy.org/docs/rama/service/trait.Service.html#method.boxed) method, which is implemented automatically for all [`Service`](https://ramaproxy.org/docs/rama/service/trait.Service.htm)s.
+The result is that `rama` has a [`BoxService`](https://ramaproxy.org/docs/rama/service/struct.BoxService.html), which can easily be created using the [`Service::boxed`](https://ramaproxy.org/docs/rama/service/trait.Service.html#method.boxed) method, which is implemented automatically for all [`Service`](https://ramaproxy.org/docs/rama/service/trait.Service.html)s.
