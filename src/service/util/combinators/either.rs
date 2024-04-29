@@ -1,5 +1,7 @@
 use crate::http::{self, layer::retry};
-use crate::service::{layer::limit, Context, Layer, Service};
+use crate::service::{
+    context::Extensions, layer::limit, matcher::Matcher, Context, Layer, Service,
+};
 
 macro_rules! create_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
@@ -10,6 +12,7 @@ macro_rules! create_either {
         ///
         /// - the [`Service`] trait;
         /// - the [`Layer`] trait;
+        /// - the [`Matcher`] trait;
         /// - the [`limit::Policy`] trait;
         /// - the [`retry::Policy`] trait;
         ///
@@ -18,6 +21,7 @@ macro_rules! create_either {
         ///
         /// [`limit::Policy`]: crate::service::layer::limit::Policy
         /// [`retry::Policy`]: crate::http::layer::retry::Policy
+        /// [`Matcher`]: crate::service::matcher::Matcher
         /// [`Service`]: crate::service::Service
         /// [`Layer`]: crate::service::Layer
         pub enum $id<$($param),+> {
@@ -70,6 +74,26 @@ macro_rules! create_either {
                 match self {
                     $(
                         $id::$param(layer) => $id::$param(layer.layer(inner)),
+                    )+
+                }
+            }
+        }
+
+        impl<$($param),+, State, Request> Matcher<State, Request> for $id<$($param),+>
+        where
+            $($param: Matcher<State, Request>),+,
+            Request: Send + 'static,
+            State: Send + Sync + 'static,
+        {
+            fn matches(
+                &self,
+                ext: Option<&mut Extensions>,
+                ctx: &Context<State>,
+                req: &Request
+            ) -> bool{
+                match self {
+                    $(
+                        $id::$param(layer) => layer.matches(ext, ctx, req),
                     )+
                 }
             }
