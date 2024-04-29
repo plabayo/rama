@@ -82,4 +82,4 @@ to know how to use rama for your purposes.
 
 🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
 
-💖 Please consider becoming [a regular sponsor][ghs-url] if you critically depend upon Rama (ラマ) or are a fan of the project.
+💖 Please consider becoming [a regular sponsor][ghs-url] if you critically depend upon Rama (ラマ) or if you are a fan of the project.
