@@ -178,6 +178,17 @@ pub trait ErrorExt: private::SealedErrorExt {
     ///    }
     /// }
     /// ```
+    ///
+    /// # Remarks
+    ///
+    /// The error chain logic relies on the [`Error::source`](std::error::Error::source) method to
+    /// traverse the chain of errors:
+    ///
+    /// - if the error does not implement the `source` method it will not work for _that_ error type;
+    /// - the meaning of [`Error::source`](std::error::Error::source) is not well defined and
+    ///   even within the standard library it is not uncommon for an error to call source on the inner error,
+    ///   which can lead to some error types being skipped. This is [by design](https://github.com/rust-lang/rust/pull/124536#issuecomment-2084667289),
+    ///   and behaviour that must be taken into account in case you rely on [`ErrorChain`] for some of your error handling.
     fn chain(&self) -> ErrorChain<'_>;
 
     /// Tries to get the most top level error cause of the given type.

@@ -52,6 +52,15 @@ The extension also allows one to iterate over the chain of errors ([`ErrorExt::c
 which is useful for manually checking if certain errors happened,
 and if so extract info out of them.
 
+> ❗ The error chain logic relies on the [`std::error::Error::source`] method to
+> traverse the chain of errors:
+>
+> - if the error does not implement the `source` method it will not work for _that_ error type;
+> - the meaning of [`std::error::Error::source`] is not well defined and
+>   even within the standard library it is not uncommon for an error to call source on the inner error,
+>   which can lead to some error types being skipped. This is [by design](https://github.com/rust-lang/rust/pull/124536#issuecomment-2084667289),
+>   and behaviour that must be taken into account in case you rely on [`ErrorChain`] for some of your error handling.
+
 In case you only care about the most top-level error of a specific type you can use
 [`ErrorExt::has_error`]. To get the root cause, regardless of the type you can use
 [`ErrorExt::root_cause`].
@@ -208,3 +217,4 @@ to be implemented and resolved.
 [`Option`]: https://doc.rust-lang.org/stable/std/option/enum.Option.html
 [`error`]: https://ramaproxy.org/docs/rama/error/macro.error.html
 [`std::error::Error`]: https://doc.rust-lang.org/stable/std/error/trait.Error.html
+[`std::error::Error::source`]: https://doc.rust-lang.org/stable/std/error/trait.Error.html#method.source
