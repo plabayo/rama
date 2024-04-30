@@ -63,7 +63,7 @@ and data extracted using [`rama-fp`](https://github.com/plabayo/rama/tree/main/r
 > the service, please let us know [by opening an issue](https://github.com/plabayo/rama/issues).
 
 [BrowserStack](https://browserstack.com) sponsors Rama by providing automated cross-platform browser testing
-on real devices, which [uses the public fingerprinting service](./rama-fp/browserstack/main.py) to aid in automated fingerprint collection
+on real devices, which [uses the public fingerprinting service](https://github.com/plabayo/rama/tree/main/rama-fp/browserstack/main.py) to aid in automated fingerprint collection
 on both the Http and Tls layers. By design we do not consider Tcp and Udp fingerprinting.
 
 Next to proxies, Rama can also be used to develop [Web Services](./web_servers.md) and [Http Clients](./http_clients.md).
