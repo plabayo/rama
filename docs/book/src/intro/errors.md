@@ -48,60 +48,6 @@ implemented for all types that implement the [`std::error::Error`] trait. The me
 used to add context to an error, add a backtrace to an error, and to convert an error into
 an opaque error.
 
-The extension also allows one to iterate over the chain of errors ([`ErrorExt::chain`]),
-which is useful for manually checking if certain errors happened,
-and if so extract info out of them.
-
-> ❗ The error chain logic relies on the [`std::error::Error::source`] method to
-> traverse the chain of errors:
->
-> - if the error does not implement the `source` method it will not work for _that_ error type;
-> - the meaning of [`std::error::Error::source`] is not well defined and
->   even within the standard library it is not uncommon for an error to call source on the inner error,
->   which can lead to some error types being skipped. This is [by design](https://github.com/rust-lang/rust/pull/124536#issuecomment-2084667289),
->   and behaviour that must be taken into account in case you rely on [`ErrorChain`] for some of your error handling.
-
-In case you only care about the most top-level error of a specific type you can use
-[`ErrorExt::has_error`]. To get the root cause, regardless of the type you can use
-[`ErrorExt::root_cause`].
-
-### Error Extension Example
-
-```rust
-use rama::error::{BoxError, ErrorExt, OpaqueError};
-
-#[derive(Debug)]
-struct CustomError;
-
-impl std::fmt::Display for CustomError {
-   fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-    write!(f, "Custom error")
-  }
-}
-
-impl std::error::Error for CustomError {}
-
-#[derive(Debug)]
-struct IoError(BoxError);
-
-impl std::fmt::Display for IoError {
-  fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-     write!(f, "IO error")
-  }
-}
-
-impl std::error::Error for IoError {
-  fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-     Some(self.0.as_ref())
-  }
-}
-
-let error = IoError(CustomError.into()).context("whoops");
-assert!(error.root_cause().downcast_ref::<CustomError>().is_some());
-assert!(error.has_error::<IoError>().is_some());
-assert!(error.has_error::<CustomError>().is_some());
-```
-
 ## Opaque Error
 
 The [`OpaqueError`] type is a type-erased error that can be used to represent any error
@@ -142,7 +88,6 @@ impl std::error::Error for CustomError {}
 let error = error!(CustomError).context("foo");
 
 assert_eq!(error.to_string(), "foo: entity not found");
-assert!(error.root_cause().downcast_ref::<CustomError>().is_some());
 ```
 
 ## Error Context

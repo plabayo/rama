@@ -41,7 +41,7 @@ impl Display for OpaqueError {
 
 impl std::error::Error for OpaqueError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        Some(self.0.as_ref())
+        self.0.source()
     }
 }
 

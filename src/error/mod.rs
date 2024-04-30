@@ -44,51 +44,6 @@
 //! used to add context to an error, add a backtrace to an error, and to convert an error into
 //! an opaque error.
 //!
-//! The extension also allows one to iterate over the chain of errors ([`ErrorExt::chain`]),
-//! which is useful for manually checking if certain errors happened,
-//! and if so extract info out of them.
-//!
-//! In case you only care about the most top-level error of a specific type you can use
-//! [`ErrorExt::has_error`]. To get the root cause, regardless of the type you can use
-//! [`ErrorExt::root_cause`].
-//!
-//! ### Error Extension Example
-//!
-//! ```rust
-//! use rama::error::{BoxError, ErrorExt, OpaqueError};
-//!
-//! #[derive(Debug)]
-//! struct CustomError;
-//!
-//! impl std::fmt::Display for CustomError {
-//!    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-//!     write!(f, "Custom error")
-//!   }
-//! }
-//!
-//! impl std::error::Error for CustomError {}
-//!
-//! #[derive(Debug)]
-//! struct IoError(BoxError);
-//!
-//! impl std::fmt::Display for IoError {
-//!   fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-//!      write!(f, "IO error")
-//!   }
-//! }
-//!
-//! impl std::error::Error for IoError {
-//!   fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-//!      Some(self.0.as_ref())
-//!   }
-//! }
-//!
-//! let error = IoError(CustomError.into()).context("whoops");
-//! assert!(error.root_cause().downcast_ref::<CustomError>().is_some());
-//! assert!(error.has_error::<IoError>().is_some());
-//! assert!(error.has_error::<CustomError>().is_some());
-//! ```
-//!
 //! ## Opaque Error
 //!
 //! The [`OpaqueError`] type is a type-erased error that can be used to represent any error
@@ -129,7 +84,6 @@
 //! let error = error!(CustomError).context("foo");
 //!
 //! assert_eq!(error.to_string(), "foo: entity not found");
-//! assert!(error.root_cause().downcast_ref::<CustomError>().is_some());
 //! ```
 //!
 //! ## Error Context
@@ -199,7 +153,7 @@ use std::error::Error as StdError;
 pub type BoxError = Box<dyn StdError + Send + Sync>;
 
 mod ext;
-pub use ext::{ErrorChain, ErrorContext, ErrorExt, OpaqueError};
+pub use ext::{ErrorContext, ErrorExt, OpaqueError};
 
 mod macros;
 #[doc(inline)]
