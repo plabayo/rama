@@ -94,7 +94,7 @@
 //! ```
 
 use super::{BoxMakeHeaderValueFn, InsertHeaderMode, MakeHeaderValue};
-use crate::http::{header::HeaderName, Request, Response};
+use crate::http::{header::HeaderName, HeaderValue, Request, Response};
 use crate::service::{Context, Layer, Service};
 use std::fmt;
 
@@ -114,6 +114,32 @@ impl<M> fmt::Debug for SetResponseHeaderLayer<M> {
             .field("mode", &self.mode)
             .field("make", &std::any::type_name::<M>())
             .finish()
+    }
+}
+
+impl SetResponseHeaderLayer<Option<HeaderValue>> {
+    /// Create a new [`SetResponseHeaderLayer`] that sets the `server` header the rama name and version,
+    /// overriding any previous value.
+    pub fn rama_server_overriding() -> Self {
+        Self::overriding(
+            HeaderName::from_static("server"),
+            HeaderValue::from_str(
+                format!("{}-{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).as_str(),
+            )
+            .ok(),
+        )
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] that sets the `server` header the rama name and version,
+    /// only if it is not already present.
+    pub fn rama_server_if_not_present() -> Self {
+        Self::if_not_present(
+            HeaderName::from_static("server"),
+            HeaderValue::from_str(
+                format!("{}-{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).as_str(),
+            )
+            .ok(),
+        )
     }
 }
 

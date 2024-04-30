@@ -135,10 +135,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             .layer(TraceLayer::new_for_http())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
-            .layer(SetResponseHeaderLayer::overriding(
-                HeaderName::from_static("server"),
-                HeaderValue::from_static("rama-v0.2-alpha"),
-            ))
+            .layer(SetResponseHeaderLayer::rama_server_overriding())
             .layer(SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),
@@ -351,10 +348,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
             .layer(TraceLayer::new_for_http())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
-            .layer(SetResponseHeaderLayer::overriding(
-                HeaderName::from_static("server"),
-                HeaderValue::from_static("rama-v0.2-alpha"),
-            ))
+            .layer(SetResponseHeaderLayer::rama_server_overriding())
             .layer(SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),

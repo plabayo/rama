@@ -30,7 +30,7 @@ fn html<T: Into<String>>(inner: T) -> Html {
 //------------------------------------------
 
 pub async fn get_consent() -> impl IntoResponse {
-    ([("Set-Cookie", "rama-fp=0.2.0; Max-Age=60")], render_page(
+    ([("Set-Cookie", "rama-fp=ready; Max-Age=60")], render_page(
         "🕵️ Fingerprint Consent",
         String::new(),
         r##"<div class="consent">
