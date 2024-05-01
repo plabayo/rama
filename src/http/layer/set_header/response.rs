@@ -94,7 +94,11 @@
 //! ```
 
 use super::{BoxMakeHeaderValueFn, InsertHeaderMode, MakeHeaderValue};
-use crate::http::{header::HeaderName, HeaderValue, Request, Response};
+use crate::http::{
+    header::HeaderName,
+    headers::{Header, HeaderExt},
+    HeaderValue, Request, Response,
+};
 use crate::service::{Context, Layer, Service};
 use std::fmt;
 
@@ -117,29 +121,26 @@ impl<M> fmt::Debug for SetResponseHeaderLayer<M> {
     }
 }
 
-impl SetResponseHeaderLayer<Option<HeaderValue>> {
-    /// Create a new [`SetResponseHeaderLayer`] that sets the `server` header the rama name and version,
-    /// overriding any previous value.
-    pub fn rama_server_overriding() -> Self {
-        Self::overriding(
-            HeaderName::from_static("server"),
-            HeaderValue::from_str(
-                format!("{}-{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).as_str(),
-            )
-            .ok(),
-        )
+impl SetResponseHeaderLayer<HeaderValue> {
+    /// Create a new [`SetResponseHeaderLayer`] from a typed [`Header`].
+    ///
+    /// See [`SetResponseHeaderLayer::overriding`] for more details.
+    pub fn overriding_typed<H: Header>(header: H) -> Self {
+        Self::overriding(H::name().clone(), header.encode_to_value())
     }
 
-    /// Create a new [`SetResponseHeaderLayer`] that sets the `server` header the rama name and version,
-    /// only if it is not already present.
-    pub fn rama_server_if_not_present() -> Self {
-        Self::if_not_present(
-            HeaderName::from_static("server"),
-            HeaderValue::from_str(
-                format!("{}-{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).as_str(),
-            )
-            .ok(),
-        )
+    /// Create a new [`SetResponseHeaderLayer`] from a typed [`Header`].
+    ///
+    /// See [`SetResponseHeaderLayer::appending`] for more details.
+    pub fn appending_typed<H: Header>(header: H) -> Self {
+        Self::appending(H::name().clone(), header.encode_to_value())
+    }
+
+    /// Create a new [`SetResponseHeaderLayer`] from a typed [`Header`].
+    ///
+    /// See [`SetResponseHeaderLayer::if_not_present`] for more details.
+    pub fn if_not_present_typed<H: Header>(header: H) -> Self {
+        Self::if_not_present(H::name().clone(), header.encode_to_value())
     }
 }
 

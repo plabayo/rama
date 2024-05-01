@@ -1,6 +1,7 @@
 use base64::Engine as _;
 use rama::{
     http::{
+        headers::Server,
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
             set_header::SetResponseHeaderLayer, trace::TraceLayer,
@@ -135,7 +136,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             .layer(TraceLayer::new_for_http())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
-            .layer(SetResponseHeaderLayer::rama_server_overriding())
+            .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).parse::<Server>().unwrap()))
             .layer(SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),
@@ -348,7 +349,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
             .layer(TraceLayer::new_for_http())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
-            .layer(SetResponseHeaderLayer::rama_server_overriding())
+            .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION")).parse::<Server>().unwrap()))
             .layer(SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),
