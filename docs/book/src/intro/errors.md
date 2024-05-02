@@ -145,9 +145,29 @@ assert!(result.is_err());
 
 ## Error Composition
 
-TODO: Add documentation for error composition.
-Requires <https://github.com/plabayo/rama/issues/162>
-to be implemented and resolved.
+Sometimes it can be useful to compose errors with more
+expressive error types. In such cases [`OpaqueError`] is... too opaque.
+
+In an early design of Rama we considered adding a `compose_error` function macro
+that would allow to create error types in a similar manner as [the `thiserror` crate](https://docs.rs/thiserror),
+but we decided against it as it would be an abstraction too much.
+
+Rama was created to give developers the full power of the Rust language to develop
+proxies, and by extension also web services and http clients. In a similar line of thought
+it is also important that one has all tools available to create the error types for their purpose.
+
+As such, if you want your own custom error types we recommend just creating them
+as you would any other type in Rust. The blog article <https://sabrinajewson.org/blog/errors>
+gives a good overview and background on this topic.
+
+You can declare your own `macro_rules` in case there are common patterns for the services
+and middlewares that you are writing for your project. For inspiration you can
+see the http rejection macros we borrowed and modified from [Axum's extract logic](https://github.com/tokio-rs/axum/blob/5201798d4e4d4759c208ef83e30ce85820c07baa/axum-core/src/macros.rs):
+<https://github.com/plabayo/rama/blob/main/src/macros/http_error.rs>
+
+And of course... if you really want, against our advice in,
+you can use [the `thiserror` crate](https://docs.rs/thiserror),
+or even [the `anyhow` crate](https://docs.rs/anyhow). All is possible.
 
 [`BoxError`]: https://ramaproxy.org/docs/rama/error/type.BoxError.html
 [`OpaqueError`]: https://ramaproxy.org/docs/rama/error/struct.OpaqueError.html
