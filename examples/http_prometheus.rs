@@ -10,7 +10,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_prometheus
+//! cargo run --features=full --example http_prometheus
 //! ```
 //!
 //! # Expected output

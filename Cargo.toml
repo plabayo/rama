@@ -89,7 +89,8 @@ rust-version = { workspace = true }
 
 [features]
 default = []
-full = ["compression"]
+full = ["compression", "telemetry"]
+telemetry = ["dep:prometheus"]
 compression = ["dep:async-compression"]
 
 [build-dependencies]
@@ -119,7 +120,7 @@ paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 pki-types = { workspace = true }
-prometheus = { workspace = true }
+prometheus = { workspace = true, optional = true }
 quickcheck = { workspace = true }
 rama-macros = { path = "rama-macros" }
 rcgen = { workspace = true }
