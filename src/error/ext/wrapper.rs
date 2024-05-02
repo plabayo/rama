@@ -34,6 +34,11 @@ impl OpaqueError {
         self.0.is::<T>()
     }
 
+    /// Consumes the [`OpaqueError`] and returns it as a [`BoxError`].
+    pub fn into_boxed(self) -> BoxError {
+        self.0
+    }
+
     /// Atempts to downcast the error to the concrete type `T`.
     pub fn downcast<T>(self) -> Result<T, Self>
     where
