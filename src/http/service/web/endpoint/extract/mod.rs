@@ -30,7 +30,7 @@ pub use state::State;
 
 mod typed_header;
 #[doc(inline)]
-pub use typed_header::TypedHeader;
+pub use typed_header::{TypedHeader, TypedHeaderRejection, TypedHeaderRejectionReason};
 
 mod body;
 #[doc(inline)]

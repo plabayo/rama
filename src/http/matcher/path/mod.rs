@@ -1,5 +1,5 @@
 use crate::{
-    http::Request,
+    http::{IntoResponse, Request, StatusCode},
     service::{context::Extensions, Context},
 };
 use std::collections::HashMap;
@@ -71,6 +71,38 @@ impl UriParams {
 /// See [`UriParams::deserialize`] for more information.
 pub struct UriParamsDeserializeError(de::PathDeserializationError);
 
+impl UriParamsDeserializeError {
+    /// Get the response body text used for this rejection.
+    pub fn body_text(&self) -> String {
+        use crate::http::matcher::path::de::ErrorKind;
+        match self.0.kind {
+            ErrorKind::Message(_)
+            | ErrorKind::NoParams
+            | ErrorKind::ParseError { .. }
+            | ErrorKind::ParseErrorAtIndex { .. }
+            | ErrorKind::ParseErrorAtKey { .. } => format!("Invalid URL: {}", self.0.kind),
+            ErrorKind::WrongNumberOfParameters { .. } | ErrorKind::UnsupportedType { .. } => {
+                self.0.kind.to_string()
+            }
+        }
+    }
+
+    /// Get the status code used for this rejection.
+    pub fn status(&self) -> StatusCode {
+        use crate::http::matcher::path::de::ErrorKind;
+        match self.0.kind {
+            ErrorKind::Message(_)
+            | ErrorKind::NoParams
+            | ErrorKind::ParseError { .. }
+            | ErrorKind::ParseErrorAtIndex { .. }
+            | ErrorKind::ParseErrorAtKey { .. } => StatusCode::BAD_REQUEST,
+            ErrorKind::WrongNumberOfParameters { .. } | ErrorKind::UnsupportedType { .. } => {
+                StatusCode::INTERNAL_SERVER_ERROR
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for UriParamsDeserializeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         self.0.fmt(f)
@@ -78,6 +110,17 @@ impl std::fmt::Display for UriParamsDeserializeError {
 }
 
 impl std::error::Error for UriParamsDeserializeError {}
+
+impl IntoResponse for UriParamsDeserializeError {
+    fn into_response(self) -> crate::http::Response {
+        crate::__log_http_rejection!(
+            rejection_type = UriParamsDeserializeError,
+            body_text = self.body_text(),
+            status = self.status(),
+        );
+        (self.status(), self.body_text()).into_response()
+    }
+}
 
 #[derive(Debug, Clone)]
 enum PathFragment {

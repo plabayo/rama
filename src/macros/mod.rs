@@ -1,5 +1,7 @@
 //! Internal macros
 
+pub(crate) mod http_error;
+
 #[allow(unused_macros)]
 macro_rules! opaque_body {
     ($(#[$m:meta])* pub type $name:ident = $actual:ty;) => {

@@ -1,9 +1,7 @@
-use headers::Header;
-use http::StatusCode;
-
 use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
-use crate::http::headers::HeaderMapExt;
+use crate::http::headers::{self, Header};
+use crate::http::{HeaderName, IntoResponse, Response};
 use crate::service::Context;
 use std::ops::Deref;
 
@@ -27,13 +25,22 @@ where
     S: Send + Sync + 'static,
     H: Header + Send + Sync + 'static,
 {
-    type Rejection = StatusCode;
+    type Rejection = TypedHeaderRejection;
 
     async fn from_request_parts(_ctx: &Context<S>, parts: &Parts) -> Result<Self, Self::Rejection> {
-        parts
-            .headers
-            .typed_get()
-            .map_or_else(|| Err(StatusCode::BAD_REQUEST), |value| Ok(Self(value)))
+        let mut values = parts.headers.get_all(H::name()).iter();
+        let is_missing = values.size_hint() == (0, Some(0));
+        H::decode(&mut values)
+            .map(Self)
+            .map_err(|err| TypedHeaderRejection {
+                name: H::name(),
+                reason: if is_missing {
+                    // Report a more precise rejection for the missing header case.
+                    TypedHeaderRejectionReason::Missing
+                } else {
+                    TypedHeaderRejectionReason::Error(err)
+                },
+            })
     }
 }
 
@@ -42,6 +49,81 @@ impl<H> Deref for TypedHeader<H> {
 
     fn deref(&self) -> &Self::Target {
         &self.0
+    }
+}
+
+/// Rejection used for [`TypedHeader`].
+#[derive(Debug)]
+pub struct TypedHeaderRejection {
+    name: &'static HeaderName,
+    reason: TypedHeaderRejectionReason,
+}
+
+impl TypedHeaderRejection {
+    /// Name of the header that caused the rejection
+    pub fn name(&self) -> &HeaderName {
+        self.name
+    }
+
+    /// Reason why the header extraction has failed
+    pub fn reason(&self) -> &TypedHeaderRejectionReason {
+        &self.reason
+    }
+
+    /// Returns `true` if the typed header rejection reason is [`Missing`].
+    ///
+    /// [`Missing`]: TypedHeaderRejectionReason::Missing
+    #[must_use]
+    pub fn is_missing(&self) -> bool {
+        self.reason.is_missing()
+    }
+}
+
+/// Additional information regarding a [`TypedHeaderRejection`]
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum TypedHeaderRejectionReason {
+    /// The header was missing from the HTTP request
+    Missing,
+    /// An error occurred when parsing the header from the HTTP request
+    Error(headers::Error),
+}
+
+impl TypedHeaderRejectionReason {
+    /// Returns `true` if the typed header rejection reason is [`Missing`].
+    ///
+    /// [`Missing`]: TypedHeaderRejectionReason::Missing
+    #[must_use]
+    pub fn is_missing(&self) -> bool {
+        matches!(self, Self::Missing)
+    }
+}
+
+impl IntoResponse for TypedHeaderRejection {
+    fn into_response(self) -> Response {
+        (http::StatusCode::BAD_REQUEST, self.to_string()).into_response()
+    }
+}
+
+impl std::fmt::Display for TypedHeaderRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.reason {
+            TypedHeaderRejectionReason::Missing => {
+                write!(f, "Header of type `{}` was missing", self.name)
+            }
+            TypedHeaderRejectionReason::Error(err) => {
+                write!(f, "{} ({})", err, self.name)
+            }
+        }
+    }
+}
+
+impl std::error::Error for TypedHeaderRejection {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self.reason {
+            TypedHeaderRejectionReason::Error(err) => Some(err),
+            TypedHeaderRejectionReason::Missing => None,
+        }
     }
 }
 

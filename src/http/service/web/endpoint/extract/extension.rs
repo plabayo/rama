@@ -1,10 +1,18 @@
 use super::FromRequestParts;
-use crate::http::{dep::http::request::Parts, StatusCode};
+use crate::http::dep::http::request::Parts;
 use crate::service::Context;
 use std::ops::{Deref, DerefMut};
 
 /// Extractor to get an Extension from the context (e.g. a shared Database).
 pub struct Extension<T>(pub T);
+
+crate::__define_http_rejection! {
+    #[status = INTERNAL_SERVER_ERROR]
+    #[body = "Missing request extension"]
+    /// Rejection type for [`Extension`] if an expected
+    /// [`Request`] extension was not found.
+    pub struct MissingExtension(Error);
+}
 
 impl<T: std::fmt::Debug> std::fmt::Debug for Extension<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -23,12 +31,15 @@ where
     S: Send + Sync + 'static,
     T: Clone + Send + Sync + 'static,
 {
-    type Rejection = StatusCode;
+    type Rejection = MissingExtension;
 
     async fn from_request_parts(ctx: &Context<S>, _parts: &Parts) -> Result<Self, Self::Rejection> {
         match ctx.get::<T>() {
             Some(value) => Ok(Self(value.clone())),
-            None => Err(StatusCode::INTERNAL_SERVER_ERROR),
+            None => Err(MissingExtension::from_display(format!(
+                "Request extension of type `{}` was not found. Perhaps you forgot to add it?",
+                std::any::type_name::<T>()
+            ))),
         }
     }
 }

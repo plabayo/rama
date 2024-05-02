@@ -1,9 +1,7 @@
 use std::ops::Deref;
 
 use super::FromRequestParts;
-use crate::http::{
-    dep::http::request::Parts, headers::extract::extract_host_from_headers, StatusCode,
-};
+use crate::http::{dep::http::request::Parts, headers::extract::extract_host_from_headers};
 use crate::service::Context;
 
 /// Extractor that resolves the hostname of the request.
@@ -19,11 +17,19 @@ use crate::service::Context;
 #[derive(Debug, Clone)]
 pub struct Host(pub String);
 
+crate::__define_http_rejection! {
+    #[status = BAD_REQUEST]
+    #[body = "Failed to detect the Http host"]
+    /// Rejection type used if the [`Host`] extractor is unable to
+    /// determine the (http) Host.
+    pub struct MissingHost;
+}
+
 impl<S> FromRequestParts<S> for Host
 where
     S: Send + Sync + 'static,
 {
-    type Rejection = StatusCode;
+    type Rejection = MissingHost;
 
     async fn from_request_parts(_ctx: &Context<S>, parts: &Parts) -> Result<Self, Self::Rejection> {
         if let Some(host) = extract_host_from_headers(&parts.headers) {
@@ -34,7 +40,7 @@ where
             return Ok(Host(host.to_owned()));
         }
 
-        Err(StatusCode::BAD_REQUEST)
+        Err(MissingHost)
     }
 }
 
@@ -53,6 +59,7 @@ mod tests {
     use crate::http::dep::http_body_util::BodyExt as _;
     use crate::http::header::X_FORWARDED_HOST_HEADER_KEY;
     use crate::http::service::web::WebService;
+    use crate::http::StatusCode;
     use crate::http::{Body, HeaderName, Request};
     use crate::service::Service;
 

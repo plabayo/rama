@@ -9,7 +9,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! RUST_LOG=debug cargo run --example http_form
+//! RUST_LOG=trace cargo run --example http_form
 //! ```
 //!
 //! # Expected output
