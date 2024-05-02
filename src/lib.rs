@@ -234,6 +234,7 @@ pub(crate) mod macros;
 mod test_helpers;
 
 pub mod graceful;
+pub mod info;
 pub mod latency;
 
 pub(crate) mod future;
