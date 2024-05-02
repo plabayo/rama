@@ -31,7 +31,9 @@
 //! curl -v http://127.0.0.1:8080
 //!
 //! # store multiple key value pairs
-//! curl -v -X POST http://127.0.0.1:8080/items -d '{"key1": "value1", "key2": "value2"}'
+//! curl -v -X POST http://127.0.0.1:8080/items \
+//!     -H 'content-type: application/json' \
+//!     -d '{"key1": "value1", "key2": "value2"}'
 //!
 //! # list all keys
 //! curl -v http://127.0.0.1:8080/keys
