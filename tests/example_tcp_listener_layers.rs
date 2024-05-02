@@ -1,17 +1,18 @@
-mod test_server;
-use rama::error::Error;
+pub mod test_server;
+
+use std::error::Error;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
 };
 
-const ADDR: &str = "127.0.0.1:49001";
+const ADDRESS: &str = "127.0.0.1:49001";
 
 #[tokio::test]
-async fn test_tcp_listener_layers() -> Result<(), Error> {
+async fn test_tcp_listener_layers() -> Result<(), Box<dyn Error>> {
     let _example = test_server::run_example_server("tcp_listener_layers");
-
-    let mut stream = TcpStream::connect(ADDR).await?;
+    std::thread::sleep(std::time::Duration::from_secs(1));
+    let mut stream = TcpStream::connect(ADDRESS).await?;
     let write_buf = b"tcp_listener_layers";
     let mut read_buf = [0_u8; 19];
     let _ = stream.write(write_buf).await;

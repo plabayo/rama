@@ -1,21 +1,24 @@
 mod test_server;
-use rama::{error::BoxError, http::Request};
 
-use crate::test_server::recive_as_string;
+use rama::error::BoxError;
+use rama::http::client::HttpClientExt;
+use rama::http::BodyExtractExt;
+use rama::service::Context;
 use serde_json::{self, json, Value};
+
+const ADDRESS: &str = "127.0.0.1:40005";
 
 #[tokio::test]
 async fn test_http_listener_hello() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_listener_hello");
 
-    let get_request = Request::builder()
-        .method("GET")
-        .uri("http://127.0.0.1:40005/path")
-        .body(String::new())
+    let resp = test_server::client()
+        .get(format!("http://{ADDRESS}/path"))
+        .send(Context::default())
+        .await
         .unwrap();
 
-    let (_, res_str) = recive_as_string(get_request).await?;
-    let res_json: Value = serde_json::from_str(&res_str).unwrap();
+    let res_json = resp.try_into_json::<Value>().await.unwrap();
 
     let test_json = json!({"method":"GET","path":"/path"});
 

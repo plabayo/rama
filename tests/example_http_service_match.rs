@@ -1,22 +1,25 @@
 mod test_server;
-use crate::test_server::recive_as_string;
-use rama::{error::BoxError, http::Request};
+
+use rama::error::BoxError;
+use rama::http::client::HttpClientExt;
+use rama::http::BodyExtractExt;
+use rama::service::Context;
 use serde_json::{json, Value};
-const URL: &str = "http://127.0.0.1:40010";
+
+const ADDRESS: &str = "127.0.0.1:40010";
 
 #[tokio::test]
 async fn test_http_service_match() -> Result<(), BoxError> {
-    let method = "PATCH";
-    let path = "/echo";
     let _example = test_server::run_example_server("http_service_match");
-    let request = Request::builder()
-        .method(method)
-        .uri(format!("{}{}", URL, path))
-        .body(String::new())?;
-    let (_, body) = recive_as_string(request).await?;
-    let res_json: Value = serde_json::from_str(&body).unwrap();
 
-    let test_json = json!({"method":method,"path":path});
+    let res_json = test_server::client()
+        .patch(format!("http://{ADDRESS}/echo"))
+        .send(Context::default())
+        .await?
+        .try_into_json::<Value>()
+        .await?;
+
+    let test_json = json!({"method":"PATCH","path": "/echo"});
     assert_eq!(res_json, test_json);
     Ok(())
 }

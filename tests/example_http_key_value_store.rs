@@ -1,41 +1,37 @@
 mod test_server;
 
 use http::StatusCode;
-use rama::{error::BoxError, http::Request};
+use rama::error::BoxError;
+use rama::http::client::HttpClientExt;
+use rama::http::BodyExtractExt;
+use rama::service::Context;
 
-use crate::test_server::recive_as_string;
+const ADDRESS: &str = "127.0.0.1:40004";
 
 #[tokio::test]
 async fn test_http_key_value_store() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_key_value_store");
 
     let (key, value) = ("key3", "value3");
-    test_post(key, value).await?;
-    test_get(key, value).await?;
 
-    Ok(())
-}
-
-async fn test_post(key: &str, value: &str) -> Result<(), BoxError> {
-    let request = Request::builder()
-        .method("POST")
-        .uri(format!("http://127.0.0.1:40004/item/{}", key))
+    let resp = test_server::client()
+        .post(format!("http://{ADDRESS}/item/{}", key))
         .body(value.to_string())
+        .send(Context::default())
+        .await
         .unwrap();
 
-    let (parts, _) = recive_as_string(request).await?;
+    let (parts, _) = resp.into_parts();
+
     assert_eq!(parts.status, StatusCode::OK);
-    Ok(())
-}
 
-async fn test_get(key: &str, value: &str) -> Result<(), BoxError> {
-    let request = Request::builder()
-        .method("GET")
-        .uri(format!("http://127.0.0.1:40004/item/{}", key))
-        .body(String::new())
+    let resp = test_server::client()
+        .get(format!("http://{ADDRESS}/item/{}", key))
+        .send(Context::default())
+        .await
         .unwrap();
 
-    let (_, res_str) = recive_as_string(request).await?;
+    let res_str = resp.try_into_string().await.unwrap();
     assert_eq!(res_str, value);
     Ok(())
 }

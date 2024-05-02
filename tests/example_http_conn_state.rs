@@ -1,23 +1,25 @@
 mod test_server;
 
-use rama::{error::BoxError, http::Request};
+use rama::error::BoxError;
+use rama::http::client::HttpClientExt;
+use rama::http::BodyExtractExt;
+use rama::service::Context;
 
-use crate::test_server::recive_as_string;
+const ADDRESS: &str = "127.0.0.1:40000";
 
 #[tokio::test]
 async fn test_http_conn_state() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_conn_state");
 
-    let get_request = Request::builder()
-        .method("GET")
-        .uri("http://127.0.0.1:40000/")
-        .body(String::new())
+    let resp = test_server::client()
+        .get(format!("http://{ADDRESS}"))
+        .send(Context::default())
+        .await
         .unwrap();
 
-    let (_, res_str) = recive_as_string(get_request).await?;
-    // TODO: Investigate why this counter is not consistent 1
-    // assert!(res_str.contains("Connection 1"));
-    assert!(res_str.contains("Connection "));
+    let res_str = resp.try_into_string().await.unwrap();
+
+    assert!(res_str.contains("Connection <code>1</code>"));
 
     Ok(())
 }

@@ -1,9 +1,11 @@
 mod test_server;
 
-use crate::test_server::recive_as_string;
-use rama::{error::BoxError, http::Request};
+use rama::error::BoxError;
+use rama::http::client::HttpClientExt;
+use rama::http::BodyExtractExt;
+use rama::service::Context;
 
-const URL: &str = "http://127.0.0.1:40006/";
+const ADDRESS: &str = "127.0.0.1:40006";
 
 #[tokio::test]
 async fn test_http_prometheus() -> Result<(), BoxError> {
@@ -18,14 +20,14 @@ async fn test_http_prometheus() -> Result<(), BoxError> {
 }
 
 async fn test_root_path() -> Result<(), BoxError> {
-    let request = Request::builder()
-        .method("GET")
-        .uri(URL)
-        .body(String::new())
-        .unwrap();
-
     for counter in 1..=2 {
-        let (_, res_str) = recive_as_string(request.clone()).await?;
+        let resp = test_server::client()
+            .get(format!("http://{ADDRESS}"))
+            .send(Context::default())
+            .await
+            .unwrap();
+
+        let res_str = resp.try_into_string().await?;
         let test_str = format!("<h1>Hello, #{}!", counter);
         assert_eq!(res_str, test_str);
     }
@@ -33,12 +35,12 @@ async fn test_root_path() -> Result<(), BoxError> {
 }
 
 async fn test_metrics() -> Result<(), BoxError> {
-    let request = Request::builder()
-        .method("GET")
-        .uri(format!("{}{}", URL, "metrics"))
-        .body(String::new())
+    let resp = test_server::client()
+        .get(format!("http://{ADDRESS}/{}", "metrics"))
+        .send(Context::default())
+        .await
         .unwrap();
-    let (_, res_str) = recive_as_string(request.clone()).await?;
+    let res_str = resp.try_into_string().await?;
     assert!(res_str.contains("counter 2"));
 
     Ok(())

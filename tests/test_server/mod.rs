@@ -1,11 +1,17 @@
 use std::process::Child;
 
-use http::response::Parts;
-use http_body_util::BodyExt;
 use rama::{
     error::BoxError,
-    http::{client::HttpClient, Request},
-    service::{Context, Service},
+    http::{
+        client::HttpClient,
+        layer::{
+            decompression::DecompressionLayer,
+            retry::{ManagedPolicy, RetryLayer},
+            trace::TraceLayer,
+        },
+        Request, Response,
+    },
+    service::{util::backoff::ExponentialBackoff, BoxService, Service, ServiceBuilder},
 };
 
 pub struct ExampleServer(Child);
@@ -20,7 +26,7 @@ impl std::ops::Drop for ExampleServer {
 }
 
 pub fn run_example_server(example_name: &str) -> ExampleServer {
-    let server = ExampleServer(
+    ExampleServer(
         escargot::CargoBuild::new()
             .arg("--all-features")
             .example(example_name)
@@ -31,19 +37,34 @@ pub fn run_example_server(example_name: &str) -> ExampleServer {
             .command()
             .spawn()
             .unwrap(),
-    );
-
-    std::thread::sleep(std::time::Duration::from_secs(1));
-    server
+    )
 }
 
-pub async fn recive_as_string(request: Request<String>) -> Result<(Parts, String), BoxError> {
-    let client = HttpClient::new();
-    let res = client.serve(Context::default(), request).await?;
+fn map_internal_client_error<E, Body>(
+    result: Result<Response<Body>, E>,
+) -> Result<Response, rama::error::BoxError>
+where
+    E: Into<rama::error::BoxError>,
+    Body: rama::http::dep::http_body::Body<Data = bytes::Bytes> + Send + Sync + 'static,
+    Body::Error: Into<BoxError>,
+{
+    match result {
+        Ok(response) => Ok(response.map(rama::http::Body::new)),
+        Err(err) => Err(err.into()),
+    }
+}
 
-    let (parts, res_body) = res.into_parts();
-    let collected_bytes = res_body.collect().await?;
-    let bytes = collected_bytes.to_bytes();
-    let res_str = String::from_utf8_lossy(&bytes);
-    Ok((parts, res_str.to_string()))
+pub fn client<S>() -> BoxService<S, Request, Response, BoxError>
+where
+    S: Send + Sync + 'static,
+{
+    ServiceBuilder::new()
+        .map_result(map_internal_client_error)
+        .layer(TraceLayer::new_for_http())
+        .layer(DecompressionLayer::new())
+        .layer(RetryLayer::new(
+            ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
+        ))
+        .service(HttpClient::new())
+        .boxed()
 }
