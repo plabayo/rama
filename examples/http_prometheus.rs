@@ -10,63 +10,178 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_prometheus
+//! cargo run --features=full --example http_prometheus
 //! ```
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:8080`. You can use `curl` to check if the server is ready:
+//! The server will start and listen on `:8080` and `:9000`. You can use `curl`:
 //!
 //! ```sh
 //! curl -v http://127.0.0.1:8080
-//! curl -v http://127.0.0.1:8080/metrics
+//! curl -v http://127.0.0.1:9000/metrics
 //! ```
 //!
 //! With the seecoresponse you should see a response with `HTTP/1.1 200` and the `
+//!
+//! # Prometheus
+//!
+//! Please visit <https://prometheus.io/> for more information about Prometheus,
+//! and how to use it.
+//!
+//! For a quick demo you can run the following command:
+//!
+//! ```sh
+//! prometheus --config.file=examples/configs/prometheus.yml \
+//!     --storage.tsdb.path=/tmp/prometheus/data
+//! ```
+//!
+//! You can then visit <http://localhost:9090> to see the Prometheus dashboard.
+//! Here you have access to both the custom app metrics as well as the metrics provided by the rama middleware,
+//! some examples:
+//!
+//! - `visitor_counter`: vistors of our app `/` home route
+//! - `http_server_active_requests`: active (http) requests on the server
+//! - `network_server_active_connections`: active (tcp) connections on the server
+//!
+//! And plenty more. Visit `http://127.0.0.1:9000/metrics` to see them all.
+//! Learn more on how to use prometheus at <https://prometheus.io/docs/introduction/overview/>.
 
-use prometheus::{default_registry, Counter};
+use std::{sync::Arc, time::Duration};
+
 use rama::{
     http::{
+        layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
         response::Html,
         server::HttpServer,
-        service::web::{extract::State, prometheus_metrics, WebService},
+        service::web::{extract::State, PrometheusMetricsHandler, WebService},
+    },
+    opentelemetry::{
+        self,
+        metrics::{Meter, MeterProvider, UpDownCounter},
+        prometheus,
+        semantic_conventions::{
+            self,
+            resource::{HOST_ARCH, OS_NAME},
+        },
+        KeyValue,
     },
     rt::Executor,
+    service::ServiceBuilder,
+    stream::layer::opentelemetry::NetworkMetricsLayer,
+    tcp::server::TcpListener,
 };
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Debug)]
 struct Metrics {
-    counter: Counter,
+    _meter: Meter,
+    counter: UpDownCounter<i64>,
 }
 
-impl Default for Metrics {
-    fn default() -> Self {
-        let this = Self {
-            counter: Counter::new("example_counter", "example counter").unwrap(),
-        };
-        let registry = default_registry();
-        registry.register(Box::new(this.counter.clone())).unwrap();
-        this
+impl Metrics {
+    pub fn new(provider: impl MeterProvider) -> Self {
+        let meter = provider.versioned_meter(
+            "example.http_prometheus",
+            Some(env!("CARGO_PKG_VERSION")),
+            Some(semantic_conventions::SCHEMA_URL),
+            Some(vec![
+                KeyValue::new(OS_NAME, std::env::consts::OS),
+                KeyValue::new(HOST_ARCH, std::env::consts::ARCH),
+            ]),
+        );
+        let counter = meter.i64_up_down_counter("visitor_counter").init();
+        Self {
+            _meter: meter,
+            counter,
+        }
     }
 }
 
 #[tokio::main]
 async fn main() {
-    let exec = Executor::default();
-    HttpServer::auto(exec)
-        .listen_with_state(
-            Metrics::default(),
-            "127.0.0.1:8080",
-            // by default the k8s health service is always ready and alive,
-            // optionally you can define your own conditional closures to define
-            // more accurate health checks
-            WebService::default()
-                .get("/", |State(metrics): State<Metrics>| async move {
-                    metrics.counter.inc();
-                    Html(format!("<h1>Hello, #{}!", metrics.counter.get()))
-                })
-                .get("/metrics", prometheus_metrics),
+    // tracing setup
+    tracing_subscriber::registry()
+        .with(fmt::layer())
+        .with(
+            EnvFilter::builder()
+                .with_default_directive(LevelFilter::DEBUG.into())
+                .from_env_lossy(),
         )
+        .init();
+
+    // prometheus registry & exporter
+    let registry = prometheus::Registry::new();
+    let exporter = prometheus::exporter()
+        .with_registry(registry.clone())
+        .build()
+        .unwrap();
+
+    // set up a meter meter to create instruments
+    let provider = opentelemetry::sdk::metrics::SdkMeterProvider::builder()
+        .with_reader(exporter)
+        .build();
+
+    // open telemetry middleware
+    let network_metrics = NetworkMetricsLayer::with_provider(provider.clone());
+    let http_metrics = RequestMetricsLayer::with_provider(provider.clone());
+
+    // state for our custom app metrics
+    let state = Metrics::new(provider);
+
+    // prometheus metrics http handler (exporter)
+    let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
+
+    let graceful = rama::graceful::Shutdown::default();
+
+    // http web service
+    graceful.spawn_task_fn(|guard| async move {
+        // http service
+        let exec = Executor::graceful(guard.clone());
+        let http_service = HttpServer::auto(exec).service(
+            ServiceBuilder::new()
+                .layer(TraceLayer::new_for_http())
+                .layer(http_metrics)
+                .service(WebService::default().get(
+                    "/",
+                    |State(metrics): State<Metrics>| async move {
+                        metrics.counter.add(1, &[]);
+                        Html("<h1>Hello!</h1>")
+                    },
+                )),
+        );
+
+        // service setup & go
+        TcpListener::build_with_state(state)
+            .bind("127.0.0.1:8080")
+            .await
+            .unwrap()
+            .serve_graceful(
+                guard,
+                ServiceBuilder::new()
+                    .layer(network_metrics)
+                    .service(http_service),
+            )
+            .await;
+    });
+
+    // prometheus web exporter
+    graceful.spawn_task_fn(|guard| async move {
+        let exec = Executor::graceful(guard.clone());
+        HttpServer::auto(exec)
+            .listen_graceful(
+                guard,
+                "127.0.0.1:9000",
+                WebService::default().get("/metrics", metrics_http_handler),
+            )
+            .await
+            .unwrap();
+    });
+
+    // wait for graceful shutdown
+    graceful
+        .shutdown_with_limit(Duration::from_secs(30))
         .await
         .unwrap();
 }

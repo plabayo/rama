@@ -43,6 +43,10 @@ percent-encoding = "2.1"
 pin-project-lite = "0.2.13"
 pki-types = { package = "rustls-pki-types", version = "^1" }
 proc-macro2 = "1.0"
+opentelemetry = { version = "0.22", default-features = false, features = ["trace"] }
+opentelemetry_sdk = { version = "0.22", default-features = false, features = ["trace"] }
+opentelemetry-prometheus = { version = "0.15" }
+opentelemetry-semantic-conventions = "0.14"
 prometheus = "0.13.3"
 quickcheck = "1.0"
 quote = "1.0"
@@ -89,7 +93,8 @@ rust-version = { workspace = true }
 
 [features]
 default = []
-full = ["compression"]
+full = ["compression", "telemetry"]
+telemetry = ["dep:prometheus", "dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-prometheus", "dep:opentelemetry-semantic-conventions"]
 compression = ["dep:async-compression"]
 
 [build-dependencies]
@@ -115,11 +120,15 @@ hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
 ipnet = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
+opentelemetry = { workspace = true, optional = true }
+opentelemetry-prometheus = { workspace = true, optional = true }
+opentelemetry-semantic-conventions = { workspace = true, optional = true }
+opentelemetry_sdk = { workspace = true, optional = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 pki-types = { workspace = true }
-prometheus = { workspace = true }
+prometheus = { workspace = true, optional = true }
 quickcheck = { workspace = true }
 rama-macros = { path = "rama-macros" }
 rcgen = { workspace = true }
