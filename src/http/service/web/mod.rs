@@ -16,4 +16,4 @@ pub use k8s::{k8s_health, k8s_health_builder};
 mod prometheus;
 #[doc(inline)]
 #[cfg(feature = "telemetry")]
-pub use prometheus::prometheus_metrics;
+pub use prometheus::PrometheusMetricsHandler;

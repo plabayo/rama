@@ -237,6 +237,9 @@ pub mod graceful;
 pub mod info;
 pub mod latency;
 
+#[cfg(feature = "telemetry")]
+pub mod opentelemetry;
+
 pub(crate) mod future;
 
 pub mod rt;

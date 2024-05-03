@@ -38,6 +38,9 @@ pub mod trace;
 pub mod upgrade;
 pub mod validate_request;
 
+#[cfg(feature = "telemetry")]
+pub mod opentelemetry;
+
 pub(crate) mod util;
 
 #[cfg(feature = "compression")]

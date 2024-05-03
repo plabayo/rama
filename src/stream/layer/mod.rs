@@ -7,3 +7,6 @@ mod tracker;
 pub use tracker::{BytesRWTrackerHandle, BytesTrackerLayer, BytesTrackerService};
 
 pub mod http;
+
+#[cfg(feature = "telemetry")]
+pub mod opentelemetry;

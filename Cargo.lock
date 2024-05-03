@@ -296,6 +296,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ab3db02a9c5b5121e1e42fbdb1aeb65f5e02624cc58c43f2884c6ccac0b82f95"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
+name = "crossbeam-utils"
+version = "0.8.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "248e3bacc7dc6baa3b21e405ee045c3047101a49145e7e9eca583ab4c2ca5345"
+
+[[package]]
 name = "crypto-common"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -918,6 +933,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9e90c7113be649e31e9a0f8b5ee24ed7a16923b322c3c5ab6367469c049d6b7e"
 dependencies = [
  "async-trait",
+ "crossbeam-channel",
  "futures-channel",
  "futures-executor",
  "futures-util",
@@ -925,6 +941,8 @@ dependencies = [
  "once_cell",
  "opentelemetry",
  "ordered-float",
+ "percent-encoding",
+ "rand",
  "thiserror",
 ]
 
@@ -1109,6 +1127,7 @@ dependencies = [
  "opentelemetry",
  "opentelemetry-prometheus",
  "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
  "paste",
  "percent-encoding",
  "pin-project-lite",
