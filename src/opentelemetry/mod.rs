@@ -5,8 +5,10 @@
 
 pub use ::opentelemetry::*;
 
+#[doc(inline)]
 pub use ::opentelemetry_semantic_conventions as semantic_conventions;
 
+#[doc(inline)]
 pub use ::opentelemetry_sdk as sdk;
 
 pub mod prometheus {
