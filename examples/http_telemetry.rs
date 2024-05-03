@@ -1,16 +1,16 @@
-//! An example to show how to expose your [`prometheus`] metrics over HTTP
-//! using the [`HttpServer`] and [`Executor`] from Rama.
+//! An example to show how to expose your [`opentelemetry`] metrics over HTTP.
+//! It also sets up [`tracing`] in a basic manner.
 //!
-//! [`prometheus`]: https://crates.io/crates/prometheus
-//! [`HttpServer`]: crate::http::server::HttpServer
-//! [`Executor`]: crate::rt::Executor
+//! [`opentelemetry`]: https://opentelemetry.io/
+//! [`tracing`]: https://tracing.rs/
 //!
-//! This example will create a server that listens on `127.0.0.1:8080.
+//! This example will create a server that listens on `127.0.0.1:8080 for the http service
+//! and on `127.0.0.1:9000` for the prometheus exportor.
 //!
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --features=full --example http_prometheus
+//! cargo run --features=full --example http_telemetry
 //! ```
 //!
 //! # Expected output

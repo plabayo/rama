@@ -17,6 +17,10 @@ struct Cli {
     #[argh(option, short = 's', default = "8443")]
     secure_port: u16,
 
+    /// the port to listen on for the TLS service
+    #[argh(option, short = 't', default = "9091")]
+    prometheus_port: u16,
+
     /// http version to serve FP Service from
     #[argh(option, default = "String::from(\"auto\")")]
     http_version: String,
@@ -62,6 +66,7 @@ async fn main() -> anyhow::Result<()> {
                 interface: args.interface,
                 port: args.port,
                 secure_port: args.secure_port,
+                prometheus_port: args.prometheus_port,
                 http_version: args.http_version,
                 ha_proxy: args.ha_proxy,
             })
@@ -72,6 +77,7 @@ async fn main() -> anyhow::Result<()> {
                 interface: args.interface,
                 port: args.port,
                 secure_port: args.secure_port,
+                prometheus_port: args.prometheus_port,
                 http_version: args.http_version,
                 ha_proxy: args.ha_proxy,
             })

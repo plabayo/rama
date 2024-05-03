@@ -7,6 +7,10 @@ image = "glendc/rama-fp:latest"
 [experimental]
 cmd = ["./rama-fp", "-i", "0.0.0.0", "-p", "8080", "--http-version", "auto", "-f"]
 
+[metrics]
+port = 9091
+path = "/metrics"
+
 [[services]]
 internal_port = 8080
 protocol = "tcp"

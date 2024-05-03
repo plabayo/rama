@@ -159,6 +159,15 @@ impl<S: fmt::Debug> fmt::Debug for RequestMetricsService<S> {
     }
 }
 
+impl<S: Clone> Clone for RequestMetricsService<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            metrics: self.metrics.clone(),
+        }
+    }
+}
+
 impl<S, State, Body> Service<State, Request<Body>> for RequestMetricsService<S>
 where
     S: Service<State, Request<Body>>,
