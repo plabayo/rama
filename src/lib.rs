@@ -6,6 +6,23 @@
 //! Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 //! to get inspired on how you can use it for your purposes.
 //!
+//! This opiniated framework comes with 🔋 batteries included://!
+//!
+//! | category | description |
+//! |-|-|
+//! | [transports](crate::stream) | ✅ [tcp] ⸱ ❌ udp ⸱ ✅ [middleware](crate::stream/layer) |
+//! | [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ ❌ h3 ⸱ ✅ [middleware](crate::http::layer) |
+//! | web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
+//! | http client | ✅ [client](crate::http::client::HttpClient) ⸱ ✅ [high level API](crate::http::client::HttpClientExt) |
+//! | [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ ❌ BoringSSL ⸱ ❌ NSS ⸱ ❌ OpenSSL |
+//! | dns | ✅ [DNS Resolver](crate::dns::layer) |
+//! | proxy protocols | ✅ [PROXY protocol](crate::proxy::pp) ⸱ ❌ http proxy ⸱ ❌ SOCKS5 ⸱ ❌ SOCKS5H |
+//! | async-method trait services | ✅ [Service](crate::service::Service) ⸱ ✅ [Layer](crate::service::layer::Layer) ⸱ ✅ [context](crate::service::context) ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::service::layer) |
+//! | telemetry | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::stream::layer::opentelemetry) ⸱ ✅ [prometheus exportor](crate::http::service::web::PrometheusMetricsHandler) |
+//! | upstream proxies | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config](crate::proxy::username::UsernameConfig) ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
+//! | distortion proxies | ❌ UA Profiles ⸱ ❌ UA Emulation ⸱ ❌ UA Parsing |
+//! | utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) |
+//!
 //! The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
 //!
 //! - 🚦 [Reverse proxies](https://ramaproxy.org/book/proxies/reverse);
