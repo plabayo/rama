@@ -1,6 +1,10 @@
 //! An example to show how to expose your [`opentelemetry`] metrics over HTTP.
 //! It also sets up [`tracing`] in a basic manner.
 //!
+//! Learn more about telemetry at <https://ramaproxy.org/book/intro/telemetry.html>.
+//! In this book chapter you'll also find more information on how you can
+//! consume the metrics of this example in tools such as Prometheus and Grafana.
+//!
 //! [`opentelemetry`]: https://opentelemetry.io/
 //! [`tracing`]: https://tracing.rs/
 //!
@@ -23,29 +27,6 @@
 //! ```
 //!
 //! With the seecoresponse you should see a response with `HTTP/1.1 200` and the `
-//!
-//! # Prometheus
-//!
-//! Please visit <https://prometheus.io/> for more information about Prometheus,
-//! and how to use it.
-//!
-//! For a quick demo you can run the following command:
-//!
-//! ```sh
-//! prometheus --config.file=examples/configs/prometheus.yml \
-//!     --storage.tsdb.path=/tmp/prometheus/data
-//! ```
-//!
-//! You can then visit <http://localhost:9090> to see the Prometheus dashboard.
-//! Here you have access to both the custom app metrics as well as the metrics provided by the rama middleware,
-//! some examples:
-//!
-//! - `visitor_counter`: vistors of our app `/` home route
-//! - `http_server_active_requests`: active (http) requests on the server
-//! - `network_server_active_connections`: active (tcp) connections on the server
-//!
-//! And plenty more. Visit `http://127.0.0.1:9000/metrics` to see them all.
-//! Learn more on how to use prometheus at <https://prometheus.io/docs/introduction/overview/>.
 
 use std::{sync::Arc, time::Duration};
 

@@ -1,4 +1,4 @@
-//! Http OpenTelemetry [`Layer`] Suppport for Rama.
+//! Http OpenTelemetry [`Layer`] Support for Rama.
 //!
 //! [`Layer`]: crate::service::Layer
 

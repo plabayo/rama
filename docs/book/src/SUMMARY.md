@@ -16,6 +16,7 @@
     - [🧱 Modular](./intro/modular.md)
     - [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)
     - [🚫 Errors](./intro/errors.md)
+    - [🔭 Telemetry](./intro/telemetry.md)
 
 # Intro to Proxies
 

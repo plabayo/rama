@@ -39,7 +39,7 @@ impl OpaqueError {
         self.0
     }
 
-    /// Atempts to downcast the error to the concrete type `T`.
+    /// Attempts to downcast the error to the concrete type `T`.
     pub fn downcast<T>(self) -> Result<T, Self>
     where
         T: std::error::Error + 'static,
