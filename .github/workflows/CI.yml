@@ -458,6 +458,9 @@ jobs:
       - test-beta
       - test-examples-msrv
       - test-examples-beta
+      - test-ignored
+      - test-ignored-msrv
+      - test-ignored-beta
       - test-docs
     if: github.ref == 'refs/heads/main'
     steps:
@@ -519,6 +522,9 @@ jobs:
       - test-beta
       - test-examples-msrv
       - test-examples-beta
+      - test-ignored
+      - test-ignored-msrv
+      - test-ignored-beta
       - test-docs
     if: github.ref == 'refs/heads/main'
     steps:
