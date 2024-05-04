@@ -4,7 +4,7 @@
 //! [`HttpServer`]: crate::http::server::HttpServer
 //! [`Executor`]: crate::rt::Executor
 //!
-//! This example will create a server that listens on `127.0.0.1:8080`.
+//! This example will create a server that listens on `127.0.0.1:40002`.
 //!
 //! # Run the example
 //!
@@ -14,10 +14,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:8080`. You can use `curl` to check if the server is running:
+//! The server will start and listen on `:40002`. You can use `curl` to check if the server is running:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:8080
+//! curl -v http://127.0.0.1:40002
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and an empty body.
@@ -28,7 +28,7 @@ use rama::{http::server::HttpServer, rt::Executor, service::service_fn};
 async fn main() {
     let exec = Executor::default();
     HttpServer::auto(exec)
-        .listen("127.0.0.1:8080", service_fn(|| async move { Ok(()) }))
+        .listen("127.0.0.1:40002", service_fn(|| async move { Ok(()) }))
         .await
         .unwrap();
 }

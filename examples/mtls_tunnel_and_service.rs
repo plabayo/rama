@@ -20,7 +20,7 @@
 //! This won't work as the client is not authorized. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:8080/hello
+//! curl -v http://127.0.0.1:40012/hello
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with `Hello, authorized client!`.
@@ -59,7 +59,7 @@ use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 const SERVER_DOMAIN: &str = "127.0.0.1";
 const SERVER_ADDR: &str = "127.0.0.1:8443";
-const TUNNEL_ADDR: &str = "127.0.0.1:8080";
+const TUNNEL_ADDR: &str = "127.0.0.1:40012";
 
 #[derive(Debug)]
 struct TunnelState {
