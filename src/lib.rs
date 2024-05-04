@@ -24,7 +24,7 @@
 //! | ❌ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ❌ Http Emulation <sup>(1)</sup> ⸱ ❌ Tls Emulation <sup>(1)</sup> ⸱ ❌ UA Parsing <sup>(1)</sup> |
 //! | 🏗️ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ ❌ Connection Pool <sup>(1)</sup> |
 //! | ❌ [TUI](https://ratatui.rs/) | ❌ traffic logger <sup>(2)</sup> ⸱ ❌ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
-//! | ❌ proxy binary | ❌ prebuilt binaries <sup>(2)</sup> ⸱ ❌ proxy config <sup>(2)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
+//! | ❌ proxy binary | ❌ prebuilt binaries <sup>(2)</sup> ⸱ ❌ proxy config <sup>(2)</sup> ⸱ ❌ http client <sup>(2)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 //! | ❌ data scraping | ❌ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
 //! | ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
 //!
