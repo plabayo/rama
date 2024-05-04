@@ -10,22 +10,22 @@
 //!
 //! | category | support list |
 //! |-|-|
-//! | 🏗️ [transports](crate::stream) | ✅ [tcp] ⸱ ❌ udp <sup>(1)</sup> ⸱ ✅ [middleware](crate::stream::layer) |
-//! | 🏗️ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ ❌ h3 <sup>(1)</sup> ⸱ ✅ [middleware](crate::http::layer) |
+//! | 🏗️ [transports](crate::stream) | ✅ [tcp] ⸱ 🏗️ udp <sup>(1)</sup> ⸱ ✅ [middleware](crate::stream::layer) |
+//! | 🏗️ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(1)</sup> ⸱ ✅ [middleware](crate::http::layer) |
 //! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
 //! | ✅ [http client](crate::http::client) | ✅ [client](crate::http::client::HttpClient) ⸱ ✅ [high level API](crate::http::client::HttpClientExt) |
-//! | 🏗️ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ ❌ BoringSSL <sup>(1)</sup> ⸱ ❌ NSS <sup>(3)</sup> |
+//! | 🏗️ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ 🏗️ BoringSSL <sup>(1)</sup> ⸱ ❌ NSS <sup>(3)</sup> |
 //! | ✅ [dns] | ✅ [DNS Resolver](crate::dns::layer) |
-//! | 🏗️ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::pp) ⸱ ❌ http proxy <sup>(1)</sup> ⸱ ❌ https proxy <sup>(1)</sup> ⸱ ❌ SOCKS5 <sup>(2)</sup> ⸱ ❌ SOCKS5H <sup>(2)</sup> |
-//! | ❌ web protocols | ❌ Web Sockets (WS) <sup>(2)</sup> ⸱ ❌ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
+//! | 🏗️ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::pp) ⸱ 🏗️ http proxy <sup>(1)</sup> ⸱ 🏗️ https proxy <sup>(1)</sup> ⸱ 🏗️ SOCKS5 <sup>(2)</sup> ⸱ 🏗️ SOCKS5H <sup>(2)</sup> |
+//! | 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(2)</sup> ⸱ 🏗️ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 //! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service](crate::service::Service) ⸱ ✅ [Layer](crate::service::layer::Layer) ⸱ ✅ [context](crate::service::context) ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::service::layer) |
 //! | ✅ [telemetry][opentelemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::stream::layer::opentelemetry) ⸱ ✅ [prometheus exportor](crate::http::service::web::PrometheusMetricsHandler) |
 //! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config](crate::proxy::username::UsernameConfig) ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
-//! | ❌ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | ❌ Http Emulation <sup>(1)</sup> ⸱ ❌ Tls Emulation <sup>(1)</sup> ⸱ ❌ UA Parsing <sup>(1)</sup> |
-//! | 🏗️ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ ❌ Connection Pool <sup>(1)</sup> |
-//! | ❌ [TUI](https://ratatui.rs/) | ❌ traffic logger <sup>(2)</sup> ⸱ ❌ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
-//! | ❌ proxy binary | ❌ prebuilt binaries <sup>(2)</sup> ⸱ ❌ proxy config <sup>(2)</sup> ⸱ ❌ http client <sup>(2)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
-//! | ❌ data scraping | ❌ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
+//! | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ 🏗️ UA Parsing <sup>(1)</sup> |
+//! | 🏗️ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ 🏗️ Connection Pool <sup>(1)</sup> |
+//! | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
+//! | 🏗️ proxy binary | 🏗️ prebuilt binaries <sup>(2)</sup> ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ 🏗️ http client <sup>(2)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
+//! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
 //! | ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
 //!
 //! > 🗒️ _Footnotes_
