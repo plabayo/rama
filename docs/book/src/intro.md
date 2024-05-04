@@ -27,3 +27,4 @@ And of course as a reminder, if you want to use Rama but are still learning Rust
 - [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)
 - [🚫 Errors](./intro/errors.md)
 - [🔭 Telemetry](./intro/telemetry.md)
+- [👤 User Agent](./intro/user_agent.md)
