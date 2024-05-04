@@ -18,9 +18,8 @@ pub struct ExampleServer(Child);
 
 impl std::ops::Drop for ExampleServer {
     fn drop(&mut self) {
-        let Ok(_) = self.0.kill() else {
-            println!("faild kill a process. ");
-            return;
+        if let Err(err) = self.0.kill() {
+            panic!("faild kill a process: {:?}", err);
         };
     }
 }

@@ -35,7 +35,7 @@ test-ignored:
 
 qa: lint check clippy doc test
 
-qa-full: lint check clippy doc hack test
+qa-full: lint check clippy doc hack test test-ignored
 
 watch-docs:
 	cargo watch -x doc
