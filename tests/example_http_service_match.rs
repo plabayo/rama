@@ -9,6 +9,7 @@ use serde_json::{json, Value};
 const ADDRESS: &str = "127.0.0.1:40010";
 
 #[tokio::test]
+#[ignore]
 async fn test_http_service_match() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_service_match");
 

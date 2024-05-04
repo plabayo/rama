@@ -9,6 +9,7 @@ use std::fs::read_to_string;
 const ADDRESS: &str = "127.0.0.1:40008";
 
 #[tokio::test]
+#[ignore]
 async fn test_http_service_fs() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_service_fs");
     let cwd = std::env::current_dir().expect("current working dir");

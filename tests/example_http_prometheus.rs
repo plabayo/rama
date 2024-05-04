@@ -8,6 +8,7 @@ use rama::service::Context;
 const ADDRESS: &str = "127.0.0.1:40006";
 
 #[tokio::test]
+#[ignore]
 async fn test_http_prometheus() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_prometheus");
     tokio::time::sleep(std::time::Duration::from_secs(1)).await;

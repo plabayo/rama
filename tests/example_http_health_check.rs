@@ -5,6 +5,7 @@ use rama::http::client::HttpClientExt;
 use rama::service::Context;
 
 #[tokio::test]
+#[ignore]
 async fn test_http_health_check() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_health_check");
 

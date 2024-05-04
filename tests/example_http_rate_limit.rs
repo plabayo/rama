@@ -15,6 +15,7 @@ static COUNT_OK: AtomicUsize = AtomicUsize::new(0);
 static COUNT_TOO_MANY_REQUEST: AtomicUsize = AtomicUsize::new(0);
 
 #[tokio::test]
+#[ignore]
 async fn test_http_rate_limit() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_rate_limit");
     let _ = test_limit_slow().await;

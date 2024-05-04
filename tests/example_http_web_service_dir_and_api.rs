@@ -8,6 +8,7 @@ use rama::service::Context;
 const ADDRESS: &str = "127.0.0.1:40011";
 
 #[tokio::test]
+#[ignore]
 async fn test_http_web_service_dir_and_api() -> Result<(), BoxError> {
     let coin_count = r##"<h1 id="coinCount">{count}</h1>"##;
     let _example = test_server::run_example_server("http_web_service_dir_and_api");

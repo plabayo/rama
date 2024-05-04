@@ -7,6 +7,7 @@ use rama::service::Context;
 const URL: &str = "http://127.0.0.1:40003/k8s/ready";
 
 #[tokio::test]
+#[ignore]
 async fn test_http_k8s_health() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("http_k8s_health");
 

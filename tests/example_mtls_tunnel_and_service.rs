@@ -8,6 +8,7 @@ use rama::service::Context;
 const ADDRESS: &str = "127.0.0.1:40012";
 
 #[tokio::test]
+#[ignore]
 async fn test_mtls_tunnel_and_service() -> Result<(), BoxError> {
     let _example = test_server::run_example_server("mtls_tunnel_and_service");
 

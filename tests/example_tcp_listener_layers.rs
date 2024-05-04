@@ -9,6 +9,7 @@ use tokio::{
 const ADDRESS: &str = "127.0.0.1:49001";
 
 #[tokio::test]
+#[ignore]
 async fn test_tcp_listener_layers() -> Result<(), Box<dyn Error>> {
     let _example = test_server::run_example_server("tcp_listener_layers");
     std::thread::sleep(std::time::Duration::from_secs(1));

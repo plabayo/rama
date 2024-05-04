@@ -30,6 +30,9 @@ hack:
 test:
 	cargo test --all-features --workspace
 
+test-ignored:
+	cargo test --all-features --workspace -- --ignored
+
 qa: lint check clippy doc test
 
 qa-full: lint check clippy doc hack test
