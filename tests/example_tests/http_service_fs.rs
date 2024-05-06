@@ -1,5 +1,5 @@
-use rama::{http::BodyExtractExt, service::Context};
 use super::utils;
+use rama::{http::BodyExtractExt, service::Context};
 
 const EXPECTED_FILE_CONTENT: &str = include_str!("../../test-files/index.html");
 

@@ -1,8 +1,7 @@
-use rama::{http::BodyExtractExt, service::Context};
 use super::utils;
+use rama::{http::BodyExtractExt, service::Context};
 
 const EXPECTED_FILE_CONTENT: &str = include_str!("../../examples/tcp_listener_hello.rs");
-
 
 #[tokio::test]
 #[ignore]

@@ -56,14 +56,17 @@ where
             .map_result(map_internal_client_error)
             .layer(TraceLayer::new_for_http())
             .layer(DecompressionLayer::new())
-            .layer(RetryLayer::new(ManagedPolicy::default().with_backoff(
-                ExponentialBackoff::new(
-                    Duration::from_millis(100),
-                    Duration::from_secs(30),
-                    0.01,
-                    HasherRng::default,
-                ).unwrap(),
-            )))
+            .layer(RetryLayer::new(
+                ManagedPolicy::default().with_backoff(
+                    ExponentialBackoff::new(
+                        Duration::from_millis(100),
+                        Duration::from_secs(30),
+                        0.01,
+                        HasherRng::default,
+                    )
+                    .unwrap(),
+                ),
+            ))
             .service(HttpClient::new())
             .boxed();
 

@@ -9,7 +9,7 @@ async fn test_http_listener_hello() {
     let runner = utils::ExampleRunner::interactive("http_listener_hello");
 
     let value = runner
-        .post(format!("http://127.0.0.1:40007/foo/bar"))
+        .post("http://127.0.0.1:40007/foo/bar")
         .send(Context::default())
         .await
         .unwrap()

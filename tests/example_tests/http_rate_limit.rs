@@ -1,6 +1,6 @@
+use super::utils;
 use rama::{http::StatusCode, service::Context};
 use std::sync::Arc;
-use super::utils;
 
 #[tokio::test]
 #[ignore]

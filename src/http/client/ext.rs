@@ -496,7 +496,7 @@ where
     {
         self.state = match self.state {
             RequestBuilderState::PreBody(builder) => match body.try_into() {
-                Ok(body) => match builder.body(body.into()) {
+                Ok(body) => match builder.body(body) {
                     Ok(req) => RequestBuilderState::PostBody(req),
                     Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
                 },
@@ -504,7 +504,7 @@ where
             },
             RequestBuilderState::PostBody(mut req) => match body.try_into() {
                 Ok(body) => {
-                    *req.body_mut() = body.into();
+                    *req.body_mut() = body;
                     RequestBuilderState::PostBody(req)
                 }
                 Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
