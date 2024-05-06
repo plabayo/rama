@@ -1,38 +1,86 @@
-mod test_server;
+use itertools::Itertools;
+use rama::{
+    http::{BodyExtractExt, StatusCode},
+    service::Context,
+};
+use serde_json::json;
 
-use http::StatusCode;
-use rama::error::BoxError;
-use rama::http::client::HttpClientExt;
-use rama::http::BodyExtractExt;
-use rama::service::Context;
-
-const ADDRESS: &str = "127.0.0.1:40004";
+mod utils;
 
 #[tokio::test]
 #[ignore]
-async fn test_http_key_value_store() -> Result<(), BoxError> {
-    let _example = test_server::run_example_server("http_key_value_store");
+async fn test_example_http_form() {
+    let runner = utils::ExampleRunner::interactive("http_key_value_store");
 
-    let (key, value) = ("key3", "value3");
-
-    let resp = test_server::client()
-        .post(format!("http://{ADDRESS}/item/{}", key))
-        .body(value.to_string())
+    // store multiple key value pairs
+    let response = runner
+        .post("http://127.0.0.1:40005/items")
+        .json(&json!({
+            "key1": "value1",
+            "key2": "value2",
+        }))
         .send(Context::default())
         .await
         .unwrap();
+    assert_eq!(StatusCode::OK, response.status());
 
-    let (parts, _) = resp.into_parts();
+    // list all keys
+    let keys = runner
+        .get("http://127.0.0.1:40005/keys")
+        .send(Context::default())
+        .await
+        .unwrap()
+        .try_into_string()
+        .await
+        .unwrap()
+        .split(',')
+        .map(str::trim)
+        .sorted()
+        .join(", ");
+    assert_eq!("key1, key2", keys);
 
-    assert_eq!(parts.status, StatusCode::OK);
-
-    let resp = test_server::client()
-        .get(format!("http://{ADDRESS}/item/{}", key))
+    // store a single key value pair
+    let response = runner
+        .post("http://127.0.0.1:40005/item/key3")
+        .body("value3")
         .send(Context::default())
         .await
         .unwrap();
+    assert_eq!(StatusCode::OK, response.status());
 
-    let res_str = resp.try_into_string().await.unwrap();
-    assert_eq!(res_str, value);
-    Ok(())
+    // get a single key value pair
+    let value = runner
+        .get("http://127.0.0.1:40005/item/key3")
+        .send(Context::default())
+        .await
+        .unwrap()
+        .try_into_string()
+        .await
+        .unwrap();
+    assert_eq!("value3", value);
+
+    // check existence for a key
+    let response = runner
+        .head("http://127.0.0.1:40005/item/key3")
+        .send(Context::default())
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, response.status());
+
+    // delete a key
+    let response = runner
+        .delete("http://127.0.0.1:40005/admin/item/key3")
+        .bearer_auth("secret-token")
+        .send(Context::default())
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::OK, response.status());
+
+    // check existence for that same key again
+    let response = runner
+        .head("http://127.0.0.1:40005/item/key3")
+        .send(Context::default())
+        .await
+        .unwrap();
+    assert_eq!(StatusCode::NOT_FOUND, response.status());
 }

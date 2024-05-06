@@ -1,7 +1,9 @@
+use crate::error::OpaqueError;
 use crate::http::dep::http::header::CONTENT_TYPE;
 use crate::http::dep::http::StatusCode;
 use crate::http::dep::mime;
 use crate::http::response::{IntoResponse, Response};
+use crate::http::Body;
 use serde::Serialize;
 
 /// Wrapper used to create Form Http [`Response`]s,
@@ -85,6 +87,20 @@ where
                 tracing::error!(error = %err, "response error");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
+        }
+    }
+}
+
+impl<T> TryInto<Body> for Form<T>
+where
+    T: Serialize,
+{
+    type Error = OpaqueError;
+
+    fn try_into(self) -> Result<Body, Self::Error> {
+        match serde_urlencoded::to_string(&self.0) {
+            Ok(body) => Ok(body.into()),
+            Err(err) => Err(OpaqueError::from_std(err)),
         }
     }
 }

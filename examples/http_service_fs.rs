@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40008`. You can use your browser to interact with the service:
+//! The server will start and listen on `:40009`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! curl -v http://localhost:40008/test-files/index.html
+//! curl -v http://localhost:40009/test-files/index.html
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and the content of the `index.html` file.
@@ -27,7 +27,7 @@ use rama::{
 async fn main() {
     let exec = Executor::default();
 
-    let listener = TcpListener::bind("127.0.0.1:40008")
+    let listener = TcpListener::bind("127.0.0.1:40009")
         .await
         .expect("bind TCP Listener");
 
@@ -38,7 +38,7 @@ async fn main() {
 
     // Serve the HTTP server over TCP,
     // ...once running you can go in browser for example to:
-    println!("open: http://localhost:40008/test-files/index.html");
+    println!("open: http://localhost:40009/test-files/index.html");
     listener
         .serve(ServiceBuilder::new().trace_err().service(http_fs_server))
         .await;

@@ -14,7 +14,7 @@ As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramapr
 
 > The full example can be found at <https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs>.
 
-```rust,ignore
+```rust
 use rama::http::client::HttpClientExt;
 
 let client = ServiceBuilder::new()

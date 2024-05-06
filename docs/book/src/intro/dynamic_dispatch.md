@@ -21,7 +21,7 @@ to help you automate this process. The latter is faster then _true_ dynamic disp
 
 ## 🤷 Either
 
-```rust,ignore
+```rust
 pub enum Either<A, B> {
     A(A),
     B(B),

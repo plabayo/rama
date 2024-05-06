@@ -1,26 +1,24 @@
-mod test_server;
-
-use rama::error::BoxError;
-use rama::http::client::HttpClientExt;
 use rama::http::BodyExtractExt;
 use rama::service::Context;
 
-const ADDRESS: &str = "127.0.0.1:40012";
+mod utils;
 
 #[tokio::test]
 #[ignore]
-async fn test_mtls_tunnel_and_service() -> Result<(), BoxError> {
-    let _example = test_server::run_example_server("mtls_tunnel_and_service");
+async fn test_mtls_tunnel_and_service() {
+    let runner = utils::ExampleRunner::interactive("mtls_tunnel_and_service");
 
-    let res_str = test_server::client()
-        .get(format!("http://{ADDRESS}{}", "/hello"))
+    // TODO: once http client supports https,
+    // test we cannot go directly to http://127.0.0.1:41013
+
+    let res_str = runner
+        .get("http://127.0.0.1:40014/hello")
         .send(Context::default())
-        .await?
+        .await
+        .unwrap()
         .try_into_string()
-        .await?;
+        .await
+        .unwrap();
 
     assert_eq!(res_str, "<h1>Hello, authorized client!</h1>");
-
-    // TODO: connect by mTLS
-    Ok(())
 }

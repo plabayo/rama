@@ -13,10 +13,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40011`. You can use your browser to interact with the service:
+//! The server will start and listen on `:40013`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://localhost:40011
+//! open http://localhost:40013
 //! ```
 //!
 //! You should see a the homepage in your browser.
@@ -65,7 +65,7 @@ async fn main() {
         )
         .init();
 
-    let addr = "0.0.0.0:40011";
+    let addr = "0.0.0.0:40013";
     tracing::info!("running service at: {addr}");
     let exec = Executor::default();
     HttpServer::auto(exec)

@@ -1,25 +1,22 @@
-pub mod test_server;
+use rama::{http::BodyExtractExt, service::Context};
 
-use rama::error::BoxError;
-use rama::http::client::HttpClientExt;
-use rama::http::BodyExtractExt;
-use rama::service::Context;
+const EXPECTED_FILE_CONTENT: &str = include_str!("../examples/tcp_listener_hello.rs");
 
-const ADDRESS: &str = "127.0.0.1:49000";
-const SRC: &str = include_str!("../examples/tcp_listener_hello.rs");
+mod utils;
 
 #[tokio::test]
 #[ignore]
-async fn test_tcp_listener_hello() -> Result<(), BoxError> {
-    let _example = test_server::run_example_server("tcp_listener_hello");
+async fn test_tcp_listener_hello() {
+    let runner = utils::ExampleRunner::interactive("tcp_listener_hello");
 
-    let res_str = test_server::client()
-        .get(format!("http://{ADDRESS}"))
+    let file_content = runner
+        .get("http://localhost:40500")
         .send(Context::default())
-        .await?
+        .await
+        .unwrap()
         .try_into_string()
-        .await?;
-    assert_eq!(res_str, SRC);
+        .await
+        .unwrap();
 
-    Ok(())
+    assert_eq!(EXPECTED_FILE_CONTENT, file_content);
 }

@@ -1,32 +1,58 @@
-pub mod test_server;
+use http::StatusCode;
+use rama::{http::BodyExtractExt, service::Context};
 
-use rama::error::BoxError;
-use rama::http::client::HttpClientExt;
-use rama::http::BodyExtractExt;
-use rama::service::Context;
-
-const ADDRESS: &str = "127.0.0.1:40011";
+mod utils;
 
 #[tokio::test]
 #[ignore]
-async fn test_http_web_service_dir_and_api() -> Result<(), BoxError> {
-    let coin_count = r##"<h1 id="coinCount">{count}</h1>"##;
-    let _example = test_server::run_example_server("http_web_service_dir_and_api");
+async fn test_http_web_service_dir_and_api() {
+    let runner = utils::ExampleRunner::interactive("http_web_service_dir_and_api");
 
-    let res_str = test_server::client()
-        .get(format!("http://{ADDRESS}{}", "/coin"))
+    // test index.html via directory service
+    let response = runner
+        .get("http://127.0.0.1:40013")
         .send(Context::default())
-        .await?
-        .try_into_string()
-        .await?;
-    assert!(res_str.contains(&coin_count.replace("{count}", "0")));
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let homepage = response.try_into_string().await.unwrap();
+    assert!(homepage.contains("<h1>Coin Clicker</h1>"));
 
-    let res_str = test_server::client()
-        .post(format!("http://{ADDRESS}{}", "/coin"))
+    // test redirect
+    let response = runner
+        .get("http://127.0.0.1:40013/foo/bar")
         .send(Context::default())
-        .await?
-        .try_into_string()
-        .await?;
-    assert!(res_str.contains(&coin_count.replace("{count}", "1")));
-    Ok(())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+
+    // test coin fetching
+    let response = runner
+        .get("http://127.0.0.1:40013/coin")
+        .send(Context::default())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let coin_page = response.try_into_string().await.unwrap();
+    assert!(coin_page.contains(r#"<h1 id="coinCount">0</h1>"#));
+
+    // test coin post
+    let response = runner
+        .post("http://127.0.0.1:40013/coin")
+        .send(Context::default())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let coin_page = response.try_into_string().await.unwrap();
+    assert!(coin_page.contains(r#"<h1 id="coinCount">1</h1>"#));
+
+    // test coin fetching (again)
+    let response = runner
+        .get("http://127.0.0.1:40013/coin")
+        .send(Context::default())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let coin_page = response.try_into_string().await.unwrap();
+    assert!(coin_page.contains(r#"<h1 id="coinCount">1</h1>"#));
 }

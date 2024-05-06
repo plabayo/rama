@@ -1,26 +1,25 @@
-mod test_server;
-
-use rama::error::BoxError;
-use rama::http::client::HttpClientExt;
-use rama::http::BodyExtractExt;
-use rama::service::Context;
+use rama::{http::BodyExtractExt, service::Context};
 use regex::Regex;
 
-const ADDRESS: &str = "127.0.0.1:40009";
+mod utils;
 
 #[tokio::test]
 #[ignore]
-async fn test_http_service_fs() -> Result<(), BoxError> {
-    let _example = test_server::run_example_server("http_service_hello");
+async fn test_http_service_fs() {
+    let runner = utils::ExampleRunner::interactive("http_service_hello");
 
-    let res_str = test_server::client()
-        .get(format!("http://{ADDRESS}"))
+    let res_str = runner
+        .get("http://127.0.0.1:40010")
         .send(Context::default())
-        .await?
+        .await
+        .unwrap()
         .try_into_string()
-        .await?;
+        .await
+        .unwrap();
 
-    let peer = Regex::new(r"Peer: 127.0.0.1:[56][0-9]{4}")?;
+    assert!(res_str.contains("<h1>Hello</h1>"));
+    assert!(res_str.contains("<p>Path: /</p>"));
+
+    let peer = Regex::new(r"<p>Peer: 127.0.0.1:\d+</p>").unwrap();
     assert!(peer.is_match(&res_str));
-    Ok(())
 }

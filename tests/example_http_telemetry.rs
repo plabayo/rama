@@ -1,48 +1,35 @@
-mod test_server;
+use rama::{http::BodyExtractExt, service::Context};
 
-use rama::error::BoxError;
-use rama::http::client::HttpClientExt;
-use rama::http::BodyExtractExt;
-use rama::service::Context;
-
-const ADDRESS: &str = "127.0.0.1:40006";
+mod utils;
 
 #[tokio::test]
 #[ignore]
-async fn test_http_prometheus() -> Result<(), BoxError> {
-    let _example = test_server::run_example_server("http_telemetry");
-    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+async fn test_http_prometheus() {
+    let runner = utils::ExampleRunner::interactive("http_telemetry");
 
-    test_root_path().await?;
-
-    test_metrics().await?;
-
-    Ok(())
-}
-
-async fn test_root_path() -> Result<(), BoxError> {
-    for counter in 1..=2 {
-        let resp = test_server::client()
-            .get(format!("http://{ADDRESS}"))
-            .send(Context::default())
-            .await
-            .unwrap();
-
-        let res_str = resp.try_into_string().await?;
-        let test_str = format!("<h1>Hello, #{}!", counter);
-        assert_eq!(res_str, test_str);
-    }
-    Ok(())
-}
-
-async fn test_metrics() -> Result<(), BoxError> {
-    let resp = test_server::client()
-        .get(format!("http://{ADDRESS}/{}", "metrics"))
+    let homepage = runner
+        .get("http://127.0.0.1:40012")
         .send(Context::default())
         .await
+        .unwrap()
+        .try_into_string()
+        .await
         .unwrap();
-    let res_str = resp.try_into_string().await?;
-    assert!(res_str.contains("counter 2"));
+    assert!(homepage.contains("<h1>Hello!</h1>"));
 
-    Ok(())
+    let metrics = runner
+        .get("http://127.0.0.1:41012/metrics")
+        .send(Context::default())
+        .await
+        .unwrap()
+        .try_into_string()
+        .await
+        .unwrap();
+
+    let counter_line = metrics
+        .lines()
+        .find(|line| line.starts_with("visitor_counter"))
+        .unwrap();
+    assert!(counter_line.starts_with("visitor_counter{"));
+    assert!(counter_line.ends_with("} 1"));
 }

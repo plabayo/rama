@@ -1,26 +1,39 @@
-mod test_server;
+use rama::{http::BodyExtractExt, service::Context};
 
-use rama::error::BoxError;
-use rama::http::client::HttpClientExt;
-use rama::http::BodyExtractExt;
-use rama::service::Context;
-use serde_json::{json, Value};
+mod utils;
 
-const ADDRESS: &str = "127.0.0.1:40010";
+const ADDRESS: &str = "127.0.0.1:40011";
 
 #[tokio::test]
 #[ignore]
-async fn test_http_service_match() -> Result<(), BoxError> {
-    let _example = test_server::run_example_server("http_service_match");
+async fn test_http_service_match() {
+    let runner = utils::ExampleRunner::interactive("http_service_match");
 
-    let res_json = test_server::client()
-        .patch(format!("http://{ADDRESS}/echo"))
+    let homepage = runner
+        .get(format!("http://{ADDRESS}"))
         .send(Context::default())
-        .await?
-        .try_into_json::<Value>()
-        .await?;
+        .await
+        .unwrap()
+        .try_into_string()
+        .await
+        .unwrap();
+    assert!(homepage.contains("<h1>Home</h1>"));
 
-    let test_json = json!({"method":"PATCH","path": "/echo"});
-    assert_eq!(res_json, test_json);
-    Ok(())
+    #[derive(serde::Deserialize)]
+    struct Echo {
+        method: String,
+        path: String,
+    }
+
+    let echo: Echo = runner
+        .post(format!("http://{ADDRESS}/echo"))
+        .send(Context::default())
+        .await
+        .unwrap()
+        .try_into_json()
+        .await
+        .unwrap();
+
+    assert_eq!(echo.method, "POST");
+    assert_eq!(echo.path, "/echo");
 }

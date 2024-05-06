@@ -9,14 +9,14 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40010`. You can use your browser to interact with the service:
+//! The server will start and listen on `:40011`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://localhost:40010
-//! curl -v -X PATCH http://localhost:40010/echo
+//! open http://localhost:40011
+//! curl -v -X PATCH http://localhost:40011/echo
 //! ```
 //!
-//! You should see a the homepage in your browser.
+//! You should see the homepage in your browser.
 //! The example will also respond to your request with the method and path of the request as JSON.
 
 // rama provides everything out of the box to build a complete web service.
@@ -51,7 +51,7 @@ async fn main() {
         )
         .init();
 
-    let addr = "127.0.0.1:40010";
+    let addr = "127.0.0.1:40011";
     tracing::info!("running service at: {addr}");
     let exec = Executor::default();
     HttpServer::auto(exec)

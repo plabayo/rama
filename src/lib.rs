@@ -176,6 +176,8 @@
 //! > 💡 The full example can be found at [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
 //!
 //! ```rust,ignore
+//! # #[cfg(feature = "do-not-ever-run")]
+//! # {
 //! use rama::http::client::HttpClientExt;
 //!
 //! let client = ServiceBuilder::new()
@@ -208,6 +210,7 @@
 //!     .try_into_json()
 //!     .await
 //!     .unwrap();
+//! # }
 //! ```
 
 #![doc(

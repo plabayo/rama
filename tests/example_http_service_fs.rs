@@ -1,29 +1,22 @@
-mod test_server;
+use rama::{http::BodyExtractExt, service::Context};
 
-use rama::error::BoxError;
-use rama::http::client::HttpClientExt;
-use rama::http::BodyExtractExt;
-use rama::service::Context;
-use std::fs::read_to_string;
+mod utils;
 
-const ADDRESS: &str = "127.0.0.1:40008";
+const EXPECTED_FILE_CONTENT: &str = include_str!("../test-files/index.html");
 
 #[tokio::test]
 #[ignore]
-async fn test_http_service_fs() -> Result<(), BoxError> {
-    let _example = test_server::run_example_server("http_service_fs");
-    let cwd = std::env::current_dir().expect("current working dir");
-    let path = "test-files/index.html";
+async fn test_http_service_fs() {
+    let runner = utils::ExampleRunner::interactive("http_service_fs");
 
-    let request = test_server::client()
-        .get(format!("http://{ADDRESS}/{}", path))
+    let file_content = runner
+        .get("http://localhost:40009/test-files/index.html")
         .send(Context::default())
+        .await
+        .unwrap()
+        .try_into_string()
         .await
         .unwrap();
 
-    let res_str = request.try_into_string().await?;
-    let index_path = cwd.join(path);
-    let test_file_index = read_to_string(index_path)?;
-    assert_eq!(res_str, test_file_index);
-    Ok(())
+    assert_eq!(EXPECTED_FILE_CONTENT, file_content);
 }

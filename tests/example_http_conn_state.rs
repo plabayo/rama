@@ -1,26 +1,20 @@
-mod test_server;
+use rama::{http::BodyExtractExt, service::Context};
 
-use rama::error::BoxError;
-use rama::http::client::HttpClientExt;
-use rama::http::BodyExtractExt;
-use rama::service::Context;
-
-const ADDRESS: &str = "127.0.0.1:40000";
+mod utils;
 
 #[tokio::test]
 #[ignore]
-async fn test_http_conn_state() -> Result<(), BoxError> {
-    let _example = test_server::run_example_server("http_conn_state");
+async fn test_http_conn_state() {
+    let runner = utils::ExampleRunner::interactive("http_conn_state");
 
-    let resp = test_server::client()
-        .get(format!("http://{ADDRESS}"))
+    let response = runner
+        .get("http://127.0.0.1:40000")
         .send(Context::default())
+        .await
+        .unwrap()
+        .try_into_string()
         .await
         .unwrap();
 
-    let res_str = resp.try_into_string().await.unwrap();
-
-    assert!(res_str.contains("Connection <code>1</code>"));
-
-    Ok(())
+    assert!(response.contains("Connection <code>1</code>"));
 }

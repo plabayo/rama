@@ -8,8 +8,8 @@
 //! [`opentelemetry`]: https://opentelemetry.io/
 //! [`tracing`]: https://tracing.rs/
 //!
-//! This example will create a server that listens on `127.0.0.1:40006 for the http service
-//! and on `127.0.0.1:41006` for the prometheus exportor.
+//! This example will create a server that listens on `127.0.0.1:40012 for the http service
+//! and on `127.0.0.1:41012` for the prometheus exportor.
 //!
 //! # Run the example
 //!
@@ -19,11 +19,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40006` and `:41006`. You can use `curl`:
+//! The server will start and listen on `:40012` and `:41012`. You can use `curl`:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:40006
-//! curl -v http://127.0.0.1:41006/metrics
+//! curl -v http://127.0.0.1:40012
+//! curl -v http://127.0.0.1:41012/metrics
 //! ```
 //!
 //! With the seecoresponse you should see a response with `HTTP/1.1 200` and the `
@@ -135,7 +135,7 @@ async fn main() {
 
         // service setup & go
         TcpListener::build_with_state(state)
-            .bind("127.0.0.1:40006")
+            .bind("127.0.0.1:40012")
             .await
             .unwrap()
             .serve_graceful(
@@ -153,7 +153,7 @@ async fn main() {
         HttpServer::auto(exec)
             .listen_graceful(
                 guard,
-                "127.0.0.1:41006",
+                "127.0.0.1:41012",
                 WebService::default().get("/metrics", metrics_http_handler),
             )
             .await

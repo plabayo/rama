@@ -1,65 +1,66 @@
-pub mod test_server;
+use rama::{http::StatusCode, service::Context};
+use std::sync::Arc;
 
-use http::StatusCode;
-use rama::error::BoxError;
-use rama::http::client::{HttpClient, HttpClientExt};
-use rama::http::layer::decompression::DecompressionLayer;
-use rama::http::layer::retry::{ManagedPolicy, RetryLayer};
-use rama::http::layer::trace::TraceLayer;
-use rama::service::util::backoff::ExponentialBackoff;
-use rama::service::{Context, ServiceBuilder};
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-const ADDRESS: &str = "127.0.0.1:40007";
-static COUNT_OK: AtomicUsize = AtomicUsize::new(0);
-static COUNT_TOO_MANY_REQUEST: AtomicUsize = AtomicUsize::new(0);
+mod utils;
 
 #[tokio::test]
 #[ignore]
-async fn test_http_rate_limit() -> Result<(), BoxError> {
-    let _example = test_server::run_example_server("http_rate_limit");
-    let _ = test_limit_slow().await;
+async fn test_http_rate_limit() {
+    let runner: Arc<utils::ExampleRunner<()>> =
+        Arc::new(utils::ExampleRunner::interactive("http_rate_limit"));
 
-    Ok(())
+    const ADDRESS: &str = "http://127.0.0.1:40008";
+
+    assert_endpoint_concurrent_runs(runner.clone(), 3, format!("{ADDRESS}/limit"), 3).await;
+    assert_endpoint_concurrent_runs(runner.clone(), 3, format!("{ADDRESS}/limit/slow"), 2).await;
+    assert_endpoint_concurrent_runs(runner.clone(), 3, format!("{ADDRESS}/api/slow"), 1).await;
+    assert_endpoint_concurrent_runs(runner.clone(), 5, format!("{ADDRESS}/api/fast"), 5).await;
 }
 
-async fn test_limit_slow() -> Result<(), BoxError> {
-    let mut handle = Vec::new();
-    for _ in 0..3 {
-        handle.push(tokio::spawn(connect_limit_slow()));
+async fn assert_endpoint_concurrent_runs(
+    runner: Arc<utils::ExampleRunner<()>>,
+    n: usize,
+    endpoint: String,
+    expected_success: usize,
+) {
+    let local_set = tokio::task::LocalSet::new();
+    let mut handles = Vec::with_capacity(n);
+
+    for _ in 0..n {
+        let runner = runner.clone();
+        let endpoint = endpoint.clone();
+        handles.push(local_set.spawn_local(async move {
+            runner
+                .get(endpoint)
+                .send(Context::default())
+                .await
+                .unwrap()
+                .status()
+        }));
     }
-    for handle in handle {
-        handle.await?;
+
+    local_set.await;
+
+    let mut success_count: usize = 0;
+    let mut too_many_request_count: usize = 0;
+
+    for handle in handles {
+        match handle.await.unwrap() {
+            StatusCode::OK => {
+                success_count += 1;
+            }
+            StatusCode::TOO_MANY_REQUESTS => {
+                too_many_request_count += 1;
+            }
+            _ => unreachable!(),
+        }
     }
-    assert_eq!(COUNT_OK.load(Ordering::Relaxed), 2);
-    assert_eq!(COUNT_TOO_MANY_REQUEST.load(Ordering::Relaxed), 1);
-    Ok(())
-}
 
-async fn connect_limit_slow() {
-    let client = ServiceBuilder::new()
-        .layer(TraceLayer::new_for_http())
-        .layer(DecompressionLayer::new())
-        .layer(RetryLayer::new(
-            ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
-        ))
-        .service(HttpClient::new());
-
-    let request = client
-        .get(format!("http://{ADDRESS}/{}", "limit/slow"))
-        .send(Context::default())
-        .await
-        .unwrap();
-
-    let (parts, _) = request.into_parts();
-
-    match parts.status {
-        StatusCode::OK => {
-            COUNT_OK.fetch_add(1, Ordering::Relaxed);
-        }
-        StatusCode::TOO_MANY_REQUESTS => {
-            COUNT_TOO_MANY_REQUEST.fetch_add(1, Ordering::Relaxed);
-        }
-        _ => unreachable!(),
-    };
+    assert_eq!(success_count, expected_success, "endpoint: {}", endpoint);
+    assert_eq!(
+        too_many_request_count,
+        n - expected_success,
+        "endpoint: {}",
+        endpoint
+    );
 }
