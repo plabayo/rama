@@ -1,7 +1,6 @@
+use super::utils;
 use rama::{http::BodyExtractExt, service::Context};
 use serde::Serialize;
-
-mod utils;
 
 #[tokio::test]
 #[ignore]

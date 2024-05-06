@@ -1,8 +1,7 @@
+use super::utils;
 use rama::http::BodyExtractExt;
 use rama::service::Context;
 use serde_json::{self, json, Value};
-
-mod utils;
 
 #[tokio::test]
 #[ignore]

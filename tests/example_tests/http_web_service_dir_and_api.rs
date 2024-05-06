@@ -1,7 +1,8 @@
-use http::StatusCode;
-use rama::{http::BodyExtractExt, service::Context};
-
-mod utils;
+use super::utils;
+use rama::{
+    http::{BodyExtractExt, StatusCode},
+    service::Context,
+};
 
 #[tokio::test]
 #[ignore]

@@ -1,6 +1,5 @@
+use super::*;
 use rama::{http::StatusCode, service::Context};
-
-mod utils;
 
 #[tokio::test]
 #[ignore]
@@ -8,7 +7,7 @@ async fn test_http_conn_state() {
     let runner = utils::ExampleRunner::interactive("http_k8s_health");
 
     let response = runner
-        .get("http://127.0.0.1:40004/k8s/ready")
+        .get("http://127.0.0.1:40005/k8s/ready")
         .send(Context::default())
         .await
         .unwrap();

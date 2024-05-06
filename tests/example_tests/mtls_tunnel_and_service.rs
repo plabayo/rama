@@ -1,7 +1,6 @@
+use super::utils;
 use rama::http::BodyExtractExt;
 use rama::service::Context;
-
-mod utils;
 
 #[tokio::test]
 #[ignore]

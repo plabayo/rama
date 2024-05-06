@@ -1,6 +1,5 @@
+use super::utils;
 use rama::{http::StatusCode, service::Context};
-
-mod utils;
 
 #[tokio::test]
 #[ignore]

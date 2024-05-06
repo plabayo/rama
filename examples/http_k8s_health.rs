@@ -4,7 +4,7 @@
 //! [`HttpServer`]: crate::http::server::HttpServer
 //! [`Executor`]: crate::rt::Executor
 //!
-//! This example will create a server that listens on `127.0.0.1:40004.
+//! This example will create a server that listens on `127.0.0.1:40005.
 //!
 //! # Run the example
 //!
@@ -14,10 +14,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40004`. You can use `curl` to check if the server is ready:
+//! The server will start and listen on `:40005`. You can use `curl` to check if the server is ready:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:40004/k8s/ready
+//! curl -v http://127.0.0.1:40005/k8s/ready
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 503 Service Unavailable` and an empty body.
@@ -35,7 +35,7 @@ async fn main() {
     let startup_time = std::time::Instant::now();
     HttpServer::auto(exec)
         .listen(
-            "127.0.0.1:40004",
+            "127.0.0.1:40005",
             // by default the k8s health service is always ready and alive,
             // optionally you can define your own conditional closures to define
             // more accurate health checks

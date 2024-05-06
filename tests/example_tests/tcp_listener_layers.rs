@@ -1,6 +1,5 @@
+use super::utils;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-mod utils;
 
 #[tokio::test]
 #[ignore]

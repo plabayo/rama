@@ -10,6 +10,8 @@
 //! You should see the output printed and the example should exit with a success status code.
 //! In your logs you will also find each request traced twice, once for the client and once for the server.
 
+use std::time::Duration;
+
 // rama provides everything out of the box to build a complete web service.
 use rama::{
     http::{
@@ -28,7 +30,10 @@ use rama::{
         Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
     },
     rt::Executor,
-    service::{util::backoff::ExponentialBackoff, Context, Service, ServiceBuilder},
+    service::{
+        util::{backoff::ExponentialBackoff, rng::HasherRng},
+        Context, Service, ServiceBuilder,
+    },
 };
 
 use serde_json::json;
@@ -65,7 +70,15 @@ async fn main() {
                 .if_not_present(),
         )
         .layer(RetryLayer::new(
-            ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
+            ManagedPolicy::default().with_backoff(
+                ExponentialBackoff::new(
+                    Duration::from_millis(100),
+                    Duration::from_secs(30),
+                    0.01,
+                    HasherRng::default,
+                )
+                .unwrap(),
+            ),
         ))
         .service(HttpClient::new());
 

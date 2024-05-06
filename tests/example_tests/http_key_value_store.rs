@@ -1,11 +1,10 @@
+use super::utils;
 use itertools::Itertools;
 use rama::{
     http::{BodyExtractExt, StatusCode},
     service::Context,
 };
 use serde_json::json;
-
-mod utils;
 
 #[tokio::test]
 #[ignore]
@@ -14,7 +13,7 @@ async fn test_example_http_form() {
 
     // store multiple key value pairs
     let response = runner
-        .post("http://127.0.0.1:40005/items")
+        .post("http://127.0.0.1:40006/items")
         .json(&json!({
             "key1": "value1",
             "key2": "value2",
@@ -26,7 +25,7 @@ async fn test_example_http_form() {
 
     // list all keys
     let keys = runner
-        .get("http://127.0.0.1:40005/keys")
+        .get("http://127.0.0.1:40006/keys")
         .send(Context::default())
         .await
         .unwrap()
@@ -41,7 +40,7 @@ async fn test_example_http_form() {
 
     // store a single key value pair
     let response = runner
-        .post("http://127.0.0.1:40005/item/key3")
+        .post("http://127.0.0.1:40006/item/key3")
         .body("value3")
         .send(Context::default())
         .await
@@ -50,7 +49,7 @@ async fn test_example_http_form() {
 
     // get a single key value pair
     let value = runner
-        .get("http://127.0.0.1:40005/item/key3")
+        .get("http://127.0.0.1:40006/item/key3")
         .send(Context::default())
         .await
         .unwrap()
@@ -61,7 +60,7 @@ async fn test_example_http_form() {
 
     // check existence for a key
     let response = runner
-        .head("http://127.0.0.1:40005/item/key3")
+        .head("http://127.0.0.1:40006/item/key3")
         .send(Context::default())
         .await
         .unwrap();
@@ -69,7 +68,7 @@ async fn test_example_http_form() {
 
     // delete a key
     let response = runner
-        .delete("http://127.0.0.1:40005/admin/item/key3")
+        .delete("http://127.0.0.1:40006/admin/item/key3")
         .bearer_auth("secret-token")
         .send(Context::default())
         .await
@@ -78,7 +77,7 @@ async fn test_example_http_form() {
 
     // check existence for that same key again
     let response = runner
-        .head("http://127.0.0.1:40005/item/key3")
+        .head("http://127.0.0.1:40006/item/key3")
         .send(Context::default())
         .await
         .unwrap();
