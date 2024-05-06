@@ -5,7 +5,7 @@
 /// Utility error trait to allow Rama layers
 /// to return a default error as well as a user-defined one,
 /// being it a [`Clone`]-able type or a [`Fn`] returning an error type.
-pub trait MakeLayerError: Send + Sync + 'static {
+pub trait MakeLayerError: sealed::Sealed + Send + Sync + 'static {
     /// The error type returned by the layer.
     ///
     /// It does not need to be an actual error type,
@@ -81,7 +81,7 @@ where
 }
 
 mod sealed {
-    pub(super) trait Sealed {}
+    pub trait Sealed {}
 
     impl<F> Sealed for super::LayerErrorFn<F> {}
     impl<E> Sealed for super::LayerErrorStatic<E> {}

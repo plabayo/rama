@@ -140,7 +140,6 @@ impl fmt::Debug for Extensions {
 trait AnyClone: Any {
     fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync>;
     fn as_any(&self) -> &dyn Any;
-    fn as_any_mut(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
@@ -150,10 +149,6 @@ impl<T: Clone + Send + Sync + 'static> AnyClone for T {
     }
 
     fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
