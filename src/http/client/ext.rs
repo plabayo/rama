@@ -489,16 +489,26 @@ where
     /// Set the [`Request`]'s [`Body`].
     ///
     /// [`Body`]: crate::http::Body
-    pub fn body<T: Into<crate::http::Body>>(mut self, body: T) -> Self {
+    pub fn body<T>(mut self, body: T) -> Self
+    where
+        T: TryInto<crate::http::Body>,
+        T::Error: Into<BoxError>,
+    {
         self.state = match self.state {
-            RequestBuilderState::PreBody(builder) => match builder.body(body.into()) {
-                Ok(req) => RequestBuilderState::PostBody(req),
+            RequestBuilderState::PreBody(builder) => match body.try_into() {
+                Ok(body) => match builder.body(body) {
+                    Ok(req) => RequestBuilderState::PostBody(req),
+                    Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                },
                 Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
             },
-            RequestBuilderState::PostBody(mut req) => {
-                *req.body_mut() = body.into();
-                RequestBuilderState::PostBody(req)
-            }
+            RequestBuilderState::PostBody(mut req) => match body.try_into() {
+                Ok(body) => {
+                    *req.body_mut() = body;
+                    RequestBuilderState::PostBody(req)
+                }
+                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+            },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
         self

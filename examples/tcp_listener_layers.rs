@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:9000`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:40501`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! telnet 127.0.0.1 9000
+//! telnet 127.0.0.1 40501
 //! ```
 //!
 //! Within the telnet session, you can type anything and it will be echoed back to you.
@@ -45,7 +45,7 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(|guard| async {
-        TcpListener::bind("0.0.0.0:9000")
+        TcpListener::bind("0.0.0.0:40501")
             .await
             .expect("bind TCP Listener")
             .serve_graceful(

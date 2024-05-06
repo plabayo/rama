@@ -24,31 +24,31 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:8080`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:40006`. You can use `curl` to interact with the service:
 //!
 //! ```sh
 //! # show the API documentation
-//! curl -v http://127.0.0.1:8080
+//! curl -v http://127.0.0.1:40006
 //!
 //! # store multiple key value pairs
-//! curl -v -X POST http://127.0.0.1:8080/items \
+//! curl -v -X POST http://127.0.0.1:40006/items \
 //!     -H 'content-type: application/json' \
 //!     -d '{"key1": "value1", "key2": "value2"}'
 //!
 //! # list all keys
-//! curl -v http://127.0.0.1:8080/keys
+//! curl -v http://127.0.0.1:40006/keys
 //!
 //! # store a single key value pair
-//! curl -v -X POST http://127.0.0.1:8080/item/key3 -d "value3"
+//! curl -v -X POST http://127.0.0.1:40006/item/key3 -d "value3"
 //!
 //! # get the value for a key
-//! curl -v http://127.0.0.1:8080/item/key3
+//! curl -v http://127.0.0.1:40006/item/key3
 //!
 //! # check existence for a key
-//! curl -v -XHEAD http://127.0.0.1:8080/item/key3
+//! curl -v -XHEAD http://127.0.0.1:40006/item/key3
 //!
 //! # delete a key
-//! curl -v -X DELETE http://127.0.0.1:8080/admin/item/key3 -H "Authorization: Bearer secret-token"
+//! curl -v -X DELETE http://127.0.0.1:40006/admin/item/key3 -H "Authorization: Bearer secret-token"
 //! ```
 
 use rama::{
@@ -99,7 +99,7 @@ async fn main() {
         )
         .init();
 
-    let addr = "127.0.0.1:8080";
+    let addr = "127.0.0.1:40006";
     tracing::info!("running service at: {addr}");
     let exec = Executor::default();
     HttpServer::auto(exec)

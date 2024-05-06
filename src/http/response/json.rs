@@ -1,8 +1,14 @@
-use crate::http::dep::http::{
-    header::{self, HeaderValue},
-    StatusCode,
-};
 use crate::http::response::{IntoResponse, Response};
+use crate::{
+    error::OpaqueError,
+    http::{
+        dep::http::{
+            header::{self, HeaderValue},
+            StatusCode,
+        },
+        Body,
+    },
+};
 use bytes::{BufMut, BytesMut};
 use serde::Serialize;
 
@@ -95,6 +101,23 @@ where
                 err.to_string(),
             )
                 .into_response(),
+        }
+    }
+}
+
+impl<T> TryInto<Body> for Json<T>
+where
+    T: Serialize,
+{
+    type Error = OpaqueError;
+
+    fn try_into(self) -> Result<Body, Self::Error> {
+        // Use a small initial capacity of 128 bytes like serde_json::to_vec
+        // https://docs.rs/serde_json/1.0.82/src/serde_json/ser.rs.html#2189
+        let mut buf = BytesMut::with_capacity(128).writer();
+        match serde_json::to_writer(&mut buf, &self.0) {
+            Ok(()) => Ok(buf.into_inner().freeze().into()),
+            Err(err) => Err(OpaqueError::from_std(err)),
         }
     }
 }

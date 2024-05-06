@@ -11,6 +11,7 @@
 //! In your logs you will also find each request traced twice, once for the client and once for the server.
 
 // rama provides everything out of the box to build a complete web service.
+
 use rama::{
     http::{
         client::{HttpClient, HttpClientExt},
@@ -28,17 +29,22 @@ use rama::{
         Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
     },
     rt::Executor,
-    service::{util::backoff::ExponentialBackoff, Context, Service, ServiceBuilder},
+    service::{
+        util::{backoff::ExponentialBackoff, rng::HasherRng},
+        Context, Service, ServiceBuilder,
+    },
 };
 
+// Everything else we need is provided by the standard library, community crates or tokio.
+
 use serde_json::json;
-/// Everything else we need is provided by the standard library, community crates or tokio.
+use std::time::Duration;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter};
 
-const ADDRESS: &str = "127.0.0.1:8080";
+const ADDRESS: &str = "127.0.0.1:40004";
 
 #[tokio::main]
 async fn main() {
@@ -65,7 +71,15 @@ async fn main() {
                 .if_not_present(),
         )
         .layer(RetryLayer::new(
-            ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
+            ManagedPolicy::default().with_backoff(
+                ExponentialBackoff::new(
+                    Duration::from_millis(100),
+                    Duration::from_secs(30),
+                    0.01,
+                    HasherRng::default,
+                )
+                .unwrap(),
+            ),
         ))
         .service(HttpClient::new());
 

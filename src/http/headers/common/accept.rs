@@ -216,12 +216,4 @@ mod tests {
             Quality::from(500)
         ),]))
     );
-
-    #[test]
-    #[ignore]
-    fn test_fuzzing1() {
-        let raw = HeaderValue::from_static("chunk#;e");
-        let header = Accept::decode(&mut Some(&raw).into_iter());
-        assert!(header.is_ok());
-    }
 }

@@ -151,6 +151,7 @@ venndb = { workspace = true }
 
 [dev-dependencies]
 brotli = { workspace = true }
+escargot = "0.5.10"
 flate2 = { workspace = true }
 itertools = { workspace = true }
 rustversion = { workspace = true }
