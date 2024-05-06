@@ -150,7 +150,6 @@ uuid = { workspace = true, features = ["v4"] }
 venndb = { workspace = true }
 
 [dev-dependencies]
-assert_fs = "1.1.1"
 brotli = { workspace = true }
 escargot = "0.5.10"
 flate2 = { workspace = true }
