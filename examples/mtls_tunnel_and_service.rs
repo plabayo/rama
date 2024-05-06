@@ -11,10 +11,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:41013`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:41014`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -k -v https://127.0.0.1:41013
+//! curl -k -v https://127.0.0.1:41014
 //! ```
 //!
 //! This won't work as the client is not authorized. You can use `curl` to interact with the service:
@@ -58,7 +58,7 @@ use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 const SERVER_DOMAIN: &str = "127.0.0.1";
-const SERVER_ADDR: &str = "127.0.0.1:41013";
+const SERVER_ADDR: &str = "127.0.0.1:41014";
 const TUNNEL_ADDR: &str = "127.0.0.1:40014";
 
 #[derive(Debug)]

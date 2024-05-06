@@ -14,7 +14,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40002`. You can use `curl` to check if the server is running:
+//! The server will start and listen on `:40003`. You can use `curl` to check if the server is running:
 //!
 //! ```sh
 //! curl -v http://127.0.0.1:40003

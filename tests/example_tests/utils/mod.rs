@@ -125,6 +125,7 @@ impl ExampleRunner<()> {
         .unwrap()
     }
 
+    /// Establish an async R/W to the TCP server behind this [`ExampleRunner`].
     pub async fn connect_tcp(&self, addr: impl ToSocketAddrs) -> Result<impl Stream, OpaqueError> {
         tokio::net::TcpStream::connect(addr)
             .await

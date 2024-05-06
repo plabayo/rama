@@ -10,9 +10,8 @@
 //! You should see the output printed and the example should exit with a success status code.
 //! In your logs you will also find each request traced twice, once for the client and once for the server.
 
-use std::time::Duration;
-
 // rama provides everything out of the box to build a complete web service.
+
 use rama::{
     http::{
         client::{HttpClient, HttpClientExt},
@@ -36,8 +35,10 @@ use rama::{
     },
 };
 
+// Everything else we need is provided by the standard library, community crates or tokio.
+
 use serde_json::json;
-/// Everything else we need is provided by the standard library, community crates or tokio.
+use std::time::Duration;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
