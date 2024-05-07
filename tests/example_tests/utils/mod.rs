@@ -6,6 +6,7 @@ use rama::{
         client::{HttpClient, HttpClientExt, IntoUrl, RequestBuilder},
         layer::{
             decompression::DecompressionLayer,
+            follow_redirect::FollowRedirectLayer,
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
         },
@@ -56,11 +57,12 @@ where
             .map_result(map_internal_client_error)
             .layer(TraceLayer::new_for_http())
             .layer(DecompressionLayer::new())
+            .layer(FollowRedirectLayer::default())
             .layer(RetryLayer::new(
                 ManagedPolicy::default().with_backoff(
                     ExponentialBackoff::new(
                         Duration::from_millis(100),
-                        Duration::from_secs(30),
+                        Duration::from_secs(60),
                         0.01,
                         HasherRng::default,
                     )

@@ -73,8 +73,9 @@ tracing-subscriber = "0.3.17"
 trybuild = "1.0.63"
 uuid = "1.6"
 zstd = "0.13"
-venndb = { version = "0.4.0" }
+venndb = "0.4.0"
 unicode-normalization = "0.1.23"
+iri-string = "0.7.0"
 
 [package]
 name = "rama"
@@ -118,6 +119,7 @@ httpdate = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "server", "client"] }
 hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
 ipnet = { workspace = true }
+iri-string = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
 opentelemetry = { workspace = true, optional = true }

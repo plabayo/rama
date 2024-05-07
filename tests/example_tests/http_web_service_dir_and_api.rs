@@ -25,7 +25,9 @@ async fn test_http_web_service_dir_and_api() {
         .send(Context::default())
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::TEMPORARY_REDIRECT);
+    assert_eq!(response.status(), StatusCode::OK);
+    let error_page = response.try_into_string().await.unwrap();
+    assert!(error_page.contains("<h1>Not Found (404)</h1>"));
 
     // test coin fetching
     let response = runner
