@@ -1,23 +1,14 @@
-//! User agent modules for Rama.
+//! User Agent (UA) parser and types.
 //!
-//! TODO: Develop first version of this module
+//! Learn more about User Agents (UA)
+//! at <https://ramaproxy.org/book/intro/user_agent.html>.
 
-#[derive(Debug)]
-#[non_exhaustive]
-/// User agent
-///
-/// TODO: develop first version of this struct
-pub struct UserAgent;
+mod info;
+pub use info::{HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentKind};
 
-impl UserAgent {
-    /// Create a new user agent
-    pub fn new() -> Self {
-        panic!("TODO:implement")
-    }
-}
+mod parse;
+use parse::parse_http_user_agent;
+pub use parse::UserAgentParseError;
 
-impl Default for UserAgent {
-    fn default() -> Self {
-        panic!("TODO:implement")
-    }
-}
+#[cfg(test)]
+mod tests;
