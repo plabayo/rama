@@ -1,4 +1,4 @@
-//! A policy that limits the number of concurrent requests.
+//! A [`Policy`] that limits the number of concurrent requests.
 //!
 //! See [`ConcurrentPolicy`].
 //!
@@ -28,7 +28,7 @@ use super::{Policy, PolicyOutput, PolicyResult};
 use crate::service::{util::backoff::Backoff, Context};
 use std::sync::{Arc, Mutex};
 
-/// A policy that limits the number of concurrent requests.
+/// A [`Policy`] that limits the number of concurrent requests.
 #[derive(Debug)]
 pub struct ConcurrentPolicy<B, C> {
     tracker: C,

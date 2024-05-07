@@ -62,7 +62,7 @@ pub enum PolicyOutput<Guard, Error> {
     Retry,
 }
 
-/// A limit policy is used to determine whether a request is allowed to proceed,
+/// A limit [`Policy`] is used to determine whether a request is allowed to proceed,
 /// and if not, how to handle it.
 pub trait Policy<State, Request>: Send + Sync + 'static {
     /// The guard type that is returned when the request is allowed to proceed.

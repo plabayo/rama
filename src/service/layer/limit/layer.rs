@@ -1,7 +1,9 @@
 use super::Limit;
 use crate::service::Layer;
 
-/// Limit requests based on a policy
+/// Limit requests based on a [`Policy`].
+///
+/// [`Policy`]: crate::service::layer::limit::Policy
 #[derive(Debug)]
 pub struct LimitLayer<P> {
     policy: P,

@@ -12,7 +12,9 @@ mod layer;
 #[doc(inline)]
 pub use layer::LimitLayer;
 
-/// Limit requests based on a policy
+/// Limit requests based on a [`Policy`].
+///
+/// [`Policy`]: crate::service::layer::limit::Policy
 #[derive(Debug)]
 pub struct Limit<T, P> {
     inner: T,
@@ -20,8 +22,8 @@ pub struct Limit<T, P> {
 }
 
 impl<T, P> Limit<T, P> {
-    /// Creates a new [`Limit`] from a limit policy,
-    /// wrapping the given service.
+    /// Creates a new [`Limit`] from a limit [`Policy`],
+    /// wrapping the given [`Service`].
     pub fn new(inner: T, policy: P) -> Self {
         Limit { inner, policy }
     }
