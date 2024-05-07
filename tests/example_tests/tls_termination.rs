@@ -3,7 +3,7 @@ use rama::{http::BodyExtractExt, service::Context};
 
 #[tokio::test]
 #[ignore]
-async fn test_tcp_listener_hello() {
+async fn test_tls_termination() {
     let runner = utils::ExampleRunner::interactive("tls_termination");
 
     let reply = runner
