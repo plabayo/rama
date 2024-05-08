@@ -46,6 +46,9 @@ const HTTP_SERVER_ACTIVE_REQUESTS: &str = "http.server.active_requests";
 /// [spec]: https://github.com/open-telemetry/semantic-conventions/blob/v1.21.0/docs/http/http-metrics.md#http-server
 #[derive(Clone, Debug)]
 struct Metrics {
+    // TODO: in https://github.com/open-telemetry/opentelemetry-rust/pull/1663 they fixed
+    // that meter no longer needs to stay alive when still using counters. So perhaps we can remove this?!
+    // once v0.23 is released we can look into trying this...
     _meter: Meter,
     http_server_duration: Histogram<f64>,
     http_server_active_requests: UpDownCounter<i64>,
@@ -190,7 +193,12 @@ where
         // used to compute the duration of the request
         let timer = SystemTime::now();
 
-        match self.inner.serve(ctx, req).await {
+        let result = self.inner.serve(ctx, req).await;
+        self.metrics
+            .http_server_active_requests
+            .add(-1, &attributes);
+
+        match result {
             Ok(res) => {
                 let res = res.into_response();
 

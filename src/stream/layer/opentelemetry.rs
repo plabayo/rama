@@ -21,6 +21,9 @@ const NETWORK_SERVER_ACTIVE_CONNECTIONS: &str = "network.server.active_connectio
 /// Records network server metrics
 #[derive(Clone, Debug)]
 struct Metrics {
+    // TODO: in https://github.com/open-telemetry/opentelemetry-rust/pull/1663 they fixed
+    // that meter no longer needs to stay alive when still using counters. So perhaps we can remove this?!
+    // once v0.23 is released we can look into trying this...
     _meter: Meter,
     network_connection_duration: Histogram<f64>,
     network_active_connections: UpDownCounter<i64>,
@@ -139,7 +142,10 @@ where
         // used to compute the duration of the connection
         let timer = SystemTime::now();
 
-        match self.inner.serve(ctx, stream).await {
+        let result = self.inner.serve(ctx, stream).await;
+        self.metrics.network_active_connections.add(-1, &attributes);
+
+        match result {
             Ok(res) => {
                 self.metrics.network_connection_duration.record(
                     timer.elapsed().map(|t| t.as_secs_f64()).unwrap_or_default(),
