@@ -647,13 +647,26 @@ where
     ///
     /// This method fails if there was an error while sending [`Request`].
     pub async fn send(self, ctx: Context<State>) -> Result<Response<Body>, HttpClientError> {
-        let request = match self.state {
+        let mut request = match self.state {
             RequestBuilderState::PreBody(builder) => builder
                 .body(crate::http::Body::empty())
                 .map_err(HttpClientError::request_err)?,
             RequestBuilderState::PostBody(request) => request,
             RequestBuilderState::Error(err) => return Err(err),
         };
+
+        // add user-agent header if not already set
+        if !request
+            .headers()
+            .contains_key(crate::http::header::USER_AGENT)
+        {
+            request.headers_mut().insert(
+                crate::http::header::USER_AGENT,
+                format!("{}/{}", crate::info::NAME, crate::info::VERSION)
+                    .parse()
+                    .unwrap(),
+            );
+        }
 
         match self.http_client_service.serve(ctx, request).await {
             Ok(response) => Ok(response),
@@ -682,7 +695,7 @@ mod test {
 
     async fn fake_client_fn<S, Body>(
         _ctx: Context<S>,
-        _request: Request<Body>,
+        request: Request<Body>,
     ) -> Result<Response, Infallible>
     where
         S: Send + Sync + 'static,
@@ -690,6 +703,15 @@ mod test {
         Body::Data: Send + 'static,
         Body::Error: Send + 'static,
     {
+        let ua = request
+            .headers()
+            .get(crate::http::header::USER_AGENT)
+            .unwrap();
+        assert_eq!(
+            ua.to_str().unwrap(),
+            format!("{}/{}", crate::info::NAME, crate::info::VERSION)
+        );
+
         Ok(StatusCode::OK.into_response())
     }
 
