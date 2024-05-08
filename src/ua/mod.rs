@@ -4,7 +4,7 @@
 //! at <https://ramaproxy.org/book/intro/user_agent.html>.
 
 mod info;
-pub use info::{HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentKind};
+pub use info::{DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentKind};
 
 mod parse;
 use parse::parse_http_user_agent;

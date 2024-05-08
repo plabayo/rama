@@ -1,19 +1,123 @@
 #![allow(dead_code)]
 
-use super::UserAgent;
+use super::{
+    info::{UserAgentData, UserAgentInfo},
+    PlatformKind, UserAgent, UserAgentKind,
+};
 
 /// parse the http user agent string and return a [`UserAgent`] info,
 /// containing the parsed information or fallback to defaults in case of a parse failure.
+///
+/// # Remarks
+///
+/// NOTE that this function does not aim to be:
+///
+/// - super accurate: it aims to be fast and good for the popular cases;
+/// - complete: we do not care about all the possible user agents out there, only the popular ones.
+///
+/// That said. Do open a ticket if you find bugs or think something is missing.
 pub(crate) fn parse_http_user_agent(ua: impl AsRef<str>) -> Result<UserAgent, UserAgentParseError> {
     let ua = ua.as_ref();
 
+    let (kind, kind_version, maybe_platform) = if let Some(loc) =
+        contains_ignore_ascii_case(ua, "Firefox")
+    {
+        let kind = UserAgentKind::Firefox;
+        let kind_version = parse_ua_version_firefox(&ua[loc..]);
+        (Some(kind), kind_version, None)
+    } else if let Some(loc) = contains_ignore_ascii_case(ua, "Chrom") {
+        let kind = UserAgentKind::Chromium;
+        let kind_version = parse_ua_version_chromium(&ua[loc..]);
+        (Some(kind), kind_version, None)
+    } else if let Some(loc) = contains_ignore_ascii_case(ua, "Safari") {
+        if let Some(firefox_loc) = contains_ignore_ascii_case(ua, "FxiOS") {
+            let kind = UserAgentKind::Firefox;
+            let kind_version = parse_ua_version_firefox(&ua[firefox_loc..]);
+            (Some(kind), kind_version, Some(PlatformKind::IOS))
+        } else if let Some(chrome_loc) = contains_ignore_ascii_case(ua, "CriOS") {
+            let kind = UserAgentKind::Chromium;
+            let kind_version = parse_ua_version_chromium(&ua[chrome_loc..]);
+            (Some(kind), kind_version, Some(PlatformKind::IOS))
+        } else if let Some(chromium_loc) = contains_any_ignore_ascii_case(ua, &["Opera"]) {
+            let kind = UserAgentKind::Chromium;
+            let kind_version = parse_ua_version_chromium(&ua[chromium_loc..]);
+            (Some(kind), kind_version, None)
+        } else {
+            let kind = UserAgentKind::Safari;
+            let kind_version = parse_ua_version_safari(&ua[loc..]);
+            (Some(kind), kind_version, None)
+        }
+    } else if contains_any_ignore_ascii_case(ua, &["Mobile", "Phone", "Tablet", "Zune"]).is_some() {
+        return Ok(UserAgent {
+            data: UserAgentData::Mobile,
+        });
+    } else if contains_ignore_ascii_case(ua, "Desktop").is_some() {
+        return Ok(UserAgent {
+            data: UserAgentData::Desktop,
+        });
+    } else {
+        (None, None, None)
+    };
+
+    let maybe_platform = match maybe_platform {
+        Some(platform) => Some(platform),
+        None => {
+            if contains_ignore_ascii_case(ua, "Windows").is_some() {
+                if contains_ignore_ascii_case(ua, "X11").is_some() {
+                    None
+                } else {
+                    Some(PlatformKind::Windows)
+                }
+            } else if contains_ignore_ascii_case(ua, "Android").is_some() {
+                if contains_ignore_ascii_case(ua, "iOS").is_some() {
+                    Some(PlatformKind::IOS)
+                } else {
+                    Some(PlatformKind::Android)
+                }
+            } else if contains_ignore_ascii_case(ua, "Linux").is_some() {
+                if contains_any_ignore_ascii_case(ua, &["Mobile", "UCW"]).is_some() {
+                    Some(PlatformKind::Android)
+                } else {
+                    Some(PlatformKind::Linux)
+                }
+            } else if contains_any_ignore_ascii_case(ua, &["iOS", "iPad", "iPod", "iPhone"])
+                .is_some()
+            {
+                Some(PlatformKind::IOS)
+            } else if contains_ignore_ascii_case(ua, "Mac").is_some() {
+                Some(PlatformKind::MacOS)
+            } else if contains_ignore_ascii_case(ua, "Darwin").is_some() {
+                if contains_ignore_ascii_case(ua, "86").is_some() {
+                    Some(PlatformKind::MacOS)
+                } else {
+                    Some(PlatformKind::MacOS)
+                }
+            } else {
+                None
+            }
+        }
+    };
+
     Ok(UserAgent {
-        http_user_agent: ua.to_owned(),
-        kind: None,
-        version: None,
-        platform: None,
-        platform_version: None,
+        data: UserAgentData::Known(UserAgentInfo {
+            http_user_agent: ua.to_owned(),
+            kind,
+            version: kind_version,
+            platform: maybe_platform,
+        }),
     })
+}
+
+fn parse_ua_version_chromium(ua: &str) -> Option<usize> {
+    todo!();
+}
+
+fn parse_ua_version_firefox(ua: &str) -> Option<usize> {
+    todo!();
+}
+
+fn parse_ua_version_safari(ua: &str) -> Option<usize> {
+    todo!();
 }
 
 /// Errors returned for [`UserAgent`] parsing that went wrong.
