@@ -1,8 +1,23 @@
-use crate::ua::{
-    //PlatformKind,
-    UserAgent,
-    //UserAgentKind,
-};
+use crate::ua::{HttpAgent, TlsAgent, UserAgent};
+
+#[test]
+fn test_parse_happy_path_unknown_ua() {
+    let ua_str = "rama/0.2.0";
+    let ua: UserAgent = ua_str.parse().unwrap();
+
+    // UA Is always stored as is.
+    assert_eq!(ua.header_str(), ua_str);
+
+    // No information should be known about the UA.
+    assert!(ua.kind().is_none());
+    assert!(ua.version().is_none());
+    assert!(ua.platform().is_none());
+    assert!(ua.platform_version().is_none());
+
+    // Http/Tls agents do have defaults
+    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
+    assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
+}
 
 #[test]
 fn test_parse_happy_path_ua_macos_chrome() {

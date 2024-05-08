@@ -10,21 +10,21 @@ pub struct UserAgent {
     /// The 'User-Agent' http header value used by the [`UserAgent`].
     ///
     /// [`UserAgent`]: crate::ua::UserAgent
-    pub http_user_agent: String,
+    pub(super) http_user_agent: String,
 
     /// The kind of [`UserAgent`]
     ///
     /// [`UserAgent`]: crate::ua::UserAgent
-    pub kind: UserAgentKind,
+    pub(super) kind: Option<UserAgentKind>,
     /// The major version of the [`UserAgent`]
     ///
     /// [`UserAgent`]: crate::ua::UserAgent
-    pub version: usize,
+    pub(super) version: Option<usize>,
 
     /// The PlatformKind used by the [`UserAgent`]
     ///
     /// [`UserAgent`]: crate::ua::UserAgent
-    pub platform: PlatformKind,
+    pub(super) platform: Option<PlatformKind>,
 
     /// The major platform version used by the [`UserAgent`]
     ///
@@ -32,7 +32,7 @@ pub struct UserAgent {
     /// especially in modern UA distros this is no longer exposed for privacy reasons.
     ///
     /// [`UserAgent`]: crate::ua::UserAgent
-    pub platform_version: Option<usize>,
+    pub(super) platform_version: Option<usize>,
 }
 
 impl FromStr for UserAgent {
@@ -44,39 +44,69 @@ impl FromStr for UserAgent {
 }
 
 impl UserAgent {
+    /// returns the 'User-Agent' http header value used by the [`UserAgent`].
+    pub fn header_str(&self) -> &str {
+        &self.http_user_agent
+    }
+
+    /// returns the kind of [`UserAgent`], if known.
+    pub fn kind(&self) -> Option<UserAgentKind> {
+        self.kind
+    }
+
+    /// returns the major version of the [`UserAgent`], if known.
+    ///
+    /// This is the version of the distribution, not the version a component such as the rendering engine.
+    pub fn version(&self) -> Option<usize> {
+        self.version
+    }
+
+    /// returns the [`PlatformKind`] used by the [`UserAgent`], if known.
+    ///
+    /// This is the platform the UA is running on.
+    pub fn platform(&self) -> Option<PlatformKind> {
+        self.platform
+    }
+
+    /// returns the major version of the platform used by the [`UserAgent`], if known.
+    pub fn platform_version(&self) -> Option<usize> {
+        self.platform_version
+    }
+
     /// returns the [`HttpAgent`] used by the [`UserAgent`].
     ///
     /// [`UserAgent`]: crate::ua::UserAgent
     pub fn http_agent(&self) -> HttpAgent {
-        match self.kind {
-            UserAgentKind::Chrome | UserAgentKind::Chromium | UserAgentKind::Edge => {
-                HttpAgent::Chromium
-            }
-            UserAgentKind::Firefox => HttpAgent::Firefox,
-            UserAgentKind::Safari => HttpAgent::Safari,
-            UserAgentKind::Unknown => HttpAgent::Chromium,
-        }
+        self.kind
+            .map(|kind| match kind {
+                UserAgentKind::Chrome | UserAgentKind::Chromium | UserAgentKind::Edge => {
+                    HttpAgent::Chromium
+                }
+                UserAgentKind::Firefox => HttpAgent::Firefox,
+                UserAgentKind::Safari => HttpAgent::Safari,
+            })
+            .unwrap_or(HttpAgent::Chromium)
     }
 
     /// returns the [`TlsAgent`] used by the [`UserAgent`].
     ///
     /// [`UserAgent`]: crate::ua::UserAgent
     pub fn tls_agent(&self) -> TlsAgent {
-        match self.kind {
-            UserAgentKind::Chrome | UserAgentKind::Chromium | UserAgentKind::Edge => {
-                TlsAgent::Boringssl
-            }
-            UserAgentKind::Firefox | UserAgentKind::Safari | UserAgentKind::Unknown => {
-                TlsAgent::Rustls
-            }
-        }
+        self.kind
+            .map(|kind| match kind {
+                UserAgentKind::Chrome | UserAgentKind::Chromium | UserAgentKind::Edge => {
+                    TlsAgent::Boringssl
+                }
+                UserAgentKind::Firefox | UserAgentKind::Safari => TlsAgent::Rustls,
+            })
+            .unwrap_or(TlsAgent::Rustls)
     }
 }
 
 /// The kind of [`UserAgent`]
 ///
 /// [`UserAgent`]: crate::ua::UserAgent
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UserAgentKind {
     /// Google's Chrome Browser
     Chrome,
@@ -88,14 +118,12 @@ pub enum UserAgentKind {
     Safari,
     /// Edge Browser
     Edge,
-    /// A browser that is not recognised
-    Unknown,
 }
 
 /// PlatformKind used by the [`UserAgent`]
 ///
 /// [`UserAgent`]: crate::ua::UserAgent
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlatformKind {
     /// Windows Platform (desktop)
     Windows,
@@ -107,8 +135,6 @@ pub enum PlatformKind {
     Android,
     /// iOS Platform (mobile)
     IOS,
-    /// Unknown Platform
-    Unknown,
 }
 
 /// Http implementation used by the [`UserAgent`]
