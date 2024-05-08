@@ -29,7 +29,7 @@ pub(crate) fn parse_http_user_agent(ua: impl AsRef<str>) -> Result<UserAgent, Us
         let kind = UserAgentKind::Chromium;
         let kind_version = parse_ua_version_chromium(&ua[loc..]);
         (Some(kind), kind_version, None)
-    } else if let Some(loc) = contains_ignore_ascii_case(ua, "Safari") {
+    } else if contains_ignore_ascii_case(ua, "Safari").is_some() {
         if let Some(firefox_loc) = contains_ignore_ascii_case(ua, "FxiOS") {
             let kind = UserAgentKind::Firefox;
             let kind_version = parse_ua_version_firefox(&ua[firefox_loc..]);
@@ -44,7 +44,7 @@ pub(crate) fn parse_http_user_agent(ua: impl AsRef<str>) -> Result<UserAgent, Us
             (Some(kind), kind_version, None)
         } else {
             let kind = UserAgentKind::Safari;
-            let kind_version = parse_ua_version_safari(&ua[loc..]);
+            let kind_version = parse_ua_version_safari(ua);
             (Some(kind), kind_version, None)
         }
     } else if contains_any_ignore_ascii_case(ua, &["Mobile", "Phone", "Tablet", "Zune"]).is_some() {
@@ -90,7 +90,7 @@ pub(crate) fn parse_http_user_agent(ua: impl AsRef<str>) -> Result<UserAgent, Us
                 if contains_ignore_ascii_case(ua, "86").is_some() {
                     Some(PlatformKind::MacOS)
                 } else {
-                    Some(PlatformKind::MacOS)
+                    Some(PlatformKind::IOS)
                 }
             } else {
                 None
@@ -109,15 +109,27 @@ pub(crate) fn parse_http_user_agent(ua: impl AsRef<str>) -> Result<UserAgent, Us
 }
 
 fn parse_ua_version_chromium(ua: &str) -> Option<usize> {
-    todo!();
+    ua.find('/').and_then(|i| {
+        let start = i + 1;
+        let end = ua[start..].find('.').map(|i| start + i).unwrap_or(ua.len());
+        ua[start..end].parse().ok()
+    })
 }
 
 fn parse_ua_version_firefox(ua: &str) -> Option<usize> {
-    todo!();
+    ua.find('/').and_then(|i| {
+        let start = i + 1;
+        let end = ua[start..].find('.').map(|i| start + i).unwrap_or(ua.len());
+        ua[start..end].parse().ok()
+    })
 }
 
 fn parse_ua_version_safari(ua: &str) -> Option<usize> {
-    todo!();
+    ua.find("Version/").and_then(|i| {
+        let start = i + 8;
+        let end = ua[start..].find('.').map(|i| start + i).unwrap_or(ua.len());
+        ua[start..end].parse().ok()
+    })
 }
 
 /// Errors returned for [`UserAgent`] parsing that went wrong.

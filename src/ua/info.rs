@@ -53,11 +53,10 @@ impl UserAgent {
     pub fn device(&self) -> DeviceKind {
         match &self.data {
             UserAgentData::Known(info) => match info.platform {
-                Some(PlatformKind::Windows)
-                | Some(PlatformKind::MacOS)
-                | Some(PlatformKind::Linux)
-                | None => DeviceKind::Desktop,
-                Some(PlatformKind::Android) | Some(PlatformKind::IOS) => DeviceKind::Mobile,
+                Some(PlatformKind::Windows | PlatformKind::MacOS | PlatformKind::Linux) | None => {
+                    DeviceKind::Desktop
+                }
+                Some(PlatformKind::Android | PlatformKind::IOS) => DeviceKind::Mobile,
             },
             UserAgentData::Desktop => DeviceKind::Desktop,
             UserAgentData::Mobile => DeviceKind::Mobile,
