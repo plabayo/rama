@@ -327,6 +327,4 @@ mod tests {
             );
         }
     }
-
-    // TODO: port https://github.com/almarklein/fastuaparser/blob/master/fastuaparser.py
 }
