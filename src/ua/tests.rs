@@ -68,4 +68,89 @@ fn test_parse_happy_path_ua_macos_chrome() {
     assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
 }
 
+#[test]
+fn test_parse_happy_uas() {
+    struct TestCase {
+        ua: &'static str,
+        kind: Option<UserAgentKind>,
+        version: Option<usize>,
+        platform: Option<PlatformKind>,
+    }
+    for test_case in &[
+        TestCase {
+            ua: "Mozilla/5.0 (Windows NT 6.1; WOW64; rv:12.0) Gecko/20100101 Firefox/12.0",
+            kind: Some(UserAgentKind::Firefox),
+            version: Some(12),
+            platform: Some(PlatformKind::Windows),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)",
+            kind: None,
+            version: None,
+            platform: Some(PlatformKind::Windows),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (Windows NT 6.1; WOW64) AppleWebKit/536.5 (KHTML, like Gecko) Chrome/19.0.1084.52 Safari/536.5",
+            kind: Some(UserAgentKind::Chromium),
+            version: Some(19),
+            platform: Some(PlatformKind::Windows),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/51.0.2704.79 Safari/537.36 Edge/14.14393",
+            kind: Some(UserAgentKind::Chromium),
+            version: Some(51),
+            platform: Some(PlatformKind::Windows),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:125.0) Gecko/20100101 Firefox/125.",
+            kind: Some(UserAgentKind::Firefox),
+            version: Some(125),
+            platform: Some(PlatformKind::MacOS),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/25.0 Chrome/121.0.0.0 Safari/537.3",
+            kind: Some(UserAgentKind::Chromium),
+            version: Some(121),
+            platform: Some(PlatformKind::Linux),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.",
+            kind: Some(UserAgentKind::Safari),
+            version: Some(17),
+            platform: Some(PlatformKind::IOS),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.3",
+            kind: Some(UserAgentKind::Chromium),
+            version: Some(124),
+            platform: Some(PlatformKind::Android),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
+            kind: Some(UserAgentKind::Safari),
+            version: Some(17),
+            platform: Some(PlatformKind::MacOS),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 OPR/109.0.0.0",
+            kind: Some(UserAgentKind::Chromium),
+            version: Some(124),
+            platform: Some(PlatformKind::Linux),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67",
+            kind: Some(UserAgentKind::Chromium),
+            version: Some(124),
+            platform: Some(PlatformKind::Windows),
+        },
+    ] {
+        let ua: UserAgent = test_case.ua.parse().unwrap();
+
+        assert_eq!(ua.header_str(), Some(test_case.ua));
+        assert_eq!(ua.kind(), test_case.kind, "UA: {}", test_case.ua);
+        assert_eq!(ua.version(), test_case.version, "UA: {}", test_case.ua);
+        assert_eq!(ua.platform(), test_case.platform, "UA: {}", test_case.ua);
+    }
+}
+
 // TODO: add bench + fuzz tests
