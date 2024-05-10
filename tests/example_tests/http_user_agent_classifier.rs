@@ -43,7 +43,7 @@ async fn test_http_user_agent_classifier() {
         .await
         .unwrap();
     assert_eq!(ua_chrome.ua, UA);
-    assert_eq!(ua_chrome.kind, Some("chromium".to_string()));
+    assert_eq!(ua_chrome.kind, Some("Chromium".to_string()));
     assert_eq!(ua_chrome.version, Some(124));
-    assert_eq!(ua_chrome.platform, Some("windows".to_string()));
+    assert_eq!(ua_chrome.platform, Some("Windows".to_string()));
 }
