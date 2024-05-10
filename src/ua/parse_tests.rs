@@ -152,5 +152,3 @@ fn test_parse_happy_uas() {
         assert_eq!(ua.platform(), test_case.platform, "UA: {}", test_case.ua);
     }
 }
-
-// TODO: add bench + fuzz tests

@@ -8,8 +8,6 @@ pub struct UserAgent {
     pub(super) data: UserAgentData,
 }
 
-// TODO: support Deserialize UserAgent from UserAgentInfo with addded 'device'.
-
 /// internal representation of the [`UserAgent`]
 #[derive(Debug, Clone)]
 pub(super) enum UserAgentData {
