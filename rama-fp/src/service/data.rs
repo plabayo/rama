@@ -4,6 +4,7 @@ use rama::{
     service::Context,
     stream::SocketInfo,
     tls::rustls::server::IncomingClientHello,
+    ua::UserAgent,
 };
 use serde::Serialize;
 use std::str::FromStr;
@@ -101,9 +102,16 @@ impl Default for DataSource {
     }
 }
 
+#[derive(Debug, Default, Clone, Serialize)]
+pub struct UserAgentInfo {
+    pub user_agent: Option<String>,
+    pub kind: Option<String>,
+    pub version: Option<usize>,
+    pub platform: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct RequestInfo {
-    pub user_agent: Option<String>,
     pub version: String,
     pub scheme: String,
     pub authority: Option<String>,
@@ -114,6 +122,17 @@ pub struct RequestInfo {
     pub path: String,
     pub uri: String,
     pub peer_addr: Option<String>,
+}
+
+pub async fn get_user_agent_info(ctx: &Context<State>) -> UserAgentInfo {
+    ctx.get()
+        .map(|info: &UserAgent| UserAgentInfo {
+            user_agent: info.header_str().map(|v| v.to_owned()),
+            kind: info.kind().map(|v| v.to_string()),
+            version: info.version(),
+            platform: info.platform().map(|v| v.to_string()),
+        })
+        .unwrap_or_default()
 }
 
 pub async fn get_request_info(
@@ -128,11 +147,6 @@ pub async fn get_request_info(
         .and_then(RequestContext::authority);
 
     RequestInfo {
-        user_agent: parts
-            .headers
-            .get("user-agent")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.to_owned()),
         version: format!("{:?}", parts.version),
         scheme: parts
             .uri

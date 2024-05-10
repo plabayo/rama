@@ -13,6 +13,7 @@ mod http_service_fs;
 mod http_service_hello;
 mod http_service_match;
 mod http_telemetry;
+mod http_user_agent_classifier;
 mod http_web_service_dir_and_api;
 mod mtls_tunnel_and_service;
 mod tcp_listener_hello;

@@ -33,6 +33,7 @@ use rama::{
         },
         server::{TlsAcceptorLayer, TlsClientConfigHandler},
     },
+    ua::UserAgentClassifierLayer,
 };
 use std::{convert::Infallible, io::BufReader, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
@@ -177,6 +178,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 HeaderName::from_static("vary"),
                 ch_headers,
             ))
+            .layer(UserAgentClassifierLayer::new())
             .service(
                 Arc::new(match_service!{
                     // Navigate
@@ -415,6 +417,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),
             ))
+            .layer(UserAgentClassifierLayer::new())
             .service(
                 Arc::new(match_service!{
                     HttpMatcher::get("/.well-known/acme-challenge/:token") => endpoints::get_acme_challenge,

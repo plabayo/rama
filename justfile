@@ -35,7 +35,7 @@ test-ignored:
 
 qa: lint check clippy doc test
 
-qa-full: lint check clippy doc hack test test-ignored
+qa-full: lint check clippy doc hack test test-ignored fuzz-60s
 
 watch-docs:
 	cargo watch -x doc
@@ -76,3 +76,12 @@ report-code-lines:
 	find . -type f -name '*.rs' -exec cat {} + \
 		| grep -v target | tr -d ' ' | grep -v '^$' | grep -v '^//' \
 		| wc -l
+
+fuzz:
+	cargo +nightly fuzz run ua_parse -- -max_len=131072
+
+fuzz-60s:
+	cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=60
+
+bench:
+	cargo bench
