@@ -76,3 +76,9 @@ report-code-lines:
 	find . -type f -name '*.rs' -exec cat {} + \
 		| grep -v target | tr -d ' ' | grep -v '^$' | grep -v '^//' \
 		| wc -l
+
+fuzz-ua-parse:
+	cargo +nightly fuzz run ua_parse -- -max_len=131072
+
+fuzz-ua-parse-60s:
+	cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=60

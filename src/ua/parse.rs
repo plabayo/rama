@@ -143,7 +143,11 @@ fn contains_ignore_ascii_case(s: &str, sub: &str) -> Option<usize> {
         return None;
     }
 
-    (0..=(s.len() - n)).find(|&i| s[i..i + n].eq_ignore_ascii_case(sub))
+    (0..=(s.len() - n)).find(|&i| {
+        s.get(i..i + n)
+            .map(|s| s.eq_ignore_ascii_case(sub))
+            .unwrap_or_default()
+    })
 }
 
 fn contains_any_ignore_ascii_case(s: &str, subs: &[&str]) -> Option<usize> {
@@ -161,7 +165,10 @@ fn contains_any_ignore_ascii_case(s: &str, subs: &[&str]) -> Option<usize> {
             if i + n > max {
                 continue;
             }
-            if s[i..i + n].eq_ignore_ascii_case(sub) {
+            if s.get(i..i + n)
+                .map(|s| s.eq_ignore_ascii_case(sub))
+                .unwrap_or_default()
+            {
                 return Some(i);
             }
         }
