@@ -452,7 +452,7 @@ jobs:
           cargo install cargo-fuzz
       - name: cargo fuzz check
         run: |
-          cargo fuzz run ua_parse -- -max_len=131072 -max_total_time=30
+          cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
 
   semver-checks:
     needs: [check, check-msrv]
