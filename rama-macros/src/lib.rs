@@ -89,11 +89,11 @@ where
 fn run_ui_tests(directory: &str) {
     let t = trybuild::TestCases::new();
 
-    if let Ok(mut path) = std::env::var("RAMA_TEST_ONLY") {
-        if let Some(path_without_prefix) = path.strip_prefix("rama-macros/") {
-            path = path_without_prefix.to_owned();
-        }
-
+    if let Some(path) = std::env::var("RAMA_TEST_ONLY")
+        .as_ref()
+        .ok()
+        .and_then(|s| s.strip_prefix("rama-macros/"))
+    {
         if !path.contains(&format!("/{directory}/")) {
             return;
         }
