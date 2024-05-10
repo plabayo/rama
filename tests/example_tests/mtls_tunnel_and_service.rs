@@ -8,7 +8,7 @@ async fn test_mtls_tunnel_and_service() {
     let runner = utils::ExampleRunner::interactive("mtls_tunnel_and_service");
 
     // TODO: once http client supports https,
-    // test we cannot go directly to http://127.0.0.1:41013
+    // test we cannot go directly to http://127.0.0.1:41014
 
     let res_str = runner
         .get("http://127.0.0.1:40014/hello")

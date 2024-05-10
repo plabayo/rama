@@ -10,5 +10,8 @@ mod parse;
 use parse::parse_http_user_agent;
 pub use parse::UserAgentParseError;
 
+mod layer;
+pub use layer::{UserAgentClassifier, UserAgentClassifierLayer};
+
 #[cfg(test)]
-mod tests;
+mod parse_tests;

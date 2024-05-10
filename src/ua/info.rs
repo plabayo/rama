@@ -1,4 +1,4 @@
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 use super::{parse_http_user_agent, UserAgentParseError};
 
@@ -135,6 +135,16 @@ pub enum UserAgentKind {
     Safari,
 }
 
+impl fmt::Display for UserAgentKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            UserAgentKind::Chromium => write!(f, "Chromium"),
+            UserAgentKind::Firefox => write!(f, "Firefox"),
+            UserAgentKind::Safari => write!(f, "Safari"),
+        }
+    }
+}
+
 /// Device on which the [`UserAgent`] operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DeviceKind {
@@ -142,6 +152,15 @@ pub enum DeviceKind {
     Desktop,
     /// Phones, Tablets and other mobile devices
     Mobile,
+}
+
+impl fmt::Display for DeviceKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            DeviceKind::Desktop => write!(f, "Desktop"),
+            DeviceKind::Mobile => write!(f, "Mobile"),
+        }
+    }
 }
 
 /// Platform within the [`UserAgent`] operates.
@@ -159,6 +178,18 @@ pub enum PlatformKind {
     IOS,
 }
 
+impl fmt::Display for PlatformKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlatformKind::Windows => write!(f, "Windows"),
+            PlatformKind::MacOS => write!(f, "MacOS"),
+            PlatformKind::Linux => write!(f, "Linux"),
+            PlatformKind::Android => write!(f, "Android"),
+            PlatformKind::IOS => write!(f, "iOS"),
+        }
+    }
+}
+
 /// Http implementation used by the [`UserAgent`]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum HttpAgent {
@@ -168,6 +199,16 @@ pub enum HttpAgent {
     Firefox,
     /// Safari also has its own http implementation
     Safari,
+}
+
+impl fmt::Display for HttpAgent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HttpAgent::Chromium => write!(f, "Chromium"),
+            HttpAgent::Firefox => write!(f, "Firefox"),
+            HttpAgent::Safari => write!(f, "Safari"),
+        }
+    }
 }
 
 /// Tls implementation used by the [`UserAgent`]
@@ -180,4 +221,14 @@ pub enum TlsAgent {
     Boringssl,
     /// NSS is used for Firefox
     Nss,
+}
+
+impl fmt::Display for TlsAgent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TlsAgent::Rustls => write!(f, "Rustls"),
+            TlsAgent::Boringssl => write!(f, "Boringssl"),
+            TlsAgent::Nss => write!(f, "NSS"),
+        }
+    }
 }
