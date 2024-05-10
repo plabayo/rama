@@ -76,6 +76,8 @@ zstd = "0.13"
 venndb = "0.4.0"
 unicode-normalization = "0.1.23"
 iri-string = "0.7.0"
+escargot = "0.5.10"
+divan = "0.1.14"
 
 [package]
 name = "rama"
@@ -153,7 +155,8 @@ venndb = { workspace = true }
 
 [dev-dependencies]
 brotli = { workspace = true }
-escargot = "0.5.10"
+divan = { workspace = true }
+escargot = { workspace = true }
 flate2 = { workspace = true }
 itertools = { workspace = true }
 rustversion = { workspace = true }
@@ -167,3 +170,7 @@ zstd = { workspace = true }
 [package.metadata.docs.rs]
 all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
+
+[[bench]]
+name = "ua_parse"
+harness = false

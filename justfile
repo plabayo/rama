@@ -82,3 +82,6 @@ fuzz:
 
 fuzz-60s:
 	cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=60
+
+bench:
+	cargo bench

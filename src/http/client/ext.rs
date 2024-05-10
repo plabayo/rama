@@ -683,7 +683,6 @@ mod test {
     use crate::{
         http::{
             layer::{
-                decompression::DecompressionLayer,
                 retry::{ManagedPolicy, RetryLayer},
                 trace::TraceLayer,
             },
@@ -733,10 +732,14 @@ mod test {
     type HttpClient<S> = BoxService<S, Request, Response, HttpClientError>;
 
     fn client<S: Send + Sync + 'static>() -> HttpClient<S> {
-        ServiceBuilder::new()
+        let builder = ServiceBuilder::new()
             .map_result(map_internal_client_error)
-            .layer(TraceLayer::new_for_http())
-            .layer(DecompressionLayer::new())
+            .layer(TraceLayer::new_for_http());
+
+        #[cfg(feature = "compression")]
+        let builder = builder.layer(crate::http::layer::decompression::DecompressionLayer::new());
+
+        builder
             .layer(RetryLayer::new(
                 ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
             ))
