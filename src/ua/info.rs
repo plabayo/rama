@@ -1,3 +1,5 @@
+use serde::{Deserialize, Deserializer, Serialize};
+
 use super::parse_http_user_agent_header;
 use std::fmt;
 
@@ -40,13 +42,13 @@ impl UserAgent {
     }
 
     /// Overwrite the [`HttpAgent`] advertised by the [`UserAgent`].
-    pub fn with_http_agent(mut self, http_agent: HttpAgent) -> Self {
+    pub fn with_http_agent(&mut self, http_agent: HttpAgent) -> &mut Self {
         self.http_agent_overwrite = Some(http_agent);
         self
     }
 
     /// Overwrite the [`TlsAgent`] advertised by the [`UserAgent`].
-    pub fn with_tls_agent(mut self, tls_agent: TlsAgent) -> Self {
+    pub fn with_tls_agent(&mut self, tls_agent: TlsAgent) -> &mut Self {
         self.tls_agent_overwrite = Some(tls_agent);
         self
     }
@@ -215,6 +217,36 @@ pub enum HttpAgent {
     Safari,
 }
 
+impl Serialize for HttpAgent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        match self {
+            HttpAgent::Chromium => serializer.serialize_str("Chromium"),
+            HttpAgent::Firefox => serializer.serialize_str("Firefox"),
+            HttpAgent::Safari => serializer.serialize_str("Safari"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for HttpAgent {
+    fn deserialize<D>(deserializer: D) -> Result<HttpAgent, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match_ignore_ascii_case_str! {
+            match (s.as_str()) {
+                "" | "chrome" | "chromium" => Ok(HttpAgent::Chromium),
+                "Firefox" => Ok(HttpAgent::Firefox),
+                "Safari" => Ok(HttpAgent::Safari),
+                _ => Err(serde::de::Error::custom("invalid http agent")),
+            }
+        }
+    }
+}
+
 impl fmt::Display for HttpAgent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -243,6 +275,36 @@ impl fmt::Display for TlsAgent {
             TlsAgent::Rustls => write!(f, "Rustls"),
             TlsAgent::Boringssl => write!(f, "Boringssl"),
             TlsAgent::Nss => write!(f, "NSS"),
+        }
+    }
+}
+
+impl Serialize for TlsAgent {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        match self {
+            TlsAgent::Rustls => serializer.serialize_str("Rustls"),
+            TlsAgent::Boringssl => serializer.serialize_str("Boringssl"),
+            TlsAgent::Nss => serializer.serialize_str("NSS"),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for TlsAgent {
+    fn deserialize<D>(deserializer: D) -> Result<TlsAgent, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        match_ignore_ascii_case_str! {
+            match (s.as_str()) {
+                "" | "tls" | "rustls" | "std" | "standard" | "default" => Ok(TlsAgent::Rustls),
+                "boring" | "boringssl" => Ok(TlsAgent::Boringssl),
+                "nss" => Ok(TlsAgent::Nss),
+                _ => Err(serde::de::Error::custom("invalid tls agent")),
+            }
         }
     }
 }

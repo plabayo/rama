@@ -70,7 +70,7 @@ mod parse;
 use parse::parse_http_user_agent_header;
 
 mod layer;
-pub use layer::{UserAgentClassifier, UserAgentClassifierLayer};
+pub use layer::{UserAgentClassifier, UserAgentClassifierLayer, UserAgentOverwrites};
 
 #[cfg(test)]
 mod parse_tests;

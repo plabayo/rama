@@ -5,7 +5,7 @@ use crate::ua::{
 #[test]
 fn test_parse_desktop_ua() {
     let ua_str = "desktop";
-    let ua = UserAgent::new(ua_str);
+    let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
     assert_eq!(ua.device(), DeviceKind::Desktop);
@@ -17,11 +17,11 @@ fn test_parse_desktop_ua() {
     assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
 
     // Overwrite http agent
-    let ua = ua.with_http_agent(HttpAgent::Firefox);
+    ua.with_http_agent(HttpAgent::Firefox);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 
     // Overwrite tls agent
-    let ua = ua.with_tls_agent(TlsAgent::Nss);
+    ua.with_tls_agent(TlsAgent::Nss);
     assert_eq!(ua.tls_agent(), TlsAgent::Nss);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 }
@@ -29,7 +29,7 @@ fn test_parse_desktop_ua() {
 #[test]
 fn test_parse_too_long_ua() {
     let ua_str = " ".repeat(512) + "desktop";
-    let ua = UserAgent::new(ua_str.clone());
+    let mut ua = UserAgent::new(ua_str.clone());
 
     assert_eq!(ua.header_str(), ua_str);
     assert_eq!(ua.device(), DeviceKind::Desktop);
@@ -41,11 +41,11 @@ fn test_parse_too_long_ua() {
     assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
 
     // Overwrite http agent
-    let ua = ua.with_http_agent(HttpAgent::Firefox);
+    ua.with_http_agent(HttpAgent::Firefox);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 
     // Overwrite tls agent
-    let ua = ua.with_tls_agent(TlsAgent::Nss);
+    ua.with_tls_agent(TlsAgent::Nss);
     assert_eq!(ua.tls_agent(), TlsAgent::Nss);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 }
@@ -53,7 +53,7 @@ fn test_parse_too_long_ua() {
 #[test]
 fn test_parse_windows() {
     let ua_str = "windows";
-    let ua = UserAgent::new(ua_str);
+    let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
     assert_eq!(ua.device(), DeviceKind::Desktop);
@@ -65,11 +65,11 @@ fn test_parse_windows() {
     assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
 
     // Overwrite http agent
-    let ua = ua.with_http_agent(HttpAgent::Firefox);
+    ua.with_http_agent(HttpAgent::Firefox);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 
     // Overwrite tls agent
-    let ua = ua.with_tls_agent(TlsAgent::Nss);
+    ua.with_tls_agent(TlsAgent::Nss);
     assert_eq!(ua.tls_agent(), TlsAgent::Nss);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 }
@@ -77,7 +77,7 @@ fn test_parse_windows() {
 #[test]
 fn test_parse_chrome() {
     let ua_str = "chrome";
-    let ua = UserAgent::new(ua_str);
+    let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
     assert_eq!(ua.device(), DeviceKind::Desktop);
@@ -95,11 +95,11 @@ fn test_parse_chrome() {
     assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
 
     // Overwrite http agent
-    let ua = ua.with_http_agent(HttpAgent::Firefox);
+    ua.with_http_agent(HttpAgent::Firefox);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 
     // Overwrite tls agent
-    let ua = ua.with_tls_agent(TlsAgent::Nss);
+    ua.with_tls_agent(TlsAgent::Nss);
     assert_eq!(ua.tls_agent(), TlsAgent::Nss);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 }
@@ -107,7 +107,7 @@ fn test_parse_chrome() {
 #[test]
 fn test_parse_windows_chrome() {
     let ua_str = "windows chrome";
-    let ua = UserAgent::new(ua_str);
+    let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
     assert_eq!(ua.device(), DeviceKind::Desktop);
@@ -125,11 +125,11 @@ fn test_parse_windows_chrome() {
     assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
 
     // Overwrite http agent
-    let ua = ua.with_http_agent(HttpAgent::Firefox);
+    ua.with_http_agent(HttpAgent::Firefox);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 
     // Overwrite tls agent
-    let ua = ua.with_tls_agent(TlsAgent::Nss);
+    ua.with_tls_agent(TlsAgent::Nss);
     assert_eq!(ua.tls_agent(), TlsAgent::Nss);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 }
@@ -137,7 +137,7 @@ fn test_parse_windows_chrome() {
 #[test]
 fn test_parse_windows_chrome_with_version() {
     let ua_str = "windows chrome/124";
-    let ua = UserAgent::new(ua_str);
+    let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
     assert_eq!(ua.device(), DeviceKind::Desktop);
@@ -155,11 +155,11 @@ fn test_parse_windows_chrome_with_version() {
     assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
 
     // Overwrite http agent
-    let ua = ua.with_http_agent(HttpAgent::Firefox);
+    ua.with_http_agent(HttpAgent::Firefox);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 
     // Overwrite tls agent
-    let ua = ua.with_tls_agent(TlsAgent::Nss);
+    ua.with_tls_agent(TlsAgent::Nss);
     assert_eq!(ua.tls_agent(), TlsAgent::Nss);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 }
@@ -167,7 +167,7 @@ fn test_parse_windows_chrome_with_version() {
 #[test]
 fn test_parse_mobile_ua() {
     for ua_str in &["mobile", "phone", "tablet"] {
-        let ua = UserAgent::new(*ua_str);
+        let mut ua = UserAgent::new(*ua_str);
 
         assert_eq!(ua.header_str(), *ua_str);
         assert_eq!(ua.device(), DeviceKind::Mobile);
@@ -179,11 +179,11 @@ fn test_parse_mobile_ua() {
         assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
 
         // Overwrite http agent
-        let ua = ua.with_http_agent(HttpAgent::Firefox);
+        ua.with_http_agent(HttpAgent::Firefox);
         assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 
         // Overwrite tls agent
-        let ua = ua.with_tls_agent(TlsAgent::Nss);
+        ua.with_tls_agent(TlsAgent::Nss);
         assert_eq!(ua.tls_agent(), TlsAgent::Nss);
         assert_eq!(ua.http_agent(), HttpAgent::Firefox);
     }
@@ -192,7 +192,7 @@ fn test_parse_mobile_ua() {
 #[test]
 fn test_parse_happy_path_unknown_ua() {
     let ua_str = "rama/0.2.0";
-    let ua = UserAgent::new(ua_str);
+    let mut ua = UserAgent::new(ua_str);
 
     // UA Is always stored as is.
     assert_eq!(ua.header_str(), ua_str);
@@ -207,11 +207,11 @@ fn test_parse_happy_path_unknown_ua() {
     assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
 
     // Overwrite http agent
-    let ua = ua.with_http_agent(HttpAgent::Firefox);
+    ua.with_http_agent(HttpAgent::Firefox);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 
     // Overwrite tls agent
-    let ua = ua.with_tls_agent(TlsAgent::Nss);
+    ua.with_tls_agent(TlsAgent::Nss);
     assert_eq!(ua.tls_agent(), TlsAgent::Nss);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 }
@@ -219,7 +219,7 @@ fn test_parse_happy_path_unknown_ua() {
 #[test]
 fn test_parse_happy_path_ua_macos_chrome() {
     let ua_str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36";
-    let ua = UserAgent::new(ua_str);
+    let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
     assert_eq!(ua.device(), DeviceKind::Desktop);
@@ -237,11 +237,11 @@ fn test_parse_happy_path_ua_macos_chrome() {
     assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
 
     // Overwrite http agent
-    let ua = ua.with_http_agent(HttpAgent::Firefox);
+    ua.with_http_agent(HttpAgent::Firefox);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 
     // Overwrite tls agent
-    let ua = ua.with_tls_agent(TlsAgent::Nss);
+    ua.with_tls_agent(TlsAgent::Nss);
     assert_eq!(ua.tls_agent(), TlsAgent::Nss);
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 }
