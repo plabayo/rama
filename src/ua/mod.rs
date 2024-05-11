@@ -1,6 +1,6 @@
 //! User Agent (UA) parser and types.
 //!
-//! This module provides a parser (`"...".parse::<UserAgent>()`) for User Agents
+//! This module provides a parser ([`UserAgent::new`]) for User Agents
 //! as well as a classifier ([`UserAgentClassifierLayer`]) that can be used to
 //! classify incoming requests based on their [User Agent (header)](crate::http::headers::UserAgent).
 //!
@@ -19,6 +19,17 @@
 //!
 //! User Agent versions are parsed only their most significant version number (major),
 //! we do not parse the version for platforms as these are no longer advertised in contemporary User Agents.
+//!
+//! For UA Classification one can overwrite the [`HttpAgent`] and [`TlsAgent`] advertised by the [`UserAgent`],
+//! using the [`UserAgent::with_http_agent`] and [`UserAgent::with_tls_agent`] methods.
+//!
+//! UA Emulators are adviced to interpret the [`UserAgent`] in the following order:
+//!
+//! 1. first try to find an emulation match using [`UserAgent::header_str`];
+//! 2. otherwise try to find an emulation match using [`UserAgent::info`]: where the [`UserAgentKind`] and [`PlatformKind`] should be matched,
+//!    and the version should be as close as possible to the version of the [`UserAgent`].
+//! 3. otherwise match the [`DeviceKind`] using [`UserAgent::device`].
+//! 4. final fallback is to find emulation data for [`DeviceKind::Desktop`].
 //!
 //! Please open an [issue](https://github.com/plabayo/rama/issues) in case you need support for more User Agents,
 //! and have a good case to make for it. For example we might also support the default user agents used by mobile
