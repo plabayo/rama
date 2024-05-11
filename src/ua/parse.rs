@@ -5,6 +5,10 @@ use super::{
     PlatformKind, UserAgent, UserAgentKind,
 };
 
+/// Maximum length of a User Agent string that we take into consideration.
+/// This is significantly longer then expected in the wild where at most we observed around 300 characters.
+const MAX_UA_LENGTH: usize = 512;
+
 /// parse the http user agent string and return a [`UserAgent`] info,
 /// containing the parsed information or fallback to defaults in case of a parse failure.
 ///
@@ -18,6 +22,14 @@ use super::{
 /// That said. Do open a ticket if you find bugs or think something is missing.
 pub(crate) fn parse_http_user_agent(ua: impl AsRef<str>) -> Result<UserAgent, UserAgentParseError> {
     let ua = ua.as_ref();
+    let ua = if ua.len() > MAX_UA_LENGTH {
+        match ua.get(..MAX_UA_LENGTH) {
+            Some(s) => s,
+            None => return Err(UserAgentParseError),
+        }
+    } else {
+        ua
+    };
 
     let (kind, kind_version, maybe_platform) = if let Some(loc) =
         contains_ignore_ascii_case(ua, "Firefox")

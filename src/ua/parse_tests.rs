@@ -17,6 +17,26 @@ fn test_parse_desktop_ua() {
 }
 
 #[test]
+fn test_parse_too_long_ua() {
+    let ua_str = " ".repeat(512) + "desktop";
+    let ua: UserAgent = ua_str.parse().unwrap();
+
+    assert_eq!(ua.header_str(), Some(" ".repeat(512).as_str()));
+    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.kind(), None);
+    assert_eq!(ua.version(), None);
+    assert_eq!(ua.platform(), None);
+
+    // Http/Tls agents do have defaults
+    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
+    assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
+}
+
+// TODO:
+// - add tests + support: windows, windows+browser, ...
+// - add tests + support: safari => include minor version inside major (major*10 + minor)
+
+#[test]
 fn test_parse_mobile_ua() {
     for ua_str in &["mobile", "phone", "tablet"] {
         let ua: UserAgent = ua_str.parse().unwrap();
