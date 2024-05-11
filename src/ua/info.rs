@@ -3,6 +3,8 @@ use std::{fmt, str::FromStr};
 use super::{parse_http_user_agent, UserAgentParseError};
 
 /// User Agent (UA) information.
+/// 
+/// See [the module level documentation](crate::ua) for more information.
 #[derive(Debug, Clone)]
 pub struct UserAgent {
     pub(super) data: UserAgentData,
