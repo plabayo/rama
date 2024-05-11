@@ -164,9 +164,6 @@ fn test_parse_windows_chrome_with_version() {
     assert_eq!(ua.http_agent(), HttpAgent::Firefox);
 }
 
-// TODO:
-// - add tests + support: safari => include minor version inside major (major*10 + minor)
-
 #[test]
 fn test_parse_mobile_ua() {
     for ua_str in &["mobile", "phone", "tablet"] {
@@ -297,7 +294,7 @@ fn test_parse_happy_uas() {
         TestCase {
             ua: "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4_1 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Mobile/15E148 Safari/604.",
             kind: Some(UserAgentKind::Safari),
-            version: Some(17),
+            version: Some(1704),
             platform: Some(PlatformKind::IOS),
         },
         TestCase {
@@ -309,7 +306,19 @@ fn test_parse_happy_uas() {
         TestCase {
             ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4.1 Safari/605.1.15",
             kind: Some(UserAgentKind::Safari),
-            version: Some(17),
+            version: Some(1704),
+            platform: Some(PlatformKind::MacOS),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.a.1 Safari/605.1.15",
+            kind: Some(UserAgentKind::Safari),
+            version: Some(1700),
+            platform: Some(PlatformKind::MacOS),
+        },
+        TestCase {
+            ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15",
+            kind: Some(UserAgentKind::Safari),
+            version: None,
             platform: Some(PlatformKind::MacOS),
         },
         TestCase {

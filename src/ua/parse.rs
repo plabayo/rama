@@ -167,8 +167,13 @@ fn parse_ua_version_firefox(ua: &str) -> Option<usize> {
 fn parse_ua_version_safari(ua: &str) -> Option<usize> {
     ua.find("Version/").and_then(|i| {
         let start = i + 8;
-        let end = ua[start..].find('.').map(|i| start + i).unwrap_or(ua.len());
-        ua[start..end].parse().ok()
+        let mut parts = ua[start..].split('.');
+        let major: usize = parts.next()?.parse().ok()?;
+        let minor: usize = parts
+            .next()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or_default();
+        Some(major * 100 + minor)
     })
 }
 
