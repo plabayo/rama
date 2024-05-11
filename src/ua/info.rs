@@ -1,85 +1,86 @@
-use std::{fmt, str::FromStr};
-
-use super::{parse_http_user_agent, UserAgentParseError};
+use super::parse_http_user_agent_header;
+use std::fmt;
 
 /// User Agent (UA) information.
 ///
 /// See [the module level documentation](crate::ua) for more information.
 #[derive(Debug, Clone)]
 pub struct UserAgent {
+    pub(super) header: String,
     pub(super) data: UserAgentData,
+    pub(super) http_agent_overwrite: Option<HttpAgent>,
+    pub(super) tls_agent_overwrite: Option<TlsAgent>,
 }
 
 /// internal representation of the [`UserAgent`]
 #[derive(Debug, Clone)]
 pub(super) enum UserAgentData {
-    Known(UserAgentInfo),
-    Desktop,
-    Mobile,
+    Standard {
+        info: UserAgentInfo,
+        platform: Option<PlatformKind>,
+    },
+    Platform(PlatformKind),
+    Device(DeviceKind),
+    Unknown,
 }
 
 /// Information about the [`UserAgent`]
-#[derive(Debug, Clone)]
-pub(super) struct UserAgentInfo {
-    /// The 'User-Agent' http header value used by the [`UserAgent`].
-    pub(super) http_user_agent: String,
-
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct UserAgentInfo {
     /// The kind of [`UserAgent`]
-    pub(super) kind: Option<UserAgentKind>,
-    /// The major version of the [`UserAgent`]
-    pub(super) version: Option<usize>,
-
-    /// The PlatformKind used by the [`UserAgent`]
-    pub(super) platform: Option<PlatformKind>,
-}
-
-impl FromStr for UserAgent {
-    type Err = UserAgentParseError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        parse_http_user_agent(s)
-    }
+    pub kind: UserAgentKind,
+    /// The version of the [`UserAgent`]
+    pub version: Option<usize>,
 }
 
 impl UserAgent {
-    /// returns the 'User-Agent' http header value used by the [`UserAgent`].
-    pub fn header_str(&self) -> Option<&str> {
-        if let UserAgentData::Known(info) = &self.data {
-            Some(&info.http_user_agent)
-        } else {
-            None
-        }
+    /// Create a new [`UserAgent`] from a [`User-Agent` header](crate::http::headers::UserAgent) value.
+    pub fn new(header: impl Into<String>) -> Self {
+        parse_http_user_agent_header(header.into())
+    }
+
+    /// Overwrite the [`HttpAgent`] advertised by the [`UserAgent`].
+    pub fn with_http_agent(mut self, http_agent: HttpAgent) -> Self {
+        self.http_agent_overwrite = Some(http_agent);
+        self
+    }
+
+    /// Overwrite the [`TlsAgent`] advertised by the [`UserAgent`].
+    pub fn with_tls_agent(mut self, tls_agent: TlsAgent) -> Self {
+        self.tls_agent_overwrite = Some(tls_agent);
+        self
+    }
+
+    /// returns [the 'User-Agent' http header](crate::http::headers::UserAgent) value used by the [`UserAgent`].
+    pub fn header_str(&self) -> &str {
+        &self.header
     }
 
     /// returns the device kind of the [`UserAgent`].
     pub fn device(&self) -> DeviceKind {
         match &self.data {
-            UserAgentData::Known(info) => match info.platform {
+            UserAgentData::Standard { platform, .. } => match platform {
                 Some(PlatformKind::Windows | PlatformKind::MacOS | PlatformKind::Linux) | None => {
                     DeviceKind::Desktop
                 }
                 Some(PlatformKind::Android | PlatformKind::IOS) => DeviceKind::Mobile,
             },
-            UserAgentData::Desktop => DeviceKind::Desktop,
-            UserAgentData::Mobile => DeviceKind::Mobile,
+            UserAgentData::Platform(platform) => match platform {
+                PlatformKind::Windows | PlatformKind::MacOS | PlatformKind::Linux => {
+                    DeviceKind::Desktop
+                }
+                PlatformKind::Android | PlatformKind::IOS => DeviceKind::Mobile,
+            },
+            UserAgentData::Device(kind) => *kind,
+            UserAgentData::Unknown => DeviceKind::Desktop,
         }
     }
 
-    /// returns the kind of [`UserAgent`], if known.
-    pub fn kind(&self) -> Option<UserAgentKind> {
-        if let UserAgentData::Known(info) = &self.data {
-            info.kind
-        } else {
-            None
-        }
-    }
-
-    /// returns the major version of the [`UserAgent`], if known.
-    ///
-    /// This is the version of the distribution, not the version a component such as the rendering engine.
-    pub fn version(&self) -> Option<usize> {
-        if let UserAgentData::Known(info) = &self.data {
-            info.version
+    /// returns the [`UserAgent`] information, containing
+    /// the [`UserAgentKind`] and version if known.
+    pub fn info(&self) -> Option<UserAgentInfo> {
+        if let UserAgentData::Standard { info, .. } = &self.data {
+            Some(info.clone())
         } else {
             None
         }
@@ -87,12 +88,12 @@ impl UserAgent {
 
     /// returns the [`PlatformKind`] used by the [`UserAgent`], if known.
     ///
-    /// This is the platform the UA is running on.
+    /// This is the platform the [`UserAgent`] is running on.
     pub fn platform(&self) -> Option<PlatformKind> {
-        if let UserAgentData::Known(info) = &self.data {
-            info.platform
-        } else {
-            None
+        match &self.data {
+            UserAgentData::Standard { platform, .. } => *platform,
+            UserAgentData::Platform(platform) => Some(*platform),
+            _ => None,
         }
     }
 
@@ -100,25 +101,38 @@ impl UserAgent {
     ///
     /// [`UserAgent`]: crate::ua::UserAgent
     pub fn http_agent(&self) -> HttpAgent {
-        self.kind()
-            .map(|kind| match kind {
-                UserAgentKind::Chromium => HttpAgent::Chromium,
-                UserAgentKind::Firefox => HttpAgent::Firefox,
-                UserAgentKind::Safari => HttpAgent::Safari,
-            })
-            .unwrap_or(HttpAgent::Chromium)
+        match &self.http_agent_overwrite {
+            Some(agent) => agent.clone(),
+            None => match &self.data {
+                UserAgentData::Standard { info, .. } => match info.kind {
+                    UserAgentKind::Chromium => HttpAgent::Chromium,
+                    UserAgentKind::Firefox => HttpAgent::Firefox,
+                    UserAgentKind::Safari => HttpAgent::Safari,
+                },
+                UserAgentData::Device(_) | UserAgentData::Platform(_) | UserAgentData::Unknown => {
+                    HttpAgent::Chromium
+                }
+            },
+        }
     }
 
     /// returns the [`TlsAgent`] used by the [`UserAgent`].
     ///
     /// [`UserAgent`]: crate::ua::UserAgent
     pub fn tls_agent(&self) -> TlsAgent {
-        self.kind()
-            .map(|kind| match kind {
-                UserAgentKind::Chromium => TlsAgent::Boringssl,
-                UserAgentKind::Firefox | UserAgentKind::Safari => TlsAgent::Rustls,
-            })
-            .unwrap_or(TlsAgent::Rustls)
+        match &self.tls_agent_overwrite {
+            Some(agent) => agent.clone(),
+            None => match &self.data {
+                UserAgentData::Standard { info, .. } => match info.kind {
+                    UserAgentKind::Chromium => TlsAgent::Boringssl,
+                    UserAgentKind::Firefox => TlsAgent::Nss,
+                    UserAgentKind::Safari => TlsAgent::Rustls,
+                },
+                UserAgentData::Device(_) | UserAgentData::Platform(_) | UserAgentData::Unknown => {
+                    TlsAgent::Rustls
+                }
+            },
+        }
     }
 }
 

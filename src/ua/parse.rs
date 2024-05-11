@@ -2,7 +2,7 @@
 
 use super::{
     info::{UserAgentData, UserAgentInfo},
-    PlatformKind, UserAgent, UserAgentKind,
+    DeviceKind, PlatformKind, UserAgent, UserAgentKind,
 };
 
 /// Maximum length of a User Agent string that we take into consideration.
@@ -20,12 +20,19 @@ const MAX_UA_LENGTH: usize = 512;
 /// - complete: we do not care about all the possible user agents out there, only the popular ones.
 ///
 /// That said. Do open a ticket if you find bugs or think something is missing.
-pub(crate) fn parse_http_user_agent(ua: impl AsRef<str>) -> Result<UserAgent, UserAgentParseError> {
-    let ua = ua.as_ref();
+pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
+    let ua = header.as_str();
     let ua = if ua.len() > MAX_UA_LENGTH {
         match ua.get(..MAX_UA_LENGTH) {
             Some(s) => s,
-            None => return Err(UserAgentParseError),
+            None => {
+                return UserAgent {
+                    header,
+                    data: UserAgentData::Unknown,
+                    http_agent_overwrite: None,
+                    tls_agent_overwrite: None,
+                }
+            }
         }
     } else {
         ua
@@ -60,13 +67,19 @@ pub(crate) fn parse_http_user_agent(ua: impl AsRef<str>) -> Result<UserAgent, Us
             (Some(kind), kind_version, None)
         }
     } else if contains_any_ignore_ascii_case(ua, &["Mobile", "Phone", "Tablet", "Zune"]).is_some() {
-        return Ok(UserAgent {
-            data: UserAgentData::Mobile,
-        });
+        return UserAgent {
+            header,
+            data: UserAgentData::Device(DeviceKind::Mobile),
+            http_agent_overwrite: None,
+            tls_agent_overwrite: None,
+        };
     } else if contains_ignore_ascii_case(ua, "Desktop").is_some() {
-        return Ok(UserAgent {
-            data: UserAgentData::Desktop,
-        });
+        return UserAgent {
+            header,
+            data: UserAgentData::Device(DeviceKind::Desktop),
+            http_agent_overwrite: None,
+            tls_agent_overwrite: None,
+        };
     } else {
         (None, None, None)
     };
@@ -110,14 +123,29 @@ pub(crate) fn parse_http_user_agent(ua: impl AsRef<str>) -> Result<UserAgent, Us
         }
     };
 
-    Ok(UserAgent {
-        data: UserAgentData::Known(UserAgentInfo {
-            http_user_agent: ua.to_owned(),
-            kind,
-            version: kind_version,
-            platform: maybe_platform,
-        }),
-    })
+    match (kind, kind_version, maybe_platform) {
+        (Some(kind), version, platform) => UserAgent {
+            header,
+            data: UserAgentData::Standard {
+                info: UserAgentInfo { kind, version },
+                platform,
+            },
+            http_agent_overwrite: None,
+            tls_agent_overwrite: None,
+        },
+        (None, _, Some(platform)) => UserAgent {
+            header,
+            data: UserAgentData::Platform(platform),
+            http_agent_overwrite: None,
+            tls_agent_overwrite: None,
+        },
+        (None, _, None) => UserAgent {
+            header,
+            data: UserAgentData::Unknown,
+            http_agent_overwrite: None,
+            tls_agent_overwrite: None,
+        },
+    }
 }
 
 fn parse_ua_version_chromium(ua: &str) -> Option<usize> {
@@ -143,11 +171,6 @@ fn parse_ua_version_safari(ua: &str) -> Option<usize> {
         ua[start..end].parse().ok()
     })
 }
-
-/// Errors returned for [`UserAgent`] parsing that went wrong.
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct UserAgentParseError;
 
 fn contains_ignore_ascii_case(s: &str, sub: &str) -> Option<usize> {
     let n = sub.len();

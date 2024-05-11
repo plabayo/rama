@@ -79,7 +79,7 @@ where
         if let Some(ua) = req
             .headers()
             .typed_get::<headers::UserAgent>()
-            .and_then(|ua| ua.as_str().parse::<UserAgent>().ok())
+            .map(|ua| UserAgent::new(ua.to_string()))
         {
             ctx.insert(ua);
         }
@@ -129,10 +129,9 @@ mod tests {
 
             assert_eq!(
                 ua.header_str(),
-                Some(format!("{}/{}", crate::info::NAME, crate::info::VERSION).as_str())
+                format!("{}/{}", crate::info::NAME, crate::info::VERSION).as_str(),
             );
-            assert!(ua.kind().is_none());
-            assert!(ua.version().is_none());
+            assert!(ua.info().is_none());
             assert!(ua.platform().is_none());
 
             Ok(StatusCode::OK.into_response())
@@ -156,9 +155,10 @@ mod tests {
         async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
             let ua: &UserAgent = ctx.get().unwrap();
 
-            assert_eq!(ua.header_str(), Some(UA),);
-            assert_eq!(ua.kind(), Some(UserAgentKind::Chromium));
-            assert_eq!(ua.version(), Some(124));
+            assert_eq!(ua.header_str(), UA);
+            let ua_info = ua.info().unwrap();
+            assert_eq!(ua_info.kind, UserAgentKind::Chromium);
+            assert_eq!(ua_info.version, Some(124));
             assert_eq!(ua.platform(), Some(PlatformKind::Windows));
 
             Ok(StatusCode::OK.into_response())

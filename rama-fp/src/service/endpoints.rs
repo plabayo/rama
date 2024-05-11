@@ -532,7 +532,7 @@ impl From<UserAgentInfo> for Table {
         Self {
             title: "👤 User Agent Info".to_owned(),
             rows: vec![
-                ("User Agent".to_owned(), info.user_agent.unwrap_or_default()),
+                ("User Agent".to_owned(), info.user_agent),
                 ("Kind".to_owned(), info.kind.unwrap_or_default()),
                 (
                     "Version".to_owned(),

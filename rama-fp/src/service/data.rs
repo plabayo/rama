@@ -104,7 +104,7 @@ impl Default for DataSource {
 
 #[derive(Debug, Default, Clone, Serialize)]
 pub struct UserAgentInfo {
-    pub user_agent: Option<String>,
+    pub user_agent: String,
     pub kind: Option<String>,
     pub version: Option<usize>,
     pub platform: Option<String>,
@@ -126,11 +126,11 @@ pub struct RequestInfo {
 
 pub async fn get_user_agent_info(ctx: &Context<State>) -> UserAgentInfo {
     ctx.get()
-        .map(|info: &UserAgent| UserAgentInfo {
-            user_agent: info.header_str().map(|v| v.to_owned()),
-            kind: info.kind().map(|v| v.to_string()),
-            version: info.version(),
-            platform: info.platform().map(|v| v.to_string()),
+        .map(|ua: &UserAgent| UserAgentInfo {
+            user_agent: ua.header_str().to_owned(),
+            kind: ua.info().map(|info| info.kind.to_string()),
+            version: ua.info().and_then(|info| info.version),
+            platform: ua.platform().map(|v| v.to_string()),
         })
         .unwrap_or_default()
 }

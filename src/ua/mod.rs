@@ -30,7 +30,7 @@
 //! use rama::{
 //!     http::{client::HttpClientExt, IntoResponse, Request, Response, StatusCode},
 //!     service::{Context, ServiceBuilder},
-//!     ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind},
+//!     ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
 //! };
 //! use std::convert::Infallible;
 //!
@@ -39,9 +39,8 @@
 //! async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
 //!     let ua: &UserAgent = ctx.get().unwrap();
 //!
-//!     assert_eq!(ua.header_str(), Some(UA),);
-//!     assert_eq!(ua.kind(), Some(UserAgentKind::Chromium));
-//!     assert_eq!(ua.version(), Some(124));
+//!     assert_eq!(ua.header_str(), UA);
+//!     assert_eq!(ua.info(), Some(UserAgentInfo{ kind: UserAgentKind::Chromium, version: Some(124) }));
 //!     assert_eq!(ua.platform(), Some(PlatformKind::Windows));
 //!
 //!     Ok(StatusCode::OK.into_response())
@@ -63,11 +62,12 @@
 //! ```
 
 mod info;
-pub use info::{DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentKind};
+pub use info::{
+    DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentInfo, UserAgentKind,
+};
 
 mod parse;
-use parse::parse_http_user_agent;
-pub use parse::UserAgentParseError;
+use parse::parse_http_user_agent_header;
 
 mod layer;
 pub use layer::{UserAgentClassifier, UserAgentClassifierLayer};

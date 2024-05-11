@@ -44,8 +44,8 @@ async fn handle(ctx: Context<()>, _req: Request) -> Result<Response, Infallible>
     let ua: &UserAgent = ctx.get().unwrap();
     Ok(Json(json!({
         "ua": ua.header_str(),
-        "kind": ua.kind().map(|k| k.to_string()),
-        "version": ua.version(),
+        "kind": ua.info().map(|info| info.kind.to_string()),
+        "version": ua.info().and_then(|info| info.version),
         "platform": ua.platform().map(|p| p.to_string()),
     }))
     .into_response())
