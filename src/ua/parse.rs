@@ -31,6 +31,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
                     data: UserAgentData::Unknown,
                     http_agent_overwrite: None,
                     tls_agent_overwrite: None,
+                    preserve_ua_header: false,
                 }
             }
         }
@@ -72,6 +73,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
             data: UserAgentData::Device(DeviceKind::Mobile),
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
+            preserve_ua_header: false,
         };
     } else if contains_ignore_ascii_case(ua, "Desktop").is_some() {
         return UserAgent {
@@ -79,6 +81,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
             data: UserAgentData::Device(DeviceKind::Desktop),
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
+            preserve_ua_header: false,
         };
     } else {
         (None, None, None)
@@ -132,18 +135,21 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
             },
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
+            preserve_ua_header: false,
         },
         (None, _, Some(platform)) => UserAgent {
             header,
             data: UserAgentData::Platform(platform),
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
+            preserve_ua_header: false,
         },
         (None, _, None) => UserAgent {
             header,
             data: UserAgentData::Unknown,
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
+            preserve_ua_header: false,
         },
     }
 }

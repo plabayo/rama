@@ -42,6 +42,8 @@ pub struct UserAgentOverwrites {
     pub http: Option<HttpAgent>,
     /// Overwrite the [`TlsAgent`] of the [`Request`] with a custom value.
     pub tls: Option<TlsAgent>,
+    /// Preserve the original [`UserAgent`] header of the [`Request`].
+    pub preserve_ua: Option<bool>,
 }
 
 impl<S> UserAgentClassifier<S> {
@@ -123,6 +125,9 @@ where
                 }
                 if let Some(tls_agent) = overwrites.tls {
                     ua.with_tls_agent(tls_agent);
+                }
+                if let Some(preserve_ua) = overwrites.preserve_ua {
+                    ua.with_preserve_ua_header(preserve_ua);
                 }
             }
         }
@@ -284,6 +289,7 @@ mod tests {
             assert!(ua.platform().is_none());
             assert_eq!(ua.http_agent(), HttpAgent::Safari);
             assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+            assert_eq!(ua.preserve_ua_header(), true);
 
             Ok(StatusCode::OK.into_response())
         }
@@ -303,6 +309,7 @@ mod tests {
                     ua: Some(UA.to_owned()),
                     http: Some(HttpAgent::Safari),
                     tls: Some(TlsAgent::Boringssl),
+                    preserve_ua: Some(true),
                 })
                 .unwrap(),
             )

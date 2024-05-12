@@ -12,6 +12,7 @@ pub struct UserAgent {
     pub(super) data: UserAgentData,
     pub(super) http_agent_overwrite: Option<HttpAgent>,
     pub(super) tls_agent_overwrite: Option<TlsAgent>,
+    pub(super) preserve_ua_header: bool,
 }
 
 impl fmt::Display for UserAgent {
@@ -57,6 +58,21 @@ impl UserAgent {
     pub fn with_tls_agent(&mut self, tls_agent: TlsAgent) -> &mut Self {
         self.tls_agent_overwrite = Some(tls_agent);
         self
+    }
+
+    /// Preserve the incoming [`User-Agent` header](crate::http::headers::UserAgent) value.
+    ///
+    /// This is used to indicate to emulators that they should respect the User-Agent header
+    /// attached to this [`UserAgent`], if possible.
+    pub fn with_preserve_ua_header(&mut self, preserve: bool) -> &mut Self {
+        self.preserve_ua_header = preserve;
+        self
+    }
+
+    /// returns whether the [`UserAgent`] consumer should try to preserve
+    /// the [`UserAgent::header_str`] value if possible.
+    pub fn preserve_ua_header(&self) -> bool {
+        self.preserve_ua_header
     }
 
     /// returns [the 'User-Agent' http header](crate::http::headers::UserAgent) value used by the [`UserAgent`].
@@ -196,15 +212,15 @@ impl fmt::Display for DeviceKind {
 /// Platform within the [`UserAgent`] operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlatformKind {
-    /// Windows Platform (desktop)
+    /// Windows Platform ([`Desktop`](DeviceKind::Desktop))
     Windows,
-    /// MacOS Platform (desktop)
+    /// MacOS Platform ([`Desktop`](DeviceKind::Desktop))
     MacOS,
-    /// Linux Platform (desktop)
+    /// Linux Platform ([`Desktop`](DeviceKind::Desktop))
     Linux,
-    /// Android Platform (mobile)
+    /// Android Platform ([`Mobile`](DeviceKind::Mobile))
     Android,
-    /// iOS Platform (mobile)
+    /// iOS Platform ([`Mobile`](DeviceKind::Mobile))
     IOS,
 }
 
