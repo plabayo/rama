@@ -88,3 +88,6 @@ bench:
 
 vet:
 	cargo vet
+
+miri:
+	cargo +nightly miri test
