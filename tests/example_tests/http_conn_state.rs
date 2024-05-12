@@ -7,6 +7,8 @@ use rama::{
 #[tokio::test]
 #[ignore]
 async fn test_http_conn_state() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("http_conn_state");
 
     let response = runner

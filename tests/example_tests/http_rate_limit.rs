@@ -5,6 +5,8 @@ use std::sync::Arc;
 #[tokio::test]
 #[ignore]
 async fn test_http_rate_limit() {
+    utils::init_tracing();
+
     let runner: Arc<utils::ExampleRunner<()>> =
         Arc::new(utils::ExampleRunner::interactive("http_rate_limit"));
 

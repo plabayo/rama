@@ -6,6 +6,8 @@ use serde_json::{self, json, Value};
 #[tokio::test]
 #[ignore]
 async fn test_http_listener_hello() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("http_listener_hello");
 
     let value = runner

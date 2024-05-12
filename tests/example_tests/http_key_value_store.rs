@@ -9,6 +9,8 @@ use serde_json::json;
 #[tokio::test]
 #[ignore]
 async fn test_example_http_form() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("http_key_value_store");
 
     // store multiple key value pairs

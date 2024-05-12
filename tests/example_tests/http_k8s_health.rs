@@ -4,6 +4,8 @@ use rama::{http::StatusCode, service::Context};
 #[tokio::test]
 #[ignore]
 async fn test_http_conn_state() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("http_k8s_health");
 
     let response = runner

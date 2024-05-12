@@ -4,6 +4,8 @@ use rama::{http::BodyExtractExt, service::Context};
 #[tokio::test]
 #[ignore]
 async fn test_http_prometheus() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("http_telemetry");
 
     let homepage = runner

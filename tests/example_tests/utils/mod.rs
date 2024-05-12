@@ -20,9 +20,12 @@ use rama::{
 };
 use std::{
     process::{Child, ExitStatus},
+    sync::Once,
     time::Duration,
 };
 use tokio::net::ToSocketAddrs;
+use tracing::level_filters::LevelFilter;
+use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 pub type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
@@ -30,6 +33,26 @@ pub type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 pub struct ExampleRunner<State = ()> {
     server_process: Child,
     client: ClientService<State>,
+}
+
+/// to ensure we only ever register tracing once,
+/// in the first test that gets run.
+///
+/// Dirty but it works, good enough for tests.
+static INIT_TRACING_ONCE: Once = Once::new();
+
+/// Initialize tracing for example tests
+pub fn init_tracing() {
+    INIT_TRACING_ONCE.call_once(|| {
+        tracing_subscriber::registry()
+            .with(fmt::layer())
+            .with(
+                EnvFilter::builder()
+                    .with_default_directive(LevelFilter::TRACE.into())
+                    .from_env_lossy(),
+            )
+            .init();
+    });
 }
 
 impl<State> ExampleRunner<State>

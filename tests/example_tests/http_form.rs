@@ -5,6 +5,8 @@ use serde::Serialize;
 #[tokio::test]
 #[ignore]
 async fn test_example_http_form() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("http_form");
 
     #[derive(Serialize)]

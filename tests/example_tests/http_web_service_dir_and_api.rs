@@ -7,6 +7,8 @@ use rama::{
 #[tokio::test]
 #[ignore]
 async fn test_http_web_service_dir_and_api() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("http_web_service_dir_and_api");
 
     // test index.html via directory service

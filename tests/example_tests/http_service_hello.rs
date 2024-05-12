@@ -5,6 +5,8 @@ use regex::Regex;
 #[tokio::test]
 #[ignore]
 async fn test_http_service_fs() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("http_service_hello");
 
     let res_str = runner

@@ -6,6 +6,8 @@ use rama::ua::{HttpAgent, TlsAgent, UserAgentOverwrites};
 #[tokio::test]
 #[ignore]
 async fn test_http_user_agent_classifier() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("http_user_agent_classifier");
 
     #[derive(Debug, serde::Deserialize)]

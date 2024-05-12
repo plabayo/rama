@@ -6,6 +6,8 @@ const EXPECTED_FILE_CONTENT: &str = include_str!("../../examples/tcp_listener_he
 #[tokio::test]
 #[ignore]
 async fn test_tcp_listener_hello() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("tcp_listener_hello");
 
     let file_content = runner

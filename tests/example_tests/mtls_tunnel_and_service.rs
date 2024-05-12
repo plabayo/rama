@@ -5,6 +5,8 @@ use rama::service::Context;
 #[tokio::test]
 #[ignore]
 async fn test_mtls_tunnel_and_service() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("mtls_tunnel_and_service");
 
     // TODO: once http client supports https,

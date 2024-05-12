@@ -4,6 +4,8 @@ use rama::{http::BodyExtractExt, service::Context};
 #[tokio::test]
 #[ignore]
 async fn test_tls_termination() {
+    utils::init_tracing();
+
     let runner = utils::ExampleRunner::interactive("tls_termination");
 
     let reply = runner
