@@ -15,10 +15,13 @@
 //! - All _Firefox_ User Agents are classified as [`UserAgentKind::Firefox`];
 //! - All _Safari_ User Agents are classified as [`UserAgentKind::Safari`];
 //!
-//! The only platforms recognised are `Windows`, `MacOS`, `Linux`, `Android`, and `iOS`.
+//! The only [`Platform`](PlatformKind)s recognised are [`Windows`](PlatformKind::Windows),
+//! [`MacOS`](PlatformKind::MacOS), [`Linux`](PlatformKind::Linux),
+//! [`Android`](PlatformKind::Android), and [`iOS`](PlatformKind::IOS).
 //!
-//! User Agent versions are parsed only their most significant version number (major),
-//! we do not parse the version for platforms as these are no longer advertised in contemporary User Agents.
+//! User Agent versions are parsed only their most significant version number (e.g. `124` for `Chrome/124.0.0`
+//! and `1704` for `Safari Version/17.4`). We do not parse the version for platforms as
+//! these are no longer advertised in contemporary User Agents.
 //!
 //! For UA Classification one can overwrite the [`HttpAgent`] and [`TlsAgent`] advertised by the [`UserAgent`],
 //! using the [`UserAgent::with_http_agent`] and [`UserAgent::with_tls_agent`] methods.
