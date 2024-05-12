@@ -1,7 +1,7 @@
-use serde::{Deserialize, Deserializer, Serialize};
-
 use super::parse_http_user_agent_header;
-use std::fmt;
+use crate::error::{error, OpaqueError};
+use serde::{Deserialize, Deserializer, Serialize};
+use std::{convert::Infallible, fmt, str::FromStr};
 
 /// User Agent (UA) information.
 ///
@@ -12,6 +12,12 @@ pub struct UserAgent {
     pub(super) data: UserAgentData,
     pub(super) http_agent_overwrite: Option<HttpAgent>,
     pub(super) tls_agent_overwrite: Option<TlsAgent>,
+}
+
+impl fmt::Display for UserAgent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.header)
+    }
 }
 
 /// internal representation of the [`UserAgent`]
@@ -138,6 +144,14 @@ impl UserAgent {
     }
 }
 
+impl FromStr for UserAgent {
+    type Err = Infallible;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(UserAgent::new(s))
+    }
+}
+
 /// The kind of [`UserAgent`]
 ///
 /// [`UserAgent`]: crate::ua::UserAgent
@@ -215,6 +229,11 @@ pub enum HttpAgent {
     Firefox,
     /// Safari also has its own http implementation
     Safari,
+    /// Preserve the incoming Http Agent as much as possible.
+    ///
+    /// For emulators this means that emulators will aim to have a
+    /// hands-off approach to the incoming http request.
+    Preserve,
 }
 
 impl Serialize for HttpAgent {
@@ -226,6 +245,7 @@ impl Serialize for HttpAgent {
             HttpAgent::Chromium => serializer.serialize_str("Chromium"),
             HttpAgent::Firefox => serializer.serialize_str("Firefox"),
             HttpAgent::Safari => serializer.serialize_str("Safari"),
+            HttpAgent::Preserve => serializer.serialize_str("Preserve"),
         }
     }
 }
@@ -238,10 +258,27 @@ impl<'de> Deserialize<'de> for HttpAgent {
         let s = String::deserialize(deserializer)?;
         match_ignore_ascii_case_str! {
             match (s.as_str()) {
-                "" | "chrome" | "chromium" => Ok(HttpAgent::Chromium),
+                "chrome" | "chromium" => Ok(HttpAgent::Chromium),
                 "Firefox" => Ok(HttpAgent::Firefox),
                 "Safari" => Ok(HttpAgent::Safari),
+                "preserve" => Ok(HttpAgent::Preserve),
                 _ => Err(serde::de::Error::custom("invalid http agent")),
+            }
+        }
+    }
+}
+
+impl FromStr for HttpAgent {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match_ignore_ascii_case_str! {
+            match (s) {
+                "chrome" | "chromium" => Ok(HttpAgent::Chromium),
+                "Firefox" => Ok(HttpAgent::Firefox),
+                "Safari" => Ok(HttpAgent::Safari),
+                "preserve" => Ok(HttpAgent::Preserve),
+                _ => Err(error!("invalid http agent: {}", s)),
             }
         }
     }
@@ -253,6 +290,7 @@ impl fmt::Display for HttpAgent {
             HttpAgent::Chromium => write!(f, "Chromium"),
             HttpAgent::Firefox => write!(f, "Firefox"),
             HttpAgent::Safari => write!(f, "Safari"),
+            HttpAgent::Preserve => write!(f, "Preserve"),
         }
     }
 }
@@ -267,6 +305,12 @@ pub enum TlsAgent {
     Boringssl,
     /// NSS is used for Firefox
     Nss,
+    /// Preserve the incoming TlsAgent as much as possible.
+    ///
+    /// For this Tls this means that emulators can try to
+    /// preserve details of the incoming Tls connection
+    /// such as the (Tls) Client Hello.
+    Preserve,
 }
 
 impl fmt::Display for TlsAgent {
@@ -275,6 +319,7 @@ impl fmt::Display for TlsAgent {
             TlsAgent::Rustls => write!(f, "Rustls"),
             TlsAgent::Boringssl => write!(f, "Boringssl"),
             TlsAgent::Nss => write!(f, "NSS"),
+            TlsAgent::Preserve => write!(f, "Preserve"),
         }
     }
 }
@@ -288,6 +333,7 @@ impl Serialize for TlsAgent {
             TlsAgent::Rustls => serializer.serialize_str("Rustls"),
             TlsAgent::Boringssl => serializer.serialize_str("Boringssl"),
             TlsAgent::Nss => serializer.serialize_str("NSS"),
+            TlsAgent::Preserve => serializer.serialize_str("Preserve"),
         }
     }
 }
@@ -300,11 +346,201 @@ impl<'de> Deserialize<'de> for TlsAgent {
         let s = String::deserialize(deserializer)?;
         match_ignore_ascii_case_str! {
             match (s.as_str()) {
-                "" | "tls" | "rustls" | "std" | "standard" | "default" => Ok(TlsAgent::Rustls),
+                "rustls" => Ok(TlsAgent::Rustls),
                 "boring" | "boringssl" => Ok(TlsAgent::Boringssl),
                 "nss" => Ok(TlsAgent::Nss),
+                "preserve" => Ok(TlsAgent::Preserve),
                 _ => Err(serde::de::Error::custom("invalid tls agent")),
             }
         }
+    }
+}
+
+impl FromStr for TlsAgent {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match_ignore_ascii_case_str! {
+            match (s) {
+                "rustls" => Ok(TlsAgent::Rustls),
+                "boring" | "boringssl" => Ok(TlsAgent::Boringssl),
+                "nss" => Ok(TlsAgent::Nss),
+                "preserve" => Ok(TlsAgent::Preserve),
+                _ => Err(error!("invalid tls agent: {}", s)),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_user_agent_new() {
+        let ua = UserAgent::new("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".to_owned());
+        assert_eq!(ua.header_str(), "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        assert_eq!(
+            ua.info(),
+            Some(UserAgentInfo {
+                kind: UserAgentKind::Chromium,
+                version: Some(124)
+            })
+        );
+        assert_eq!(ua.platform(), Some(PlatformKind::MacOS));
+        assert_eq!(ua.device(), DeviceKind::Desktop);
+        assert_eq!(ua.http_agent(), HttpAgent::Chromium);
+        assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+    }
+
+    #[test]
+    fn test_user_agent_parse() {
+        let ua: UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".parse().unwrap();
+        assert_eq!(ua.header_str(), "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        assert_eq!(
+            ua.info(),
+            Some(UserAgentInfo {
+                kind: UserAgentKind::Chromium,
+                version: Some(124)
+            })
+        );
+        assert_eq!(ua.platform(), Some(PlatformKind::MacOS));
+        assert_eq!(ua.device(), DeviceKind::Desktop);
+        assert_eq!(ua.http_agent(), HttpAgent::Chromium);
+        assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+    }
+
+    #[test]
+    fn test_user_agent_display() {
+        let ua: UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".parse().unwrap();
+        assert_eq!(ua.to_string(), "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+    }
+
+    #[test]
+    fn test_tls_agent_parse() {
+        assert_eq!("rustls".parse::<TlsAgent>().unwrap(), TlsAgent::Rustls);
+        assert_eq!("rUsTlS".parse::<TlsAgent>().unwrap(), TlsAgent::Rustls);
+
+        assert_eq!("boring".parse::<TlsAgent>().unwrap(), TlsAgent::Boringssl);
+        assert_eq!("BoRiNg".parse::<TlsAgent>().unwrap(), TlsAgent::Boringssl);
+
+        assert_eq!("nss".parse::<TlsAgent>().unwrap(), TlsAgent::Nss);
+        assert_eq!("NSS".parse::<TlsAgent>().unwrap(), TlsAgent::Nss);
+
+        assert_eq!("preserve".parse::<TlsAgent>().unwrap(), TlsAgent::Preserve);
+        assert_eq!("Preserve".parse::<TlsAgent>().unwrap(), TlsAgent::Preserve);
+
+        assert!("".parse::<TlsAgent>().is_err());
+        assert!("invalid".parse::<TlsAgent>().is_err());
+    }
+
+    #[test]
+    fn test_tls_agent_deserialize() {
+        assert_eq!(
+            serde_json::from_str::<TlsAgent>(r#""rustls""#).unwrap(),
+            TlsAgent::Rustls
+        );
+        assert_eq!(
+            serde_json::from_str::<TlsAgent>(r#""RuStLs""#).unwrap(),
+            TlsAgent::Rustls
+        );
+
+        assert_eq!(
+            serde_json::from_str::<TlsAgent>(r#""boringssl""#).unwrap(),
+            TlsAgent::Boringssl
+        );
+        assert_eq!(
+            serde_json::from_str::<TlsAgent>(r#""BoringSSL""#).unwrap(),
+            TlsAgent::Boringssl
+        );
+
+        assert_eq!(
+            serde_json::from_str::<TlsAgent>(r#""nss""#).unwrap(),
+            TlsAgent::Nss
+        );
+        assert_eq!(
+            serde_json::from_str::<TlsAgent>(r#""NsS""#).unwrap(),
+            TlsAgent::Nss
+        );
+
+        assert_eq!(
+            serde_json::from_str::<TlsAgent>(r#""preserve""#).unwrap(),
+            TlsAgent::Preserve
+        );
+        assert_eq!(
+            serde_json::from_str::<TlsAgent>(r#""PreSeRvE""#).unwrap(),
+            TlsAgent::Preserve
+        );
+
+        assert!(serde_json::from_str::<TlsAgent>(r#""invalid""#).is_err());
+        assert!(serde_json::from_str::<TlsAgent>(r#""""#).is_err());
+        assert!(serde_json::from_str::<TlsAgent>("1").is_err());
+    }
+
+    #[test]
+    fn test_http_agent_parse() {
+        assert_eq!("chrome".parse::<HttpAgent>().unwrap(), HttpAgent::Chromium);
+        assert_eq!("ChRoMe".parse::<HttpAgent>().unwrap(), HttpAgent::Chromium);
+
+        assert_eq!("firefox".parse::<HttpAgent>().unwrap(), HttpAgent::Firefox);
+        assert_eq!("FiReFoX".parse::<HttpAgent>().unwrap(), HttpAgent::Firefox);
+
+        assert_eq!("safari".parse::<HttpAgent>().unwrap(), HttpAgent::Safari);
+        assert_eq!("SaFaRi".parse::<HttpAgent>().unwrap(), HttpAgent::Safari);
+
+        assert_eq!(
+            "preserve".parse::<HttpAgent>().unwrap(),
+            HttpAgent::Preserve
+        );
+        assert_eq!(
+            "Preserve".parse::<HttpAgent>().unwrap(),
+            HttpAgent::Preserve
+        );
+
+        assert!("".parse::<HttpAgent>().is_err());
+        assert!("invalid".parse::<HttpAgent>().is_err());
+    }
+
+    #[test]
+    fn test_http_agent_deserialize() {
+        assert_eq!(
+            serde_json::from_str::<HttpAgent>(r#""chrome""#).unwrap(),
+            HttpAgent::Chromium
+        );
+        assert_eq!(
+            serde_json::from_str::<HttpAgent>(r#""ChRoMe""#).unwrap(),
+            HttpAgent::Chromium
+        );
+
+        assert_eq!(
+            serde_json::from_str::<HttpAgent>(r#""firefox""#).unwrap(),
+            HttpAgent::Firefox
+        );
+        assert_eq!(
+            serde_json::from_str::<HttpAgent>(r#""FirEfOx""#).unwrap(),
+            HttpAgent::Firefox
+        );
+
+        assert_eq!(
+            serde_json::from_str::<HttpAgent>(r#""safari""#).unwrap(),
+            HttpAgent::Safari
+        );
+        assert_eq!(
+            serde_json::from_str::<HttpAgent>(r#""SafArI""#).unwrap(),
+            HttpAgent::Safari
+        );
+
+        assert_eq!(
+            serde_json::from_str::<HttpAgent>(r#""preserve""#).unwrap(),
+            HttpAgent::Preserve
+        );
+        assert_eq!(
+            serde_json::from_str::<HttpAgent>(r#""PreSeRve""#).unwrap(),
+            HttpAgent::Preserve
+        );
+
+        assert!(serde_json::from_str::<HttpAgent>("1").is_err());
+        assert!(serde_json::from_str::<HttpAgent>(r#""""#).is_err());
+        assert!(serde_json::from_str::<HttpAgent>(r#""invalid""#).is_err());
     }
 }
