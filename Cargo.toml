@@ -95,7 +95,7 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 
 [features]
-default = []
+default = ["compression"]
 full = ["compression", "telemetry"]
 telemetry = ["dep:prometheus", "dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-prometheus", "dep:opentelemetry-semantic-conventions"]
 compression = ["dep:async-compression"]

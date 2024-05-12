@@ -2,7 +2,7 @@
 //! layer stack in a high level manner using the HttpClientExt.
 //!
 //! ```sh
-//! cargo run --features=full --example http_high_level_client
+//! cargo run --example http_high_level_client
 //! ```
 //!
 //! # Expected output

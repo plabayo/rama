@@ -5,7 +5,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --features=full --example http_service_hello
+//! cargo run --example http_service_hello
 //! ```
 //!
 //! # Expected output

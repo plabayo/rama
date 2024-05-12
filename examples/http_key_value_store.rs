@@ -19,7 +19,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --features=full --example http_key_value_store
+//! cargo run --example http_key_value_store
 //! ```
 //!
 //! # Expected output

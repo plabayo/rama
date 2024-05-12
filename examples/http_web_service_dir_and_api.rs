@@ -8,7 +8,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --features=full --example http_web_service_dir_and_api
+//! cargo run --example http_web_service_dir_and_api
 //! ```
 //!
 //! # Expected output
