@@ -85,3 +85,6 @@ fuzz-60s:
 
 bench:
 	cargo bench
+
+vet:
+	cargo vet

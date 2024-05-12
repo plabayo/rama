@@ -31,6 +31,9 @@ to know how to use rama for your purposes.
 
 This crate uses `#![forbid(unsafe_code)]` to ensure everything is implemented in 100% safe Rust.
 
+We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to
+[audit our supply chain](https://github.com/plabayo/rama/tree/main/supply-chain/).
+
 ## 🦀 | Compatibility
 
 Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production

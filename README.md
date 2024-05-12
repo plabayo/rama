@@ -247,6 +247,8 @@ let info: Info = client
 
 This crate uses `#![forbid(unsafe_code)]` to ensure everything is implemented in 100% safe Rust.
 
+We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to [audit our supply chain](./supply-chain/).
+
 ## 🦀 | Compatibility
 
 Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production
