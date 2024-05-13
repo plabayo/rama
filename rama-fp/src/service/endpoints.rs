@@ -378,7 +378,7 @@ pub async fn get_assets_script() -> Response {
 pub async fn echo(ctx: Context<State>, req: Request) -> Json<serde_json::Value> {
     let http_info: super::data::HttpInfo = get_http_info(&req);
 
-    let query_params = req.uri().query().map(str::to_owned);
+    let query = req.uri().query().map(str::to_owned);
 
     let (parts, body) = req.into_parts();
 
@@ -407,9 +407,9 @@ pub async fn echo(ctx: Context<State>, req: Request) -> Json<serde_json::Value> 
         "method": request_info.method,
         "authority": request_info.authority,
         "path": request_info.path,
+        "query": query,
         "ip": request_info.peer_addr,
         "headers": http_info.headers,
-        "parsedQueryParams": query_params,
         "parsedBody": String::from_utf8_lossy(body.collect().await.unwrap().to_bytes().deref()),
         "tls": tls_info,
     }))
