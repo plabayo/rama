@@ -192,7 +192,12 @@ mod tests {
 
             assert_eq!(
                 ua.header_str(),
-                format!("{}/{}", crate::info::NAME, crate::info::VERSION).as_str(),
+                format!(
+                    "{}/{}",
+                    crate::utils::info::NAME,
+                    crate::utils::info::VERSION
+                )
+                .as_str(),
             );
             assert!(ua.info().is_none());
             assert!(ua.platform().is_none());

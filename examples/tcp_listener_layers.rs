@@ -42,7 +42,7 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let graceful = rama::utils::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(|guard| async {
         TcpListener::bind("0.0.0.0:40501")

@@ -96,8 +96,8 @@ pub struct DataSource {
 impl Default for DataSource {
     fn default() -> Self {
         Self {
-            name: rama::info::NAME.to_owned(),
-            version: rama::info::VERSION.to_owned(),
+            name: rama::utils::info::NAME.to_owned(),
+            version: rama::utils::info::VERSION.to_owned(),
         }
     }
 }

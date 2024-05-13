@@ -114,7 +114,7 @@ where
 
 #[tokio::main]
 async fn main() {
-    let graceful = rama::graceful::Shutdown::default();
+    let graceful = rama::utils::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(|guard| async move {
         let exec = Executor::graceful(guard.clone());

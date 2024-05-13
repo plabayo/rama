@@ -2,7 +2,7 @@
 //!
 //! [`Layer`]: crate::service::Layer
 
-use crate::opentelemetry::{
+use crate::telemetry::opentelemetry::{
     global,
     metrics::{Histogram, Meter, MeterProvider, Unit, UpDownCounter},
     semantic_conventions, KeyValue,
@@ -129,8 +129,8 @@ impl Default for RequestMetricsLayer {
 /// construct meters for this crate
 fn get_versioned_meter(meter_provider: impl MeterProvider) -> Meter {
     meter_provider.versioned_meter(
-        crate::info::NAME,
-        Some(crate::info::VERSION),
+        crate::utils::info::NAME,
+        Some(crate::utils::info::VERSION),
         Some(semantic_conventions::SCHEMA_URL),
         None,
     )

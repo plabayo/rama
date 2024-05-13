@@ -30,7 +30,7 @@ async fn test_http_user_agent_classifier() {
         .unwrap();
     assert_eq!(
         ua_rama.ua,
-        format!("{}/{}", rama::info::NAME, rama::info::VERSION)
+        format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION)
     );
     assert_eq!(ua_rama.kind, None);
     assert_eq!(ua_rama.version, None);

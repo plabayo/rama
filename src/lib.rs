@@ -22,7 +22,7 @@
 //! | ✅ [telemetry][opentelemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::stream::layer::opentelemetry) ⸱ ✅ [prometheus exportor](crate::http::service::web::PrometheusMetricsHandler) |
 //! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config](crate::proxy::username::UsernameConfig) ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
-//! | 🏗️ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ 🏗️ Connection Pool <sup>(1)</sup> |
+//! | 🏗️ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::utils::graceful) ⸱ 🏗️ Connection Pool <sup>(1)</sup> |
 //! | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 //! | 🏗️ proxy binary | 🏗️ prebuilt binaries <sup>(2)</sup> ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ 🏗️ http client <sup>(2)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 //! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
@@ -258,26 +258,15 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
+pub mod error;
 #[macro_use]
-pub(crate) mod macros;
-
-#[cfg(test)]
-mod test_helpers;
-
-pub mod graceful;
-pub mod info;
-pub mod latency;
+pub mod utils;
 
 #[cfg(feature = "telemetry")]
-pub mod opentelemetry;
-
-pub(crate) mod future;
+pub mod telemetry;
 
 pub mod rt;
-
-pub mod error;
 pub mod service;
-
 pub mod stream;
 
 pub mod tcp;

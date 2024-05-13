@@ -1,11 +1,11 @@
 use super::HttpServeResult;
-use crate::future::Fuse;
 use crate::http::{IntoResponse, Request};
 use crate::rt::Executor;
 use crate::service::Service;
 use crate::service::{Context, HyperService};
 use crate::stream::Stream;
 use crate::tcp::utils::is_connection_error;
+use crate::utils::future::Fuse;
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::{rt::TokioIo, server::conn::auto::Builder as AutoBuilder};

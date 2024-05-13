@@ -273,7 +273,7 @@ mod test {
 
     #[test]
     fn assert_send() {
-        use crate::test_helpers::*;
+        use crate::utils::test_helpers::*;
 
         assert_send::<ServiceBuilder<Identity>>();
         assert_send::<ServiceBuilder<Stack<Identity, Identity>>>();
@@ -282,7 +282,7 @@ mod test {
 
     #[test]
     fn assert_sync() {
-        use crate::test_helpers::*;
+        use crate::utils::test_helpers::*;
 
         assert_sync::<ServiceBuilder<Identity>>();
         assert_sync::<ServiceBuilder<Stack<Identity, Identity>>>();

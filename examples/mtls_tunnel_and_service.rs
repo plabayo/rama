@@ -37,7 +37,6 @@ use rama::tls::rustls::dep::{
 // rama provides everything out of the box to build mtls web services and proxies
 use rama::{
     error::BoxError,
-    graceful::Shutdown,
     http::{
         layer::trace::TraceLayer,
         response::{Html, Redirect},
@@ -48,6 +47,7 @@ use rama::{
     service::{Context, ServiceBuilder},
     tcp::server::TcpListener,
     tls::rustls::server::TlsAcceptorLayer,
+    utils::graceful::Shutdown,
 };
 use rcgen::KeyPair;
 

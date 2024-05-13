@@ -1,9 +1,9 @@
-use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
 use crate::service::handler::{Factory, FromContextRequest};
 use crate::service::Context;
 use crate::service::Service;
 use crate::stream::SocketInfo;
+use crate::utils::graceful::ShutdownGuard;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
@@ -200,7 +200,7 @@ where
     /// Serve gracefully connections from this listener with the given service.
     ///
     /// This method does the same as [`Self::serve`] but it
-    /// will respect the given [`crate::graceful::ShutdownGuard`], and also pass
+    /// will respect the given [`crate::utils::graceful::ShutdownGuard`], and also pass
     /// it to the service.
     pub async fn serve_graceful<S>(self, guard: ShutdownGuard, service: S)
     where

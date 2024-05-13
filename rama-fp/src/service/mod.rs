@@ -13,7 +13,6 @@ use rama::{
         service::web::{match_service, PrometheusMetricsHandler},
         HeaderName, HeaderValue, IntoResponse,
     },
-    opentelemetry::{self, prometheus},
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
@@ -26,6 +25,7 @@ use rama::{
     },
     stream::layer::{http::BodyLimitLayer, opentelemetry::NetworkMetricsLayer},
     tcp::server::TcpListener,
+    telemetry::{opentelemetry, prometheus},
     tls::rustls::{
         dep::{
             pemfile,
@@ -90,7 +90,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     // prometheus metrics http handler (exporter)
     let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
 
-    let graceful = rama::graceful::Shutdown::default();
+    let graceful = rama::utils::graceful::Shutdown::default();
 
     let acme_data = if let Ok(raw_acme_data) = std::env::var("RAMA_FP_ACME_DATA") {
         let acme_data: Vec<_> = raw_acme_data
@@ -161,7 +161,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
             .layer(http_metrics)
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
-            .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", rama::info::NAME, rama::info::VERSION).parse::<Server>().unwrap()))
+            .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION).parse::<Server>().unwrap()))
             .layer(SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),
@@ -384,7 +384,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
     // prometheus metrics http handler (exporter)
     let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
 
-    let graceful = rama::graceful::Shutdown::default();
+    let graceful = rama::utils::graceful::Shutdown::default();
 
     let acme_data = if let Ok(raw_acme_data) = std::env::var("RAMA_FP_ACME_DATA") {
         let acme_data: Vec<_> = raw_acme_data
@@ -412,7 +412,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
             .layer(http_metrics)
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
-            .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", rama::info::NAME, rama::info::VERSION).parse::<Server>().unwrap()))
+            .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION).parse::<Server>().unwrap()))
             .layer(SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),

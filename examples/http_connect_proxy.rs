@@ -91,7 +91,7 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::graceful::Shutdown::default();
+    let graceful = rama::utils::graceful::Shutdown::default();
 
     #[derive(Deserialize)]
     /// API parameters for the lucky number endpoint

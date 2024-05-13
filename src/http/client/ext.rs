@@ -662,9 +662,13 @@ where
         {
             request.headers_mut().insert(
                 crate::http::header::USER_AGENT,
-                format!("{}/{}", crate::info::NAME, crate::info::VERSION)
-                    .parse()
-                    .unwrap(),
+                format!(
+                    "{}/{}",
+                    crate::utils::info::NAME,
+                    crate::utils::info::VERSION
+                )
+                .parse()
+                .unwrap(),
             );
         }
 
@@ -708,7 +712,11 @@ mod test {
             .unwrap();
         assert_eq!(
             ua.to_str().unwrap(),
-            format!("{}/{}", crate::info::NAME, crate::info::VERSION)
+            format!(
+                "{}/{}",
+                crate::utils::info::NAME,
+                crate::utils::info::VERSION
+            )
         );
 
         Ok(StatusCode::OK.into_response())

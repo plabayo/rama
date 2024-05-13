@@ -648,7 +648,7 @@ where
     /// Same as [`Self::listen`], but it will respect the given [`ShutdownGuard`],
     /// and also pass it to the service.
     ///
-    /// [`ShutdownGuard`]: crate::graceful::ShutdownGuard
+    /// [`ShutdownGuard`]: crate::utils::graceful::ShutdownGuard
     pub async fn listen_graceful<S, Response, A>(
         self,
         guard: ShutdownGuard,

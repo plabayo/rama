@@ -1,7 +1,7 @@
 use super::{Latency, DEFAULT_MESSAGE_LEVEL};
 use crate::http::header::HeaderMap;
 use crate::http::layer::classify::grpc_errors_as_failures::ParsedGrpcStatus;
-use crate::latency::LatencyUnit;
+use crate::utils::latency::LatencyUnit;
 use std::time::Duration;
 use tracing::{Level, Span};
 

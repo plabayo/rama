@@ -61,7 +61,7 @@ mod tests {
 
     #[test]
     fn assert_send() {
-        use crate::test_helpers::assert_send;
+        use crate::utils::test_helpers::assert_send;
 
         assert_send::<TlsAcceptorLayer<()>>();
         assert_send::<TlsAcceptorLayer<TlsClientConfigHandler<()>>>();
@@ -69,7 +69,7 @@ mod tests {
 
     #[test]
     fn assert_sync() {
-        use crate::test_helpers::assert_sync;
+        use crate::utils::test_helpers::assert_sync;
 
         assert_sync::<TlsAcceptorLayer<TlsClientConfigHandler<()>>>();
     }

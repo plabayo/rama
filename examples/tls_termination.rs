@@ -33,10 +33,10 @@ use rama::tls::rustls::dep::{pki_types::PrivatePkcs8KeyDer, rustls::ServerConfig
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    graceful::Shutdown,
     service::ServiceBuilder,
     tcp::{server::TcpListener, service::Forwarder},
     tls::rustls::server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
+    utils::graceful::Shutdown,
 };
 use rcgen::KeyPair;
 

@@ -52,7 +52,7 @@
 //! use rama::http::layer::trace::{
 //!     TraceLayer, DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse,
 //! };
-//! use rama::latency::LatencyUnit;
+//! use rama::utils::latency::LatencyUnit;
 //! use std::time::Duration;
 //! use std::convert::Infallible;
 //!
@@ -379,7 +379,7 @@ pub use self::{
 
 use crate::{
     http::layer::classify::{GrpcErrorsAsFailures, ServerErrorsAsFailures, SharedClassifier},
-    latency::LatencyUnit,
+    utils::latency::LatencyUnit,
 };
 
 /// MakeClassifier for HTTP requests.

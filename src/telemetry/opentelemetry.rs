@@ -10,10 +10,3 @@ pub use ::opentelemetry_semantic_conventions as semantic_conventions;
 
 #[doc(inline)]
 pub use ::opentelemetry_sdk as sdk;
-
-pub mod prometheus {
-    //! prometheus module re-exports
-
-    pub use ::opentelemetry_prometheus::*;
-    pub use ::prometheus::*;
-}

@@ -37,20 +37,20 @@ use rama::{
         server::HttpServer,
         service::web::{extract::State, PrometheusMetricsHandler, WebService},
     },
-    opentelemetry::{
+    rt::Executor,
+    service::ServiceBuilder,
+    stream::layer::opentelemetry::NetworkMetricsLayer,
+    tcp::server::TcpListener,
+    telemetry::opentelemetry::{
         self,
         metrics::{Meter, MeterProvider, UpDownCounter},
-        prometheus,
         semantic_conventions::{
             self,
             resource::{HOST_ARCH, OS_NAME},
         },
         KeyValue,
     },
-    rt::Executor,
-    service::ServiceBuilder,
-    stream::layer::opentelemetry::NetworkMetricsLayer,
-    tcp::server::TcpListener,
+    telemetry::prometheus,
 };
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -114,7 +114,7 @@ async fn main() {
     // prometheus metrics http handler (exporter)
     let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
 
-    let graceful = rama::graceful::Shutdown::default();
+    let graceful = rama::utils::graceful::Shutdown::default();
 
     // http web service
     graceful.spawn_task_fn(|guard| async move {

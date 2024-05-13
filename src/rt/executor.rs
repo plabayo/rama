@@ -1,4 +1,4 @@
-use crate::graceful::ShutdownGuard;
+use crate::utils::graceful::ShutdownGuard;
 
 /// Future executor that utilises `tokio` threads.
 #[non_exhaustive]
@@ -78,7 +78,7 @@ mod tests {
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         let (tx, rx) = oneshot::channel();
-        let shutdown = crate::graceful::Shutdown::new(async move {
+        let shutdown = crate::utils::graceful::Shutdown::new(async move {
             rx.await.unwrap();
         });
 
