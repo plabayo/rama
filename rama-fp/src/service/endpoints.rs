@@ -1,5 +1,3 @@
-use std::{collections::HashMap, ops::Deref};
-
 use super::{
     data::{
         get_http_info, get_request_info, get_tls_info, get_user_agent_info, DataSource, FetchMode,
@@ -18,6 +16,7 @@ use rama::{
 };
 use serde::Deserialize;
 use serde_json::json;
+use std::ops::Deref;
 
 type Html = rama::http::response::Html<String>;
 
@@ -379,10 +378,7 @@ pub async fn get_assets_script() -> Response {
 pub async fn echo(ctx: Context<State>, req: Request) -> Json<serde_json::Value> {
     let http_info: super::data::HttpInfo = get_http_info(&req);
 
-    let query_params = req
-        .uri()
-        .query()
-        .and_then(|q| serde_urlencoded::from_str::<HashMap<String, String>>(q).ok());
+    let query_params = req.uri().query().map(str::to_owned);
 
     let (parts, body) = req.into_parts();
 

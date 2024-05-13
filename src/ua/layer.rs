@@ -289,7 +289,7 @@ mod tests {
             assert!(ua.platform().is_none());
             assert_eq!(ua.http_agent(), HttpAgent::Safari);
             assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
-            assert_eq!(ua.preserve_ua_header(), true);
+            assert!(ua.preserve_ua_header());
 
             Ok(StatusCode::OK.into_response())
         }
