@@ -78,6 +78,11 @@ impl<State, Request> UsernameLabelParser<State, Request> for ProxyFilterUsername
                         _ => return UsernameLabelState::Ignored,
                     }
                 }
+
+                if !bval && self.key.take().is_some() {
+                    // negation only possible for standalone labels
+                    return UsernameLabelState::Ignored;
+                }
             }
         }
 
@@ -407,6 +412,28 @@ mod tests {
             "john-foo",
             "john-foo-country",
             "john-country",
+        ] {
+            let mut ctx = Context::default();
+            let mut req = ();
+
+            let parser = ProxyFilterUsernameParser::default();
+
+            assert!(
+                parse_username(&mut ctx, &mut req, parser, username, '-').is_err(),
+                "username = {}",
+                username
+            );
+        }
+    }
+
+    #[test]
+    fn test_username_negation_key_failures() {
+        for username in [
+            "john-!id-a",
+            "john-!pool-b",
+            "john-!country-us",
+            "john-!city-ny",
+            "john-!carrier-c",
         ] {
             let mut ctx = Context::default();
             let mut req = ();

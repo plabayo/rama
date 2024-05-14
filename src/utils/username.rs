@@ -2,7 +2,7 @@
 
 use crate::error::OpaqueError;
 use crate::service::Context;
-use std::convert::Infallible;
+use std::{convert::Infallible, fmt};
 
 /// Parse a username, extracting the username (first part)
 /// and passing everything else to the [`UsernameLabelParser`].
@@ -94,6 +94,30 @@ pub trait UsernameLabelParser<State, Request>: Send + Sync + 'static {
     fn build(self, ctx: &mut Context<State>, req: &mut Request) -> Result<(), Self::Error>;
 }
 
+/// Wrapper type that can be used with a tuple of [`UsernameLabelParser`]s
+/// in order for it to stop iterating over the parsers once there was one that consumed the label.
+pub struct ExclusiveUsernameParsers<P>(pub P);
+
+impl<P: Clone> Clone for ExclusiveUsernameParsers<P> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl<P: Default> Default for ExclusiveUsernameParsers<P> {
+    fn default() -> Self {
+        Self(P::default())
+    }
+}
+
+impl<P: fmt::Debug> fmt::Debug for ExclusiveUsernameParsers<P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ExclusiveUsernameParsers")
+            .field(&self.0)
+            .finish()
+    }
+}
+
 macro_rules! username_label_parser_layer_tuple_impl {
     ($($T:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
@@ -114,6 +138,27 @@ macro_rules! username_label_parser_layer_tuple_impl {
 }
 
 all_the_tuples_no_last_special_case!(username_label_parser_layer_tuple_impl);
+
+macro_rules! username_label_parser_layer_tuple_exclusive_labels_impl {
+    ($($T:ident),+ $(,)?) => {
+        #[allow(non_snake_case)]
+        impl<State, Request, $($T,)+> UsernameLabelParserLayer<State, Request> for ExclusiveUsernameParsers<($($T,)+)>
+        where
+            $(
+                $T: UsernameLabelParserLayer<State, Request>,
+            )+
+        {
+            type Parser = ExclusiveUsernameParsers<($($T::Parser,)+)>;
+
+            fn create_parser(&self, ctx: &Context<State>, req: &Request) -> Self::Parser {
+                let ($(ref $T,)+) = self.0;
+                ExclusiveUsernameParsers(($($T.create_parser(ctx, req),)+))
+            }
+        }
+    };
+}
+
+all_the_tuples_no_last_special_case!(username_label_parser_layer_tuple_exclusive_labels_impl);
 
 macro_rules! username_label_parser_tuple_impl {
     ($($T:ident),+ $(,)?) => {
@@ -150,6 +195,41 @@ macro_rules! username_label_parser_tuple_impl {
 }
 
 all_the_tuples_no_last_special_case!(username_label_parser_tuple_impl);
+
+macro_rules! username_label_parser_tuple_exclusive_labels_impl {
+    ($($T:ident),+ $(,)?) => {
+        #[allow(non_snake_case)]
+        impl<State, Request, $($T,)+> UsernameLabelParser<State, Request> for ExclusiveUsernameParsers<($($T,)+)>
+        where
+            $(
+                $T: UsernameLabelParser<State, Request>,
+                $T::Error: std::error::Error + Send + Sync + 'static,
+            )+
+        {
+            type Error = OpaqueError;
+
+            fn parse_label(&mut self, ctx: &Context<State>, req: &Request, label: &str) -> UsernameLabelState {
+                let ($(ref mut $T,)+) = self.0;
+                $(
+                    if $T.parse_label(ctx, req, label) == UsernameLabelState::Used {
+                        return UsernameLabelState::Used;
+                    }
+                )+
+                UsernameLabelState::Ignored
+            }
+
+            fn build(self, ctx: &mut Context<State>, req: &mut Request) -> Result<(), Self::Error> {
+                let ($($T,)+) = self.0;
+                $(
+                    $T.build(ctx, req).map_err(OpaqueError::from_std)?;
+                )+
+                Ok(())
+            }
+        }
+    };
+}
+
+all_the_tuples_no_last_special_case!(username_label_parser_tuple_exclusive_labels_impl);
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -272,6 +352,27 @@ mod test {
 
     #[derive(Debug, Clone, Default)]
     #[non_exhaustive]
+    struct UsernameNoLabelPanicParser;
+
+    impl<State, Request> UsernameLabelParser<State, Request> for UsernameNoLabelPanicParser {
+        type Error = Infallible;
+
+        fn parse_label(
+            &mut self,
+            _ctx: &Context<State>,
+            _req: &Request,
+            _label: &str,
+        ) -> UsernameLabelState {
+            unreachable!("this parser should not be called");
+        }
+
+        fn build(self, _ctx: &mut Context<State>, _req: &mut Request) -> Result<(), Self::Error> {
+            Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    #[non_exhaustive]
     struct MyLabelParser {
         labels: Vec<String>,
     }
@@ -304,9 +405,11 @@ mod test {
             ctx: &mut Context<State>,
             req: &mut Request<Body>,
         ) -> Result<(), Self::Error> {
-            req.headers_mut()
-                .insert("x-labels", self.labels.join(",").parse().unwrap());
-            ctx.insert(MyLabels(self.labels));
+            if !self.labels.is_empty() {
+                req.headers_mut()
+                    .insert("x-labels", self.labels.join(",").parse().unwrap());
+                ctx.insert(MyLabels(self.labels));
+            }
             Ok(())
         }
     }
@@ -410,5 +513,38 @@ mod test {
         assert_eq!(header_labels, "label1,label2");
 
         assert_eq!(ctx.state().counter.0.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn test_username_labels_multi_consumer_exclusive_parsers() {
+        #[derive(Debug, Default, AsRef)]
+        struct State {
+            counter: LabelCounter,
+        }
+
+        let mut ctx = Context::with_state(Arc::new(State::default()));
+        let mut req = Request::builder()
+            .method("GET")
+            .uri("http://www.example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let parser = ExclusiveUsernameParsers((
+            UsernameOpaqueLabelParser::default(),
+            MyLabelParser::default(),
+            UsernameNoLabelPanicParser::default(),
+        ));
+
+        assert_eq!(
+            parse_username(&mut ctx, &mut req, parser, "username-label1-label2", '-').unwrap(),
+            "username"
+        );
+
+        let labels = ctx.get::<UsernameLabels>().unwrap();
+        assert_eq!(labels.0, vec!["label1".to_owned(), "label2".to_owned()]);
+
+        assert!(ctx.get::<MyLabels>().is_none());
+        assert!(req.headers().get("x-labels").is_none());
+        assert_eq!(ctx.state().counter.0.load(Ordering::SeqCst), 0);
     }
 }
