@@ -1,4 +1,52 @@
 //! Utilities to work with usernames and pull information out of it.
+//!
+//! # Username Parsing
+//!
+//! The [`parse_username`] function is used to parse a username and extract information from
+//! its labels. The function takes a parser, which is used to parse the labels from the username.
+//!
+//! The parser is expected to implement the [`UsernameLabelParser`] trait, which has two methods:
+//!
+//! - `parse_label`: This method is called for each label in the username, and is expected to return
+//!   whether the label was used or ignored.
+//! - `build`: This method is called after all labels have been parsed, and is expected to consume
+//!   the parser and store any relevant information.
+//!
+//! The parser can be a single parser or a tuple of parsers. Tuple parsers all receive all labels,
+//! unless wrapped by a [`ExclusiveUsernameParsers`], in which case the first parser that consumes
+//! a label will stop the iteration over the parsers.
+//!
+//! Parsers are to return [`UsernameLabelState::Used`] in case they consumed the label, and
+//! [`UsernameLabelState::Ignored`] in case they did not. This way the parser-caller (e.g. [`parse_username`])
+//! can decide whether to fail on ignored labels.
+//!
+//! ## Example
+//!
+//! [`ProxyFilterUsernameParser`] is a real-world example of a parser that uses the username labels.
+//! It support proxy filter defintions directly within the username.
+//!
+//! [`ProxyFilterUsernameParser`]: crate::proxy::ProxyFilterUsernameParser
+//!
+//! ```rust
+//! use rama::proxy::ProxyFilterUsernameParser;
+//!
+//! let mut ctx = rama::service::Context::default();
+//! let mut req = rama::http::Request::builder()
+//!     .method("GET")
+//!     .uri("https://www.example.come")
+//!     .body(rama::http::Body::empty())
+//!     .unwrap();
+//!
+//! let parser = ProxyFilterUsernameParser::default();
+//!
+//! let username = rama::utils::username::parse_username(&mut ctx, &mut req, parser, "john-residential-country-us", '-').unwrap();
+//! assert_eq!(username, "john");
+//! let filter = ctx.get::<rama::proxy::ProxyFilter>().unwrap();
+//! assert_eq!(filter.residential, Some(true));
+//! assert_eq!(filter.country, Some("us".into()));
+//! assert!(filter.datacenter.is_none());
+//! assert!(filter.mobile.is_none());
+//! ```
 
 use crate::error::OpaqueError;
 use crate::service::Context;
