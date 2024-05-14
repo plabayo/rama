@@ -16,6 +16,9 @@
 pub mod username;
 pub use username::{parse_username_config, UsernameConfig};
 
+mod username_t2;
+pub use username_t2::ProxyFilterUsernameParser;
+
 pub mod pp;
 
 mod proxydb;
