@@ -163,7 +163,7 @@ gives a good overview and background on this topic.
 You can declare your own `macro_rules` in case there are common patterns for the services
 and middlewares that you are writing for your project. For inspiration you can
 see the http rejection macros we borrowed and modified from [Axum's extract logic](https://github.com/tokio-rs/axum/blob/5201798d4e4d4759c208ef83e30ce85820c07baa/axum-core/src/macros.rs):
-<https://github.com/plabayo/rama/blob/main/src/macros/http_error.rs>
+<https://github.com/plabayo/rama/blob/main/src/utils/macros/http_error.rs>
 
 And of course... if you really want, against our advice in,
 you can use [the `thiserror` crate](https://docs.rs/thiserror),

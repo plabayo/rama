@@ -20,7 +20,7 @@ Tools like [Jaeger](https://www.jaegertracing.io/) are used to visualize and ana
 
 ## Rama Telemetry
 
-Rama re-exports [OpenTelemetry](https://opentelemetry.io/) crates under [the `rama::opentelemtry` module](https://ramaproxy.org/docs/rama/opentelemetry/index.html),
+Rama re-exports [OpenTelemetry](https://opentelemetry.io/) crates under [the `rama::opentelemtry` module](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html),
 and provides middlewares for collecting metrics on:
 
 - the http layer: <https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html>
