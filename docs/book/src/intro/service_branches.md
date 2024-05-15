@@ -31,7 +31,6 @@ digraph {
     "service A" -> "service B" [dir=both]
     "service A" -> "service C" [dir=both]
     "service A" -> "service D" [dir=both]
-    "service A" -> "service E" [dir=both]
 }
 ```
 
