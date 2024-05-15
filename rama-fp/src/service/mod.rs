@@ -83,9 +83,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
         .with_reader(exporter)
         .build();
 
-    // open telemetry middleware
-    let network_metrics = NetworkMetricsLayer::with_provider(provider.clone());
-    let http_metrics = RequestMetricsLayer::with_provider(provider.clone());
+    opentelemetry::global::set_meter_provider(provider);
 
     // prometheus metrics http handler (exporter)
     let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
@@ -158,7 +156,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
 
         let http_service = ServiceBuilder::new()
             .layer(TraceLayer::new_for_http())
-            .layer(http_metrics)
+            .layer(RequestMetricsLayer::default())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
             .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION).parse::<Server>().unwrap()))
@@ -201,7 +199,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
                 }
                 Ok::<_, Infallible>(())
             })
-            .layer(network_metrics)
+            .layer(NetworkMetricsLayer::default())
             .layer(TimeoutLayer::new(Duration::from_secs(16)))
             .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
@@ -377,9 +375,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
         .with_reader(exporter)
         .build();
 
-    // open telemetry middleware
-    let network_metrics = NetworkMetricsLayer::with_provider(provider.clone());
-    let http_metrics = RequestMetricsLayer::with_provider(provider.clone());
+    opentelemetry::global::set_meter_provider(provider);
 
     // prometheus metrics http handler (exporter)
     let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
@@ -409,7 +405,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
     graceful.spawn_task_fn(move |guard| async move {
         let http_service = ServiceBuilder::new()
             .layer(TraceLayer::new_for_http())
-            .layer(http_metrics)
+            .layer(RequestMetricsLayer::default())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
             .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION).parse::<Server>().unwrap()))
@@ -432,7 +428,7 @@ pub async fn echo(cfg: Config) -> anyhow::Result<()> {
                 }
                 Ok::<_, Infallible>(())
             })
-            .layer(network_metrics)
+            .layer(NetworkMetricsLayer::default())
             .layer(TimeoutLayer::new(Duration::from_secs(16)))
             // Why the below layer makes it no longer cloneable?!?!
             .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(

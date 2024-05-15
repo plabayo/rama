@@ -4,7 +4,7 @@
 
 use crate::telemetry::opentelemetry::{
     global,
-    metrics::{Histogram, Meter, MeterProvider, Unit, UpDownCounter},
+    metrics::{Histogram, Meter, Unit, UpDownCounter},
     semantic_conventions, KeyValue,
 };
 use crate::{
@@ -46,10 +46,6 @@ const HTTP_SERVER_ACTIVE_REQUESTS: &str = "http.server.active_requests";
 /// [spec]: https://github.com/open-telemetry/semantic-conventions/blob/v1.21.0/docs/http/http-metrics.md#http-server
 #[derive(Clone, Debug)]
 struct Metrics {
-    // TODO: in https://github.com/open-telemetry/opentelemetry-rust/pull/1663 they fixed
-    // that meter no longer needs to stay alive when still using counters. So perhaps we can remove this?!
-    // once v0.23 is released we can look into trying this...
-    _meter: Meter,
     http_server_duration: Histogram<f64>,
     http_server_active_requests: UpDownCounter<i64>,
     // http_server_request_size: Histogram<u64>,
@@ -85,7 +81,6 @@ impl Metrics {
         //     .init();
 
         Metrics {
-            _meter: meter,
             http_server_active_requests,
             http_server_duration,
             // http_server_request_size,
@@ -103,16 +98,7 @@ pub struct RequestMetricsLayer {
 impl RequestMetricsLayer {
     /// Create a new [`RequestMetricsLayer`] using the global [`Meter`] provider.
     pub fn new() -> Self {
-        let meter = get_versioned_meter(global::meter_provider());
-        let metrics = Metrics::new(meter);
-        Self {
-            metrics: Arc::new(metrics),
-        }
-    }
-
-    /// Create a new [`RequestMetricsLayer`] using a custom [`MeterProvider`].
-    pub fn with_provider(meter_provider: impl MeterProvider) -> Self {
-        let meter = get_versioned_meter(meter_provider);
+        let meter = get_versioned_meter();
         let metrics = Metrics::new(meter);
         Self {
             metrics: Arc::new(metrics),
@@ -127,8 +113,8 @@ impl Default for RequestMetricsLayer {
 }
 
 /// construct meters for this crate
-fn get_versioned_meter(meter_provider: impl MeterProvider) -> Meter {
-    meter_provider.versioned_meter(
+fn get_versioned_meter() -> Meter {
+    global::meter_with_version(
         crate::utils::info::NAME,
         Some(crate::utils::info::VERSION),
         Some(semantic_conventions::SCHEMA_URL),

@@ -43,7 +43,7 @@ use rama::{
     tcp::server::TcpListener,
     telemetry::opentelemetry::{
         self,
-        metrics::{Meter, MeterProvider, UpDownCounter},
+        metrics::UpDownCounter,
         semantic_conventions::{
             self,
             resource::{HOST_ARCH, OS_NAME},
@@ -57,13 +57,12 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 #[derive(Debug)]
 struct Metrics {
-    _meter: Meter,
     counter: UpDownCounter<i64>,
 }
 
 impl Metrics {
-    pub fn new(provider: impl MeterProvider) -> Self {
-        let meter = provider.versioned_meter(
+    pub fn new() -> Self {
+        let meter = opentelemetry::global::meter_with_version(
             "example.http_prometheus",
             Some(env!("CARGO_PKG_VERSION")),
             Some(semantic_conventions::SCHEMA_URL),
@@ -73,10 +72,7 @@ impl Metrics {
             ]),
         );
         let counter = meter.i64_up_down_counter("visitor_counter").init();
-        Self {
-            _meter: meter,
-            counter,
-        }
+        Self { counter }
     }
 }
 
@@ -104,12 +100,10 @@ async fn main() {
         .with_reader(exporter)
         .build();
 
-    // open telemetry middleware
-    let network_metrics = NetworkMetricsLayer::with_provider(provider.clone());
-    let http_metrics = RequestMetricsLayer::with_provider(provider.clone());
+    opentelemetry::global::set_meter_provider(provider);
 
     // state for our custom app metrics
-    let state = Metrics::new(provider);
+    let state = Metrics::new();
 
     // prometheus metrics http handler (exporter)
     let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
@@ -123,7 +117,7 @@ async fn main() {
         let http_service = HttpServer::auto(exec).service(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .layer(http_metrics)
+                .layer(RequestMetricsLayer::default())
                 .service(WebService::default().get(
                     "/",
                     |State(metrics): State<Metrics>| async move {
@@ -141,7 +135,7 @@ async fn main() {
             .serve_graceful(
                 guard,
                 ServiceBuilder::new()
-                    .layer(network_metrics)
+                    .layer(NetworkMetricsLayer::default())
                     .service(http_service),
             )
             .await;

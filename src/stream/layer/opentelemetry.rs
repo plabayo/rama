@@ -4,7 +4,7 @@
 
 use crate::telemetry::opentelemetry::{
     global,
-    metrics::{Histogram, Meter, MeterProvider, Unit, UpDownCounter},
+    metrics::{Histogram, Meter, Unit, UpDownCounter},
     semantic_conventions, KeyValue,
 };
 use crate::{
@@ -21,10 +21,6 @@ const NETWORK_SERVER_ACTIVE_CONNECTIONS: &str = "network.server.active_connectio
 /// Records network server metrics
 #[derive(Clone, Debug)]
 struct Metrics {
-    // TODO: in https://github.com/open-telemetry/opentelemetry-rust/pull/1663 they fixed
-    // that meter no longer needs to stay alive when still using counters. So perhaps we can remove this?!
-    // once v0.23 is released we can look into trying this...
-    _meter: Meter,
     network_connection_duration: Histogram<f64>,
     network_active_connections: UpDownCounter<i64>,
 }
@@ -46,7 +42,6 @@ impl Metrics {
             .init();
 
         Metrics {
-            _meter: meter,
             network_connection_duration,
             network_active_connections,
         }
@@ -62,16 +57,7 @@ pub struct NetworkMetricsLayer {
 impl NetworkMetricsLayer {
     /// Create a new [`NetworkMetricsLayer`] using the global [`Meter`] provider.
     pub fn new() -> Self {
-        let meter = get_versioned_meter(global::meter_provider());
-        let metrics = Metrics::new(meter);
-        Self {
-            metrics: Arc::new(metrics),
-        }
-    }
-
-    /// Create a new [`NetworkMetricsLayer`] using a custom [`MeterProvider`].
-    pub fn with_provider(meter_provider: impl MeterProvider) -> Self {
-        let meter = get_versioned_meter(meter_provider);
+        let meter = get_versioned_meter();
         let metrics = Metrics::new(meter);
         Self {
             metrics: Arc::new(metrics),
@@ -86,8 +72,8 @@ impl Default for NetworkMetricsLayer {
 }
 
 /// construct meters for this crate
-fn get_versioned_meter(meter_provider: impl MeterProvider) -> Meter {
-    meter_provider.versioned_meter(
+fn get_versioned_meter() -> Meter {
+    global::meter_with_version(
         crate::utils::info::NAME,
         Some(crate::utils::info::VERSION),
         Some(semantic_conventions::SCHEMA_URL),
