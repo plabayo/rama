@@ -13,11 +13,8 @@
 //! [`Context`]: crate::service::Context
 //! [`Extensions`]: crate::service::context::Extensions
 
-pub mod username;
-pub use username::{parse_username_config, UsernameConfig};
-
-mod username_t2;
-pub use username_t2::ProxyFilterUsernameParser;
+mod username;
+pub use username::ProxyFilterUsernameParser;
 
 pub mod pp;
 

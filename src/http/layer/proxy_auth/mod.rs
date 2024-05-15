@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 
 mod auth;
 #[doc(inline)]
-pub use auth::{FromUsername, ProxyAuthority, ProxyAuthoritySync, ProxyUsernameLabels};
+pub use auth::{ProxyAuthority, ProxyAuthoritySync};
 
 /// Layer that applies the [`ProxyAuthService`] middleware which apply a timeout to requests.
 ///

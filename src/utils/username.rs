@@ -28,20 +28,23 @@
 //! [`ProxyFilterUsernameParser`]: crate::proxy::ProxyFilterUsernameParser
 //!
 //! ```rust
-//! use rama::proxy::ProxyFilterUsernameParser;
+//! use rama::proxy::{ProxyFilter, ProxyFilterUsernameParser};
+//! use rama::utils::username::{DEFAULT_USERNAME_LABEL_SEPERATOR, parse_username};
+//! use rama::service::context::Extensions;
 //!
-//! let mut ctx = rama::service::Context::default();
-//! let mut req = rama::http::Request::builder()
-//!     .method("GET")
-//!     .uri("https://www.example.come")
-//!     .body(rama::http::Body::empty())
-//!     .unwrap();
+//! let mut ext = Extensions::default();
 //!
 //! let parser = ProxyFilterUsernameParser::default();
 //!
-//! let username = rama::utils::username::parse_username(&mut ctx, &mut req, parser, "john-residential-country-us", '-').unwrap();
+//! let username = parse_username(
+//!     &mut ext, parser,
+//!     "john-residential-country-us",
+//!     DEFAULT_USERNAME_LABEL_SEPERATOR,
+//! ).unwrap();
+//!
 //! assert_eq!(username, "john");
-//! let filter = ctx.get::<rama::proxy::ProxyFilter>().unwrap();
+//!
+//! let filter = ext.get::<ProxyFilter>().unwrap();
 //! assert_eq!(filter.residential, Some(true));
 //! assert_eq!(filter.country, Some("us".into()));
 //! assert!(filter.datacenter.is_none());
@@ -49,20 +52,22 @@
 //! ```
 
 use crate::error::OpaqueError;
-use crate::service::Context;
+use crate::service::context::Extensions;
 use std::{convert::Infallible, fmt};
+
+/// The default username label seperator used by most built-in rama support.
+pub const DEFAULT_USERNAME_LABEL_SEPERATOR: char = '-';
 
 /// Parse a username, extracting the username (first part)
 /// and passing everything else to the [`UsernameLabelParser`].
-pub fn parse_username<P, State, Request>(
-    ctx: &mut Context<State>,
-    request: &mut Request,
+pub fn parse_username<P>(
+    ext: &mut Extensions,
     mut parser: P,
     username_ref: impl AsRef<str>,
     seperator: char,
 ) -> Result<String, OpaqueError>
 where
-    P: UsernameLabelParser<State, Request>,
+    P: UsernameLabelParser,
     P::Error: std::error::Error + Send + Sync + 'static,
 {
     let username_ref = username_ref.as_ref();
@@ -80,7 +85,7 @@ where
     };
 
     for label in label_it {
-        if parser.parse_label(ctx, request, label) == UsernameLabelState::Ignored {
+        if parser.parse_label(label) == UsernameLabelState::Ignored {
             return Err(OpaqueError::from_display(format!(
                 "ignored username label: {}",
                 label
@@ -88,19 +93,9 @@ where
         }
     }
 
-    parser.build(ctx, request).map_err(OpaqueError::from_std)?;
+    parser.build(ext).map_err(OpaqueError::from_std)?;
 
     Ok(username.to_owned())
-}
-
-/// A layer which is used to create a [`UsernameLabelParser`], to parse labels from the username.
-pub trait UsernameLabelParserLayer<State, Request>: Send + Sync + 'static {
-    /// The [`UsernameLabelParser`] which is created by this layer.
-    type Parser;
-
-    /// Crates the parser to be used for parsing the username,
-    /// this is expected to be a cheap and non-fallible operation.
-    fn create_parser(&self, ctx: &Context<State>, req: &Request) -> Self::Parser;
 }
 
 /// The parse state of a username label.
@@ -124,22 +119,20 @@ pub enum UsernameLabelState {
 }
 
 /// A parser which can parse labels from a username.
-pub trait UsernameLabelParser<State, Request>: Send + Sync + 'static {
+///
+/// [`Default`] is to be implemented for every [`UsernameLabelParser`],
+/// as it is what is used to create the parser instances for one-time usage.
+pub trait UsernameLabelParser: Default + Send + Sync + 'static {
     /// Error which can occur during the building phase.
-    type Error;
+    type Error: std::error::Error + Send + Sync + 'static;
 
     /// Interpret the label and return whether or not the label was recognised and valid.
     ///
     /// [`UsernameLabelState::Ignored`] should be returned in case the label was not recognised or was not valid.
-    fn parse_label(
-        &mut self,
-        ctx: &Context<State>,
-        req: &Request,
-        label: &str,
-    ) -> UsernameLabelState;
+    fn parse_label(&mut self, label: &str) -> UsernameLabelState;
 
     /// Consume self and store/use any of the relevant info seen.
-    fn build(self, ctx: &mut Context<State>, req: &mut Request) -> Result<(), Self::Error>;
+    fn build(self, ext: &mut Extensions) -> Result<(), Self::Error>;
 }
 
 /// Wrapper type that can be used with a tuple of [`UsernameLabelParser`]s
@@ -166,75 +159,33 @@ impl<P: fmt::Debug> fmt::Debug for ExclusiveUsernameParsers<P> {
     }
 }
 
-macro_rules! username_label_parser_layer_tuple_impl {
-    ($($T:ident),+ $(,)?) => {
-        #[allow(non_snake_case)]
-        impl<State, Request, $($T,)+> UsernameLabelParserLayer<State, Request> for ($($T,)+)
-        where
-            $(
-                $T: UsernameLabelParserLayer<State, Request>,
-            )+
-        {
-            type Parser = ($($T::Parser,)+);
-
-            fn create_parser(&self, ctx: &Context<State>, req: &Request) -> Self::Parser {
-                let ($($T,)+) = self;
-                ($($T.create_parser(ctx, req),)+)
-            }
-        }
-    };
-}
-
-all_the_tuples_no_last_special_case!(username_label_parser_layer_tuple_impl);
-
-macro_rules! username_label_parser_layer_tuple_exclusive_labels_impl {
-    ($($T:ident),+ $(,)?) => {
-        #[allow(non_snake_case)]
-        impl<State, Request, $($T,)+> UsernameLabelParserLayer<State, Request> for ExclusiveUsernameParsers<($($T,)+)>
-        where
-            $(
-                $T: UsernameLabelParserLayer<State, Request>,
-            )+
-        {
-            type Parser = ExclusiveUsernameParsers<($($T::Parser,)+)>;
-
-            fn create_parser(&self, ctx: &Context<State>, req: &Request) -> Self::Parser {
-                let ($(ref $T,)+) = self.0;
-                ExclusiveUsernameParsers(($($T.create_parser(ctx, req),)+))
-            }
-        }
-    };
-}
-
-all_the_tuples_no_last_special_case!(username_label_parser_layer_tuple_exclusive_labels_impl);
-
 macro_rules! username_label_parser_tuple_impl {
     ($($T:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        impl<State, Request, $($T,)+> UsernameLabelParser<State, Request> for ($($T,)+)
+        impl<$($T,)+> UsernameLabelParser for ($($T,)+)
         where
             $(
-                $T: UsernameLabelParser<State, Request>,
+                $T: UsernameLabelParser,
                 $T::Error: std::error::Error + Send + Sync + 'static,
             )+
         {
             type Error = OpaqueError;
 
-            fn parse_label(&mut self, ctx: &Context<State>, req: &Request, label: &str) -> UsernameLabelState {
+            fn parse_label(&mut self, label: &str) -> UsernameLabelState {
                 let ($(ref mut $T,)+) = self;
                 let mut state = UsernameLabelState::Ignored;
                 $(
-                    if $T.parse_label(ctx, req, label) == UsernameLabelState::Used {
+                    if $T.parse_label(label) == UsernameLabelState::Used {
                         state = UsernameLabelState::Used;
                     }
                 )+
                 state
             }
 
-            fn build(self, ctx: &mut Context<State>, req: &mut Request) -> Result<(), Self::Error> {
+            fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
                 let ($($T,)+) = self;
                 $(
-                    $T.build(ctx, req).map_err(OpaqueError::from_std)?;
+                    $T.build(ext).map_err(OpaqueError::from_std)?;
                 )+
                 Ok(())
             }
@@ -247,29 +198,29 @@ all_the_tuples_no_last_special_case!(username_label_parser_tuple_impl);
 macro_rules! username_label_parser_tuple_exclusive_labels_impl {
     ($($T:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        impl<State, Request, $($T,)+> UsernameLabelParser<State, Request> for ExclusiveUsernameParsers<($($T,)+)>
+        impl<$($T,)+> UsernameLabelParser for ExclusiveUsernameParsers<($($T,)+)>
         where
             $(
-                $T: UsernameLabelParser<State, Request>,
+                $T: UsernameLabelParser,
                 $T::Error: std::error::Error + Send + Sync + 'static,
             )+
         {
             type Error = OpaqueError;
 
-            fn parse_label(&mut self, ctx: &Context<State>, req: &Request, label: &str) -> UsernameLabelState {
+            fn parse_label(&mut self, label: &str) -> UsernameLabelState {
                 let ($(ref mut $T,)+) = self.0;
                 $(
-                    if $T.parse_label(ctx, req, label) == UsernameLabelState::Used {
+                    if $T.parse_label(label) == UsernameLabelState::Used {
                         return UsernameLabelState::Used;
                     }
                 )+
                 UsernameLabelState::Ignored
             }
 
-            fn build(self, ctx: &mut Context<State>, req: &mut Request) -> Result<(), Self::Error> {
+            fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
                 let ($($T,)+) = self.0;
                 $(
-                    $T.build(ctx, req).map_err(OpaqueError::from_std)?;
+                    $T.build(ext).map_err(OpaqueError::from_std)?;
                 )+
                 Ok(())
             }
@@ -294,27 +245,14 @@ impl UsernameLabelParserVoid {
     }
 }
 
-impl<State, Request> UsernameLabelParserLayer<State, Request> for UsernameLabelParserVoid {
-    type Parser = UsernameLabelParserVoid;
-
-    fn create_parser(&self, _ctx: &Context<State>, _req: &Request) -> Self::Parser {
-        self.clone()
-    }
-}
-
-impl<State, Request> UsernameLabelParser<State, Request> for UsernameLabelParserVoid {
+impl UsernameLabelParser for UsernameLabelParserVoid {
     type Error = Infallible;
 
-    fn parse_label(
-        &mut self,
-        _ctx: &Context<State>,
-        _req: &Request,
-        _label: &str,
-    ) -> UsernameLabelState {
+    fn parse_label(&mut self, _label: &str) -> UsernameLabelState {
         UsernameLabelState::Used
     }
 
-    fn build(self, _ctx: &mut Context<State>, _req: &mut Request) -> Result<(), Self::Error> {
+    fn build(self, _ext: &mut Extensions) -> Result<(), Self::Error> {
         Ok(())
     }
 }
@@ -340,29 +278,18 @@ impl UsernameOpaqueLabelParser {
     }
 }
 
-impl<State, Request> UsernameLabelParserLayer<State, Request> for UsernameOpaqueLabelParser {
-    type Parser = Self;
-
-    fn create_parser(&self, _ctx: &Context<State>, _req: &Request) -> Self::Parser {
-        Self::default()
-    }
-}
-
-impl<State, Request> UsernameLabelParser<State, Request> for UsernameOpaqueLabelParser {
+impl UsernameLabelParser for UsernameOpaqueLabelParser {
     type Error = Infallible;
 
-    fn parse_label(
-        &mut self,
-        _ctx: &Context<State>,
-        _req: &Request,
-        label: &str,
-    ) -> UsernameLabelState {
+    fn parse_label(&mut self, label: &str) -> UsernameLabelState {
         self.labels.push(label.to_owned());
         UsernameLabelState::Used
     }
 
-    fn build(self, ctx: &mut Context<State>, _req: &mut Request) -> Result<(), Self::Error> {
-        ctx.insert(UsernameLabels(self.labels));
+    fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
+        if !self.labels.is_empty() {
+            ext.insert(UsernameLabels(self.labels));
+        }
         Ok(())
     }
 }
@@ -370,30 +297,19 @@ impl<State, Request> UsernameLabelParser<State, Request> for UsernameOpaqueLabel
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::http::{Body, Request};
-    use crate::service::context::AsRef;
-    use std::sync::{
-        atomic::{AtomicUsize, Ordering},
-        Arc,
-    };
 
     #[derive(Debug, Clone, Default)]
     #[non_exhaustive]
     struct UsernameNoLabelParser;
 
-    impl<State, Request> UsernameLabelParser<State, Request> for UsernameNoLabelParser {
+    impl UsernameLabelParser for UsernameNoLabelParser {
         type Error = Infallible;
 
-        fn parse_label(
-            &mut self,
-            _ctx: &Context<State>,
-            _req: &Request,
-            _label: &str,
-        ) -> UsernameLabelState {
+        fn parse_label(&mut self, _label: &str) -> UsernameLabelState {
             UsernameLabelState::Ignored
         }
 
-        fn build(self, _ctx: &mut Context<State>, _req: &mut Request) -> Result<(), Self::Error> {
+        fn build(self, _ext: &mut Extensions) -> Result<(), Self::Error> {
             Ok(())
         }
     }
@@ -402,19 +318,14 @@ mod test {
     #[non_exhaustive]
     struct UsernameNoLabelPanicParser;
 
-    impl<State, Request> UsernameLabelParser<State, Request> for UsernameNoLabelPanicParser {
+    impl UsernameLabelParser for UsernameNoLabelPanicParser {
         type Error = Infallible;
 
-        fn parse_label(
-            &mut self,
-            _ctx: &Context<State>,
-            _req: &Request,
-            _label: &str,
-        ) -> UsernameLabelState {
+        fn parse_label(&mut self, _label: &str) -> UsernameLabelState {
             unreachable!("this parser should not be called");
         }
 
-        fn build(self, _ctx: &mut Context<State>, _req: &mut Request) -> Result<(), Self::Error> {
+        fn build(self, _ext: &mut Extensions) -> Result<(), Self::Error> {
             Ok(())
         }
     }
@@ -426,37 +337,19 @@ mod test {
     }
 
     #[derive(Debug, Clone, Default)]
-    struct LabelCounter(Arc<AtomicUsize>);
-
-    #[derive(Debug, Clone, Default)]
     struct MyLabels(Vec<String>);
 
-    impl<State, Body> UsernameLabelParser<State, Request<Body>> for MyLabelParser
-    where
-        State: AsRef<LabelCounter>,
-    {
+    impl UsernameLabelParser for MyLabelParser {
         type Error = Infallible;
 
-        fn parse_label(
-            &mut self,
-            ctx: &Context<State>,
-            _req: &Request<Body>,
-            label: &str,
-        ) -> UsernameLabelState {
-            ctx.state().as_ref().0.fetch_add(1, Ordering::SeqCst);
+        fn parse_label(&mut self, label: &str) -> UsernameLabelState {
             self.labels.push(label.to_owned());
             UsernameLabelState::Used
         }
 
-        fn build(
-            self,
-            ctx: &mut Context<State>,
-            req: &mut Request<Body>,
-        ) -> Result<(), Self::Error> {
+        fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
             if !self.labels.is_empty() {
-                req.headers_mut()
-                    .insert("x-labels", self.labels.join(",").parse().unwrap());
-                ctx.insert(MyLabels(self.labels));
+                ext.insert(MyLabels(self.labels));
             }
             Ok(())
         }
@@ -464,53 +357,61 @@ mod test {
 
     #[test]
     fn test_parse_username_empty() {
-        let mut ctx = Context::default();
-        let mut req = ();
+        let mut ext = Extensions::default();
 
-        assert!(
-            parse_username(&mut ctx, &mut req, UsernameLabelParserVoid::new(), "", '-').is_err()
-        );
-        assert!(
-            parse_username(&mut ctx, &mut req, UsernameLabelParserVoid::new(), "-", '-').is_err()
-        );
+        assert!(parse_username(
+            &mut ext,
+            UsernameLabelParserVoid::new(),
+            "",
+            DEFAULT_USERNAME_LABEL_SEPERATOR
+        )
+        .is_err());
+        assert!(parse_username(
+            &mut ext,
+            UsernameLabelParserVoid::new(),
+            "-",
+            DEFAULT_USERNAME_LABEL_SEPERATOR
+        )
+        .is_err());
     }
 
     #[test]
     fn test_parse_username_no_labels() {
-        let mut ctx = Context::default();
-        let mut req = ();
+        let mut ext = Extensions::default();
 
         assert_eq!(
-            parse_username(&mut ctx, &mut req, UsernameNoLabelParser, "username", '-').unwrap(),
+            parse_username(
+                &mut ext,
+                UsernameNoLabelParser,
+                "username",
+                DEFAULT_USERNAME_LABEL_SEPERATOR
+            )
+            .unwrap(),
             "username"
         );
     }
 
     #[test]
     fn test_parse_username_label_collector() {
-        let mut ctx = Context::default();
-        let mut req = ();
-
+        let mut ext = Extensions::default();
         assert_eq!(
             parse_username(
-                &mut ctx,
-                &mut req,
+                &mut ext,
                 UsernameOpaqueLabelParser::new(),
                 "username-label1-label2",
-                '-'
+                DEFAULT_USERNAME_LABEL_SEPERATOR
             )
             .unwrap(),
             "username"
         );
 
-        let labels = ctx.get::<UsernameLabels>().unwrap();
+        let labels = ext.get::<UsernameLabels>().unwrap();
         assert_eq!(labels.0, vec!["label1".to_owned(), "label2".to_owned()]);
     }
 
     #[test]
     fn test_username_labels_multi_parser() {
-        let mut ctx = Context::default();
-        let mut req = ();
+        let mut ext = Extensions::default();
 
         let parser = (
             UsernameOpaqueLabelParser::new(),
@@ -518,27 +419,23 @@ mod test {
         );
 
         assert_eq!(
-            parse_username(&mut ctx, &mut req, parser, "username-label1-label2", '-').unwrap(),
+            parse_username(
+                &mut ext,
+                parser,
+                "username-label1-label2",
+                DEFAULT_USERNAME_LABEL_SEPERATOR
+            )
+            .unwrap(),
             "username"
         );
 
-        let labels = ctx.get::<UsernameLabels>().unwrap();
+        let labels = ext.get::<UsernameLabels>().unwrap();
         assert_eq!(labels.0, vec!["label1".to_owned(), "label2".to_owned()]);
     }
 
     #[test]
-    fn test_username_labels_multi_consumer_parser_with_context_and_state_usage() {
-        #[derive(Debug, Default, AsRef)]
-        struct State {
-            counter: LabelCounter,
-        }
-
-        let mut ctx = Context::with_state(Arc::new(State::default()));
-        let mut req = Request::builder()
-            .method("GET")
-            .uri("http://www.example.com")
-            .body(Body::empty())
-            .unwrap();
+    fn test_username_labels_multi_consumer_parser() {
+        let mut ext = Extensions::default();
 
         let parser = (
             UsernameNoLabelParser::default(),
@@ -547,35 +444,26 @@ mod test {
         );
 
         assert_eq!(
-            parse_username(&mut ctx, &mut req, parser, "username-label1-label2", '-').unwrap(),
+            parse_username(
+                &mut ext,
+                parser,
+                "username-label1-label2",
+                DEFAULT_USERNAME_LABEL_SEPERATOR
+            )
+            .unwrap(),
             "username"
         );
 
-        let labels = ctx.get::<UsernameLabels>().unwrap();
+        let labels = ext.get::<UsernameLabels>().unwrap();
         assert_eq!(labels.0, vec!["label1".to_owned(), "label2".to_owned()]);
 
-        let labels = ctx.get::<MyLabels>().unwrap();
+        let labels = ext.get::<MyLabels>().unwrap();
         assert_eq!(labels.0, vec!["label1".to_owned(), "label2".to_owned()]);
-
-        let header_labels = req.headers().get("x-labels").unwrap();
-        assert_eq!(header_labels, "label1,label2");
-
-        assert_eq!(ctx.state().counter.0.load(Ordering::SeqCst), 2);
     }
 
     #[test]
     fn test_username_labels_multi_consumer_exclusive_parsers() {
-        #[derive(Debug, Default, AsRef)]
-        struct State {
-            counter: LabelCounter,
-        }
-
-        let mut ctx = Context::with_state(Arc::new(State::default()));
-        let mut req = Request::builder()
-            .method("GET")
-            .uri("http://www.example.com")
-            .body(Body::empty())
-            .unwrap();
+        let mut ext = Extensions::default();
 
         let parser = ExclusiveUsernameParsers((
             UsernameOpaqueLabelParser::default(),
@@ -584,15 +472,39 @@ mod test {
         ));
 
         assert_eq!(
-            parse_username(&mut ctx, &mut req, parser, "username-label1-label2", '-').unwrap(),
+            parse_username(
+                &mut ext,
+                parser,
+                "username-label1-label2",
+                DEFAULT_USERNAME_LABEL_SEPERATOR
+            )
+            .unwrap(),
             "username"
         );
 
-        let labels = ctx.get::<UsernameLabels>().unwrap();
+        let labels = ext.get::<UsernameLabels>().unwrap();
         assert_eq!(labels.0, vec!["label1".to_owned(), "label2".to_owned()]);
 
-        assert!(ctx.get::<MyLabels>().is_none());
-        assert!(req.headers().get("x-labels").is_none());
-        assert_eq!(ctx.state().counter.0.load(Ordering::SeqCst), 0);
+        assert!(ext.get::<MyLabels>().is_none());
+    }
+
+    #[test]
+    fn test_username_opaque_labels_none() {
+        let mut ext = Extensions::default();
+
+        let parser = UsernameOpaqueLabelParser::new();
+
+        assert_eq!(
+            parse_username(
+                &mut ext,
+                parser,
+                "username",
+                DEFAULT_USERNAME_LABEL_SEPERATOR
+            )
+            .unwrap(),
+            "username"
+        );
+
+        assert!(ext.get::<UsernameLabels>().is_none());
     }
 }
