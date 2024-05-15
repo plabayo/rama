@@ -8,10 +8,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40015`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:62015`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:40015
+//! curl -v http://127.0.0.1:62015
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the user agent info exposed by Rama.
@@ -30,7 +30,7 @@ async fn main() {
     let exec = Executor::default();
     HttpServer::auto(exec)
         .listen(
-            "127.0.0.1:40015",
+            "127.0.0.1:62015",
             ServiceBuilder::new()
                 .layer(
                     UserAgentClassifierLayer::new()

@@ -16,11 +16,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:41800`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:63800`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v https://127.0.0.1:40800
-//! curl -k -v https://127.0.0.1:41800
+//! curl -v https://127.0.0.1:62800
+//! curl -k -v https://127.0.0.1:63800
 //! ```
 //!
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
@@ -116,9 +116,9 @@ async fn main() {
                 tls_server_config,
                 tls_client_config_handler,
             ))
-            .service(Forwarder::target("127.0.0.1:40800".parse().unwrap()));
+            .service(Forwarder::target("127.0.0.1:62800".parse().unwrap()));
 
-        TcpListener::bind("127.0.0.1:41800")
+        TcpListener::bind("127.0.0.1:63800")
             .await
             .expect("bind TCP Listener: tls")
             .serve_graceful(guard, tcp_service)
@@ -127,7 +127,7 @@ async fn main() {
 
     // create http server
     shutdown.spawn_task_fn(|guard| async {
-        TcpListener::bind("127.0.0.1:40800")
+        TcpListener::bind("127.0.0.1:62800")
             .await
             .expect("bind TCP Listener: http")
             .serve_fn_graceful(guard, |mut stream: TcpStream| async move {

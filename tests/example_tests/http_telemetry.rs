@@ -9,7 +9,7 @@ async fn test_http_prometheus() {
     let runner = utils::ExampleRunner::interactive("http_telemetry");
 
     let homepage = runner
-        .get("http://127.0.0.1:40012")
+        .get("http://127.0.0.1:62012")
         .send(Context::default())
         .await
         .unwrap()
@@ -19,7 +19,7 @@ async fn test_http_prometheus() {
     assert!(homepage.contains("<h1>Hello!</h1>"));
 
     let metrics = runner
-        .get("http://127.0.0.1:41012/metrics")
+        .get("http://127.0.0.1:63012/metrics")
         .send(Context::default())
         .await
         .unwrap()

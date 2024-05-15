@@ -9,7 +9,7 @@ async fn test_http_conn_state() {
     let runner = utils::ExampleRunner::interactive("http_health_check");
 
     let response = runner
-        .get("http://127.0.0.1:40003")
+        .get("http://127.0.0.1:62003")
         .send(Context::default())
         .await
         .unwrap();

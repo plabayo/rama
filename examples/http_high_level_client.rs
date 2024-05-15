@@ -44,7 +44,7 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{fmt, EnvFilter};
 
-const ADDRESS: &str = "127.0.0.1:40004";
+const ADDRESS: &str = "127.0.0.1:62004";
 
 #[tokio::main]
 async fn main() {

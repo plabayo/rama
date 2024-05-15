@@ -10,10 +10,10 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40010`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:62010`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:40010
+//! curl -v http://127.0.0.1:62010
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a HTML body containing
@@ -109,7 +109,7 @@ async fn main() {
 
         let tcp_http_service = HttpServer::auto(exec).service(http_service);
 
-        TcpListener::bind("127.0.0.1:40010")
+        TcpListener::bind("127.0.0.1:62010")
             .await
             .expect("bind TCP Listener")
             .serve_graceful(

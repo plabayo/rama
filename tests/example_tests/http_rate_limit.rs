@@ -10,7 +10,7 @@ async fn test_http_rate_limit() {
     let runner: Arc<utils::ExampleRunner<()>> =
         Arc::new(utils::ExampleRunner::interactive("http_rate_limit"));
 
-    const ADDRESS: &str = "http://127.0.0.1:40008";
+    const ADDRESS: &str = "http://127.0.0.1:62008";
 
     assert_endpoint_concurrent_runs(runner.clone(), 3, format!("{ADDRESS}/limit"), 3).await;
     assert_endpoint_concurrent_runs(runner.clone(), 3, format!("{ADDRESS}/limit/slow"), 2).await;

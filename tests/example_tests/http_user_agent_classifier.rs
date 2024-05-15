@@ -21,7 +21,7 @@ async fn test_http_user_agent_classifier() {
     }
 
     let ua_rama: UserAgentInfo = runner
-        .get("http://127.0.0.1:40015")
+        .get("http://127.0.0.1:62015")
         .send(Context::default())
         .await
         .unwrap()
@@ -41,7 +41,7 @@ async fn test_http_user_agent_classifier() {
     const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 
     let ua_chrome: UserAgentInfo = runner
-        .get("http://127.0.0.1:40015")
+        .get("http://127.0.0.1:62015")
         .typed_header(headers::UserAgent::from_static(UA))
         .send(Context::default())
         .await
@@ -59,7 +59,7 @@ async fn test_http_user_agent_classifier() {
     const UA_APP: &str = "iPhone App/1.0";
 
     let ua_app: UserAgentInfo = runner
-        .get("http://127.0.0.1:40015")
+        .get("http://127.0.0.1:62015")
         .typed_header(headers::UserAgent::from_static(UA))
         .header(
             "x-proxy-ua",

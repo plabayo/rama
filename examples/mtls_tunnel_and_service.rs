@@ -11,16 +11,16 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:41014`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:63014`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -k -v https://127.0.0.1:41014
+//! curl -k -v https://127.0.0.1:63014
 //! ```
 //!
 //! This won't work as the client is not authorized. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:40014/hello
+//! curl -v http://127.0.0.1:62014/hello
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with `Hello, authorized client!`.
@@ -58,8 +58,8 @@ use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 const SERVER_DOMAIN: &str = "127.0.0.1";
-const SERVER_ADDR: &str = "127.0.0.1:41014";
-const TUNNEL_ADDR: &str = "127.0.0.1:40014";
+const SERVER_ADDR: &str = "127.0.0.1:63014";
+const TUNNEL_ADDR: &str = "127.0.0.1:62014";
 
 #[derive(Debug)]
 struct TunnelState {

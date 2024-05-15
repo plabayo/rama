@@ -13,7 +13,7 @@ async fn test_http_web_service_dir_and_api() {
 
     // test index.html via directory service
     let response = runner
-        .get("http://127.0.0.1:40013")
+        .get("http://127.0.0.1:62013")
         .send(Context::default())
         .await
         .unwrap();
@@ -23,7 +23,7 @@ async fn test_http_web_service_dir_and_api() {
 
     // test redirect
     let response = runner
-        .get("http://127.0.0.1:40013/foo/bar")
+        .get("http://127.0.0.1:62013/foo/bar")
         .send(Context::default())
         .await
         .unwrap();
@@ -33,7 +33,7 @@ async fn test_http_web_service_dir_and_api() {
 
     // test coin fetching
     let response = runner
-        .get("http://127.0.0.1:40013/coin")
+        .get("http://127.0.0.1:62013/coin")
         .send(Context::default())
         .await
         .unwrap();
@@ -43,7 +43,7 @@ async fn test_http_web_service_dir_and_api() {
 
     // test coin post
     let response = runner
-        .post("http://127.0.0.1:40013/coin")
+        .post("http://127.0.0.1:62013/coin")
         .send(Context::default())
         .await
         .unwrap();
@@ -53,7 +53,7 @@ async fn test_http_web_service_dir_and_api() {
 
     // test coin fetching (again)
     let response = runner
-        .get("http://127.0.0.1:40013/coin")
+        .get("http://127.0.0.1:62013/coin")
         .send(Context::default())
         .await
         .unwrap();

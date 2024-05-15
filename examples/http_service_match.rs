@@ -9,11 +9,11 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40011`. You can use your browser to interact with the service:
+//! The server will start and listen on `:62011`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://localhost:40011
-//! curl -v -X PATCH http://localhost:40011/echo
+//! open http://localhost:62011
+//! curl -v -X PATCH http://localhost:62011/echo
 //! ```
 //!
 //! You should see the homepage in your browser.
@@ -51,7 +51,7 @@ async fn main() {
         )
         .init();
 
-    let addr = "127.0.0.1:40011";
+    let addr = "127.0.0.1:62011";
     tracing::info!("running service at: {addr}");
     let exec = Executor::default();
     HttpServer::auto(exec)

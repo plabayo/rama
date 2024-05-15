@@ -4,7 +4,7 @@
 //! [`HttpServer`]: crate::http::server::HttpServer
 //! [`Executor`]: crate::rt::Executor
 //!
-//! This example will create a server that listens on `127.0.0.1:40002`.
+//! This example will create a server that listens on `127.0.0.1:62002`.
 //!
 //! # Run the example
 //!
@@ -14,14 +14,14 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:40002`. You can use `curl` to check if the server is running:
+//! The server will start and listen on `:62002`. You can use `curl` to check if the server is running:
 //!
 //! ```sh
-//! curl -X POST http://127.0.0.1:40002/form \
+//! curl -X POST http://127.0.0.1:62002/form \
 //!   -H "Content-Type: application/x-www-form-urlencoded" \
 //!   -d "name=John&age=32"
 //!
-//! curl -v 'http://127.0.0.1:40002/form?name=John&age=32'
+//! curl -v 'http://127.0.0.1:62002/form?name=John&age=32'
 //! ```
 //!
 //! You should see in both cases a response with `HTTP/1.1 200 OK` and `John is 32 years old.`.
@@ -29,7 +29,7 @@
 //! Alternatively you can
 //!
 //! ```sh
-//! open http://127.0.0.1:40002
+//! open http://127.0.0.1:62002
 //! ```
 //!
 //! and fill the form in the browser, you should see a response page after submitting the form,
@@ -72,7 +72,7 @@ async fn main() {
         HttpServer::auto(exec)
             .listen_graceful(
                 guard,
-                "127.0.0.1:40002",
+                "127.0.0.1:62002",
                 ServiceBuilder::new()
                     .layer(TraceLayer::new_for_http())
                     .service(

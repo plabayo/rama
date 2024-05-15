@@ -9,7 +9,7 @@ async fn test_tls_termination() {
     let runner = utils::ExampleRunner::interactive("tls_termination");
 
     let reply = runner
-        .get("http://localhost:40800")
+        .get("http://localhost:62800")
         .send(Context::default())
         .await
         .unwrap()

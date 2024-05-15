@@ -12,7 +12,7 @@ async fn test_http_conn_state() {
     let runner = utils::ExampleRunner::interactive("http_conn_state");
 
     let response = runner
-        .get("http://127.0.0.1:40000")
+        .get("http://127.0.0.1:62000")
         .send(Context::default())
         .await
         .unwrap();
