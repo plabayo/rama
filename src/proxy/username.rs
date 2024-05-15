@@ -10,6 +10,7 @@ use crate::{
 /// A parser which parses [`ProxyFilter`]s from username labels
 /// and adds it to the [`Context`]'s [`Extensions`].
 ///
+/// [`Context`]: crate::service::Context
 /// [`Extensions`]: crate::service::context::Extensions
 pub struct ProxyFilterUsernameParser {
     key: Option<ProxyFilterKey>,
@@ -90,7 +91,10 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{proxy::StringFilter, utils::username::{parse_username, DEFAULT_USERNAME_LABEL_SEPERATOR}};
+    use crate::{
+        proxy::StringFilter,
+        utils::username::{parse_username, DEFAULT_USERNAME_LABEL_SEPERATOR},
+    };
 
     #[test]
     fn test_username_config() {
@@ -373,7 +377,9 @@ mod tests {
 
             let parser = ProxyFilterUsernameParser::default();
 
-            let username = parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPERATOR).unwrap();
+            let username =
+                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPERATOR)
+                    .unwrap();
             let filter = ext.get::<ProxyFilter>().cloned();
             assert_eq!(
                 username, expected_username,
@@ -404,7 +410,8 @@ mod tests {
             let parser = ProxyFilterUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPERATOR).is_err(),
+                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPERATOR)
+                    .is_err(),
                 "username = {}",
                 username
             );
@@ -425,7 +432,8 @@ mod tests {
             let parser = ProxyFilterUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPERATOR).is_err(),
+                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPERATOR)
+                    .is_err(),
                 "username = {}",
                 username
             );
