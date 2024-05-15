@@ -1,5 +1,8 @@
 //! An example to showcase how one can build an unauthenticated http proxy server.
 //!
+//! This example also demonstrates how one can define their own username label parser,
+//! next to the built-in username label parsers.
+//!
 //! # Run the example
 //!
 //! ```sh
@@ -13,13 +16,14 @@
 //! ```sh
 //! curl -v -x http://127.0.0.1:40001 --proxy-user 'john:secret' http://www.example.com/
 //! curl -v -x http://127.0.0.1:40001 --proxy-user 'john-red-blue:secret' http://www.example.com/
+//! curl -v -x http://127.0.0.1:40001 --proxy-user 'john-priority-high-red-blue:secret' http://www.example.com/
 //! curl -v -x http://127.0.0.1:40001 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 //! The pseudo API can be used as follows:
 //!
 //! ```sh
 //! curl -v -x http://127.0.0.1:40001 --proxy-user 'john:secret' http://echo.example.internal/foo/bar
-//! curl -v -x http://127.0.0.1:40001 --proxy-user 'john-red-blue:secret' http://echo.example.internal/foo/bar
+//! curl -v -x http://127.0.0.1:40001 --proxy-user 'john-red-blue-priority-low:secret' http://echo.example.internal/foo/bar
 //! curl -v -x http://127.0.0.1:40001 --proxy-user 'john:secret' -XPOST http://echo.example.internal/lucky/7
 //! ```
 //!
@@ -56,7 +60,7 @@ use rama::{
     http::{
         client::HttpClient,
         layer::{
-            proxy_auth::{ProxyAuthLayer, ProxyUsernameLabels},
+            proxy_auth::ProxyAuthLayer,
             trace::TraceLayer,
             upgrade::{UpgradeLayer, Upgraded},
         },
@@ -70,13 +74,18 @@ use rama::{
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
     rt::Executor,
-    service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
+    service::{
+        context::Extensions, layer::HijackLayer, service_fn, Context, Service, ServiceBuilder,
+    },
     stream::layer::http::BodyLimitLayer,
     tcp::{server::TcpListener, utils::is_connection_error},
+    utils::username::{
+        UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
+    },
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::{convert::Infallible, ops::Deref, sync::Arc, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -111,7 +120,7 @@ async fn main() {
                     .layer(TraceLayer::new_for_http())
                     // See [`ProxyAuthLayer::with_labels`] for more information,
                     // e.g. can also be used to extract upstream proxy filters
-                    .layer(ProxyAuthLayer::basic(("john", "secret")).with_labels::<ProxyUsernameLabels>())
+                    .layer(ProxyAuthLayer::basic(("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>())
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
                         DomainMatcher::new("echo.example.internal"),
@@ -125,7 +134,12 @@ async fn main() {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path(),
-                                    "username_labels": ctx.get::<ProxyUsernameLabels>().map(|labels| labels.deref()),
+                                    "username_labels": ctx.get::<UsernameLabels>().map(|labels| &labels.0),
+                                    "user_priority": ctx.get::<Priority>().map(|p| match p {
+                                        Priority::High => "high",
+                                        Priority::Medium => "medium",
+                                        Priority::Low => "low",
+                                    }),
                                 }))
                             },
                             _ => StatusCode::NOT_FOUND,
@@ -211,5 +225,47 @@ where
                 .body(Body::empty())
                 .unwrap())
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Priority {
+    High,
+    Medium,
+    Low,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct PriorityUsernameLabelParser {
+    key_seen: bool,
+    priority: Option<Priority>,
+}
+
+impl UsernameLabelParser for PriorityUsernameLabelParser {
+    type Error = Infallible;
+
+    fn parse_label(&mut self, label: &str) -> UsernameLabelState {
+        let label = label.trim().to_ascii_lowercase();
+
+        if self.key_seen {
+            self.key_seen = false;
+            match label.as_str() {
+                "high" => self.priority = Some(Priority::High),
+                "medium" => self.priority = Some(Priority::Medium),
+                "low" => self.priority = Some(Priority::Low),
+                _ => return UsernameLabelState::Ignored,
+            }
+        } else if label == "priority" {
+            self.key_seen = true;
+        }
+
+        UsernameLabelState::Used
+    }
+
+    fn build(mut self, ext: &mut Extensions) -> Result<(), Self::Error> {
+        if let Some(priority) = self.priority.take() {
+            ext.insert(priority);
+        }
+        Ok(())
     }
 }

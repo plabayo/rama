@@ -307,6 +307,31 @@ impl<S> Context<S> {
         self.extensions.insert(extension)
     }
 
+    /// Return the entire dynamic state of the [`Context`] by reference.
+    ///
+    /// Useful only in case you have a function which works with [`Extensions`] rather
+    /// then the [`Context`] itself. In case you want to have access to a specific dynamic state,
+    /// it is more suitable to use [`Context::get`] directly.
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
+    }
+
+    /// Return the entire dynamic state of the [`Context`] by mutable reference.
+    ///
+    /// Useful only in case you have a function which works with [`Extensions`] rather
+    /// then the [`Context`] itself. In case you want to have access to a specific dynamic state,
+    /// it is more suitable to use [`Context::get_or_insert`] or [`Context::insert`] directly.
+    ///
+    /// # Rollback
+    ///
+    /// Extensions do not have "rollback" support. In case you are not yet certain if you want to keep
+    /// the to be inserted [`Extensions`], you are better to create a new [`Extensions`] object using
+    /// [`Extensions::default`] and use [`Context::extend`] once you wish to commit the new
+    /// dynamic data into the [`Context`].
+    pub fn extensions_mut(&mut self) -> &mut Extensions {
+        &mut self.extensions
+    }
+
     /// Extend The [`Context`] [`Extensions`] with another [`Extensions`].
     ///
     /// # Example

@@ -12,7 +12,7 @@ use std::marker::PhantomData;
 
 mod auth;
 #[doc(inline)]
-pub use auth::{FromUsername, ProxyAuthority, ProxyAuthoritySync, ProxyUsernameLabels};
+pub use auth::{ProxyAuthority, ProxyAuthoritySync};
 
 /// Layer that applies the [`ProxyAuthService`] middleware which apply a timeout to requests.
 ///
@@ -37,11 +37,13 @@ impl<A, C, L> ProxyAuthLayer<A, C, L> {
     /// Overwrite the Labels extract type
     ///
     /// This is used if the username contains labels that you need to extract out.
-    /// Example implementations are [`ProxyUsernameLabels`] and [`UsernameConfig`].
+    /// Example implementations are [`UsernameOpaqueLabelParser`] and [`ProxyFilterUsernameParser`].
     ///
-    /// You can provide your own extractor by implementing the [`FromUsername`] trait.
+    /// You can provide your own extractor by implementing the [`UsernameLabelParser`] trait.
     ///
-    /// [`UsernameConfig`]: crate::proxy::UsernameConfig
+    /// [`UsernameOpaqueLabelParser`]: crate::utils::username::UsernameOpaqueLabelParser
+    /// [`ProxyFilterUsernameParser`]: crate::proxy::ProxyFilterUsernameParser
+    /// [`UsernameLabelParser`]: crate::utils::username::UsernameLabelParser
     pub fn with_labels<L2>(self) -> ProxyAuthLayer<A, C, L2> {
         ProxyAuthLayer {
             proxy_auth: self.proxy_auth,
