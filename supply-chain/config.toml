@@ -155,7 +155,7 @@ criteria = "safe-to-run"
 version = "2.1.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.flat2]]
+[[exemptions.flate2]]
 version = "1.0.30"
 criteria = "safe-to-deploy"
 
