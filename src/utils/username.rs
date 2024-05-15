@@ -23,13 +23,13 @@
 //! ## Example
 //!
 //! [`ProxyFilterUsernameParser`] is a real-world example of a parser that uses the username labels.
-//! It support proxy filter defintions directly within the username.
+//! It support proxy filter definitions directly within the username.
 //!
 //! [`ProxyFilterUsernameParser`]: crate::proxy::ProxyFilterUsernameParser
 //!
 //! ```rust
 //! use rama::proxy::{ProxyFilter, ProxyFilterUsernameParser};
-//! use rama::utils::username::{DEFAULT_USERNAME_LABEL_SEPERATOR, parse_username};
+//! use rama::utils::username::{DEFAULT_USERNAME_LABEL_SEPARATOR, parse_username};
 //! use rama::service::context::Extensions;
 //!
 //! let mut ext = Extensions::default();
@@ -39,7 +39,7 @@
 //! let username = parse_username(
 //!     &mut ext, parser,
 //!     "john-residential-country-us",
-//!     DEFAULT_USERNAME_LABEL_SEPERATOR,
+//!     DEFAULT_USERNAME_LABEL_SEPARATOR,
 //! ).unwrap();
 //!
 //! assert_eq!(username, "john");
@@ -55,8 +55,8 @@ use crate::error::OpaqueError;
 use crate::service::context::Extensions;
 use std::{convert::Infallible, fmt};
 
-/// The default username label seperator used by most built-in rama support.
-pub const DEFAULT_USERNAME_LABEL_SEPERATOR: char = '-';
+/// The default username label separator used by most built-in rama support.
+pub const DEFAULT_USERNAME_LABEL_SEPARATOR: char = '-';
 
 /// Parse a username, extracting the username (first part)
 /// and passing everything else to the [`UsernameLabelParser`].
@@ -64,14 +64,14 @@ pub fn parse_username<P>(
     ext: &mut Extensions,
     mut parser: P,
     username_ref: impl AsRef<str>,
-    seperator: char,
+    separator: char,
 ) -> Result<String, OpaqueError>
 where
     P: UsernameLabelParser,
     P::Error: std::error::Error + Send + Sync + 'static,
 {
     let username_ref = username_ref.as_ref();
-    let mut label_it = username_ref.split(seperator);
+    let mut label_it = username_ref.split(separator);
 
     let username = match label_it.next() {
         Some(username) => {
@@ -363,14 +363,14 @@ mod test {
             &mut ext,
             UsernameLabelParserVoid::new(),
             "",
-            DEFAULT_USERNAME_LABEL_SEPERATOR
+            DEFAULT_USERNAME_LABEL_SEPARATOR
         )
         .is_err());
         assert!(parse_username(
             &mut ext,
             UsernameLabelParserVoid::new(),
             "-",
-            DEFAULT_USERNAME_LABEL_SEPERATOR
+            DEFAULT_USERNAME_LABEL_SEPARATOR
         )
         .is_err());
     }
@@ -384,7 +384,7 @@ mod test {
                 &mut ext,
                 UsernameNoLabelParser,
                 "username",
-                DEFAULT_USERNAME_LABEL_SEPERATOR
+                DEFAULT_USERNAME_LABEL_SEPARATOR
             )
             .unwrap(),
             "username"
@@ -399,7 +399,7 @@ mod test {
                 &mut ext,
                 UsernameOpaqueLabelParser::new(),
                 "username-label1-label2",
-                DEFAULT_USERNAME_LABEL_SEPERATOR
+                DEFAULT_USERNAME_LABEL_SEPARATOR
             )
             .unwrap(),
             "username"
@@ -423,7 +423,7 @@ mod test {
                 &mut ext,
                 parser,
                 "username-label1-label2",
-                DEFAULT_USERNAME_LABEL_SEPERATOR
+                DEFAULT_USERNAME_LABEL_SEPARATOR
             )
             .unwrap(),
             "username"
@@ -448,7 +448,7 @@ mod test {
                 &mut ext,
                 parser,
                 "username-label1-label2",
-                DEFAULT_USERNAME_LABEL_SEPERATOR
+                DEFAULT_USERNAME_LABEL_SEPARATOR
             )
             .unwrap(),
             "username"
@@ -476,7 +476,7 @@ mod test {
                 &mut ext,
                 parser,
                 "username-label1-label2",
-                DEFAULT_USERNAME_LABEL_SEPERATOR
+                DEFAULT_USERNAME_LABEL_SEPARATOR
             )
             .unwrap(),
             "username"
@@ -499,7 +499,7 @@ mod test {
                 &mut ext,
                 parser,
                 "username",
-                DEFAULT_USERNAME_LABEL_SEPERATOR
+                DEFAULT_USERNAME_LABEL_SEPARATOR
             )
             .unwrap(),
             "username"

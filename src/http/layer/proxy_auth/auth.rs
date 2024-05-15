@@ -4,7 +4,7 @@ use crate::{
         Authorization,
     },
     service::context::Extensions,
-    utils::username::{parse_username, UsernameLabelParser, DEFAULT_USERNAME_LABEL_SEPERATOR},
+    utils::username::{parse_username, UsernameLabelParser, DEFAULT_USERNAME_LABEL_SEPARATOR},
 };
 use std::future::Future;
 
@@ -69,7 +69,7 @@ impl<T: UsernameLabelParser> ProxyAuthoritySync<Basic, T> for Basic {
             &mut parser_ext,
             T::default(),
             username,
-            DEFAULT_USERNAME_LABEL_SEPERATOR,
+            DEFAULT_USERNAME_LABEL_SEPARATOR,
         ) {
             Ok(t) => t,
             Err(err) => {
@@ -118,7 +118,7 @@ impl<T: UsernameLabelParser> ProxyAuthoritySync<Basic, T> for (&'static str, &'s
             &mut parser_ext,
             T::default(),
             username,
-            DEFAULT_USERNAME_LABEL_SEPERATOR,
+            DEFAULT_USERNAME_LABEL_SEPARATOR,
         ) {
             Ok(t) => t,
             Err(err) => {
@@ -167,7 +167,7 @@ impl<T: UsernameLabelParser> ProxyAuthoritySync<Basic, T> for (String, String) {
             &mut parser_ext,
             T::default(),
             username,
-            DEFAULT_USERNAME_LABEL_SEPERATOR,
+            DEFAULT_USERNAME_LABEL_SEPARATOR,
         ) {
             Ok(t) => t,
             Err(err) => {

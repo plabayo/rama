@@ -93,7 +93,7 @@ mod tests {
     use super::*;
     use crate::{
         proxy::StringFilter,
-        utils::username::{parse_username, DEFAULT_USERNAME_LABEL_SEPERATOR},
+        utils::username::{parse_username, DEFAULT_USERNAME_LABEL_SEPARATOR},
     };
 
     #[test]
@@ -378,7 +378,7 @@ mod tests {
             let parser = ProxyFilterUsernameParser::default();
 
             let username =
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPERATOR)
+                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPARATOR)
                     .unwrap();
             let filter = ext.get::<ProxyFilter>().cloned();
             assert_eq!(
@@ -410,7 +410,7 @@ mod tests {
             let parser = ProxyFilterUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPERATOR)
+                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPARATOR)
                     .is_err(),
                 "username = {}",
                 username
@@ -432,7 +432,7 @@ mod tests {
             let parser = ProxyFilterUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPERATOR)
+                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPARATOR)
                     .is_err(),
                 "username = {}",
                 username

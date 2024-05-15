@@ -1,6 +1,7 @@
 [Preface](./preface.md)
 [Why Rama](./why_rama.md)
 [Built with Rust](./rust.md)
+[Do It Yourself](./diy.md)
 [Web Servers](./web_servers.md)
 [Http Clients](./http_clients.md)
 
@@ -12,6 +13,7 @@
     - [Service Stack](./intro/service_stack.md)
     - [🍔 Middlewares and ☘️ Leaf Services](./intro/terminology.md)
     - [Network Layers](./intro/network_layers.md)
+    - [⛌ Service Branches](./intro/service_branches.md)
     - [☀️ Context<State>](./intro/context.md)
     - [🧱 Modular](./intro/modular.md)
     - [🚚 Dynamic Dispatch](./intro/dynamic_dispatch.md)

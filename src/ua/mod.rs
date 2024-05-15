@@ -26,7 +26,7 @@
 //! For UA Classification one can overwrite the [`HttpAgent`] and [`TlsAgent`] advertised by the [`UserAgent`],
 //! using the [`UserAgent::with_http_agent`] and [`UserAgent::with_tls_agent`] methods.
 //!
-//! UA Emulators are adviced to interpret the [`UserAgent`] in the following order:
+//! UA Emulators are advised to interpret the [`UserAgent`] in the following order:
 //!
 //! 1. first try to find an emulation match using [`UserAgent::header_str`];
 //! 2. otherwise try to find an emulation match using [`UserAgent::info`]: where the [`UserAgentKind`] and [`PlatformKind`] should be matched,

@@ -499,7 +499,7 @@ mod tests {
         assert_eq!("ChRoMe".parse::<HttpAgent>().unwrap(), HttpAgent::Chromium);
 
         assert_eq!("firefox".parse::<HttpAgent>().unwrap(), HttpAgent::Firefox);
-        assert_eq!("FiReFoX".parse::<HttpAgent>().unwrap(), HttpAgent::Firefox);
+        assert_eq!("FiRefoX".parse::<HttpAgent>().unwrap(), HttpAgent::Firefox);
 
         assert_eq!("safari".parse::<HttpAgent>().unwrap(), HttpAgent::Safari);
         assert_eq!("SaFaRi".parse::<HttpAgent>().unwrap(), HttpAgent::Safari);
