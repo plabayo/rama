@@ -76,4 +76,14 @@ Another example of branching is the concept of hijacking services. These are ser
 
 This can for example be of use in case you want to serve an API over pseudo domains for alternative proxy services.
 
+```dot process
+digraph {
+    pad=0.2;
+    "serve(ctx, request)" -> "service A" [dir=both]
+    "service A" -> "service B" [dir=both]
+    "service A" -> "service C" [dir=both]
+    "service C" -> "service D" [dir=both]
+}
+```
+
 An example of this can be seen at [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs), which makes use of the [`HijackLayer`](https://ramaproxy.org/docs/rama/service/layer/struct.HijackLayer.html), a layer specifically designed for this kind of purpose.

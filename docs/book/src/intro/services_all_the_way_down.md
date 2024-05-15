@@ -48,3 +48,11 @@ process it and return a `Result` which contains a `Response` at success and an `
 As per the design of Rust's _std_ `Result` we do want to make clear that despite the associated type's name,
 that it does not have to mean that the assigned type implements the `std::error::Error` trait. It is perfectly fine
 for that to contain the same or similar type as is used for the `Response` associated type.
+
+## Everything is a service
+
+Within Rama pretty much anything is a service, except for the configurable parts of a service, those are most likely other types or even just primitives.
+
+A notable difference from other (web) frameworks where you might ave worked with the concept of services is that within Rama you can have services on multiple layers of the network stack. The lowest layer that we offer support for is the transport layer, allowing you to operate as a leaf or middleware service directly on the input Tcp/Udp stream. The highest layer is the Http layer which you are most likely already familiar with. Layers such as Tls operate within the transport layer for what is Rama concerned. As tls is from a minimal POV simply a wrapper around the Tcp stream.
+
+The story doesn't end here however. Where in most frameworks you would also have "thick" services such as an Http client. This is not the case in Rama. Here we really do it services all the way down. If you look at Rama's [HttpClient](https://ramaproxy.org/docs/rama/http/client/struct.HttpClient.html) you'll notice that it takes optionally a service to get connections. This allows you to build any kind of service stack you wish, where the input is the http request, and out the output is the input + a connection to be operated upon. Features such as a connection pool are implemented in the form of layers that you can easily add to your `HttpClient` in that manner. As we said... services all the way down.

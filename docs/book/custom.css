@@ -29,3 +29,7 @@
     text-align: center;
     margin: 10px;
 }
+
+.book-article-image-center svg {
+    max-width: 100%;
+}
