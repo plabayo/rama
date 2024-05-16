@@ -67,10 +67,7 @@ use rama::{
         matcher::{DomainMatcher, HttpMatcher, MethodMatcher},
         response::Json,
         server::HttpServer,
-        service::web::{
-            extract::{Host, Path},
-            match_service,
-        },
+        service::web::{extract::Path, match_service},
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
     rt::Executor,
@@ -107,8 +104,6 @@ async fn main() {
     struct APILuckyParams {
         number: u32,
     }
-
-    // TODO: what about the hop headers?!
 
     graceful.spawn_task_fn(|guard| async move {
         let tcp_service = TcpListener::build().bind("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
@@ -172,9 +167,6 @@ async fn http_connect_accept<S>(
 where
     S: Send + Sync + 'static,
 {
-    // TODO: should we support http connect better?
-    // e.g. by always adding the host
-
     match ctx
         .get_or_insert_with::<RequestContext>(|| RequestContext::from(&req))
         .host
@@ -194,7 +186,13 @@ async fn http_connect_proxy<S>(ctx: Context<S>, mut upgraded: Upgraded) -> Resul
 where
     S: Send + Sync + 'static,
 {
-    let Host(host) = ctx.get().unwrap();
+    let host = ctx
+        .get::<RequestContext>()
+        .unwrap()
+        .host
+        .as_ref()
+        .unwrap()
+        .clone();
     tracing::info!("CONNECT to {}", host);
     let mut stream = match tokio::net::TcpStream::connect(&host).await {
         Ok(stream) => stream,
@@ -215,7 +213,7 @@ async fn http_plain_proxy<S>(ctx: Context<S>, req: Request) -> Result<Response, 
 where
     S: Send + Sync + 'static,
 {
-    let client = HttpClient::new();
+    let client = HttpClient::default();
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {

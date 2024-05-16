@@ -3,10 +3,11 @@
 //! # Example
 //!
 //! ```rust
-//! use rama::dns::layer::{DnsLayer, DynamicDnsResolver, DnsResolvedSocketAddresses};
+//! use rama::dns::layer::{DnsLayer, DynamicDnsResolver};
 //! use rama::http::service::web::{WebService, extract::{Host, Extension}};
 //! use rama::http::{Body, Request, RequestContext, Version, StatusCode};
 //! use rama::service::{Context, Service, Layer};
+//! use rama::stream::ServerSocketAddr;
 //! use rama::uri::Scheme;
 //! use std::net::SocketAddr;
 //!
@@ -17,10 +18,10 @@
 //!         .default_resolver();
 //!    
 //!     let service = dns_layer.layer(WebService::default()
-//!         .get("/", |Host(host): Host, Extension(resolved): Extension<DnsResolvedSocketAddresses>| async move {
+//!         .get("/", |Host(host): Host, Extension(resolved): Extension<ServerSocketAddr>| async move {
 //!             assert_eq!(host, "www.example.com");
 //!             let expected_addr: SocketAddr = "127.0.0.1:8080".parse().unwrap();
-//!             assert_eq!(resolved.address(), &expected_addr);
+//!             assert_eq!(resolved.addr(), &expected_addr);
 //!             StatusCode::OK
 //!         }),
 //!     );
@@ -58,7 +59,7 @@ pub(crate) mod dns_map;
 
 mod service;
 #[doc(inline)]
-pub use service::{DnsResolvedSocketAddresses, DnsService};
+pub use service::DnsService;
 
 /// Layer which produces a [`DnsService`] which will resolve the DNS of the given request.
 ///

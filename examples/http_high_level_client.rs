@@ -81,7 +81,7 @@ async fn main() {
                 .unwrap(),
             ),
         ))
-        .service(HttpClient::new());
+        .service(HttpClient::default());
 
     //--------------------------------------------------------------------------------
     // Low Level (Regular) http client (stack) service example.

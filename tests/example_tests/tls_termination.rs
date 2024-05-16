@@ -19,5 +19,14 @@ async fn test_tls_termination() {
 
     assert_eq!("Hello world!", reply);
 
-    // TODO: test https proxy once http client supports https
+    let reply = runner
+        .get("https://localhost:63800")
+        .send(Context::default())
+        .await
+        .unwrap()
+        .try_into_string()
+        .await
+        .unwrap();
+
+    assert_eq!("Hello world!", reply);
 }

@@ -74,4 +74,13 @@ pub mod dep {
         //! [`tokio-rustls`]: https://docs.rs/tokio-rustls
         pub use tokio_rustls::*;
     }
+
+    pub mod webpki_roots {
+        //! Re-export of the [`webpki-roots`] crate.
+        //!
+        //! This crate provides a function to load the Mozilla root CA store.
+        //!
+        //! [`webpki-roots`]: https://docs.rs/webpki-roots
+        pub use webpki_roots::*;
+    }
 }

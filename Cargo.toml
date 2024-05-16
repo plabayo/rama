@@ -78,6 +78,7 @@ unicode-normalization = "0.1.23"
 iri-string = "0.7.0"
 escargot = "0.5.10"
 divan = "0.1.14"
+webpki-roots = "0.26.1"
 
 [package]
 name = "rama"
@@ -152,6 +153,7 @@ tracing = { workspace = true }
 unicode-normalization = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 venndb = { workspace = true }
+webpki-roots = { workspace = true }
 
 [dev-dependencies]
 brotli = { workspace = true }
