@@ -12,7 +12,21 @@ use crate::tls::rustls::dep::{
 
 /// Cert verifier that does not verify the server certificate.
 #[derive(Debug)]
+#[non_exhaustive]
 pub struct NoServerCertVerifier;
+
+impl NoServerCertVerifier {
+    /// Create a new instance of the [`NoServerCertVerifier`].
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for NoServerCertVerifier {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl ServerCertVerifier for NoServerCertVerifier {
     fn verify_server_cert(

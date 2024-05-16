@@ -107,8 +107,7 @@ where
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
-                        // TOD: should this error level / handling be configurable?
-                        tracing::error!("connection failed: {:?}", err);
+                        tracing::debug!("connection failed: {:?}", err);
                     }
                 });
 
@@ -124,8 +123,7 @@ where
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
-                        // TODO: should this error level / handling be configurable?
-                        tracing::error!("connection failed: {:?}", err);
+                        tracing::debug!("connection failed: {:?}", err);
                     }
                 });
 

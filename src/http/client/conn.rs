@@ -1,6 +1,7 @@
 use crate::http::RequestContext;
 use crate::service::Service;
 use crate::tcp::service::TcpConnector;
+use crate::tls::rustls::verify::NoServerCertVerifier;
 use crate::tls::rustls::{
     dep::pki_types,
     dep::rustls::{ClientConfig, RootCertStore},
@@ -164,7 +165,9 @@ pin_project! {
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-/// Default [`ClientConnector`] used by the default [`HttpClient`].
+/// Default connector [`Service`] used by the default [`HttpClient`].
+///
+/// [`HttpClient`]: crate::http::client::HttpClient
 pub struct DefaultClientConnector;
 
 impl DefaultClientConnector {
@@ -186,9 +189,12 @@ fn default_tls_client_config() -> Arc<ClientConfig> {
         .get_or_init(|| {
             let mut root_storage = RootCertStore::empty();
             root_storage.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let config = ClientConfig::builder()
+            let mut config = ClientConfig::builder()
                 .with_root_certificates(root_storage)
-                .with_no_client_auth(); // i guess this was previously the def
+                .with_no_client_auth();
+            config
+                .dangerous()
+                .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
             Arc::new(config)
         })
         .clone()
@@ -226,7 +232,7 @@ where
             });
         }
 
-        let host = match request_ctx.host.as_ref().map(String::as_str) {
+        let host = match request_ctx.host.as_deref() {
             Some(host) => host,
             None => {
                 return Err(std::io::Error::new(
