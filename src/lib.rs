@@ -13,7 +13,7 @@
 //! | 🏗️ [transports](crate::stream) | ✅ [tcp] ⸱ 🏗️ udp <sup>(1)</sup> ⸱ ✅ [middleware](crate::stream::layer) |
 //! | 🏗️ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(1)</sup> ⸱ ✅ [middleware](crate::http::layer) |
 //! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
-//! | ✅ [http client](crate::http::client) | ✅ [client](crate::http::client::HttpClient) ⸱ ✅ [high level API](crate::http::client::HttpClientExt) |
+//! | ✅ [http client](crate::http::client) | ✅ [client](crate::http::client::HttpClient) ⸱ ✅ [high level API](crate::http::client::HttpClientExt) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
 //! | 🏗️ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ 🏗️ BoringSSL <sup>(1)</sup> ⸱ ❌ NSS <sup>(3)</sup> |
 //! | ✅ [dns] | ✅ [DNS Resolver](crate::dns::layer) |
 //! | 🏗️ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::pp) ⸱ 🏗️ http proxy <sup>(1)</sup> ⸱ 🏗️ https proxy <sup>(1)</sup> ⸱ 🏗️ SOCKS5 <sup>(2)</sup> ⸱ 🏗️ SOCKS5H <sup>(2)</sup> |
@@ -22,7 +22,7 @@
 //! | ✅ [telemetry][opentelemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::stream::layer::opentelemetry) ⸱ ✅ [prometheus exportor](crate::http::service::web::PrometheusMetricsHandler) |
 //! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config](crate::utils::username) ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
-//! | 🏗️ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::utils::graceful) ⸱ 🏗️ Connection Pool <sup>(1)</sup> |
+//! | 🏗️ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::utils::graceful) ⸱ 🏗️ Connection Pool <sup>(1)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 //! | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 //! | 🏗️ proxy binary | 🏗️ prebuilt binaries <sup>(2)</sup> ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ 🏗️ http client <sup>(2)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 //! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
