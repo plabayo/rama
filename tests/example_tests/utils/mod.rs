@@ -92,7 +92,7 @@ where
                     .unwrap(),
                 ),
             ))
-            .service(HttpClient::new())
+            .service(HttpClient::default())
             .boxed();
 
         Self {

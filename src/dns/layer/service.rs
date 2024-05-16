@@ -6,51 +6,9 @@ use crate::{
         HeaderName, Request, RequestContext,
     },
     service::{Context, Service},
+    stream::ServerSocketAddr,
 };
 use std::net::SocketAddr;
-
-/// State that is added to the [`Extensions`] of a request when a [`DnsService`] is used,
-/// and which has resolved the hostname of the request.
-///
-/// The (Http) request itself is not modified, and the resolved addresses are not added to the
-/// request headers.
-///
-/// [`Extensions`]: crate::service::context::Extensions
-#[derive(Debug, Clone)]
-pub struct DnsResolvedSocketAddresses {
-    address: SocketAddr,
-    alt_addresses: Vec<SocketAddr>,
-}
-
-impl DnsResolvedSocketAddresses {
-    pub(crate) fn new(address: SocketAddr, alt_addresses: Vec<SocketAddr>) -> Self {
-        Self {
-            address,
-            alt_addresses,
-        }
-    }
-
-    /// Reference to first resolved address.
-    pub fn address(&self) -> &SocketAddr {
-        &self.address
-    }
-
-    /// Iterator over the references of all resolved addresses.
-    ///
-    /// This is guaranteed to always return 1 item, the first address.
-    /// If you wish however to be guaraneteed of that you can use [`Self::address`],
-    /// and then use [`Self::alt_address_iter`] to check if there are more.
-    pub fn address_iter(&self) -> impl Iterator<Item = &SocketAddr> {
-        std::iter::once(&self.address).chain(self.alt_addresses.iter())
-    }
-
-    /// Iterator over the references of all alternative addresses.
-    ///
-    /// use [`Self::address_iter`] to get an iterator that also includes the first address.
-    pub fn alt_address_iter(&self) -> impl Iterator<Item = &SocketAddr> {
-        self.alt_addresses.iter()
-    }
-}
 
 /// [`Service`] which resolves the hostname of the request and adds the resolved addresses
 /// to the [`Extensions`] of the request.
@@ -117,10 +75,7 @@ where
             let mut addresses_it = addresses.into_iter();
             match addresses_it.next() {
                 Some(address) => {
-                    ctx.insert(DnsResolvedSocketAddresses::new(
-                        address,
-                        addresses_it.collect(),
-                    ));
+                    ctx.insert(ServerSocketAddr::new(address));
                 }
                 None => {
                     return Err(DnsError::HostnameNotFound);

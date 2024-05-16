@@ -1,6 +1,9 @@
 #![allow(dead_code)]
 
-use crate::error::BoxError;
+use crate::error::{BoxError, OpaqueError};
+use crate::http::Uri;
+
+// TODO: support perhaps also more context, such as tracing id, ...
 
 #[derive(Debug)]
 /// An opaque error type that encapsulates all possible errors that can occur when using the
@@ -8,64 +11,60 @@ use crate::error::BoxError;
 ///
 /// [`HttpClient`]: crate::http::client::HttpClient
 pub struct HttpClientError {
-    inner: Option<BoxError>,
-    kind: HttpClientErrorKind,
-}
-
-#[derive(Debug)]
-enum HttpClientErrorKind {
-    Request,
-    IO,
+    inner: OpaqueError,
+    uri: Option<Uri>,
 }
 
 impl HttpClientError {
-    pub(crate) fn request() -> Self {
+    /// create a [`HttpClientError`] from an std error
+    pub fn from_std(err: impl std::error::Error + Send + Sync + 'static) -> Self {
         Self {
-            inner: None,
-            kind: HttpClientErrorKind::Request,
-        }
-    }
-    pub(crate) fn request_err(err: impl Into<BoxError>) -> Self {
-        Self {
-            inner: Some(err.into()),
-            kind: HttpClientErrorKind::Request,
+            inner: OpaqueError::from_std(err),
+            uri: None,
         }
     }
 
-    pub(crate) fn io() -> Self {
+    /// create a [`HttpClientError`] from a display object
+    pub fn from_display(
+        err: impl std::fmt::Display + std::fmt::Debug + Send + Sync + 'static,
+    ) -> Self {
         Self {
-            inner: None,
-            kind: HttpClientErrorKind::IO,
+            inner: OpaqueError::from_display(err),
+            uri: None,
         }
     }
 
-    pub(crate) fn io_err(err: impl Into<BoxError>) -> Self {
+    /// create a [`HttpClientError`] from a boxed error
+    pub fn from_boxed(err: BoxError) -> Self {
         Self {
-            inner: Some(err.into()),
-            kind: HttpClientErrorKind::IO,
+            inner: OpaqueError::from_boxed(err),
+            uri: None,
         }
+    }
+
+    /// Attach a [`Uri`] to the error.
+    pub fn with_uri(mut self, uri: Uri) -> Self {
+        self.uri = Some(uri);
+        self
+    }
+
+    /// Return the [`Uri`] associated with the error, if any.
+    pub fn uri(&self) -> Option<&Uri> {
+        self.uri.as_ref()
     }
 }
 
 impl std::fmt::Display for HttpClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match &self.kind {
-            HttpClientErrorKind::Request => {
-                write!(
-                    f,
-                    "HTTP Client Request error: {}",
-                    self.inner.as_ref().unwrap()
-                )
-            }
-            HttpClientErrorKind::IO => {
-                write!(f, "HTTP Client IO error: {}", self.inner.as_ref().unwrap())
-            }
+        match &self.uri {
+            Some(uri) => write!(f, "http client error ({:?}) for uri: {}", self.inner, uri),
+            None => write!(f, "http client error ({:?})", self.inner),
         }
     }
 }
 
 impl std::error::Error for HttpClientError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.inner.as_ref().and_then(|e| e.source())
+        self.inner.source()
     }
 }

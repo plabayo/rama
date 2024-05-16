@@ -222,7 +222,7 @@ mod private {
             let scheme: Scheme = self.scheme().into();
             match scheme {
                 Scheme::Http | Scheme::Https => Ok(self),
-                _ => Err(HttpClientError::request_err(format!(
+                _ => Err(HttpClientError::from_display(format!(
                     "Unsupported scheme: {scheme}"
                 ))),
             }
@@ -233,7 +233,7 @@ mod private {
         fn into_url(self) -> Result<Uri, HttpClientError> {
             match self.parse::<Uri>() {
                 Ok(uri) => uri.into_url(),
-                Err(_) => Err(HttpClientError::request_err(format!(
+                Err(_) => Err(HttpClientError::from_display(format!(
                     "Invalid URL: {}",
                     self
                 ))),
@@ -267,7 +267,7 @@ mod private {
         fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
             match self {
                 Some(name) => Ok(name),
-                None => Err(HttpClientError::request_err("Header name is required")),
+                None => Err(HttpClientError::from_display("Header name is required")),
             }
         }
     }
@@ -276,7 +276,7 @@ mod private {
         fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
             let name = self
                 .parse::<crate::http::HeaderName>()
-                .map_err(HttpClientError::request_err)?;
+                .map_err(HttpClientError::from_std)?;
             Ok(name)
         }
     }
@@ -296,7 +296,7 @@ mod private {
     impl IntoHeaderNameSealed for &[u8] {
         fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
             let name =
-                crate::http::HeaderName::from_bytes(self).map_err(HttpClientError::request_err)?;
+                crate::http::HeaderName::from_bytes(self).map_err(HttpClientError::from_std)?;
             Ok(name)
         }
     }
@@ -315,7 +315,7 @@ mod private {
         fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError> {
             let value = self
                 .parse::<crate::http::HeaderValue>()
-                .map_err(HttpClientError::request_err)?;
+                .map_err(HttpClientError::from_std)?;
             Ok(value)
         }
     }
@@ -335,7 +335,7 @@ mod private {
     impl IntoHeaderValueSealed for &[u8] {
         fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError> {
             let value =
-                crate::http::HeaderValue::from_bytes(self).map_err(HttpClientError::request_err)?;
+                crate::http::HeaderValue::from_bytes(self).map_err(HttpClientError::from_std)?;
             Ok(value)
         }
     }
@@ -477,7 +477,7 @@ where
                     RequestBuilderState::Error(original_err) => {
                         RequestBuilderState::Error(original_err)
                     }
-                    _ => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                    _ => RequestBuilderState::Error(HttpClientError::from_std(err)),
                 };
                 return self;
             }
@@ -498,16 +498,16 @@ where
             RequestBuilderState::PreBody(builder) => match body.try_into() {
                 Ok(body) => match builder.body(body) {
                     Ok(req) => RequestBuilderState::PostBody(req),
-                    Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                    Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
                 },
-                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                Err(err) => RequestBuilderState::Error(HttpClientError::from_boxed(err.into())),
             },
             RequestBuilderState::PostBody(mut req) => match body.try_into() {
                 Ok(body) => {
                     *req.body_mut() = body;
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                Err(err) => RequestBuilderState::Error(HttpClientError::from_boxed(err.into())),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -542,10 +542,10 @@ where
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
-                        Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                        Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
                     }
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
             },
             RequestBuilderState::PostBody(mut req) => match serde_urlencoded::to_string(form) {
                 Ok(body) => {
@@ -563,7 +563,7 @@ where
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -594,10 +594,10 @@ where
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
-                        Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                        Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
                     }
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
             },
             RequestBuilderState::PostBody(mut req) => match serde_json::to_vec(json) {
                 Ok(body) => {
@@ -613,7 +613,7 @@ where
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::request_err(err)),
+                Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -650,7 +650,7 @@ where
         let mut request = match self.state {
             RequestBuilderState::PreBody(builder) => builder
                 .body(crate::http::Body::empty())
-                .map_err(HttpClientError::request_err)?,
+                .map_err(HttpClientError::from_std)?,
             RequestBuilderState::PostBody(request) => request,
             RequestBuilderState::Error(err) => return Err(err),
         };
@@ -672,9 +672,10 @@ where
             );
         }
 
+        let uri = request.uri().clone();
         match self.http_client_service.serve(ctx, request).await {
             Ok(response) => Ok(response),
-            Err(err) => Err(HttpClientError::io_err(err)),
+            Err(err) => Err(HttpClientError::from_boxed(err.into()).with_uri(uri)),
         }
     }
 }
