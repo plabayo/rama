@@ -25,6 +25,8 @@
 [ghs-url]: https://github.com/sponsors/plabayo
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
+[polar-badge]: https://img.shields.io/badge/polar.sh-subscribe?style=for-the-badge&color=blue
+[polar-url]: https://polar.sh/plabayo
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](./why_rama.md).
@@ -96,10 +98,11 @@ on both the Http and Tls layers. By design we do not consider Tcp and Udp finger
 
 Next to proxies, Rama can also be used to develop [Web Services](./web_servers.md) and [Http Clients](./http_clients.md).
 
-[![Discord][discord-badge]][discord-url]
-[![Buy Me A Coffee][bmac-badge]][bmac-url]
 [![GitHub Sponsors][ghs-badge]][ghs-url]
+[![Polar Subscribe][polar-badge]][polar-url]
+[![Buy Me A Coffee][bmac-badge]][bmac-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
+[![Discord][discord-badge]][discord-url]
 
 Please consult [the official docs.rs documentation][docs-url] or explore
 [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
@@ -108,6 +111,6 @@ to know how to use rama for your purposes.
 > 💡 You can find the edge docs of the rama framework code at <https://ramaproxy.org/docs/rama/index.html>,
 > which contains the documentation for the main branch of the project.
 
-🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
+🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription at [polar.sh/plabayo](https://polar.sh/plabayo).
 
 💖 Please consider becoming [a sponsor][ghs-url] if you critically depend upon Rama (ラマ) or if you are a fan of the project.

@@ -7,11 +7,6 @@
 [![rust version][rust-version-badge]][rust-version-url]
 [![Build Status][actions-badge]][actions-url]
 
-[![Discord][discord-badge]][discord-url]
-[![Buy Me A Coffee][bmac-badge]][bmac-url]
-[![GitHub Sponsors][ghs-badge]][ghs-url]
-[![Paypal Donation][paypal-badge]][paypal-url]
-
 [crates-badge]: https://img.shields.io/crates/v/rama.svg
 [crates-url]: https://crates.io/crates/rama
 [docs-badge]: https://img.shields.io/docsrs/rama/latest
@@ -33,6 +28,8 @@
 [ghs-url]: https://github.com/sponsors/plabayo
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
+[polar-badge]: https://img.shields.io/badge/polar.sh-subscribe?style=for-the-badge&color=blue
+[polar-url]: https://polar.sh/plabayo
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
@@ -40,6 +37,12 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to get inspired on how you can use it for your purposes.
+
+[![GitHub Sponsors][ghs-badge]][ghs-url]
+[![Polar Subscribe][polar-badge]][polar-url]
+[![Buy Me A Coffee][bmac-badge]][bmac-url]
+[![Paypal Donation][paypal-badge]][paypal-url]
+[![Discord][discord-badge]][discord-url]
 
 This framework comes with 🔋 batteries included, giving you the full freedome to build the middleware and services you want, without _having_ to repeat the "common":
 
@@ -365,7 +368,7 @@ We are grateful to both sponsors for sponsering us these cloud resources.
 
 ### Professional Services
 
-🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
+🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription at [polar.sh/plabayo](https://polar.sh/plabayo).
 
 These type of contracts are another way for you to be able to support the project and
 at the same time get serviced for your own needs and purposes.
