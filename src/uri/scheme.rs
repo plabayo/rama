@@ -34,6 +34,16 @@ pub enum Scheme {
     Custom(String),
 }
 
+impl Scheme {
+    /// Returns `true` if the scheme indicates a secure protocol.
+    pub fn secure(&self) -> bool {
+        match self {
+            Scheme::Https | Scheme::Wss => true,
+            Scheme::Empty | Scheme::Ws | Scheme::Http | Scheme::Custom(_) => false,
+        }
+    }
+}
+
 impl FromStr for Scheme {
     type Err = Infallible;
 
@@ -146,5 +156,15 @@ mod tests {
             let uri = crate::http::Uri::from_str(format!("{}://example.com", s).as_str()).unwrap();
             assert_eq!(Scheme::from(uri.scheme()), *s);
         }
+    }
+
+    #[test]
+    fn test_scheme_secure() {
+        assert!(!Scheme::Http.secure());
+        assert!(Scheme::Https.secure());
+        assert!(!Scheme::Ws.secure());
+        assert!(Scheme::Wss.secure());
+        assert!(!Scheme::Empty.secure());
+        assert!(!Scheme::Custom("custom".to_owned()).secure());
     }
 }
