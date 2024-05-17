@@ -20,25 +20,25 @@ use tokio::net::TcpStream;
 /// [`Request`]: crate::http::Request
 /// [`Uri`]: crate::http::Uri
 /// [`Context`]: crate::service::Context
-pub struct TcpConnector;
+pub struct HttpConnector;
 
-impl TcpConnector {
-    /// Create a new [`TcpConnector`], which is used to establish a connection to a server.
+impl HttpConnector {
+    /// Create a new [`HttpConnector`], which is used to establish a connection to a server.
     ///
-    /// You can use middleware around the [`TcpConnector`] to set a [`ServerSocketAddr`],
+    /// You can use middleware around the [`HttpConnector`] to set a [`ServerSocketAddr`],
     /// or add connection pools, retry logic and more.
     pub fn new() -> Self {
-        TcpConnector
+        HttpConnector
     }
 }
 
-impl Default for TcpConnector {
+impl Default for HttpConnector {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<State, Body> Service<State, Request<Body>> for TcpConnector
+impl<State, Body> Service<State, Request<Body>> for HttpConnector
 where
     State: Send + Sync + 'static,
     Body: Send + 'static,

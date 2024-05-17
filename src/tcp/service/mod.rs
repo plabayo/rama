@@ -6,4 +6,4 @@ pub use forward::{ForwardAddress, Forwarder};
 
 mod connector;
 #[doc(inline)]
-pub use connector::TcpConnector;
+pub use connector::HttpConnector;

@@ -1,6 +1,6 @@
 use crate::http::RequestContext;
 use crate::service::Service;
-use crate::tcp::service::TcpConnector;
+use crate::tcp::service::HttpConnector;
 use crate::tls::rustls::verify::NoServerCertVerifier;
 use crate::tls::rustls::{
     dep::pki_types,
@@ -214,7 +214,7 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
-            TcpConnector::default().serve(ctx, req).await?;
+            HttpConnector::default().serve(ctx, req).await?;
 
         let (addr, stream) = conn.into_parts();
         let request_ctx = ctx.get_or_insert_with(|| RequestContext::new(&req));
