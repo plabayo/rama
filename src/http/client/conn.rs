@@ -76,6 +76,14 @@ impl<S> ClientConnection<S> {
         &self.addr
     }
 
+    /// Map the inner stream of this [`ClientConnection`] to a different type.
+    pub fn map<S2>(self, f: impl FnOnce(S) -> S2) -> ClientConnection<S2> {
+        ClientConnection {
+            addr: self.addr,
+            stream: f(self.stream),
+        }
+    }
+
     /// Consume the [`ClientConnection`] and return the inner stream and target [`SocketAddr`].
     pub fn into_parts(self) -> (SocketAddr, S) {
         (self.addr, self.stream)
