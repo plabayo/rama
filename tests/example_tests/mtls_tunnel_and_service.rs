@@ -28,5 +28,5 @@ async fn test_mtls_tunnel_and_service() {
         .send(ctx)
         .await
         .unwrap_err();
-    assert!(err.to_string().contains("https://127.0.0.1:63014/hello"));
+    assert!(err.to_string().contains("CertificateRequired"));
 }
