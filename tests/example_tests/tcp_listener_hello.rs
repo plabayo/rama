@@ -11,7 +11,7 @@ async fn test_tcp_listener_hello() {
     let runner = utils::ExampleRunner::interactive("tcp_listener_hello");
 
     let file_content = runner
-        .get("http://localhost:62500")
+        .get("http://localhost:52500")
         .send(Context::default())
         .await
         .unwrap()
