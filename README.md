@@ -225,7 +225,7 @@ let client = ServiceBuilder::new()
     .layer(RetryLayer::new(
         ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
     ))
-    .service(HttpClient::new());
+    .service(HttpClient::default());
 
 #[derive(Debug, Deserialize)]
 struct Info {
