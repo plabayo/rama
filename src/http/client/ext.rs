@@ -759,7 +759,7 @@ mod test {
     #[tokio::test]
     async fn test_client_happy_path() {
         let response = client()
-            .get("http://localhost:8080")
+            .get("http://127.0.0.1:8080")
             .send(Context::default())
             .await
             .unwrap();

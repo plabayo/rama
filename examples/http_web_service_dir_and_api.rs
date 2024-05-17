@@ -16,7 +16,7 @@
 //! The server will start and listen on `:62013`. You can use your browser to interact with the service:
 //!
 //! ```sh
-//! open http://localhost:62013
+//! open http://127.0.0.1:62013
 //! ```
 //!
 //! You should see a the homepage in your browser.
