@@ -4,6 +4,6 @@ mod service;
 #[doc(inline)]
 pub use service::{TlsConnectError, TlsConnectService};
 
-mod layer;
+mod http;
 #[doc(inline)]
-pub use layer::TlsConnectLayer;
+pub use http::{AutoTlsStream, HttpsConnector, HttpsConnectorLayer};

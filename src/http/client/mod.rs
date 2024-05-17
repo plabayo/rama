@@ -6,9 +6,12 @@ use crate::{
     http::{Request, Response, Version},
     service::{Context, Service},
     stream::Stream,
+    tcp::service::HttpConnector,
+    tls::rustls::client::{AutoTlsStream, HttpsConnector},
 };
 use hyper_util::rt::TokioIo;
 use std::fmt;
+use tokio::net::TcpStream;
 
 mod error;
 #[doc(inline)]
@@ -20,9 +23,7 @@ pub use ext::{HttpClientExt, IntoUrl, RequestBuilder};
 
 mod conn;
 #[doc(inline)]
-pub use conn::{
-    ClientConnection, DefaultClientConnector, DefaultClientStream, EstablishedClientConnection,
-};
+pub use conn::{ClientConnection, EstablishedClientConnection};
 
 /// An http client that can be used to serve HTTP requests.
 ///
@@ -61,10 +62,10 @@ impl<C, S> HttpClient<C, S> {
     }
 }
 
-impl Default for HttpClient<DefaultClientConnector, DefaultClientStream> {
+impl Default for HttpClient<HttpsConnector<HttpConnector>, AutoTlsStream<TcpStream>> {
     fn default() -> Self {
         Self {
-            connector: DefaultClientConnector::default(),
+            connector: HttpsConnector::auto(HttpConnector::default()),
             _phantom: std::marker::PhantomData,
         }
     }
