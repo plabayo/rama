@@ -80,7 +80,7 @@ async fn main() {
 
     // Create a server end entity cert issued by the CA.
     let server_key_pair = KeyPair::generate_for(alg).expect("generate server key pair");
-    let mut server_ee_params = rcgen::CertificateParams::new(vec!["localhost".to_string()])
+    let mut server_ee_params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()])
         .expect("create server ee params");
     server_ee_params.is_ca = rcgen::IsCa::NoCa;
     server_ee_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
