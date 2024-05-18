@@ -12,11 +12,14 @@ use rama::{
         },
         Request, Response,
     },
+    proxy::http::client::HttpProxyConnectorLayer,
     service::{
         util::{backoff::ExponentialBackoff, rng::HasherRng},
         BoxService, Service, ServiceBuilder,
     },
     stream::Stream,
+    tcp::service::HttpConnector,
+    tls::rustls::client::HttpsConnectorLayer,
 };
 use std::{
     process::{Child, ExitStatus},
@@ -92,7 +95,12 @@ where
                     .unwrap(),
                 ),
             ))
-            .service(HttpClient::default())
+            .service(HttpClient::new(
+                ServiceBuilder::new()
+                    .layer(HttpsConnectorLayer::auto())
+                    .layer(HttpProxyConnectorLayer::proxy_from_context())
+                    .service(HttpConnector::default()),
+            ))
             .boxed();
 
         Self {

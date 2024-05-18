@@ -13,9 +13,13 @@
 //! [`Context`]: crate::service::Context
 //! [`Extensions`]: crate::service::context::Extensions
 
+use std::net::SocketAddr;
+
 mod username;
+
 pub use username::ProxyFilterUsernameParser;
 
+pub mod http;
 pub mod pp;
 
 mod proxydb;
@@ -26,3 +30,26 @@ pub use proxydb::{
     ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind, ProxyDB, ProxyFilter,
     StringFilter,
 };
+
+#[derive(Debug, Clone)]
+/// An address that can be set by any service or middleware,
+/// to make connectors connect to the specified [`Proxy`] [`SocketAddr`],
+/// instead of connecting to the [`Request`] authority.
+///
+/// [`Request`]: crate::http::Request
+/// [`SocketAddr`]: std::net::SocketAddr
+pub struct ProxySocketAddr(SocketAddr);
+
+impl ProxySocketAddr {
+    /// Create a new [`ProxySocketAddr`] for the given target [`SocketAddr`].
+    pub fn new(target: SocketAddr) -> Self {
+        Self(target)
+    }
+
+    /// Get the target [`SocketAddr`] of this [`ProxySocketAddr`].
+    ///
+    /// [`SocketAddr`]: std::net::SocketAddr
+    pub fn addr(&self) -> &SocketAddr {
+        &self.0
+    }
+}

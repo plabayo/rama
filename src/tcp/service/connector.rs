@@ -3,6 +3,7 @@ use crate::{
         client::{ClientConnection, EstablishedClientConnection},
         Request, RequestContext,
     },
+    proxy::ProxySocketAddr,
     service::{Context, Service},
     stream::ServerSocketAddr,
 };
@@ -51,7 +52,11 @@ where
         mut ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        match ctx.get::<ServerSocketAddr>().map(|server| *server.addr()) {
+        match ctx
+            .get::<ProxySocketAddr>()
+            .map(|proxy| *proxy.addr())
+            .or_else(|| ctx.get::<ServerSocketAddr>().map(|server| *server.addr()))
+        {
             Some(addr) => {
                 let stream = TcpStream::connect(&addr).await?;
                 Ok(EstablishedClientConnection {

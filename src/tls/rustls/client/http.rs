@@ -23,7 +23,7 @@ pub struct HttpsConnectorLayer<K = ConnectorKindAuto> {
     _kind: std::marker::PhantomData<K>,
 }
 
-impl std::fmt::Debug for HttpsConnectorLayer {
+impl<K> std::fmt::Debug for HttpsConnectorLayer<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpsConnectorLayer")
             .field("config", &self.config)
@@ -32,14 +32,6 @@ impl std::fmt::Debug for HttpsConnectorLayer {
 }
 
 impl<K> HttpsConnectorLayer<K> {
-    /// Creates a new [`HttpsConnectorLayer`].
-    pub fn new() -> Self {
-        Self {
-            config: None,
-            _kind: std::marker::PhantomData,
-        }
-    }
-
     /// Attach a client config to this [`HttpsConnectorLayer`],
     /// to be used instead of a globally shared default client config.
     pub fn with_config(mut self, config: Arc<ClientConfig>) -> Self {
