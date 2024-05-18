@@ -21,6 +21,7 @@ async fn test_tls_termination() {
 
     let reply = runner
         .get("https://127.0.0.1:63800")
+        .header("Connection", "close")
         .send(Context::default())
         .await
         .unwrap()
