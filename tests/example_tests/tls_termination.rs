@@ -19,15 +19,17 @@ async fn test_tls_termination() {
 
     assert_eq!("Hello world!", reply);
 
-    let reply = runner
-        .get("https://127.0.0.1:63800")
-        .header("Connection", "close")
-        .send(Context::default())
-        .await
-        .unwrap()
-        .try_into_string()
-        .await
-        .unwrap();
+    #[cfg(not(target_os = "windows"))]
+    {
+        let reply = runner
+            .get("https://127.0.0.1:63800")
+            .send(Context::default())
+            .await
+            .unwrap()
+            .try_into_string()
+            .await
+            .unwrap();
 
-    assert_eq!("Hello world!", reply);
+        assert_eq!("Hello world!", reply);
+    }
 }

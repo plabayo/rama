@@ -386,6 +386,11 @@ where
     }
 }
 
+// TODO: revisit this,
+// as this is not ideal, given we'll
+// want to be able to create config on the fly,
+// e.g. to set the ALPN etc correct...
+
 fn default_tls_client_config() -> Arc<ClientConfig> {
     static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
     CONFIG
