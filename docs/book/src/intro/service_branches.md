@@ -87,3 +87,7 @@ digraph {
 ```
 
 An example of this can be seen at [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs), which makes use of the [`HijackLayer`](https://ramaproxy.org/docs/rama/service/layer/struct.HijackLayer.html), a layer specifically designed for this kind of purpose.
+
+> 💡 the [`HijackLayer`](https://ramaproxy.org/docs/rama/service/layer/struct.HijackLayer.html) is meant for use cases where you want to provide the full response yourself. In case you want to hijack starting from the regular response provided by the "actual" inner service you'll have to create your own [`Layer`](https://ramaproxy.org/docs/rama/service/layer/trait.Layer.html) implementation.
+>
+> Even if so you can still make use of the [`Matcher`](https://ramaproxy.org/docs/rama/service/matcher/index.html) and utilities around it should you want. In case you are in need of a starting point, feel free to copy code from Rama or another, which is an option like always.
