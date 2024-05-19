@@ -130,12 +130,14 @@ where
             } else {
                 Ok(Response::builder()
                     .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                    .header("Proxy-Authenticate", C::SCHEME)
                     .body(Default::default())
                     .unwrap())
             }
         } else {
             Ok(Response::builder()
                 .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
+                .header("Proxy-Authenticate", C::SCHEME)
                 .body(Default::default())
                 .unwrap())
         }

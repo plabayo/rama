@@ -32,7 +32,7 @@
 //! If you want to see the HTTP traffic in action you can of course also use telnet instead:
 //!
 //! ```sh
-//! telnet 127.0.0.1 40001
+//! telnet 127.0.0.1 62001
 //! ```
 //!
 //! and then type:
