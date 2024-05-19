@@ -43,12 +43,18 @@ but is [tested using Github Actions](https://github.com/plabayo/rama/blob/main/.
 | platform | tested | test platform |
 |----------|--------|---------------|
 | MacOS    | ✅     | M2 (developer laptop) and macos-12 Intel ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
-| Windows  | ✅     | Windows 2022 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
+| Windows <sup>⚠️</sup> | ✅     | Windows 2022 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 | Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 
 Please [open a ticket](https://github.com/plabayo/rama/issues) in case you have compatibility issues for your setup/platform.
 Our goal is not to support all possible platformns in the world, but we do want to
 support as many as we reasonably can.
+
+> <sup>⚠️</sup> example runner tests are not enabled on Windows as these failed in unpredictable ways.
+> It is unclear if this is due to code mistakes or because of the way we run these tests (e.g. hardcoded ports).
+> We also are not aware of any production usage of Rama on Windows. We welcome contributions
+> from Rama users on Windows with great enthusiasm. And while you are at it,
+> feel free to contribute to [Tokio](https://tokio.rs/) as well, given they also lack professional Windows users.
 
 ### Minimum supported Rust version
 
