@@ -10,6 +10,22 @@
 //! The [`ProxyDB`] is used by Connection Pools to connect via a proxy,
 //! in case a [`ProxyFilter`] is present in the [`Context`]'s [`Extensions`].
 //!
+//! # DB Live Reloads
+//!
+//! [`ProxyDB`] implementations like the [`MemoryProxyDB`] feel static in nature, and they are.
+//! The goal is really to load it once and read it often as fast as possible.
+//!
+//! In fact, given that we access everything through shared references,
+//! there is also no cheap way to mutate it all the time.
+//!
+//! As such the normal way to update data such as your proxy list
+//! is by performing a rolling update of your actual rama-driven proxy workloads.
+//!
+//! That said. By using crates such as [left-right](https://crates.io/crates/left-right)
+//! you can relatively affordable perform live reloads by having the writer on its own tokio
+//! task and wrap the reader in a [`ProxyDB`] implementation. This way you can live reload based upon
+//! a signal, or more realistically, every x minutes.
+//!
 //! [`Context`]: crate::service::Context
 //! [`Extensions`]: crate::service::context::Extensions
 
