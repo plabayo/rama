@@ -76,7 +76,7 @@
 //! - or checkout the framework Rust docs at <https://docs.rs/rama>;
 //!     - edge docs (for main branch) can be found at <https://ramaproxy.org/docs/rama>.
 //!
-//! There is no [crates.io](https://crates.io) release of rama yet.
+//! There is no useable [crates.io](https://crates.io) release of rama yet.
 //! If you already want to start using rama you can do so by referring to it in your `Cargo.toml` as follows:
 //!
 //! ```toml
@@ -89,7 +89,27 @@
 //!
 //! [![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)](https://ramaproxy.org/)
 //!
-//! ### 🏢 | Proxy Examples
+//! ## 🧪 | Experimental
+//!
+//! 🦙 Rama (ラマ) is to be considered experimental software for the foreseeable future. In the meanwhile it is already used
+//! in production by ourselves and others alike. This is great as it gives us new perspectives and data to further improve
+//! and grow the framework. It does mean however that there are still several non-backward compatible releases that will follow `0.2`.
+//!
+//! In the meanwhile the async ecosystem of Rust is also maturing, and edition 2024 is also to be expected as a 2024 end of year gift.
+//! It goes also without saying that we do not nilly-willy change designs or break on purpose. The core design is by now also well defined. But truth has to be said,
+//! there is still plenty to be improve and work out. Production use and feedback from you and other users helps a lot with that. As such,
+//! if you use Rama do let us know feedback over [Discord][discord-url], [email](mailto:glen@plabayo.tech) or a [GitHub issue](https://github.com/plabayo/rama/issues).
+//!
+//! 👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commcercial purposes.
+//! Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo/subscriptions).
+//! It helps make the development cycle to remain sustainable, and is beneficial to you as well.
+//! As part of your benefits we are also available to assist you with migrations between breaking releases.
+//! For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf.
+//! A win for everybody. 💪
+//!
+//! [discord-url]: https://discord.gg/29EetaSYCD
+//!
+//! ## 🏢 | Proxy Examples
 //!
 //! - [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
 //!   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the

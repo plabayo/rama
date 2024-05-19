@@ -23,7 +23,7 @@ pub struct HttpProxyConnector {
     headers: Option<HeaderMap>,
 }
 
-// TOOD: investigate if we want to have layer support?
+// TODO: investigate if we want to have layer support?
 // Just for response or both? Or just a response headerMap callback?
 // Or nothing?
 
