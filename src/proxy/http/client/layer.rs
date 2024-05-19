@@ -1,6 +1,7 @@
-use crate::error::{BoxError, ErrorExt, OpaqueError};
+use crate::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
 use crate::http::headers::{Authorization, ProxyAuthorization};
+use crate::http::Uri;
 use crate::http::{Request, RequestContext};
 use crate::proxy::{ProxyCredentials, ProxySocketAddr};
 use crate::service::{Context, Layer, Service};
@@ -8,8 +9,17 @@ use crate::stream::Stream;
 use std::fmt;
 use std::future::Future;
 use std::net::SocketAddr;
+use std::str::FromStr;
 
 use super::HttpProxyConnector;
+
+// TODO: rework provider
+// - make it perhaps public?!
+// - allow providers to be stacked so they can be combined
+//   Logic would be:
+//   - on first error: return err
+//   - if returned None, try next
+//   - first that return Ok(Some(..)) gets returned
 
 /// A [`Layer`] which wraps the given service with a [`HttpProxyConnectorService`].
 ///
@@ -36,6 +46,8 @@ impl<P: Clone> Clone for HttpProxyConnectorLayer<P> {
 
 #[derive(Debug, Clone)]
 /// Minimal information required to establish a connection over an HTTP Proxy.
+///
+/// TODO: remove this or rework this once we also support SOCKS5(h) Proxies
 pub struct HttpProxyInfo {
     /// The proxy address to connect to.
     pub proxy: SocketAddr,
@@ -43,9 +55,70 @@ pub struct HttpProxyInfo {
     pub credentials: Option<ProxyCredentials>,
 }
 
-// TOOD: support from ENV + ENV DEFAULT (HTTP_PROXY)
+impl FromStr for HttpProxyInfo {
+    type Err = OpaqueError;
+
+    // TODO: test this function...
+
+    fn from_str(raw_uri: &str) -> Result<Self, Self::Err> {
+        let uri: Uri = raw_uri.parse().map_err(|err| {
+            OpaqueError::from_std(err)
+                .with_context(|| format!("parse http proxy address '{}'", raw_uri))
+        })?;
+
+        if uri.scheme().map(|s| s.as_str()).unwrap_or("http") != "http" {
+            return Err(OpaqueError::from_display(format!(
+                "only http proxies are supported: '{}'",
+                raw_uri
+            )));
+        }
+
+        // TODO: allow for dns address (proxy routers?);
+        // see: https://github.com/plabayo/rama/issues/202
+        let mut proxy = match uri.host().and_then(|host| host.parse::<SocketAddr>().ok()) {
+            Some(proxy) => proxy,
+            None => {
+                return Err(OpaqueError::from_display(format!(
+                    "invalid http proxy address's authority '{}'",
+                    raw_uri
+                )));
+            }
+        };
+        if let Some(port) = uri.port_u16() {
+            proxy.set_port(port);
+        }
+
+        // TODO: support credentials (this would probably mean we cannot pigy back on the Uri type for our logic here)
+
+        Ok(Self {
+            proxy,
+            credentials: None,
+        })
+    }
+}
 
 impl HttpProxyConnectorLayer<HttpProxyInfo> {
+    /// create a new [`HttpProxyConnectorLayer`] from an environment variable.
+    pub fn try_proxy_from_env(key: impl AsRef<str>) -> Result<Self, OpaqueError> {
+        let key = key.as_ref();
+        let raw_uri = std::env::var(key).map_err(|err| {
+            OpaqueError::from_std(err).with_context(|| format!("fetch http proxy from env '{key}'"))
+        })?;
+
+        let proxy_info = raw_uri
+            .parse()
+            .with_context(|| format!("parse http proxy from env '{key}'"))?;
+
+        Ok(Self {
+            provider: proxy_info,
+        })
+    }
+
+    /// Creates a new [`HttpProxyConnectorLayer`] from the environment variable `HTTP_PROXY`.
+    pub fn try_proxy_from_env_default() -> Result<Self, OpaqueError> {
+        Self::try_proxy_from_env("HTTP_PROXY")
+    }
+
     /// Creates a new [`HttpProxyConnectorLayer`].
     pub fn proxy_static(info: HttpProxyInfo) -> Self {
         Self { provider: info }
@@ -102,6 +175,28 @@ impl<S, P> HttpProxyConnectorService<S, P> {
 }
 
 impl<S> HttpProxyConnectorService<S, HttpProxyInfo> {
+    /// create a new [`HttpProxyConnectorService`] from an environment variable.
+    pub fn try_proxy_from_env(key: impl AsRef<str>, inner: S) -> Result<Self, OpaqueError> {
+        let key = key.as_ref();
+        let raw_uri = std::env::var(key).map_err(|err| {
+            OpaqueError::from_std(err).with_context(|| format!("fetch http proxy from env '{key}'"))
+        })?;
+
+        let proxy_info = raw_uri
+            .parse()
+            .with_context(|| format!("parse http proxy from env '{key}'"))?;
+
+        Ok(Self {
+            provider: proxy_info,
+            inner,
+        })
+    }
+
+    /// Creates a new [`HttpProxyConnectorService`] from the environment variable `HTTP_PROXY`.
+    pub fn try_proxy_from_env_default(inner: S) -> Result<Self, OpaqueError> {
+        Self::try_proxy_from_env("HTTP_PROXY", inner)
+    }
+
     /// Creates a new [`HttpProxyConnectorService`] which will establish
     /// a proxied connection over the given proxy info.
     pub fn proxy_static(info: HttpProxyInfo, inner: S) -> Self {
