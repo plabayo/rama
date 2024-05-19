@@ -4,7 +4,6 @@ use rama::{
     proxy::http::client::HttpProxyInfo,
     rt::Executor,
     service::{service_fn, Context},
-    stream::ServerSocketAddr,
 };
 use serde_json::{json, Value};
 
@@ -42,7 +41,7 @@ async fn test_http_connect_proxy() {
     // test regular proxy flow
     let result = runner
         .get("http://127.0.0.1:63001/foo/bar")
-        .send(ctx)
+        .send(ctx.clone())
         .await
         .unwrap()
         .try_into_json::<Value>()
@@ -51,14 +50,9 @@ async fn test_http_connect_proxy() {
     let expected_value = json!({"method":"GET","path":"/foo/bar"});
     assert_eq!(expected_value, result);
 
-    let mut ctx = Context::default();
-    // TODO: this should just work correctly over proxy... instead of this hack
-    ctx.insert(ServerSocketAddr::new("127.0.0.1:62001".parse().unwrap()));
     // test proxy pseudo API
     let result = runner
         .post("http://echo.example.internal/lucky/42")
-        // TODO: once we go over proxy properly, we should not need this...
-        .header("Proxy-Authorization", "Basic am9objpzZWNyZXQ=")
         .send(ctx)
         .await
         .unwrap()
@@ -67,6 +61,4 @@ async fn test_http_connect_proxy() {
         .unwrap();
     let expected_value = json!({"lucky_number": 42});
     assert_eq!(expected_value, result);
-
-    // TODO: test https proxy flow
 }

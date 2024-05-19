@@ -1,5 +1,6 @@
 use crate::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
+use crate::http::headers::HeaderMapExt;
 use crate::http::headers::{Authorization, ProxyAuthorization};
 use crate::http::Uri;
 use crate::http::{Request, RequestContext};
@@ -255,11 +256,46 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { mut ctx, req, conn } = established_conn;
+        let EstablishedClientConnection {
+            mut ctx,
+            mut req,
+            conn,
+        } = established_conn;
 
         let (addr, stream) = conn.into_parts();
 
         let request_context = ctx.get_or_insert_with(|| RequestContext::new(&req));
+
+        if !request_context.scheme.secure() {
+            // unless the scheme is not secure, in such a case no handshake is required...
+            // we do however need to add authorization headers if credentials are present
+            if let Some(credentials) = info.credentials.as_ref() {
+                match credentials {
+                    ProxyCredentials::Basic { username, password } => {
+                        let c = Authorization::basic(
+                            username.as_str(),
+                            password.as_deref().unwrap_or_default(),
+                        )
+                        .0;
+                        req.headers_mut().typed_insert(ProxyAuthorization(c));
+                    }
+                    ProxyCredentials::Bearer(token) => {
+                        let c = Authorization::bearer(token.as_str())
+                            .map_err(|err| {
+                                OpaqueError::from_std(err).context("define http proxy bearer token")
+                            })?
+                            .0;
+                        req.headers_mut().typed_insert(ProxyAuthorization(c));
+                    }
+                }
+            }
+            return Ok(EstablishedClientConnection {
+                ctx,
+                req,
+                conn: ClientConnection::new(addr, stream),
+            });
+        }
+
         let authority = match request_context.authority() {
             Some(authority) => authority,
             None => {
