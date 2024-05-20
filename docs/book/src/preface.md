@@ -98,8 +98,8 @@ on both the Http and Tls layers. By design we do not consider Tcp and Udp finger
 
 Next to proxies, Rama can also be used to develop [Web Services](./web_servers.md) and [Http Clients](./http_clients.md).
 
-[![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Polar Subscribe][polar-badge]][polar-url]
+[![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 [![Discord][discord-badge]][discord-url]

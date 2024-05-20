@@ -38,8 +38,8 @@ Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime
 Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to get inspired on how you can use it for your purposes.
 
-[![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Polar Subscribe][polar-badge]][polar-url]
+[![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 [![Discord][discord-badge]][discord-url]
@@ -298,6 +298,10 @@ the stable and beta versions of _rust_ as well.
 
 Please refer to <https://github.com/plabayo/rama/milestones> to know what's on the roadmap. Is there something not on the roadmap for the next version that you would really like? Please [create a feature request](https://github.com/plabayo/rama/issues) to request it and [become a sponsor](#--sponsors) if you can.
 
+## 📰 | Media Appearances
+
+Rama (`0.2`)  was featured in a 📻 Rustacean episode on the 19th of May 2024, and available to listen at <https://rustacean-station.org/episode/glen-de-cauwsemaecker/>. In this episode [Glen](https://www.glendc.com/) explains the history of Rama, why it exists, how it can be used and more.
+
 ## 💼 | License
 
 This project is dual-licensed under both the [MIT license][mit-license] and [Apache 2.0 License][apache-license].
@@ -348,14 +352,14 @@ An extra big shoutout goes also to the online communities surrounding and part o
 
 Rama is **completely free, open-source software** which needs lots of effort and time to develop and maintain.
 
-Support this project by becoming a [sponsor][ghs-url]. One time payments are accepted [at GitHub][ghs-url] as well as at ["Buy me a Coffee"][bmac-url].
+You can become a regular financial contributor to Rama by paying for a monthly subscription at [polar.sh/plabayo](https://polar.sh/plabayo/subscriptions). In case you want a specific github issue to be resolved or like you can also fund issues via that platform. One time contributions are possible as well and greatly appreciated.
 
-One-time and monthly financial contributions are also possible via Paypal, should you feel more at ease with that at ["Paypal Donations"][paypal-url].
+Alternatively you can also become a (monthly subscriber) sponsor or pay a one-time donation via [Github Sponsors][ghs-url]. For one-time donations you are also free to use ["Buy me a Coffee"][bmac-url] or ["Paypal Donations"][paypal-url] in case you are more at ease with any of these.
 
 Sponsors help us continue to maintain and improve `rama`, as well as other
 Free and Open Source (FOSS) technology. It also helps us to create
 educational content such as <https://github.com/plabayo/learn-rust-101>,
-and other open source libraries such as <https://github.com/plabayo/tower-async>.
+and other open source libraries such as <https://github.com/plabayo/tokio-graceful> and <https://venndb.rs>.
 
 Next to the many unpaid developer hours we put in a project such as `rama`,
 we also have plenty of costs, such as services ranging from hosting to Docker,

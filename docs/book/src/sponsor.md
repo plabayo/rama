@@ -25,14 +25,20 @@ licensed permissively.
 
 Financial contributors help in compensate for the many unpaid developer hours we put in a project such as `rama`, but we also have plenty of costs, such as services ranging from hosting to Docker, but also tooling for developers and automated processing. All these costs money.
 
-One time or monthly contributions can be made via GitHub Sponsors at
-<https://github.com/sponsors/plabayo>, where you can also read about our different
-tiers for the monthly version.
+## 💎 | Financial Contributions
 
-Alternatively you can also make a one time contribution at
-<https://www.buymeacoffee.com/plabayo>.
+You can become a regular financial contributor to Rama by paying for a monthly subscription at [polar.sh/plabayo](https://polar.sh/plabayo/subscriptions). In case you want a specific github issue to be resolved or like you can also fund issues via that platform. One time contributions are possible as well and greatly appreciated.
 
-One-time and monthly financial contributions are also possible via Paypal, should you feel more at ease with that at ["Paypal Donations"](https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE).
+> 💡 Business subscriptions are available at [polar.sh/plabayo](https://polar.sh/plabayo/subscriptions) for businesses, enterprises and individuals who can afford it 🙏. These subscriptions keep the development of Rama and other projects sustainable and unlocks support for you and your team in the integration and usage of Rama.
+>
+> 👉 For even more custom integrations or features you can always get in touch by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
+
+Alternatively you can also become a (monthly subscriber) sponsor or pay a one-time donation via [Github Sponsors][ghs-url]. For one-time donations you are also free to use ["Buy me a Coffee"][bmac-url] or ["Paypal Donations"][paypal-url] in case you are more at ease with any of these.
+
+Sponsors help us continue to maintain and improve `rama`, as well as other
+Free and Open Source (FOSS) technology. It also helps us to create
+educational content such as <https://github.com/plabayo/learn-rust-101>,
+and other open source libraries such as <https://github.com/plabayo/tokio-graceful> and <https://venndb.rs>.
 
 Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise 🛍️ at <https://plabayo.threadless.com/>.
 

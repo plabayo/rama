@@ -67,6 +67,10 @@ the stable and beta versions of _rust_ as well.
 
 Please refer to <https://github.com/plabayo/rama/milestones> to know what's on the roadmap. Is there something not on the roadmap for the next version that you would really like? Please [create a feature request](https://github.com/plabayo/rama/issues) to request it and [become a sponsor](#sponsors) if you can.
 
+## 📰 | Media Appearances
+
+Rama (`0.2`) was featured in a 📻 Rustacean episode on the 19th of May 2024, and available to listen at <https://rustacean-station.org/episode/glen-de-cauwsemaecker/>. In this episode [Glen](https://www.glendc.com/) explains the history of Rama, why it exists, how it can be used and more.
+
 ## 💼 | License
 
 This project is dual-licensed under both the [MIT license][mit-license] and [Apache 2.0 License][apache-license].
