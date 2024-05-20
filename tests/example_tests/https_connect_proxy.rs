@@ -15,7 +15,7 @@ async fn test_http_connect_proxy() {
     tokio::spawn(async {
         HttpServer::auto(Executor::default())
             .listen(
-                "127.0.0.1:63001",
+                "127.0.0.1:63002",
                 service_fn(|req: Request| async move {
                     Ok(Json(json!({
                         "method": req.method().as_str(),
@@ -27,12 +27,12 @@ async fn test_http_connect_proxy() {
             .unwrap();
     });
 
-    let runner = utils::ExampleRunner::interactive("http_connect_proxy");
+    let runner = utils::ExampleRunner::interactive("https_connect_proxy");
 
     let mut ctx = Context::default();
     ctx.insert(HttpProxyInfo {
-        proxy: "127.0.0.1:62001".parse().unwrap(),
-        secure: false,
+        proxy: "127.0.0.1:62016".parse().unwrap(),
+        secure: true,
         credentials: Some(rama::proxy::ProxyCredentials::Basic {
             username: "john".to_owned(),
             password: Some("secret".to_owned()),
@@ -41,7 +41,7 @@ async fn test_http_connect_proxy() {
 
     // test regular proxy flow
     let result = runner
-        .get("http://127.0.0.1:63001/foo/bar")
+        .get("http://127.0.0.1:63002/foo/bar")
         .send(ctx.clone())
         .await
         .unwrap()
@@ -49,17 +49,5 @@ async fn test_http_connect_proxy() {
         .await
         .unwrap();
     let expected_value = json!({"method":"GET","path":"/foo/bar"});
-    assert_eq!(expected_value, result);
-
-    // test proxy pseudo API
-    let result = runner
-        .post("http://echo.example.internal/lucky/42")
-        .send(ctx)
-        .await
-        .unwrap()
-        .try_into_json::<Value>()
-        .await
-        .unwrap();
-    let expected_value = json!({"lucky_number": 42});
     assert_eq!(expected_value, result);
 }

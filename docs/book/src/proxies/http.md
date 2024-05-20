@@ -13,6 +13,9 @@
 - [/examples/http_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/http_connect_proxy.rs):
   Spawns a minimal http proxy which accepts http/1.1 and h2 connections alike,
   and proxies them to the target host.
+- [/examples/https_connect_proxy.rs](https://github.com/plabayo/rama/tree/main/examples/https_connect_proxy.rs):
+  Spawns a minimal https connect proxy which accepts http/1.1 and h2 connections alike,
+  and proxies them to the target host through a TLS tunnel.
 
 ## Description
 

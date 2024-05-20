@@ -99,6 +99,7 @@ where
                 ServiceBuilder::new()
                     .layer(HttpsConnectorLayer::auto())
                     .layer(HttpProxyConnectorLayer::proxy_from_context())
+                    .layer(HttpsConnectorLayer::tunnel())
                     .service(HttpConnector::default()),
             ))
             .boxed();

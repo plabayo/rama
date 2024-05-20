@@ -6,10 +6,11 @@ use crate::stream::Stream;
 use crate::tls::rustls::dep::rustls::RootCertStore;
 use crate::tls::rustls::dep::tokio_rustls::{client::TlsStream, TlsConnector};
 use crate::tls::rustls::verify::NoServerCertVerifier;
+use crate::tls::HttpsTunnel;
 use crate::uri::Scheme;
 use crate::{service::Layer, tls::rustls::dep::rustls::ClientConfig};
 use pin_project_lite::pin_project;
-use private::{ConnectorKindAuto, ConnectorKindSecure};
+use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use std::sync::OnceLock;
 use std::{fmt, sync::Arc};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -56,6 +57,17 @@ impl HttpsConnectorLayer<ConnectorKindSecure> {
     /// Creates a new [`HttpsConnectorLayer`] which will always
     /// establish a secure connection regardless of the request it is for.
     pub fn secure_only() -> Self {
+        Self {
+            config: None,
+            _kind: std::marker::PhantomData,
+        }
+    }
+}
+
+impl HttpsConnectorLayer<ConnectorKindTunnel> {
+    /// Creates a new [`HttpsConnectorLayer`] which will establish
+    /// a secure connection if the request is to be tunneled.
+    pub fn tunnel() -> Self {
         Self {
             config: None,
             _kind: std::marker::PhantomData,
@@ -143,6 +155,14 @@ impl<S> HttpsConnector<S, ConnectorKindSecure> {
     /// Creates a new [`HttpsConnector`] which will always
     /// establish a secure connection regardless of the request it is for.
     pub fn secure_only(inner: S) -> Self {
+        Self::new(inner)
+    }
+}
+
+impl<S> HttpsConnector<S, ConnectorKindTunnel> {
+    /// Creates a new [`HttpsConnector`] which will establish
+    /// a secure connection if the request is to be tunneled.
+    pub fn tunnel(inner: S) -> Self {
         Self::new(inner)
     }
 }
@@ -290,6 +310,75 @@ where
     }
 }
 
+impl<S, State, Body, T> Service<State, Request<Body>> for HttpsConnector<S, ConnectorKindTunnel>
+where
+    S: Service<State, Request<Body>, Response = EstablishedClientConnection<T, Body, State>>,
+    T: Stream + Unpin,
+    S::Error: Into<BoxError>,
+    State: Send + Sync + 'static,
+    Body: Send + 'static,
+{
+    type Response = EstablishedClientConnection<AutoTlsStream<T>, Body, State>;
+    type Error = OpaqueError;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request<Body>,
+    ) -> Result<Self::Response, Self::Error> {
+        let EstablishedClientConnection { ctx, req, conn } = self
+            .inner
+            .serve(ctx, req)
+            .await
+            .map_err(|err| OpaqueError::from_boxed(err.into()))?;
+
+        let (addr, stream) = conn.into_parts();
+
+        let domain = match ctx.get::<HttpsTunnel>() {
+            Some(tunnel) => pki_types::ServerName::try_from(tunnel.server_name.as_str())
+                .map_err(|err| {
+                    OpaqueError::from_std(err)
+                        .context("invalid DNS Hostname (tls) for https tunnel")
+                })?
+                .to_owned(),
+            None => {
+                return Ok(EstablishedClientConnection {
+                    ctx,
+                    req,
+                    conn: ClientConnection::new(
+                        addr,
+                        AutoTlsStream {
+                            inner: AutoTlsStreamData::Plain { inner: stream },
+                        },
+                    ),
+                });
+            }
+        };
+
+        let config = match ctx.get::<Arc<ClientConfig>>() {
+            Some(config) => config.clone(),
+            None => default_tls_client_config(),
+        };
+        let connector = TlsConnector::from(config);
+
+        let stream = connector
+            .connect(domain, stream)
+            .await
+            .map_err(OpaqueError::from_std)?;
+
+        Ok(EstablishedClientConnection {
+            ctx,
+            req,
+            conn: ClientConnection::new(
+                addr,
+                AutoTlsStream {
+                    inner: AutoTlsStreamData::Secure { inner: stream },
+                },
+            ),
+        })
+    }
+}
+
 pin_project! {
     /// A stream which can be either a secure or a plain stream.
     pub struct AutoTlsStream<S> {
@@ -414,6 +503,16 @@ mod private {
     /// A connector which can _only_ be used to establish a secure connection,
     /// regardless of the scheme of the request URI.
     pub struct ConnectorKindSecure;
+
+    #[derive(Debug)]
+    /// A connector which can be used to use this connector to support
+    /// secure https tunnel connections.
+    ///
+    /// The connections will only be done if the [`HttpsTunnel`]
+    /// is present in the context.
+    ///
+    /// [`HttpsTunnel`]: crate::tls::HttpsTunnel
+    pub struct ConnectorKindTunnel;
 }
 
 #[cfg(test)]

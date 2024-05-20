@@ -7,6 +7,7 @@ use crate::http::{Request, RequestContext};
 use crate::proxy::{ProxyCredentials, ProxySocketAddr};
 use crate::service::{Context, Layer, Service};
 use crate::stream::Stream;
+use crate::tls::HttpsTunnel;
 use std::fmt;
 use std::future::Future;
 use std::net::SocketAddr;
@@ -52,6 +53,9 @@ impl<P: Clone> Clone for HttpProxyConnectorLayer<P> {
 pub struct HttpProxyInfo {
     /// The proxy address to connect to.
     pub proxy: SocketAddr,
+    /// Indicates if the proxy requires a Tls connection.
+    /// TODO: what about custom configs?!
+    pub secure: bool,
     /// The credentials to use for the proxy connection.
     pub credentials: Option<ProxyCredentials>,
 }
@@ -67,12 +71,16 @@ impl FromStr for HttpProxyInfo {
                 .with_context(|| format!("parse http proxy address '{}'", raw_uri))
         })?;
 
-        if uri.scheme().map(|s| s.as_str()).unwrap_or("http") != "http" {
-            return Err(OpaqueError::from_display(format!(
-                "only http proxies are supported: '{}'",
-                raw_uri
-            )));
-        }
+        let secure = match uri.scheme().map(|s| s.as_str()).unwrap_or("http") {
+            "http" => false,
+            "https" => true,
+            _ => {
+                return Err(OpaqueError::from_display(format!(
+                    "only http proxies are supported: '{}'",
+                    raw_uri
+                )));
+            }
+        };
 
         // TODO: allow for dns address (proxy routers?);
         // see: https://github.com/plabayo/rama/issues/202
@@ -93,6 +101,7 @@ impl FromStr for HttpProxyInfo {
 
         Ok(Self {
             proxy,
+            secure,
             credentials: None,
         })
     }
@@ -240,6 +249,11 @@ where
         // in case the provider gave us a proxy info, we insert it into the context
         if let Some(info) = info.as_ref() {
             ctx.insert(ProxySocketAddr::new(info.proxy));
+            if info.secure {
+                ctx.insert(HttpsTunnel {
+                    server_name: info.proxy.ip().to_string(),
+                });
+            }
         }
 
         let established_conn =
