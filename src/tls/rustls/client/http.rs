@@ -3,6 +3,7 @@ use crate::http::client::{ClientConnection, EstablishedClientConnection};
 use crate::http::{Request, RequestContext};
 use crate::service::{Context, Service};
 use crate::stream::Stream;
+use crate::tls::rustls::dep::pki_types::ServerName;
 use crate::tls::rustls::dep::rustls::RootCertStore;
 use crate::tls::rustls::dep::tokio_rustls::{client::TlsStream, TlsConnector};
 use crate::tls::rustls::verify::NoServerCertVerifier;
@@ -215,16 +216,7 @@ where
             .map_err(|err| OpaqueError::from_std(err).context("invalid DNS Hostname (tls)"))?
             .to_owned();
 
-        let config = match ctx.get::<Arc<ClientConfig>>() {
-            Some(config) => config.clone(),
-            None => default_tls_client_config(),
-        };
-        let connector = TlsConnector::from(config);
-
-        let stream = connector
-            .connect(domain, stream)
-            .await
-            .map_err(OpaqueError::from_std)?;
+        let stream = self.handshake(domain, stream).await?;
 
         Ok(EstablishedClientConnection {
             ctx,
@@ -291,16 +283,7 @@ where
             .map_err(|err| OpaqueError::from_std(err).context("invalid DNS Hostname (tls)"))?
             .to_owned();
 
-        let config = match ctx.get::<Arc<ClientConfig>>() {
-            Some(config) => config.clone(),
-            None => default_tls_client_config(),
-        };
-        let connector = TlsConnector::from(config);
-
-        let stream = connector
-            .connect(domain, stream)
-            .await
-            .map_err(OpaqueError::from_std)?;
+        let stream = self.handshake(domain, stream).await?;
 
         Ok(EstablishedClientConnection {
             ctx,
@@ -355,16 +338,7 @@ where
             }
         };
 
-        let config = match ctx.get::<Arc<ClientConfig>>() {
-            Some(config) => config.clone(),
-            None => default_tls_client_config(),
-        };
-        let connector = TlsConnector::from(config);
-
-        let stream = connector
-            .connect(domain, stream)
-            .await
-            .map_err(OpaqueError::from_std)?;
+        let stream = self.handshake(domain, stream).await?;
 
         Ok(EstablishedClientConnection {
             ctx,
@@ -376,6 +350,28 @@ where
                 },
             ),
         })
+    }
+}
+
+impl<S, K> HttpsConnector<S, K> {
+    async fn handshake<T>(
+        &self,
+        server_name: ServerName<'static>,
+        stream: T,
+    ) -> Result<TlsStream<T>, OpaqueError>
+    where
+        T: Stream + Unpin,
+    {
+        let config = self
+            .config
+            .clone()
+            .unwrap_or_else(default_tls_client_config);
+        let connector = TlsConnector::from(config);
+
+        connector
+            .connect(server_name, stream)
+            .await
+            .map_err(OpaqueError::from_std)
     }
 }
 
