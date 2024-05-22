@@ -61,6 +61,7 @@ use rama::{
         client::HttpClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
+            remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             trace::TraceLayer,
             upgrade::{UpgradeLayer, Upgraded},
         },
@@ -145,8 +146,10 @@ async fn main() {
                         service_fn(http_connect_accept),
                         service_fn(http_connect_proxy),
                     ))
-                    .service_fn(http_plain_proxy),
-            );
+                    .service(ServiceBuilder::new()
+                        .layer(RemoveResponseHeaderLayer::hop_by_hop())
+                        .layer(RemoveRequestHeaderLayer::hop_by_hop())
+                        .service_fn(http_plain_proxy)));
 
             tcp_service.serve_graceful(guard, ServiceBuilder::new()
                 // protect the http proxy from too large bodies, both from request and response end

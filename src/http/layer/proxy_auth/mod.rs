@@ -2,6 +2,7 @@
 //!
 //! If the request is not authorized a `407 Proxy Authentication Required` response will be sent.
 
+use crate::http::header::PROXY_AUTHENTICATE;
 use crate::http::headers::{
     authorization::{Basic, Credentials},
     HeaderMapExt, ProxyAuthorization,
@@ -130,14 +131,14 @@ where
             } else {
                 Ok(Response::builder()
                     .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                    .header("Proxy-Authenticate", C::SCHEME)
+                    .header(PROXY_AUTHENTICATE, C::SCHEME)
                     .body(Default::default())
                     .unwrap())
             }
         } else {
             Ok(Response::builder()
                 .status(StatusCode::PROXY_AUTHENTICATION_REQUIRED)
-                .header("Proxy-Authenticate", C::SCHEME)
+                .header(PROXY_AUTHENTICATE, C::SCHEME)
                 .body(Default::default())
                 .unwrap())
         }

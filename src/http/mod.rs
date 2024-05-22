@@ -98,8 +98,14 @@ pub mod header {
 
     pub use crate::http::dep::http::header::*;
 
-    /// Key str constant for the `X-Forwarded-Host` header.
-    pub const X_FORWARDED_HOST_HEADER_KEY: &str = "X-Forwarded-Host";
+    /// Key str constant for the `x-forwarded-host` header.
+    pub const X_FORWARDED_HOST_HEADER_KEY: &str = "x-forwarded-host";
+
+    /// Key str constant for the `Keep-Alive` header.
+    pub const KEEP_ALIVE_HEADER_KEY: &str = "keep-alive";
+
+    /// Key str constant for the `Proxy-Connection` header.
+    pub const PROXY_CONNECTION_HEADER_KEY: &str = "proxy-connection";
 }
 
 pub use self::dep::http::header::HeaderMap;
