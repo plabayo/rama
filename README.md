@@ -326,6 +326,17 @@ For that we thank you. You can take a look at the open issues, and in particular
 In general, any issue not assigned already is free to be picked up by anyone else. Please do communicate in the ticket
 if you are planning to pick it up, as to avoid multiple people trying to solve the same one.
 
+> 💡 Some issues have a [`needs input`](https://github.com/plabayo/rama/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+input%22+) label.
+> These mean that the issue is not yet ready for development. First of all prior to starting working on an issue you should always look for
+> alignment with the rama maintainers. However these
+> [`needs input`](https://github.com/plabayo/rama/issues?q=is%3Aissue+is%3Aopen+label%3A%22needs+input%22+) issues require also prior R&D work:
+>
+> - add and discuss missing knowledge or other things not clear;
+> - figure out pros and cons of the solutions (as well as what if we choose to not not resolve the issue);
+> - discuss and brainstorm on possible implementations, desire features, consequences, benefits, ...
+>
+> Only once this R&D is complete and alignment is confirmed, shall the feature be started to be implemented.
+
 Should you want to contribure this project but you do not yet know how to program in Rust, you could start learning Rust with as goal to contribute as soon as possible to `rama` by using "[the Rust 101 Learning Guide](https://rust-lang.guide/)" as your study companion. Glen can also be hired as a mentor or teacher to give you paid 1-on-1 lessons and other similar consultancy services. You can find his contact details at <https://www.glendc.com/>.
 
 ### Contribution
