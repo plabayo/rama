@@ -249,7 +249,7 @@ mod test {
         assert_eq!(&auth, c);
 
         let filter: &ProxyFilter = ext.get().unwrap();
-        assert_eq!(filter.country, Some("us".into()));
+        assert_eq!(filter.country, Some(vec!["us".into()]));
     }
 
     #[tokio::test]

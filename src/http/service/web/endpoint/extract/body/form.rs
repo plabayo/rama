@@ -45,7 +45,7 @@ where
     async fn from_request(_ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
         if req.method() == Method::GET {
             let query = req.uri().query().unwrap_or_default();
-            let value = match serde_urlencoded::from_bytes(query.as_bytes()) {
+            let value = match serde_html_form::from_bytes(query.as_bytes()) {
                 Ok(value) => value,
                 Err(err) => return Err(FailedToDeserializeForm::from_err(err).into()),
             };
@@ -61,7 +61,7 @@ where
             let body = req.into_body();
             match body.collect().await {
                 Ok(c) => {
-                    let value = match serde_urlencoded::from_bytes(&c.to_bytes()) {
+                    let value = match serde_html_form::from_bytes(&c.to_bytes()) {
                         Ok(value) => value,
                         Err(err) => return Err(FailedToDeserializeForm::from_err(err).into()),
                     };

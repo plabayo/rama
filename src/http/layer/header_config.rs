@@ -63,7 +63,7 @@ where
     G: HeaderValueGetter,
 {
     let value = request.header_str(header_name)?;
-    let config = serde_urlencoded::from_str::<T>(value)
+    let config = serde_html_form::from_str::<T>(value)
         .map_err(|_| HeaderValueErr::HeaderInvalid(header_name.as_str().to_owned()))?;
     Ok(config)
 }

@@ -59,7 +59,7 @@ rustls-pemfile = "2.1"
 rustversion = "1.0.9"
 serde = "1.0"
 serde_json = "1.0"
-serde_urlencoded = "0.7"
+serde_html_form = "0.2"
 syn = "2.0"
 sync_wrapper = "1.0"
 tempfile = "3.10"
@@ -142,8 +142,8 @@ rustls = { workspace = true }
 rustls-native-certs = { workspace = true }
 rustls-pemfile = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_html_form = { workspace = true }
 serde_json = { workspace = true }
-serde_urlencoded = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs"] }
 tokio-graceful = { workspace = true }

@@ -77,7 +77,7 @@ where
     T: Serialize,
 {
     fn into_response(self) -> Response {
-        match serde_urlencoded::to_string(&self.0) {
+        match serde_html_form::to_string(&self.0) {
             Ok(body) => (
                 [(CONTENT_TYPE, mime::APPLICATION_WWW_FORM_URLENCODED.as_ref())],
                 body,
@@ -98,7 +98,7 @@ where
     type Error = OpaqueError;
 
     fn try_into(self) -> Result<Body, Self::Error> {
-        match serde_urlencoded::to_string(&self.0) {
+        match serde_html_form::to_string(&self.0) {
             Ok(body) => Ok(body.into()),
             Err(err) => Err(OpaqueError::from_std(err)),
         }

@@ -1231,8 +1231,8 @@ dependencies = [
  "rustls-pki-types",
  "rustversion",
  "serde",
+ "serde_html_form",
  "serde_json",
- "serde_urlencoded",
  "sync_wrapper",
  "tempfile",
  "tokio",
@@ -1268,8 +1268,8 @@ dependencies = [
  "base64 0.22.1",
  "rama",
  "serde",
+ "serde_html_form",
  "serde_json",
- "serde_urlencoded",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1562,6 +1562,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "serde_html_form"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8de514ef58196f1fc96dcaef80fe6170a1ce6215df9687a93fe8300e773fefc5"
+dependencies = [
+ "form_urlencoded",
+ "indexmap",
+ "itoa",
+ "ryu",
+ "serde",
+]
+
+[[package]]
 name = "serde_json"
 version = "1.0.117"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1578,18 +1591,6 @@ version = "0.6.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "79e674e01f999af37c49f70a6ede167a8a60b2503e56c5599532a65baa5969a0"
 dependencies = [
- "serde",
-]
-
-[[package]]
-name = "serde_urlencoded"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d3491c14715ca2294c4d6a88f15e84739788c1d030eed8c110436aafdaa2f3fd"
-dependencies = [
- "form_urlencoded",
- "itoa",
- "ryu",
  "serde",
 ]
 

@@ -2,6 +2,7 @@ use crate::http::{RequestContext, Version};
 use base64::Engine;
 use serde::Deserialize;
 use std::{future::Future, str::FromStr};
+use venndb::Any;
 
 mod internal;
 pub use internal::{
@@ -153,13 +154,14 @@ pub struct ProxyFilter {
     pub id: Option<String>,
 
     /// The ID of the pool from which to select the proxy.
-    pub pool_id: Option<StringFilter>,
+    #[serde(alias = "pool")]
+    pub pool_id: Option<Vec<StringFilter>>,
 
     /// The country of the proxy.
-    pub country: Option<StringFilter>,
+    pub country: Option<Vec<StringFilter>>,
 
     /// The city of the proxy.
-    pub city: Option<StringFilter>,
+    pub city: Option<Vec<StringFilter>>,
 
     /// Set explicitly to `true` to select a datacenter proxy.
     pub datacenter: Option<bool>,
@@ -171,7 +173,7 @@ pub struct ProxyFilter {
     pub mobile: Option<bool>,
 
     /// The mobile carrier desired.
-    pub carrier: Option<StringFilter>,
+    pub carrier: Option<Vec<StringFilter>>,
 }
 
 /// The trait to implement to provide a proxy database to other facilities,
@@ -283,17 +285,17 @@ impl MemoryProxyDB {
     ) -> internal::ProxyDBQuery {
         let mut query = self.data.query();
 
-        if let Some(pool_id) = filter.pool_id {
+        for pool_id in filter.pool_id.into_iter().flatten() {
             query.pool_id(pool_id);
         }
-        if let Some(country) = filter.country {
+        for country in filter.country.into_iter().flatten() {
             query.country(country);
         }
-        if let Some(city) = filter.city {
+        for city in filter.city.into_iter().flatten() {
             query.city(city);
         }
-        if let Some(value) = filter.carrier {
-            query.carrier(value);
+        for carrier in filter.carrier.into_iter().flatten() {
+            query.carrier(carrier);
         }
 
         if let Some(value) = filter.datacenter {
@@ -389,11 +391,39 @@ fn combine_proxy_filter(proxy: &Proxy, filter: ProxyFilter) -> Proxy {
         residential: proxy.residential,
         mobile: proxy.mobile,
         authority: proxy.authority.clone(),
-        pool_id: filter.pool_id,
-        country: filter.country,
-        city: filter.city,
-        carrier: filter.carrier,
+        pool_id: use_preferred_string_filter(filter.pool_id, &proxy.pool_id),
+        country: use_preferred_string_filter(filter.country, &proxy.country),
+        city: use_preferred_string_filter(filter.city, &proxy.city),
+        carrier: use_preferred_string_filter(filter.carrier, &proxy.carrier),
         credentials: proxy.credentials.clone(),
+    }
+}
+
+/// - In case we only have a single non-any filter, we use that (no cloning needed)
+/// - In case we have no filters or the proxy value is any, we use the filter value (cloning required)
+/// - If multiple filters are defined but the proxy value is any we returned first filter, assuming it is the most important one
+fn use_preferred_string_filter(
+    filter: Option<Vec<StringFilter>>,
+    returned_value: &Option<StringFilter>,
+) -> Option<StringFilter> {
+    let mut filter_values = filter.unwrap_or_default();
+    match filter_values.len() {
+        0 => returned_value.clone(),
+        1 => match filter_values.pop() {
+            Some(value) if !value.is_any() => Some(value),
+            _ => returned_value.clone(),
+        },
+        _ => {
+            if returned_value
+                .as_ref()
+                .map(|v| v.is_any())
+                .unwrap_or_default()
+            {
+                filter_values.pop()
+            } else {
+                returned_value.clone()
+            }
+        }
     }
 }
 
@@ -607,13 +637,13 @@ mod tests {
         let ctx = h2_req_context();
         let filter = ProxyFilter {
             id: Some("3031533634".to_owned()),
-            pool_id: Some(StringFilter::new("poolF")),
-            country: Some(StringFilter::new("JP")),
-            city: Some(StringFilter::new("Yokohama")),
+            pool_id: Some(vec![StringFilter::new("poolF")]),
+            country: Some(vec![StringFilter::new("JP")]),
+            city: Some(vec![StringFilter::new("Yokohama")]),
             datacenter: Some(true),
             residential: Some(false),
             mobile: Some(true),
-            carrier: Some(StringFilter::new("Verizon")),
+            carrier: Some(vec![StringFilter::new("Verizon")]),
         };
         let proxy = db.get_proxy(ctx, filter).await.unwrap();
         assert_eq!(proxy.id, "3031533634");
@@ -638,17 +668,17 @@ mod tests {
         let filters = [
             ProxyFilter {
                 id: Some("3031533634".to_owned()),
-                pool_id: Some(StringFilter::new("poolB")),
+                pool_id: Some(vec![StringFilter::new("poolB")]),
                 ..Default::default()
             },
             ProxyFilter {
                 id: Some("3031533634".to_owned()),
-                country: Some(StringFilter::new("US")),
+                country: Some(vec![StringFilter::new("US")]),
                 ..Default::default()
             },
             ProxyFilter {
                 id: Some("3031533634".to_owned()),
-                city: Some(StringFilter::new("New York")),
+                city: Some(vec![StringFilter::new("New York")]),
                 ..Default::default()
             },
             ProxyFilter {
@@ -668,7 +698,7 @@ mod tests {
             },
             ProxyFilter {
                 id: Some("3031533634".to_owned()),
-                carrier: Some(StringFilter::new("AT&T")),
+                carrier: Some(vec![StringFilter::new("AT&T")]),
                 ..Default::default()
             },
         ];
@@ -750,7 +780,7 @@ mod tests {
         let filter = ProxyFilter {
             // there are no explicit BE proxies,
             // so these will only match the proxies that have a wildcard country
-            country: Some("BE".into()),
+            country: Some(vec!["BE".into()]),
             ..Default::default()
         };
         let mut found_ids = Vec::new();
@@ -773,7 +803,7 @@ mod tests {
         let db = memproxydb().await;
         let ctx = h3_req_context();
         let filter = ProxyFilter {
-            country: Some("BE".into()),
+            country: Some(vec!["BE".into()]),
             mobile: Some(true),
             residential: Some(true),
             ..Default::default()
@@ -896,42 +926,42 @@ mod tests {
                 ..Default::default()
             },
             ProxyFilter {
-                pool_id: Some(StringFilter::new("*")),
+                pool_id: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
             ProxyFilter {
-                pool_id: Some(StringFilter::new("hq")),
+                pool_id: Some(vec![StringFilter::new("hq")]),
                 ..Default::default()
             },
             ProxyFilter {
-                country: Some(StringFilter::new("*")),
+                country: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
             ProxyFilter {
-                country: Some(StringFilter::new("US")),
+                country: Some(vec![StringFilter::new("US")]),
                 ..Default::default()
             },
             ProxyFilter {
-                city: Some(StringFilter::new("*")),
+                city: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
             ProxyFilter {
-                city: Some(StringFilter::new("NY")),
+                city: Some(vec![StringFilter::new("NY")]),
                 ..Default::default()
             },
             ProxyFilter {
-                carrier: Some(StringFilter::new("*")),
+                carrier: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
             ProxyFilter {
-                carrier: Some(StringFilter::new("Telenet")),
+                carrier: Some(vec![StringFilter::new("Telenet")]),
                 ..Default::default()
             },
             ProxyFilter {
-                pool_id: Some(StringFilter::new("hq")),
-                country: Some(StringFilter::new("US")),
-                city: Some(StringFilter::new("NY")),
-                carrier: Some(StringFilter::new("AT&T")),
+                pool_id: Some(vec![StringFilter::new("hq")]),
+                country: Some(vec![StringFilter::new("US")]),
+                city: Some(vec![StringFilter::new("NY")]),
+                carrier: Some(vec![StringFilter::new("AT&T")]),
                 ..Default::default()
             },
         ] {
@@ -939,19 +969,19 @@ mod tests {
             assert!(filter.id.map(|id| proxy.id == id).unwrap_or(true));
             assert!(filter
                 .pool_id
-                .map(|pool_id| proxy.pool_id == Some(pool_id))
+                .map(|pool_id| pool_id.contains(proxy.pool_id.as_ref().unwrap()))
                 .unwrap_or(true));
             assert!(filter
                 .country
-                .map(|country| proxy.country == Some(country))
+                .map(|country| country.contains(proxy.country.as_ref().unwrap()))
                 .unwrap_or(true));
             assert!(filter
                 .city
-                .map(|city| proxy.city == Some(city))
+                .map(|city| city.contains(proxy.city.as_ref().unwrap()))
                 .unwrap_or(true));
             assert!(filter
                 .carrier
-                .map(|carrier| proxy.carrier == Some(carrier))
+                .map(|carrier| carrier.contains(proxy.carrier.as_ref().unwrap()))
                 .unwrap_or(true));
         }
     }
@@ -980,26 +1010,26 @@ mod tests {
 
         for filter in [
             ProxyFilter {
-                pool_id: Some(StringFilter::new("*")),
+                pool_id: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
             ProxyFilter {
-                country: Some(StringFilter::new("*")),
+                country: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
             ProxyFilter {
-                city: Some(StringFilter::new("*")),
+                city: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
             ProxyFilter {
-                carrier: Some(StringFilter::new("*")),
+                carrier: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
             ProxyFilter {
-                pool_id: Some(StringFilter::new("*")),
-                country: Some(StringFilter::new("*")),
-                city: Some(StringFilter::new("*")),
-                carrier: Some(StringFilter::new("*")),
+                pool_id: Some(vec![StringFilter::new("*")]),
+                country: Some(vec![StringFilter::new("*")]),
+                city: Some(vec![StringFilter::new("*")]),
+                carrier: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
         ] {
@@ -1018,6 +1048,137 @@ mod tests {
                 "filter: {:?}",
                 filter
             );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_search_proxy_for_any_of_given_pools() {
+        let db = MemoryProxyDB::try_from_iter([
+            Proxy {
+                id: "1".to_owned(),
+                tcp: true,
+                udp: true,
+                http: true,
+                socks5: true,
+                datacenter: true,
+                residential: true,
+                mobile: true,
+                authority: "example.com".to_owned(),
+                pool_id: Some("a".into()),
+                country: Some("US".into()),
+                city: Some("NY".into()),
+                carrier: Some("AT&T".into()),
+                credentials: None,
+            },
+            Proxy {
+                id: "2".to_owned(),
+                tcp: true,
+                udp: true,
+                http: true,
+                socks5: true,
+                datacenter: true,
+                residential: true,
+                mobile: true,
+                authority: "example.com".to_owned(),
+                pool_id: Some("b".into()),
+                country: Some("US".into()),
+                city: Some("NY".into()),
+                carrier: Some("AT&T".into()),
+                credentials: None,
+            },
+            Proxy {
+                id: "3".to_owned(),
+                tcp: true,
+                udp: true,
+                http: true,
+                socks5: true,
+                datacenter: true,
+                residential: true,
+                mobile: true,
+                authority: "example.com".to_owned(),
+                pool_id: Some("b".into()),
+                country: Some("US".into()),
+                city: Some("NY".into()),
+                carrier: Some("AT&T".into()),
+                credentials: None,
+            },
+            Proxy {
+                id: "4".to_owned(),
+                tcp: true,
+                udp: true,
+                http: true,
+                socks5: true,
+                datacenter: true,
+                residential: true,
+                mobile: true,
+                authority: "example.com".to_owned(),
+                pool_id: Some("c".into()),
+                country: Some("US".into()),
+                city: Some("NY".into()),
+                carrier: Some("AT&T".into()),
+                credentials: None,
+            },
+        ])
+        .unwrap();
+
+        let ctx = h2_req_context();
+
+        let filter = ProxyFilter {
+            pool_id: Some(vec![StringFilter::new("a"), StringFilter::new("c")]),
+            ..Default::default()
+        };
+
+        let mut seen_1 = false;
+        let mut seen_4 = false;
+        for _ in 0..100 {
+            let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
+            match proxy.id.as_str() {
+                "1" => seen_1 = true,
+                "4" => seen_4 = true,
+                _ => panic!("unexpected pool id"),
+            }
+        }
+        assert!(seen_1);
+        assert!(seen_4);
+    }
+
+    #[tokio::test]
+    async fn test_deserialize_url_proxy_filter() {
+        for (input, expected_output) in [
+            (
+                "id=1",
+                ProxyFilter {
+                    id: Some("1".into()),
+                    ..Default::default()
+                },
+            ),
+            (
+                "pool=hq&country=us",
+                ProxyFilter {
+                    pool_id: Some(vec![StringFilter::new("hq")]),
+                    country: Some(vec![StringFilter::new("us")]),
+                    ..Default::default()
+                },
+            ),
+            (
+                "pool=hq&country=us&country=be",
+                ProxyFilter {
+                    pool_id: Some(vec![StringFilter::new("hq")]),
+                    country: Some(vec![StringFilter::new("us"), StringFilter::new("be")]),
+                    ..Default::default()
+                },
+            ),
+            (
+                "pool=a&country=uk&pool=b",
+                ProxyFilter {
+                    pool_id: Some(vec![StringFilter::new("a"), StringFilter::new("b")]),
+                    country: Some(vec![StringFilter::new("uk")]),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let filter: ProxyFilter = serde_html_form::from_str(input).unwrap();
+            assert_eq!(filter, expected_output);
         }
     }
 }

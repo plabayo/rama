@@ -71,7 +71,7 @@
 //!     
 //!     let mut ctx = Context::default();
 //!     ctx.insert(ProxyFilter {
-//!         country: Some("BE".into()),
+//!         country: Some(vec!["BE".into()]),
 //!         mobile: Some(true),
 //!         residential: Some(true),
 //!         ..Default::default()
@@ -407,7 +407,7 @@ mod tests {
     use super::*;
     use crate::{
         http::{Body, Version},
-        proxy::{MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader},
+        proxy::{MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader, StringFilter},
         service::ServiceBuilder,
     };
     use itertools::Itertools;
@@ -459,7 +459,7 @@ mod tests {
 
         let mut ctx = Context::default();
         ctx.insert(ProxyFilter {
-            country: Some("BE".into()),
+            country: Some(vec!["BE".into()]),
             mobile: Some(true),
             residential: Some(true),
             ..Default::default()
@@ -523,7 +523,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    country: Some("BE".into()),
+                    country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
                     ..Default::default()
@@ -565,7 +565,7 @@ mod tests {
             (None, "1125300915,1259341971,1264821985,129108927,1316455915,1425588737,1571861931,1810781137,1836040682,1844412609,1885107293,2021561518,2079461709,2107229589,2141152822,2438596154,2497865606,2521901221,2551759475,2560727338,2593294918,2798907087,2854473221,2880295577,2909724448,2912880381,292096733,2951529660,3031533634,3187902553,3269411602,3269465574,339020035,3481200027,3498810974,3503691556,362091157,3679054656,371209663,3861736957,39048766,3976711563,4062553709,49590203,56402588,724884866,738626121,767809962,846528631,906390012", (Version::HTTP_11, "GET", "http://example.com")),
             (
                 Some(ProxyFilter {
-                    country: Some("BE".into()),
+                    country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
                     ..Default::default()
@@ -626,7 +626,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    country: Some("BE".into()),
+                    country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
                     ..Default::default()
@@ -683,7 +683,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    country: Some("BE".into()),
+                    country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
                     ..Default::default()
@@ -714,7 +714,7 @@ mod tests {
             (
                 Some(ProxyFilter {
                     id: Some("1316455915".into()),
-                    country: Some("BE".into()),
+                    country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
                     ..Default::default()
@@ -778,7 +778,7 @@ mod tests {
             ),
             (
                 Some(ProxyFilter {
-                    country: Some("BE".into()),
+                    country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
                     ..Default::default()
@@ -809,7 +809,7 @@ mod tests {
             (
                 Some(ProxyFilter {
                     id: Some("1316455915".into()),
-                    country: Some("BE".into()),
+                    country: Some(vec![StringFilter::new("BE")]),
                     mobile: Some(true),
                     residential: Some(true),
                     ..Default::default()

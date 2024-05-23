@@ -114,7 +114,7 @@ where
             .as_ref()
             .and_then(|header| req.headers().get(header))
             .map(|header| header.as_bytes())
-            .and_then(|value| serde_urlencoded::from_bytes::<UserAgentOverwrites>(value).ok())
+            .and_then(|value| serde_html_form::from_bytes::<UserAgentOverwrites>(value).ok())
         {
             if let Some(ua) = overwrites.ua {
                 user_agent = Some(UserAgent::new(ua));
@@ -271,7 +271,7 @@ mod tests {
             .get("http://www.example.com")
             .header(
                 "x-proxy-ua",
-                serde_urlencoded::to_string(&UserAgentOverwrites {
+                serde_html_form::to_string(&UserAgentOverwrites {
                     ua: Some(UA.to_owned()),
                     ..Default::default()
                 })
@@ -310,7 +310,7 @@ mod tests {
             .get("http://www.example.com")
             .header(
                 "x-proxy-ua",
-                serde_urlencoded::to_string(&UserAgentOverwrites {
+                serde_html_form::to_string(&UserAgentOverwrites {
                     ua: Some(UA.to_owned()),
                     http: Some(HttpAgent::Safari),
                     tls: Some(TlsAgent::Boringssl),

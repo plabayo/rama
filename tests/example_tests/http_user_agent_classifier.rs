@@ -63,7 +63,7 @@ async fn test_http_user_agent_classifier() {
         .typed_header(headers::UserAgent::from_static(UA))
         .header(
             "x-proxy-ua",
-            serde_urlencoded::to_string(&UserAgentOverwrites {
+            serde_html_form::to_string(&UserAgentOverwrites {
                 ua: Some(UA_APP.to_owned()),
                 http: Some(HttpAgent::Safari),
                 tls: Some(TlsAgent::Boringssl),

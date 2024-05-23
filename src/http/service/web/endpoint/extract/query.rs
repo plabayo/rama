@@ -38,7 +38,7 @@ where
     async fn from_request_parts(_ctx: &Context<S>, parts: &Parts) -> Result<Self, Self::Rejection> {
         let query = parts.uri.query().unwrap_or_default();
         let params =
-            serde_urlencoded::from_str(query).map_err(FailedToDeserializeQueryString::from_err)?;
+            serde_html_form::from_str(query).map_err(FailedToDeserializeQueryString::from_err)?;
         Ok(Query(params))
     }
 }

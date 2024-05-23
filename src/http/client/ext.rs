@@ -519,7 +519,7 @@ where
     /// [`Body`]: crate::http::Body
     pub fn form<T: serde::Serialize + ?Sized>(mut self, form: &T) -> Self {
         self.state = match self.state {
-            RequestBuilderState::PreBody(mut builder) => match serde_urlencoded::to_string(form) {
+            RequestBuilderState::PreBody(mut builder) => match serde_html_form::to_string(form) {
                 Ok(body) => {
                     let builder = match builder.headers_mut() {
                         Some(headers) => {
@@ -547,7 +547,7 @@ where
                 }
                 Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
             },
-            RequestBuilderState::PostBody(mut req) => match serde_urlencoded::to_string(form) {
+            RequestBuilderState::PostBody(mut req) => match serde_html_form::to_string(form) {
                 Ok(body) => {
                     if !req
                         .headers()

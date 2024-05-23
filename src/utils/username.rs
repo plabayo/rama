@@ -46,7 +46,7 @@
 //!
 //! let filter = ext.get::<ProxyFilter>().unwrap();
 //! assert_eq!(filter.residential, Some(true));
-//! assert_eq!(filter.country, Some("us".into()));
+//! assert_eq!(filter.country, Some(vec!["us".into()]));
 //! assert!(filter.datacenter.is_none());
 //! assert!(filter.mobile.is_none());
 //! ```

@@ -87,22 +87,34 @@ impl Proxy {
         return filter
             .country
             .as_ref()
-            .map(|c| Some(c) == self.country.as_ref())
+            .map(|c| {
+                let country = self.country.as_ref();
+                c.iter().any(|c| Some(c) == country)
+            })
             .unwrap_or(true)
             && filter
                 .city
                 .as_ref()
-                .map(|c| Some(c) == self.city.as_ref())
+                .map(|c| {
+                    let city = self.city.as_ref();
+                    c.iter().any(|c| Some(c) == city)
+                })
                 .unwrap_or(true)
             && filter
                 .pool_id
                 .as_ref()
-                .map(|p| Some(p) == self.pool_id.as_ref())
+                .map(|p| {
+                    let pool_id = self.pool_id.as_ref();
+                    p.iter().any(|p| Some(p) == pool_id)
+                })
                 .unwrap_or(true)
             && filter
                 .carrier
                 .as_ref()
-                .map(|c| Some(c) == self.carrier.as_ref())
+                .map(|c| {
+                    let carrier = self.carrier.as_ref();
+                    c.iter().any(|c| Some(c) == carrier)
+                })
                 .unwrap_or(true)
             && filter
                 .datacenter
@@ -623,11 +635,11 @@ mod tests {
         };
 
         let filter = ProxyFilter {
-            id: Some("id".into()),
-            country: Some("country".into()),
-            city: Some("city".into()),
-            pool_id: Some("pool_id".into()),
-            carrier: Some("carrier".into()),
+            id: Some("id".to_owned()),
+            country: Some(vec![StringFilter::new("country")]),
+            city: Some(vec![StringFilter::new("city")]),
+            pool_id: Some(vec![StringFilter::new("pool_id")]),
+            carrier: Some(vec![StringFilter::new("carrier")]),
             datacenter: Some(true),
             residential: Some(false),
             mobile: Some(true),
@@ -664,10 +676,10 @@ mod tests {
 
         let filter = ProxyFilter {
             id: Some("id".into()),
-            country: Some("country".into()),
-            city: Some("city".into()),
-            pool_id: Some("pool_id".into()),
-            carrier: Some("carrier".into()),
+            country: Some(vec![StringFilter::new("country")]),
+            city: Some(vec![StringFilter::new("city")]),
+            pool_id: Some(vec![StringFilter::new("pool_id")]),
+            carrier: Some(vec![StringFilter::new("carrier")]),
             datacenter: Some(true),
             residential: Some(false),
             mobile: Some(true),
@@ -704,10 +716,10 @@ mod tests {
 
         let filter = ProxyFilter {
             id: Some("id".into()),
-            country: Some("country".into()),
-            city: Some("city".into()),
-            pool_id: Some("pool_id".into()),
-            carrier: Some("carrier".into()),
+            country: Some(vec![StringFilter::new("country")]),
+            city: Some(vec![StringFilter::new("city")]),
+            pool_id: Some(vec![StringFilter::new("pool_id")]),
+            carrier: Some(vec![StringFilter::new("carrier")]),
             datacenter: Some(true),
             residential: Some(false),
             mobile: Some(true),
@@ -744,10 +756,10 @@ mod tests {
 
         let filter = ProxyFilter {
             id: Some("id".into()),
-            country: Some("country".into()),
-            city: Some("city".into()),
-            pool_id: Some("pool_id".into()),
-            carrier: Some("carrier".into()),
+            country: Some(vec![StringFilter::new("country")]),
+            city: Some(vec![StringFilter::new("city")]),
+            pool_id: Some(vec![StringFilter::new("pool_id")]),
+            carrier: Some(vec![StringFilter::new("carrier")]),
             datacenter: Some(true),
             residential: Some(false),
             mobile: Some(true),
@@ -784,10 +796,10 @@ mod tests {
 
         let filter = ProxyFilter {
             id: Some("id".into()),
-            country: Some("country".into()),
-            city: Some("city".into()),
-            pool_id: Some("pool_id".into()),
-            carrier: Some("carrier".into()),
+            country: Some(vec![StringFilter::new("country")]),
+            city: Some(vec![StringFilter::new("city")]),
+            pool_id: Some(vec![StringFilter::new("pool_id")]),
+            carrier: Some(vec![StringFilter::new("carrier")]),
             datacenter: Some(true),
             residential: Some(false),
             mobile: Some(true),
@@ -911,7 +923,7 @@ mod tests {
                     datacenter: None,
                     residential: None,
                     mobile: None,
-                    pool_id: Some(" FooBar".into()),
+                    pool_id: Some(vec![StringFilter::new(" FooBar")]),
                     country: None,
                     city: None,
                     carrier: None,
@@ -925,7 +937,7 @@ mod tests {
                     residential: None,
                     mobile: None,
                     pool_id: None,
-                    country: Some(" FooBar".into()),
+                    country: Some(vec![StringFilter::new(" FooBar")]),
                     city: None,
                     carrier: None,
                 },
@@ -939,7 +951,7 @@ mod tests {
                     mobile: None,
                     pool_id: None,
                     country: None,
-                    city: Some(" FooBar".into()),
+                    city: Some(vec![StringFilter::new(" FooBar")]),
                     carrier: None,
                 },
             ),
@@ -953,7 +965,7 @@ mod tests {
                     pool_id: None,
                     country: None,
                     city: None,
-                    carrier: Some(" FooBar".into()),
+                    carrier: Some(vec![StringFilter::new(" FooBar")]),
                 },
             ),
         ] {
@@ -1057,7 +1069,7 @@ mod tests {
                     datacenter: None,
                     residential: None,
                     mobile: None,
-                    pool_id: Some("baz".into()),
+                    pool_id: Some(vec![StringFilter::new("baz")]),
                     country: None,
                     city: None,
                     carrier: None,
@@ -1071,7 +1083,7 @@ mod tests {
                     residential: None,
                     mobile: None,
                     pool_id: None,
-                    country: Some("baz".into()),
+                    country: Some(vec![StringFilter::new("baz")]),
                     city: None,
                     carrier: None,
                 },
@@ -1085,7 +1097,7 @@ mod tests {
                     mobile: None,
                     pool_id: None,
                     country: None,
-                    city: Some("baz".into()),
+                    city: Some(vec![StringFilter::new("baz")]),
                     carrier: None,
                 },
             ),
@@ -1099,7 +1111,7 @@ mod tests {
                     pool_id: None,
                     country: None,
                     city: None,
-                    carrier: Some("baz".into()),
+                    carrier: Some(vec![StringFilter::new("baz")]),
                 },
             ),
         ] {
@@ -1141,17 +1153,17 @@ mod tests {
                 datacenter: None,
                 residential: None,
                 mobile: None,
-                pool_id: Some("pool_a".into()),
-                country: Some("country_a".into()),
-                city: Some("city_a".into()),
-                carrier: Some("carrier_a".into()),
+                pool_id: Some(vec![StringFilter::new("pool_a")]),
+                country: Some(vec![StringFilter::new("country_a")]),
+                city: Some(vec![StringFilter::new("city_a")]),
+                carrier: Some(vec![StringFilter::new("carrier_a")]),
             },
             ProxyFilter {
                 id: None,
                 datacenter: None,
                 residential: None,
                 mobile: None,
-                pool_id: Some("pool_a".into()),
+                pool_id: Some(vec![StringFilter::new("pool_a")]),
                 country: None,
                 city: None,
                 carrier: None,
@@ -1162,7 +1174,7 @@ mod tests {
                 residential: None,
                 mobile: None,
                 pool_id: None,
-                country: Some("country_a".into()),
+                country: Some(vec![StringFilter::new("country_a")]),
                 city: None,
                 carrier: None,
             },
@@ -1173,8 +1185,8 @@ mod tests {
                 mobile: None,
                 pool_id: None,
                 country: None,
-                city: Some("city_a".into()),
-                carrier: Some("carrier_a".into()),
+                city: Some(vec![StringFilter::new("city_a")]),
+                carrier: Some(vec![StringFilter::new("carrier_a")]),
             },
             ProxyFilter {
                 id: None,
@@ -1184,7 +1196,7 @@ mod tests {
                 pool_id: None,
                 country: None,
                 city: None,
-                carrier: Some("carrier_a".into()),
+                carrier: Some(vec![StringFilter::new("carrier_a")]),
             },
         ] {
             assert!(proxy.is_match(&ctx, &filter), "filter: {:?}", filter);
@@ -1217,7 +1229,7 @@ mod tests {
                 datacenter: None,
                 residential: None,
                 mobile: None,
-                pool_id: Some("*".into()),
+                pool_id: Some(vec![StringFilter::new("*")]),
                 country: None,
                 city: None,
                 carrier: None,
@@ -1228,7 +1240,7 @@ mod tests {
                 residential: None,
                 mobile: None,
                 pool_id: None,
-                country: Some("*".into()),
+                country: Some(vec![StringFilter::new("*")]),
                 city: None,
                 carrier: None,
             },
@@ -1239,7 +1251,7 @@ mod tests {
                 mobile: None,
                 pool_id: None,
                 country: None,
-                city: Some("*".into()),
+                city: Some(vec![StringFilter::new("*")]),
                 carrier: None,
             },
             ProxyFilter {
@@ -1250,67 +1262,67 @@ mod tests {
                 pool_id: None,
                 country: None,
                 city: None,
-                carrier: Some("*".into()),
+                carrier: Some(vec![StringFilter::new("*")]),
             },
             ProxyFilter {
                 id: None,
                 datacenter: None,
                 residential: None,
                 mobile: None,
-                pool_id: Some("pool".into()),
-                country: Some("country".into()),
-                city: Some("city".into()),
-                carrier: Some("carrier".into()),
+                pool_id: Some(vec![StringFilter::new("pool")]),
+                country: Some(vec![StringFilter::new("country")]),
+                city: Some(vec![StringFilter::new("city")]),
+                carrier: Some(vec![StringFilter::new("carrier")]),
             },
             ProxyFilter {
                 id: None,
                 datacenter: None,
                 residential: None,
                 mobile: None,
-                pool_id: Some("*".into()),
-                country: Some("country".into()),
-                city: Some("city".into()),
-                carrier: Some("carrier".into()),
+                pool_id: Some(vec![StringFilter::new("*")]),
+                country: Some(vec![StringFilter::new("country")]),
+                city: Some(vec![StringFilter::new("city")]),
+                carrier: Some(vec![StringFilter::new("carrier")]),
             },
             ProxyFilter {
                 id: None,
                 datacenter: None,
                 residential: None,
                 mobile: None,
-                pool_id: Some("pool".into()),
-                country: Some("*".into()),
-                city: Some("city".into()),
-                carrier: Some("carrier".into()),
+                pool_id: Some(vec![StringFilter::new("pool")]),
+                country: Some(vec![StringFilter::new("*")]),
+                city: Some(vec![StringFilter::new("city")]),
+                carrier: Some(vec![StringFilter::new("carrier")]),
             },
             ProxyFilter {
                 id: None,
                 datacenter: None,
                 residential: None,
                 mobile: None,
-                pool_id: Some("pool".into()),
-                country: Some("country".into()),
-                city: Some("*".into()),
-                carrier: Some("carrier".into()),
+                pool_id: Some(vec![StringFilter::new("pool")]),
+                country: Some(vec![StringFilter::new("country")]),
+                city: Some(vec![StringFilter::new("*")]),
+                carrier: Some(vec![StringFilter::new("carrier")]),
             },
             ProxyFilter {
                 id: None,
                 datacenter: None,
                 residential: None,
                 mobile: None,
-                pool_id: Some("pool".into()),
-                country: Some("country".into()),
-                city: Some("city".into()),
-                carrier: Some("*".into()),
+                pool_id: Some(vec![StringFilter::new("pool")]),
+                country: Some(vec![StringFilter::new("country")]),
+                city: Some(vec![StringFilter::new("city")]),
+                carrier: Some(vec![StringFilter::new("*")]),
             },
             ProxyFilter {
                 id: None,
                 datacenter: None,
                 residential: None,
                 mobile: None,
-                pool_id: Some("*".into()),
-                country: Some("*".into()),
-                city: Some("*".into()),
-                carrier: Some("*".into()),
+                pool_id: Some(vec![StringFilter::new("*")]),
+                country: Some(vec![StringFilter::new("*")]),
+                city: Some(vec![StringFilter::new("*")]),
+                carrier: Some(vec![StringFilter::new("*")]),
             },
         ] {
             assert!(proxy.is_match(&ctx, &filter), "filter: {:?}", filter);
