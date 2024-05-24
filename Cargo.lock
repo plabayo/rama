@@ -1248,6 +1248,7 @@ name = "rama-cli"
 version = "0.2.0"
 dependencies = [
  "argh",
+ "bytes",
  "rama",
  "tokio",
  "tracing",

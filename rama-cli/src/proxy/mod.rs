@@ -39,7 +39,7 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
-                .with_default_directive(LevelFilter::DEBUG.into())
+                .with_default_directive(LevelFilter::INFO.into())
                 .from_env_lossy(),
         )
         .init();
