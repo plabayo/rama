@@ -91,7 +91,11 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     // args = &args[1..];
 
     let url = if url.starts_with(':') {
-        format!("http://localhost{}", url)
+        if url.starts_with(":/") {
+            format!("http://localhost{}", &url[1..])
+        } else {
+            format!("http://localhost{}", url)
+        }
     } else if !url.contains("://") {
         format!("http://{}", url)
     } else {
