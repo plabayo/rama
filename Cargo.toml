@@ -13,7 +13,6 @@ authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
 rust-version = "1.75.0"
 
 [workspace.dependencies]
-anyhow = "1.0"
 async-compression = "0.4"
 base64 = "0.22"
 bitflags = "2.4"

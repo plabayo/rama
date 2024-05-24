@@ -1,4 +1,5 @@
 use argh::FromArgs;
+use rama::error::BoxError;
 
 pub mod service;
 
@@ -57,7 +58,7 @@ struct RunSubCommand {}
 struct EchoSubCommand {}
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
+async fn main() -> Result<(), BoxError> {
     let args: Cli = argh::from_env();
 
     match args.command.unwrap_or_default() {

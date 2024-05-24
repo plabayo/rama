@@ -12,7 +12,6 @@ rust-version = { workspace = true }
 default-run = "rama-fp"
 
 [dependencies]
-anyhow = { workspace = true }
 argh = { workspace = true }
 base64 = { workspace = true }
 rama = { version = "0.2", path = "..", features = ["full"] }

@@ -12,10 +12,11 @@ rust-version = { workspace = true }
 default-run = "rama"
 
 [dependencies]
-anyhow = { workspace = true }
 argh = { workspace = true }
 rama = { version = "0.2", path = ".." }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bin]]
 name = "rama"

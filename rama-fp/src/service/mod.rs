@@ -1,5 +1,6 @@
 use base64::Engine as _;
 use rama::{
+    error::BoxError,
     http::{
         headers::Server,
         layer::{
@@ -61,7 +62,7 @@ pub struct Config {
     pub ha_proxy: bool,
 }
 
-pub async fn run(cfg: Config) -> anyhow::Result<()> {
+pub async fn run(cfg: Config) -> Result<(), BoxError> {
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -353,7 +354,7 @@ pub async fn run(cfg: Config) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn echo(cfg: Config) -> anyhow::Result<()> {
+pub async fn echo(cfg: Config) -> Result<(), BoxError> {
     tracing_subscriber::registry()
         .with(fmt::layer())
         .with(
@@ -587,7 +588,7 @@ async fn get_server_config(
     tls_cert_pem_raw: String,
     tls_key_pem_raw: String,
     http_version: &str,
-) -> anyhow::Result<ServerConfig> {
+) -> Result<ServerConfig, BoxError> {
     // server TLS Certs
     let tls_cert_pem_raw = BASE64.decode(tls_cert_pem_raw.as_bytes())?;
     let mut pem = BufReader::new(&tls_cert_pem_raw[..]);
