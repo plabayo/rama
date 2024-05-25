@@ -7,6 +7,9 @@ use http::CliCommandHttp;
 mod proxy;
 use proxy::CliCommandProxy;
 
+mod ip;
+use ip::CliCommandIp;
+
 #[derive(Debug, FromArgs)]
 /// rama cli to move and transform netwrok packets
 ///
@@ -21,6 +24,7 @@ struct Cli {
 enum CliCommands {
     Http(CliCommandHttp),
     Proxy(CliCommandProxy),
+    Ip(CliCommandIp),
 }
 
 #[tokio::main]
@@ -29,5 +33,6 @@ async fn main() -> Result<(), BoxError> {
     match cli.cmds {
         CliCommands::Http(cfg) => http::run(cfg).await,
         CliCommands::Proxy(cfg) => proxy::run(cfg).await,
+        CliCommands::Ip(cfg) => ip::run(cfg).await,
     }
 }
