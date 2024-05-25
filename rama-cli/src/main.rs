@@ -9,7 +9,7 @@ use proxy::CliCommandProxy;
 
 #[derive(Debug, FromArgs)]
 /// rama cli to move and transform netwrok packets
-/// 
+///
 /// https://ramaproxy.org
 struct Cli {
     #[argh(subcommand)]
