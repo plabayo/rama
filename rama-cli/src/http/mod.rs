@@ -5,6 +5,7 @@ use rama::{
     error::{BoxError, ErrorContext},
     http::{
         client::HttpClient,
+        header::USER_AGENT,
         layer::{
             decompression::DecompressionLayer,
             follow_redirect::FollowRedirectLayer,
@@ -88,7 +89,7 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     }
 
     let url = &args[0];
-    // args = &args[1..];
+    args = &args[1..];
 
     let url = if url.starts_with(':') {
         if url.starts_with(":/") {
@@ -102,7 +103,33 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         url.to_string()
     };
 
-    let builder = Request::builder().uri(url);
+    let mut builder = Request::builder().uri(url);
+
+    // todo: use winnom??!
+
+    for arg in args {
+        match arg.split_once(':') {
+            Some((name, value)) => {
+                builder = builder.header(name, value);
+            }
+            None => {
+                // TODO
+            }
+        }
+    }
+
+    // insert user agent if not already set
+    if !builder
+        .headers_mut()
+        .map(|h| h.contains_key(USER_AGENT))
+        .unwrap_or_default()
+    {
+        // TODO: do not do this unless UA Emulation is disabled!
+        builder = builder.header(
+            USER_AGENT,
+            format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION),
+        );
+    }
 
     let request = builder
         .method(method.clone().unwrap_or(Method::GET))
