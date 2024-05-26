@@ -51,6 +51,20 @@ pub struct CliCommandHttp {
     args: Vec<String>,
 }
 
+// TODO:
+// - options:
+//   - http: redirect, max redirects, auth (basic/bearer), -a/A, --auth/--auth-type
+//   - http sessions
+//   - TLS: verify, versions, ciphers, server cert, client cert/key
+//   - conn: timeout
+//   - output: print (headers, meta, body, all (all requests/responses))
+//   - -v/--verbose: shortcut for --all and --print (headers, meta, body)
+//   - --offline: print request instead of executing it
+//   - --check-status: fail if status code is not 2xx (4 if 4xx and 5 if 5xx
+//   - --debug: print debug info (set default log level to debug)
+//   - --manual: print manual
+//   - --version: print version
+
 pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -76,7 +90,7 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         "head" => Some(Method::HEAD),
         "options" => Some(Method::OPTIONS),
         "usage" => {
-            println!("{}", usage());
+            println!("{}", print_manual());
             return Ok(());
         }
         _ => None,
@@ -202,7 +216,7 @@ where
     }
 }
 
-fn usage() -> &'static str {
+fn print_manual() -> &'static str {
     r##"
 usage:
     rama http [METHOD] URL [REQUEST_ITEM ...]
@@ -250,6 +264,10 @@ Positional arguments:
       ':=' Non-string JSON data fields (only with --json, -j):
 
           awesome:=true  amount:=42  colors:='["red", "green", "blue"]'
+
+      '=@' A data field like '=', but takes a file path and embeds its content:
+
+          essay=@Documents/essay.txt
 
       ':=@' A raw JSON field like ':=', but takes a file path and embeds its content:
 

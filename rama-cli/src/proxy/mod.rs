@@ -13,7 +13,12 @@ use rama::{
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
     rt::Executor,
-    service::{service_fn, Context, Service, ServiceBuilder},
+    service::{
+        layer::{limit::policy::ConcurrentPolicy, Identity, LimitLayer, TimeoutLayer},
+        service_fn,
+        util::combinators::Either,
+        Context, Service, ServiceBuilder,
+    },
     stream::layer::http::BodyLimitLayer,
     tcp::{server::TcpListener, utils::is_connection_error},
 };
@@ -32,6 +37,14 @@ pub struct CliCommandProxy {
     #[argh(option, short = 'i', default = "String::from(\"127.0.0.1\")")]
     /// the interface to listen on
     interface: String,
+
+    #[argh(option, short = 'c', default = "0")]
+    /// the number of concurrent connections to allow (0 = no limit)
+    concurrent: usize,
+
+    #[argh(option, short = 't', default = "8")]
+    /// the timeout in seconds for each connection (0 = no timeout)
+    timeout: u64,
 }
 
 pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
@@ -49,7 +62,7 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
     let address = format!("{}:{}", cfg.interface, cfg.port);
     tracing::info!("starting proxy on: {}", address);
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(move |guard| async move {
         let tcp_service = TcpListener::build()
             .bind(address)
             .await
@@ -72,14 +85,28 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
                 ),
         );
 
+        let tcp_service_builder = ServiceBuilder::new()
+            // protect the http proxy from too large bodies, both from request and response end
+            .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024));
+
+        let tcp_service_builder = if cfg.concurrent > 0 {
+            tcp_service_builder.layer(Either::A(LimitLayer::new(ConcurrentPolicy::max(
+                cfg.concurrent,
+            ))))
+        } else {
+            tcp_service_builder.layer(Either::B(Identity::new()))
+        };
+
+        let tcp_service_builder = if cfg.timeout > 0 {
+            tcp_service_builder.layer(Either::A(TimeoutLayer::new(Duration::from_secs(
+                cfg.timeout,
+            ))))
+        } else {
+            tcp_service_builder.layer(Either::B(Identity::new()))
+        };
+
         tcp_service
-            .serve_graceful(
-                guard,
-                ServiceBuilder::new()
-                    // protect the http proxy from too large bodies, both from request and response end
-                    .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024))
-                    .service(http_service),
-            )
+            .serve_graceful(guard, tcp_service_builder.service(http_service))
             .await;
     });
 

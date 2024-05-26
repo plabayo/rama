@@ -92,7 +92,8 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         };
 
         // Limit the body size to 1MB for requests
-        let tcp_service_builder = tcp_service_builder.layer(BodyLimitLayer::request_only(1024 * 1024));
+        let tcp_service_builder =
+            tcp_service_builder.layer(BodyLimitLayer::request_only(1024 * 1024));
 
         // TODO: support opt-in TLS
 
