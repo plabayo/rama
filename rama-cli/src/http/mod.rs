@@ -29,10 +29,6 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 /// rama http client (run usage for more info)
 #[argh(subcommand, name = "http")]
 pub struct CliCommandHttp {
-    #[argh(switch, short = 'v')]
-    /// verbose output (e.g. show headers)
-    verbose: bool,
-
     #[argh(switch, short = 'j')]
     /// data items from the command line are serialized as a JSON object.
     /// The Content-Type and Accept headers are set to application/json
@@ -177,17 +173,17 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
 
     let response = client.serve(Context::default(), request).await?;
 
-    if cfg.verbose {
-        // TODO:
-        // - print request
-        // - print also for each redirect?
+    // if cfg.verbose {
+    //     // TODO:
+    //     // - print request
+    //     // - print also for each redirect?
 
-        // print headers
-        for (name, value) in response.headers() {
-            println!("{}: {}", name, value.to_str().unwrap());
-        }
-        println!();
-    }
+    //     // print headers
+    //     for (name, value) in response.headers() {
+    //         println!("{}: {}", name, value.to_str().unwrap());
+    //     }
+    //     println!();
+    // }
 
     if method != Some(Method::HEAD) {
         // TODO Handle errors better, as there might not be a body...
