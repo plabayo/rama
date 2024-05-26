@@ -13,6 +13,20 @@ pub trait Layer<S> {
     fn layer(&self, inner: S) -> Self::Service;
 }
 
+impl<L, S> Layer<S> for Option<L>
+where
+    L: Layer<S>,
+{
+    type Service = Either<L::Service, S>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        match self {
+            Some(layer) => Either::A(layer.layer(inner)),
+            None => Either::B(inner),
+        }
+    }
+}
+
 mod into_error;
 #[doc(inline)]
 pub use into_error::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
@@ -73,5 +87,7 @@ pub use limit::{Limit, LimitLayer};
 
 pub mod add_extension;
 pub use add_extension::{AddExtension, AddExtensionLayer};
+
+use super::util::combinators::Either;
 
 pub mod http;

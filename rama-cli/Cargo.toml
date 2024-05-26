@@ -17,6 +17,7 @@ bytes = { workspace = true }
 hex = { workspace = true }
 rama = { version = "0.2", path = ".." }
 serde_json = { workspace = true }
+terminal-prompt = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

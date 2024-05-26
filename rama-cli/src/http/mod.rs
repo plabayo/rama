@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use argh::FromArgs;
 use rama::{
     error::{BoxError, ErrorContext},
@@ -7,21 +5,20 @@ use rama::{
         client::HttpClient,
         header::USER_AGENT,
         layer::{
+            auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
-            follow_redirect::FollowRedirectLayer,
-            retry::{ManagedPolicy, RetryLayer},
-            trace::TraceLayer,
+            follow_redirect::{policy::Limited, FollowRedirectLayer},
+            timeout::TimeoutLayer,
         },
         Body, BodyExtractExt, Method, Request, Response,
     },
     proxy::http::client::HttpProxyConnectorLayer,
-    service::{
-        util::{backoff::ExponentialBackoff, rng::HasherRng},
-        Context, Service, ServiceBuilder,
-    },
+    service::{Context, Service, ServiceBuilder},
     tcp::service::HttpConnector,
     tls::rustls::client::HttpsConnectorLayer,
 };
+use std::time::Duration;
+use terminal_prompt::Terminal;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -43,20 +40,41 @@ pub struct CliCommandHttp {
     /// The Content-Type is set to application/x-www-form-urlencoded (if not specified).
     form: bool,
 
+    #[argh(switch, short = 'F')]
+    /// follow 30 Location redirects
+    follow: bool,
+
+    #[argh(option, default = "30")]
+    /// the maximum number of redirects to follow
+    max_redirects: usize,
+
+    #[argh(option, short = 'a')]
+    /// client authentication: USER[:PASS] | TOKEN, if basic and no password is given it will be promped
+    auth: Option<String>,
+
+    #[argh(option, short = 'A', default = "String::from(\"basic\")")]
+    /// the type of authentication to use (basic, bearer)
+    auth_type: String,
+
+    #[argh(option, short = 't', default = "0")]
+    /// the timeout in seconds for each connection (0 = no timeout)
+    timeout: u64,
+
+    #[argh(switch)]
+    /// fail if status code is not 2xx (4 if 4xx and 5 if 5xx)
+    check_status: bool,
+
     #[argh(positional, greedy)]
     args: Vec<String>,
 }
 
 // TODO:
 // - options:
-//   - http: redirect, max redirects, auth (basic/bearer), -a/A, --auth/--auth-type
 //   - http sessions
 //   - TLS: verify, versions, ciphers, server cert, client cert/key
-//   - conn: timeout
 //   - output: print (headers, meta, body, all (all requests/responses))
 //   - -v/--verbose: shortcut for --all and --print (headers, meta, body)
 //   - --offline: print request instead of executing it
-//   - --check-status: fail if status code is not 2xx (4 if 4xx and 5 if 5xx
 //   - --debug: print debug info (set default log level to debug)
 //   - --manual: print manual
 
@@ -145,30 +163,44 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         .body(Body::empty())
         .context("build http request")?;
 
-    let client = ServiceBuilder::new()
+    let client_builder = ServiceBuilder::new()
         .map_result(map_internal_client_error)
-        .layer(TraceLayer::new_for_http())
         .layer(DecompressionLayer::new())
-        // TODO: make optional??
-        .layer(FollowRedirectLayer::default())
-        .layer(RetryLayer::new(
-            ManagedPolicy::default().with_backoff(
-                ExponentialBackoff::new(
-                    Duration::from_millis(100),
-                    Duration::from_secs(30),
-                    0.01,
-                    HasherRng::default,
-                )
-                .unwrap(),
-            ),
-        ))
-        .service(HttpClient::new(
-            ServiceBuilder::new()
-                .layer(HttpsConnectorLayer::auto())
-                .layer(HttpProxyConnectorLayer::proxy_from_context())
-                .layer(HttpsConnectorLayer::tunnel())
-                .service(HttpConnector::default()),
-        ));
+        .layer(cfg.auth.as_deref().map(|auth| {
+            let auth = auth.trim().trim_end_matches(':');
+            match cfg.auth_type.trim().to_lowercase().as_str() {
+                "basic" => match auth.split_once(':') {
+                    Some((user, pass)) => AddAuthorizationLayer::basic(user, pass),
+                    None => {
+                        let mut terminal =
+                            Terminal::open().expect("open terminal for password prompting");
+                        let password = terminal
+                            .prompt_sensitive("password: ")
+                            .expect("prompt password");
+                        AddAuthorizationLayer::basic(auth, password.as_str())
+                    }
+                },
+                "bearer" => AddAuthorizationLayer::bearer(auth),
+                unknown => panic!("unknown auth type: {}", unknown),
+            }
+        }))
+        .layer(
+            cfg.follow
+                .then(|| FollowRedirectLayer::with_policy(Limited::new(cfg.max_redirects))),
+        )
+        .layer(TimeoutLayer::new(if cfg.timeout > 0 {
+            Duration::from_secs(cfg.timeout)
+        } else {
+            Duration::from_secs(180)
+        }));
+
+    let client = client_builder.service(HttpClient::new(
+        ServiceBuilder::new()
+            .layer(HttpsConnectorLayer::auto())
+            .layer(HttpProxyConnectorLayer::proxy_from_context())
+            .layer(HttpsConnectorLayer::tunnel())
+            .service(HttpConnector::default()),
+    ));
 
     let response = client.serve(Context::default(), request).await?;
 
@@ -183,6 +215,17 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     //     }
     //     println!();
     // }
+
+    if cfg.check_status {
+        let status = response.status();
+        if status.is_client_error() {
+            eprintln!("client error: {}", status);
+            std::process::exit(4);
+        } else if status.is_server_error() {
+            eprintln!("server error: {}", status);
+            std::process::exit(5);
+        }
+    }
 
     if method != Some(Method::HEAD) {
         // TODO Handle errors better, as there might not be a body...
