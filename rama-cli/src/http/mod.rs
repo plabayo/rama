@@ -64,6 +64,10 @@ pub struct CliCommandHttp {
     /// fail if status code is not 2xx (4 if 4xx and 5 if 5xx)
     check_status: bool,
 
+    #[argh(switch)]
+    /// print debug info
+    debug: bool,
+
     #[argh(positional, greedy)]
     args: Vec<String>,
 }
@@ -75,7 +79,6 @@ pub struct CliCommandHttp {
 //   - output: print (headers, meta, body, all (all requests/responses))
 //   - -v/--verbose: shortcut for --all and --print (headers, meta, body)
 //   - --offline: print request instead of executing it
-//   - --debug: print debug info (set default log level to debug)
 //   - --manual: print manual
 
 pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
@@ -83,7 +86,14 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         .with(fmt::layer())
         .with(
             EnvFilter::builder()
-                .with_default_directive(LevelFilter::ERROR.into())
+                .with_default_directive(
+                    if cfg.debug {
+                        LevelFilter::DEBUG
+                    } else {
+                        LevelFilter::ERROR
+                    }
+                    .into(),
+                )
                 .from_env_lossy(),
         )
         .init();
