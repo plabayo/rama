@@ -59,7 +59,6 @@ pub struct CliCommandHttp {
 //   - --check-status: fail if status code is not 2xx (4 if 4xx and 5 if 5xx
 //   - --debug: print debug info (set default log level to debug)
 //   - --manual: print manual
-//   - --version: print version
 
 pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     tracing_subscriber::registry()
