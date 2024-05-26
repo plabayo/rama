@@ -10,8 +10,7 @@ use rama::{
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
-        layer::{limit::policy::ConcurrentPolicy, Identity, LimitLayer, TimeoutLayer},
-        util::combinators::Either,
+        layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
         Context, ServiceBuilder,
     },
     stream::{layer::http::BodyLimitLayer, SocketInfo},
@@ -67,33 +66,15 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
             .await
             .expect("bind tcp proxy to 127.0.0.1:62001");
 
-        let tcp_service_builder = ServiceBuilder::new();
-
-        let tcp_service_builder = if cfg.concurrent > 0 {
-            tcp_service_builder.layer(Either::A(LimitLayer::new(ConcurrentPolicy::max(
-                cfg.concurrent,
-            ))))
-        } else {
-            tcp_service_builder.layer(Either::B(Identity::new()))
-        };
-
-        let tcp_service_builder = if cfg.timeout > 0 {
-            tcp_service_builder.layer(Either::A(TimeoutLayer::new(Duration::from_secs(
-                cfg.timeout,
-            ))))
-        } else {
-            tcp_service_builder.layer(Either::B(Identity::new()))
-        };
-
-        let tcp_service_builder = if cfg.ha_proxy {
-            tcp_service_builder.layer(Either::A(HaProxyLayer::default()))
-        } else {
-            tcp_service_builder.layer(Either::B(Identity::new()))
-        };
-
-        // Limit the body size to 1MB for requests
-        let tcp_service_builder =
-            tcp_service_builder.layer(BodyLimitLayer::request_only(1024 * 1024));
+        let tcp_service_builder = ServiceBuilder::new()
+            .layer(
+                (cfg.concurrent > 0)
+                    .then(|| LimitLayer::new(ConcurrentPolicy::max(cfg.concurrent))),
+            )
+            .layer((cfg.timeout > 0).then(|| TimeoutLayer::new(Duration::from_secs(cfg.timeout))))
+            .layer((cfg.ha_proxy).then(|| HaProxyLayer::default()))
+            // Limit the body size to 1MB for requests
+            .layer(BodyLimitLayer::request_only(1024 * 1024));
 
         // TODO: support opt-in TLS
 

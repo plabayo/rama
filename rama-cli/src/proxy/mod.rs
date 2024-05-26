@@ -14,10 +14,8 @@ use rama::{
     },
     rt::Executor,
     service::{
-        layer::{limit::policy::ConcurrentPolicy, Identity, LimitLayer, TimeoutLayer},
-        service_fn,
-        util::combinators::Either,
-        Context, Service, ServiceBuilder,
+        layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
+        service_fn, Context, Service, ServiceBuilder,
     },
     stream::layer::http::BodyLimitLayer,
     tcp::{server::TcpListener, utils::is_connection_error},
@@ -87,23 +85,12 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
 
         let tcp_service_builder = ServiceBuilder::new()
             // protect the http proxy from too large bodies, both from request and response end
-            .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024));
-
-        let tcp_service_builder = if cfg.concurrent > 0 {
-            tcp_service_builder.layer(Either::A(LimitLayer::new(ConcurrentPolicy::max(
-                cfg.concurrent,
-            ))))
-        } else {
-            tcp_service_builder.layer(Either::B(Identity::new()))
-        };
-
-        let tcp_service_builder = if cfg.timeout > 0 {
-            tcp_service_builder.layer(Either::A(TimeoutLayer::new(Duration::from_secs(
-                cfg.timeout,
-            ))))
-        } else {
-            tcp_service_builder.layer(Either::B(Identity::new()))
-        };
+            .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024))
+            .layer(
+                (cfg.concurrent > 0)
+                    .then(|| LimitLayer::new(ConcurrentPolicy::max(cfg.concurrent))),
+            )
+            .layer((cfg.timeout > 0).then(|| TimeoutLayer::new(Duration::from_secs(cfg.timeout))));
 
         tcp_service
             .serve_graceful(guard, tcp_service_builder.service(http_service))
