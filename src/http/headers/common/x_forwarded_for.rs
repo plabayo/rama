@@ -2,10 +2,7 @@ use crate::http::headers::{self, Header, QualityValue};
 use crate::http::{HeaderName, HeaderValue};
 use mime::{self, Mime};
 use std::iter::FromIterator;
-
-fn qitem(mime: Mime) -> QualityValue<Mime> {
-    QualityValue::new(mime, Default::default())
-}
+use std::net::IpAddr;
 
 /// `Accept` header, defined in [RFC7231](https://datatracker.ietf.org/doc/html/rfc7231#section-5.3.2)
 ///
@@ -83,37 +80,28 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// );
 /// ```
 #[derive(Debug, PartialEq, Eq)]
-pub struct Accept(Vec<QualityValue<Mime>>);
+pub struct XForwardedFor(Vec<IpAddr>);
 
-impl Header for Accept {
+impl Header for XForwardedFor {
     fn name() -> &'static HeaderName {
-        &crate::http::header::ACCEPT
+        &crate::http::header::X_FORWARDED_FOR
     }
 
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(
         values: &mut I,
     ) -> Result<Self, headers::Error> {
-        crate::http::headers::util::csv::from_comma_delimited(values).map(Accept)
+        let mut ips = Vec::new();
+        for value in values {
+            let ip: IpAddr = value.to_str().map_err(|_| headers::Error::invalid())?.trim().parse().map_err(|_| headers::Error::invalid())?;
+            ips.push(ip);
+        }
+        Ok(Self(ips))
     }
 
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        use std::fmt;
-        struct Format<F>(F);
-        impl<F> fmt::Display for Format<F>
-        where
-            F: Fn(&mut fmt::Formatter<'_>) -> fmt::Result,
-        {
-            fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                (self.0)(f)
-            }
+        for ip in &self.0 {
+            values.extend(Some(HeaderValue::from_str(&ip.to_string()).unwrap()))
         }
-        let s = format!(
-            "{}",
-            Format(|f: &mut fmt::Formatter<'_>| {
-                crate::http::headers::util::csv::fmt_comma_delimited(&mut *f, self.0.iter())
-            })
-        );
-        values.extend(Some(HeaderValue::from_str(&s).unwrap()))
     }
 }
 

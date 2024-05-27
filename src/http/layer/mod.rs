@@ -39,6 +39,7 @@ pub mod timeout;
 pub mod trace;
 pub mod upgrade;
 pub mod validate_request;
+pub mod header_ips;
 
 #[cfg(feature = "telemetry")]
 pub mod opentelemetry;
