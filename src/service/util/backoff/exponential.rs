@@ -1,5 +1,6 @@
+use parking_lot::Mutex;
+use std::fmt::Display;
 use std::time::Duration;
-use std::{fmt::Display, sync::Mutex};
 use tokio::time;
 
 use crate::service::util::rng::{HasherRng, Rng};
@@ -134,7 +135,7 @@ impl<F, R: Rng> ExponentialBackoff<F, R> {
             "Maximum backoff must be non-zero"
         );
         self.min
-            .checked_mul(2_u32.saturating_pow(self.state.lock().unwrap().iterations))
+            .checked_mul(2_u32.saturating_pow(self.state.lock().iterations))
             .unwrap_or(self.max)
             .min(self.max)
     }
@@ -145,7 +146,7 @@ impl<F, R: Rng> ExponentialBackoff<F, R> {
         if self.jitter <= 0.0 {
             None
         } else {
-            let jitter_factor = self.state.lock().unwrap().rng.next_f64();
+            let jitter_factor = self.state.lock().rng.next_f64();
             debug_assert!(
                 jitter_factor > 0.0,
                 "rng returns values between 0.0 and 1.0"
@@ -181,14 +182,14 @@ where
 
         let next = base + jitter;
 
-        self.state.lock().unwrap().iterations += 1;
+        self.state.lock().iterations += 1;
 
         tokio::time::sleep(next).await;
         true
     }
 
     async fn reset(&self) {
-        self.state.lock().unwrap().iterations = 0;
+        self.state.lock().iterations = 0;
     }
 }
 
@@ -232,26 +233,26 @@ mod tests {
     async fn backoff_reset() {
         let backoff = ExponentialBackoff::default();
         assert!(backoff.next_backoff().await);
-        assert!(backoff.state.lock().unwrap().iterations == 1);
+        assert!(backoff.state.lock().iterations == 1);
         backoff.reset().await;
-        assert!(backoff.state.lock().unwrap().iterations == 0);
+        assert!(backoff.state.lock().iterations == 0);
     }
 
     #[tokio::test]
     async fn backoff_clone() {
         let backoff = ExponentialBackoff::default();
 
-        assert!(backoff.state.lock().unwrap().iterations == 0);
+        assert!(backoff.state.lock().iterations == 0);
         assert!(backoff.next_backoff().await);
-        assert!(backoff.state.lock().unwrap().iterations == 1);
+        assert!(backoff.state.lock().iterations == 1);
 
         let cloned = backoff.clone();
-        assert!(cloned.state.lock().unwrap().iterations == 0);
-        assert!(backoff.state.lock().unwrap().iterations == 1);
+        assert!(cloned.state.lock().iterations == 0);
+        assert!(backoff.state.lock().iterations == 1);
 
         assert!(cloned.next_backoff().await);
-        assert!(cloned.state.lock().unwrap().iterations == 1);
-        assert!(backoff.state.lock().unwrap().iterations == 1);
+        assert!(cloned.state.lock().iterations == 1);
+        assert!(backoff.state.lock().iterations == 1);
     }
 
     quickcheck! {
@@ -275,7 +276,7 @@ mod tests {
                 Ok(backoff) => backoff,
             };
 
-            backoff.state.lock().unwrap().iterations = iterations;
+            backoff.state.lock().iterations = iterations;
             let delay = backoff.base();
             TestResult::from_bool(min <= delay && delay <= max)
         }

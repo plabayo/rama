@@ -10,7 +10,8 @@ use std::future::Future;
 /// use rama::service::Context;
 /// use rama::http::Request;
 /// use rama::http::layer::retry::{Policy, PolicyResult, RetryBody};
-/// use std::sync::{Arc, Mutex};
+/// use std::sync::Arc;
+/// use parking_lot::Mutex;
 ///
 /// struct Attempts(Arc<Mutex<usize>>);
 ///
@@ -30,7 +31,7 @@ use std::future::Future;
 ///             Err(_) => {
 ///                 // Treat all errors as failures...
 ///                 // But we limit the number of attempts...
-///                 let mut attempts = self.0.lock().unwrap();
+///                 let mut attempts = self.0.lock();
 ///                 if *attempts > 0 {
 ///                     // Try again!
 ///                     *attempts -= 1;

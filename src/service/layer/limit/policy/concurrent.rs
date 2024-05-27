@@ -26,7 +26,8 @@
 
 use super::{Policy, PolicyOutput, PolicyResult};
 use crate::service::{util::backoff::Backoff, Context};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 /// A [`Policy`] that limits the number of concurrent requests.
 #[derive(Debug)]
@@ -256,7 +257,7 @@ impl ConcurrentTracker for ConcurrentCounter {
     type Error = LimitReached;
 
     fn try_access(&self) -> Result<Self::Guard, Self::Error> {
-        let mut current = self.current.lock().unwrap();
+        let mut current = self.current.lock();
         if *current < self.max {
             *current += 1;
             Ok(ConcurrentCounterGuard {
@@ -276,7 +277,7 @@ pub struct ConcurrentCounterGuard {
 
 impl Drop for ConcurrentCounterGuard {
     fn drop(&mut self) {
-        let mut current = self.current.lock().unwrap();
+        let mut current = self.current.lock();
         *current -= 1;
     }
 }

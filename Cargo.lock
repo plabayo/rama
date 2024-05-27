@@ -1216,6 +1216,7 @@ dependencies = [
  "opentelemetry-prometheus",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
+ "parking_lot",
  "paste",
  "percent-encoding",
  "pin-project-lite",
