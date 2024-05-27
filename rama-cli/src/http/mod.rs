@@ -49,7 +49,7 @@ pub struct CliCommandHttp {
     max_redirects: usize,
 
     #[argh(option, short = 'a')]
-    /// client authentication: USER[:PASS] | TOKEN, if basic and no password is given it will be promped
+    /// client authentication: `USER[:PASS]` | TOKEN, if basic and no password is given it will be promped
     auth: Option<String>,
 
     #[argh(option, short = 'A', default = "String::from(\"basic\")")]
