@@ -33,7 +33,7 @@ http-range-header = "0.4.0"
 httparse = "1.8"
 httpdate = "1.0"
 hyper = "1.2"
-hyper-util = "0.1.3"
+hyper-util = "0.1.4"
 ipnet = "2.9.0"
 itertools = "0.13.0"
 mime = "0.3.17"
@@ -80,6 +80,7 @@ escargot = "0.5.10"
 divan = "0.1.14"
 webpki-roots = "0.26.1"
 terminal-prompt = "0.2.3"
+parking_lot = "0.12.3"
 
 [package]
 name = "rama"
@@ -130,6 +131,7 @@ opentelemetry = { workspace = true, optional = true }
 opentelemetry-prometheus = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
+parking_lot = { workspace = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }

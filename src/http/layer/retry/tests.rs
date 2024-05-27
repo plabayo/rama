@@ -3,9 +3,10 @@ use crate::error::{error, OpaqueError};
 use crate::http::{response::IntoResponse, BodyExtractExt};
 use crate::http::{Request, Response};
 use crate::service::{Service, ServiceBuilder};
+use parking_lot::Mutex;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc,
 };
 
 #[tokio::test]
@@ -281,7 +282,7 @@ impl Policy<State, Response, Error> for Limit {
         req: Request<RetryBody>,
         result: Result<Response, Error>,
     ) -> PolicyResult<State, Response, Error> {
-        let mut attempts = self.0.lock().unwrap();
+        let mut attempts = self.0.lock();
         if result.is_err() && *attempts > 0 {
             *attempts -= 1;
             PolicyResult::Retry { ctx, req }
@@ -369,7 +370,7 @@ where
         _req: Request<RetryBody>,
         _result: Result<Response, Error>,
     ) -> PolicyResult<State, Response, Error> {
-        let mut remaining = self.remaining.lock().unwrap();
+        let mut remaining = self.remaining.lock();
         if *remaining == 0 {
             PolicyResult::Abort(Err(error!("out of retries")))
         } else {
