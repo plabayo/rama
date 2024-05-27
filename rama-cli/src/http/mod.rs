@@ -22,6 +22,8 @@ use terminal_prompt::Terminal;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
+mod tls;
+
 #[derive(FromArgs, PartialEq, Debug)]
 /// rama http client (run usage for more info)
 #[argh(subcommand, name = "http")]
@@ -56,6 +58,22 @@ pub struct CliCommandHttp {
     /// the type of authentication to use (basic, bearer)
     auth_type: String,
 
+    #[argh(switch, short = 'k')]
+    /// skip Tls certificate verification
+    insecure: bool,
+
+    #[argh(option)]
+    /// the desired tls version to use (automatically defined by default, choices are: 1.2, 1.3)
+    tls: Option<String>,
+
+    #[argh(option)]
+    /// the client tls certificate file path to use
+    cert: Option<String>,
+
+    #[argh(option)]
+    /// the client tls key file path to use
+    cert_key: Option<String>,
+
     #[argh(option, short = 't', default = "0")]
     /// the timeout in seconds for each connection (0 = no timeout)
     timeout: u64,
@@ -75,7 +93,6 @@ pub struct CliCommandHttp {
 // TODO:
 // - options:
 //   - http sessions
-//   - TLS: verify, versions, ciphers, server cert, client cert/key
 //   - output: print (headers, meta, body, all (all requests/responses))
 //   - -v/--verbose: shortcut for --all and --print (headers, meta, body)
 //   - --offline: print request instead of executing it
@@ -204,9 +221,12 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
             Duration::from_secs(180)
         }));
 
+    let tls_client_config =
+        tls::create_tls_client_config(cfg.insecure, cfg.tls, cfg.cert, cfg.cert_key).await?;
+
     let client = client_builder.service(HttpClient::new(
         ServiceBuilder::new()
-            .layer(HttpsConnectorLayer::auto())
+            .layer(HttpsConnectorLayer::auto().with_config(tls_client_config))
             .layer(HttpProxyConnectorLayer::proxy_from_context())
             .layer(HttpsConnectorLayer::tunnel())
             .service(HttpConnector::default()),
