@@ -3,14 +3,14 @@ use rama::{
     error::{BoxError, ErrorContext},
     http::{
         client::HttpClient,
-        header::USER_AGENT,
+        header::{HOST, USER_AGENT},
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
             follow_redirect::{policy::Limited, FollowRedirectLayer},
             timeout::TimeoutLayer,
         },
-        Body, BodyExtractExt, Method, Request, Response,
+        Body, BodyExtractExt, HeaderValue, Method, Request, Response, Uri,
     },
     proxy::http::client::HttpProxyConnectorLayer,
     service::{Context, Service, ServiceBuilder},
@@ -157,7 +157,9 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         url.to_string()
     };
 
-    let mut builder = Request::builder().uri(url);
+    let url: Uri = url.parse().context("parse url")?;
+
+    let mut builder = Request::builder().uri(url.clone());
 
     // todo: use winnom??!
 
@@ -183,6 +185,19 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
             USER_AGENT,
             format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION),
         );
+    }
+
+    // insert host header if missing
+    if !builder
+        .headers_mut()
+        .map(|h| h.contains_key(HOST))
+        .unwrap_or_default()
+    {
+        // TODO: host header should be modified by follow_redirect layer?!?!?!
+        // as currently it will not be updated for redirects
+        let header = HeaderValue::from_str(url.host().context("get host from url")?)
+            .context("parse host as header value")?;
+        builder = builder.header(HOST, header);
     }
 
     let request = builder
