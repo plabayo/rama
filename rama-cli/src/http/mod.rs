@@ -318,16 +318,16 @@ Positional arguments:
 
       ':' HTTP headers:
 
-          Referer:https://httpie.io  Cookie:foo=bar  User-Agent:bacon/1.0
+          Referer:https://ramaproxy.org  Cookie:foo=bar  User-Agent:rama/0.2.0
 
       '==' URL parameters to be appended to the request URI:
 
-          search==httpie
+          search==rama
 
       '=' Data fields to be serialized into a JSON object (with --json, -j)
           or form data (with --form, -f):
 
-          name=HTTPie  language=Python  description='CLI HTTP client'
+          name=rama  language=Rust  description='CLI HTTP client'
 
       ':=' Non-string JSON data fields (only with --json, -j):
 

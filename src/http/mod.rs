@@ -36,6 +36,8 @@ pub mod server;
 
 pub mod client;
 
+pub mod io;
+
 pub mod dep {
     //! Dependencies for rama http modules.
     //!
