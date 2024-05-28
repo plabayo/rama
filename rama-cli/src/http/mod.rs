@@ -108,12 +108,10 @@ pub struct CliCommandHttp {
     args: Vec<String>,
 }
 
-// TODO:
-// - options:
-//   - http sessions
-//   - output: print (headers, meta, body, all (all requests/responses))
-//   - -v/--verbose: shortcut for --all and --print (headers, meta, body)
-//   - --offline: print request instead of executing it
+// TODO in future:
+// - http sessions (e.g. cookies)
+// - fix bug in body print (we seem to print garbage)
+//    - this might to do with fact that decompressor comes later
 
 pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     tracing_subscriber::registry()
@@ -224,18 +222,6 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     let client = create_client(cfg.clone()).await?;
 
     let response = client.serve(Context::default(), request).await?;
-
-    // if cfg.verbose {
-    //     // TODO:
-    //     // - print request
-    //     // - print also for each redirect?
-
-    //     // print headers
-    //     for (name, value) in response.headers() {
-    //         println!("{}: {}", name, value.to_str().unwrap());
-    //     }
-    //     println!();
-    // }
 
     if cfg.check_status {
         let status = response.status();
