@@ -1,6 +1,6 @@
 use argh::FromArgs;
 use rama::{
-    error::{BoxError, ErrorContext},
+    error::{error, BoxError, ErrorContext},
     http::{
         client::HttpClient,
         header::{HOST, USER_AGENT},
@@ -9,11 +9,13 @@ use rama::{
             decompression::DecompressionLayer,
             follow_redirect::{policy::Limited, FollowRedirectLayer},
             timeout::TimeoutLayer,
+            traffic_printer::{PrintMode, TrafficPrinterLayer},
         },
-        Body, BodyExtractExt, HeaderValue, Method, Request, Response, Uri,
+        Body, BodyExtractExt, HeaderValue, IntoResponse, Method, Request, Response, StatusCode,
+        Uri,
     },
     proxy::http::client::HttpProxyConnectorLayer,
-    service::{Context, Service, ServiceBuilder},
+    service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
     tcp::service::HttpConnector,
     tls::rustls::client::HttpsConnectorLayer,
 };
@@ -82,13 +84,25 @@ pub struct CliCommandHttp {
     /// fail if status code is not 2xx (4 if 4xx and 5 if 5xx)
     check_status: bool,
 
+    #[argh(option, short = 'p', default = "String::from(\"hb\")")]
+    /// define what the output should contain ('h'/'H' for headers, 'b'/'B' for body (response/request)
+    print: String,
+
+    #[argh(switch, short = 'v')]
+    /// print verbose output, alias for --all --print hHbB (not used in offline mode)
+    verbose: bool,
+
     #[argh(switch)]
-    /// print debug info
-    debug: bool,
+    /// show output for all requests/responses (including redirects)
+    all: bool,
 
     #[argh(switch)]
     /// print the request instead of executing it
     offline: bool,
+
+    #[argh(switch)]
+    /// print debug info
+    debug: bool,
 
     #[argh(positional, greedy)]
     args: Vec<String>,
@@ -163,8 +177,6 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     let url: Uri = url.parse().context("parse url")?;
 
     let mut builder = Request::builder().uri(url.clone());
-
-    // todo: use winnom??!
 
     for arg in args {
         match arg.split_once(':') {
@@ -250,45 +262,70 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
 }
 
 async fn create_client<S>(
-    cfg: CliCommandHttp,
+    mut cfg: CliCommandHttp,
 ) -> Result<impl Service<S, Request, Response = Response, Error = BoxError>, BoxError>
 where
     S: Send + Sync + 'static,
 {
-    // TODO: Support printing
-    // - offline: also have middleware to just exit early with a fake response
-    // - inject the printer before the follow-redirect if only last
-    // - or inject it after the printer if always desired
+    let (request_print_mode, response_print_mode) = if cfg.offline {
+        (Some(PrintMode::All), None)
+    } else if cfg.verbose {
+        cfg.all = true;
+        (Some(PrintMode::All), Some(PrintMode::All))
+    } else {
+        parse_print_mode(&cfg.print)?
+    };
+    let traffic_print_layer = match (request_print_mode, response_print_mode) {
+        (Some(request_mode), Some(response_mode)) => {
+            TrafficPrinterLayer::bidirectional(request_mode, response_mode)
+        }
+        (Some(request_mode), None) => TrafficPrinterLayer::requests(request_mode),
+        (None, Some(response_mode)) => TrafficPrinterLayer::responses(response_mode),
+        (None, None) => TrafficPrinterLayer::none(),
+    };
+    let (all_traffic_print_layer, last_traffic_print_layer) = if cfg.all {
+        (traffic_print_layer, TrafficPrinterLayer::none())
+    } else {
+        (TrafficPrinterLayer::none(), traffic_print_layer)
+    };
+
     let client_builder = ServiceBuilder::new()
         .map_result(map_internal_client_error)
         .layer(DecompressionLayer::new())
-        .layer(cfg.auth.as_deref().map(|auth| {
-            let auth = auth.trim().trim_end_matches(':');
-            match cfg.auth_type.trim().to_lowercase().as_str() {
-                "basic" => match auth.split_once(':') {
-                    Some((user, pass)) => AddAuthorizationLayer::basic(user, pass),
-                    None => {
-                        let mut terminal =
-                            Terminal::open().expect("open terminal for password prompting");
-                        let password = terminal
-                            .prompt_sensitive("password: ")
-                            .expect("prompt password from terminal");
-                        AddAuthorizationLayer::basic(auth, password.as_str())
-                    }
-                },
-                "bearer" => AddAuthorizationLayer::bearer(auth),
-                unknown => panic!("unknown auth type: {} (known: basic, bearer)", unknown),
-            }
-        }))
         .layer(
-            cfg.follow
-                .then(|| FollowRedirectLayer::with_policy(Limited::new(cfg.max_redirects))),
+            cfg.auth
+                .as_deref()
+                .map(|auth| {
+                    let auth = auth.trim().trim_end_matches(':');
+                    match cfg.auth_type.trim().to_lowercase().as_str() {
+                        "basic" => match auth.split_once(':') {
+                            Some((user, pass)) => AddAuthorizationLayer::basic(user, pass),
+                            None => {
+                                let mut terminal =
+                                    Terminal::open().expect("open terminal for password prompting");
+                                let password = terminal
+                                    .prompt_sensitive("password: ")
+                                    .expect("prompt password from terminal");
+                                AddAuthorizationLayer::basic(auth, password.as_str())
+                            }
+                        },
+                        "bearer" => AddAuthorizationLayer::bearer(auth),
+                        unknown => panic!("unknown auth type: {} (known: basic, bearer)", unknown),
+                    }
+                })
+                .unwrap_or_else(AddAuthorizationLayer::none),
         )
+        .layer(last_traffic_print_layer)
+        .layer(FollowRedirectLayer::with_policy(Limited::new(
+            if cfg.follow { cfg.max_redirects } else { 0 },
+        )))
+        .layer(all_traffic_print_layer)
         .layer(TimeoutLayer::new(if cfg.timeout > 0 {
             Duration::from_secs(cfg.timeout)
         } else {
             Duration::from_secs(180)
-        }));
+        }))
+        .layer(HijackLayer::new(cfg.offline, service_fn(dummy_response)));
 
     let tls_client_config =
         tls::create_tls_client_config(cfg.insecure, cfg.tls, cfg.cert, cfg.cert_key).await?;
@@ -300,6 +337,59 @@ where
             .layer(HttpsConnectorLayer::tunnel())
             .service(HttpConnector::default()),
     )))
+}
+
+fn parse_print_mode(mode: &str) -> Result<(Option<PrintMode>, Option<PrintMode>), BoxError> {
+    let mut request_mode = None;
+    let mut response_mode = None;
+
+    for c in mode.chars() {
+        match c {
+            'h' => {
+                response_mode = Some(match response_mode {
+                    Some(mode) => match mode {
+                        PrintMode::All | PrintMode::Body => PrintMode::All,
+                        PrintMode::Headers => PrintMode::Headers,
+                    },
+                    None => PrintMode::Headers,
+                });
+            }
+            'H' => {
+                request_mode = Some(match request_mode {
+                    Some(mode) => match mode {
+                        PrintMode::All | PrintMode::Body => PrintMode::All,
+                        PrintMode::Headers => PrintMode::Headers,
+                    },
+                    None => PrintMode::Headers,
+                });
+            }
+            'b' => {
+                response_mode = Some(match response_mode {
+                    Some(mode) => match mode {
+                        PrintMode::All | PrintMode::Headers => PrintMode::All,
+                        PrintMode::Body => PrintMode::Body,
+                    },
+                    None => PrintMode::Body,
+                });
+            }
+            'B' => {
+                request_mode = Some(match request_mode {
+                    Some(mode) => match mode {
+                        PrintMode::All | PrintMode::Headers => PrintMode::All,
+                        PrintMode::Body => PrintMode::Body,
+                    },
+                    None => PrintMode::Body,
+                });
+            }
+            c => return Err(error!("unknown print mode character: {}", c).into()),
+        }
+    }
+
+    Ok((request_mode, response_mode))
+}
+
+async fn dummy_response<S, Request>(_ctx: Context<S>, _req: Request) -> Result<Response, BoxError> {
+    Ok(StatusCode::OK.into_response())
 }
 
 fn map_internal_client_error<E, Body>(

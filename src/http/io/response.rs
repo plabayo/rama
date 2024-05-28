@@ -47,7 +47,10 @@ where
     let body = if write_body {
         let body = body.collect().await?.to_bytes();
         w.write_all(b"\r\n").await?;
-        w.write_all(body.as_ref()).await?;
+        if !body.is_empty() {
+            w.write_all(body.as_ref()).await?;
+            w.write_all(b"\r\n").await?;
+        }
         Body::from(body)
     } else {
         Body::new(body)
@@ -112,7 +115,7 @@ mod tests {
         let res = String::from_utf8(buf).unwrap();
         assert_eq!(
             res,
-            "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nserver: test/0\r\n\r\nhello"
+            "HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\nserver: test/0\r\n\r\nhello\r\n"
         );
     }
 }

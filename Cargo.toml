@@ -146,7 +146,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
-tokio = { workspace = true, features = ["macros", "fs"] }
+tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-graceful = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }

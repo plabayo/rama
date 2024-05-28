@@ -2,7 +2,7 @@ use crate::service::{context::Extensions, Context};
 
 use super::Matcher;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 /// Matches any request.
 pub struct Always;

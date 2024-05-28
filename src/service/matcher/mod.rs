@@ -116,5 +116,11 @@ where
     }
 }
 
+impl<State, Request> Matcher<State, Request> for bool {
+    fn matches(&self, _: Option<&mut Extensions>, _: &Context<State>, _: &Request) -> bool {
+        *self
+    }
+}
+
 #[cfg(test)]
 mod test;

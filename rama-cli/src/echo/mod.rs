@@ -77,7 +77,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
                     .then(|| LimitLayer::new(ConcurrentPolicy::max(cfg.concurrent))),
             )
             .layer((cfg.timeout > 0).then(|| TimeoutLayer::new(Duration::from_secs(cfg.timeout))))
-            .layer((cfg.ha_proxy).then(|| HaProxyLayer::default()))
+            .layer((cfg.ha_proxy).then(HaProxyLayer::default))
             // Limit the body size to 1MB for requests
             .layer(BodyLimitLayer::request_only(1024 * 1024));
 

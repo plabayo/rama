@@ -68,3 +68,12 @@ impl std::error::Error for HttpClientError {
         self.inner.source()
     }
 }
+
+impl From<BoxError> for HttpClientError {
+    fn from(err: BoxError) -> Self {
+        Self {
+            inner: OpaqueError::from_boxed(err),
+            uri: None,
+        }
+    }
+}
