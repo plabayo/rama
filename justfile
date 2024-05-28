@@ -91,3 +91,12 @@ vet:
 
 miri:
 	cargo +nightly miri test
+
+detect-unused-deps:
+	cargo machete --skip-target-dir
+
+detect-biggest-fn:
+	cargo bloat --package rama-cli --release -n 10
+
+detect-biggest-crates:
+	cargo bloat --package rama-cli --release --crates

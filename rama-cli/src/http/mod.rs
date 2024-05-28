@@ -24,7 +24,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 mod tls;
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(FromArgs, PartialEq, Debug, Clone)]
 /// rama http client (run usage for more info)
 #[argh(subcommand, name = "http")]
 pub struct CliCommandHttp {
@@ -86,6 +86,10 @@ pub struct CliCommandHttp {
     /// print debug info
     debug: bool,
 
+    #[argh(switch)]
+    /// print the request instead of executing it
+    offline: bool,
+
     #[argh(positional, greedy)]
     args: Vec<String>,
 }
@@ -96,7 +100,6 @@ pub struct CliCommandHttp {
 //   - output: print (headers, meta, body, all (all requests/responses))
 //   - -v/--verbose: shortcut for --all and --print (headers, meta, body)
 //   - --offline: print request instead of executing it
-//   - --manual: print manual
 
 pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     tracing_subscriber::registry()
@@ -195,6 +198,7 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     {
         // TODO: host header should be modified by follow_redirect layer?!?!?!
         // as currently it will not be updated for redirects
+        // Or perhaps we shall do this in a "Set-Required-Headers" middleware?! that can be used as last???
         let header = HeaderValue::from_str(url.host().context("get host from url")?)
             .context("parse host as header value")?;
         builder = builder.header(HOST, header);
@@ -205,47 +209,7 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         .body(Body::empty())
         .context("build http request")?;
 
-    let client_builder = ServiceBuilder::new()
-        .map_result(map_internal_client_error)
-        .layer(DecompressionLayer::new())
-        .layer(cfg.auth.as_deref().map(|auth| {
-            let auth = auth.trim().trim_end_matches(':');
-            match cfg.auth_type.trim().to_lowercase().as_str() {
-                "basic" => match auth.split_once(':') {
-                    Some((user, pass)) => AddAuthorizationLayer::basic(user, pass),
-                    None => {
-                        let mut terminal =
-                            Terminal::open().expect("open terminal for password prompting");
-                        let password = terminal
-                            .prompt_sensitive("password: ")
-                            .expect("prompt password");
-                        AddAuthorizationLayer::basic(auth, password.as_str())
-                    }
-                },
-                "bearer" => AddAuthorizationLayer::bearer(auth),
-                unknown => panic!("unknown auth type: {}", unknown),
-            }
-        }))
-        .layer(
-            cfg.follow
-                .then(|| FollowRedirectLayer::with_policy(Limited::new(cfg.max_redirects))),
-        )
-        .layer(TimeoutLayer::new(if cfg.timeout > 0 {
-            Duration::from_secs(cfg.timeout)
-        } else {
-            Duration::from_secs(180)
-        }));
-
-    let tls_client_config =
-        tls::create_tls_client_config(cfg.insecure, cfg.tls, cfg.cert, cfg.cert_key).await?;
-
-    let client = client_builder.service(HttpClient::new(
-        ServiceBuilder::new()
-            .layer(HttpsConnectorLayer::auto().with_config(tls_client_config))
-            .layer(HttpProxyConnectorLayer::proxy_from_context())
-            .layer(HttpsConnectorLayer::tunnel())
-            .service(HttpConnector::default()),
-    ));
+    let client = create_client(cfg.clone()).await?;
 
     let response = client.serve(Context::default(), request).await?;
 
@@ -283,6 +247,59 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     }
 
     Ok(())
+}
+
+async fn create_client<S>(
+    cfg: CliCommandHttp,
+) -> Result<impl Service<S, Request, Response = Response, Error = BoxError>, BoxError>
+where
+    S: Send + Sync + 'static,
+{
+    // TODO: Support printing
+    // - offline: also have middleware to just exit early with a fake response
+    // - inject the printer before the follow-redirect if only last
+    // - or inject it after the printer if always desired
+    let client_builder = ServiceBuilder::new()
+        .map_result(map_internal_client_error)
+        .layer(DecompressionLayer::new())
+        .layer(cfg.auth.as_deref().map(|auth| {
+            let auth = auth.trim().trim_end_matches(':');
+            match cfg.auth_type.trim().to_lowercase().as_str() {
+                "basic" => match auth.split_once(':') {
+                    Some((user, pass)) => AddAuthorizationLayer::basic(user, pass),
+                    None => {
+                        let mut terminal =
+                            Terminal::open().expect("open terminal for password prompting");
+                        let password = terminal
+                            .prompt_sensitive("password: ")
+                            .expect("prompt password from terminal");
+                        AddAuthorizationLayer::basic(auth, password.as_str())
+                    }
+                },
+                "bearer" => AddAuthorizationLayer::bearer(auth),
+                unknown => panic!("unknown auth type: {} (known: basic, bearer)", unknown),
+            }
+        }))
+        .layer(
+            cfg.follow
+                .then(|| FollowRedirectLayer::with_policy(Limited::new(cfg.max_redirects))),
+        )
+        .layer(TimeoutLayer::new(if cfg.timeout > 0 {
+            Duration::from_secs(cfg.timeout)
+        } else {
+            Duration::from_secs(180)
+        }));
+
+    let tls_client_config =
+        tls::create_tls_client_config(cfg.insecure, cfg.tls, cfg.cert, cfg.cert_key).await?;
+
+    Ok(client_builder.service(HttpClient::new(
+        ServiceBuilder::new()
+            .layer(HttpsConnectorLayer::auto().with_config(tls_client_config))
+            .layer(HttpProxyConnectorLayer::proxy_from_context())
+            .layer(HttpsConnectorLayer::tunnel())
+            .service(HttpConnector::default()),
+    )))
 }
 
 fn map_internal_client_error<E, Body>(

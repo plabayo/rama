@@ -30,7 +30,6 @@ http = "1"
 http-body = "1"
 http-body-util = "0.1"
 http-range-header = "0.4.0"
-httparse = "1.8"
 httpdate = "1.0"
 hyper = "1.2"
 hyper-util = "0.1.4"
@@ -119,7 +118,6 @@ http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 http-range-header = { workspace = true }
-httparse = { workspace = true }
 httpdate = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "server", "client"] }
 hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
