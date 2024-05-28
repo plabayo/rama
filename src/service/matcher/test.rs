@@ -1,28 +1,16 @@
 use super::*;
 
 #[test]
-fn test_always() {
-    assert!(Always.matches(None, &Context::default(), &()));
-    assert!(Always.matches(None, &Context::default(), &0));
-    assert!(Always.matches(None, &Context::default(), &false));
-    assert!(Always.matches(None, &Context::default(), &"foo"));
-}
-
-#[test]
 fn test_not() {
-    assert!(!Not::new(Always).matches(None, &Context::default(), &()));
+    assert!(!Not::new(true).matches(None, &Context::default(), &()));
 }
 
 #[test]
 fn test_not_builder() {
-    assert!(!Always::new().not().matches(None, &Context::default(), &()));
-    assert!(!Always::new().not().matches(None, &Context::default(), &0));
-    assert!(!Always::new()
-        .not()
-        .matches(None, &Context::default(), &false));
-    assert!(!Always::new()
-        .not()
-        .matches(None, &Context::default(), &"foo"));
+    assert!(!true.not().matches(None, &Context::default(), &()));
+    assert!(!true.not().matches(None, &Context::default(), &0));
+    assert!(!true.not().matches(None, &Context::default(), &false));
+    assert!(!true.not().matches(None, &Context::default(), &"foo"));
 }
 
 mod marker {

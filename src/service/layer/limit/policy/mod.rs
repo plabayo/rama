@@ -14,7 +14,7 @@
 //! The first matching policy is used.
 //! If no policy matches, the request is allowed to proceed as well.
 //! If you want to enforce a default policy, you can add a policy with a [`Matcher`] that always matches,
-//! such as [`matcher::Always`].
+//! such as the bool `true`.
 //!
 //! Note that the [`Matcher`]s will not receive the mutable [`Extensions`],
 //! as polices are not intended to keep track of what is matched on.
@@ -24,7 +24,6 @@
 //! See the [`http_rate_limit.rs`] example for a use case.
 //!
 //! [`Matcher`]: crate::service::Matcher
-//! [`matcher::Always`]: crate::service::matcher::Always
 //! [`Extensions`]: crate::service::context::Extensions
 //! [`http_listener_hello.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
 

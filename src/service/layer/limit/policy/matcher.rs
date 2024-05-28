@@ -88,7 +88,6 @@ mod tests {
     use crate::service::{
         context::Extensions,
         layer::limit::policy::{ConcurrentCounter, ConcurrentPolicy},
-        matcher::Always,
     };
 
     use super::*;
@@ -109,7 +108,7 @@ mod tests {
 
     #[tokio::test]
     async fn matcher_policy_empty() {
-        let policy = Vec::<(Always, ConcurrentPolicy<(), ConcurrentCounter>)>::new();
+        let policy = Vec::<(bool, ConcurrentPolicy<(), ConcurrentCounter>)>::new();
 
         for i in 0..10 {
             assert_ready(policy.check(Context::default(), i).await);
@@ -120,7 +119,7 @@ mod tests {
     async fn matcher_policy_always() {
         let concurrency_policy = ConcurrentPolicy::max(2);
 
-        let policy = Arc::new(vec![(Always, concurrency_policy)]);
+        let policy = Arc::new(vec![(true, concurrency_policy)]);
 
         let guard_1 = assert_ready(policy.check(Context::default(), ()).await);
         let guard_2 = assert_ready(policy.check(Context::default(), ()).await);
