@@ -17,11 +17,9 @@ use rama::{
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
-        layer::{
-            limit::policy::ConcurrentPolicy, HijackLayer, LimitLayer, MapErrLayer, TimeoutLayer,
-        },
+        layer::{limit::policy::ConcurrentPolicy, HijackLayer, LimitLayer, TimeoutLayer},
         service_fn,
-        util::{backoff::ExponentialBackoff, combinators::Either},
+        util::backoff::ExponentialBackoff,
         ServiceBuilder,
     },
     stream::layer::{http::BodyLimitLayer, opentelemetry::NetworkMetricsLayer},
@@ -220,11 +218,8 @@ pub async fn run(cfg: Config) -> Result<(), BoxError> {
 
             let http_service = http_service.clone();
 
-            let tcp_service_builder = if ha_proxy {
-                tcp_service_builder.clone().layer(Either::A(HaProxyLayer::default()))
-            } else {
-                tcp_service_builder.clone().layer(Either::B(MapErrLayer::new(Into::into)))
-            };
+            let tcp_service_builder = tcp_service_builder.clone()
+                .layer(ha_proxy.then(HaProxyLayer::default));
 
             // create tls service builder
             let server_config =
@@ -283,11 +278,8 @@ pub async fn run(cfg: Config) -> Result<(), BoxError> {
             });
         }
 
-        let tcp_service_builder = if ha_proxy {
-            tcp_service_builder.layer(Either::A(HaProxyLayer::default()))
-        } else {
-            tcp_service_builder.layer(Either::B(MapErrLayer::new(Into::into)))
-        };
+        let tcp_service_builder = tcp_service_builder
+        .layer(ha_proxy.then(HaProxyLayer::default));
 
         let tcp_listener = TcpListener::build_with_state(State::new(acme_data))
             .bind(&http_address)
@@ -450,11 +442,8 @@ pub async fn echo(cfg: Config) -> Result<(), BoxError> {
 
             let http_service = http_service.clone();
 
-            let tcp_service_builder = if ha_proxy {
-                tcp_service_builder.clone().layer(Either::A(HaProxyLayer::default()))
-            } else {
-                tcp_service_builder.clone().layer(Either::B(MapErrLayer::new(Into::into)))
-            };
+            let tcp_service_builder = tcp_service_builder.clone()
+                .layer(ha_proxy.then(HaProxyLayer::default));
 
             // create tls service builder
             let server_config =
@@ -518,11 +507,8 @@ pub async fn echo(cfg: Config) -> Result<(), BoxError> {
             .await
             .expect("bind TCP Listener");
 
-        let tcp_service_builder = if ha_proxy {
-            tcp_service_builder.layer(Either::A(HaProxyLayer::default()))
-        } else {
-            tcp_service_builder.layer(Either::B(MapErrLayer::new(Into::into)))
-        };
+        let tcp_service_builder = tcp_service_builder
+            .layer(ha_proxy.then(HaProxyLayer::default));
 
         match cfg.http_version.as_str() {
             "" | "auto" => {

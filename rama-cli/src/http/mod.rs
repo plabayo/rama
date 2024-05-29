@@ -77,7 +77,7 @@ pub struct CliCommandHttp {
     cert_key: Option<String>,
 
     #[argh(option, short = 't', default = "0")]
-    /// the timeout in seconds for each connection (0 = no timeout)
+    /// the timeout in seconds for each connection (0 = default timeout of 180s)
     timeout: u64,
 
     #[argh(switch)]

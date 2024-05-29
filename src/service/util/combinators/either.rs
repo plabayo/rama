@@ -1,3 +1,4 @@
+use crate::error::BoxError;
 use crate::http::{self, layer::retry};
 use crate::service::{
     context::Extensions, layer::limit, matcher::Matcher, Context, Layer, Service,
@@ -44,21 +45,23 @@ macro_rules! create_either {
             }
         }
 
-        impl<$($param),+, State, Request, Response, Error> Service<State, Request> for $id<$($param),+>
+        impl<$($param),+, State, Request, Response> Service<State, Request> for $id<$($param),+>
         where
-            $($param: Service<State, Request, Response = Response, Error = Error>),+,
+            $(
+                $param: Service<State, Request, Response = Response>,
+                $param::Error: Into<BoxError>,
+            )+
             Request: Send + 'static,
             State: Send + Sync + 'static,
             Response: Send + 'static,
-            Error: Send + Sync + 'static,
         {
             type Response = Response;
-            type Error = Error;
+            type Error = BoxError;
 
             async fn serve(&self, ctx: Context<State>, req: Request) -> Result<Self::Response, Self::Error> {
                 match self {
                     $(
-                        $id::$param(s) => s.serve(ctx, req).await,
+                        $id::$param(s) => s.serve(ctx, req).await.map_err(Into::into),
                     )+
                 }
             }
@@ -99,15 +102,17 @@ macro_rules! create_either {
             }
         }
 
-        impl<$($param),+, State, Request, Error> limit::Policy<State, Request> for $id<$($param),+>
+        impl<$($param),+, State, Request> limit::Policy<State, Request> for $id<$($param),+>
         where
-            $($param: limit::Policy<State, Request, Error = Error>),+,
+            $(
+                $param: limit::Policy<State, Request>,
+                $param::Error: Into<BoxError>,
+            )+
             Request: Send + 'static,
             State: Send + Sync + 'static,
-            Error: Send + Sync + 'static,
         {
             type Guard = $id<$($param::Guard),+>;
-            type Error = Error;
+            type Error = BoxError;
 
             async fn check(
                 &self,
@@ -127,7 +132,7 @@ macro_rules! create_either {
                                 limit::policy::PolicyOutput::Abort(err) => limit::policy::PolicyResult {
                                     ctx: result.ctx,
                                     request: result.request,
-                                    output: limit::policy::PolicyOutput::Abort(err),
+                                    output: limit::policy::PolicyOutput::Abort(err.into()),
                                 },
                                 limit::policy::PolicyOutput::Retry => limit::policy::PolicyResult {
                                     ctx: result.ctx,

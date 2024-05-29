@@ -6,6 +6,7 @@ use crate::error::BoxError;
 use crate::service::{Context, Service};
 
 pub mod policy;
+use policy::UnlimitedPolicy;
 pub use policy::{Policy, PolicyOutput};
 
 mod layer;
@@ -26,6 +27,18 @@ impl<T, P> Limit<T, P> {
     /// wrapping the given [`Service`].
     pub fn new(inner: T, policy: P) -> Self {
         Limit { inner, policy }
+    }
+}
+
+impl<T> Limit<T, UnlimitedPolicy> {
+    /// Creates a new [`Limit`] with an unlimited policy.
+    ///
+    /// Meaning that all requests are allowed to proceed.
+    pub fn unlimited(inner: T) -> Self {
+        Limit {
+            inner,
+            policy: UnlimitedPolicy,
+        }
     }
 }
 

@@ -69,7 +69,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         let tcp_listener = TcpListener::build()
             .bind(address)
             .await
-            .expect("bind tcp proxy to 127.0.0.1:62001");
+            .expect("bind echo service to 127.0.0.1:62001");
 
         let tcp_service_builder = ServiceBuilder::new()
             .layer(

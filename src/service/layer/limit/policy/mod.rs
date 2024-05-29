@@ -27,9 +27,8 @@
 //! [`Extensions`]: crate::service::context::Extensions
 //! [`http_listener_hello.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
 
-use std::sync::Arc;
-
 use crate::service::Context;
+use std::{convert::Infallible, sync::Arc};
 
 mod concurrent;
 #[doc(inline)]
@@ -165,5 +164,38 @@ where
         request: Request,
     ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
         self.as_ref().check(ctx, request).await
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+/// An unlimited policy that allows all requests to proceed.
+pub struct UnlimitedPolicy;
+
+impl UnlimitedPolicy {
+    /// Create a new [`UnlimitedPolicy`].
+    pub fn new() -> Self {
+        UnlimitedPolicy
+    }
+}
+
+impl<State, Request> Policy<State, Request> for UnlimitedPolicy
+where
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Guard = ();
+    type Error = Infallible;
+
+    async fn check(
+        &self,
+        ctx: Context<State>,
+        request: Request,
+    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+        PolicyResult {
+            ctx,
+            request,
+            output: PolicyOutput::Ready(()),
+        }
     }
 }
