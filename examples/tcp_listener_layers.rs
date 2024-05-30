@@ -11,7 +11,7 @@
 //! The server will start and listen on `:62501`. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! telnet 127.0.0.1 40501
+//! telnet 127.0.0.1 62501
 //! ```
 //!
 //! Within the telnet session, you can type anything and it will be echoed back to you.
