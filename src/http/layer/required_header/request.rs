@@ -16,13 +16,23 @@ use std::fmt;
 ///
 /// See [`AddRequiredRequestHeaders`] for more details.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-pub struct AddRequiredRequestHeadersLayer;
+pub struct AddRequiredRequestHeadersLayer {
+    overwrite: bool,
+}
 
 impl AddRequiredRequestHeadersLayer {
     /// Create a new [`AddRequiredRequestHeadersLayer`].
     pub fn new() -> Self {
-        Self
+        Self { overwrite: false }
+    }
+
+    /// Set whether to overwrite the existing headers.
+    /// If set to `true`, the headers will be overwritten.
+    ///
+    /// Default is `false`.
+    pub fn overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
     }
 }
 
@@ -30,7 +40,10 @@ impl<S> Layer<S> for AddRequiredRequestHeadersLayer {
     type Service = AddRequiredRequestHeaders<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        AddRequiredRequestHeaders { inner }
+        AddRequiredRequestHeaders {
+            inner,
+            overwrite: self.overwrite,
+        }
     }
 }
 
@@ -38,12 +51,25 @@ impl<S> Layer<S> for AddRequiredRequestHeadersLayer {
 #[derive(Clone)]
 pub struct AddRequiredRequestHeaders<S> {
     inner: S,
+    overwrite: bool,
 }
 
 impl<S> AddRequiredRequestHeaders<S> {
     /// Create a new [`AddRequiredRequestHeaders`].
     pub fn new(inner: S) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            overwrite: false,
+        }
+    }
+
+    /// Set whether to overwrite the existing headers.
+    /// If set to `true`, the headers will be overwritten.
+    ///
+    /// Default is `false`.
+    pub fn overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
     }
 
     define_inner_service_accessors!();
@@ -75,7 +101,7 @@ where
         mut ctx: Context<State>,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        if !req.headers().contains_key(HOST) {
+        if self.overwrite || !req.headers().contains_key(HOST) {
             if let Some(host) = ctx
                 .get_or_insert_with(|| RequestContext::from(&req))
                 .host
@@ -86,7 +112,10 @@ where
             };
         }
 
-        if let header::Entry::Vacant(header) = req.headers_mut().entry(USER_AGENT) {
+        if self.overwrite {
+            req.headers_mut()
+                .insert(USER_AGENT, RAMA_ID_HEADER_VALUE.clone());
+        } else if let header::Entry::Vacant(header) = req.headers_mut().entry(USER_AGENT) {
             header.insert(RAMA_ID_HEADER_VALUE.clone());
         }
 
@@ -115,6 +144,49 @@ mod test {
             .uri("http://www.example.com/")
             .body(Body::empty())
             .unwrap();
+        let resp = svc.serve(Context::default(), req).await.unwrap();
+
+        assert!(!resp.headers().contains_key(HOST));
+        assert!(!resp.headers().contains_key(USER_AGENT));
+    }
+
+    #[tokio::test]
+    async fn add_required_request_headers_overwrite() {
+        let svc = ServiceBuilder::new()
+            .layer(AddRequiredRequestHeadersLayer::new().overwrite(true))
+            .service_fn(|_ctx: Context<()>, req: Request| async move {
+                assert_eq!(req.headers().get(HOST).unwrap(), "example.com");
+                assert_eq!(
+                    req.headers().get(USER_AGENT).unwrap(),
+                    RAMA_ID_HEADER_VALUE.to_str().unwrap()
+                );
+                Ok::<_, Infallible>(http::Response::new(Body::empty()))
+            });
+
+        let req = Request::builder()
+            .uri("http://127.0.0.1/")
+            .header(HOST, "example.com")
+            .header(USER_AGENT, "test")
+            .body(Body::empty())
+            .unwrap();
+
+        let resp = svc.serve(Context::default(), req).await.unwrap();
+
+        assert!(!resp.headers().contains_key(HOST));
+        assert!(!resp.headers().contains_key(USER_AGENT));
+    }
+
+    #[tokio::test]
+    async fn add_required_request_headers_no_host() {
+        let svc = ServiceBuilder::new()
+            .layer(AddRequiredRequestHeadersLayer::default())
+            .service_fn(|_ctx: Context<()>, req: Request| async move {
+                assert!(!req.headers().contains_key(HOST));
+                assert!(req.headers().contains_key(USER_AGENT));
+                Ok::<_, Infallible>(http::Response::new(Body::empty()))
+            });
+
+        let req = Request::builder().body(Body::empty()).unwrap();
         let resp = svc.serve(Context::default(), req).await.unwrap();
 
         assert!(!resp.headers().contains_key(HOST));

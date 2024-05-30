@@ -17,13 +17,23 @@ use std::{fmt, time::SystemTime};
 ///
 /// See [`AddRequiredResponseHeaders`] for more details.
 #[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-pub struct AddRequiredResponseHeadersLayer;
+pub struct AddRequiredResponseHeadersLayer {
+    overwrite: bool,
+}
 
 impl AddRequiredResponseHeadersLayer {
     /// Create a new [`AddRequiredResponseHeadersLayer`].
     pub fn new() -> Self {
-        Self
+        Self { overwrite: false }
+    }
+
+    /// Set whether to overwrite the existing headers.
+    /// If set to `true`, the headers will be overwritten.
+    ///
+    /// Default is `false`.
+    pub fn overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
     }
 }
 
@@ -31,7 +41,10 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
     type Service = AddRequiredResponseHeaders<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        AddRequiredResponseHeaders { inner }
+        AddRequiredResponseHeaders {
+            inner,
+            overwrite: self.overwrite,
+        }
     }
 }
 
@@ -39,12 +52,25 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
 #[derive(Clone)]
 pub struct AddRequiredResponseHeaders<S> {
     inner: S,
+    overwrite: bool,
 }
 
 impl<S> AddRequiredResponseHeaders<S> {
     /// Create a new [`AddRequiredResponseHeaders`].
     pub fn new(inner: S) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            overwrite: false,
+        }
+    }
+
+    /// Set whether to overwrite the existing headers.
+    /// If set to `true`, the headers will be overwritten.
+    ///
+    /// Default is `false`.
+    pub fn overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
     }
 
     define_inner_service_accessors!();
@@ -78,11 +104,14 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let mut resp = self.inner.serve(ctx, req).await?;
 
-        if let header::Entry::Vacant(header) = resp.headers_mut().entry(SERVER) {
+        if self.overwrite {
+            resp.headers_mut()
+                .insert(SERVER, RAMA_ID_HEADER_VALUE.clone());
+        } else if let header::Entry::Vacant(header) = resp.headers_mut().entry(SERVER) {
             header.insert(RAMA_ID_HEADER_VALUE.clone());
         }
 
-        if !resp.headers().contains_key(DATE) {
+        if self.overwrite || !resp.headers().contains_key(DATE) {
             resp.headers_mut()
                 .typed_insert(Date::from(SystemTime::now()));
         }
@@ -115,5 +144,28 @@ mod tests {
             RAMA_ID_HEADER_VALUE.as_ref()
         );
         assert!(resp.headers().contains_key(DATE));
+    }
+
+    #[tokio::test]
+    async fn add_required_response_headers_overwrite() {
+        let svc = ServiceBuilder::new()
+            .layer(AddRequiredResponseHeadersLayer::new().overwrite(true))
+            .service_fn(|_ctx: Context<()>, req: Request| async move {
+                assert!(!req.headers().contains_key(SERVER));
+                assert!(!req.headers().contains_key(DATE));
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header(SERVER, "foo")
+                        .header(DATE, "bar")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            });
+
+        let req = Request::new(Body::empty());
+        let resp = svc.serve(Context::default(), req).await.unwrap();
+
+        assert_eq!(resp.headers().get(SERVER).unwrap(), RAMA_ID_HEADER_VALUE.to_str().unwrap());
+        assert_ne!(resp.headers().get(DATE).unwrap(), "bar");
     }
 }
