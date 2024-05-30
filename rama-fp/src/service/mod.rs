@@ -2,11 +2,10 @@ use base64::Engine as _;
 use rama::{
     error::BoxError,
     http::{
-        headers::Server,
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
-            opentelemetry::RequestMetricsLayer, set_header::SetResponseHeaderLayer,
-            trace::TraceLayer,
+            opentelemetry::RequestMetricsLayer, required_header::AddRequiredResponseHeadersLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer,
         },
         matcher::HttpMatcher,
         response::Redirect,
@@ -158,7 +157,7 @@ pub async fn run(cfg: Config) -> Result<(), BoxError> {
             .layer(RequestMetricsLayer::default())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
-            .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION).parse::<Server>().unwrap()))
+            .layer(AddRequiredResponseHeadersLayer::default())
             .layer(SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),
@@ -401,7 +400,7 @@ pub async fn echo(cfg: Config) -> Result<(), BoxError> {
             .layer(RequestMetricsLayer::default())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
-            .layer(SetResponseHeaderLayer::overriding_typed(format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION).parse::<Server>().unwrap()))
+            .layer(AddRequiredResponseHeadersLayer::default())
             .layer(SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),

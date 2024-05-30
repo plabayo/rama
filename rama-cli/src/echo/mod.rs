@@ -3,8 +3,7 @@ use rama::{
     error::BoxError,
     http::{
         dep::http_body_util::BodyExt,
-        headers::Server,
-        layer::{set_header::SetResponseHeaderLayer, trace::TraceLayer},
+        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         response::Json,
         server::HttpServer,
         IntoResponse, Request, RequestContext, Response,
@@ -87,11 +86,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
 
         let http_service = ServiceBuilder::new()
             .layer(TraceLayer::new_for_http())
-            .layer(SetResponseHeaderLayer::overriding_typed(
-                format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION)
-                    .parse::<Server>()
-                    .unwrap(),
-            ))
+            .layer(AddRequiredResponseHeadersLayer::default())
             .layer(UserAgentClassifierLayer::new())
             .service_fn(echo);
 

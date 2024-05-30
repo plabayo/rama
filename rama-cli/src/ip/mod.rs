@@ -2,8 +2,7 @@ use argh::FromArgs;
 use rama::{
     error::BoxError,
     http::{
-        headers::Server,
-        layer::{set_header::SetResponseHeaderLayer, trace::TraceLayer},
+        layer::{required_header::AddRequiredRequestHeadersLayer, trace::TraceLayer},
         server::HttpServer,
         IntoResponse, Request, Response, StatusCode,
     },
@@ -98,11 +97,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         } else {
             let http_service = ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .layer(SetResponseHeaderLayer::overriding_typed(
-                    format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION)
-                        .parse::<Server>()
-                        .unwrap(),
-                ))
+                .layer(AddRequiredRequestHeadersLayer::default())
                 .service_fn(ip);
 
             let tcp_service = tcp_service_builder

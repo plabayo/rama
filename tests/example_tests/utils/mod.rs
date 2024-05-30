@@ -7,6 +7,7 @@ use rama::{
         layer::{
             decompression::DecompressionLayer,
             follow_redirect::FollowRedirectLayer,
+            required_header::AddRequiredRequestHeadersLayer,
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
         },
@@ -95,6 +96,7 @@ where
                     .unwrap(),
                 ),
             ))
+            .layer(AddRequiredRequestHeadersLayer::default())
             .service(HttpClient::new(
                 ServiceBuilder::new()
                     .layer(HttpsConnectorLayer::auto())

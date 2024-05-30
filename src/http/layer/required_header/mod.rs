@@ -7,6 +7,6 @@ pub mod response;
 
 #[doc(inline)]
 pub use self::{
-    request::{RequiredRequestHeader, RequiredRequestHeaderLayer},
-    response::{RequiredResponseHeader, RequiredResponseHeaderLayer},
+    request::{AddRequiredRequestHeaders, AddRequiredRequestHeadersLayer},
+    response::{AddRequiredResponseHeaders, AddRequiredResponseHeadersLayer},
 };

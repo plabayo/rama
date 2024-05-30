@@ -3,16 +3,15 @@ use rama::{
     error::{error, BoxError, ErrorContext},
     http::{
         client::HttpClient,
-        header::{HOST, USER_AGENT},
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
             follow_redirect::{policy::Limited, FollowRedirectLayer},
+            required_header::AddRequiredRequestHeadersLayer,
             timeout::TimeoutLayer,
             traffic_printer::{PrintMode, TrafficPrinterLayer},
         },
-        Body, BodyExtractExt, HeaderValue, IntoResponse, Method, Request, Response, StatusCode,
-        Uri,
+        Body, BodyExtractExt, IntoResponse, Method, Request, Response, StatusCode, Uri,
     },
     proxy::http::client::HttpProxyConnectorLayer,
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
@@ -145,6 +144,7 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         "head" => Some(Method::HEAD),
         "options" => Some(Method::OPTIONS),
         "usage" => {
+            //  TODO: delete
             println!("{}", print_manual());
             return Ok(());
         }
@@ -153,7 +153,7 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     if method.is_some() {
         args = &args[1..];
         if args.is_empty() {
-            return Err("no url provided".into());
+            return Err("method provided, but no url provided".into());
         }
     }
 
@@ -185,33 +185,6 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
                 // TODO
             }
         }
-    }
-
-    // insert user agent if not already set
-    if !builder
-        .headers_mut()
-        .map(|h| h.contains_key(USER_AGENT))
-        .unwrap_or_default()
-    {
-        // TODO: do not do this unless UA Emulation is disabled!
-        builder = builder.header(
-            USER_AGENT,
-            format!("{}/{}", rama::utils::info::NAME, rama::utils::info::VERSION),
-        );
-    }
-
-    // insert host header if missing
-    if !builder
-        .headers_mut()
-        .map(|h| h.contains_key(HOST))
-        .unwrap_or_default()
-    {
-        // TODO: host header should be modified by follow_redirect layer?!?!?!
-        // as currently it will not be updated for redirects
-        // Or perhaps we shall do this in a "Set-Required-Headers" middleware?! that can be used as last???
-        let header = HeaderValue::from_str(url.host().context("get host from url")?)
-            .context("parse host as header value")?;
-        builder = builder.header(HOST, header);
     }
 
     let request = builder
@@ -311,6 +284,7 @@ where
         } else {
             Duration::from_secs(180)
         }))
+        .layer(AddRequiredRequestHeadersLayer::default())
         .layer(HijackLayer::new(cfg.offline, service_fn(dummy_response)));
 
     let tls_client_config =
