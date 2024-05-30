@@ -31,6 +31,7 @@ pub mod propagate_headers;
 pub mod proxy_auth;
 pub mod remove_header;
 pub mod request_id;
+pub mod required_header;
 pub mod retry;
 pub mod sensitive_headers;
 pub mod set_header;
