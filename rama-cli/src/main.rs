@@ -14,7 +14,7 @@ mod ip;
 use ip::CliCommandIp;
 
 #[derive(Debug, FromArgs)]
-/// rama cli to move and transform netwrok packets
+/// rama cli to move and transform network packets
 ///
 /// https://ramaproxy.org
 struct Cli {
