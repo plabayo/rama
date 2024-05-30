@@ -380,9 +380,9 @@ async fn dummy_response<S, Request>(_ctx: Context<S>, _req: Request) -> Result<R
 
 fn map_internal_client_error<E, Body>(
     result: Result<Response<Body>, E>,
-) -> Result<Response, rama::error::BoxError>
+) -> Result<Response, BoxError>
 where
-    E: Into<rama::error::BoxError>,
+    E: Into<BoxError>,
     Body: rama::http::dep::http_body::Body<Data = bytes::Bytes> + Send + Sync + 'static,
     Body::Error: Into<BoxError>,
 {

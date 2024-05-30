@@ -3,14 +3,16 @@
 //! For now this only sets `Host` header on http/1.1,
 //! as well as always a User-Agent for all versions.
 
-use http::HeaderValue;
+use http::header::{HOST, USER_AGENT};
 
-use crate::http::{
-    header::HeaderName,
-    headers::{Header, HeaderExt},
-    Request, Response,
-};
 use crate::service::{Context, Layer, Service};
+use crate::{
+    error::{BoxError, ErrorContext},
+    http::{
+        header::{self, RAMA_ID_HEADER_VALUE},
+        Request, RequestContext, Response,
+    },
+};
 use std::fmt;
 
 /// Layer that applies [`RequiredRequestHeader`] which adds a request header.
@@ -67,24 +69,38 @@ where
     ResBody: Send + 'static,
     State: Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S::Error: Into<BoxError>,
 {
     type Response = S::Response;
-    type Error = S::Error;
+    type Error = BoxError;
 
     async fn serve(
         &self,
         mut ctx: Context<State>,
-        req: Request<ReqBody>,
+        mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        
-        req.headers_mut().entry(HOST).or_try_insert_with(|| {
-            let request_info = 
-            HeaderValue::from_str("localhost").expect("failed to create header value")
-        });
-        let (ctx, req) = self
-            .mode
-            .apply(&self.header_name, ctx, req, &self.make)
-            .await;
-        self.inner.serve(ctx, req).await
+        if !req.headers().contains_key(HOST) {
+            let host = match ctx
+                .get_or_insert_with(|| RequestContext::from(&req))
+                .host
+                .as_deref()
+            {
+                Some(host) => host,
+                None => {
+                    return Err("error extracting required host".into());
+                }
+            };
+
+            req.headers_mut().insert(
+                HOST,
+                host.parse().context("create required host header value")?,
+            );
+        }
+
+        if let header::Entry::Vacant(header) = req.headers_mut().entry(USER_AGENT) {
+            header.insert(RAMA_ID_HEADER_VALUE.clone());
+        }
+
+        self.inner.serve(ctx, req).await.map_err(Into::into)
     }
 }

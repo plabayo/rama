@@ -5,7 +5,7 @@
 //! This currently is only ever printing to stdout, open a feature request
 //! if you want to be able to provide your own writer.
 
-use crate::error::{ErrorContext, OpaqueError};
+use crate::error::{BoxError, ErrorContext, OpaqueError};
 use crate::http::dep::http_body;
 use crate::http::io::{write_http_request, write_http_response};
 use crate::http::{Body, Request, Response};
@@ -129,14 +129,14 @@ impl<State, S, ReqBody, ResBody> Service<State, Request<ReqBody>> for TrafficPri
 where
     State: Send + Sync + 'static,
     S: Service<State, Request, Response = Response<ResBody>>,
-    S::Error: std::error::Error + Send + Sync + 'static,
+    S::Error: Into<BoxError>,
     ReqBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     ReqBody::Error: std::error::Error + Send + Sync + 'static,
     ResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     ResBody::Error: std::error::Error + Send + Sync + 'static,
 {
     type Response = Response;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(
         &self,
@@ -158,11 +158,7 @@ where
             req.map(Body::new)
         };
 
-        let resp = self
-            .inner
-            .serve(ctx, req)
-            .await
-            .map_err(OpaqueError::from_std)?;
+        let resp = self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let resp = if let Some(mode) = self.response_mode {
             let (write_headers, writer_body) = match mode {

@@ -80,6 +80,7 @@ divan = "0.1.14"
 webpki-roots = "0.26.1"
 terminal-prompt = "0.2.3"
 parking_lot = "0.12.3"
+const_format = "0.2.32"
 
 [package]
 name = "rama"
@@ -110,6 +111,7 @@ async-compression = { workspace = true, features = ["tokio", "brotli", "zlib", "
 base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
+const_format = { workspace = true }
 futures-core = { workspace = true }
 futures-lite = { workspace = true }
 h2 = { workspace = true }

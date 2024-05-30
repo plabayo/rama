@@ -234,7 +234,7 @@ where
     Body: Send + 'static,
 {
     type Response = EstablishedClientConnection<T, Body, State>;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(
         &self,
@@ -313,7 +313,7 @@ where
         let authority = match request_context.authority() {
             Some(authority) => authority,
             None => {
-                return Err(OpaqueError::from_display("missing http authority"));
+                return Err("missing http authority".into());
             }
         };
 

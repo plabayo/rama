@@ -108,6 +108,14 @@ pub mod header {
 
     /// Key str constant for the `Proxy-Connection` header.
     pub const PROXY_CONNECTION_HEADER_KEY: &str = "proxy-connection";
+
+    /// Static Header Value that is can be used as `User-Agent` or `Server` header.
+    pub static RAMA_ID_HEADER_VALUE: HeaderValue =
+        HeaderValue::from_static(const_format::formatcp!(
+            "{}/{}",
+            crate::utils::info::NAME,
+            crate::utils::info::VERSION,
+        ));
 }
 
 pub use self::dep::http::header::HeaderMap;

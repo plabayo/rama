@@ -1,4 +1,4 @@
-use crate::error::{BoxError, ErrorExt, OpaqueError};
+use crate::error::{BoxError, ErrorExt};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
 use crate::http::{Request, RequestContext};
 use crate::service::{Context, Service};
@@ -177,7 +177,7 @@ where
     Body: Send + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<T>, Body, State>;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(
         &self,
@@ -185,10 +185,7 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
-            self.inner
-                .serve(ctx, req)
-                .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()))?;
+            self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let (addr, stream) = conn.into_parts();
         let request_ctx = ctx.get_or_insert_with(|| RequestContext::new(&req));
@@ -209,11 +206,11 @@ where
         let host = match request_ctx.host.as_deref() {
             Some(host) => host,
             None => {
-                return Err(OpaqueError::from_display("missing http host"));
+                return Err("missing http host".into());
             }
         };
         let domain = pki_types::ServerName::try_from(host)
-            .map_err(|err| OpaqueError::from_std(err).context("invalid DNS Hostname (tls)"))?
+            .map_err(|err| err.context("invalid DNS Hostname (tls)"))?
             .to_owned();
 
         let stream = self.handshake(domain, stream).await?;
@@ -240,7 +237,7 @@ where
     Body: Send + 'static,
 {
     type Response = EstablishedClientConnection<TlsStream<T>, Body, State>;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(
         &self,
@@ -251,11 +248,7 @@ where
             mut ctx,
             mut req,
             conn,
-        } = self
-            .inner
-            .serve(ctx, req)
-            .await
-            .map_err(|err| OpaqueError::from_boxed(err.into()))?;
+        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let (addr, stream) = conn.into_parts();
 
@@ -276,11 +269,11 @@ where
         let host = match request_ctx.host.as_deref() {
             Some(host) => host,
             None => {
-                return Err(OpaqueError::from_display("missing http host"));
+                return Err("missing http host".into());
             }
         };
         let domain = pki_types::ServerName::try_from(host)
-            .map_err(|err| OpaqueError::from_std(err).context("invalid DNS Hostname (tls)"))?
+            .map_err(|err| err.context("invalid DNS Hostname (tls)"))?
             .to_owned();
 
         let stream = self.handshake(domain, stream).await?;
@@ -302,27 +295,21 @@ where
     Body: Send + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<T>, Body, State>;
-    type Error = OpaqueError;
+    type Error = BoxError;
 
     async fn serve(
         &self,
         ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, conn } = self
-            .inner
-            .serve(ctx, req)
-            .await
-            .map_err(|err| OpaqueError::from_boxed(err.into()))?;
+        let EstablishedClientConnection { ctx, req, conn } =
+            self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let (addr, stream) = conn.into_parts();
 
         let domain = match ctx.get::<HttpsTunnel>() {
             Some(tunnel) => pki_types::ServerName::try_from(tunnel.server_name.as_str())
-                .map_err(|err| {
-                    OpaqueError::from_std(err)
-                        .context("invalid DNS Hostname (tls) for https tunnel")
-                })?
+                .map_err(|err| err.context("invalid DNS Hostname (tls) for https tunnel"))?
                 .to_owned(),
             None => {
                 return Ok(EstablishedClientConnection {
@@ -358,7 +345,7 @@ impl<S, K> HttpsConnector<S, K> {
         &self,
         server_name: ServerName<'static>,
         stream: T,
-    ) -> Result<TlsStream<T>, OpaqueError>
+    ) -> Result<TlsStream<T>, BoxError>
     where
         T: Stream + Unpin,
     {
@@ -371,7 +358,7 @@ impl<S, K> HttpsConnector<S, K> {
         connector
             .connect(server_name, stream)
             .await
-            .map_err(OpaqueError::from_std)
+            .map_err(Into::into)
     }
 }
 
