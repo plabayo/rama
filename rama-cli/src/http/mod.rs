@@ -131,7 +131,11 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
             EnvFilter::builder()
                 .with_default_directive(
                     if cfg.debug {
-                        LevelFilter::DEBUG
+                        if cfg.verbose {
+                            LevelFilter::TRACE
+                        } else {
+                            LevelFilter::DEBUG
+                        }
                     } else {
                         LevelFilter::ERROR
                     }
@@ -284,8 +288,6 @@ where
         response_writer_mode,
     )
     .await?;
-
-    // TODO support piping as alternative to output
 
     let client_builder = ServiceBuilder::new()
         .map_result(map_internal_client_error)
