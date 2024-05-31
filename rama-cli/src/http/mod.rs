@@ -11,7 +11,7 @@ use rama::{
             timeout::TimeoutLayer,
             traffic_writer::WriterMode,
         },
-        Body, BodyExtractExt, IntoResponse, Method, Request, Response, StatusCode, Uri,
+        Body, IntoResponse, Method, Request, Response, StatusCode, Uri,
     },
     proxy::http::client::HttpProxyConnectorLayer,
     rt::Executor,
@@ -245,16 +245,6 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
             eprintln!("server error: {}", status);
             std::process::exit(5);
         }
-    }
-
-    if method != Some(Method::HEAD) {
-        // TODO Handle errors better, as there might not be a body...
-        let body = response
-            .try_into_string()
-            .await
-            .context("read response body as utf-8 string")?;
-
-        println!("{}", body);
     }
 
     Ok(())
