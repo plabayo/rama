@@ -29,6 +29,10 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 mod tls;
 mod writer;
 
+// TODO:
+// - provide: --body --headers shortcut
+// - provide: --pretty option (e.g. will print json prett if json is used))
+
 #[derive(FromArgs, PartialEq, Debug, Clone)]
 /// rama http client (run usage for more info)
 #[argh(subcommand, name = "http")]
