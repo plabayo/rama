@@ -18,7 +18,7 @@ pub async fn write_http_request<W, B>(
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
     B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    B::Error: std::error::Error + Send + Sync,
+    B::Error: Into<BoxError>,
 {
     let (parts, body) = req.into_parts();
 
@@ -41,7 +41,7 @@ where
     }
 
     let body = if write_body {
-        let body = body.collect().await?.to_bytes();
+        let body = body.collect().await.map_err(Into::into)?.to_bytes();
         w.write_all(b"\r\n").await?;
         if !body.is_empty() {
             w.write_all(body.as_ref()).await?;

@@ -1,6 +1,7 @@
 use bytes::Bytes;
 
 use crate::{
+    error::BoxError,
     http::{dep::http_body::Body as HttpBody, Body, BodyLimit, IntoResponse, Request, Response},
     service::{Context, Layer, Service},
 };
@@ -88,7 +89,7 @@ where
     S::Response: IntoResponse,
     State: Send + Sync + 'static,
     ReqBody: HttpBody<Data = Bytes> + Send + Sync + 'static,
-    ReqBody::Error: std::error::Error + Send + Sync + 'static,
+    ReqBody::Error: Into<BoxError>,
 {
     type Response = Response;
     type Error = S::Error;

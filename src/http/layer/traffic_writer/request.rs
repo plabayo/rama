@@ -1,5 +1,5 @@
 use super::WriterMode;
-use crate::error::{BoxError, ErrorContext};
+use crate::error::{BoxError, ErrorExt, OpaqueError};
 use crate::http::dep::http_body;
 use crate::http::dep::http_body_util::BodyExt;
 use crate::http::io::write_http_request;
@@ -263,7 +263,7 @@ where
     S::Error: Into<BoxError>,
     W: RequestWriter,
     ReqBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    ReqBody::Error: std::error::Error + Send + Sync + 'static,
+    ReqBody::Error: Into<BoxError>,
     ResBody: Send + 'static,
 {
     type Response = Response<ResBody>;
@@ -281,7 +281,10 @@ where
                 let body_bytes = body
                     .collect()
                     .await
-                    .context("printer prepare: collect request body")?
+                    .map_err(|err| {
+                        OpaqueError::from_boxed(err.into())
+                            .context("printer prepare: collect request body")
+                    })?
                     .to_bytes();
                 let req = Request::from_parts(parts.clone(), Body::from(body_bytes.clone()));
                 self.writer.write_request(req).await;
