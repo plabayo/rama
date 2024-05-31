@@ -22,18 +22,18 @@ where
 {
     let (parts, body) = req.into_parts();
 
-    w.write_all(
-        format!(
-            "{} {} {:?}\r\n",
-            parts.method,
-            parts.uri.path(),
-            parts.version
-        )
-        .as_bytes(),
-    )
-    .await?;
-
     if write_headers {
+        w.write_all(
+            format!(
+                "{} {} {:?}\r\n",
+                parts.method,
+                parts.uri.path(),
+                parts.version
+            )
+            .as_bytes(),
+        )
+        .await?;
+
         for (key, value) in parts.headers.iter() {
             w.write_all(format!("{}: {}\r\n", key, value.to_str()?).as_bytes())
                 .await?;

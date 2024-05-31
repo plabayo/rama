@@ -9,21 +9,25 @@ use rama::{
             follow_redirect::{policy::Limited, FollowRedirectLayer},
             required_header::AddRequiredRequestHeadersLayer,
             timeout::TimeoutLayer,
-            traffic_printer::{PrintMode, TrafficPrinterLayer},
+            traffic_writer::WriterMode,
         },
         Body, BodyExtractExt, IntoResponse, Method, Request, Response, StatusCode, Uri,
     },
     proxy::http::client::HttpProxyConnectorLayer,
+    rt::Executor,
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
     tcp::service::HttpConnector,
     tls::rustls::client::HttpsConnectorLayer,
+    utils::graceful::{self, Shutdown, ShutdownGuard},
 };
 use std::time::Duration;
 use terminal_prompt::Terminal;
+use tokio::sync::oneshot;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 mod tls;
+mod writer;
 
 #[derive(FromArgs, PartialEq, Debug, Clone)]
 /// rama http client (run usage for more info)
@@ -99,6 +103,10 @@ pub struct CliCommandHttp {
     /// print the request instead of executing it
     offline: bool,
 
+    #[argh(option, short = 'o')]
+    /// write output to file instead of stdout
+    output: Option<String>,
+
     #[argh(switch)]
     /// print debug info
     debug: bool,
@@ -129,6 +137,38 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         )
         .init();
 
+    let (tx, rx) = oneshot::channel();
+    let (tx_final, rx_final) = oneshot::channel();
+
+    let shutdown = Shutdown::new(async move {
+        tokio::select! {
+            _ = graceful::default_signal() => {
+                let _ = tx_final.send(Ok(()));
+            }
+            result = rx => {
+                match result {
+                    Ok(result) => {
+                        let _ = tx_final.send(result);
+                    }
+                    Err(_) => {
+                        let _ = tx_final.send(Ok(()));
+                    }
+                }
+            }
+        }
+    });
+
+    shutdown.spawn_task_fn(move |guard| async move {
+        let result = run_inner(guard, cfg).await;
+        let _ = tx.send(result);
+    });
+
+    let _ = shutdown.shutdown_with_limit(Duration::from_secs(1)).await;
+
+    rx_final.await?
+}
+
+async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxError> {
     if cfg.args.is_empty() {
         return Err("no url provided".into());
     }
@@ -192,7 +232,7 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         .body(Body::empty())
         .context("build http request")?;
 
-    let client = create_client(cfg.clone()).await?;
+    let client = create_client(guard, cfg.clone()).await?;
 
     let response = client.serve(Context::default(), request).await?;
 
@@ -221,35 +261,49 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
 }
 
 async fn create_client<S>(
+    guard: ShutdownGuard,
     mut cfg: CliCommandHttp,
 ) -> Result<impl Service<S, Request, Response = Response, Error = BoxError>, BoxError>
 where
     S: Send + Sync + 'static,
 {
-    let (request_print_mode, response_print_mode) = if cfg.offline {
-        (Some(PrintMode::All), None)
+    let (request_writer_mode, response_writer_mode) = if cfg.offline {
+        (Some(WriterMode::All), None)
     } else if cfg.verbose {
         cfg.all = true;
-        (Some(PrintMode::All), Some(PrintMode::All))
+        (Some(WriterMode::All), Some(WriterMode::All))
     } else {
         parse_print_mode(&cfg.print)?
     };
-    let traffic_print_layer = match (request_print_mode, response_print_mode) {
-        (Some(request_mode), Some(response_mode)) => {
-            TrafficPrinterLayer::bidirectional(request_mode, response_mode)
-        }
-        (Some(request_mode), None) => TrafficPrinterLayer::requests(request_mode),
-        (None, Some(response_mode)) => TrafficPrinterLayer::responses(response_mode),
-        (None, None) => TrafficPrinterLayer::none(),
+
+    let writer_kind = match cfg.output.take() {
+        Some(path) => writer::WriterKind::File(path.into()),
+        None => writer::WriterKind::Stdout,
     };
-    let (all_traffic_print_layer, last_traffic_print_layer) = if cfg.all {
-        (traffic_print_layer, TrafficPrinterLayer::none())
-    } else {
-        (TrafficPrinterLayer::none(), traffic_print_layer)
-    };
+
+    let executor = Executor::graceful(guard);
+    let (request_writer, response_writer) = writer::create_traffic_writers(
+        &executor,
+        writer_kind,
+        cfg.all,
+        request_writer_mode,
+        response_writer_mode,
+    )
+    .await?;
+
+    // TODO support piping as alternative to output
 
     let client_builder = ServiceBuilder::new()
         .map_result(map_internal_client_error)
+        .layer(TimeoutLayer::new(if cfg.timeout > 0 {
+            Duration::from_secs(cfg.timeout)
+        } else {
+            Duration::from_secs(180)
+        }))
+        .layer(FollowRedirectLayer::with_policy(Limited::new(
+            if cfg.follow { cfg.max_redirects } else { 0 },
+        )))
+        .layer(response_writer)
         .layer(DecompressionLayer::new())
         .layer(
             cfg.auth
@@ -274,17 +328,8 @@ where
                 })
                 .unwrap_or_else(AddAuthorizationLayer::none),
         )
-        .layer(last_traffic_print_layer)
-        .layer(FollowRedirectLayer::with_policy(Limited::new(
-            if cfg.follow { cfg.max_redirects } else { 0 },
-        )))
-        .layer(all_traffic_print_layer)
-        .layer(TimeoutLayer::new(if cfg.timeout > 0 {
-            Duration::from_secs(cfg.timeout)
-        } else {
-            Duration::from_secs(180)
-        }))
         .layer(AddRequiredRequestHeadersLayer::default())
+        .layer(request_writer)
         .layer(HijackLayer::new(cfg.offline, service_fn(dummy_response)));
 
     let tls_client_config =
@@ -299,7 +344,7 @@ where
     )))
 }
 
-fn parse_print_mode(mode: &str) -> Result<(Option<PrintMode>, Option<PrintMode>), BoxError> {
+fn parse_print_mode(mode: &str) -> Result<(Option<WriterMode>, Option<WriterMode>), BoxError> {
     let mut request_mode = None;
     let mut response_mode = None;
 
@@ -308,37 +353,37 @@ fn parse_print_mode(mode: &str) -> Result<(Option<PrintMode>, Option<PrintMode>)
             'h' => {
                 response_mode = Some(match response_mode {
                     Some(mode) => match mode {
-                        PrintMode::All | PrintMode::Body => PrintMode::All,
-                        PrintMode::Headers => PrintMode::Headers,
+                        WriterMode::All | WriterMode::Body => WriterMode::All,
+                        WriterMode::Headers => WriterMode::Headers,
                     },
-                    None => PrintMode::Headers,
+                    None => WriterMode::Headers,
                 });
             }
             'H' => {
                 request_mode = Some(match request_mode {
                     Some(mode) => match mode {
-                        PrintMode::All | PrintMode::Body => PrintMode::All,
-                        PrintMode::Headers => PrintMode::Headers,
+                        WriterMode::All | WriterMode::Body => WriterMode::All,
+                        WriterMode::Headers => WriterMode::Headers,
                     },
-                    None => PrintMode::Headers,
+                    None => WriterMode::Headers,
                 });
             }
             'b' => {
                 response_mode = Some(match response_mode {
                     Some(mode) => match mode {
-                        PrintMode::All | PrintMode::Headers => PrintMode::All,
-                        PrintMode::Body => PrintMode::Body,
+                        WriterMode::All | WriterMode::Headers => WriterMode::All,
+                        WriterMode::Body => WriterMode::Body,
                     },
-                    None => PrintMode::Body,
+                    None => WriterMode::Body,
                 });
             }
             'B' => {
                 request_mode = Some(match request_mode {
                     Some(mode) => match mode {
-                        PrintMode::All | PrintMode::Headers => PrintMode::All,
-                        PrintMode::Body => PrintMode::Body,
+                        WriterMode::All | WriterMode::Headers => WriterMode::All,
+                        WriterMode::Body => WriterMode::Body,
                     },
-                    None => PrintMode::Body,
+                    None => WriterMode::Body,
                 });
             }
             c => return Err(error!("unknown print mode character: {}", c).into()),

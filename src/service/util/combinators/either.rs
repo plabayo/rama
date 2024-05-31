@@ -3,6 +3,10 @@ use crate::http::{self, layer::retry};
 use crate::service::{
     context::Extensions, layer::limit, matcher::Matcher, Context, Layer, Service,
 };
+use std::io::IoSlice;
+use std::pin::Pin;
+use std::task::{Context as TaskContext, Poll};
+use tokio::io::{AsyncRead, AsyncWrite, Error as IoError, ReadBuf, Result as IoResult};
 
 macro_rules! create_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
@@ -174,6 +178,76 @@ macro_rules! create_either {
                 match self {
                     $(
                         $id::$param(policy) => policy.clone_input(ctx, req),
+                    )+
+                }
+            }
+        }
+
+        impl<$($param),+> AsyncRead for $id<$($param),+>
+        where
+            $($param: AsyncRead + Unpin),+,
+        {
+            fn poll_read(
+                mut self: Pin<&mut Self>,
+                cx: &mut TaskContext<'_>,
+                buf: &mut ReadBuf<'_>,
+            ) -> Poll<IoResult<()>> {
+                match &mut *self {
+                    $(
+                        $id::$param(reader) => Pin::new(reader).poll_read(cx, buf),
+                    )+
+                }
+            }
+        }
+
+        impl<$($param),+> AsyncWrite for $id<$($param),+>
+        where
+            $($param: AsyncWrite + Unpin),+,
+        {
+            fn poll_write(
+                mut self: Pin<&mut Self>,
+                cx: &mut TaskContext<'_>,
+                buf: &[u8],
+            ) -> Poll<Result<usize, IoError>> {
+                match &mut *self {
+                    $(
+                        $id::$param(writer) => Pin::new(writer).poll_write(cx, buf),
+                    )+
+                }
+            }
+
+            fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<(), IoError>> {
+                match &mut *self {
+                    $(
+                        $id::$param(writer) => Pin::new(writer).poll_flush(cx),
+                    )+
+                }
+            }
+
+            fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<Result<(), IoError>> {
+                match &mut *self {
+                    $(
+                        $id::$param(writer) => Pin::new(writer).poll_shutdown(cx),
+                    )+
+                }
+            }
+
+            fn poll_write_vectored(
+                mut self: Pin<&mut Self>,
+                cx: &mut TaskContext<'_>,
+                bufs: &[IoSlice<'_>],
+            ) -> Poll<Result<usize, IoError>> {
+                match &mut *self {
+                    $(
+                        $id::$param(writer) => Pin::new(writer).poll_write_vectored(cx, bufs),
+                    )+
+                }
+            }
+
+            fn is_write_vectored(&self) -> bool {
+                match self {
+                    $(
+                        $id::$param(reader) => reader.is_write_vectored(),
                     )+
                 }
             }

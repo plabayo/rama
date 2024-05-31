@@ -22,22 +22,22 @@ where
 {
     let (parts, body) = res.into_parts();
 
-    w.write_all(
-        format!(
-            "{:?} {}{}\r\n",
-            parts.version,
-            parts.status.as_u16(),
-            parts
-                .status
-                .canonical_reason()
-                .map(|r| format!(" {}", r))
-                .unwrap_or_default(),
-        )
-        .as_bytes(),
-    )
-    .await?;
-
     if write_headers {
+        w.write_all(
+            format!(
+                "{:?} {}{}\r\n",
+                parts.version,
+                parts.status.as_u16(),
+                parts
+                    .status
+                    .canonical_reason()
+                    .map(|r| format!(" {}", r))
+                    .unwrap_or_default(),
+            )
+            .as_bytes(),
+        )
+        .await?;
+
         for (key, value) in parts.headers.iter() {
             w.write_all(format!("{}: {}\r\n", key, value.to_str()?).as_bytes())
                 .await?;
