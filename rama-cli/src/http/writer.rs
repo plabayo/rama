@@ -8,7 +8,7 @@ use rama::{
     service::util::combinators::Either,
 };
 use std::path::PathBuf;
-use tokio::{fs::File, io::stdout, sync::mpsc::Sender};
+use tokio::{fs::OpenOptions, io::stdout, sync::mpsc::Sender};
 
 #[derive(Debug, Clone)]
 pub enum WriterKind {
@@ -31,7 +31,13 @@ pub async fn create_traffic_writers(
 > {
     let writer = match kind {
         WriterKind::Stdout => Either::A(stdout()),
-        WriterKind::File(path) => Either::B(File::create(path).await?),
+        WriterKind::File(path) => Either::B(
+            OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .await?,
+        ),
     };
 
     let bidirectional_writer = if all {
