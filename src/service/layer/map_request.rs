@@ -52,9 +52,17 @@ where
 /// A [`Layer`] that produces [`MapRequest`] services.
 ///
 /// [`Layer`]: crate::service::Layer
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct MapRequestLayer<F> {
     f: F,
+}
+
+impl<F> fmt::Debug for MapRequestLayer<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MapRequestLayer")
+            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .finish()
+    }
 }
 
 impl<F> MapRequestLayer<F> {

@@ -165,7 +165,10 @@ mod tests {
         let req = Request::new(Body::empty());
         let resp = svc.serve(Context::default(), req).await.unwrap();
 
-        assert_eq!(resp.headers().get(SERVER).unwrap(), RAMA_ID_HEADER_VALUE.to_str().unwrap());
+        assert_eq!(
+            resp.headers().get(SERVER).unwrap(),
+            RAMA_ID_HEADER_VALUE.to_str().unwrap()
+        );
         assert_ne!(resp.headers().get(DATE).unwrap(), "bar");
     }
 }

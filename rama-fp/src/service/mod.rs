@@ -16,7 +16,9 @@ use rama::{
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
-        layer::{limit::policy::ConcurrentPolicy, HijackLayer, LimitLayer, TimeoutLayer},
+        layer::{
+            limit::policy::ConcurrentPolicy, ConsumeErrLayer, HijackLayer, LimitLayer, TimeoutLayer,
+        },
         service_fn,
         util::backoff::ExponentialBackoff,
         ServiceBuilder,
@@ -191,12 +193,7 @@ pub async fn run(cfg: Config) -> Result<(), BoxError> {
             );
 
         let tcp_service_builder = ServiceBuilder::new()
-            .map_result(|result| {
-                if let Err(err) = result {
-                    tracing::warn!(error = %err, "rama service failed");
-                }
-                Ok::<_, Infallible>(())
-            })
+            .layer(ConsumeErrLayer::trace(tracing::Level::WARN))
             .layer(NetworkMetricsLayer::default())
             .layer(TimeoutLayer::new(Duration::from_secs(16)))
             .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
@@ -414,12 +411,7 @@ pub async fn echo(cfg: Config) -> Result<(), BoxError> {
             );
 
         let tcp_service_builder = ServiceBuilder::new()
-            .map_result(|result| {
-                if let Err(err) = result {
-                    tracing::warn!(error = %err, "rama service failed");
-                }
-                Ok::<_, Infallible>(())
-            })
+            .layer(ConsumeErrLayer::trace(tracing::Level::WARN))
             .layer(NetworkMetricsLayer::default())
             .layer(TimeoutLayer::new(Duration::from_secs(16)))
             // Why the below layer makes it no longer cloneable?!?!

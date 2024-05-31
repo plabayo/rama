@@ -71,6 +71,10 @@ mod map_err;
 #[doc(inline)]
 pub use map_err::{MapErr, MapErrLayer};
 
+mod consume_err;
+#[doc(inline)]
+pub use consume_err::{ConsumeErr, ConsumeErrLayer};
+
 mod trace_err;
 #[doc(inline)]
 pub use trace_err::{TraceErr, TraceErrLayer};
