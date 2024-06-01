@@ -299,3 +299,5 @@ pub mod http;
 
 pub mod proxy;
 pub mod ua;
+
+pub mod cli;

@@ -1,6 +1,7 @@
 use argh::FromArgs;
 use rama::{
-    error::{error, BoxError, ErrorContext},
+    cli::args::RequestArgsBuilder,
+    error::{error, BoxError},
     http::{
         client::HttpClient,
         layer::{
@@ -11,7 +12,7 @@ use rama::{
             timeout::TimeoutLayer,
             traffic_writer::WriterMode,
         },
-        Body, IntoResponse, Method, Request, Response, StatusCode, Uri,
+        IntoResponse, Request, Response, StatusCode,
     },
     proxy::http::client::HttpProxyConnectorLayer,
     rt::Executor,
@@ -177,68 +178,19 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
 }
 
 async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxError> {
-    if cfg.args.is_empty() {
-        return Err("no url provided".into());
-    }
-
-    let mut args = &cfg.args[..];
-
-    let method = match args[0].to_lowercase().as_str() {
-        "get" => Some(Method::GET),
-        "post" => Some(Method::POST),
-        "put" => Some(Method::PUT),
-        "delete" => Some(Method::DELETE),
-        "patch" => Some(Method::PATCH),
-        "head" => Some(Method::HEAD),
-        "options" => Some(Method::OPTIONS),
-        "usage" => {
-            //  TODO: delete
-            println!("{}", print_manual());
-            return Ok(());
-        }
-        _ => None,
-    };
-    if method.is_some() {
-        args = &args[1..];
-        if args.is_empty() {
-            return Err("method provided, but no url provided".into());
-        }
-    }
-
-    let url = &args[0];
-    args = &args[1..];
-
-    let url = if url.starts_with(':') {
-        if url.starts_with(":/") {
-            format!("http://localhost{}", &url[1..])
-        } else {
-            format!("http://localhost{}", url)
-        }
-    } else if !url.contains("://") {
-        format!("http://{}", url)
+    let mut request_args_builder = if cfg.json {
+        RequestArgsBuilder::new_json()
+    } else if cfg.form {
+        RequestArgsBuilder::new_form()
     } else {
-        url.to_string()
+        RequestArgsBuilder::new()
     };
 
-    let url: Uri = url.parse().context("parse url")?;
-
-    let mut builder = Request::builder().uri(url.clone());
-
-    for arg in args {
-        match arg.split_once(':') {
-            Some((name, value)) => {
-                builder = builder.header(name, value);
-            }
-            None => {
-                // TODO
-            }
-        }
+    for arg in cfg.args.clone() {
+        request_args_builder.parse_arg(arg);
     }
 
-    let request = builder
-        .method(method.clone().unwrap_or(Method::GET))
-        .body(Body::empty())
-        .context("build http request")?;
+    let request = request_args_builder.build()?;
 
     let client = create_client(guard, cfg.clone()).await?;
 
@@ -407,7 +359,8 @@ where
     }
 }
 
-fn print_manual() -> &'static str {
+// TODO: merge into help
+fn _print_manual() -> &'static str {
     r##"
 usage:
     rama http [METHOD] URL [REQUEST_ITEM ...]
@@ -447,22 +400,13 @@ Positional arguments:
 
           search==rama
 
-      '=' Data fields to be serialized into a JSON object (with --json, -j)
-          or form data (with --form, -f):
+      '=' Data fields to be serialized into a JSON object or form data:
 
           name=rama  language=Rust  description='CLI HTTP client'
 
-      ':=' Non-string JSON data fields (only with --json, -j):
+      ':=' Non-string data fields:
 
           awesome:=true  amount:=42  colors:='["red", "green", "blue"]'
-
-      '=@' A data field like '=', but takes a file path and embeds its content:
-
-          essay=@Documents/essay.txt
-
-      ':=@' A raw JSON field like ':=', but takes a file path and embeds its content:
-
-          package:=@./package.json
 
       You can use a backslash to escape a colliding separator in the field name:
 
