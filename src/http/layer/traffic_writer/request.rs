@@ -9,7 +9,7 @@ use crate::service::{Context, Layer, Service};
 use bytes::Bytes;
 use std::fmt::Debug;
 use std::future::Future;
-use tokio::io::{stderr, stdout, AsyncWrite};
+use tokio::io::{stderr, stdout, AsyncWrite, AsyncWriteExt};
 use tokio::sync::mpsc::{channel, unbounded_channel, Sender, UnboundedSender};
 
 /// Layer that applies [`RequestWriterService`] which prints the http request in std format.
@@ -79,6 +79,9 @@ impl RequestWriterLayer<UnboundedSender<Request>> {
                 {
                     tracing::error!(err = %err, "failed to write http request to writer")
                 }
+                if let Err(err) = writer.write_all(b"\r\n").await {
+                    tracing::error!(err = %err, "failed to write separator to writer")
+                }
             }
         });
         Self { writer: tx }
@@ -122,6 +125,9 @@ impl RequestWriterLayer<Sender<Request>> {
                     write_http_request(&mut writer, req, write_headers, write_body).await
                 {
                     tracing::error!(err = %err, "failed to write http request to writer")
+                }
+                if let Err(err) = writer.write_all(b"\r\n").await {
+                    tracing::error!(err = %err, "failed to write separator to writer")
                 }
             }
         });

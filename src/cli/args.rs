@@ -3,7 +3,7 @@
 use crate::{
     error::{ErrorContext, OpaqueError},
     http::{
-        header::{Entry, HeaderValue, ACCEPT, CONTENT_TYPE},
+        header::{Entry, HeaderValue, ACCEPT, CONTENT_LENGTH, CONTENT_TYPE},
         Body, Method, Request, Uri,
     },
 };
@@ -125,17 +125,32 @@ impl RequestArgsBuilder {
                 let mut req = Request::builder();
 
                 let url = if let Some(stripped_url) = url.strip_prefix(':') {
-                    format!("http://localhost{}", stripped_url)
+                    if stripped_url.is_empty() {
+                        "http://localhost".to_owned()
+                    } else if stripped_url
+                        .chars()
+                        .next()
+                        .map(|c| c.is_ascii_digit())
+                        .unwrap_or_default()
+                    {
+                        format!("http://localhost{}", url)
+                    } else {
+                        format!("http://localhost{}", stripped_url)
+                    }
                 } else if !url.contains("://") {
                     format!("http://{}", url)
                 } else {
                     url.to_string()
                 };
 
+                let uri: Uri = url
+                    .parse()
+                    .map_err(OpaqueError::from_std)
+                    .context("parse base uri")?;
+
                 if query.is_empty() {
                     req = req.uri(url);
                 } else {
-                    let uri: Uri = url.parse().map_err(OpaqueError::from_std)?;
                     let mut uri_parts = uri.into_parts();
                     uri_parts.path_and_query = Some(match uri_parts.path_and_query {
                         Some(pq) => match pq.query() {
@@ -191,10 +206,24 @@ impl RequestArgsBuilder {
                 }
 
                 if body.is_empty() {
-                    return req.body(Body::empty()).map_err(OpaqueError::from_std);
+                    return req
+                        .body(Body::empty())
+                        .map_err(OpaqueError::from_std)
+                        .context("create request without body");
                 }
 
-                let ct = content_type.unwrap_or(ContentType::Json);
+                let ct = content_type.unwrap_or_else(|| {
+                    match req
+                        .headers_ref()
+                        .and_then(|h| h.get(CONTENT_TYPE))
+                        .and_then(|h| h.to_str().ok())
+                    {
+                        Some(cv) if cv.contains("application/x-www-form-urlencoded") => {
+                            ContentType::Form
+                        }
+                        _ => ContentType::Json,
+                    }
+                });
 
                 let req = if req.headers_ref().is_none() {
                     req.header(
@@ -236,16 +265,19 @@ impl RequestArgsBuilder {
                         let body = serde_json::to_string(&body)
                             .map_err(OpaqueError::from_std)
                             .context("serialize form body")?;
-                        req.body(Body::from(body))
+                        req.header(CONTENT_LENGTH, body.len().to_string())
+                            .body(Body::from(body))
                     }
                     ContentType::Form => {
                         let body = serde_html_form::to_string(&body)
                             .map_err(OpaqueError::from_std)
                             .context("serialize json body")?;
-                        req.body(Body::from(body))
+                        req.header(CONTENT_LENGTH, body.len().to_string())
+                            .body(Body::from(body))
                     }
                 }
                 .map_err(OpaqueError::from_std)
+                .context("create request with body")
             }
         }
     }
@@ -353,4 +385,130 @@ enum BuilderState {
         message: String,
         ignored: Vec<String>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::http::io::write_http_request;
+
+    #[tokio::test]
+    async fn test_request_args_builder_happy() {
+        for (args, expected_request_str) in [
+            (vec![":8080"], "GET / HTTP/1.1\r\n\r\n"),
+            (vec!["HeAD", ":8000/foo"], "HEAD /foo HTTP/1.1\r\n\r\n"),
+            (
+                vec![
+                    "example.com/foo",
+                    "c=d",
+                    "Content-Type:application/x-www-form-urlencoded",
+                ],
+                "POST /foo HTTP/1.1\r\ncontent-type: application/x-www-form-urlencoded\r\naccept: application/x-www-form-urlencoded\r\ncontent-length: 3\r\n\r\nc=d",
+            ),
+            (
+                vec![
+                    "example.com/foo",
+                    "a=b",
+                    "Content-Type:application/json",
+                ],
+                "POST /foo HTTP/1.1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 9\r\n\r\n{\"a\":\"b\"}",
+            ),
+            (
+                vec![
+                    "example.com/foo",
+                    "a=b",
+                ],
+                "POST /foo HTTP/1.1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 9\r\n\r\n{\"a\":\"b\"}",
+            ),
+            (
+                vec![
+                    "example.com/foo",
+                    "x-a:1",
+                    "a=b",
+                ],
+                "POST /foo HTTP/1.1\r\nx-a: 1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 9\r\n\r\n{\"a\":\"b\"}",
+            ),
+            (
+                vec![
+                    "put",
+                    "example.com/foo?a=2",
+                    "x-a:1",
+                    "a:=42",
+                    "a==3"
+                ],
+                "PUT /foo?a=2&a=3 HTTP/1.1\r\nx-a: 1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 8\r\n\r\n{\"a\":42}",
+            ),
+        ] {
+            let mut builder = RequestArgsBuilder::new();
+            for arg in args {
+                builder.parse_arg(arg.to_owned());
+            }
+            let request = builder.build().unwrap();
+            let mut w = Vec::new();
+            let _ = write_http_request(&mut w, request, true, true)
+                .await
+                .unwrap();
+            assert_eq!(String::from_utf8(w).unwrap(), expected_request_str);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_request_args_builder_form_happy() {
+        for (args, expected_request_str) in [
+            (
+                vec![
+                    "example.com/foo",
+                    "c=d",
+                ],
+                "POST /foo HTTP/1.1\r\ncontent-type: application/x-www-form-urlencoded\r\naccept: application/x-www-form-urlencoded\r\ncontent-length: 3\r\n\r\nc=d",
+            ),
+        ] {
+            let mut builder = RequestArgsBuilder::new_form();
+            for arg in args {
+                builder.parse_arg(arg.to_owned());
+            }
+            let request = builder.build().unwrap();
+            let mut w = Vec::new();
+            let _ = write_http_request(&mut w, request, true, true)
+                .await
+                .unwrap();
+            assert_eq!(String::from_utf8(w).unwrap(), expected_request_str);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_request_args_builder_json_happy() {
+        for (args, expected_request_str) in [
+            (
+                vec![
+                    "example.com/foo",
+                    "a=b",
+                ],
+                "POST /foo HTTP/1.1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 9\r\n\r\n{\"a\":\"b\"}",
+            ),
+        ] {
+            let mut builder = RequestArgsBuilder::new();
+            for arg in args {
+                builder.parse_arg(arg.to_owned());
+            }
+            let request = builder.build().unwrap();
+            let mut w = Vec::new();
+            let _ = write_http_request(&mut w, request, true, true)
+                .await
+                .unwrap();
+            assert_eq!(String::from_utf8(w).unwrap(), expected_request_str);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_request_args_builder_error() {
+        for test in [vec![], vec!["invalid url"]] {
+            let mut builder = RequestArgsBuilder::new();
+            for arg in test {
+                builder.parse_arg(arg.to_owned());
+            }
+            let request = builder.build();
+            assert!(request.is_err());
+        }
+    }
 }

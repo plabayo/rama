@@ -25,9 +25,14 @@ where
     if write_headers {
         w.write_all(
             format!(
-                "{} {} {:?}\r\n",
+                "{} {}{} {:?}\r\n",
                 parts.method,
                 parts.uri.path(),
+                parts
+                    .uri
+                    .query()
+                    .map(|q| format!("?{}", q))
+                    .unwrap_or_default(),
                 parts.version
             )
             .as_bytes(),
@@ -45,7 +50,6 @@ where
         w.write_all(b"\r\n").await?;
         if !body.is_empty() {
             w.write_all(body.as_ref()).await?;
-            w.write_all(b"\r\n").await?;
         }
         Body::from(body)
     } else {
@@ -96,6 +100,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_write_http_request_get_with_headers_and_query() {
+        let mut buf = Vec::new();
+        let req = Request::builder()
+            .method("GET")
+            .uri("http://example.com?foo=bar")
+            .header("content-type", "text/plain")
+            .header("user-agent", "test/0")
+            .body(Body::empty())
+            .unwrap();
+
+        write_http_request(&mut buf, req, true, true).await.unwrap();
+
+        let req = String::from_utf8(buf).unwrap();
+        assert_eq!(
+            req,
+            "GET /?foo=bar HTTP/1.1\r\ncontent-type: text/plain\r\nuser-agent: test/0\r\n\r\n"
+        );
+    }
+
+    #[tokio::test]
     async fn test_write_http_request_post_with_headers_and_body() {
         let mut buf = Vec::new();
         let req = Request::builder()
@@ -111,7 +135,7 @@ mod tests {
         let req = String::from_utf8(buf).unwrap();
         assert_eq!(
             req,
-            "POST / HTTP/1.1\r\ncontent-type: text/plain\r\nuser-agent: test/0\r\n\r\nhello\r\n"
+            "POST / HTTP/1.1\r\ncontent-type: text/plain\r\nuser-agent: test/0\r\n\r\nhello"
         );
     }
 }

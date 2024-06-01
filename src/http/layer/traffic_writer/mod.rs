@@ -10,7 +10,7 @@ use crate::{
     rt::Executor,
 };
 use tokio::{
-    io::AsyncWrite,
+    io::{AsyncWrite, AsyncWriteExt},
     sync::mpsc::{channel, unbounded_channel, Sender, UnboundedSender},
 };
 
@@ -110,6 +110,9 @@ impl BidirectionalWriter<UnboundedSender<BidirectionalMessage>> {
                         }
                     }
                 }
+                if let Err(err) = writer.write_all(b"\r\n").await {
+                    tracing::error!(err = %err, "failed to write separator to writer")
+                }
             }
         });
 
@@ -192,6 +195,9 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                         }
                     }
                 }
+                if let Err(err) = writer.write_all(b"\r\n").await {
+                    tracing::error!(err = %err, "failed to write separator to writer")
+                }
             }
         });
 
@@ -241,6 +247,9 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                 {
                     tracing::error!(err = %err, "failed to write last http request to writer")
                 }
+                if let Err(err) = writer.write_all(b"\r\n").await {
+                    tracing::error!(err = %err, "failed to write separator to writer")
+                }
             }
 
             if let Some(res) = last_response {
@@ -253,6 +262,9 @@ impl BidirectionalWriter<Sender<BidirectionalMessage>> {
                 .await
                 {
                     tracing::error!(err = %err, "failed to write last http response to writer")
+                }
+                if let Err(err) = writer.write_all(b"\r\n").await {
+                    tracing::error!(err = %err, "failed to write separator to writer")
                 }
             }
         });
