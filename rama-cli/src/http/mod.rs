@@ -21,7 +21,7 @@ use rama::{
     tls::rustls::client::HttpsConnectorLayer,
     utils::graceful::{self, Shutdown, ShutdownGuard},
 };
-use std::time::Duration;
+use std::{io::IsTerminal, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
 use tracing::level_filters::LevelFilter;
@@ -88,9 +88,9 @@ pub struct CliCommandHttp {
     /// fail if status code is not 2xx (4 if 4xx and 5 if 5xx)
     check_status: bool,
 
-    #[argh(option, short = 'p', default = "String::from(\"hb\")")]
+    #[argh(option, short = 'p')]
     /// define what the output should contain ('h'/'H' for headers, 'b'/'B' for body (response/request)
-    print: String,
+    print: Option<String>,
 
     #[argh(switch, short = 'b')]
     /// print the response body (short for --print b)
@@ -235,9 +235,18 @@ where
     } else if cfg.headers {
         (None, Some(WriterMode::Headers))
     } else {
-        parse_print_mode(&cfg.print)
-            .map_err(OpaqueError::from_boxed)
-            .context("parse CLI print option")?
+        match &cfg.print {
+            Some(mode) => parse_print_mode(mode)
+                .map_err(OpaqueError::from_boxed)
+                .context("parse CLI print option")?,
+            None => {
+                if std::io::stdout().is_terminal() {
+                    (None, Some(WriterMode::All))
+                } else {
+                    (None, Some(WriterMode::Body))
+                }
+            }
+        }
     };
 
     let writer_kind = match cfg.output.take() {
