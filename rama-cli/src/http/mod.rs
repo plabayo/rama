@@ -1,7 +1,7 @@
 use argh::FromArgs;
 use rama::{
     cli::args::RequestArgsBuilder,
-    error::{error, BoxError},
+    error::{error, BoxError, ErrorContext, OpaqueError},
     http::{
         client::HttpClient,
         layer::{
@@ -29,10 +29,6 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 mod tls;
 mod writer;
-
-// TODO:
-// - provide: --body --headers shortcut
-// - provide: --pretty option (e.g. will print json prett if json is used))
 
 #[derive(FromArgs, PartialEq, Debug, Clone)]
 /// rama http client (run usage for more info)
@@ -95,6 +91,14 @@ pub struct CliCommandHttp {
     #[argh(option, short = 'p', default = "String::from(\"hb\")")]
     /// define what the output should contain ('h'/'H' for headers, 'b'/'B' for body (response/request)
     print: String,
+
+    #[argh(switch, short = 'b')]
+    /// print the response body (short for --print b)
+    body: bool,
+
+    #[argh(switch, short = 'H')]
+    /// print the response headers (short for --print h)
+    headers: bool,
 
     #[argh(switch, short = 'v')]
     /// print verbose output, alias for --all --print hHbB (not used in offline mode)
@@ -222,8 +226,18 @@ where
     } else if cfg.verbose {
         cfg.all = true;
         (Some(WriterMode::All), Some(WriterMode::All))
+    } else if cfg.body {
+        if cfg.headers {
+            (None, Some(WriterMode::All))
+        } else {
+            (None, Some(WriterMode::Body))
+        }
+    } else if cfg.headers {
+        (None, Some(WriterMode::Headers))
     } else {
-        parse_print_mode(&cfg.print)?
+        parse_print_mode(&cfg.print)
+            .map_err(OpaqueError::from_boxed)
+            .context("parse CLI print option")?
     };
 
     let writer_kind = match cfg.output.take() {
