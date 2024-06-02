@@ -42,7 +42,7 @@ impl RamaService {
         thread::spawn(move || {
             for line in stdout {
                 let line = line.unwrap();
-                println!("rama ip >> {}", line);
+                eprintln!("rama ip >> {}", line);
             }
         });
 
