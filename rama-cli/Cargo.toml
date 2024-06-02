@@ -15,7 +15,7 @@ default-run = "rama"
 bytes = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }
-rama = { version = "0.2.0-alpha.0", path = ".." }
+rama = { version = "0.2.0-alpha.1", path = ".." }
 serde_json = { workspace = true }
 terminal-prompt = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
