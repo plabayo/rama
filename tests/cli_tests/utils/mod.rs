@@ -1,14 +1,14 @@
 #![allow(dead_code)]
 
 use std::{
-    io::{BufRead, BufReader, Lines},
-    process::{Child, ChildStdout},
+    io::{BufRead, BufReader},
+    process::Child,
+    thread,
 };
 
 #[derive(Debug)]
 /// A wrapper around a rama service process.
 pub struct RamaService {
-    stdout: Lines<BufReader<ChildStdout>>,
     process: Child,
 }
 
@@ -39,7 +39,14 @@ impl RamaService {
             }
         }
 
-        Self { stdout, process }
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                println!("rama ip >> {}", line);
+            }
+        });
+
+        Self { process }
     }
 
     /// Start the rama echo service with the given port.
@@ -68,12 +75,14 @@ impl RamaService {
             }
         }
 
-        Self { stdout, process }
-    }
+        thread::spawn(move || {
+            for line in stdout {
+                let line = line.unwrap();
+                println!("rama echo >> {}", line);
+            }
+        });
 
-    /// try to read a line from the stdout of the service
-    pub fn read_stdout_line(&mut self) -> Option<String> {
-        self.stdout.next().and_then(|r| r.ok())
+        Self { process }
     }
 
     /// Run any rama cmd
