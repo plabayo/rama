@@ -37,5 +37,5 @@
 
 # Appendices
 
-[❓ FAQ](./faq.md)
-[💖 Sponsor](./sponsor.md)
+- [❓ FAQ](./faq.md)
+- [💖 Sponsor](./sponsor.md)
