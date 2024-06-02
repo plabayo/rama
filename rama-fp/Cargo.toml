@@ -14,7 +14,7 @@ default-run = "rama-fp"
 [dependencies]
 base64 = { workspace = true }
 clap = { workspace = true }
-rama = { version = "0.2", path = "..", features = ["full"] }
+rama = { version = "0.2.0-alpha.0", path = "..", features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
