@@ -6,14 +6,6 @@ Rama is a modular service framework distributed as a Rust crate at <https://crat
 cargo add rama
 ```
 
-> ❗ There is no [crates.io](https://crates.io) release of rama yet.
-> If you already want to start using rama you can do so by referring
-> to it in your `Cargo.toml` as follows:
->
-> ```toml
-> rama = { git = "https://github.com/plabayo/rama" }
-> ```
-
 ## Quick Links
 
 * Crates Page: <https://crates.io/crates/rama>

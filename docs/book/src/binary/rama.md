@@ -27,10 +27,6 @@ Options:
 
 ## Install
 
-> ❗ None of these install instructions work at the moment,
-> as we still need to release a first alpha version of `rama` to make this work.
-> These instructions are for now just preparation towards that.
-
 The easiest way to install `rama` is by using `cargo`:
 
 ```sh

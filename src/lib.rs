@@ -76,13 +76,6 @@
 //! - or checkout the framework Rust docs at <https://docs.rs/rama>;
 //!     - edge docs (for main branch) can be found at <https://ramaproxy.org/docs/rama>.
 //!
-//! There is no useable [crates.io](https://crates.io) release of rama yet.
-//! If you already want to start using rama you can do so by referring to it in your `Cargo.toml` as follows:
-//!
-//! ```toml
-//! rama = { git = "https://github.com/plabayo/rama" }
-//! ```
-//!
 //! 📖 Rama's full documentation, references and background material can be found in the form of the "rama book" at <https://ramaproxy.org/book>.
 //!
 //! 💬 Come join us at [Discord](https://discord.gg/29EetaSYCD) on the `#rama` public channel. To ask questions, discuss ideas and ask how rama may be useful for you.
