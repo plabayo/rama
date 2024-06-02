@@ -2,7 +2,7 @@ use clap::Args;
 use rama::{
     error::BoxError,
     http::{
-        layer::{required_header::AddRequiredRequestHeadersLayer, trace::TraceLayer},
+        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
         server::HttpServer,
         IntoResponse, Request, Response, StatusCode,
     },
@@ -96,7 +96,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         } else {
             let http_service = ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                .layer(AddRequiredRequestHeadersLayer::default())
+                .layer(AddRequiredResponseHeadersLayer::default())
                 .service_fn(ip);
 
             let tcp_service = tcp_service_builder
