@@ -110,10 +110,16 @@ impl RequestArgsBuilder {
             BuilderState::MethodOrUrl { .. } | BuilderState::Url { .. } => {
                 Err(OpaqueError::from_display("no url defined"))
             }
-            BuilderState::Error { message, ignored } => Err(OpaqueError::from_display(format!(
-                "request arg parser failed: {} (ignored: {:?})",
-                message, ignored
-            ))),
+            BuilderState::Error { message, ignored } => {
+                Err(OpaqueError::from_display(if ignored.is_empty() {
+                    format!("request arg parser failed: {}", message)
+                } else {
+                    format!(
+                        "request arg parser failed: {} (ignored: {:?})",
+                        message, ignored
+                    )
+                }))
+            }
             BuilderState::Data {
                 content_type,
                 method,
@@ -124,24 +130,7 @@ impl RequestArgsBuilder {
             } => {
                 let mut req = Request::builder();
 
-                let url = if let Some(stripped_url) = url.strip_prefix(':') {
-                    if stripped_url.is_empty() {
-                        "http://localhost".to_owned()
-                    } else if stripped_url
-                        .chars()
-                        .next()
-                        .map(|c| c.is_ascii_digit())
-                        .unwrap_or_default()
-                    {
-                        format!("http://localhost{}", url)
-                    } else {
-                        format!("http://localhost{}", stripped_url)
-                    }
-                } else if !url.contains("://") {
-                    format!("http://{}", url)
-                } else {
-                    url.to_string()
-                };
+                let url = expand_url(url);
 
                 let uri: Uri = url
                     .parse()
@@ -226,35 +215,17 @@ impl RequestArgsBuilder {
                 });
 
                 let req = if req.headers_ref().is_none() {
-                    req.header(
-                        CONTENT_TYPE,
-                        match ct {
-                            ContentType::Json => "application/json",
-                            ContentType::Form => "application/x-www-form-urlencoded",
-                        },
-                    )
-                    .header(
-                        ACCEPT,
-                        match ct {
-                            ContentType::Json => "application/json",
-                            ContentType::Form => "application/x-www-form-urlencoded",
-                        },
-                    )
+                    req.header(CONTENT_TYPE, ct.header_value())
+                        .header(ACCEPT, ct.header_value())
                 } else {
                     let headers = req.headers_mut().unwrap();
 
                     if let Entry::Vacant(entry) = headers.entry(CONTENT_TYPE) {
-                        entry.insert(HeaderValue::from_static(match ct {
-                            ContentType::Json => "application/json",
-                            ContentType::Form => "application/x-www-form-urlencoded",
-                        }));
+                        entry.insert(ct.header_value());
                     }
 
                     if let Entry::Vacant(entry) = headers.entry(ACCEPT) {
-                        entry.insert(HeaderValue::from_static(match ct {
-                            ContentType::Json => "application/json",
-                            ContentType::Form => "application/x-www-form-urlencoded",
-                        }));
+                        entry.insert(ct.header_value());
                     }
 
                     req
@@ -299,17 +270,20 @@ fn parse_arg_as_data(
                 _ => (),
             },
             DataParseArgState::Escaped => {
+                // \*
                 state = DataParseArgState::None;
             }
             DataParseArgState::Equal => {
                 let (name, value) = arg.split_at(i - 1);
                 if c == '=' {
+                    // ==
                     let value = &value[2..];
                     query
                         .entry(name.to_owned())
                         .or_default()
                         .push(value.to_owned());
                 } else {
+                    // =
                     let value = &value[1..];
                     body.insert(name.to_owned(), Value::String(value.to_owned()));
                 }
@@ -318,11 +292,13 @@ fn parse_arg_as_data(
             DataParseArgState::Colon => {
                 let (name, value) = arg.split_at(i - 1);
                 if c == '=' {
+                    // :=
                     let value = &value[2..];
                     let value: Value =
                         serde_json::from_str(value).map_err(|err| err.to_string())?;
                     body.insert(name.to_owned(), value);
                 } else {
+                    // :
                     let value = &value[1..];
                     headers.insert(name.to_owned(), value.to_owned());
                 }
@@ -331,13 +307,6 @@ fn parse_arg_as_data(
         }
     }
     Ok(())
-}
-
-enum DataParseArgState {
-    None,
-    Escaped,
-    Equal,
-    Colon,
 }
 
 fn parse_arg_as_method(arg: impl AsRef<str>) -> Option<Method> {
@@ -358,10 +327,51 @@ fn parse_arg_as_method(arg: impl AsRef<str>) -> Option<Method> {
     }
 }
 
+/// Expand a URL string to a full URL,
+/// e.g. `example.com` -> `http://example.com`
+fn expand_url(url: String) -> String {
+    if url.is_empty() {
+        "http://localhost".to_owned()
+    } else if let Some(stripped_url) = url.strip_prefix(':') {
+        if stripped_url.is_empty() {
+            "http://localhost".to_owned()
+        } else if stripped_url
+            .chars()
+            .next()
+            .map(|c| c.is_ascii_digit())
+            .unwrap_or_default()
+        {
+            format!("http://localhost{}", url)
+        } else {
+            format!("http://localhost{}", stripped_url)
+        }
+    } else if !url.contains("://") {
+        format!("http://{}", url)
+    } else {
+        url.to_string()
+    }
+}
+
+enum DataParseArgState {
+    None,
+    Escaped,
+    Equal,
+    Colon,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ContentType {
     Json,
     Form,
+}
+
+impl ContentType {
+    fn header_value(&self) -> HeaderValue {
+        HeaderValue::from_static(match self {
+            ContentType::Json => "application/json",
+            ContentType::Form => "application/x-www-form-urlencoded",
+        })
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -391,6 +401,49 @@ enum BuilderState {
 mod tests {
     use super::*;
     use crate::http::io::write_http_request;
+
+    #[test]
+    fn test_parse_arg_as_method() {
+        for (arg, expected) in [
+            ("GET", Some(Method::GET)),
+            ("POST", Some(Method::POST)),
+            ("PUT", Some(Method::PUT)),
+            ("DELETE", Some(Method::DELETE)),
+            ("PATCH", Some(Method::PATCH)),
+            ("HEAD", Some(Method::HEAD)),
+            ("OPTIONS", Some(Method::OPTIONS)),
+            ("CONNECT", Some(Method::CONNECT)),
+            ("TRACE", Some(Method::TRACE)),
+            ("get", Some(Method::GET)),
+            ("post", Some(Method::POST)),
+            ("put", Some(Method::PUT)),
+            ("delete", Some(Method::DELETE)),
+            ("patch", Some(Method::PATCH)),
+            ("head", Some(Method::HEAD)),
+            ("options", Some(Method::OPTIONS)),
+            ("connect", Some(Method::CONNECT)),
+            ("trace", Some(Method::TRACE)),
+            ("invalid", None),
+            ("", None),
+        ] {
+            assert_eq!(parse_arg_as_method(arg), expected);
+        }
+    }
+
+    #[test]
+    fn test_expand_url() {
+        for (url, expected) in [
+            ("example.com", "http://example.com"),
+            ("http://example.com", "http://example.com"),
+            ("https://example.com", "https://example.com"),
+            ("example.com:8080", "http://example.com:8080"),
+            (":8080/foo", "http://localhost:8080/foo"),
+            (":8080", "http://localhost:8080"),
+            ("", "http://localhost"),
+        ] {
+            assert_eq!(expand_url(url.to_owned()), expected);
+        }
+    }
 
     #[tokio::test]
     async fn test_request_args_builder_happy() {
@@ -502,7 +555,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_args_builder_error() {
-        for test in [vec![], vec!["invalid url"]] {
+        for test in [
+            vec![],
+            vec!["invalid url"],
+            vec!["get"],
+            vec!["get", "invalid url"],
+        ] {
             let mut builder = RequestArgsBuilder::new();
             for arg in test {
                 builder.parse_arg(arg.to_owned());
