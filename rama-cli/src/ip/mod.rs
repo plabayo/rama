@@ -92,6 +92,9 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
 
         if cfg.transport {
             let tcp_service = tcp_service_builder.service(IpTransportEchoService);
+
+            tracing::info!("ip service ready");
+
             tcp_listener.serve_graceful(guard, tcp_service).await;
         } else {
             let http_service = ServiceBuilder::new()
@@ -103,6 +106,8 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
                 // Limit the body size to 1MB for requests
                 .layer(BodyLimitLayer::request_only(1024 * 1024))
                 .service(HttpServer::auto(Executor::graceful(guard.clone())).service(http_service));
+
+            tracing::info!("ip service ready");
 
             tcp_listener.serve_graceful(guard, tcp_service).await;
         }

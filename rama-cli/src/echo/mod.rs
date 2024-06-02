@@ -92,6 +92,8 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         let tcp_service = tcp_service_builder
             .service(HttpServer::auto(Executor::graceful(guard.clone())).service(http_service));
 
+        tracing::info!("echo service ready");
+
         tcp_listener.serve_graceful(guard, tcp_service).await;
     });
 

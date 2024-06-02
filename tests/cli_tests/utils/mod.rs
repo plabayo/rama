@@ -34,7 +34,7 @@ impl RamaService {
 
         for line in &mut stdout {
             let line = line.unwrap();
-            if line.contains("starting ip service") {
+            if line.contains("ip service ready") {
                 break;
             }
         }
@@ -63,7 +63,7 @@ impl RamaService {
 
         for line in &mut stdout {
             let line = line.unwrap();
-            if line.contains("starting echo service") {
+            if line.contains("echo service ready") {
                 break;
             }
         }
