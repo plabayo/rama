@@ -59,9 +59,16 @@ where
 /// A [`Layer`] that produces a [`MapResult`] service.
 ///
 /// [`Layer`]: crate::service::Layer
-#[derive(Debug)]
 pub struct MapResultLayer<F> {
     f: F,
+}
+
+impl<F> fmt::Debug for MapResultLayer<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MapResultLayer")
+            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .finish()
+    }
 }
 
 impl<F> Clone for MapResultLayer<F>

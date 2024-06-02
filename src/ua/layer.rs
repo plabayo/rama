@@ -177,6 +177,7 @@ mod tests {
     use super::*;
     use crate::http::client::HttpClientExt;
     use crate::http::headers;
+    use crate::http::layer::required_header::AddRequiredRequestHeadersLayer;
     use crate::http::{IntoResponse, StatusCode};
     use crate::ua::{PlatformKind, UserAgentKind};
     use crate::{
@@ -206,6 +207,7 @@ mod tests {
         }
 
         let service = ServiceBuilder::new()
+            .layer(AddRequiredRequestHeadersLayer::default())
             .layer(UserAgentClassifierLayer::new())
             .service_fn(handle);
 

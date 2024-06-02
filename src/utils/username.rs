@@ -51,7 +51,7 @@
 //! assert!(filter.mobile.is_none());
 //! ```
 
-use crate::error::OpaqueError;
+use crate::error::{BoxError, OpaqueError};
 use crate::service::context::Extensions;
 use std::{convert::Infallible, fmt};
 
@@ -68,7 +68,7 @@ pub fn parse_username<P>(
 ) -> Result<String, OpaqueError>
 where
     P: UsernameLabelParser,
-    P::Error: std::error::Error + Send + Sync + 'static,
+    P::Error: Into<BoxError>,
 {
     let username_ref = username_ref.as_ref();
     let mut label_it = username_ref.split(separator);
@@ -93,7 +93,9 @@ where
         }
     }
 
-    parser.build(ext).map_err(OpaqueError::from_std)?;
+    parser
+        .build(ext)
+        .map_err(|err| OpaqueError::from_boxed(err.into()))?;
 
     Ok(username.to_owned())
 }
@@ -124,7 +126,7 @@ pub enum UsernameLabelState {
 /// as it is what is used to create the parser instances for one-time usage.
 pub trait UsernameLabelParser: Default + Send + Sync + 'static {
     /// Error which can occur during the building phase.
-    type Error: std::error::Error + Send + Sync + 'static;
+    type Error: Into<BoxError>;
 
     /// Interpret the label and return whether or not the label was recognised and valid.
     ///
@@ -166,7 +168,7 @@ macro_rules! username_label_parser_tuple_impl {
         where
             $(
                 $T: UsernameLabelParser,
-                $T::Error: std::error::Error + Send + Sync + 'static,
+                $T::Error: Into<BoxError>,
             )+
         {
             type Error = OpaqueError;
@@ -185,7 +187,7 @@ macro_rules! username_label_parser_tuple_impl {
             fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
                 let ($($T,)+) = self;
                 $(
-                    $T.build(ext).map_err(OpaqueError::from_std)?;
+                    $T.build(ext).map_err(|err| OpaqueError::from_boxed(err.into()))?;
                 )+
                 Ok(())
             }
@@ -202,7 +204,7 @@ macro_rules! username_label_parser_tuple_exclusive_labels_impl {
         where
             $(
                 $T: UsernameLabelParser,
-                $T::Error: std::error::Error + Send + Sync + 'static,
+                $T::Error: Into<BoxError>,
             )+
         {
             type Error = OpaqueError;
@@ -220,7 +222,7 @@ macro_rules! username_label_parser_tuple_exclusive_labels_impl {
             fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
                 let ($($T,)+) = self.0;
                 $(
-                    $T.build(ext).map_err(OpaqueError::from_std)?;
+                    $T.build(ext).map_err(|err| OpaqueError::from_boxed(err.into()))?;
                 )+
                 Ok(())
             }

@@ -8,9 +8,12 @@ pub struct MapState<S, F> {
     f: F,
 }
 
-impl<S, F> std::fmt::Debug for MapState<S, F> {
+impl<S: std::fmt::Debug, F> std::fmt::Debug for MapState<S, F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MapState").finish()
+        f.debug_struct("MapState")
+            .field("inner", &self.inner)
+            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .finish()
     }
 }
 
@@ -64,7 +67,9 @@ pub struct MapStateLayer<F> {
 
 impl<F> std::fmt::Debug for MapStateLayer<F> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MapStateLayer").finish()
+        f.debug_struct("MapStateLayer")
+            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .finish()
     }
 }
 

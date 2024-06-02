@@ -1,40 +1,42 @@
-use argh::FromArgs;
+use clap::{Args, Parser, Subcommand};
+use rama::error::BoxError;
 
 pub mod service;
 
-#[derive(Debug, FromArgs)]
-/// a fingerprinting service for rama
+#[derive(Debug, Parser)]
+#[command(name = "rama-fp")]
+#[command(bin_name = "rama-fp")]
+#[command(version, about, long_about = None)]
 struct Cli {
     /// the interface to listen on
-    #[argh(option, short = 'i', default = "String::from(\"127.0.0.1\")")]
+    #[arg(long, short = 'i', default_value = "127.0.0.1")]
     interface: String,
 
     /// the port to listen on
-    #[argh(option, short = 'p', default = "8080")]
+    #[arg(long, short = 'p', default_value_t = 8080)]
     port: u16,
 
     /// the port to listen on for the TLS service
-    #[argh(option, short = 's', default = "8443")]
+    #[arg(long, short = 's', default_value_t = 8443)]
     secure_port: u16,
 
     /// the port to listen on for the TLS service
-    #[argh(option, short = 't', default = "9091")]
+    #[arg(long, short = 't', default_value_t = 9091)]
     prometheus_port: u16,
 
     /// http version to serve FP Service from
-    #[argh(option, default = "String::from(\"auto\")")]
+    #[arg(long, default_value = "auto")]
     http_version: String,
 
     /// serve as an HaProxy
-    #[argh(switch, short = 'f')]
+    #[arg(long, short = 'f')]
     ha_proxy: bool,
 
-    #[argh(subcommand)]
+    #[command(subcommand)]
     command: Option<Commands>,
 }
 
-#[derive(Debug, FromArgs)]
-#[argh(subcommand)]
+#[derive(Debug, Subcommand)]
 enum Commands {
     Run(RunSubCommand),
     Echo(EchoSubCommand),
@@ -46,19 +48,17 @@ impl Default for Commands {
     }
 }
 
-#[derive(FromArgs, Debug)]
+#[derive(Debug, Args)]
 /// Run the regular FP Server
-#[argh(subcommand, name = "run")]
-struct RunSubCommand {}
+struct RunSubCommand;
 
-#[derive(FromArgs, Debug)]
+#[derive(Debug, Args)]
 /// Run an echo server
-#[argh(subcommand, name = "echo")]
-struct EchoSubCommand {}
+struct EchoSubCommand;
 
 #[tokio::main]
-async fn main() -> anyhow::Result<()> {
-    let args: Cli = argh::from_env();
+async fn main() -> Result<(), BoxError> {
+    let args = Cli::parse();
 
     match args.command.unwrap_or_default() {
         Commands::Run(_) => {

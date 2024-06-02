@@ -87,6 +87,12 @@ impl std::error::Error for OpaqueError {
     }
 }
 
+impl From<BoxError> for OpaqueError {
+    fn from(error: BoxError) -> Self {
+        Self(error)
+    }
+}
+
 #[repr(transparent)]
 /// An error type that wraps a message.
 pub(crate) struct MessageError<M>(pub(crate) M);

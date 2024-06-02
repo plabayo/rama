@@ -59,11 +59,22 @@ const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::
 /// [`SetRequestHeader`]: crate::http::layer::set_header::SetRequestHeader
 #[derive(Debug, Clone)]
 pub struct AddAuthorizationLayer {
-    value: HeaderValue,
+    value: Option<HeaderValue>,
     if_not_present: bool,
 }
 
 impl AddAuthorizationLayer {
+    /// Create a new [`AddAuthorizationLayer`] that does not add any authorization.
+    ///
+    /// Can be useful if you only want to add authorization for some branches
+    /// of your service.
+    pub fn none() -> Self {
+        Self {
+            value: None,
+            if_not_present: false,
+        }
+    }
+
     /// Authorize requests using a username and password pair.
     ///
     /// The `Authorization` header will be set to `Basic {credentials}` where `credentials` is
@@ -75,7 +86,7 @@ impl AddAuthorizationLayer {
         let encoded = BASE64.encode(format!("{}:{}", username, password));
         let value = HeaderValue::try_from(format!("Basic {}", encoded)).unwrap();
         Self {
-            value,
+            value: Some(value),
             if_not_present: false,
         }
     }
@@ -91,7 +102,7 @@ impl AddAuthorizationLayer {
         let value =
             HeaderValue::try_from(format!("Bearer {}", token)).expect("token is not valid header");
         Self {
-            value,
+            value: Some(value),
             if_not_present: false,
         }
     }
@@ -103,7 +114,9 @@ impl AddAuthorizationLayer {
     /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
     #[allow(clippy::wrong_self_convention)]
     pub fn as_sensitive(mut self, sensitive: bool) -> Self {
-        self.value.set_sensitive(sensitive);
+        if let Some(value) = &mut self.value {
+            value.set_sensitive(sensitive);
+        }
         self
     }
 
@@ -140,11 +153,19 @@ impl<S> Layer<S> for AddAuthorizationLayer {
 #[derive(Debug, Clone)]
 pub struct AddAuthorization<S> {
     inner: S,
-    value: HeaderValue,
+    value: Option<HeaderValue>,
     if_not_present: bool,
 }
 
 impl<S> AddAuthorization<S> {
+    /// Create a new [`AddAuthorization`] that does not add any authorization.
+    ///
+    /// Can be useful if you only want to add authorization for some branches
+    /// of your service.
+    pub fn none(inner: S) -> Self {
+        AddAuthorizationLayer::none().layer(inner)
+    }
+
     /// Authorize requests using a username and password pair.
     ///
     /// The `Authorization` header will be set to `Basic {credentials}` where `credentials` is
@@ -176,7 +197,9 @@ impl<S> AddAuthorization<S> {
     /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
     #[allow(clippy::wrong_self_convention)]
     pub fn as_sensitive(mut self, sensitive: bool) -> Self {
-        self.value.set_sensitive(sensitive);
+        if let Some(value) = &mut self.value {
+            value.set_sensitive(sensitive);
+        }
         self
     }
 
@@ -204,9 +227,11 @@ where
         ctx: Context<State>,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        if !self.if_not_present || !req.headers().contains_key(http::header::AUTHORIZATION) {
-            req.headers_mut()
-                .insert(http::header::AUTHORIZATION, self.value.clone());
+        if let Some(value) = &self.value {
+            if !self.if_not_present || !req.headers().contains_key(http::header::AUTHORIZATION) {
+                req.headers_mut()
+                    .insert(http::header::AUTHORIZATION, value.clone());
+            }
         }
         self.inner.serve(ctx, req).await
     }

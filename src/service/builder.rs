@@ -6,9 +6,7 @@ use super::{
         layer_fn, AndThenLayer, Identity, LayerFn, MapErrLayer, MapRequestLayer, MapResponseLayer,
         MapResultLayer, MapStateLayer, Stack, ThenLayer, TraceErrLayer,
     },
-    service_fn,
-    util::combinators::Either,
-    BoxService, Layer, Service,
+    service_fn, BoxService, Layer, Service,
 };
 use std::fmt;
 use std::future::Future;
@@ -61,19 +59,6 @@ impl<L> ServiceBuilder<L> {
         ServiceBuilder {
             layer: Stack::new(layer, self.layer),
         }
-    }
-
-    /// Optionally add a new layer `T` into the [`ServiceBuilder`].
-    pub fn option_layer<T>(
-        self,
-        layer: Option<T>,
-    ) -> ServiceBuilder<Stack<Either<T, Identity>, L>> {
-        let layer = if let Some(layer) = layer {
-            Either::A(layer)
-        } else {
-            Either::B(Identity::new())
-        };
-        self.layer(layer)
     }
 
     /// Add a [`Layer`] built from a function that accepts a service and returns another service.

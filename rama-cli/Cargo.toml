@@ -1,6 +1,6 @@
 [package]
 name = "rama-cli"
-description = "binary version of and cli utility for rama, a modular service framework"
+description = "rama cli to move and transform network packets"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -12,10 +12,15 @@ rust-version = { workspace = true }
 default-run = "rama"
 
 [dependencies]
-anyhow = { workspace = true }
-argh = { workspace = true }
-rama = { version = "0.2", path = ".." }
+bytes = { workspace = true }
+clap = { workspace = true }
+hex = { workspace = true }
+rama = { version = "0.2.0-alpha.0", path = ".." }
+serde_json = { workspace = true }
+terminal-prompt = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [[bin]]
 name = "rama"

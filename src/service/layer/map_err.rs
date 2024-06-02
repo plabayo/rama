@@ -28,9 +28,17 @@ where
 /// A [`Layer`] that produces [`MapErr`] services.
 ///
 /// [`Layer`]: crate::service::Layer
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct MapErrLayer<F> {
     f: F,
+}
+
+impl<F> std::fmt::Debug for MapErrLayer<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MapErrLayer")
+            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .finish()
+    }
 }
 
 impl<S, F> MapErr<S, F> {

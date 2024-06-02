@@ -1,4 +1,4 @@
-use super::Limit;
+use super::{policy::UnlimitedPolicy, Limit};
 use crate::service::Layer;
 
 /// Limit requests based on a [`Policy`].
@@ -13,6 +13,15 @@ impl<P> LimitLayer<P> {
     /// Creates a new [`LimitLayer`] from a [`crate::service::layer::limit::Policy`].
     pub fn new(policy: P) -> Self {
         LimitLayer { policy }
+    }
+}
+
+impl LimitLayer<UnlimitedPolicy> {
+    /// Creates a new [`LimitLayer`] with an unlimited policy.
+    ///
+    /// Meaning that all requests are allowed to proceed.
+    pub fn unlimited() -> Self {
+        Self::new(UnlimitedPolicy::default())
     }
 }
 

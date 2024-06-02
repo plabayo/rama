@@ -2,7 +2,7 @@
 members = [".", "fuzz", "rama-cli", "rama-fp", "rama-macros"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.2.0-alpha.0"
 license = "MIT OR Apache-2.0"
 edition = "2021"
 repository = "https://github.com/plabayo/rama"
@@ -13,24 +13,23 @@ authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
 rust-version = "1.75.0"
 
 [workspace.dependencies]
-anyhow = "1.0"
 async-compression = "0.4"
 base64 = "0.22"
 bitflags = "2.4"
 brotli = "6"
 bytes = "1"
-argh = "0.1"
+clap = { version = "4.5.4", features = ["derive"] }
 crossterm = "0.27"
 flate2 = "1.0"
 futures-lite = "2.3.0"
 futures-core = "0.3"
 h2 = "0.4"
 headers = "0.4"
+hex = "0.4"
 http = "1"
 http-body = "1"
 http-body-util = "0.1"
 http-range-header = "0.4.0"
-httparse = "1.8"
 httpdate = "1.0"
 hyper = "1.2"
 hyper-util = "0.1.4"
@@ -79,7 +78,9 @@ iri-string = "0.7.0"
 escargot = "0.5.10"
 divan = "0.1.14"
 webpki-roots = "0.26.1"
+terminal-prompt = "0.2.3"
 parking_lot = "0.12.3"
+const_format = "0.2.32"
 
 [package]
 name = "rama"
@@ -110,6 +111,7 @@ async-compression = { workspace = true, features = ["tokio", "brotli", "zlib", "
 base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
+const_format = { workspace = true }
 futures-core = { workspace = true }
 futures-lite = { workspace = true }
 h2 = { workspace = true }
@@ -118,7 +120,6 @@ http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
 http-range-header = { workspace = true }
-httparse = { workspace = true }
 httpdate = { workspace = true }
 hyper = { workspace = true, features = ["http1", "http2", "server", "client"] }
 hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
@@ -147,7 +148,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
-tokio = { workspace = true, features = ["macros", "fs"] }
+tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-graceful = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }

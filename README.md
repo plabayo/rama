@@ -62,7 +62,7 @@ This framework comes with 🔋 batteries included, giving you the full freedome 
 | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html) |
 | 🏗️ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/utils/graceful/index.html) ⸱ 🏗️ Connection Pool <sup>(1)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
-| 🏗️ binary | 🏗️ prebuilt binaries <sup>(1)</sup> ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ 🏗️ http client <sup>(1)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
+| ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/binary/rama) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
 | ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
 
@@ -124,6 +124,16 @@ rama = { git = "https://github.com/plabayo/rama" }
 📖 Rama's full documentation, references and background material can be found in the form of the "rama book" at <https://ramaproxy.org/book>.
 
 💬 Come join us at [Discord][discord-url] on the `#rama` public channel. To ask questions, discuss ideas and ask how rama may be useful for you.
+
+## ⌨️ | `rama` binary
+
+The `rama` binary allows you to use a lot of what `rama` has to offer without
+having to code yourself. It comes with a working http client for CLI, which emulates
+User-Agents and has other utilities. And it also comes with IP/Echo services.
+
+It also allows you to run a `rama` proxy, configured to your needs.
+
+Learn more about the `rama` binary and how to install it at <https://ramaproxy.org/book/binary/rama>.
 
 ## 🧪 | Experimental
 

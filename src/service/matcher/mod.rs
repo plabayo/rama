@@ -5,7 +5,7 @@
 //!
 //! - Examples of this are iterator "reducers" as made available via [`IteratorMatcherExt`],
 //!   as well as optional [`Matcher::or`] and [`Matcher::and`] trait methods.
-//! - These all serve as building blocks together with [`And`], [`Or`], [`Not`] and [`Always`]
+//! - These all serve as building blocks together with [`And`], [`Or`], [`Not`] and a bool
 //!   to combine and transform any kind of [`Matcher`].
 //! - And finally there is [`MatchFn`], easily created using [`match_fn`] to create a [`Matcher`]
 //!   from any compatible [`Fn`].
@@ -23,10 +23,6 @@
 //! [`TcpStream`]: tokio::net::TcpStream
 
 use super::{context::Extensions, Context};
-
-mod always;
-#[doc(inline)]
-pub use always::Always;
 
 mod op_or;
 #[doc(inline)]
@@ -113,6 +109,12 @@ where
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
         (**self).matches(ext, ctx, req)
+    }
+}
+
+impl<State, Request> Matcher<State, Request> for bool {
+    fn matches(&self, _: Option<&mut Extensions>, _: &Context<State>, _: &Request) -> bool {
+        *self
     }
 }
 

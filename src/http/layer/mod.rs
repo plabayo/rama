@@ -31,12 +31,14 @@ pub mod propagate_headers;
 pub mod proxy_auth;
 pub mod remove_header;
 pub mod request_id;
+pub mod required_header;
 pub mod retry;
 pub mod sensitive_headers;
 pub mod set_header;
 pub mod set_status;
 pub mod timeout;
 pub mod trace;
+pub mod traffic_writer;
 pub mod upgrade;
 pub mod validate_request;
 

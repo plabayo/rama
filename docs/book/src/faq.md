@@ -106,3 +106,33 @@ Most commonly you might get this error, especially the difficult ones, for high 
 - return a Result as the output of an `Endpoint` service/fn (when using the `WebService` router), instead of only returning the happy path value;
 
 There are other possibilities to get long wielded compiler errors as well. It is not feasible to list all possible reasons here, but know most likely it is among the lines of the examples above. If not, and you continue to be stuck, to feel free to join our discord at <https://discord.gg/29EetaSYCD> and reach out for help. We're here for you.
+
+## my cargo check/build/... commands take forever
+
+[Service stacks](./intro/service_stack.md) can become quiet complex in Rama. In case you notice that your current change
+makes the `cargo check` command (or something similar) becomes very slow, it should hopefully be clear
+why by checking `git diff` or a similar VCS action.
+
+The most common reasons for this is if:
+
+1. you have a very large function which also contains deeply nested generic types;
+2. you have a lot of [`Either`] service/layer stuff within your [Service stacks](./intro/service_stack.md).
+
+It's especially (2) that can slow you down if you overuse it. This usually comes op in case you use
+plenty of `Option<Layer<L>>` code to optionally create a layer based on a certain input/config variable.
+While this might seem like a good idea, and it can be if used sparsly, it can really slow you down once you
+use a couple of these. This is because under the hood this results in `Either<L::Service, S>`, meaning your
+`S` service (stack) will be twice in that signature. Do that a couple of times and you very quickly have a very long long type.
+
+Therefore it is recommended for optional layers/services to instead provide an option to create the same kind of layer/service
+type, but in a "nop" mode. Meaning the (middleware) service would essentially do nothing more then passing the request and response.
+
+Middleware provided by `rama` should provide this for all types that are commonly used in a setting where they might be opt-in.
+Please do [open an issue](https://github.com/plabayo/rama/issues) if you notice a case for which this is not yet possible.
+
+Another option is to use [`Either`] on the internal policy/config items used by your layer.
+[`follow_redirect::policy::Unlimited`](https://ramaproxy.org/docs/rama/http/layer/follow_redirect/policy/struct.Unlimited.html) is an example
+of this, to allow you to have a `redirect` layer which is either limited or not. This is fine,
+because your `Either` has only a depth of one, in contrast to having it contain the entire inner "service stack".
+
+[`Either`]: https://ramaproxy.org/docs/rama/service/util/combinators/enum.Either.html
