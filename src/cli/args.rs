@@ -215,8 +215,12 @@ impl RequestArgsBuilder {
                 });
 
                 let req = if req.headers_ref().is_none() {
-                    req.header(CONTENT_TYPE, ct.header_value())
-                        .header(ACCEPT, ct.header_value())
+                    let req = req.header(CONTENT_TYPE, ct.header_value());
+                    if ct == ContentType::Json {
+                        req.header(ACCEPT, ct.header_value())
+                    } else {
+                        req
+                    }
                 } else {
                     let headers = req.headers_mut().unwrap();
 
@@ -224,8 +228,10 @@ impl RequestArgsBuilder {
                         entry.insert(ct.header_value());
                     }
 
-                    if let Entry::Vacant(entry) = headers.entry(ACCEPT) {
-                        entry.insert(ct.header_value());
+                    if ct == ContentType::Json {
+                        if let Entry::Vacant(entry) = headers.entry(ACCEPT) {
+                            entry.insert(ct.header_value());
+                        }
                     }
 
                     req
@@ -456,7 +462,7 @@ mod tests {
                     "c=d",
                     "Content-Type:application/x-www-form-urlencoded",
                 ],
-                "POST /foo HTTP/1.1\r\ncontent-type: application/x-www-form-urlencoded\r\naccept: application/x-www-form-urlencoded\r\ncontent-length: 3\r\n\r\nc=d",
+                "POST /foo HTTP/1.1\r\ncontent-type: application/x-www-form-urlencoded\r\ncontent-length: 3\r\n\r\nc=d",
             ),
             (
                 vec![
@@ -534,7 +540,7 @@ mod tests {
                     "example.com/foo",
                     "c=d",
                 ],
-                "POST /foo HTTP/1.1\r\ncontent-type: application/x-www-form-urlencoded\r\naccept: application/x-www-form-urlencoded\r\ncontent-length: 3\r\n\r\nc=d",
+                "POST /foo HTTP/1.1\r\ncontent-type: application/x-www-form-urlencoded\r\ncontent-length: 3\r\n\r\nc=d",
             ),
         ] {
             let mut builder = RequestArgsBuilder::new_form();
