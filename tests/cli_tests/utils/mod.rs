@@ -86,19 +86,19 @@ impl RamaService {
             .unwrap()
             .command()
             .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
             .args(args)
             .spawn()
             .unwrap();
 
         let output = child.wait_with_output()?;
+        assert!(output.status.success());
         let output = String::from_utf8(output.stdout)?;
         Ok(output)
     }
 
     /// Run the http command
     pub fn http(input_args: Vec<&'static str>) -> Result<String, Box<dyn std::error::Error>> {
-        let mut args = vec!["http", "-v", "--all", "-F"];
+        let mut args = vec!["http", "--debug", "-v", "--all", "-F"];
         args.extend(input_args);
         Self::run(args)
     }
