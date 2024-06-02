@@ -1,4 +1,4 @@
-use argh::FromArgs;
+use clap::{Parser, Subcommand};
 use rama::error::BoxError;
 
 mod echo;
@@ -13,42 +13,31 @@ use proxy::CliCommandProxy;
 mod ip;
 use ip::CliCommandIp;
 
-#[derive(Debug, FromArgs)]
-/// rama cli to move and transform network packets
-///
-/// https://ramaproxy.org
+#[derive(Debug, Parser)]
+#[command(name = "rama")]
+#[command(bin_name = "rama")]
+#[command(version, about, long_about = None)]
 struct Cli {
-    #[argh(subcommand)]
+    #[command(subcommand)]
     cmds: CliCommands,
 }
 
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand)]
+#[derive(Debug, Subcommand)]
 enum CliCommands {
     Echo(CliCommandEcho),
     Http(CliCommandHttp),
     Proxy(CliCommandProxy),
     Ip(CliCommandIp),
-    Version(CliCommandVersion),
 }
-
-#[derive(FromArgs, PartialEq, Debug)]
-#[argh(subcommand, name = "version")]
-/// print the version information
-struct CliCommandVersion {}
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
-    let cli: Cli = argh::from_env();
+    let cli = Cli::parse();
 
     match cli.cmds {
         CliCommands::Echo(cfg) => echo::run(cfg).await,
         CliCommands::Http(cfg) => http::run(cfg).await,
         CliCommands::Proxy(cfg) => proxy::run(cfg).await,
         CliCommands::Ip(cfg) => ip::run(cfg).await,
-        CliCommands::Version(_) => {
-            println!("{}", rama::utils::info::VERSION);
-            Ok(())
-        }
     }
 }

@@ -1,4 +1,4 @@
-use argh::FromArgs;
+use clap::Args;
 use rama::{
     cli::args::RequestArgsBuilder,
     error::{error, BoxError, ErrorContext, OpaqueError},
@@ -30,97 +30,148 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 mod tls;
 mod writer;
 
-#[derive(FromArgs, PartialEq, Debug, Clone)]
-/// rama http client (run usage for more info)
-#[argh(subcommand, name = "http")]
+#[derive(Args, Debug, Clone)]
+/// rama http client
 pub struct CliCommandHttp {
-    #[argh(switch, short = 'j')]
+    #[arg(short = 'j', long)]
     /// data items from the command line are serialized as a JSON object.
-    /// The Content-Type and Accept headers are set to application/json
+    /// The `Content-Type` and `Accept headers` are set to `application/json`
     /// (if not specified)
     ///
     /// (default)
     json: bool,
 
-    #[argh(switch, short = 'f')]
+    #[arg(short = 'f', long)]
     /// data items from the command line are serialized as form fields.
     ///
-    /// The Content-Type is set to application/x-www-form-urlencoded (if not specified).
+    /// The `Content-Type` is set to `application/x-www-form-urlencoded` (if not specified).
     form: bool,
 
-    #[argh(switch, short = 'F')]
+    #[arg(short = 'F', long)]
     /// follow 30 Location redirects
     follow: bool,
 
-    #[argh(option, default = "30")]
+    #[arg(long, default_value_t = 30)]
     /// the maximum number of redirects to follow
     max_redirects: usize,
 
-    #[argh(option, short = 'a')]
-    /// client authentication: `USER[:PASS]` | TOKEN, if basic and no password is given it will be promped
+    #[arg(long, short = 'a')]
+    /// client authentication: `USER[:PASS]` | TOKEN,
+    /// if basic and no password is given it will be promped
     auth: Option<String>,
 
-    #[argh(option, short = 'A', default = "String::from(\"basic\")")]
+    #[arg(long, short = 'A', default_value = "basic")]
     /// the type of authentication to use (basic, bearer)
     auth_type: String,
 
-    #[argh(switch, short = 'k')]
+    #[arg(short = 'k', long)]
     /// skip Tls certificate verification
     insecure: bool,
 
-    #[argh(option)]
+    #[arg(long)]
     /// the desired tls version to use (automatically defined by default, choices are: 1.2, 1.3)
     tls: Option<String>,
 
-    #[argh(option)]
+    #[arg(long)]
     /// the client tls certificate file path to use
     cert: Option<String>,
 
-    #[argh(option)]
+    #[arg(long)]
     /// the client tls key file path to use
     cert_key: Option<String>,
 
-    #[argh(option, short = 't', default = "0")]
+    #[arg(long, short = 't', default_value = "0")]
     /// the timeout in seconds for each connection (0 = default timeout of 180s)
     timeout: u64,
 
-    #[argh(switch)]
+    #[arg(long)]
     /// fail if status code is not 2xx (4 if 4xx and 5 if 5xx)
     check_status: bool,
 
-    #[argh(option, short = 'p')]
+    #[arg(long, short = 'p')]
     /// define what the output should contain ('h'/'H' for headers, 'b'/'B' for body (response/request)
     print: Option<String>,
 
-    #[argh(switch, short = 'b')]
+    #[arg(short = 'b', long)]
     /// print the response body (short for --print b)
     body: bool,
 
-    #[argh(switch, short = 'H')]
+    #[arg(short = 'H', long)]
     /// print the response headers (short for --print h)
     headers: bool,
 
-    #[argh(switch, short = 'v')]
+    #[arg(short = 'v', long)]
     /// print verbose output, alias for --all --print hHbB (not used in offline mode)
     verbose: bool,
 
-    #[argh(switch)]
+    #[arg(long)]
     /// show output for all requests/responses (including redirects)
     all: bool,
 
-    #[argh(switch)]
+    #[arg(long)]
     /// print the request instead of executing it
     offline: bool,
 
-    #[argh(option, short = 'o')]
+    #[arg(long, short = 'o')]
     /// write output to file instead of stdout
     output: Option<String>,
 
-    #[argh(switch)]
+    #[arg(long)]
     /// print debug info
     debug: bool,
 
-    #[argh(positional, greedy)]
+    #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+    /// positional arguments to populate request headers and body
+    ///
+    /// These arguments come after any flags and in the order they are listed here.
+    /// Only the URL is required.
+    ///
+    /// # METHOD
+    ///
+    /// The HTTP method to be used for the request (GET, POST, PUT, DELETE, ...).
+    ///
+    /// This argument can be omitted in which case HTTPie will use POST if there
+    /// is some data to be sent, otherwise GET:
+    ///
+    ///     $ rama http example.org               # => GET
+    ///
+    ///     $ rama http example.org hello=world   # => POST
+    ///
+    /// # URL
+    ///
+    /// The request URL. Scheme defaults to 'http://' if the URL
+    /// does not include one.
+    ///
+    /// You can also use a shorthand for localhost
+    ///
+    ///    $ rama http :3000    # => http://localhost:3000
+    ///
+    ///    $ rama http :/foo    # => http://localhost/foo
+    ///
+    /// # REQUEST_ITEM
+    ///
+    /// Optional key-value pairs to be included in the request. The separator used
+    /// determines the type:
+    ///
+    /// ':' HTTP headers:
+    ///
+    ///     Referer:https://ramaproxy.org  Cookie:foo=bar  User-Agent:rama/0.2.0
+    ///
+    /// '==' URL parameters to be appended to the request URI:
+    ///
+    ///     search==rama
+    ///
+    /// '=' Data fields to be serialized into a JSON object or form data:
+    ///
+    ///     name=rama  language=Rust  description='CLI HTTP client'
+    ///
+    /// ':=' Non-string data fields:
+    ///
+    ///     awesome:=true  amount:=42  colors:='["red", "green", "blue"]'
+    ///
+    /// You can use a backslash to escape a colliding separator in the field name:
+    ///
+    ///     field-name-with\:colon=value
     args: Vec<String>,
 }
 

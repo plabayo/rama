@@ -1,6 +1,6 @@
 [package]
 name = "rama-cli"
-description = "binary version of and cli utility for rama, a modular service framework"
+description = "rama cli to move and transform network packets"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -12,8 +12,8 @@ rust-version = { workspace = true }
 default-run = "rama"
 
 [dependencies]
-argh = { workspace = true }
 bytes = { workspace = true }
+clap = { workspace = true }
 hex = { workspace = true }
 rama = { version = "0.2", path = ".." }
 serde_json = { workspace = true }

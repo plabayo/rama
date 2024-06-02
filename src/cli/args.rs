@@ -491,6 +491,27 @@ mod tests {
                 ],
                 "PUT /foo?a=2&a=3 HTTP/1.1\r\nx-a: 1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 8\r\n\r\n{\"a\":42}",
             ),
+            (
+                vec![
+                    ":3000",
+                    "Cookie:foo=bar",
+                ],
+                "GET / HTTP/1.1\r\ncookie: foo=bar\r\n\r\n",
+            ),
+            (
+                vec![
+                    ":/foo",
+                    "search==rama",
+                ],
+                "GET /foo?search=rama HTTP/1.1\r\n\r\n",
+            ),
+            (
+                vec![
+                    "example.com",
+                    "description='CLI HTTP client'",
+                ],
+                "POST / HTTP/1.1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 35\r\n\r\n{\"description\":\"'CLI HTTP client'\"}",
+            )
         ] {
             let mut builder = RequestArgsBuilder::new();
             for arg in args {

@@ -1,4 +1,4 @@
-use argh::FromArgs;
+use clap::Args;
 use rama::{
     error::BoxError,
     http::{
@@ -24,31 +24,30 @@ use tokio::io::AsyncWriteExt;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)
-#[argh(subcommand, name = "ip")]
 pub struct CliCommandIp {
-    #[argh(option, short = 'p', default = "8080")]
+    #[arg(long, short = 'p', default_value_t = 8080)]
     /// the port to listen on
     port: u16,
 
-    #[argh(option, short = 'i', default = "String::from(\"127.0.0.1\")")]
+    #[arg(long, short = 'i', default_value = "127.0.0.1")]
     /// the interface to listen on
     interface: String,
 
-    #[argh(option, short = 'c', default = "0")]
+    #[arg(long, short = 'c', default_value_t = 0)]
     /// the number of concurrent connections to allow (0 = no limit)
     concurrent: usize,
 
-    #[argh(option, short = 't', default = "8")]
+    #[arg(long, short = 't', default_value = "8")]
     /// the timeout in seconds for each connection (0 = default timeout of 30s)
     timeout: u64,
 
-    #[argh(switch, short = 'a')]
+    #[arg(long, short = 'a')]
     /// enable HaProxy PROXY Protocol
     ha_proxy: bool,
 
-    #[argh(switch, short = 'T')]
+    #[arg(long, short = 'T')]
     /// operate the IP service on transport layer (tcp)
     transport: bool,
 }

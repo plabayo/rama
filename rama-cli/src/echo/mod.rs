@@ -1,4 +1,4 @@
-use argh::FromArgs;
+use clap::Args;
 use rama::{
     error::BoxError,
     http::{
@@ -24,27 +24,26 @@ use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-#[derive(FromArgs, PartialEq, Debug)]
+#[derive(Debug, Args)]
 /// rama echo service (echos the http request and tls client config)
-#[argh(subcommand, name = "echo")]
 pub struct CliCommandEcho {
-    #[argh(option, short = 'p', default = "8080")]
+    #[arg(short = 'p', long, default_value_t = 8080)]
     /// the port to listen on
     port: u16,
 
-    #[argh(option, short = 'i', default = "String::from(\"127.0.0.1\")")]
+    #[arg(short = 'i', long, default_value = "127.0.0.1")]
     /// the interface to listen on
     interface: String,
 
-    #[argh(option, short = 'c', default = "0")]
+    #[arg(short = 'c', long, default_value_t = 0)]
     /// the number of concurrent connections to allow (0 = no limit)
     concurrent: usize,
 
-    #[argh(option, short = 't', default = "8")]
+    #[arg(short = 't', long, default_value_t = 8)]
     /// the timeout in seconds for each connection (0 = no timeout)
     timeout: u64,
 
-    #[argh(switch, short = 'a')]
+    #[arg(short = 'a', long)]
     /// enable HaProxy PROXY Protocol
     ha_proxy: bool,
 }
