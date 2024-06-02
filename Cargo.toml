@@ -138,7 +138,7 @@ pin-project-lite = { workspace = true }
 pki-types = { workspace = true }
 prometheus = { workspace = true, optional = true }
 quickcheck = { workspace = true }
-rama-macros = { path = "rama-macros" }
+rama-macros = { version = "0.2.0-alpha.0", path = "rama-macros" }
 rcgen = { workspace = true }
 regex = { workspace = true }
 rustls = { workspace = true }
