@@ -31,5 +31,11 @@
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
 
+# Binary
+
+- [⌨️ `rama` binary](./binary/rama.md)
+
+# Appendices
+
 [❓ FAQ](./faq.md)
 [💖 Sponsor](./sponsor.md)

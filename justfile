@@ -100,3 +100,6 @@ detect-biggest-fn:
 
 detect-biggest-crates:
 	cargo bloat --package rama-cli --release --crates
+
+mdbook-serve:
+	cd docs/book && mdbook serve
