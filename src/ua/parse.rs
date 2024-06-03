@@ -43,24 +43,24 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
         contains_ignore_ascii_case(ua, "Firefox")
     {
         let kind = UserAgentKind::Firefox;
-        let kind_version = parse_ua_version_firefox(&ua[loc..]);
+        let kind_version = parse_ua_version_firefox_and_chromium(&ua[loc..]);
         (Some(kind), kind_version, None)
     } else if let Some(loc) = contains_ignore_ascii_case(ua, "Chrom") {
         let kind = UserAgentKind::Chromium;
-        let kind_version = parse_ua_version_chromium(&ua[loc..]);
+        let kind_version = parse_ua_version_firefox_and_chromium(&ua[loc..]);
         (Some(kind), kind_version, None)
     } else if contains_ignore_ascii_case(ua, "Safari").is_some() {
         if let Some(firefox_loc) = contains_ignore_ascii_case(ua, "FxiOS") {
             let kind = UserAgentKind::Firefox;
-            let kind_version = parse_ua_version_firefox(&ua[firefox_loc..]);
+            let kind_version = parse_ua_version_firefox_and_chromium(&ua[firefox_loc..]);
             (Some(kind), kind_version, Some(PlatformKind::IOS))
         } else if let Some(chrome_loc) = contains_ignore_ascii_case(ua, "CriOS") {
             let kind = UserAgentKind::Chromium;
-            let kind_version = parse_ua_version_chromium(&ua[chrome_loc..]);
+            let kind_version = parse_ua_version_firefox_and_chromium(&ua[chrome_loc..]);
             (Some(kind), kind_version, Some(PlatformKind::IOS))
         } else if let Some(chromium_loc) = contains_any_ignore_ascii_case(ua, &["Opera"]) {
             let kind = UserAgentKind::Chromium;
-            let kind_version = parse_ua_version_chromium(&ua[chromium_loc..]);
+            let kind_version = parse_ua_version_firefox_and_chromium(&ua[chromium_loc..]);
             (Some(kind), kind_version, None)
         } else {
             let kind = UserAgentKind::Safari;
@@ -154,18 +154,13 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
     }
 }
 
-fn parse_ua_version_chromium(ua: &str) -> Option<usize> {
+fn parse_ua_version_firefox_and_chromium(ua: &str) -> Option<usize> {
     ua.find('/').and_then(|i| {
         let start = i + 1;
-        let end = ua[start..].find('.').map(|i| start + i).unwrap_or(ua.len());
-        ua[start..end].parse().ok()
-    })
-}
-
-fn parse_ua_version_firefox(ua: &str) -> Option<usize> {
-    ua.find('/').and_then(|i| {
-        let start = i + 1;
-        let end = ua[start..].find('.').map(|i| start + i).unwrap_or(ua.len());
+        let end = ua[start..]
+            .find(['.', ' '])
+            .map(|i| start + i)
+            .unwrap_or(ua.len());
         ua[start..end].parse().ok()
     })
 }
@@ -173,7 +168,7 @@ fn parse_ua_version_firefox(ua: &str) -> Option<usize> {
 fn parse_ua_version_safari(ua: &str) -> Option<usize> {
     ua.find("Version/").and_then(|i| {
         let start = i + 8;
-        let mut parts = ua[start..].split('.');
+        let mut parts = ua[start..].split(['.', ' ']);
         let major: usize = parts.next()?.parse().ok()?;
         let minor: usize = parts
             .next()
@@ -377,6 +372,89 @@ mod tests {
                 "'{}' in '{}'",
                 sub,
                 s
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_ua_version_safari() {
+        for (test_case, expected_version) in [
+            ("Version/14.0.1", Some(1400)),
+            ("Version/14.0", Some(1400)),
+            ("Version/14.3", Some(1403)),
+            ("Version/14.3 ", Some(1403)),
+            ("Version/14.3 foo", Some(1403)),
+            ("Version/14", Some(1400)),
+            ("Version/14 ", Some(1400)),
+            ("Version/14 foo", Some(1400)),
+            ("Version/14.", Some(1400)),
+            ("Version/14.0.", Some(1400)),
+            ("Version/14.3.", Some(1403)),
+            ("Version/14.0.1.", Some(1400)),
+            ("Version/99.99", Some(9999)),
+            ("Version/99.99.", Some(9999)),
+            ("Version/99.99.99", Some(9999)),
+            ("Version/99.99.99.99", Some(9999)),
+        ] {
+            assert_eq!(
+                super::parse_ua_version_safari(test_case),
+                expected_version,
+                "test_case: '{}'",
+                test_case
+            );
+            assert_eq!(
+                super::parse_ua_version_safari(format!("foo {test_case}").as_str()),
+                expected_version,
+                "[prefixed] test_case: '{}'",
+                test_case
+            );
+            assert_eq!(
+                super::parse_ua_version_safari(format!("{test_case} bar").as_str()),
+                expected_version,
+                "[postfixed] test_case: '{}'",
+                test_case
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_ua_version_firefox_and_chromium() {
+        for (test_case, expected_version) in [
+            ("/14.0.1", Some(14)),
+            ("/14.0", Some(14)),
+            ("/14.3", Some(14)),
+            ("/14.3 ", Some(14)),
+            ("/14.3 foo", Some(14)),
+            ("/14", Some(14)),
+            ("/14 ", Some(14)),
+            ("Version/14 ", Some(14)),
+            ("/14 foo", Some(14)),
+            ("/14.", Some(14)),
+            ("/14.0.", Some(14)),
+            ("/14.3.", Some(14)),
+            ("/14.0.1.", Some(14)),
+            ("/99.99", Some(99)),
+            ("/99.99.", Some(99)),
+            ("/99.99.99", Some(99)),
+            ("/99.99.99.99", Some(99)),
+        ] {
+            assert_eq!(
+                super::parse_ua_version_firefox_and_chromium(test_case),
+                expected_version,
+                "test_case: '{}'",
+                test_case
+            );
+            assert_eq!(
+                super::parse_ua_version_firefox_and_chromium(format!("foo {test_case}").as_str()),
+                expected_version,
+                "[prefixed] test_case: '{}'",
+                test_case
+            );
+            assert_eq!(
+                super::parse_ua_version_firefox_and_chromium(format!("{test_case} bar").as_str()),
+                expected_version,
+                "[postfixed] test_case: '{}'",
+                test_case
             );
         }
     }

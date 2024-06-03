@@ -316,9 +316,15 @@ fn test_parse_happy_uas() {
             platform: Some(PlatformKind::MacOS),
         },
         TestCase {
+            ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+            version: Some(1705),
+            kind: Some(UserAgentKind::Safari),
+            platform: Some(PlatformKind::MacOS),
+        },
+        TestCase {
             ua: "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_4_1) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17 Safari/605.1.15",
             kind: Some(UserAgentKind::Safari),
-            version: None,
+            version: Some(1700),
             platform: Some(PlatformKind::MacOS),
         },
         TestCase {
@@ -340,7 +346,8 @@ fn test_parse_happy_uas() {
         assert_eq!(ua.info(), test_case.kind.map(|kind| UserAgentInfo {
             kind,
             version: test_case.version,
-        }));
+        }),
+        "UA = '{}'", test_case.ua);
         assert_eq!(ua.platform(), test_case.platform, "UA: {}", test_case.ua);
     }
 }
