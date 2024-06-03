@@ -94,7 +94,7 @@ sudo certbot certonly --manual -d fp.ramaproxy.org
 4. press `enter` in process started in step (1)
 5. copy key and cert files, found at and to be made available as secrets at:
   - `RAMA_FP_TLS_CRT`: `sudo cat /etc/letsencrypt/live/fp.ramaproxy.org/fullchain.pem | base64 | pbcopy`
-  - `RAMA_FP_TLS_KEY`: `sudo cat /etc/letsencrypt/live/fp.ramaproxy.org/privkey.pe | base64 | pbcopy`
+  - `RAMA_FP_TLS_KEY`: `sudo cat /etc/letsencrypt/live/fp.ramaproxy.org/privkey.pem | base64 | pbcopy`
 
 For now this process has to be repeated every 90 days, for both the `fp.*` and `h1.fp.*` subdomains.
 We can probably automate this already using a manual github action flow, given that `certbot` can be used
