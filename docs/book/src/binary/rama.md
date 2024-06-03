@@ -30,7 +30,7 @@ Options:
 The easiest way to install `rama` is by using `cargo`:
 
 ```sh
-cargo install rama-cli
+cargo install rama-cli@0.2.0-alpha.0
 ```
 
 This will install `rama-cli` from source and make it available
@@ -39,11 +39,15 @@ a pre-built binary when available for your platform you can do so
 using [`cargo binstall`](https://github.com/cargo-bins/cargo-binstall):
 
 ```sh
-cargo binstall rama-cli
+cargo binstall rama-cli@0.2.0-alpha.0
 ```
 
 On 🍎 MacOS you can also install the `rama` binary using [HomeBrew](https://brew.sh/):
 
 ```
+brew tap plabayo/rama
 brew install rama
 ```
+
+> Contributions to the homebrew distributions can be made via
+> <https://github.com/plabayo/homebrew-rama>.

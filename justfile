@@ -103,3 +103,13 @@ detect-biggest-crates:
 
 mdbook-serve:
 	cd docs/book && mdbook serve
+
+rama-cli-release-build TARGET:
+	cargo build -p rama-cli --bin rama --release --target {{TARGET}}
+	cd target/{{TARGET}}/release && \
+		tar -czf rama-{{TARGET}}.tar.gz rama && \
+		shasum -a 256 rama-{{TARGET}}.tar.gz > rama-{{TARGET}}.tar.gz.sha256
+
+rama-cli-release-build-all:
+	just rama-cli-release-build x86_64-apple-darwin
+	just rama-cli-release-build aarch64-apple-darwin
