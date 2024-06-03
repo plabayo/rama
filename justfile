@@ -106,9 +106,10 @@ mdbook-serve:
 
 rama-cli-release-build TARGET:
 	cargo build -p rama-cli --bin rama --release --target {{TARGET}}
-	cd target/{{TARGET}}/release && \
-		tar -czf rama-{{TARGET}}.tar.gz rama && \
-		shasum -a 256 rama-{{TARGET}}.tar.gz > rama-{{TARGET}}.tar.gz.sha256
+	VERSION="$(cat Cargo.toml | grep -E '^version = "' | cut -d\" -f2)" && \
+		cd target/{{TARGET}}/release && \
+		tar -czf rama-cli-${VERSION}-{{TARGET}}.tar.gz rama && \
+		shasum -a 256 rama-cli-${VERSION}-{{TARGET}}.tar.gz > rama-cli-${VERSION}-{{TARGET}}.tar.gz.sha256
 
 rama-cli-release-build-all:
 	just rama-cli-release-build x86_64-apple-darwin
