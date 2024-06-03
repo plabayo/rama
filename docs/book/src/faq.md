@@ -131,8 +131,5 @@ Middleware provided by `rama` should provide this for all types that are commonl
 Please do [open an issue](https://github.com/plabayo/rama/issues) if you notice a case for which this is not yet possible.
 
 Another option is to use [`Either`] on the internal policy/config items used by your layer.
-[`follow_redirect::policy::Unlimited`](https://ramaproxy.org/docs/rama/http/layer/follow_redirect/policy/struct.Unlimited.html) is an example
-of this, to allow you to have a `redirect` layer which is either limited or not. This is fine,
-because your `Either` has only a depth of one, in contrast to having it contain the entire inner "service stack".
 
 [`Either`]: https://ramaproxy.org/docs/rama/service/util/combinators/enum.Either.html
