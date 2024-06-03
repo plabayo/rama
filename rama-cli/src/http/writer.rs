@@ -11,12 +11,12 @@ use std::path::PathBuf;
 use tokio::{fs::OpenOptions, io::stdout, sync::mpsc::Sender};
 
 #[derive(Debug, Clone)]
-pub enum WriterKind {
+pub(super) enum WriterKind {
     Stdout,
     File(PathBuf),
 }
 
-pub async fn create_traffic_writers(
+pub(super) async fn create_traffic_writers(
     executor: &Executor,
     kind: WriterKind,
     all: bool,

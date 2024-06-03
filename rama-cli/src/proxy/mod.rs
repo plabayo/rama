@@ -1,3 +1,5 @@
+//! rama proxy service
+
 use clap::Args;
 use rama::{
     error::BoxError,
@@ -44,6 +46,7 @@ pub struct CliCommandProxy {
     timeout: u64,
 }
 
+/// run the rama proxy service
 pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
     tracing_subscriber::registry()
         .with(fmt::layer())

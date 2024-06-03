@@ -1,3 +1,5 @@
+//! rama http client
+
 use clap::Args;
 use rama::{
     cli::args::RequestArgsBuilder,
@@ -26,6 +28,8 @@ use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+use crate::error::ErrorWithExitCode;
 
 mod tls;
 mod writer;
@@ -180,6 +184,7 @@ pub struct CliCommandHttp {
 // - fix bug in body print (we seem to print garbage)
 //    - this might to do with fact that decompressor comes later
 
+/// Run the HTTP client command.
 pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -254,11 +259,17 @@ async fn run_inner(guard: ShutdownGuard, cfg: CliCommandHttp) -> Result<(), BoxE
     if cfg.check_status {
         let status = response.status();
         if status.is_client_error() {
-            eprintln!("client error: {}", status);
-            std::process::exit(4);
+            return Err(ErrorWithExitCode::new(
+                4,
+                OpaqueError::from_display(format!("client http error, status: {status}")),
+            )
+            .into());
         } else if status.is_server_error() {
-            eprintln!("server error: {}", status);
-            std::process::exit(5);
+            return Err(ErrorWithExitCode::new(
+                5,
+                OpaqueError::from_display(format!("server http error, status: {status}")),
+            )
+            .into());
         }
     }
 

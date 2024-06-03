@@ -1,3 +1,5 @@
+//! Echo service that echos the http request and tls client config
+
 use clap::Args;
 use rama::{
     error::BoxError,
@@ -48,6 +50,7 @@ pub struct CliCommandEcho {
     ha_proxy: bool,
 }
 
+/// run the rama echo service
 pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -104,7 +107,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
     Ok(())
 }
 
-pub async fn echo<State>(ctx: Context<State>, req: Request) -> Result<Response, Infallible> {
+async fn echo<State>(ctx: Context<State>, req: Request) -> Result<Response, Infallible> {
     let user_agent_info = ctx
         .get()
         .map(|ua: &UserAgent| {
@@ -175,7 +178,7 @@ pub async fn echo<State>(ctx: Context<State>, req: Request) -> Result<Response, 
             }),
             "method": format!("{:?}", parts.method),
             "authority": authority,
-            "path": parts.uri.path().to_string(),
+            "path": parts.uri.path().to_owned(),
             "query": parts.uri.query().map(str::to_owned),
             "headers": headers,
             "payload": body,

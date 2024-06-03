@@ -15,7 +15,7 @@ use rama::{
 use std::sync::Arc;
 
 /// Create a new [`ClientConfig`] for a TLS cli client.
-pub async fn create_tls_client_config(
+pub(super) async fn create_tls_client_config(
     insecure: bool,
     tls_version: Option<String>,
     client_cert_path: Option<String>,

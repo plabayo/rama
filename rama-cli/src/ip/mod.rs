@@ -1,3 +1,5 @@
+//! rama ip service
+
 use clap::Args;
 use rama::{
     error::BoxError,
@@ -52,6 +54,7 @@ pub struct CliCommandIp {
     transport: bool,
 }
 
+/// run the rama ip service
 pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
     tracing_subscriber::registry()
         .with(fmt::layer())
@@ -120,7 +123,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
     Ok(())
 }
 
-pub async fn ip<State>(ctx: Context<State>, _: Request) -> Result<Response, Infallible>
+async fn ip<State>(ctx: Context<State>, _: Request) -> Result<Response, Infallible>
 where
     State: Send + Sync + 'static,
 {
