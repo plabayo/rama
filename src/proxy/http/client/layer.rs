@@ -1,4 +1,4 @@
-use crate::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
+use crate::error::{BoxError, ErrorExt, OpaqueError};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
 use crate::http::headers::HeaderMapExt;
 use crate::http::headers::{Authorization, ProxyAuthorization};
@@ -108,37 +108,32 @@ impl FromStr for HttpProxyInfo {
 }
 
 impl HttpProxyConnectorLayer<HttpProxyInfo> {
-    /// create a new [`HttpProxyConnectorLayer`] from an environment variable.
-    pub fn try_proxy_from_env(key: impl AsRef<str>) -> Result<Self, OpaqueError> {
-        let key = key.as_ref();
-        let raw_uri = std::env::var(key).map_err(|err| {
-            OpaqueError::from_std(err).with_context(|| format!("fetch http proxy from env '{key}'"))
-        })?;
-
-        let proxy_info = raw_uri
-            .parse()
-            .with_context(|| format!("parse http proxy from env '{key}'"))?;
-
-        Ok(Self {
-            provider: proxy_info,
-        })
-    }
-
-    /// Creates a new [`HttpProxyConnectorLayer`] from the environment variable `HTTP_PROXY`.
-    pub fn try_proxy_from_env_default() -> Result<Self, OpaqueError> {
-        Self::try_proxy_from_env("HTTP_PROXY")
-    }
-
     /// Creates a new [`HttpProxyConnectorLayer`].
-    pub fn proxy_static(info: HttpProxyInfo) -> Self {
+    pub fn hardcoded(info: HttpProxyInfo) -> Self {
         Self { provider: info }
+    }
+}
+
+impl HttpProxyConnectorLayer<private::FromEnv> {
+    /// Creates a new [`HttpProxyConnectorLayer`] which will establish
+    /// a proxy connection over the environment variable `HTTP_PROXY`.
+    pub fn from_env_default() -> Self {
+        Self::from_env("HTTP_PROXY".to_owned())
+    }
+
+    /// Creates a new [`HttpProxyConnectorLayer`] which will establish
+    /// a proxy connection over the given environment variable.
+    pub fn from_env(key: String) -> Self {
+        Self {
+            provider: private::FromEnv(key),
+        }
     }
 }
 
 impl HttpProxyConnectorLayer<private::FromContext> {
     /// Creates a new [`HttpProxyConnectorLayer`] which will establish
     /// a proxy connection in case the context contains a [`HttpProxyInfo`].
-    pub fn proxy_from_context() -> Self {
+    pub fn from_context() -> Self {
         Self {
             provider: private::FromContext,
         }
@@ -179,37 +174,15 @@ impl<S: Clone, P: Clone> Clone for HttpProxyConnectorService<S, P> {
 
 impl<S, P> HttpProxyConnectorService<S, P> {
     /// Creates a new [`HttpProxyConnectorService`].
-    pub fn new(provider: P, inner: S) -> Self {
+    fn new(provider: P, inner: S) -> Self {
         Self { inner, provider }
     }
 }
 
 impl<S> HttpProxyConnectorService<S, HttpProxyInfo> {
-    /// create a new [`HttpProxyConnectorService`] from an environment variable.
-    pub fn try_proxy_from_env(key: impl AsRef<str>, inner: S) -> Result<Self, OpaqueError> {
-        let key = key.as_ref();
-        let raw_uri = std::env::var(key).map_err(|err| {
-            OpaqueError::from_std(err).with_context(|| format!("fetch http proxy from env '{key}'"))
-        })?;
-
-        let proxy_info = raw_uri
-            .parse()
-            .with_context(|| format!("parse http proxy from env '{key}'"))?;
-
-        Ok(Self {
-            provider: proxy_info,
-            inner,
-        })
-    }
-
-    /// Creates a new [`HttpProxyConnectorService`] from the environment variable `HTTP_PROXY`.
-    pub fn try_proxy_from_env_default(inner: S) -> Result<Self, OpaqueError> {
-        Self::try_proxy_from_env("HTTP_PROXY", inner)
-    }
-
     /// Creates a new [`HttpProxyConnectorService`] which will establish
     /// a proxied connection over the given proxy info.
-    pub fn proxy_static(info: HttpProxyInfo, inner: S) -> Self {
+    pub fn hardcoded(info: HttpProxyInfo, inner: S) -> Self {
         Self::new(info, inner)
     }
 }
@@ -218,8 +191,20 @@ impl<S> HttpProxyConnectorService<S, private::FromContext> {
     /// Creates a new [`HttpProxyConnectorService`] which will establish
     /// a proxied connection if the context contains the info,
     /// otherwise it will establish a direct connection.
-    pub fn proxy_from_context(inner: S) -> Self {
+    pub fn from_context(inner: S) -> Self {
         Self::new(private::FromContext, inner)
+    }
+}
+
+impl<S> HttpProxyConnectorService<S, private::FromEnv> {
+    /// create a new [`HttpProxyConnectorService`] from an environment variable.
+    pub fn from_env(key: String, inner: S) -> Result<Self, OpaqueError> {
+        Ok(Self::new(private::FromEnv(key), inner))
+    }
+
+    /// Creates a new [`HttpProxyConnectorService`] from the environment variable `HTTP_PROXY`.
+    pub fn from_env_default(inner: S) -> Result<Self, OpaqueError> {
+        Self::from_env("HTTP_PROXY".to_owned(), inner)
     }
 }
 
@@ -370,6 +355,9 @@ mod private {
     #[derive(Debug, Clone)]
     pub struct FromContext;
 
+    #[derive(Debug, Clone)]
+    pub struct FromEnv(pub(crate) String);
+
     pub trait Sealed<S>: Clone + Send + Sync + 'static {
         type Error;
 
@@ -416,6 +404,23 @@ mod private {
         async fn info(&self, ctx: Context<S>) -> Result<HttpProxyOutput<S>, Self::Error> {
             let info = ctx.get::<HttpProxyInfo>().cloned();
             Ok(HttpProxyOutput { info, ctx })
+        }
+    }
+
+    impl<S> Sealed<S> for FromEnv
+    where
+        S: Send + Sync + 'static,
+    {
+        type Error = Infallible;
+
+        async fn info(&self, ctx: Context<S>) -> Result<HttpProxyOutput<S>, Self::Error> {
+            match std::env::var(&self.0).ok() {
+                Some(raw_uri) => {
+                    let info = raw_uri.parse().ok();
+                    Ok(HttpProxyOutput { info, ctx })
+                }
+                None => Ok(HttpProxyOutput { info: None, ctx }),
+            }
         }
     }
 }

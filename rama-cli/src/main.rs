@@ -44,17 +44,8 @@
 use clap::{Parser, Subcommand};
 use rama::error::BoxError;
 
-pub mod echo;
-use echo::CliCommandEcho;
-
-pub mod http;
-use http::CliCommandHttp;
-
-pub mod proxy;
-use proxy::CliCommandProxy;
-
-pub mod ip;
-use ip::CliCommandIp;
+pub mod cmd;
+use cmd::{echo, http, ip, proxy};
 
 pub mod error;
 
@@ -69,10 +60,10 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum CliCommands {
-    Echo(CliCommandEcho),
-    Http(CliCommandHttp),
-    Proxy(CliCommandProxy),
-    Ip(CliCommandIp),
+    Echo(echo::CliCommandEcho),
+    Http(http::CliCommandHttp),
+    Proxy(proxy::CliCommandProxy),
+    Ip(ip::CliCommandIp),
 }
 
 #[tokio::main]
