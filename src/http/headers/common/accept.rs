@@ -87,7 +87,7 @@ pub struct Accept(Vec<QualityValue<Mime>>);
 
 impl Header for Accept {
     fn name() -> &'static HeaderName {
-        &::http::header::ACCEPT
+        &crate::http::header::ACCEPT
     }
 
     fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(

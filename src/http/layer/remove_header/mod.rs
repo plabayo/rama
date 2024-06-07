@@ -2,7 +2,7 @@
 //!
 //! See [request] and [response] for more details.
 
-use crate::http::{header, HeaderMap, HeaderName};
+use crate::http::{header, HeaderMap};
 
 pub mod request;
 pub mod response;
@@ -32,13 +32,13 @@ fn remove_headers_by_exact_name(headers: &mut HeaderMap, name: &str) {
 
 fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
     for header in [
-        header::CONNECTION,
-        HeaderName::from_static(header::PROXY_CONNECTION_HEADER_KEY),
-        header::PROXY_AUTHORIZATION,
-        header::TE,
-        header::TRAILER,
-        header::TRANSFER_ENCODING,
-        header::UPGRADE,
+        &header::CONNECTION,
+        &header::PROXY_CONNECTION,
+        &header::PROXY_AUTHORIZATION,
+        &header::TE,
+        &header::TRAILER,
+        &header::TRANSFER_ENCODING,
+        &header::UPGRADE,
     ] {
         headers.remove(header);
     }
@@ -46,12 +46,12 @@ fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
 
 fn remove_hop_by_hop_response_headers(headers: &mut HeaderMap) {
     for header in [
-        header::CONNECTION,
-        HeaderName::from_static(header::KEEP_ALIVE_HEADER_KEY),
-        header::PROXY_AUTHENTICATE,
-        header::TRAILER,
-        header::TRANSFER_ENCODING,
-        header::UPGRADE,
+        &header::CONNECTION,
+        &header::KEEP_ALIVE,
+        &header::PROXY_AUTHENTICATE,
+        &header::TRAILER,
+        &header::TRANSFER_ENCODING,
+        &header::UPGRADE,
     ] {
         headers.remove(header);
     }

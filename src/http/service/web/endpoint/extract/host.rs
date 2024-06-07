@@ -57,13 +57,13 @@ mod tests {
     use super::*;
 
     use crate::http::dep::http_body_util::BodyExt as _;
-    use crate::http::header::X_FORWARDED_HOST_HEADER_KEY;
+    use crate::http::header::X_FORWARDED_HOST;
     use crate::http::service::web::WebService;
     use crate::http::StatusCode;
     use crate::http::{Body, HeaderName, Request};
     use crate::service::Service;
 
-    async fn test_host_from_request(host: &str, headers: Vec<(HeaderName, &str)>) {
+    async fn test_host_from_request(host: &str, headers: Vec<(&HeaderName, &str)>) {
         let svc = WebService::default().get("/", |Host(host): Host| async move { host });
 
         let mut builder = Request::builder().method("GET").uri("http://example.com/");
@@ -82,7 +82,7 @@ mod tests {
     async fn host_header() {
         test_host_from_request(
             "some-domain:123",
-            vec![(http::header::HOST, "some-domain:123")],
+            vec![(&http::header::HOST, "some-domain:123")],
         )
         .await;
     }
@@ -91,10 +91,7 @@ mod tests {
     async fn x_forwarded_host_header() {
         test_host_from_request(
             "some-domain:456",
-            vec![(
-                HeaderName::try_from(X_FORWARDED_HOST_HEADER_KEY).unwrap(),
-                "some-domain:456",
-            )],
+            vec![(&X_FORWARDED_HOST, "some-domain:456")],
         )
         .await;
     }
@@ -104,11 +101,8 @@ mod tests {
         test_host_from_request(
             "some-domain:456",
             vec![
-                (
-                    HeaderName::try_from(X_FORWARDED_HOST_HEADER_KEY).unwrap(),
-                    "some-domain:456",
-                ),
-                (http::header::HOST, "some-domain:123"),
+                (&X_FORWARDED_HOST, "some-domain:456"),
+                (&http::header::HOST, "some-domain:123"),
             ],
         )
         .await;

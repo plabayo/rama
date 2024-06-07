@@ -100,14 +100,23 @@ pub mod header {
 
     pub use crate::http::dep::http::header::*;
 
-    /// Key str constant for the `x-forwarded-host` header.
-    pub const X_FORWARDED_HOST_HEADER_KEY: &str = "x-forwarded-host";
+    macro_rules! static_header {
+        ($($name_bytes:literal),+ $(,)?) => {
+            $(
+                paste::paste! {
+                    #[doc = concat!("header name constant for `", $name_bytes, "`.")]
+                    pub static [<$name_bytes:snake:upper>]: super::HeaderName = super::HeaderName::from_static($name_bytes);
+                }
+            )+
+        };
+    }
 
-    /// Key str constant for the `Keep-Alive` header.
-    pub const KEEP_ALIVE_HEADER_KEY: &str = "keep-alive";
-
-    /// Key str constant for the `Proxy-Connection` header.
-    pub const PROXY_CONNECTION_HEADER_KEY: &str = "proxy-connection";
+    static_header![
+        "x-forwarded-host",
+        "x-forwarded-for",
+        "keep-alive",
+        "proxy-connection",
+    ];
 
     /// Static Header Value that is can be used as `User-Agent` or `Server` header.
     pub static RAMA_ID_HEADER_VALUE: HeaderValue =
