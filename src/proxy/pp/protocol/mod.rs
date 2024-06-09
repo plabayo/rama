@@ -81,7 +81,7 @@ impl PartialResult for v2::ParseError {
 ///
 /// assert_eq!(header, Ok(v1::Header::new(input, v1::Addresses::Unknown)).into());
 /// ```
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 #[must_use = "this `HeaderResult` may contain a V1 or V2 `Err` variant, which should be handled"]
 pub enum HeaderResult<'a> {
     /// Version 1 of the PROXY protocol header.

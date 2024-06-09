@@ -93,7 +93,7 @@ pub const SEPARATOR: char = ' ';
 ///
 /// assert_eq!(Err(ParseError::InvalidProtocol), "PROXY tcp4\r\n".parse::<Addresses>());
 /// ```
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Header<'a> {
     /// The original input string.
     pub header: Cow<'a, str>,
@@ -198,7 +198,7 @@ impl<'a> Header<'a> {
 ///
 /// assert_eq!(Err(ParseError::InvalidProtocol), "PROXY tcp4\r\n".parse::<Addresses>());
 /// ```
-#[derive(Copy, Clone, Debug, PartialEq, Default)]
+#[derive(Copy, Clone, Default, Debug, PartialEq, Eq, Hash)]
 pub enum Addresses {
     #[default]
     /// The source and destination addresses of the header are unknown.

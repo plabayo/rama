@@ -3,7 +3,7 @@
 use std::fmt;
 
 /// An error in parsing a text PROXY protocol header.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParseError {
     /// Header must start with 'PROXY'.
     InvalidPrefix,
@@ -77,7 +77,7 @@ impl std::error::Error for ParseError {
 }
 
 /// An error in parsing a text PROXY protocol header that is represented as a byte slice.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinaryParseError {
     /// An error in parsing a binary PROXY protocol header.
     Parse(ParseError),

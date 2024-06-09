@@ -5,7 +5,7 @@ use crate::{
 use std::fmt::{self, Debug, Formatter};
 
 /// A matcher that matches one or more HTTP methods.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct VersionMatcher(u16);
 
 impl VersionMatcher {

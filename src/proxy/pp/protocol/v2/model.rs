@@ -42,7 +42,7 @@ const UNIX_ADDRESSES_BYTES: usize = 216;
 /// assert_eq!(actual, expected);
 /// assert_eq!(actual.tlvs().collect::<Vec<Result<TypeLengthValue<'_>, ParseError>>>(), vec![Ok(TypeLengthValue::new(Type::NoOp, &[42]))]);
 /// ```
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Header<'a> {
     /// The underlying byte slice this `Header` is built on.
     pub header: Cow<'a, [u8]>,
@@ -57,14 +57,14 @@ pub struct Header<'a> {
 }
 
 /// The supported `Version`s for binary headers.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Version {
     /// Version two of the PROXY protocol.
     Two = 0x20,
 }
 
 /// The supported `Command`s for a PROXY protocol header.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Command {
     /// The connection is a local connection.
     Local = 0,
@@ -73,7 +73,7 @@ pub enum Command {
 }
 
 /// The supported `AddressFamily` for a PROXY protocol header.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum AddressFamily {
     /// The address family is unspecified.
     Unspecified = 0x00,
@@ -86,7 +86,7 @@ pub enum AddressFamily {
 }
 
 /// The supported `Protocol`s for a PROXY protocol header.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Protocol {
     /// The protocol is unspecified.
     Unspecified = 0,
@@ -107,7 +107,7 @@ pub enum Protocol {
 ///
 /// assert_eq!(addresses.address_family(), AddressFamily::IPv4);
 /// ```
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Addresses {
     /// The source and destination addresses are unspecified.
     Unspecified,
@@ -120,7 +120,7 @@ pub enum Addresses {
 }
 
 /// The source and destination addresses of UNIX sockets.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct Unix {
     /// The source address of the UNIX socket.
     pub source: [u8; 108],
@@ -129,14 +129,14 @@ pub struct Unix {
 }
 
 /// An `Iterator` of `TypeLengthValue`s stored in a byte slice.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TypeLengthValues<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 
 /// A Type-Length-Value payload.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TypeLengthValue<'a> {
     /// The type of the `TypeLengthValue`.
     pub kind: u8,
@@ -145,7 +145,7 @@ pub struct TypeLengthValue<'a> {
 }
 
 /// Supported types for `TypeLengthValue` payloads.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Type {
     /// The ALPN of the connection.
     ALPN = 0x01,

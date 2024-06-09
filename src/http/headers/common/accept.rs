@@ -82,7 +82,7 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 ///     ])
 /// );
 /// ```
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Accept(Vec<QualityValue<Mime>>);
 
 impl Header for Accept {

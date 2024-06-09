@@ -8,7 +8,7 @@ use std::{
 };
 
 /// A matcher that matches one or more HTTP methods.
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub struct MethodMatcher(u16);
 
 impl MethodMatcher {

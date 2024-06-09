@@ -21,7 +21,7 @@ use self::internal::IntoQuality;
 ///
 /// [RFC7231 Section 5.3.1](https://datatracker.ietf.org/doc/html/rfc7231#section-5.3.1)
 /// gives more information on quality values in HTTP header fields.
-#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 pub struct Quality(u16);
 
 impl Default for Quality {

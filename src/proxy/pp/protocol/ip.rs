@@ -3,7 +3,7 @@
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 /// The source and destination IPv4 addresses and TCP ports of a header.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IPv4 {
     /// The source IPv4 address.
     pub source_address: Ipv4Addr,
@@ -32,7 +32,7 @@ impl IPv4 {
     }
 }
 /// The source and destination IPv6 addresses and TCP ports of a header.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub struct IPv6 {
     /// The source IPv6 address.
     pub source_address: Ipv6Addr,

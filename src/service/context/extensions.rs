@@ -165,7 +165,7 @@ impl Clone for Box<dyn AnyClone + Send + Sync> {
 
 #[test]
 fn test_extensions() {
-    #[derive(Clone, Debug, PartialEq)]
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
     struct MyType(i32);
 
     let mut extensions = Extensions::new();

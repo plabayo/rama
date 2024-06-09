@@ -17,7 +17,7 @@ pub use str::StringFilter;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// The credentials to use to authenticate with the proxy.
 pub enum ProxyCredentials {
     /// Basic authentication
@@ -124,7 +124,7 @@ impl std::fmt::Display for InvalidProxyCredentialsString {
 
 impl std::error::Error for InvalidProxyCredentialsString {}
 
-#[derive(Debug, Default, Clone, Deserialize, PartialEq)]
+#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Hash)]
 /// Filter to select a specific kind of proxy.
 ///
 /// If the `id` is specified the other fields are used
@@ -451,7 +451,7 @@ impl std::fmt::Display for MemoryProxyDBInsertError {
 
 impl std::error::Error for MemoryProxyDBInsertError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// The kind of error that [`MemoryProxyDBInsertError`] represents.
 pub enum MemoryProxyDBInsertErrorKind {
     /// Duplicate key found in the proxies.
@@ -500,7 +500,7 @@ pub struct MemoryProxyDBQueryError {
     kind: MemoryProxyDBQueryErrorKind,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 /// The kind of error that [`MemoryProxyDBQueryError`] represents.
 pub enum MemoryProxyDBQueryErrorKind {
     /// No proxy match could be found.

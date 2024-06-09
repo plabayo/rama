@@ -104,7 +104,7 @@ where
 ///
 /// This can be used to signal that a label was recognised in the case
 /// that you wish to fail on labels that weren't recognised.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UsernameLabelState {
     /// The label was used by this parser.
     ///

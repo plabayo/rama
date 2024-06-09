@@ -365,7 +365,7 @@ enum DataParseArgState {
     Colon,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Hash)]
 enum ContentType {
     Json,
     Form,

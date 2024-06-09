@@ -365,7 +365,7 @@ pub(crate) const SENTINEL_ERROR_CODE: i32 = -837459418;
 
 /// Level of compression data should be compressed with.
 #[non_exhaustive]
-#[derive(Default, Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Default, Clone, Copy, Debug, Eq, PartialEq, Hash)]
 pub enum CompressionLevel {
     /// Fastest quality of compression, usually produces bigger size.
     Fastest,

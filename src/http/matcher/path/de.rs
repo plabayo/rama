@@ -71,7 +71,7 @@ impl std::error::Error for PathDeserializationError {}
 /// This type is obtained through [`FailedToDeserializePathParams::kind`] or
 /// [`FailedToDeserializePathParams::into_kind`] and is useful for building
 /// more precise error messages.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub(crate) enum ErrorKind {
     /// The URI contained the wrong number of parameters.

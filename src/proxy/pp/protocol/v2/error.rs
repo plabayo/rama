@@ -3,7 +3,7 @@
 use std::fmt;
 
 /// An error in parsing a binary PROXY protocol header.
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum ParseError {
     /// Expected header to the protocol prefix plus 4 bytes after the prefix.
     Incomplete(usize),

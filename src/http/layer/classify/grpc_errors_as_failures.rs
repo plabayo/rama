@@ -298,7 +298,7 @@ pub(crate) fn classify_grpc_metadata(
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ParsedGrpcStatus {
     Success,
     NonSuccess(NonZeroI32),

@@ -34,7 +34,7 @@ pub(super) enum UserAgentData {
 }
 
 /// Information about the [`UserAgent`]
-#[derive(Debug, Clone, Eq, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UserAgentInfo {
     /// The kind of [`UserAgent`]
     pub kind: UserAgentKind,

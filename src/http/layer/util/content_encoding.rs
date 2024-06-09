@@ -8,7 +8,7 @@ pub(crate) trait SupportedEncodings: Copy {
 }
 
 // This enum's variants are ordered from least to most preferred.
-#[derive(Copy, Clone, Debug, Ord, PartialOrd, PartialEq, Eq)]
+#[derive(Copy, Clone, Debug, Ord, PartialOrd, PartialEq, Eq, Hash)]
 pub(crate) enum Encoding {
     #[allow(dead_code)]
     Identity,
@@ -83,7 +83,7 @@ impl Encoding {
 
 // Allowed q-values are numbers between 0 and 1 with at most 3 digits in the fractional part. They
 // are presented here as an unsigned integer between 0 and 1000.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct QValue(u16);
 
 impl QValue {
