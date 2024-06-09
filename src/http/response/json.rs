@@ -67,6 +67,8 @@ use serde::Serialize;
 #[must_use]
 pub struct Json<T>(pub T);
 
+impl_deref!(Json);
+
 impl<T> From<T> for Json<T> {
     fn from(inner: T) -> Self {
         Self(inner)

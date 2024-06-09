@@ -2,7 +2,6 @@ use super::FromRequest;
 use crate::http;
 use crate::service::Context;
 use std::convert::Infallible;
-use std::ops::{Deref, DerefMut};
 
 mod bytes;
 #[doc(inline)]
@@ -24,6 +23,8 @@ pub use form::*;
 #[derive(Debug)]
 pub struct Body(pub http::Body);
 
+impl_deref!(Body: http::Body);
+
 impl<S> FromRequest<S> for Body
 where
     S: Send + Sync + 'static,
@@ -32,20 +33,6 @@ where
 
     async fn from_request(_ctx: Context<S>, req: http::Request) -> Result<Self, Self::Rejection> {
         Ok(Self(req.into_body()))
-    }
-}
-
-impl Deref for Body {
-    type Target = http::Body;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Body {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }
 

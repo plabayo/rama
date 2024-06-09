@@ -1,5 +1,3 @@
-use std::ops::Deref;
-
 use super::FromRequestParts;
 use crate::http::{dep::http::request::Parts, headers::extract::extract_host_from_headers};
 use crate::service::Context;
@@ -16,6 +14,8 @@ use crate::service::Context;
 /// sure to validate them to avoid security issues.
 #[derive(Debug, Clone)]
 pub struct Host(pub String);
+
+impl_deref!(Host: String);
 
 crate::__define_http_rejection! {
     #[status = BAD_REQUEST]
@@ -41,14 +41,6 @@ where
         }
 
         Err(MissingHost)
-    }
-}
-
-impl Deref for Host {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
     }
 }
 

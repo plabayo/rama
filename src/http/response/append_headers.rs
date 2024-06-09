@@ -33,6 +33,8 @@ use std::fmt;
 #[must_use]
 pub struct AppendHeaders<I>(pub I);
 
+impl_deref!(AppendHeaders);
+
 impl<I, K, V> IntoResponse for AppendHeaders<I>
 where
     I: IntoIterator<Item = (K, V)>,

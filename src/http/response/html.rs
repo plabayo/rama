@@ -7,6 +7,8 @@ use crate::http::{header, Body, HeaderValue, IntoResponse, Response};
 #[must_use]
 pub struct Html<T>(pub T);
 
+impl_deref!(Html);
+
 impl<T> IntoResponse for Html<T>
 where
     T: Into<Body>,

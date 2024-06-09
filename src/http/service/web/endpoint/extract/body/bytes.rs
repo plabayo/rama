@@ -2,13 +2,14 @@ use crate::http::dep::http_body_util::BodyExt;
 use crate::http::service::web::extract::FromRequest;
 use crate::http::Request;
 use crate::service::Context;
-use std::ops::{Deref, DerefMut};
 
 /// Extractor to get the response body, collected as [`Bytes`].
 ///
 /// [`Bytes`]: https://docs.rs/bytes/latest/bytes/struct.Bytes.html
 #[derive(Debug, Clone)]
 pub struct Bytes(pub bytes::Bytes);
+
+impl_deref!(Bytes: bytes::Bytes);
 
 crate::__define_http_rejection! {
     #[status = BAD_REQUEST]
@@ -29,20 +30,6 @@ where
             .await
             .map_err(BytesRejection::from_err)
             .map(|c| Bytes(c.to_bytes()))
-    }
-}
-
-impl Deref for Bytes {
-    type Target = bytes::Bytes;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Bytes {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }
 

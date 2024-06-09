@@ -3,11 +3,12 @@ use crate::http::dep::http_body_util::BodyExt;
 use crate::http::service::web::extract::FromRequest;
 use crate::http::Request;
 use crate::service::Context;
-use std::ops::{Deref, DerefMut};
 
 /// Extractor to get the response body, collected as [`String`].
 #[derive(Debug, Clone)]
 pub struct Text(pub String);
+
+impl_deref!(Text: String);
 
 crate::__define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
@@ -60,20 +61,6 @@ where
             },
             Err(err) => Err(BytesRejection::from_err(err).into()),
         }
-    }
-}
-
-impl Deref for Text {
-    type Target = String;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
-impl DerefMut for Text {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
     }
 }
 

@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{convert::Infallible, ops::Deref, str::FromStr};
+use std::{convert::Infallible, str::FromStr};
 use unicode_normalization::UnicodeNormalization;
 
 #[derive(Debug, Clone)]
@@ -101,14 +101,6 @@ impl From<&String> for StringFilter {
     }
 }
 
-impl Deref for StringFilter {
-    type Target = str;
-
-    fn deref(&self) -> &Self::Target {
-        &self.0
-    }
-}
-
 impl Serialize for StringFilter {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -158,7 +150,7 @@ mod tests {
     #[test]
     fn test_string_filter_deref() {
         let filter = StringFilter::new("Hello World");
-        assert_eq!(filter.to_ascii_uppercase(), "HELLO WORLD");
+        assert_eq!(filter.as_ref().to_ascii_uppercase(), "HELLO WORLD");
     }
 
     #[test]
