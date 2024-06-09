@@ -50,6 +50,8 @@ impl<S> TraceErr<S> {
     pub fn with_level(inner: S, level: tracing::Level) -> Self {
         TraceErr { inner, level }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S, State, Request> Service<State, Request> for TraceErr<S>

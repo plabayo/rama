@@ -1,7 +1,7 @@
 use super::{
     DefaultMakeSpan, DefaultOnBodyChunk, DefaultOnEos, DefaultOnFailure, DefaultOnRequest,
     DefaultOnResponse, GrpcMakeClassifier, HttpMakeClassifier, MakeSpan, OnBodyChunk, OnEos,
-    OnFailure, OnRequest, OnResponse, ResponseBody, TraceLayer,
+    OnFailure, OnRequest, OnResponse, ResponseBody,
 };
 use crate::http::dep::http_body::Body as HttpBody;
 use crate::http::layer::classify::{
@@ -55,16 +55,6 @@ impl<S, M> Trace<S, M> {
             on_eos: DefaultOnEos::default(),
             on_failure: DefaultOnFailure::default(),
         }
-    }
-
-    /// Returns a new [`Layer`] that wraps services with a [`TraceLayer`] middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(make_classifier: M) -> TraceLayer<M>
-    where
-        M: MakeClassifier,
-    {
-        TraceLayer::new(make_classifier)
     }
 }
 

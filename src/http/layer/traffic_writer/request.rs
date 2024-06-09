@@ -171,6 +171,8 @@ impl<S, W> RequestWriterService<S, W> {
     pub fn new(writer: W, inner: S) -> Self {
         Self { inner, writer }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S: Debug, W> Debug for RequestWriterService<S, W> {

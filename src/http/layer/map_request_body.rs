@@ -112,13 +112,6 @@ impl<S, F> MapRequestBody<S, F> {
         Self { inner: service, f }
     }
 
-    /// Returns a new [`Layer`] that wraps services with a `MapRequestBodyLayer` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(f: F) -> MapRequestBodyLayer<F> {
-        MapRequestBodyLayer::new(f)
-    }
-
     define_inner_service_accessors!();
 }
 

@@ -46,6 +46,8 @@ impl<S, F> MapErr<S, F> {
     pub fn new(inner: S, f: F) -> Self {
         MapErr { f, inner }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S, F, State, Request, Error> Service<State, Request> for MapErr<S, F>

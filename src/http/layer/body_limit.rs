@@ -74,13 +74,6 @@ impl<S> BodyLimitService<S> {
         }
     }
 
-    /// Returns a new [`Layer`] that wraps services with a `BodyLimitLayer` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(size: usize) -> BodyLimitLayer {
-        BodyLimitLayer::new(size)
-    }
-
     define_inner_service_accessors!();
 }
 

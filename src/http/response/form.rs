@@ -64,8 +64,6 @@ use serde::Serialize;
 #[must_use]
 pub struct Form<T>(pub T);
 
-__impl_deref!(Form);
-
 impl<T> From<T> for Form<T> {
     fn from(value: T) -> Self {
         Self(value)

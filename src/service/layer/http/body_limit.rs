@@ -58,13 +58,16 @@ impl<S> Layer<S> for BodyLimitLayer {
     type Service = BodyLimitService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        BodyLimitService::new(inner, self.limit)
+        Self::Service {
+            inner,
+            limit: self.limit,
+        }
     }
 }
 
 /// Communicate to the downstream http service to apply a limit to the body.
 ///
-/// See [`BodyLimitService`] for more information.
+/// See [`BodyLimitLayer`] for more information.
 #[derive(Clone)]
 pub struct BodyLimitService<S> {
     inner: S,
@@ -81,6 +84,35 @@ impl<S> BodyLimitService<S> {
     }
 
     define_inner_service_accessors!();
+
+    /// Create a new [`BodyLimitService`], with the given limit to be applied to the request only.
+    ///
+    /// See [`BodyLimitLayer`] for more information.
+    pub fn request_only(service: S, limit: usize) -> Self {
+        BodyLimitLayer::request_only(limit).layer(service)
+    }
+
+    /// Create a new [`BodyLimitService`], with the given limit to be applied to the response only.
+    ///
+    /// See [`BodyLimitLayer`] for more information.
+    pub fn response_only(service: S, limit: usize) -> Self {
+        BodyLimitLayer::response_only(limit).layer(service)
+    }
+
+    /// Create a new [`BodyLimitService`], with the given limit to be applied to both the request and response bodies.
+    ///
+    /// See [`BodyLimitLayer`] for more information.
+    pub fn symmetric(service: S, limit: usize) -> Self {
+        BodyLimitLayer::symmetric(limit).layer(service)
+    }
+
+    /// Create a new [`BodyLimitService`], with the given limits
+    /// respectively to be applied to the request and response bodies.
+    ///
+    /// See [`BodyLimitLayer`] for more information.
+    pub fn asymmetric(service: S, request: usize, response: usize) -> Self {
+        BodyLimitLayer::asymmetric(request, response).layer(service)
+    }
 }
 
 impl<S, State, ReqBody> Service<State, Request<ReqBody>> for BodyLimitService<S>

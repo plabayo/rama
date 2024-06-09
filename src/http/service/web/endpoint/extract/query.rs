@@ -42,5 +42,3 @@ where
         Ok(Query(params))
     }
 }
-
-__impl_deref!(Query);

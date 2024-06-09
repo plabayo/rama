@@ -101,20 +101,14 @@ impl<S> RemoveRequestHeader<S> {
     ///
     /// Removes headers by prefix.
     pub fn prefix(prefix: impl AsRef<str>, inner: S) -> Self {
-        Self {
-            inner,
-            mode: RemoveRequestHeaderMode::Prefix(prefix.as_ref().to_lowercase()),
-        }
+        RemoveRequestHeaderLayer::prefix(prefix).layer(inner)
     }
 
     /// Create a new [`RemoveRequestHeader`].
     ///
     /// Removes the header with the exact name.
     pub fn exact(header: impl AsRef<str>, inner: S) -> Self {
-        Self {
-            inner,
-            mode: RemoveRequestHeaderMode::Exact(header.as_ref().to_lowercase()),
-        }
+        RemoveRequestHeaderLayer::exact(header).layer(inner)
     }
 
     /// Create a new [`RemoveRequestHeader`].
@@ -122,10 +116,7 @@ impl<S> RemoveRequestHeader<S> {
     /// Removes all hop-by-hop headers as specified in [RFC 2616](https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1).
     /// This does not support other hop-by-hop headers defined in [section-14.10](https://datatracker.ietf.org/doc/html/rfc2616#section-14.10).
     pub fn hop_by_hop(inner: S) -> Self {
-        Self {
-            inner,
-            mode: RemoveRequestHeaderMode::Hop,
-        }
+        RemoveRequestHeaderLayer::hop_by_hop().layer(inner)
     }
 
     define_inner_service_accessors!();

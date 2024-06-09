@@ -136,13 +136,6 @@ impl<S, F> MapResponseBody<S, F> {
         Self { inner: service, f }
     }
 
-    /// Returns a new [`Layer`] that wraps services with a `MapResponseBodyLayer` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(f: F) -> MapResponseBodyLayer<F> {
-        MapResponseBodyLayer::new(f)
-    }
-
     define_inner_service_accessors!();
 }
 

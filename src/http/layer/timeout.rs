@@ -87,13 +87,6 @@ impl<S> Timeout<S> {
     }
 
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `Timeout` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(timeout: Duration) -> TimeoutLayer {
-        TimeoutLayer::new(timeout)
-    }
 }
 
 impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for Timeout<S>

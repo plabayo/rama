@@ -81,6 +81,21 @@ pub struct HeaderConfigService<T, S> {
 }
 
 impl<T, S> HeaderConfigService<T, S> {
+    /// Create a new [`HeaderConfigService`].
+    ///
+    /// Alias for [`HeaderConfigService::required`] if `!optional`
+    /// and [`HeaderConfigService::optional`] if `optional`.
+    pub fn new(inner: S, key: String, optional: bool) -> Self {
+        Self {
+            inner,
+            key,
+            optional,
+            _marker: PhantomData,
+        }
+    }
+
+    define_inner_service_accessors!();
+
     /// Create a new [`HeaderConfigService`] with the given inner service
     /// and header name, on which to extract the config,
     /// and which will fail if the header is missing.
@@ -93,16 +108,6 @@ impl<T, S> HeaderConfigService<T, S> {
     /// and which will gracefully accept if the header is missing.
     pub fn optional(inner: S, key: String) -> Self {
         Self::new(inner, key, true)
-    }
-
-    #[inline]
-    pub(crate) fn new(inner: S, key: String, optional: bool) -> Self {
-        Self {
-            inner,
-            key,
-            optional,
-            _marker: PhantomData,
-        }
     }
 }
 

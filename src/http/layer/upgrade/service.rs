@@ -46,6 +46,8 @@ impl<S, State, O> UpgradeService<S, State, O> {
     pub fn new(handlers: Vec<Arc<UpgradeHandler<State, O>>>, inner: S) -> Self {
         Self { handlers, inner }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S, State, O> fmt::Debug for UpgradeService<S, State, O>

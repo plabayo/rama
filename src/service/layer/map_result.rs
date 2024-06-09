@@ -85,6 +85,8 @@ impl<S, F> MapResult<S, F> {
     pub fn new(inner: S, f: F) -> Self {
         MapResult { f, inner }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S, F, State, Request, Response, Error> Service<State, Request> for MapResult<S, F>

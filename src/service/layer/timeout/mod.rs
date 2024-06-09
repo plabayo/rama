@@ -17,15 +17,19 @@ pub use layer::TimeoutLayer;
 
 /// Applies a timeout to requests.
 #[derive(Debug)]
-pub struct Timeout<T, F> {
-    inner: T,
+pub struct Timeout<S, F> {
+    inner: S,
     into_error: F,
     timeout: Duration,
 }
 
-impl<T, F> Clone for Timeout<T, F>
+impl<S, F> Timeout<S, F> {
+    define_inner_service_accessors!();
+}
+
+impl<S, F> Clone for Timeout<S, F>
 where
-    T: Clone,
+    S: Clone,
     F: Clone,
 {
     fn clone(&self) -> Self {
@@ -39,17 +43,17 @@ where
 
 // ===== impl Timeout =====
 
-impl<T> Timeout<T, LayerErrorStatic<Elapsed>> {
+impl<S> Timeout<S, LayerErrorStatic<Elapsed>> {
     /// Creates a new [`Timeout`]
-    pub fn new(inner: T, timeout: Duration) -> Self {
+    pub fn new(inner: S, timeout: Duration) -> Self {
         Self::with_error(inner, timeout, error::Elapsed::new(timeout))
     }
 }
 
-impl<T, E> Timeout<T, LayerErrorStatic<E>> {
+impl<S, E> Timeout<S, LayerErrorStatic<E>> {
     /// Creates a new [`Timeout`] with a custom error
     /// value.
-    pub fn with_error(inner: T, timeout: Duration, error: E) -> Self
+    pub fn with_error(inner: S, timeout: Duration, error: E) -> Self
     where
         E: Clone + Send + Sync + 'static,
     {
@@ -61,10 +65,10 @@ impl<T, E> Timeout<T, LayerErrorStatic<E>> {
     }
 }
 
-impl<T, F> Timeout<T, LayerErrorFn<F>> {
+impl<S, F> Timeout<S, LayerErrorFn<F>> {
     /// Creates a new [`Timeout`] with a custom error
     /// function.
-    pub fn with_error_fn<E>(inner: T, timeout: Duration, error_fn: F) -> Self
+    pub fn with_error_fn<E>(inner: S, timeout: Duration, error_fn: F) -> Self
     where
         F: FnOnce() -> E + Clone + Send + Sync + 'static,
         E: Send + 'static,
@@ -77,13 +81,13 @@ impl<T, F> Timeout<T, LayerErrorFn<F>> {
     }
 }
 
-impl<T, F> Timeout<T, F>
+impl<S, F> Timeout<S, F>
 where
     F: MakeLayerError,
 {
     /// Creates a new [`Timeout`] with a custom error
     /// value.
-    pub(crate) fn with(inner: T, timeout: Duration, into_error: F) -> Self {
+    pub(crate) fn with(inner: S, timeout: Duration, into_error: F) -> Self {
         Self {
             inner,
             timeout,

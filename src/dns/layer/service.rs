@@ -48,6 +48,8 @@ impl<S, R> DnsService<S, R> {
             dns_map_header,
         }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<State, Body, E, S, R> Service<State, Request<Body>> for DnsService<S, R>

@@ -177,6 +177,8 @@ impl<S, P> HttpProxyConnectorService<S, P> {
     fn new(provider: P, inner: S) -> Self {
         Self { inner, provider }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S> HttpProxyConnectorService<S, HttpProxyInfo> {

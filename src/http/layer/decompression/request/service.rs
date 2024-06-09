@@ -1,4 +1,3 @@
-use super::layer::RequestDecompressionLayer;
 use crate::error::BoxError;
 use crate::http::dep::http_body::Body;
 use crate::http::dep::http_body_util::{combinators::UnsyncBoxBody, BodyExt, Empty};
@@ -120,13 +119,6 @@ impl<S> RequestDecompression<S> {
     }
 
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `RequestDecompression` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer() -> RequestDecompressionLayer {
-        RequestDecompressionLayer::new()
-    }
 
     /// Passes through the request even when the encoding is not supported.
     ///

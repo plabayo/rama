@@ -17,17 +17,19 @@ pub use layer::LimitLayer;
 ///
 /// [`Policy`]: crate::service::layer::limit::Policy
 #[derive(Debug)]
-pub struct Limit<T, P> {
-    inner: T,
+pub struct Limit<S, P> {
+    inner: S,
     policy: P,
 }
 
-impl<T, P> Limit<T, P> {
+impl<S, P> Limit<S, P> {
     /// Creates a new [`Limit`] from a limit [`Policy`],
     /// wrapping the given [`Service`].
-    pub fn new(inner: T, policy: P) -> Self {
+    pub fn new(inner: S, policy: P) -> Self {
         Limit { inner, policy }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<T> Limit<T, UnlimitedPolicy> {

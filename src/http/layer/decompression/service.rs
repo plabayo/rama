@@ -1,4 +1,4 @@
-use super::{body::BodyInner, DecompressionBody, DecompressionLayer};
+use super::{body::BodyInner, DecompressionBody};
 use crate::http::dep::http_body::Body;
 use crate::http::layer::util::{
     compression::{AcceptEncoding, CompressionLevel, WrapBody},
@@ -32,13 +32,6 @@ impl<S> Decompression<S> {
     }
 
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `Decompression` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer() -> DecompressionLayer {
-        DecompressionLayer::new()
-    }
 
     /// Sets whether to request the gzip encoding.
     pub fn gzip(mut self, enable: bool) -> Self {

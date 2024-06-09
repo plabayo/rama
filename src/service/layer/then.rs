@@ -47,6 +47,8 @@ impl<S, F> Then<S, F> {
     pub fn new(inner: S, f: F) -> Self {
         Then { f, inner }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<F> Clone for ThenLayer<F>

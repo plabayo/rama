@@ -189,14 +189,6 @@ impl<S, M> SetRequestId<S, M> {
     }
 
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `SetRequestId` middleware.
-    pub fn layer(header_name: HeaderName, make_request_id: M) -> SetRequestIdLayer<M>
-    where
-        M: MakeRequestId,
-    {
-        SetRequestIdLayer::new(header_name, make_request_id)
-    }
 }
 
 impl<State, S, M, ReqBody, ResBody> Service<State, Request<ReqBody>> for SetRequestId<S, M>
@@ -284,11 +276,6 @@ impl<S> PropagateRequestId<S> {
     }
 
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `PropagateRequestId` middleware.
-    pub fn layer(header_name: HeaderName) -> PropagateRequestIdLayer {
-        PropagateRequestIdLayer::new(header_name)
-    }
 }
 
 impl<State, S, ReqBody, ResBody> Service<State, Request<ReqBody>> for PropagateRequestId<S>

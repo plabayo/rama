@@ -54,6 +54,8 @@ impl<S> UserAgentClassifier<S> {
             overwrite_header,
         }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S> Debug for UserAgentClassifier<S>

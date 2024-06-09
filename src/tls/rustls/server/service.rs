@@ -26,6 +26,8 @@ impl<S, H> TlsAcceptorService<S, H> {
             inner,
         }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S, H> std::fmt::Debug for TlsAcceptorService<S, H> {

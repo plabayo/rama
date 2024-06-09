@@ -536,13 +536,6 @@ impl<S> Cors<S> {
 
     define_inner_service_accessors!();
 
-    /// Returns a new [`Layer`] that wraps services with a [`Cors`] middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer() -> CorsLayer {
-        CorsLayer::new()
-    }
-
     /// Set the [`Access-Control-Allow-Credentials`][mdn] header.
     ///
     /// See [`CorsLayer::allow_credentials`] for more details.

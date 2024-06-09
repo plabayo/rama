@@ -139,6 +139,15 @@ pub struct RequestMetricsService<S> {
     metrics: Arc<Metrics>,
 }
 
+impl<S> RequestMetricsService<S> {
+    /// Create a new [`RequestMetricsService`].
+    pub fn new(inner: S) -> Self {
+        RequestMetricsLayer::new().layer(inner)
+    }
+
+    define_inner_service_accessors!();
+}
+
 impl<S: fmt::Debug> fmt::Debug for RequestMetricsService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RequestMetricsService")

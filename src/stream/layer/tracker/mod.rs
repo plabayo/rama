@@ -18,6 +18,17 @@ pub struct BytesTrackerService<S> {
     inner: S,
 }
 
+impl<S> BytesTrackerService<S> {
+    /// Create a new [`BytesTrackerService`].
+    ///
+    /// See [`BytesTrackerService`] for more information.
+    pub fn new(inner: S) -> Self {
+        Self { inner }
+    }
+
+    define_inner_service_accessors!();
+}
+
 impl<S> Clone for BytesTrackerService<S>
 where
     S: Clone,

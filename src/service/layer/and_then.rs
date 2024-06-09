@@ -49,6 +49,8 @@ impl<S, F> AndThen<S, F> {
     pub fn new(inner: S, f: F) -> Self {
         AndThen { f, inner }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<F> Clone for AndThenLayer<F>

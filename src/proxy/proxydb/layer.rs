@@ -217,6 +217,8 @@ impl<S, D> ProxyDBService<S, D> {
             predicate: (),
         }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S, D, P> ProxyDBService<S, D, P> {

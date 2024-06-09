@@ -76,6 +76,14 @@ pub struct NormalizePath<S> {
 impl<S> NormalizePath<S> {
     /// Create a new [`NormalizePath`].
     ///
+    /// Alias for [`Self::trim_trailing_slash`].
+    #[inline]
+    pub fn new(inner: S) -> Self {
+        Self::trim_trailing_slash(inner)
+    }
+
+    /// Create a new [`NormalizePath`].
+    ///
     /// Any trailing slashes from request paths will be removed. For example, a request with `/foo/`
     /// will be changed to `/foo` before reaching the inner service.
     pub fn trim_trailing_slash(inner: S) -> Self {

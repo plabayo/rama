@@ -160,10 +160,6 @@ pub struct AsyncRequireAuthorization<S, T> {
 }
 
 impl<S, T> AsyncRequireAuthorization<S, T> {
-    define_inner_service_accessors!();
-}
-
-impl<S, T> AsyncRequireAuthorization<S, T> {
     /// Authorize requests using a custom scheme.
     ///
     /// The `Authorization` header is required to have the value provided.
@@ -171,13 +167,7 @@ impl<S, T> AsyncRequireAuthorization<S, T> {
         Self { inner, auth }
     }
 
-    /// Returns a new [`Layer`] that wraps services with an [`AsyncRequireAuthorizationLayer`]
-    /// middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(auth: T) -> AsyncRequireAuthorizationLayer<T> {
-        AsyncRequireAuthorizationLayer::new(auth)
-    }
+    define_inner_service_accessors!();
 }
 
 impl<ReqBody, ResBody, S, State, Auth> Service<State, Request<ReqBody>>

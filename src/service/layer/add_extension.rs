@@ -98,13 +98,6 @@ impl<S, T> AddExtension<S, T> {
     }
 
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `AddExtension` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(value: T) -> AddExtensionLayer<T> {
-        AddExtensionLayer::new(value)
-    }
 }
 
 impl<State, Request, S, T> Service<State, Request> for AddExtension<S, T>

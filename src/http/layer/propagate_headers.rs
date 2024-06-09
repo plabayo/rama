@@ -85,13 +85,6 @@ impl<S> PropagateHeader<S> {
     }
 
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `PropagateHeader` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(header: HeaderName) -> PropagateHeaderLayer {
-        PropagateHeaderLayer::new(header)
-    }
 }
 
 impl<ReqBody, ResBody, S, State> Service<State, Request<ReqBody>> for PropagateHeader<S>

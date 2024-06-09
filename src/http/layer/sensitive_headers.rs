@@ -153,16 +153,6 @@ impl<S> SetSensitiveRequestHeaders<S> {
     }
 
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `SetSensitiveRequestHeaders` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer<I>(headers: I) -> SetSensitiveRequestHeadersLayer
-    where
-        I: IntoIterator<Item = HeaderName>,
-    {
-        SetSensitiveRequestHeadersLayer::new(headers)
-    }
 }
 
 impl<ReqBody, ResBody, State, S> Service<State, Request<ReqBody>> for SetSensitiveRequestHeaders<S>
@@ -259,16 +249,6 @@ impl<S> SetSensitiveResponseHeaders<S> {
     }
 
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `SetSensitiveResponseHeaders` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer<I>(headers: I) -> SetSensitiveResponseHeadersLayer
-    where
-        I: IntoIterator<Item = HeaderName>,
-    {
-        SetSensitiveResponseHeadersLayer::new(headers)
-    }
 }
 
 impl<ReqBody, ResBody, State, S> Service<State, Request<ReqBody>> for SetSensitiveResponseHeaders<S>

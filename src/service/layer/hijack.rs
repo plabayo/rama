@@ -53,6 +53,8 @@ impl<S, H, M> HijackService<S, H, M> {
             matcher,
         }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S, H, M, State, Request> Service<State, Request> for HijackService<S, H, M>

@@ -132,6 +132,8 @@ impl<S> ErrorHandler<S> {
         }
     }
 
+    define_inner_service_accessors!();
+
     /// Set the error mapper function (not set by default).
     ///
     /// The error mapper function is called with the error,

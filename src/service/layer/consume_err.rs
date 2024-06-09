@@ -52,6 +52,8 @@ impl<S, F> ConsumeErr<S, F> {
     pub fn new(inner: S, f: F) -> Self {
         ConsumeErr { f, inner }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S> ConsumeErr<S, Trace> {

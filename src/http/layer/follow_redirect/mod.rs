@@ -206,14 +206,6 @@ impl<S, P> FollowRedirect<S, P> {
         FollowRedirect { inner, policy }
     }
 
-    /// Returns a new [`Layer`] that wraps services with a `FollowRedirect` middleware
-    /// with the given redirection [`Policy`].
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer_with_policy(policy: P) -> FollowRedirectLayer<P> {
-        FollowRedirectLayer::with_policy(policy)
-    }
-
     define_inner_service_accessors!();
 }
 

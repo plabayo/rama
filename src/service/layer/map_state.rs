@@ -35,6 +35,8 @@ impl<S, F> MapState<S, F> {
     pub fn new(inner: S, f: F) -> Self {
         Self { inner, f }
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<S, F, W, State, Request> Service<State, Request> for MapState<S, F>

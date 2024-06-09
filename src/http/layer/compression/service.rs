@@ -1,7 +1,7 @@
 use super::body::BodyInner;
 use super::predicate::{DefaultPredicate, Predicate};
+use super::CompressionBody;
 use super::CompressionLevel;
-use super::{CompressionBody, CompressionLayer};
 use crate::http::dep::http_body::Body;
 use crate::http::layer::util::compression::WrapBody;
 use crate::http::layer::util::{compression::AcceptEncoding, content_encoding::Encoding};
@@ -49,13 +49,6 @@ impl<S> Compression<S, DefaultPredicate> {
 
 impl<S, P> Compression<S, P> {
     define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `Compression` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer() -> CompressionLayer {
-        CompressionLayer::new()
-    }
 
     /// Sets whether to enable the gzip encoding.
     pub fn gzip(mut self, enable: bool) -> Self {

@@ -98,6 +98,15 @@ pub struct NetworkMetricsService<S> {
     metrics: Arc<Metrics>,
 }
 
+impl<S> NetworkMetricsService<S> {
+    /// Create a new [`NetworkMetricsService`].
+    pub fn new(inner: S) -> Self {
+        NetworkMetricsLayer::new().layer(inner)
+    }
+
+    define_inner_service_accessors!();
+}
+
 impl<S: fmt::Debug> fmt::Debug for NetworkMetricsService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NetworkMetricsService")

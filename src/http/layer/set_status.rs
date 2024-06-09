@@ -49,6 +49,13 @@ impl SetStatusLayer {
     pub fn new(status: StatusCode) -> Self {
         SetStatusLayer { status }
     }
+
+    /// Create a new [`SetStatusLayer`] layer which will create
+    /// a service that will always set the status code at [`StatusCode::OK`].
+    #[inline]
+    pub fn ok() -> Self {
+        Self::new(StatusCode::OK)
+    }
 }
 
 impl<S> Layer<S> for SetStatusLayer {
@@ -76,14 +83,14 @@ impl<S> SetStatus<S> {
         Self { status, inner }
     }
 
-    define_inner_service_accessors!();
-
-    /// Returns a new [`Layer`] that wraps services with a `SetStatus` middleware.
-    ///
-    /// [`Layer`]: crate::service::Layer
-    pub fn layer(status: StatusCode) -> SetStatusLayer {
-        SetStatusLayer::new(status)
+    /// Create a new [`SetStatus`] service which will always set the
+    /// status code at [`StatusCode::OK`].
+    #[inline]
+    pub fn ok(inner: S) -> Self {
+        Self::new(inner, StatusCode::OK)
     }
+
+    define_inner_service_accessors!();
 }
 
 impl<State, S, ReqBody, ResBody> Service<State, Request<ReqBody>> for SetStatus<S>

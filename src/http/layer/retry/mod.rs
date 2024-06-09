@@ -27,7 +27,7 @@ pub use self::policy::{Policy, PolicyResult};
 /// A [`Policy`] classifies what is a "failed" response.
 pub struct Retry<P, S> {
     policy: P,
-    service: S,
+    inner: S,
 }
 
 impl<P, S> std::fmt::Debug for Retry<P, S>
@@ -38,7 +38,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Retry")
             .field("policy", &self.policy)
-            .field("service", &self.service)
+            .field("inner", &self.inner)
             .finish()
     }
 }
@@ -51,7 +51,7 @@ where
     fn clone(&self) -> Self {
         Retry {
             policy: self.policy.clone(),
-            service: self.service.clone(),
+            inner: self.inner.clone(),
         }
     }
 }
@@ -61,23 +61,13 @@ where
 impl<P, S> Retry<P, S> {
     /// Retry the inner service depending on this [`Policy`].
     pub fn new(policy: P, service: S) -> Self {
-        Retry { policy, service }
+        Retry {
+            policy,
+            inner: service,
+        }
     }
 
-    /// Get a reference to the inner service
-    pub fn get_ref(&self) -> &S {
-        &self.service
-    }
-
-    /// Get a mutable reference to the inner service
-    pub fn get_mut(&mut self) -> &mut S {
-        &mut self.service
-    }
-
-    /// Consume `self`, returning the inner service
-    pub fn into_inner(self) -> S {
-        self.service
-    }
+    define_inner_service_accessors!();
 }
 
 #[derive(Debug)]
@@ -149,7 +139,7 @@ where
         let mut cloned = self.policy.clone_input(&ctx, &request);
 
         loop {
-            let resp = self.service.serve(ctx, request).await;
+            let resp = self.inner.serve(ctx, request).await;
             match cloned.take() {
                 Some((cloned_ctx, cloned_req)) => {
                     let (cloned_ctx, cloned_req) =
