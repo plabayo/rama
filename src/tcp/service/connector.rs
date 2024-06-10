@@ -3,9 +3,9 @@ use crate::{
         client::{ClientConnection, EstablishedClientConnection},
         Request, RequestContext,
     },
+    net::stream::ServerSocketAddr,
     proxy::ProxySocketAddr,
     service::{Context, Service},
-    stream::ServerSocketAddr,
 };
 use std::net::SocketAddr;
 use tokio::net::TcpStream;

@@ -1,9 +1,9 @@
 use super::HttpServeResult;
 use crate::http::{IntoResponse, Request};
+use crate::net::stream::Stream;
 use crate::rt::Executor;
 use crate::service::Service;
 use crate::service::{Context, HyperService};
-use crate::stream::Stream;
 use crate::tcp::utils::is_connection_error;
 use crate::utils::future::Fuse;
 use hyper::server::conn::http1::Builder as Http1Builder;

@@ -35,9 +35,9 @@ use rama::{
             WebService,
         },
     },
+    net::stream::{matcher::SocketMatcher, SocketInfo},
     rt::Executor,
     service::ServiceBuilder,
-    stream::{matcher::SocketMatcher, SocketInfo},
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.

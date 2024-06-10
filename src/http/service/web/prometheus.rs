@@ -25,7 +25,7 @@ use prometheus::{Encoder, TextEncoder};
 /// [`WebService`]: crate::http::service::web::WebService
 /// [`prometheus`]: https://crates.io/crates/prometheus
 /// [`RequestMetricsLayer`]: crate::http::layer::opentelemetry::RequestMetricsLayer
-/// [`NetworkMetricsLayer`]: crate::stream::layer::opentelemetry::NetworkMetricsLayer
+/// [`NetworkMetricsLayer`]: crate::net::stream::layer::opentelemetry::NetworkMetricsLayer
 pub struct PrometheusMetricsHandler {
     registry: Option<prometheus::Registry>,
 }

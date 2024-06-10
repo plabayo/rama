@@ -1,7 +1,7 @@
 use crate::{
     http::BodyLimit,
+    net::stream::Stream,
     service::{Context, Layer, Service},
-    stream::Stream,
 };
 use std::fmt;
 
@@ -11,7 +11,7 @@ use std::fmt;
 /// it only is used to add the [`BodyLimit`] value to the [`Context`],
 /// such that the L7 http service can apply the limit when found in that [`Context`].
 ///
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: crate::net::stream::Stream
 /// [`Context`]: crate::service::Context`
 #[derive(Debug, Clone)]
 pub struct BodyLimitLayer {

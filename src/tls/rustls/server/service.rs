@@ -1,6 +1,6 @@
 use crate::{
+    net::stream::Stream,
     service::{Context, Service},
-    stream::Stream,
     tls::rustls::dep::tokio_rustls::{server::TlsStream, TlsAcceptor},
     tls::rustls::dep::{rustls::server::Acceptor, tokio_rustls::LazyConfigAcceptor},
 };

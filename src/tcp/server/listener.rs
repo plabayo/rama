@@ -1,8 +1,8 @@
+use crate::net::stream::SocketInfo;
 use crate::rt::Executor;
 use crate::service::handler::{Factory, FromContextRequest};
 use crate::service::Context;
 use crate::service::Service;
-use crate::stream::SocketInfo;
 use crate::utils::graceful::ShutdownGuard;
 use std::future::Future;
 use std::pin::pin;

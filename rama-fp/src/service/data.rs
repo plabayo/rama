@@ -1,8 +1,8 @@
 use super::State;
 use rama::{
     http::{dep::http::request::Parts, Request, RequestContext},
+    net::stream::SocketInfo,
     service::Context,
-    stream::SocketInfo,
     tls::rustls::server::IncomingClientHello,
     ua::UserAgent,
 };

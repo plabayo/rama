@@ -8,6 +8,7 @@ use rama::{
         server::HttpServer,
         IntoResponse, Request, Response, StatusCode,
     },
+    net::stream::{layer::http::BodyLimitLayer, SocketInfo, Stream},
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
@@ -18,7 +19,6 @@ use rama::{
         util::combinators::Either,
         Context, ServiceBuilder,
     },
-    stream::{layer::http::BodyLimitLayer, SocketInfo, Stream},
     tcp::server::TcpListener,
 };
 use std::{convert::Infallible, time::Duration};

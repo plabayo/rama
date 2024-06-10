@@ -1,6 +1,6 @@
 use crate::{
+    net::stream::Stream,
     service::{Context, Layer, Service},
-    stream::Stream,
 };
 use std::future::Future;
 
@@ -12,7 +12,7 @@ pub use bytes::BytesRWTrackerHandle;
 /// A [`Service`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.
 ///
 /// [`Service`]: crate::service::Service
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: crate::net::stream::Stream
 #[derive(Debug)]
 pub struct BytesTrackerService<S> {
     inner: S,
@@ -65,7 +65,7 @@ where
 ///
 /// [`Layer`]: crate::service::Layer
 /// [`Service`]: crate::service::Service
-/// [`Stream`]: crate::stream::Stream
+/// [`Stream`]: crate::net::stream::Stream
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct BytesTrackerLayer;

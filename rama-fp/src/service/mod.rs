@@ -13,6 +13,7 @@ use rama::{
         service::web::{match_service, PrometheusMetricsHandler},
         HeaderName, HeaderValue, IntoResponse,
     },
+    net::stream::layer::{http::BodyLimitLayer, opentelemetry::NetworkMetricsLayer},
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
@@ -23,7 +24,6 @@ use rama::{
         util::backoff::ExponentialBackoff,
         ServiceBuilder,
     },
-    stream::layer::{http::BodyLimitLayer, opentelemetry::NetworkMetricsLayer},
     tcp::server::TcpListener,
     telemetry::{opentelemetry, prometheus},
     tls::rustls::{

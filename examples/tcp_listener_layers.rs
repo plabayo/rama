@@ -19,11 +19,11 @@
 //! This is because of the `TimeoutLayer` that was added to the server.
 
 use rama::{
+    net::stream::{matcher::SocketMatcher, service::EchoService},
     service::{
         layer::{HijackLayer, TimeoutLayer},
         service_fn, ServiceBuilder,
     },
-    stream::{matcher::SocketMatcher, service::EchoService},
     tcp::server::TcpListener,
 };
 use std::{convert::Infallible, time::Duration};

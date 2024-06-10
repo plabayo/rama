@@ -2,9 +2,9 @@ use std::net::SocketAddr;
 
 use crate::{
     error::BoxError,
+    net::stream::{ChainReader, HeapReader, SocketInfo, Stream},
     proxy::pp::protocol::{v1, v2, HeaderResult, PartialResult},
     service::{Context, Layer, Service},
-    stream::{ChainReader, HeapReader, SocketInfo, Stream},
 };
 use tokio::io::AsyncReadExt;
 

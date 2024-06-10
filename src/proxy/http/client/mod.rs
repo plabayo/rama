@@ -7,7 +7,7 @@ use crate::{
         headers::{Header, HeaderMapExt},
         HeaderMap, HeaderName, HeaderValue,
     },
-    stream::Stream,
+    net::stream::Stream,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 

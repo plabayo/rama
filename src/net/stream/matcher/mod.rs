@@ -3,7 +3,7 @@
 //! See [`service::matcher` module] for more information.
 //!
 //! [`service::Matcher`]: crate::service::Matcher
-//! [`Socket`]: crate::stream::Socket
+//! [`Socket`]: crate::net::stream::Socket
 //! [`service::matcher` module]: crate::service::matcher
 
 mod socket;
@@ -34,7 +34,7 @@ use std::{fmt, sync::Arc};
 
 /// A matcher to match on a [`Socket`].
 ///
-/// [`Socket`]: crate::stream::Socket
+/// [`Socket`]: crate::net::stream::Socket
 pub struct SocketMatcher<State, Socket> {
     kind: SocketMatcherKind<State, Socket>,
     negate: bool,
@@ -482,7 +482,7 @@ where
 
 impl<State, Socket> crate::service::Matcher<State, Socket> for SocketMatcherKind<State, Socket>
 where
-    Socket: crate::stream::Socket,
+    Socket: crate::net::stream::Socket,
     State: 'static,
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
@@ -501,7 +501,7 @@ where
 
 impl<State, Socket> crate::service::Matcher<State, Socket> for SocketMatcher<State, Socket>
 where
-    Socket: crate::stream::Socket,
+    Socket: crate::net::stream::Socket,
     State: 'static,
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
