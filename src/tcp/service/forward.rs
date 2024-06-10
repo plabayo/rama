@@ -3,8 +3,8 @@ use std::net::SocketAddr;
 use tokio::net::TcpStream;
 
 use crate::{
+    net::stream::Stream,
     service::{Context, Service},
-    stream::Stream,
     tcp::utils::is_connection_error,
 };
 

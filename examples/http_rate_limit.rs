@@ -42,6 +42,7 @@ use rama::{
         matcher::HttpMatcher, response::Json, server::HttpServer, HeaderName, HeaderValue,
         IntoResponse, Request, Response, StatusCode,
     },
+    net::stream::matcher::SocketMatcher,
     rt::Executor,
     service::{
         layer::{
@@ -51,7 +52,6 @@ use rama::{
         util::{backoff::ExponentialBackoff, combinators::Either},
         ServiceBuilder,
     },
-    stream::matcher::SocketMatcher,
 };
 use serde_json::json;
 

@@ -53,16 +53,6 @@ impl<A, C, L> ProxyAuthLayer<A, C, L> {
     }
 }
 
-impl<A> ProxyAuthLayer<A, Basic, ()> {
-    /// Creates a new [`ProxyAuthLayer`] with the default [`Basic`] credentials.
-    pub fn basic(proxy_auth: A) -> Self {
-        ProxyAuthLayer {
-            proxy_auth,
-            _phantom: PhantomData,
-        }
-    }
-}
-
 impl<A, C, L, S> Layer<S> for ProxyAuthLayer<A, C, L>
 where
     A: ProxyAuthority<C, L> + Clone,

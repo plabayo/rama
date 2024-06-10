@@ -1,6 +1,7 @@
 use super::utils;
 use rama::{
     http::{response::Json, server::HttpServer, BodyExtractExt, Request},
+    net::user::Basic,
     proxy::http::client::HttpProxyInfo,
     rt::Executor,
     service::{service_fn, Context},
@@ -33,10 +34,7 @@ async fn test_http_connect_proxy() {
     ctx.insert(HttpProxyInfo {
         proxy: "127.0.0.1:62001".parse().unwrap(),
         secure: false,
-        credentials: Some(rama::proxy::ProxyCredentials::Basic {
-            username: "john".to_owned(),
-            password: Some("secret".to_owned()),
-        }),
+        credentials: Some(Basic::new("john", "secret")),
     });
 
     // test regular proxy flow

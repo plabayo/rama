@@ -37,9 +37,9 @@ use rama::{
         server::HttpServer,
         service::web::{extract::State, PrometheusMetricsHandler, WebService},
     },
+    net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,
     service::ServiceBuilder,
-    stream::layer::opentelemetry::NetworkMetricsLayer,
     tcp::server::TcpListener,
     telemetry::opentelemetry::{
         self,

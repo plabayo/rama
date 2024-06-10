@@ -13,13 +13,13 @@
 //! Implementation Examples:
 //!
 //! - [`http::matcher`]: [`Matcher`] implementations for [`http::Request`]s.
-//! - [`stream::matcher`]: [`Matcher`] implementations for [`Socket`]s (e.g. [`TcpStream`]).
+//! - [`net::stream::matcher`]: [`Matcher`] implementations for [`Socket`]s (e.g. [`TcpStream`]).
 //!
 //! [`Context`]: crate::service::Context
 //! [`http::matcher`]: crate::http::matcher
 //! [`http::Request`]: crate::http::Request
-//! [`stream::matcher`]: crate::stream::matcher
-//! [`Socket`]: crate::stream::Socket
+//! [`net::stream::matcher`]: crate::net::stream::matcher
+//! [`Socket`]: crate::net::stream::Socket
 //! [`TcpStream`]: tokio::net::TcpStream
 
 use super::{context::Extensions, Context};

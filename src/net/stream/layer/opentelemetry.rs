@@ -8,8 +8,8 @@ use crate::telemetry::opentelemetry::{
     semantic_conventions, KeyValue,
 };
 use crate::{
+    net::stream::SocketInfo,
     service::{Context, Layer, Service},
-    stream::SocketInfo,
 };
 use std::{fmt, sync::Arc, time::SystemTime};
 
@@ -120,7 +120,7 @@ impl<S, State, Stream> Service<State, Stream> for NetworkMetricsService<S>
 where
     S: Service<State, Stream>,
     State: Send + Sync + 'static,
-    Stream: crate::stream::Stream,
+    Stream: crate::net::stream::Stream,
 {
     type Response = S::Response;
     type Error = S::Error;

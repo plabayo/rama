@@ -1,9 +1,9 @@
 use http::Request;
 
-use crate::stream::dep::ipnet::IpNet;
+use crate::net::stream::dep::ipnet::IpNet;
 use crate::{
+    net::stream::SocketInfo,
     service::{context::Extensions, Context},
-    stream::SocketInfo,
 };
 
 #[derive(Debug, Clone)]
@@ -136,7 +136,7 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for PrivateIpNet
 
 impl<State, Socket> crate::service::Matcher<State, Socket> for PrivateIpNetMatcher
 where
-    Socket: crate::stream::Socket,
+    Socket: crate::net::stream::Socket,
 {
     fn matches(
         &self,
@@ -218,7 +218,7 @@ mod test {
             peer_addr: Option<SocketAddr>,
         }
 
-        impl crate::stream::Socket for FakeSocket {
+        impl crate::net::stream::Socket for FakeSocket {
             fn local_addr(&self) -> std::io::Result<SocketAddr> {
                 match &self.local_addr {
                     Some(addr) => Ok(*addr),

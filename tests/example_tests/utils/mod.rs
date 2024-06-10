@@ -13,12 +13,12 @@ use rama::{
         },
         Request, Response,
     },
+    net::stream::Stream,
     proxy::http::client::HttpProxyConnectorLayer,
     service::{
         util::{backoff::ExponentialBackoff, rng::HasherRng},
         BoxService, Service, ServiceBuilder,
     },
-    stream::Stream,
     tcp::service::HttpConnector,
     tls::rustls::client::HttpsConnectorLayer,
 };

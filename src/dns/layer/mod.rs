@@ -7,7 +7,7 @@
 //! use rama::http::service::web::{WebService, extract::{Host, Extension}};
 //! use rama::http::{Body, Request, RequestContext, Version, StatusCode};
 //! use rama::service::{Context, Service, Layer};
-//! use rama::stream::ServerSocketAddr;
+//! use rama::net::stream::ServerSocketAddr;
 //! use rama::uri::Scheme;
 //! use std::net::SocketAddr;
 //!

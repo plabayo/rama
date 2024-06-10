@@ -5,8 +5,8 @@ use crate::{
         utils::{HeaderValueErr, HeaderValueGetter},
         HeaderName, Request, RequestContext,
     },
+    net::stream::ServerSocketAddr,
     service::{Context, Service},
-    stream::ServerSocketAddr,
 };
 use std::net::SocketAddr;
 

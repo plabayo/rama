@@ -2,8 +2,8 @@
 
 use crate::{
     error::BoxError,
+    net::stream::Stream,
     service::{Context, Service},
-    stream::Stream,
 };
 
 /// An async service which echoes the incoming bytes back on the same stream.
@@ -11,7 +11,7 @@ use crate::{
 /// # Example
 ///
 /// ```rust
-/// use rama::{error::BoxError, service::{Context, Service}, stream::service::EchoService};
+/// use rama::{error::BoxError, service::{Context, Service}, net::stream::service::EchoService};
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), BoxError> {

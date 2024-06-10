@@ -1,7 +1,6 @@
 use crate::http::{RequestContext, Version};
-use base64::Engine;
 use serde::Deserialize;
-use std::{future::Future, str::FromStr};
+use std::future::Future;
 use venndb::Any;
 
 mod internal;
@@ -14,115 +13,6 @@ pub mod layer;
 mod str;
 #[doc(inline)]
 pub use str::StringFilter;
-
-const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// The credentials to use to authenticate with the proxy.
-pub enum ProxyCredentials {
-    /// Basic authentication
-    ///
-    /// See <https://datatracker.ietf.org/doc/html/rfc7617> for more information.
-    Basic {
-        /// The username to use to authenticate with the proxy.
-        username: String,
-        /// The optional password to use to authenticate with the proxy,
-        /// in combination with the username.
-        password: Option<String>,
-    },
-    /// Bearer token authentication, token content is opaque for the proxy facilities.
-    ///
-    /// See <https://datatracker.ietf.org/doc/html/rfc6750> for more information.
-    Bearer(String),
-}
-
-impl ProxyCredentials {
-    /// Get the username from the credentials, if any.
-    pub fn username(&self) -> Option<&str> {
-        match self {
-            ProxyCredentials::Basic { username, .. } => Some(username),
-            ProxyCredentials::Bearer(_) => None,
-        }
-    }
-
-    /// Get the password from the credentials, if any.
-    pub fn password(&self) -> Option<&str> {
-        match self {
-            ProxyCredentials::Basic { password, .. } => password.as_deref(),
-            ProxyCredentials::Bearer(_) => None,
-        }
-    }
-
-    /// Get the bearer token from the credentials, if any.
-    pub fn bearer(&self) -> Option<&str> {
-        match self {
-            ProxyCredentials::Bearer(token) => Some(token),
-            ProxyCredentials::Basic { .. } => None,
-        }
-    }
-}
-
-impl std::fmt::Display for ProxyCredentials {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ProxyCredentials::Basic { username, password } => match password {
-                Some(password) => write!(
-                    f,
-                    "Basic {}",
-                    BASE64.encode(format!("{}:{}", username, password))
-                ),
-                None => write!(f, "Basic {}", BASE64.encode(username)),
-            },
-            ProxyCredentials::Bearer(token) => write!(f, "Bearer {}", token),
-        }
-    }
-}
-
-#[derive(Debug)]
-/// The error that can be returned when parsing a proxy credentials string.
-#[non_exhaustive]
-pub struct InvalidProxyCredentialsString;
-
-impl FromStr for ProxyCredentials {
-    type Err = InvalidProxyCredentialsString;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let mut parts = s.splitn(2, ' ');
-
-        match parts.next() {
-            Some("Basic") => {
-                let encoded = parts.next().ok_or(InvalidProxyCredentialsString)?;
-                let decoded = BASE64
-                    .decode(encoded)
-                    .map_err(|_| InvalidProxyCredentialsString)?;
-                let decoded =
-                    String::from_utf8(decoded).map_err(|_| InvalidProxyCredentialsString)?;
-                let mut parts = decoded.splitn(2, ':');
-
-                let username = parts
-                    .next()
-                    .ok_or(InvalidProxyCredentialsString)?
-                    .to_owned();
-                let password = parts.next().map(str::to_owned);
-
-                Ok(ProxyCredentials::Basic { username, password })
-            }
-            Some("Bearer") => {
-                let token = parts.next().ok_or(InvalidProxyCredentialsString)?;
-                Ok(ProxyCredentials::Bearer(token.to_owned()))
-            }
-            _ => Err(InvalidProxyCredentialsString),
-        }
-    }
-}
-
-impl std::fmt::Display for InvalidProxyCredentialsString {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "Invalid proxy credentials string")
-    }
-}
-
-impl std::error::Error for InvalidProxyCredentialsString {}
 
 #[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Hash)]
 /// Filter to select a specific kind of proxy.
@@ -546,52 +436,8 @@ impl MemoryProxyDBQueryError {
 
 #[cfg(test)]
 mod tests {
-    use itertools::Itertools;
-
     use super::*;
-
-    #[test]
-    fn test_proxy_credentials_from_str_basic() {
-        let credentials: ProxyCredentials = "Basic dXNlcm5hbWU6cGFzc3dvcmQ=".parse().unwrap();
-        assert_eq!(credentials.username().unwrap(), "username");
-        assert_eq!(credentials.password().unwrap(), "password");
-    }
-
-    #[test]
-    fn test_proxy_credentials_from_str_bearer() {
-        let credentials: ProxyCredentials = "Bearer bar".parse().unwrap();
-        assert_eq!(credentials.bearer().unwrap(), "bar");
-    }
-
-    #[test]
-    fn test_proxy_credentials_from_str_invalid() {
-        let credentials: Result<ProxyCredentials, _> = "Invalid".parse();
-        assert!(credentials.is_err());
-    }
-
-    #[test]
-    fn test_proxy_credentials_display_basic() {
-        let credentials = ProxyCredentials::Basic {
-            username: "username".to_owned(),
-            password: Some("password".to_owned()),
-        };
-        assert_eq!(credentials.to_string(), "Basic dXNlcm5hbWU6cGFzc3dvcmQ=");
-    }
-
-    #[test]
-    fn test_proxy_credentials_display_basic_no_password() {
-        let credentials = ProxyCredentials::Basic {
-            username: "username".to_owned(),
-            password: None,
-        };
-        assert_eq!(credentials.to_string(), "Basic dXNlcm5hbWU=");
-    }
-
-    #[test]
-    fn test_proxy_credentials_display_bearer() {
-        let credentials = ProxyCredentials::Bearer("foo".to_owned());
-        assert_eq!(credentials.to_string(), "Bearer foo");
-    }
+    use itertools::Itertools;
 
     const RAW_CSV_DATA: &str = include_str!("./test_proxydb_rows.csv");
 

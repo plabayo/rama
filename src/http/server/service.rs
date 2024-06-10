@@ -3,9 +3,9 @@
 use super::hyper_conn::HyperConnServer;
 use super::HttpServeResult;
 use crate::http::{IntoResponse, Request};
+use crate::net::stream::Stream;
 use crate::rt::Executor;
 use crate::service::{Context, Service};
-use crate::stream::Stream;
 use crate::tcp::server::TcpListener;
 use hyper::server::conn::http2::Builder as H2ConnBuilder;
 use hyper::{rt::Timer, server::conn::http1::Builder as Http1ConnBuilder};

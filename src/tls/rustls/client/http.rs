@@ -1,8 +1,8 @@
 use crate::error::{BoxError, ErrorExt};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
 use crate::http::{Request, RequestContext};
+use crate::net::stream::Stream;
 use crate::service::{Context, Service};
-use crate::stream::Stream;
 use crate::tls::rustls::dep::pki_types::ServerName;
 use crate::tls::rustls::dep::rustls::RootCertStore;
 use crate::tls::rustls::dep::tokio_rustls::{client::TlsStream, TlsConnector};

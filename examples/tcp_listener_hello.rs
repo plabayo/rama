@@ -19,7 +19,7 @@
 use std::convert::Infallible;
 
 use rama::{
-    stream::{Socket, Stream},
+    net::stream::{Socket, Stream},
     tcp::server::TcpListener,
 };
 use tokio::io::AsyncWriteExt;

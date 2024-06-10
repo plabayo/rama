@@ -34,12 +34,12 @@ use rama::{
         server::HttpServer,
         IntoResponse, Request,
     },
-    rt::Executor,
-    service::{layer::TimeoutLayer, Context, ServiceBuilder},
-    stream::{
+    net::stream::{
         layer::{BytesRWTrackerHandle, BytesTrackerLayer},
         SocketInfo,
     },
+    rt::Executor,
+    service::{layer::TimeoutLayer, Context, ServiceBuilder},
     tcp::server::TcpListener,
     utils::latency::LatencyUnit,
 };

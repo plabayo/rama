@@ -4,8 +4,8 @@
 use crate::{
     error::BoxError,
     http::{Request, Response, Version},
+    net::stream::Stream,
     service::{Context, Service},
-    stream::Stream,
     tcp::service::HttpConnector,
     tls::rustls::client::{AutoTlsStream, HttpsConnector},
 };

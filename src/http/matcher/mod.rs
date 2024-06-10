@@ -7,8 +7,8 @@
 //! [`service::matcher` module]: crate::service::matcher
 use crate::{
     http::Request,
+    net::stream::matcher::SocketMatcher,
     service::{context::Extensions, matcher::IteratorMatcherExt, Context},
-    stream::matcher::SocketMatcher,
 };
 use std::fmt;
 use std::sync::Arc;
