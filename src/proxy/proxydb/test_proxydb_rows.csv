@@ -5,40 +5,40 @@
 39048766,1,true,1,True,Null,True,true,134.190.189.202:5772,poolC,US,Chicago,Verizon,
 3732488183,Nil,True,null,true,Null,True,True,222.175.50.229:5855,poolC,US,New York,AT&T,Basic dXNlcjUyOnBhc3MzOA==
 3269921904,null,true,nil,true,false,Null,true,46.238.186.104:5710,poolA,GB,Glasgow,Sprint,
-724884866,1,True,True,true,True,false,1,42.54.35.118:6846,poolG,IT,Naples,Verizon,Bearer token1
+724884866,1,True,True,true,True,false,1,42.54.35.118:6846,poolG,IT,Naples,Verizon,Basic dXNlcjI2OnBhc3MzMA==
 2909724448,True,1,true,True,true,True,true,169.179.161.206:6843,poolB,CA,Calgary,Sprint,Basic dXNlcjI2OnBhc3MzMA==
 3976711563,True,1,true,1,True,Null,False,92.227.104.237:6161,poolE,GB,Manchester,
 3187902553,1,true,null,true,nil,True,1,151.254.135.9:6961,poolG,CA,Vancouver,AT&T,Basic dXNlcjEwOnBhc3MyNA==
 906390012,True,true,0,true,0,True,0,253.138.153.41:2640,poolE,GB,Birmingham,,Basic dXNlcjk6cGFzczgw
 2950022859,Null,True,,true,nil,false,true,70.180.100.111:2932,poolA,DE,Frankfurt,AT&T,Basic dXNlcjI5OnBhc3M1OA==
 2912880381,True,false,True,true,nil,1,,209.176.177.182:4311,poolJ,*,*,,Basic dXNlcjk2OnBhc3M4OQ==
-846528631,1,0,true,null,null,nil,1,45.59.69.12:5934,,JP,Nagoya,Sprint,Bearer token3
-129108927,True,nil,true,null,1,True,True,233.22.59.115:1653,poolD,AU,Melbourne,AT&T,Bearer token3
+846528631,1,0,true,null,null,nil,1,45.59.69.12:5934,,JP,Nagoya,Sprint,Basic dXNlcjI2OnBhc3MzMA==
+129108927,True,nil,true,null,1,True,True,233.22.59.115:1653,poolD,AU,Melbourne,AT&T,Basic dXNlcjI2OnBhc3MzMA==
 2141152822,True,Null,True,1,Nil,True,Null,61.112.212.160:3842,poolJ,*,*,,Basic dXNlcjY0OnBhc3MzMg==
 4062553709,True,False,true,False,1,False,nil,249.221.15.121:7434,poolH,JP,Osaka,
-2560727338,1,1,nil,true,true,0,1,215.49.63.89:9458,poolD,US,Chicago,AT&T,Bearer token2
-56402588,true,True,,true,1,1,true,75.43.123.181:7719,poolA,NL,Amsterdam,Sprint,Bearer token2
-1684342915,nil,true,0,True,true,null,Nil,155.57.216.74:3953,poolD,CA,Toronto,,Bearer token2
-362091157,1,True,Null,true,true,True,Nil,106.213.197.28:9110,poolB,US,Los Angeles,,Bearer token2
-2880295577,1,true,True,true,,0,True,76.128.58.167:4797,poolH,FR,Marseille,AT&T,Bearer token2
+2560727338,1,1,nil,true,true,0,1,215.49.63.89:9458,poolD,US,Chicago,AT&T,Basic dXNlcjI2OnBhc3MzMA==
+56402588,true,True,,true,1,1,true,75.43.123.181:7719,poolA,NL,Amsterdam,Sprint,Basic dXNlcjI2OnBhc3MzMA==
+1684342915,nil,true,0,True,true,null,Nil,155.57.216.74:3953,poolD,CA,Toronto,,Basic dXNlcjI2OnBhc3MzMA==
+362091157,1,True,Null,true,true,True,Nil,106.213.197.28:9110,poolB,US,Los Angeles,,Basic dXNlcjI2OnBhc3MzMA==
+2880295577,1,true,True,true,,0,True,76.128.58.167:4797,poolH,FR,Marseille,AT&T,Basic dXNlcjI2OnBhc3MzMA==
 371209663,1,False,True,1,True,false,true,66.142.40.209:4251,poolG,*,*,Verizon
 2551759475,true,0,1,true,True,Nil,true,4.20.243.186:9155,poolD,AU,Melbourne,AT&T
 3861736957,true,False,True,true,true,Nil,Nil,136.186.95.10:7095,poolI,GB,Manchester,,
 2798907087,1,Nil,true,true,1,True,true,85.14.163.105:8362,poolI,,,T-Mobile,Basic dXNlcjYyOnBhc3M5Nw==
 3269411602,True,true,True,true,true,True,1,223.234.242.63:7211,*,JP,Yokohama,Sprint,Basic dXNlcjYxOnBhc3M0OQ==
-3481200027,1,1,Null,True,True,1,False,208.224.120.97:7118,poolG,IT,Milan,,Bearer token1
+3481200027,1,1,Null,True,True,1,False,208.224.120.97:7118,poolG,IT,Milan,,Basic dXNlcjI2OnBhc3MzMA==
 2854473221,True,0,True,true,nil,Null,1,171.174.56.89:5744,poolH,,,Verizon
-3269465574,1,1,Nil,True,true,1,1,153.206.209.221:8696,poolH,AU,Adelaide,Sprint,Bearer token3
+3269465574,1,1,Nil,True,true,1,1,153.206.209.221:8696,poolH,AU,Adelaide,Sprint,Basic dXNlcjI2OnBhc3MzMA==
 292096733,true,Nil,True,True,1,Null,true,54.226.47.54:7442,poolD,US,Chicago,Verizon,Basic dXNlcjg4OnBhc3M5
 3951672504,nil,True,0,true,True,1,true,239.42.80.24:4891,poolB,US,Chicago,T-Mobile
 1916851007,False,1,Null,True,Null,True,,91.61.111.11:2160,poolA,GB,Birmingham,
-1425588737,True,nil,1,0,nil,Nil,True,46.247.45.238:3522,poolA,US,New York,Sprint,Bearer token1
+1425588737,True,nil,1,0,nil,Nil,True,46.247.45.238:3522,poolA,US,New York,Sprint,Basic dXNlcjI2OnBhc3MzMA==
 2745456299,nil,true,null,True,Null,True,true,73.199.6.241:9908,poolC,US,Los Angeles,Sprint
-1885107293,1,False,1,0,nil,false,1,184.209.230.177:1358,poolD,GB,London,Sprint,Bearer token2
+1885107293,1,False,1,0,nil,false,1,184.209.230.177:1358,poolD,GB,London,Sprint,Basic dXNlcjI2OnBhc3MzMA==
 2107229589,True,1,true,true,True,False,True,24.155.249.112:2645,poolI,AU,Sydney,Verizon,Basic dXNlcjIwOnBhc3M1NQ==
 2951529660,1,true,null,True,true,true,Null,182.34.76.182:2374,poolF,US,New York,,
 2593294918,1,1,1,1,nil,true,true,140.249.154.18:5800,poolH,*,*,T-Mobile
-20647117,Null,true,Null,1,,1,True,113.102.210.39:1797,poolC,CA,Ottawa,Sprint,Bearer token3
+20647117,Null,true,Null,1,,1,True,113.102.210.39:1797,poolC,CA,Ottawa,Sprint,Basic dXNlcjI2OnBhc3MzMA==
 339020035,true,Nil,True,true,1,Nil,1,145.57.31.149:6304,poolI,GB,Liverpool,T-Mobile,Basic dXNlcjE0OnBhc3MzOQ==
 2021561518,True,false,1,null,false,true,true,193.188.239.29:3541,poolF,JP,Yokohama,AT&T,
 1316455915,True,true,true,True,1,,false,137.220.180.169:4929,poolC,US,Houston,,Basic dXNlcjE3OnBhc3M2OA==
@@ -49,11 +49,11 @@
 738626121,True,true,true,1,nil,false,1,97.192.206.72:6067,poolC,GB,London,T-Mobile,
 2079461709,true,null,1,false,true,True,False,162.97.174.152:1673,poolH,AU,Sydney,,Basic dXNlcjk2OnBhc3M4NA==
 1259341971,True,1,True,1,True,Null,true,252.69.242.136:4791,poolF,GB,London,Verizon
-767809962,true,Nil,True,null,null,True,True,104.207.92.167:9387,poolJ,*,*,Verizon,Bearer token1
-2596743625,0,1,false,true,1,nil,,29.24.94.92:6271,poolJ,*,*,,Bearer token1
-2497865606,true,1,,1,True,1,False,129.204.152.130:6524,,IT,Palermo,,Bearer token3
+767809962,true,Nil,True,null,null,True,True,104.207.92.167:9387,poolJ,*,*,Verizon,Basic dXNlcjI2OnBhc3MzMA==
+2596743625,0,1,false,true,1,nil,,29.24.94.92:6271,poolJ,*,*,,Basic dXNlcjI2OnBhc3MzMA==
+2497865606,true,1,,1,True,1,False,129.204.152.130:6524,,IT,Palermo,,Basic dXNlcjI2OnBhc3MzMA==
 153202126,,true,Nil,true,True,null,true,143.200.228.236:8235,poolH,ES,Valencia,AT&T,Basic dXNlcjc5OnBhc3MzMg==
-1844412609,1,1,1,True,False,Null,1,0.20.204.227:8373,poolB,CA,Ottawa,AT&T,Bearer token2
+1844412609,1,1,1,True,False,Null,1,0.20.204.227:8373,poolB,CA,Ottawa,AT&T,Basic dXNlcjI2OnBhc3MzMA==
 4187178960,Null,True,Nil,true,false,false,1,195.237.244.108:6255,poolD,AU,Sydney,T-Mobile
 3498810974,1,1,True,true,False,true,nil,193.26.37.125:3780,poolI,JP,Sapporo,
 1810781137,1,Nil,True,null,nil,null,True,204.168.216.113:1096,,JP,Osaka,Verizon,

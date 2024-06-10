@@ -1,5 +1,7 @@
 use std::borrow::Cow;
+use std::str::FromStr;
 
+use crate::error::{ErrorContext, OpaqueError};
 use crate::http;
 use crate::http::headers::authorization;
 use base64::engine::general_purpose::STANDARD as ENGINE;
@@ -70,32 +72,46 @@ impl PartialEq<Basic> for Basic {
 
 impl Eq for Basic {}
 
-impl authorization::Credentials for Basic {
-    const SCHEME: &'static str = "Basic";
+const BASIC_SCHEME: &str = "Basic";
 
-    fn decode(value: &http::HeaderValue) -> Option<Self> {
-        debug_assert!(
-            value.as_bytes()[..Self::SCHEME.len()].eq_ignore_ascii_case(Self::SCHEME.as_bytes()),
-            "HeaderValue to decode should start with \"Basic ..\", received = {:?}",
-            value,
-        );
+impl FromStr for Basic {
+    type Err = OpaqueError;
 
-        let bytes = &value.as_bytes()["Basic ".len()..];
-        let non_space_pos = bytes.iter().position(|b| *b != b' ')?;
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        if value.as_bytes().len() <= BASIC_SCHEME.len() + 1 {
+            return Err(OpaqueError::from_display(
+                "invalid scheme length in basic str",
+            ));
+        }
+        if !value.as_bytes()[..BASIC_SCHEME.len()].eq_ignore_ascii_case(BASIC_SCHEME.as_bytes()) {
+            return Err(OpaqueError::from_display("invalid scheme in basic str"));
+        }
+
+        let bytes = &value.as_bytes()[BASIC_SCHEME.len() + 1..];
+        let non_space_pos = bytes
+            .iter()
+            .position(|b| *b != b' ')
+            .ok_or_else(|| OpaqueError::from_display("missing space separator in basic str"))?;
         let bytes = &bytes[non_space_pos..];
 
-        let bytes = ENGINE.decode(bytes).ok()?;
+        let bytes = ENGINE
+            .decode(bytes)
+            .context("failed to decode base64 basic str")?;
 
-        let decoded = String::from_utf8(bytes).ok()?;
+        let decoded = String::from_utf8(bytes).context("base64 decoded basic str is not utf-8")?;
 
-        let colon_pos = decoded.find(':')?;
+        let colon_pos = decoded.find(':').ok_or_else(|| {
+            OpaqueError::from_display("missing colon separator in decoded basic utf-8 str")
+        })?;
 
         let data = BasicData::Decoded { decoded, colon_pos };
-        Some(Basic { data })
+        Ok(Basic { data })
     }
+}
 
-    fn encode(&self) -> http::HeaderValue {
-        let mut encoded = String::from("Basic ");
+impl std::fmt::Display for Basic {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut encoded = format!("{BASIC_SCHEME} ");
 
         match &self.data {
             BasicData::Username(username) => {
@@ -111,6 +127,20 @@ impl authorization::Credentials for Basic {
             }
         }
 
+        f.write_str(&encoded)
+    }
+}
+
+impl authorization::Credentials for Basic {
+    const SCHEME: &'static str = BASIC_SCHEME;
+
+    fn decode(value: &http::HeaderValue) -> Option<Self> {
+        let value = value.to_str().ok()?;
+        value.parse().ok()
+    }
+
+    fn encode(&self) -> http::HeaderValue {
+        let encoded = self.to_string();
         let bytes = bytes::Bytes::from(encoded);
         http::HeaderValue::from_maybe_shared(bytes)
             .expect("base64 encoding is always a valid HeaderValue")
@@ -123,6 +153,12 @@ mod tests {
     use headers::authorization::Credentials;
 
     use super::*;
+
+    #[test]
+    fn basic_parse_empty() {
+        let value = "".parse::<Basic>();
+        assert!(value.is_err());
+    }
 
     #[test]
     fn basic_encode() {

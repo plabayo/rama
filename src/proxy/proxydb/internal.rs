@@ -1,5 +1,8 @@
-use super::{ProxyCredentials, ProxyFilter, StringFilter};
-use crate::http::{RequestContext, Version};
+use super::{ProxyFilter, StringFilter};
+use crate::{
+    http::{RequestContext, Version},
+    net::user::Basic,
+};
 use std::path::Path;
 use tokio::{
     fs::File,
@@ -56,9 +59,7 @@ pub struct Proxy {
     pub carrier: Option<StringFilter>,
 
     /// The optional credentials to use to authenticate with the proxy.
-    ///
-    /// See [`ProxyCredentials`] for more information.
-    pub credentials: Option<ProxyCredentials>,
+    pub credentials: Option<Basic>,
 }
 
 /// Validate the proxy is valid according to rules that are not enforced by the type system.
@@ -408,10 +409,7 @@ mod tests {
                     country: Some("country".into()),
                     city: Some("city".into()),
                     carrier: Some("carrier".into()),
-                    credentials: Some(ProxyCredentials::Basic {
-                        username: "username".into(),
-                        password: Some("password".into()),
-                    }),
+                    credentials: Some(Basic::new("username", "password")),
                 },
             ),
             (
@@ -537,13 +535,7 @@ mod tests {
         assert_eq!(proxy.country, Some("country".into()));
         assert_eq!(proxy.city, Some("city".into()));
         assert_eq!(proxy.carrier, Some("carrier".into()));
-        assert_eq!(
-            proxy.credentials,
-            Some(ProxyCredentials::Basic {
-                username: "username".into(),
-                password: Some("password".into()),
-            })
-        );
+        assert_eq!(proxy.credentials, Some(Basic::new("username", "password")),);
 
         // no more rows to read
         assert!(reader.next().await.unwrap().is_none());
@@ -567,13 +559,7 @@ mod tests {
         assert_eq!(proxy.country, Some("country".into()));
         assert_eq!(proxy.city, Some("city".into()));
         assert_eq!(proxy.carrier, Some("carrier".into()));
-        assert_eq!(
-            proxy.credentials,
-            Some(ProxyCredentials::Basic {
-                username: "username".into(),
-                password: Some("password".into()),
-            })
-        );
+        assert_eq!(proxy.credentials, Some(Basic::new("username", "password")),);
 
         let proxy = reader.next().await.unwrap().unwrap();
 

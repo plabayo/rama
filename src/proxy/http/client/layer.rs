@@ -1,11 +1,12 @@
 use crate::error::{BoxError, ErrorExt, OpaqueError};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
 use crate::http::headers::HeaderMapExt;
-use crate::http::headers::{Authorization, ProxyAuthorization};
+use crate::http::headers::ProxyAuthorization;
 use crate::http::Uri;
 use crate::http::{Request, RequestContext};
 use crate::net::stream::Stream;
-use crate::proxy::{ProxyCredentials, ProxySocketAddr};
+use crate::net::user::Basic;
+use crate::proxy::ProxySocketAddr;
 use crate::service::{Context, Layer, Service};
 use crate::tls::HttpsTunnel;
 use std::fmt;
@@ -57,7 +58,7 @@ pub struct HttpProxyInfo {
     /// TODO: what about custom configs?!
     pub secure: bool,
     /// The credentials to use for the proxy connection.
-    pub credentials: Option<ProxyCredentials>,
+    pub credentials: Option<Basic>,
 }
 
 impl FromStr for HttpProxyInfo {
@@ -270,25 +271,8 @@ where
         if !request_context.scheme.secure() {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
-            if let Some(credentials) = info.credentials.as_ref() {
-                match credentials {
-                    ProxyCredentials::Basic { username, password } => {
-                        let c = Authorization::basic(
-                            username.as_str(),
-                            password.as_deref().unwrap_or_default(),
-                        )
-                        .0;
-                        req.headers_mut().typed_insert(ProxyAuthorization(c));
-                    }
-                    ProxyCredentials::Bearer(token) => {
-                        let c = Authorization::bearer(token.as_str())
-                            .map_err(|err| {
-                                OpaqueError::from_std(err).context("define http proxy bearer token")
-                            })?
-                            .0;
-                        req.headers_mut().typed_insert(ProxyAuthorization(c));
-                    }
-                }
+            if let Some(basic) = info.credentials.clone() {
+                req.headers_mut().typed_insert(ProxyAuthorization(basic));
             }
             return Ok(EstablishedClientConnection {
                 ctx,
@@ -305,25 +289,8 @@ where
         };
 
         let mut connector = HttpProxyConnector::new(authority);
-        if let Some(credentials) = info.credentials.as_ref() {
-            match credentials {
-                ProxyCredentials::Basic { username, password } => {
-                    let c = Authorization::basic(
-                        username.as_str(),
-                        password.as_deref().unwrap_or_default(),
-                    )
-                    .0;
-                    connector.with_typed_header(ProxyAuthorization(c));
-                }
-                ProxyCredentials::Bearer(token) => {
-                    let c = Authorization::bearer(token.as_str())
-                        .map_err(|err| {
-                            OpaqueError::from_std(err).context("define http proxy bearer token")
-                        })?
-                        .0;
-                    connector.with_typed_header(ProxyAuthorization(c));
-                }
-            }
+        if let Some(basic) = info.credentials.clone() {
+            connector.with_typed_header(ProxyAuthorization(basic));
         }
 
         let stream = connector
