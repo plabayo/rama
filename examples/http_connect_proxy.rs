@@ -71,7 +71,7 @@ use rama::{
         service::web::{extract::Path, match_service},
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
-    net::stream::layer::http::BodyLimitLayer,
+    net::{stream::layer::http::BodyLimitLayer, user::Basic},
     rt::Executor,
     service::{
         context::Extensions, layer::HijackLayer, service_fn, Context, Service, ServiceBuilder,
@@ -116,7 +116,7 @@ async fn main() {
                     .layer(TraceLayer::new_for_http())
                     // See [`ProxyAuthLayer::with_labels`] for more information,
                     // e.g. can also be used to extract upstream proxy filters
-                    .layer(ProxyAuthLayer::basic(("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>())
+                    .layer(ProxyAuthLayer::new(Basic::new("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>())
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
                         DomainMatcher::new("echo.example.internal"),

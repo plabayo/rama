@@ -35,7 +35,7 @@ use rama::{
         server::HttpServer,
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
-    net::stream::layer::http::BodyLimitLayer,
+    net::{stream::layer::http::BodyLimitLayer, user::Basic},
     rt::Executor,
     service::{service_fn, Context, Service, ServiceBuilder},
     tcp::{server::TcpListener, utils::is_connection_error},
@@ -133,7 +133,7 @@ async fn main() {
                 .layer(TraceLayer::new_for_http())
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                .layer(ProxyAuthLayer::basic(("john", "secret")))
+                .layer(ProxyAuthLayer::new(Basic::new("john", "secret")))
                 .layer(UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
