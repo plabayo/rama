@@ -1,6 +1,9 @@
 use super::Host;
 use crate::error::{ErrorContext, OpaqueError};
-use std::{fmt, net::SocketAddr};
+use std::{
+    fmt,
+    net::{IpAddr, SocketAddr},
+};
 
 /// A [`Host`] with an associated port.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -133,7 +136,12 @@ impl TryFrom<&str> for Authority {
 
         let (host, port) = try_to_split_port_from_str(s)?;
         let host = Host::try_from(host).context("parse host from authority")?;
-        Ok(Authority { host, port })
+        match host {
+            Host::Address(IpAddr::V6(_)) if port.is_some() && !s.starts_with('[') => Err(
+                OpaqueError::from_display("missing brackets for IPv6 address with port"),
+            ),
+            _ => Ok(Authority { host, port }),
+        }
     }
 }
 
@@ -184,7 +192,6 @@ mod tests {
             ("[::1]:80", ("::1", Some(80))),
             ("127.0.0.1", ("127.0.0.1", None)),
             ("127.0.0.1:80", ("127.0.0.1", Some(80))),
-            ("[127.0.0.1]:80", ("127.0.0.1", Some(80))), // 🤷 technically not correct, but...
             (
                 "2001:db8:3333:4444:5555:6666:7777:8888",
                 ("2001:db8:3333:4444:5555:6666:7777:8888", None),
@@ -195,10 +202,6 @@ mod tests {
             ),
             (
                 "[2001:db8:3333:4444:5555:6666:7777:8888]:80",
-                ("2001:db8:3333:4444:5555:6666:7777:8888", Some(80)),
-            ),
-            (
-                "2001:db8:3333:4444:5555:6666:7777:8888:80", // 🤷 technically not correct, but...
                 ("2001:db8:3333:4444:5555:6666:7777:8888", Some(80)),
             ),
         ] {
@@ -241,6 +244,8 @@ mod tests {
             "example.com:-1",
             "example.com:999999",
             "example:com",
+            "[127.0.0.1]:80",
+            "2001:db8:3333:4444:5555:6666:7777:8888:80",
         ] {
             let msg = format!("parsing '{}'", s);
             assert!(s.parse::<Authority>().is_err(), "{}", msg);
@@ -266,7 +271,6 @@ mod tests {
             ("[::1]:80", "[::1]:80"),
             ("127.0.0.1", "127.0.0.1"),
             ("127.0.0.1:80", "127.0.0.1:80"),
-            ("[127.0.0.1]:80", "127.0.0.1:80"), // 🤷 technically not correct, but...
         ] {
             let msg = format!("parsing '{}'", s);
             let authority: Authority = s.parse().expect(&msg);

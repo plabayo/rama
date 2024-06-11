@@ -1,6 +1,9 @@
 use super::{Authority, Domain};
 use crate::error::{ErrorContext, OpaqueError};
-use std::{fmt, net::IpAddr};
+use std::{
+    fmt,
+    net::{IpAddr, Ipv6Addr},
+};
 
 /// Either a [`Domain`] or an [`IpAddr`].
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -133,14 +136,14 @@ impl TryFrom<&[u8]> for Host {
 }
 
 fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
-    let value_str = if value.starts_with('[') || value.ends_with(']') {
-        value
+    if value.starts_with('[') || value.ends_with(']') {
+        let value = value
             .strip_prefix('[')
-            .and_then(|value| value.strip_suffix(']'))?
+            .and_then(|value| value.strip_suffix(']'))?;
+        Some(IpAddr::V6(value.parse::<Ipv6Addr>().ok()?))
     } else {
-        value
-    };
-    value_str.parse::<IpAddr>().ok()
+        value.parse::<IpAddr>().ok()
+    }
 }
 
 fn try_to_parse_bytes_to_ip(value: &[u8]) -> Option<IpAddr> {
