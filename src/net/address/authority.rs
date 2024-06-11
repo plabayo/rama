@@ -81,6 +81,15 @@ impl From<SocketAddr> for Authority {
     }
 }
 
+impl From<&SocketAddr> for Authority {
+    fn from(addr: &SocketAddr) -> Self {
+        Authority {
+            host: Host::Address(addr.ip()),
+            port: Some(addr.port()),
+        }
+    }
+}
+
 impl fmt::Display for Authority {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         match self.port {
