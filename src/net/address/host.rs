@@ -216,6 +216,33 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_bytes_valid() {
+        for (bytes, expected) in [
+            ("example.com".as_bytes(), Is::Domain("example.com")),
+            ("aA1".as_bytes(), Is::Domain("aA1")),
+            (&[127, 0, 0, 1], Is::Ip("127.0.0.1")),
+            (&[19, 117, 63, 126], Is::Ip("19.117.63.126")),
+            (
+                &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                Is::Ip("::1"),
+            ),
+            (
+                &[
+                    32, 1, 13, 184, 51, 51, 68, 68, 85, 85, 102, 102, 119, 119, 136, 136,
+                ],
+                Is::Ip("2001:db8:3333:4444:5555:6666:7777:8888"),
+            ),
+        ] {
+            let msg = format!("parsing {:?}", bytes);
+            assert_is(Host::try_from(bytes).expect(msg.as_str()), expected);
+            assert_is(
+                Host::try_from(bytes.to_vec()).expect(msg.as_str()),
+                expected,
+            );
+        }
+    }
+
+    #[test]
     fn test_parse_valid() {
         for (str, expected) in [
             ("example.com", Is::Domain("example.com")),
