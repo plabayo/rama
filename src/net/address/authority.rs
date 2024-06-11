@@ -1,7 +1,6 @@
-use crate::error::{ErrorContext, OpaqueError};
-
 use super::Host;
-use std::fmt;
+use crate::error::{ErrorContext, OpaqueError};
+use std::{fmt, net::SocketAddr};
 
 /// A [`Host`] with an associated port.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -70,6 +69,15 @@ impl From<Authority> for (Host, Option<u16>) {
 impl From<Authority> for Host {
     fn from(authority: Authority) -> Host {
         authority.host
+    }
+}
+
+impl From<SocketAddr> for Authority {
+    fn from(addr: SocketAddr) -> Self {
+        Authority {
+            host: Host::Address(addr.ip()),
+            port: Some(addr.port()),
+        }
     }
 }
 
