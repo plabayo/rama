@@ -8,4 +8,4 @@ pub use id::UserId;
 
 mod credentials;
 #[doc(inline)]
-pub use credentials::Basic;
+pub use credentials::{Basic, Bearer, ProxyCredentials};

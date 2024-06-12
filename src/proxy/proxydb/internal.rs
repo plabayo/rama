@@ -222,7 +222,8 @@ fn parse_csv_row(row: &str) -> Option<Proxy> {
             if value.is_empty() {
                 None
             } else {
-                Some(value.parse().ok()?)
+                // TODO: deserialize as ProxyCredentials
+                Some(Basic::try_from_header_str(value).ok()?)
             }
         }
         _ => None,
