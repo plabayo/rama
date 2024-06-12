@@ -3,7 +3,7 @@ use crate::error::{ErrorContext, OpaqueError};
 use crate::http::HeaderValue;
 use std::borrow::Cow;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Proxy credentials.
 pub enum ProxyCredential {
     /// [`Basic`]` credentials.

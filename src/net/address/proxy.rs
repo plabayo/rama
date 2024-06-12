@@ -1,0 +1,184 @@
+use super::Authority;
+use crate::{
+    error::{ErrorContext, OpaqueError},
+    net::{proto::try_to_extract_protocol_from_uri_scheme, user::ProxyCredential, Protocol},
+};
+use std::{fmt::Display, str::FromStr};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Address of a proxy that can be connected to.
+pub struct ProxyAddress {
+    protocol: Protocol,
+    authority: Authority,
+    credential: Option<ProxyCredential>,
+}
+
+impl ProxyAddress {
+    /// Creates a new [`ProxyAddress`] with the given [`Protocol`], [`Authority`], and optional [`ProxyCredential`].
+    pub fn new(
+        protocol: Protocol,
+        authority: Authority,
+        credential: Option<ProxyCredential>,
+    ) -> Self {
+        Self {
+            protocol,
+            authority,
+            credential,
+        }
+    }
+
+    /// Returns the protocol of this [`ProxyAddress`].
+    pub fn protocol(&self) -> &Protocol {
+        &self.protocol
+    }
+
+    /// Returns the authority of this [`ProxyAddress`].
+    pub fn authority(&self) -> &Authority {
+        &self.authority
+    }
+
+    /// Returns the credential of this [`ProxyAddress`].
+    pub fn credential(&self) -> Option<&ProxyCredential> {
+        self.credential.as_ref()
+    }
+}
+
+impl TryFrom<&str> for ProxyAddress {
+    type Error = OpaqueError;
+
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        let slice = value.as_bytes();
+
+        let (protocol, slice) = match try_to_extract_protocol_from_uri_scheme(slice) {
+            Some((protocol, size)) => (protocol, &slice[size..]),
+            None => (Protocol::Empty, slice),
+        };
+
+        for i in 0..slice.len() {
+            if slice[i] == b'@' {
+                let credential = ProxyCredential::try_from_clear_str(
+                    std::str::from_utf8(&slice[..i])
+                        .context("parse proxy address: view credential as utf-8")?
+                        .to_owned(),
+                )
+                .context("parse proxy address")?;
+
+                let authority: Authority =
+                    slice[i + 1..].try_into().context("parse proxy address")?;
+
+                return Ok(ProxyAddress::new(protocol, authority, Some(credential)));
+            }
+        }
+
+        let authority: Authority = slice.try_into().context("parse proxy address")?;
+        Ok(ProxyAddress::new(protocol, authority, None))
+    }
+}
+
+impl TryFrom<String> for ProxyAddress {
+    type Error = OpaqueError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        value.as_str().try_into()
+    }
+}
+
+impl FromStr for ProxyAddress {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.try_into()
+    }
+}
+
+impl Display for ProxyAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(scheme) = self.protocol.as_scheme() {
+            write!(f, "{}://", scheme)?;
+        }
+        if let Some(credential) = &self.credential {
+            write!(f, "{}@", credential.as_clear_string())?;
+        }
+        self.authority.fmt(f)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::net::{
+        address::Host,
+        user::{Basic, Bearer},
+    };
+
+    #[test]
+    fn test_valid_http_proxy() {
+        let addr: ProxyAddress = "https://foo-cc-be:baz@my.proxy.io.:9999"
+            .try_into()
+            .unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress::new(
+                Protocol::Https,
+                Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), Some(9999)),
+                Some(Basic::new("foo-cc-be", "baz").into()),
+            )
+        );
+    }
+
+    #[test]
+    fn test_valid_socks5h_proxy() {
+        let addr: ProxyAddress = "socks5h://foo@[::1]:60000".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress::new(
+                Protocol::Socks5h,
+                Authority::new(Host::Address("::1".parse().unwrap()), Some(60000)),
+                Some(Bearer::try_from_clear_str("foo").unwrap().into()),
+            )
+        );
+    }
+
+    #[test]
+    fn test_valid_proxy_address_symmetric() {
+        for s in [
+            "proxy.io",
+            "proxy.io:8080",
+            "127.0.0.1",
+            "127.0.0.1:8080",
+            "::1",
+            "[::1]:8080",
+            "http://proxy.io",
+            "http://proxy.io:8080",
+            "http://127.0.0.1",
+            "http://127.0.0.1:8080",
+            "http://::1",
+            "http://[::1]:8080",
+            "http://foo@proxy.io",
+            "http://foo@proxy.io:8080",
+            "http://foo@127.0.0.1",
+            "http://foo@127.0.0.1:8080",
+            "http://foo@::1",
+            "http://foo@[::1]:8080",
+            "http://foo:@proxy.io",
+            "http://foo:@proxy.io:8080",
+            "http://foo:@127.0.0.1",
+            "http://foo:@127.0.0.1:8080",
+            "http://foo:@::1",
+            "http://foo:@[::1]:8080",
+            "http://foo:bar@proxy.io",
+            "http://foo:bar@proxy.io:8080",
+            "http://foo:bar@127.0.0.1",
+            "http://foo:bar@127.0.0.1:8080",
+            "http://foo:bar@::1",
+            "http://foo:bar@[::1]:8080",
+        ] {
+            let addr: ProxyAddress = match s.try_into() {
+                Ok(addr) => addr,
+                Err(err) => panic!("invalid addr '{s}': {err}"),
+            };
+            let out = addr.to_string();
+            assert_eq!(s, out);
+        }
+    }
+}

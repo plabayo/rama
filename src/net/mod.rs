@@ -3,3 +3,7 @@
 pub mod address;
 pub mod stream;
 pub mod user;
+
+pub(crate) mod proto;
+#[doc(inline)]
+pub use proto::Protocol;

@@ -18,3 +18,7 @@ pub use domain::Domain;
 mod authority;
 #[doc(inline)]
 pub use authority::Authority;
+
+mod proxy;
+#[doc(inline)]
+pub use proxy::ProxyAddress;
