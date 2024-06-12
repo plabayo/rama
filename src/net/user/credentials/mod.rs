@@ -8,4 +8,4 @@ pub use bearer::Bearer;
 
 mod proxy;
 #[doc(inline)]
-pub use proxy::ProxyCredentials;
+pub use proxy::ProxyCredential;

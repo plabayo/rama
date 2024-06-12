@@ -178,12 +178,17 @@ mod tests {
 
     fn assert_is(host: Host, expected: Is) {
         match expected {
-            Is::Domain(domain) => {
-                assert_eq!(host, domain);
-            }
-            Is::Ip(ip) => {
-                assert_eq!(host, ip);
-            }
+            Is::Domain(domain) => match host {
+                Host::Address(address) => panic!(
+                    "expected host address {} to be the domain: {}",
+                    address, domain
+                ),
+                Host::Name(name) => assert_eq!(domain, name),
+            },
+            Is::Ip(ip) => match host {
+                Host::Address(address) => assert_eq!(ip, address.to_string()),
+                Host::Name(name) => panic!("expected host domain {} to be the ip: {}", name, ip),
+            },
         }
     }
 

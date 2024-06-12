@@ -74,6 +74,11 @@ impl Basic {
         let colon_pos = s
             .find(':')
             .ok_or_else(|| OpaqueError::from_display("missing colon separator in clear str"))?;
+        if colon_pos == 0 {
+            return Err(OpaqueError::from_display(
+                "missing username in basic credential",
+            ));
+        }
         let data = BasicData::Decoded {
             decoded: s,
             colon_pos,
@@ -100,6 +105,13 @@ impl Basic {
         }
 
         encoded
+    }
+
+    /// View this [`Basic`] as a [`HeaderValue`][http::HeaderValue].
+    pub fn as_header_value(&self) -> http::HeaderValue {
+        let encoded = self.as_header_string();
+        // we validate the inner value upon creation
+        http::HeaderValue::from_str(&encoded).expect("inner value should always be valid")
     }
 
     /// Serialize this [`Basic`] credential as a clear (not encoded) string.
@@ -159,21 +171,30 @@ impl authorization::Credentials for Basic {
     }
 
     fn encode(&self) -> http::HeaderValue {
-        let encoded = self.as_header_string();
-        http::HeaderValue::from_str(&encoded).expect("header value to be always valid")
+        self.as_header_value()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use ::http::HeaderValue;
-    use headers::authorization::Credentials;
-
     use super::*;
+    use authorization::Credentials;
 
     #[test]
     fn basic_parse_empty() {
         let value = Basic::try_from_header_str("");
+        assert!(value.is_err());
+    }
+
+    #[test]
+    fn basic_clear_text_empty() {
+        let value = Basic::try_from_clear_str("".to_owned());
+        assert!(value.is_err());
+    }
+
+    #[test]
+    fn basic_missing_username() {
+        let value = Basic::try_from_clear_str(":".to_owned());
         assert!(value.is_err());
     }
 
@@ -195,7 +216,7 @@ mod tests {
 
     #[test]
     fn basic_decode() {
-        let auth = Basic::decode(&HeaderValue::from_static(
+        let auth = Basic::decode(&http::HeaderValue::from_static(
             "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         ))
         .unwrap();
@@ -205,7 +226,7 @@ mod tests {
 
     #[test]
     fn basic_decode_case_insensitive() {
-        let auth = Basic::decode(&HeaderValue::from_static(
+        let auth = Basic::decode(&http::HeaderValue::from_static(
             "basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         ))
         .unwrap();
@@ -215,7 +236,7 @@ mod tests {
 
     #[test]
     fn basic_decode_extra_whitespaces() {
-        let auth = Basic::decode(&HeaderValue::from_static(
+        let auth = Basic::decode(&http::HeaderValue::from_static(
             "Basic  QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         ))
         .unwrap();
@@ -225,7 +246,7 @@ mod tests {
 
     #[test]
     fn basic_decode_no_password() {
-        let auth = Basic::decode(&HeaderValue::from_static("Basic QWxhZGRpbjo=")).unwrap();
+        let auth = Basic::decode(&http::HeaderValue::from_static("Basic QWxhZGRpbjo=")).unwrap();
         assert_eq!(auth.username(), "Aladdin");
         assert_eq!(auth.password(), "");
     }
