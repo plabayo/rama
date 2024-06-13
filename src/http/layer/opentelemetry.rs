@@ -250,7 +250,7 @@ fn compute_attributes<State, Body>(ctx: &mut Context<State>, req: &Request<Body>
         Some("") | None => (),
         Some(query) => attributes.push(KeyValue::new(URL_QUERY, query.to_owned())),
     }
-    attributes.push(KeyValue::new(URL_SCHEME, request_ctx.scheme.to_string()));
+    attributes.push(KeyValue::new(URL_SCHEME, request_ctx.protocol.to_string()));
 
     // Common attrs (Request Info)
     // <https://github.com/open-telemetry/semantic-conventions/blob/v1.21.0/docs/http/http-spans.md#common-attributes>

@@ -437,7 +437,7 @@ impl MemoryProxyDBQueryError {
 mod tests {
     use std::str::FromStr;
 
-    use crate::net::address::ProxyAddress;
+    use crate::net::{address::ProxyAddress, Protocol};
 
     use super::*;
     use itertools::Itertools;
@@ -462,8 +462,8 @@ mod tests {
     fn h2_req_context() -> RequestContext {
         RequestContext {
             http_version: Version::HTTP_2,
-            scheme: crate::uri::Scheme::Https,
-            host: Some("example.com".to_owned()),
+            protocol: Protocol::Https,
+            host: Some("localhost".try_into().unwrap()),
             port: None,
         }
     }
@@ -560,8 +560,8 @@ mod tests {
     fn h3_req_context() -> RequestContext {
         RequestContext {
             http_version: Version::HTTP_3,
-            scheme: crate::uri::Scheme::Https,
-            host: Some("example.com".to_owned()),
+            protocol: Protocol::Https,
+            host: Some("localhost".try_into().unwrap()),
             port: Some(8443),
         }
     }

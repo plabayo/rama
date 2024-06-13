@@ -8,7 +8,7 @@
 //! use rama::http::{Body, Request, RequestContext, Version, StatusCode};
 //! use rama::service::{Context, Service, Layer};
 //! use rama::net::stream::ServerSocketAddr;
-//! use rama::uri::Scheme;
+//! use rama::net::Protocol;
 //! use std::net::SocketAddr;
 //!
 //! #[tokio::main]
@@ -16,7 +16,7 @@
 //!     let dns_layer = DnsLayer::new()
 //!         .dns_map_header("x-dns-map".parse().unwrap())
 //!         .default_resolver();
-//!    
+//!
 //!     let service = dns_layer.layer(WebService::default()
 //!         .get("/", |Host(host): Host, Extension(resolved): Extension<ServerSocketAddr>| async move {
 //!             assert_eq!(host, "www.example.com");
@@ -29,8 +29,8 @@
 //!     let mut ctx = Context::default();
 //!     ctx.insert(RequestContext{
 //!         http_version: Version::HTTP_11,
-//!         scheme: Scheme::Http,
-//!         host: Some("www.example.com".to_owned()),
+//!         protocol: Protocol::Http,
+//!         host: Some("www.example.com".try_into().unwrap()),
 //!         port: None,
 //!     });
 //!
@@ -38,7 +38,7 @@
 //!         ctx,
 //!         Request::builder()
 //!             .uri("http://www.example.com")
-//!             .header("x-dns-map", "www.example.com=127.0.0.1:8080")
+//!             .header("x-dns-map", "www.example.com:80=127.0.0.1:8080")
 //!             .body(Body::empty()).unwrap(),
 //!     ).await.unwrap();
 //!     assert_eq!(resp.status(), StatusCode::OK);
@@ -138,7 +138,7 @@ impl<R> DnsLayer<R> {
     /// Enable the default resolver to be used for resolving DNS.
     pub fn default_resolver(self) -> DnsLayer<impl DynamicDnsResolver + Clone> {
         DnsLayer {
-            resolver: tokio::net::lookup_host,
+            resolver: crate::net::lookup_host,
             resolver_header: self.resolver_header,
             dns_map_header: self.dns_map_header,
         }

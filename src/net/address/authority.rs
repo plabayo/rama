@@ -1,5 +1,6 @@
 use super::Host;
 use crate::error::{ErrorContext, OpaqueError};
+use crate::http::HeaderValue;
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
@@ -39,6 +40,11 @@ impl Authority {
     /// Gets the port, if defined
     pub fn port(&self) -> Option<u16> {
         self.port
+    }
+
+    /// Consume self into its parts: `(host, port?)`
+    pub fn into_parts(self) -> (Host, Option<u16>) {
+        (self.host, self.port)
     }
 }
 
@@ -142,6 +148,22 @@ impl TryFrom<&str> for Authority {
             ),
             _ => Ok(Authority { host, port }),
         }
+    }
+}
+
+impl TryFrom<HeaderValue> for Authority {
+    type Error = OpaqueError;
+
+    fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
+        Self::try_from(&header)
+    }
+}
+
+impl TryFrom<&HeaderValue> for Authority {
+    type Error = OpaqueError;
+
+    fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
+        header.to_str().context("convert header to str")?.try_into()
     }
 }
 

@@ -209,7 +209,7 @@ impl IntoHeaderValue for &[u8] {}
 mod private {
     use http::HeaderName;
 
-    use crate::uri::Scheme;
+    use crate::net::Protocol;
 
     use super::*;
 
@@ -219,11 +219,11 @@ mod private {
 
     impl IntoUrlSealed for Uri {
         fn into_url(self) -> Result<Uri, HttpClientError> {
-            let scheme: Scheme = self.scheme().into();
-            match scheme {
-                Scheme::Http | Scheme::Https => Ok(self),
+            let protocol: Protocol = self.scheme().into();
+            match protocol {
+                Protocol::Http | Protocol::Https => Ok(self),
                 _ => Err(HttpClientError::from_display(format!(
-                    "Unsupported scheme: {scheme}"
+                    "Unsupported protocol: {protocol}"
                 ))),
             }
         }

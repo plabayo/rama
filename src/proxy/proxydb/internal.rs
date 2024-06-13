@@ -325,6 +325,8 @@ mod tests {
 
     use itertools::Itertools;
 
+    use crate::net::Protocol;
+
     use super::*;
 
     #[test]
@@ -615,8 +617,8 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
-            scheme: crate::uri::Scheme::Https,
-            host: Some("localhost".to_owned()),
+            protocol: Protocol::Https,
+            host: Some("localhost".try_into().unwrap()),
             port: None,
         };
 
@@ -654,8 +656,8 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
-            scheme: crate::uri::Scheme::Https,
-            host: Some("localhost".to_owned()),
+            protocol: Protocol::Https,
+            host: Some("localhost".try_into().unwrap()),
             port: None,
         };
 
@@ -693,8 +695,8 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_3,
-            scheme: crate::uri::Scheme::Https,
-            host: Some("localhost".to_owned()),
+            protocol: Protocol::Https,
+            host: Some("localhost".try_into().unwrap()),
             port: None,
         };
 
@@ -732,8 +734,8 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_3,
-            scheme: crate::uri::Scheme::Https,
-            host: Some("localhost".to_owned()),
+            protocol: Protocol::Https,
+            host: Some("localhost".try_into().unwrap()),
             port: None,
         };
 
@@ -771,8 +773,8 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_3,
-            scheme: crate::uri::Scheme::Https,
-            host: Some("localhost".to_owned()),
+            protocol: Protocol::Https,
+            host: Some("localhost".try_into().unwrap()),
             port: None,
         };
 
@@ -954,8 +956,8 @@ mod tests {
             let proxy = parse_csv_row(proxy_csv).unwrap();
             let ctx = RequestContext {
                 http_version: Version::HTTP_2,
-                scheme: crate::uri::Scheme::Https,
-                host: Some("localhost".to_owned()),
+                protocol: Protocol::Https,
+                host: Some("localhost".try_into().unwrap()),
                 port: None,
             };
 
@@ -1100,8 +1102,8 @@ mod tests {
             let proxy = parse_csv_row(proxy_csv).unwrap();
             let ctx = RequestContext {
                 http_version: Version::HTTP_2,
-                scheme: crate::uri::Scheme::Https,
-                host: Some("localhost".to_owned()),
+                protocol: Protocol::Https,
+                host: Some("localhost".try_into().unwrap()),
                 port: None,
             };
 
@@ -1114,8 +1116,8 @@ mod tests {
         let proxy = parse_csv_row("id,1,,1,,,,,authority,*,*,*,*").unwrap();
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
-            scheme: crate::uri::Scheme::Https,
-            host: Some("localhost".to_owned()),
+            protocol: Protocol::Https,
+            host: Some("localhost".try_into().unwrap()),
             port: None,
         };
 
@@ -1190,8 +1192,8 @@ mod tests {
         let proxy = parse_csv_row("id,1,,1,,,,,authority,pool,country,city,carrier").unwrap();
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
-            scheme: crate::uri::Scheme::Https,
-            host: Some("localhost".to_owned()),
+            protocol: Protocol::Https,
+            host: Some("localhost".try_into().unwrap()),
             port: None,
         };
 

@@ -132,15 +132,14 @@ async fn http_connect_proxy<S>(ctx: Context<S>, mut upgraded: Upgraded) -> Resul
 where
     S: Send + Sync + 'static,
 {
-    let host = ctx
+    let authority = ctx
         .get::<RequestContext>()
         .unwrap()
-        .host
-        .as_ref()
+        .authority()
         .unwrap()
-        .clone();
-    tracing::info!("CONNECT to {}", host);
-    let mut stream = match tokio::net::TcpStream::connect(&host).await {
+        .to_string();
+    tracing::info!("CONNECT to {}", authority);
+    let mut stream = match tokio::net::TcpStream::connect(authority).await {
         Ok(stream) => stream,
         Err(err) => {
             tracing::error!(error = %err, "error connecting to host");

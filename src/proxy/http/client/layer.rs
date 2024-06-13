@@ -229,7 +229,7 @@ where
 
         let request_context = ctx.get_or_insert_with(|| RequestContext::new(&req));
 
-        if !request_context.scheme.secure() {
+        if !request_context.protocol.secure() {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
             if let Some(credential) = address.credential().cloned() {

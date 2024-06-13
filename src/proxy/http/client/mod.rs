@@ -7,7 +7,7 @@ use crate::{
         headers::{Header, HeaderMapExt},
         HeaderMap, HeaderName, HeaderValue,
     },
-    net::stream::Stream,
+    net::{address::Authority, stream::Stream},
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -19,7 +19,7 @@ pub use layer::{HttpProxyConnectorLayer, HttpProxyConnectorService};
 ///
 /// Used to connect as a client to a HTTP proxy server.
 pub struct HttpProxyConnector {
-    authority: String,
+    authority: Authority,
     headers: Option<HeaderMap>,
 }
 
@@ -29,7 +29,7 @@ pub struct HttpProxyConnector {
 
 impl HttpProxyConnector {
     /// Create a new [`HttpProxyConnector`] with the given authority.
-    pub fn new(authority: String) -> Self {
+    pub fn new(authority: Authority) -> Self {
         Self {
             authority,
             headers: None,
@@ -76,7 +76,7 @@ impl HttpProxyConnector {
              Host: {authority}\r\n\
              User-Agent: {ua_name}/{ua_version}\r\n\
              ",
-            authority = self.authority,
+            authority = self.authority.host(),
             ua_name = crate::utils::info::NAME,
             ua_version = crate::utils::info::VERSION,
         )

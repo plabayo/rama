@@ -142,24 +142,17 @@ pub async fn get_request_info(
     ctx: &Context<State>,
     parts: &Parts,
 ) -> RequestInfo {
-    let authority = ctx
-        .get::<RequestContext>()
-        .and_then(RequestContext::authority);
+    let request_context = ctx.get::<RequestContext>();
+    let authority = request_context
+        .and_then(RequestContext::authority)
+        .map(|a| a.to_string());
+    let scheme = request_context
+        .map(|ctx| ctx.protocol.to_string())
+        .unwrap_or_default();
 
     RequestInfo {
         version: format!("{:?}", parts.version),
-        scheme: parts
-            .uri
-            .scheme_str()
-            .map(|v| v.to_owned())
-            .unwrap_or_else(|| {
-                if ctx.get::<IncomingClientHello>().is_some() {
-                    "https"
-                } else {
-                    "http"
-                }
-                .to_owned()
-            }),
+        scheme,
         authority,
         method: parts.method.as_str().to_owned(),
         fetch_mode: parts

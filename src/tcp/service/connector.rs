@@ -3,7 +3,10 @@ use crate::{
         client::{ClientConnection, EstablishedClientConnection},
         Request, RequestContext,
     },
-    net::{address::ProxyAddress, stream::ServerSocketAddr},
+    net::{
+        address::{Authority, ProxyAddress},
+        stream::ServerSocketAddr,
+    },
     service::{Context, Service},
 };
 use std::net::SocketAddr;
@@ -52,8 +55,7 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(proxy) = ctx.get::<ProxyAddress>() {
-            // TODO: can we do without stringifying?
-            let addr = resolve_authority(proxy.authority().to_string()).await?;
+            let addr = resolve_authority(proxy.authority()).await?;
             let stream = TcpStream::connect(&addr).await?;
             return Ok(EstablishedClientConnection {
                 ctx,
@@ -74,7 +76,7 @@ where
         let request_info = ctx.get_or_insert_with(|| RequestContext::new(&req));
         match request_info.authority() {
             Some(authority) => {
-                let socket_addr = resolve_authority(authority).await?;
+                let socket_addr = resolve_authority(&authority).await?;
                 let stream = TcpStream::connect(&socket_addr).await?;
                 Ok(EstablishedClientConnection {
                     ctx,
@@ -90,17 +92,19 @@ where
     }
 }
 
-async fn resolve_authority(authority: String) -> Result<SocketAddr, std::io::Error> {
-    match authority.parse::<SocketAddr>() {
-        Ok(addr) => Ok(addr),
-        Err(_) => tokio::net::lookup_host(&authority)
-            .await
-            .and_then(|mut iter| match iter.next() {
-                Some(addr) => Ok(addr),
-                None => Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidInput,
-                    format!("empty host lookup result for authority: {}", authority),
-                )),
-            }),
-    }
+// TODO: support custom dns resolvers
+// TODO: use addr iter instead of just first
+
+async fn resolve_authority(authority: &Authority) -> Result<SocketAddr, std::io::Error> {
+    let host = authority.host().clone();
+    let port = authority.port().unwrap_or(80);
+    crate::net::lookup_host(host, port)
+        .await
+        .and_then(|mut iter| match iter.next() {
+            Some(addr) => Ok(addr),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "empty host lookup result for authority",
+            )),
+        })
 }

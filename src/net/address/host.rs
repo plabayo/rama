@@ -1,5 +1,6 @@
 use super::{Authority, Domain};
 use crate::error::{ErrorContext, OpaqueError};
+use crate::http::HeaderValue;
 use std::{
     fmt,
     net::{IpAddr, Ipv6Addr},
@@ -110,6 +111,22 @@ impl TryFrom<&str> for Host {
             .map(Host::Address)
             .or_else(|| Domain::try_from(name.to_owned()).ok().map(Host::Name))
             .context("parse host from string")
+    }
+}
+
+impl TryFrom<HeaderValue> for Host {
+    type Error = OpaqueError;
+
+    fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
+        Self::try_from(&header)
+    }
+}
+
+impl TryFrom<&HeaderValue> for Host {
+    type Error = OpaqueError;
+
+    fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
+        header.to_str().context("convert header to str")?.try_into()
     }
 }
 

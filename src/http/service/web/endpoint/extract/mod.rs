@@ -12,6 +12,10 @@ mod host;
 #[doc(inline)]
 pub use host::Host;
 
+mod authority;
+#[doc(inline)]
+pub use authority::Authority;
+
 mod path;
 #[doc(inline)]
 pub use path::Path;

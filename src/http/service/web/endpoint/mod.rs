@@ -343,7 +343,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_fn_wrapper_single_param_host() {
-        let svc = |Host(host): Host| async move { host };
+        let svc = |Host(host): Host| async move { host.to_string() };
         let svc = svc.into_endpoint_service();
 
         let resp = svc

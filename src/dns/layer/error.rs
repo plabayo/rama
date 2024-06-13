@@ -1,3 +1,5 @@
+use crate::net::address::Host;
+
 /// Error type returned by the [`DnsService`].
 ///
 /// [`DnsService`]: crate::dns::layer::DnsService
@@ -6,7 +8,7 @@ pub enum DnsError<E> {
     /// The hostname was not found in the request, while it was required.
     HostnameNotFound,
     /// The hostname could not be mapped, for some unknown reason.
-    MappingNotFound(String),
+    MappingNotFound(Option<Host>),
     /// A used header was invalid.
     InvalidHeader(String),
     /// An error occurred while dynamically resolving the hostname.
@@ -26,7 +28,7 @@ where
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DnsError::HostnameNotFound => write!(f, "hostname not found"),
-            DnsError::MappingNotFound(host) => write!(f, "mapping not found: {}", host),
+            DnsError::MappingNotFound(host) => write!(f, "mapping not found: {:?}", host),
             DnsError::InvalidHeader(header) => write!(f, "invalid header: {}", header),
             DnsError::DynamicResolveError(err) => write!(f, "dynamic resolve error: {}", err),
             DnsError::ServiceError(err) => write!(f, "service error: {}", err),

@@ -86,8 +86,6 @@ pub mod authorization {
     pub use headers::authorization::{Authorization, Basic, Bearer};
 }
 
-pub mod extract;
-
 mod ext;
 pub use ext::HeaderExt;
 
