@@ -50,7 +50,9 @@ impl HttpProxyConnectorLayer<ProxyAddress> {
     pub fn hardcoded(info: ProxyAddress) -> Self {
         Self { provider: info }
     }
+}
 
+impl HttpProxyConnectorLayer<Option<ProxyAddress>> {
     /// Try to create a new [`HttpProxyConnectorLayer`] which will establish
     /// a proxy connection over the environment variable `PROXY`.
     pub fn try_from_env_default() -> Result<Self, OpaqueError> {
@@ -60,9 +62,22 @@ impl HttpProxyConnectorLayer<ProxyAddress> {
     /// Try to create a new [`HttpProxyConnectorLayer`] which will establish
     /// a proxy connection over the given environment variable.
     pub fn try_from_env(key: impl AsRef<str>) -> Result<Self, OpaqueError> {
-        let value = std::env::var(key.as_ref()).context("retrieve proxy info from std env")?;
-        let info = value.try_into().context("parse std env proxy info")?;
-        Ok(Self { provider: info })
+        let env_result = std::env::var(key.as_ref()).ok();
+        let env_result_mapped = env_result.as_ref().and_then(|v| {
+            let v = v.trim();
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        });
+
+        let provider = match env_result_mapped {
+            Some(value) => Some(value.try_into().context("parse std env proxy info")?),
+            None => None,
+        };
+
+        Ok(Self { provider })
     }
 }
 
@@ -298,6 +313,21 @@ mod private {
             ctx: Context<S>,
         ) -> impl Future<Output = Result<HttpProxyOutput<S>, Self::Error>> + Send + '_ {
             (**self).info(ctx)
+        }
+    }
+
+    impl<S, T> Sealed<S> for Option<T>
+    where
+        T: Sealed<S>,
+        S: Send + Sync + 'static,
+    {
+        type Error = T::Error;
+
+        async fn info(&self, ctx: Context<S>) -> Result<HttpProxyOutput<S>, Self::Error> {
+            match self {
+                Some(s) => s.info(ctx).await,
+                None => Ok(HttpProxyOutput { address: None, ctx }),
+            }
         }
     }
 
