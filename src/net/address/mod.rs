@@ -1,4 +1,4 @@
-//! network adddress types and utilities
+//! network address types and utilities
 //!
 //! This module provides the common language to work with
 //! the different kind of formats that network addresses

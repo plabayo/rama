@@ -24,7 +24,7 @@ Rama re-exports [OpenTelemetry](https://opentelemetry.io/) crates under [the `ra
 and provides middlewares for collecting metrics on:
 
 - the http layer: <https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html>
-- the transport layer: <https://ramaproxy.org/docs/rama/stream/layer/opentelemetry/index.html>
+- the transport layer: <https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html>
 
 Rama also provides a [Prometheus](https://prometheus.io/) exportor to easily export your [OpenTelemetry](https://opentelemetry.io/) metrics
 over http, to be consumed by tools such as [Grafana](https://grafana.com/):
@@ -35,7 +35,7 @@ over http, to be consumed by tools such as [Grafana](https://grafana.com/):
 
 > Source Code: [/examples/http_telemetry.rs](https://github.com/plabayo/rama/tree/main/examples/http_telemetry.rs)
 
-In this example you can see a web service which keeps track of a visitor counter as a custom opentelemetry counter metric. It also makes use of the rama provided [`RequestMetricsLayer`](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/struct.RequestMetricsLayer.html) and [`NetworkMetricsLayer`](https://ramaproxy.org/docs/rama/stream/layer/opentelemetry/struct.NetworkMetricsLayer.html) layers to also some insights in the traffic both on the network- and application (http) layers. These metrics are exported using the [`PrometheusMetricsHandler`](https://ramaproxy.org/docs/rama/http/service/web/struct.PrometheusMetricsHandler.html).
+In this example you can see a web service which keeps track of a visitor counter as a custom opentelemetry counter metric. It also makes use of the rama provided [`RequestMetricsLayer`](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/struct.RequestMetricsLayer.html) and [`NetworkMetricsLayer`](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/struct.NetworkMetricsLayer.html) layers to also some insights in the traffic both on the network- and application (http) layers. These metrics are exported using the [`PrometheusMetricsHandler`](https://ramaproxy.org/docs/rama/http/service/web/struct.PrometheusMetricsHandler.html).
 
 With that example setup you can use a tool like [Grafana](https://grafana.com/) or [Prometheus](https://prometheus.io/) to make a dashboard with your own sharts.
 

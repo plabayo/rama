@@ -253,7 +253,7 @@ pub(crate) fn try_to_extract_protocol_from_uri_scheme(s: &[u8]) -> Option<(Proto
                     Err(_) => None,
                 };
             }
-            // Invald scheme character, abort
+            // Invalid scheme character, abort
             0 => break,
             _ => {}
         }

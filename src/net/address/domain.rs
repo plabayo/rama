@@ -247,7 +247,7 @@ mod tests {
             "-.-.-",
             ".-.-",
             "-example.com",
-            "loca!host",
+            "local!host",
             "thislabeliswaytoolongforbeingeversomethingwewishtocareabout-example.com",
             "example-thislabeliswaytoolongforbeingeversomethingwewishtocareabout.com",
             "こんにちは",
