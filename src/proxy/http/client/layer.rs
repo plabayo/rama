@@ -53,6 +53,12 @@ impl HttpProxyConnectorLayer<ProxyAddress> {
 }
 
 impl HttpProxyConnectorLayer<Option<ProxyAddress>> {
+    /// Creates a new [`HttpProxyConnectorLayer`],
+    /// using the hardcoded [`ProxyAddress`] if defined, None otherwise.
+    pub fn maybe_hardcoded(info: Option<ProxyAddress>) -> Self {
+        Self { provider: info }
+    }
+
     /// Try to create a new [`HttpProxyConnectorLayer`] which will establish
     /// a proxy connection over the environment variable `PROXY`.
     pub fn try_from_env_default() -> Result<Self, OpaqueError> {
