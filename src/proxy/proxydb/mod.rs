@@ -273,6 +273,7 @@ impl ProxyDB for MemoryProxyDB {
 fn combine_proxy_filter(proxy: &Proxy, filter: ProxyFilter) -> Proxy {
     Proxy {
         id: proxy.id.clone(),
+        address: proxy.address.clone(),
         tcp: proxy.tcp,
         udp: proxy.udp,
         http: proxy.http,
@@ -280,12 +281,10 @@ fn combine_proxy_filter(proxy: &Proxy, filter: ProxyFilter) -> Proxy {
         datacenter: proxy.datacenter,
         residential: proxy.residential,
         mobile: proxy.mobile,
-        authority: proxy.authority.clone(),
         pool_id: use_preferred_string_filter(filter.pool_id, &proxy.pool_id),
         country: use_preferred_string_filter(filter.country, &proxy.country),
         city: use_preferred_string_filter(filter.city, &proxy.city),
         carrier: use_preferred_string_filter(filter.carrier, &proxy.carrier),
-        credentials: proxy.credentials.clone(),
     }
 }
 
@@ -436,6 +435,10 @@ impl MemoryProxyDBQueryError {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
+    use crate::net::address::ProxyAddress;
+
     use super::*;
     use itertools::Itertools;
 
@@ -748,6 +751,7 @@ mod tests {
     async fn test_db_proxy_filter_any_use_filter_property() {
         let db = MemoryProxyDB::try_from_iter([Proxy {
             id: "1".to_owned(),
+            address: ProxyAddress::from_str("example.com").unwrap(),
             tcp: true,
             udp: true,
             http: true,
@@ -755,12 +759,10 @@ mod tests {
             datacenter: true,
             residential: true,
             mobile: true,
-            authority: "example.com".to_owned(),
             pool_id: Some("*".into()),
             country: Some("*".into()),
             city: Some("*".into()),
             carrier: Some("*".into()),
-            credentials: None,
         }])
         .unwrap();
 
@@ -836,6 +838,7 @@ mod tests {
     async fn test_db_proxy_filter_any_only_matches_any_value() {
         let db = MemoryProxyDB::try_from_iter([Proxy {
             id: "1".to_owned(),
+            address: ProxyAddress::from_str("example.com").unwrap(),
             tcp: true,
             udp: true,
             http: true,
@@ -843,12 +846,10 @@ mod tests {
             datacenter: true,
             residential: true,
             mobile: true,
-            authority: "example.com".to_owned(),
             pool_id: Some("hq".into()),
             country: Some("US".into()),
             city: Some("NY".into()),
             carrier: Some("AT&T".into()),
-            credentials: None,
         }])
         .unwrap();
 
@@ -902,6 +903,7 @@ mod tests {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
                 id: "1".to_owned(),
+                address: ProxyAddress::from_str("example.com").unwrap(),
                 tcp: true,
                 udp: true,
                 http: true,
@@ -909,15 +911,14 @@ mod tests {
                 datacenter: true,
                 residential: true,
                 mobile: true,
-                authority: "example.com".to_owned(),
                 pool_id: Some("a".into()),
                 country: Some("US".into()),
                 city: Some("NY".into()),
                 carrier: Some("AT&T".into()),
-                credentials: None,
             },
             Proxy {
                 id: "2".to_owned(),
+                address: ProxyAddress::from_str("example.com").unwrap(),
                 tcp: true,
                 udp: true,
                 http: true,
@@ -925,15 +926,14 @@ mod tests {
                 datacenter: true,
                 residential: true,
                 mobile: true,
-                authority: "example.com".to_owned(),
                 pool_id: Some("b".into()),
                 country: Some("US".into()),
                 city: Some("NY".into()),
                 carrier: Some("AT&T".into()),
-                credentials: None,
             },
             Proxy {
                 id: "3".to_owned(),
+                address: ProxyAddress::from_str("example.com").unwrap(),
                 tcp: true,
                 udp: true,
                 http: true,
@@ -941,15 +941,14 @@ mod tests {
                 datacenter: true,
                 residential: true,
                 mobile: true,
-                authority: "example.com".to_owned(),
                 pool_id: Some("b".into()),
                 country: Some("US".into()),
                 city: Some("NY".into()),
                 carrier: Some("AT&T".into()),
-                credentials: None,
             },
             Proxy {
                 id: "4".to_owned(),
+                address: ProxyAddress::from_str("example.com").unwrap(),
                 tcp: true,
                 udp: true,
                 http: true,
@@ -957,12 +956,10 @@ mod tests {
                 datacenter: true,
                 residential: true,
                 mobile: true,
-                authority: "example.com".to_owned(),
                 pool_id: Some("c".into()),
                 country: Some("US".into()),
                 city: Some("NY".into()),
                 carrier: Some("AT&T".into()),
-                credentials: None,
             },
         ])
         .unwrap();

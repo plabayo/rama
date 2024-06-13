@@ -16,6 +16,7 @@ use rama::{
         },
         IntoResponse, Request, Response, StatusCode,
     },
+    net::{address::ProxyAddress, user::ProxyCredential},
     proxy::http::client::HttpProxyConnectorLayer,
     rt::Executor,
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
@@ -58,6 +59,14 @@ pub struct CliCommandHttp {
     #[arg(long, default_value_t = 30)]
     /// the maximum number of redirects to follow
     max_redirects: usize,
+
+    #[arg(long, short = 'P')]
+    /// upstream proxy to use (can also be specified using PROXY env variable)
+    proxy: Option<String>,
+
+    #[arg(long, short = 'U')]
+    /// upstream proxy user credentials to use (or overwrite)
+    proxy_user: Option<String>,
 
     #[arg(long, short = 'a')]
     /// client authentication: `USER[:PASS]` | TOKEN,
@@ -368,10 +377,23 @@ where
     let tls_client_config =
         tls::create_tls_client_config(cfg.insecure, cfg.tls, cfg.cert, cfg.cert_key).await?;
 
+    let proxy_connect_layer = match cfg.proxy {
+        None => HttpProxyConnectorLayer::try_from_env_default()?,
+        Some(proxy) => {
+            let mut proxy_address: ProxyAddress = proxy.parse().context("parse proxy address")?;
+            if let Some(proxy_user) = cfg.proxy_user {
+                let credential = ProxyCredential::try_from_clear_str(proxy_user)
+                    .context("parse proxy credentials")?;
+                proxy_address.with_credential(credential);
+            }
+            HttpProxyConnectorLayer::maybe_hardcoded(Some(proxy_address))
+        }
+    };
+
     Ok(client_builder.service(HttpClient::new(
         ServiceBuilder::new()
             .layer(HttpsConnectorLayer::auto().with_config(tls_client_config))
-            .layer(HttpProxyConnectorLayer::from_env_default())
+            .layer(proxy_connect_layer)
             .layer(HttpsConnectorLayer::tunnel())
             .service(HttpConnector::default()),
     )))

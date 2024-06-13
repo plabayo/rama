@@ -1,7 +1,7 @@
 use super::{ProxyFilter, StringFilter};
 use crate::{
     http::{RequestContext, Version},
-    net::user::Basic,
+    net::{address::ProxyAddress, user::ProxyCredential},
 };
 use std::path::Path;
 use tokio::{
@@ -17,6 +17,9 @@ pub struct Proxy {
     #[venndb(key)]
     /// Unique identifier of the proxy.
     pub id: String,
+
+    /// The address to be used to connect to the proxy, including credentials if needed.
+    pub address: ProxyAddress,
 
     /// True if the proxy supports TCP connections.
     pub tcp: bool,
@@ -39,9 +42,6 @@ pub struct Proxy {
     /// Proxy's IP originates from a mobile network.
     pub mobile: bool,
 
-    /// The authority of the proxy to use to connect to the proxy (`host[:port]`)
-    pub authority: String,
-
     #[venndb(filter, any)]
     /// Pool ID of the proxy.
     pub pool_id: Option<StringFilter>,
@@ -57,15 +57,11 @@ pub struct Proxy {
     #[venndb(filter, any)]
     /// Mobile carrier of the proxy.
     pub carrier: Option<StringFilter>,
-
-    /// The optional credentials to use to authenticate with the proxy.
-    pub credentials: Option<Basic>,
 }
 
 /// Validate the proxy is valid according to rules that are not enforced by the type system.
 pub fn proxy_is_valid(proxy: &Proxy) -> bool {
     !proxy.id.is_empty()
-        && !proxy.authority.is_empty()
         && (proxy.datacenter || proxy.residential || proxy.mobile)
         && ((proxy.http && proxy.tcp) || (proxy.socks5 && (proxy.tcp || proxy.udp)))
 }
@@ -188,8 +184,14 @@ impl ProxyCsvRowReader {
     }
 }
 
+fn strip_csv_quotes(p: &str) -> &str {
+    p.strip_prefix('"')
+        .and_then(|p| p.strip_suffix('"'))
+        .unwrap_or(p)
+}
+
 fn parse_csv_row(row: &str) -> Option<Proxy> {
-    let mut iter = row.split(',');
+    let mut iter = row.split(',').map(strip_csv_quotes);
 
     let id = iter.next().and_then(|s| {
         if s.is_empty() {
@@ -198,6 +200,9 @@ fn parse_csv_row(row: &str) -> Option<Proxy> {
             Some(s.to_owned())
         }
     })?;
+
+    // TODO: remove double quotes if surrounding...
+
     let tcp = iter.next().and_then(parse_csv_bool)?;
     let udp = iter.next().and_then(parse_csv_bool)?;
     let http = iter.next().and_then(parse_csv_bool)?;
@@ -205,11 +210,11 @@ fn parse_csv_row(row: &str) -> Option<Proxy> {
     let datacenter = iter.next().and_then(parse_csv_bool)?;
     let residential = iter.next().and_then(parse_csv_bool)?;
     let mobile = iter.next().and_then(parse_csv_bool)?;
-    let authority = iter.next().and_then(|s| {
+    let mut address = iter.next().and_then(|s| {
         if s.is_empty() {
             None
         } else {
-            Some(s.to_owned())
+            ProxyAddress::try_from(s).ok()
         }
     })?;
     let pool_id = parse_csv_opt_string_filter(iter.next()?);
@@ -217,16 +222,15 @@ fn parse_csv_row(row: &str) -> Option<Proxy> {
     let city = parse_csv_opt_string_filter(iter.next()?);
     let carrier = parse_csv_opt_string_filter(iter.next()?);
 
-    let credentials = match iter.next() {
-        Some(value) => {
-            if value.is_empty() {
-                None
-            } else {
-                Some(value.parse().ok()?)
-            }
+    // support header format or cleartext format
+    if let Some(value) = iter.next() {
+        if !value.is_empty() {
+            let credential = ProxyCredential::try_from_header_str(value)
+                .or_else(|_| ProxyCredential::try_from_clear_str(value.to_owned()))
+                .ok()?;
+            address.with_credential(credential);
         }
-        _ => None,
-    };
+    }
 
     // Ensure there are no more values in the row
     if iter.next().is_some() {
@@ -235,6 +239,7 @@ fn parse_csv_row(row: &str) -> Option<Proxy> {
 
     Some(Proxy {
         id,
+        address,
         tcp,
         udp,
         http,
@@ -242,12 +247,10 @@ fn parse_csv_row(row: &str) -> Option<Proxy> {
         datacenter,
         residential,
         mobile,
-        authority,
         pool_id,
         country,
         city,
         carrier,
-        credentials,
     })
 }
 
@@ -318,6 +321,8 @@ impl From<std::io::Error> for ProxyCsvRowReaderError {
 
 #[cfg(test)]
 mod tests {
+    use std::str::FromStr;
+
     use itertools::Itertools;
 
     use super::*;
@@ -377,6 +382,7 @@ mod tests {
                 "id,,,,,,,,authority,,,,,",
                 Proxy {
                     id: "id".into(),
+                    address: ProxyAddress::from_str("authority").unwrap(),
                     tcp: false,
                     udp: false,
                     http: false,
@@ -384,12 +390,10 @@ mod tests {
                     datacenter: false,
                     residential: false,
                     mobile: false,
-                    authority: "authority".into(),
                     pool_id: None,
                     country: None,
                     city: None,
                     carrier: None,
-                    credentials: None,
                 },
             ),
             // more happy row tests
@@ -397,6 +401,7 @@ mod tests {
                 "id,true,false,true,false,true,false,true,authority,pool_id,country,city,carrier,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
                 Proxy {
                     id: "id".into(),
+                    address: ProxyAddress::from_str("username:password@authority").unwrap(),
                     tcp: true,
                     udp: false,
                     http: true,
@@ -404,18 +409,17 @@ mod tests {
                     datacenter: true,
                     residential: false,
                     mobile: true,
-                    authority: "authority".into(),
                     pool_id: Some("pool_id".into()),
                     country: Some("country".into()),
                     city: Some("city".into()),
                     carrier: Some("carrier".into()),
-                    credentials: Some(Basic::new("username", "password")),
                 },
             ),
             (
                 "123,1,0,False,True,null,false,true,host:1234,,*,*,carrier,",
                 Proxy {
                     id: "123".into(),
+                    address: ProxyAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
                     http: false,
@@ -423,18 +427,17 @@ mod tests {
                     datacenter: false,
                     residential: false,
                     mobile: true,
-                    authority: "host:1234".into(),
                     pool_id: None,
                     country: Some("*".into()),
                     city: Some("*".into()),
                     carrier: Some("carrier".into()),
-                    credentials: None,
                 },
             ),
             (
                 "123,1,0,False,True,null,false,true,host:1234,,*,*,carrier",
                 Proxy {
                     id: "123".into(),
+                    address: ProxyAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
                     http: false,
@@ -442,18 +445,17 @@ mod tests {
                     datacenter: false,
                     residential: false,
                     mobile: true,
-                    authority: "host:1234".into(),
                     pool_id: None,
                     country: Some("*".into()),
                     city: Some("*".into()),
                     carrier: Some("carrier".into()),
-                    credentials: None,
                 },
             ),
             (
                 "foo,1,0,1,0,1,0,0,bar,baz,US,,",
                 Proxy {
                     id: "foo".into(),
+                    address: ProxyAddress::from_str("bar").unwrap(),
                     tcp: true,
                     udp: false,
                     http: true,
@@ -461,17 +463,16 @@ mod tests {
                     datacenter: true,
                     residential: false,
                     mobile: false,
-                    authority: "bar".into(),
                     pool_id: Some("baz".into()),
                     country: Some("us".into()),
                     city: None,
                     carrier: None,
-                    credentials: None,
                 },
             ),
         ] {
             let proxy = parse_csv_row(input).unwrap();
             assert_eq!(proxy.id, output.id);
+            assert_eq!(proxy.address, output.address);
             assert_eq!(proxy.tcp, output.tcp);
             assert_eq!(proxy.udp, output.udp);
             assert_eq!(proxy.http, output.http);
@@ -479,12 +480,10 @@ mod tests {
             assert_eq!(proxy.datacenter, output.datacenter);
             assert_eq!(proxy.residential, output.residential);
             assert_eq!(proxy.mobile, output.mobile);
-            assert_eq!(proxy.authority, output.authority);
             assert_eq!(proxy.pool_id, output.pool_id);
             assert_eq!(proxy.country, output.country);
             assert_eq!(proxy.city, output.city);
             assert_eq!(proxy.carrier, output.carrier);
-            assert_eq!(proxy.credentials, output.credentials);
         }
     }
 
@@ -510,10 +509,9 @@ mod tests {
             "id,,,,,,foo,,authority,,,,,",
             "id,,,,,,,foo,authority,,,,,",
             // invalid credentials
-            "id,,,,,,,,authority,,,,,foo",
-            "id,,,,,,,,authority,,,,,Basic kaboo",
+            "id,,,,,,,,authority,,,,,:foo",
         ] {
-            assert!(parse_csv_row(input).is_none());
+            assert!(parse_csv_row(input).is_none(), "input: {}", input);
         }
     }
 
@@ -523,6 +521,10 @@ mod tests {
         let proxy = reader.next().await.unwrap().unwrap();
 
         assert_eq!(proxy.id, "id");
+        assert_eq!(
+            proxy.address,
+            ProxyAddress::from_str("username:password@authority").unwrap()
+        );
         assert!(proxy.tcp);
         assert!(!proxy.udp);
         assert!(proxy.http);
@@ -530,12 +532,10 @@ mod tests {
         assert!(proxy.datacenter);
         assert!(!proxy.residential);
         assert!(proxy.mobile);
-        assert_eq!(proxy.authority, "authority");
         assert_eq!(proxy.pool_id, Some("pool_id".into()));
         assert_eq!(proxy.country, Some("country".into()));
         assert_eq!(proxy.city, Some("city".into()));
         assert_eq!(proxy.carrier, Some("carrier".into()));
-        assert_eq!(proxy.credentials, Some(Basic::new("username", "password")),);
 
         // no more rows to read
         assert!(reader.next().await.unwrap().is_none());
@@ -547,6 +547,10 @@ mod tests {
 
         let proxy = reader.next().await.unwrap().unwrap();
         assert_eq!(proxy.id, "id");
+        assert_eq!(
+            proxy.address,
+            ProxyAddress::from_str("username:password@authority").unwrap()
+        );
         assert!(proxy.tcp);
         assert!(!proxy.udp);
         assert!(proxy.http);
@@ -554,16 +558,15 @@ mod tests {
         assert!(proxy.datacenter);
         assert!(!proxy.residential);
         assert!(proxy.mobile);
-        assert_eq!(proxy.authority, "authority");
         assert_eq!(proxy.pool_id, Some("pool_id".into()));
         assert_eq!(proxy.country, Some("country".into()));
         assert_eq!(proxy.city, Some("city".into()));
         assert_eq!(proxy.carrier, Some("carrier".into()));
-        assert_eq!(proxy.credentials, Some(Basic::new("username", "password")),);
 
         let proxy = reader.next().await.unwrap().unwrap();
 
         assert_eq!(proxy.id, "id2");
+        assert_eq!(proxy.address, ProxyAddress::from_str("authority2").unwrap());
         assert!(proxy.tcp);
         assert!(!proxy.udp);
         assert!(!proxy.http);
@@ -571,12 +574,10 @@ mod tests {
         assert!(proxy.datacenter);
         assert!(!proxy.residential);
         assert!(!proxy.mobile);
-        assert_eq!(proxy.authority, "authority2");
         assert_eq!(proxy.pool_id, Some("pool_id2".into()));
         assert_eq!(proxy.country, Some("country2".into()));
         assert_eq!(proxy.city, Some("city2".into()));
         assert_eq!(proxy.carrier, Some("carrier2".into()));
-        assert!(proxy.credentials.is_none());
 
         // no more rows to read
         assert!(reader.next().await.unwrap().is_none());
@@ -598,6 +599,7 @@ mod tests {
     fn test_proxy_is_match_happy_path_explicit_h2() {
         let proxy = Proxy {
             id: "id".into(),
+            address: ProxyAddress::from_str("authority").unwrap(),
             tcp: true,
             udp: false,
             http: true,
@@ -605,12 +607,10 @@ mod tests {
             datacenter: true,
             residential: false,
             mobile: true,
-            authority: "authority".into(),
             pool_id: Some("pool_id".into()),
             country: Some("country".into()),
             city: Some("city".into()),
             carrier: Some("carrier".into()),
-            credentials: None,
         };
 
         let ctx = RequestContext {
@@ -638,6 +638,7 @@ mod tests {
     fn test_proxy_is_match_failure_tcp_explicit_h2() {
         let proxy = Proxy {
             id: "id".into(),
+            address: ProxyAddress::from_str("authority").unwrap(),
             tcp: false,
             udp: false,
             http: true,
@@ -645,12 +646,10 @@ mod tests {
             datacenter: true,
             residential: false,
             mobile: true,
-            authority: "authority".into(),
             pool_id: Some("pool_id".into()),
             country: Some("country".into()),
             city: Some("city".into()),
             carrier: Some("carrier".into()),
-            credentials: None,
         };
 
         let ctx = RequestContext {
@@ -678,6 +677,7 @@ mod tests {
     fn test_proxy_is_match_happy_path_explicit_h3() {
         let proxy = Proxy {
             id: "id".into(),
+            address: ProxyAddress::from_str("authority").unwrap(),
             tcp: false,
             udp: true,
             http: false,
@@ -685,12 +685,10 @@ mod tests {
             datacenter: true,
             residential: false,
             mobile: true,
-            authority: "authority".into(),
             pool_id: Some("pool_id".into()),
             country: Some("country".into()),
             city: Some("city".into()),
             carrier: Some("carrier".into()),
-            credentials: None,
         };
 
         let ctx = RequestContext {
@@ -718,6 +716,7 @@ mod tests {
     fn test_proxy_is_match_failure_udp_explicit_h3() {
         let proxy = Proxy {
             id: "id".into(),
+            address: ProxyAddress::from_str("authority").unwrap(),
             tcp: false,
             udp: false,
             http: false,
@@ -725,12 +724,10 @@ mod tests {
             datacenter: true,
             residential: false,
             mobile: true,
-            authority: "authority".into(),
             pool_id: Some("pool_id".into()),
             country: Some("country".into()),
             city: Some("city".into()),
             carrier: Some("carrier".into()),
-            credentials: None,
         };
 
         let ctx = RequestContext {
@@ -758,6 +755,7 @@ mod tests {
     fn test_proxy_is_match_failure_socks5_explicit_h3() {
         let proxy = Proxy {
             id: "id".into(),
+            address: ProxyAddress::from_str("authority").unwrap(),
             tcp: false,
             udp: true,
             http: false,
@@ -765,12 +763,10 @@ mod tests {
             datacenter: true,
             residential: false,
             mobile: true,
-            authority: "authority".into(),
             pool_id: Some("pool_id".into()),
             country: Some("country".into()),
             city: Some("city".into()),
             carrier: Some("carrier".into()),
-            credentials: None,
         };
 
         let ctx = RequestContext {

@@ -59,6 +59,7 @@ struct Cli {
 }
 
 #[derive(Debug, Subcommand)]
+#[allow(clippy::large_enum_variant)]
 enum CliCommands {
     Echo(echo::CliCommandEcho),
     Http(http::CliCommandHttp),

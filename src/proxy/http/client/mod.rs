@@ -12,7 +12,7 @@ use crate::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 mod layer;
-pub use layer::{HttpProxyConnectorLayer, HttpProxyConnectorService, HttpProxyInfo};
+pub use layer::{HttpProxyConnectorLayer, HttpProxyConnectorService};
 
 #[derive(Debug, Clone)]
 /// Connector for HTTP proxies.
@@ -68,12 +68,17 @@ impl HttpProxyConnector {
 
     /// Connect to the proxy server.
     pub async fn handshake<S: Stream + Unpin>(&self, mut stream: S) -> Result<S, std::io::Error> {
+        // TODO: handle user-agent and host better
+        // TODO: use h1 protocol from embedded hyper directly here!
         let mut request = format!(
             "\
              CONNECT {authority} HTTP/1.1\r\n\
              Host: {authority}\r\n\
+             User-Agent: {ua_name}/{ua_version}\r\n\
              ",
-            authority = self.authority
+            authority = self.authority,
+            ua_name = crate::utils::info::NAME,
+            ua_version = crate::utils::info::VERSION,
         )
         .into_bytes();
         if let Some(ref headers) = self.headers {

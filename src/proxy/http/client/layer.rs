@@ -1,18 +1,15 @@
-use crate::error::{BoxError, ErrorExt, OpaqueError};
+use crate::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
 use crate::http::headers::HeaderMapExt;
 use crate::http::headers::ProxyAuthorization;
-use crate::http::Uri;
 use crate::http::{Request, RequestContext};
+use crate::net::address::ProxyAddress;
 use crate::net::stream::Stream;
-use crate::net::user::Basic;
-use crate::proxy::ProxySocketAddr;
+use crate::net::user::ProxyCredential;
 use crate::service::{Context, Layer, Service};
 use crate::tls::HttpsTunnel;
 use std::fmt;
 use std::future::Future;
-use std::net::SocketAddr;
-use std::str::FromStr;
 
 use super::HttpProxyConnector;
 
@@ -47,93 +44,52 @@ impl<P: Clone> Clone for HttpProxyConnectorLayer<P> {
     }
 }
 
-#[derive(Debug, Clone)]
-/// Minimal information required to establish a connection over an HTTP Proxy.
-///
-/// TODO: remove this or rework this once we also support SOCKS5(h) Proxies
-pub struct HttpProxyInfo {
-    /// The proxy address to connect to.
-    pub proxy: SocketAddr,
-    /// Indicates if the proxy requires a Tls connection.
-    /// TODO: what about custom configs?!
-    pub secure: bool,
-    /// The credentials to use for the proxy connection.
-    pub credentials: Option<Basic>,
-}
-
-impl FromStr for HttpProxyInfo {
-    type Err = OpaqueError;
-
-    // TODO: test this function...
-
-    fn from_str(raw_uri: &str) -> Result<Self, Self::Err> {
-        let uri: Uri = raw_uri.parse().map_err(|err| {
-            OpaqueError::from_std(err)
-                .with_context(|| format!("parse http proxy address '{}'", raw_uri))
-        })?;
-
-        let secure = match uri.scheme().map(|s| s.as_str()).unwrap_or("http") {
-            "http" => false,
-            "https" => true,
-            _ => {
-                return Err(OpaqueError::from_display(format!(
-                    "only http proxies are supported: '{}'",
-                    raw_uri
-                )));
-            }
-        };
-
-        // TODO: allow for dns address (proxy routers?);
-        // see: https://github.com/plabayo/rama/issues/202
-        let mut proxy = match uri.host().and_then(|host| host.parse::<SocketAddr>().ok()) {
-            Some(proxy) => proxy,
-            None => {
-                return Err(OpaqueError::from_display(format!(
-                    "invalid http proxy address's authority '{}'",
-                    raw_uri
-                )));
-            }
-        };
-        if let Some(port) = uri.port_u16() {
-            proxy.set_port(port);
-        }
-
-        // TODO: support credentials (this would probably mean we cannot pigy back on the Uri type for our logic here)
-
-        Ok(Self {
-            proxy,
-            secure,
-            credentials: None,
-        })
-    }
-}
-
-impl HttpProxyConnectorLayer<HttpProxyInfo> {
-    /// Creates a new [`HttpProxyConnectorLayer`].
-    pub fn hardcoded(info: HttpProxyInfo) -> Self {
+impl HttpProxyConnectorLayer<ProxyAddress> {
+    /// Creates a new [`HttpProxyConnectorLayer`],
+    /// using the hardcoded [`ProxyAddress`].
+    pub fn hardcoded(info: ProxyAddress) -> Self {
         Self { provider: info }
     }
 }
 
-impl HttpProxyConnectorLayer<private::FromEnv> {
-    /// Creates a new [`HttpProxyConnectorLayer`] which will establish
-    /// a proxy connection over the environment variable `HTTP_PROXY`.
-    pub fn from_env_default() -> Self {
-        Self::from_env("HTTP_PROXY".to_owned())
+impl HttpProxyConnectorLayer<Option<ProxyAddress>> {
+    /// Creates a new [`HttpProxyConnectorLayer`],
+    /// using the hardcoded [`ProxyAddress`] if defined, None otherwise.
+    pub fn maybe_hardcoded(info: Option<ProxyAddress>) -> Self {
+        Self { provider: info }
     }
 
-    /// Creates a new [`HttpProxyConnectorLayer`] which will establish
+    /// Try to create a new [`HttpProxyConnectorLayer`] which will establish
+    /// a proxy connection over the environment variable `PROXY`.
+    pub fn try_from_env_default() -> Result<Self, OpaqueError> {
+        Self::try_from_env("PROXY")
+    }
+
+    /// Try to create a new [`HttpProxyConnectorLayer`] which will establish
     /// a proxy connection over the given environment variable.
-    pub fn from_env(key: String) -> Self {
-        Self {
-            provider: private::FromEnv(key),
-        }
+    pub fn try_from_env(key: impl AsRef<str>) -> Result<Self, OpaqueError> {
+        let env_result = std::env::var(key.as_ref()).ok();
+        let env_result_mapped = env_result.as_ref().and_then(|v| {
+            let v = v.trim();
+            if v.is_empty() {
+                None
+            } else {
+                Some(v)
+            }
+        });
+
+        let provider = match env_result_mapped {
+            Some(value) => Some(value.try_into().context("parse std env proxy info")?),
+            None => None,
+        };
+
+        Ok(Self { provider })
     }
 }
 
 impl HttpProxyConnectorLayer<private::FromContext> {
     /// Creates a new [`HttpProxyConnectorLayer`] which will establish
-    /// a proxy connection in case the context contains a [`HttpProxyInfo`].
+    /// a proxy connection in case the context contains a [`ProxyAddress`].
     pub fn from_context() -> Self {
         Self {
             provider: private::FromContext,
@@ -182,11 +138,28 @@ impl<S, P> HttpProxyConnectorService<S, P> {
     define_inner_service_accessors!();
 }
 
-impl<S> HttpProxyConnectorService<S, HttpProxyInfo> {
+impl<S> HttpProxyConnectorService<S, ProxyAddress> {
     /// Creates a new [`HttpProxyConnectorService`] which will establish
-    /// a proxied connection over the given proxy info.
-    pub fn hardcoded(info: HttpProxyInfo, inner: S) -> Self {
+    /// a proxied connection over the given [`ProxyAddress`].
+    pub fn hardcoded(info: ProxyAddress, inner: S) -> Self {
         Self::new(info, inner)
+    }
+
+    /// Try to create a new [`HttpProxyConnectorService`] which will establish
+    /// a proxy connection over the environment variable `PROXY`.
+    pub fn try_from_env_default(inner: S) -> Result<Self, OpaqueError> {
+        Self::try_from_env("PROXY", inner)
+    }
+
+    /// Try to create a new [`HttpProxyConnectorService`] which will establish
+    /// a proxy connection over the given environment variable.
+    pub fn try_from_env(key: impl AsRef<str>, inner: S) -> Result<Self, OpaqueError> {
+        let value = std::env::var(key.as_ref()).context("retrieve proxy info from std env")?;
+        let info = value.try_into().context("parse std env proxy info")?;
+        Ok(Self {
+            provider: info,
+            inner,
+        })
     }
 }
 
@@ -196,18 +169,6 @@ impl<S> HttpProxyConnectorService<S, private::FromContext> {
     /// otherwise it will establish a direct connection.
     pub fn from_context(inner: S) -> Self {
         Self::new(private::FromContext, inner)
-    }
-}
-
-impl<S> HttpProxyConnectorService<S, private::FromEnv> {
-    /// create a new [`HttpProxyConnectorService`] from an environment variable.
-    pub fn from_env(key: String, inner: S) -> Result<Self, OpaqueError> {
-        Ok(Self::new(private::FromEnv(key), inner))
-    }
-
-    /// Creates a new [`HttpProxyConnectorService`] from the environment variable `HTTP_PROXY`.
-    pub fn from_env_default(inner: S) -> Result<Self, OpaqueError> {
-        Self::from_env("HTTP_PROXY".to_owned(), inner)
     }
 }
 
@@ -229,17 +190,17 @@ where
         ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        let private::HttpProxyOutput { info, mut ctx } =
+        let private::HttpProxyOutput { address, mut ctx } =
             self.provider.info(ctx).await.map_err(|err| {
                 OpaqueError::from_boxed(err.into()).context("fetch proxy info from provider")
             })?;
 
         // in case the provider gave us a proxy info, we insert it into the context
-        if let Some(info) = info.as_ref() {
-            ctx.insert(ProxySocketAddr::new(info.proxy));
-            if info.secure {
+        if let Some(address) = address.as_ref() {
+            ctx.insert(address.clone());
+            if address.protocol().secure() {
                 ctx.insert(HttpsTunnel {
-                    server_name: info.proxy.ip().to_string(),
+                    server_name: address.authority().host().to_string(),
                 });
             }
         }
@@ -250,8 +211,8 @@ where
             })?;
 
         // return early in case we did not use a proxy
-        let info = match info {
-            Some(info) => info,
+        let address = match address {
+            Some(address) => address,
             None => {
                 return Ok(established_conn);
             }
@@ -271,8 +232,15 @@ where
         if !request_context.scheme.secure() {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
-            if let Some(basic) = info.credentials.clone() {
-                req.headers_mut().typed_insert(ProxyAuthorization(basic));
+            if let Some(credential) = address.credential().cloned() {
+                match credential {
+                    ProxyCredential::Basic(basic) => {
+                        req.headers_mut().typed_insert(ProxyAuthorization(basic))
+                    }
+                    ProxyCredential::Bearer(bearer) => {
+                        req.headers_mut().typed_insert(ProxyAuthorization(bearer))
+                    }
+                }
             }
             return Ok(EstablishedClientConnection {
                 ctx,
@@ -289,8 +257,15 @@ where
         };
 
         let mut connector = HttpProxyConnector::new(authority);
-        if let Some(basic) = info.credentials.clone() {
-            connector.with_typed_header(ProxyAuthorization(basic));
+        if let Some(credential) = address.credential().cloned() {
+            match credential {
+                ProxyCredential::Basic(basic) => {
+                    connector.with_typed_header(ProxyAuthorization(basic));
+                }
+                ProxyCredential::Bearer(bearer) => {
+                    connector.with_typed_header(ProxyAuthorization(bearer));
+                }
+            }
         }
 
         let stream = connector
@@ -317,15 +292,12 @@ mod private {
 
     #[derive(Debug)]
     pub struct HttpProxyOutput<S> {
-        pub info: Option<HttpProxyInfo>,
+        pub address: Option<ProxyAddress>,
         pub ctx: Context<S>,
     }
 
     #[derive(Debug, Clone)]
     pub struct FromContext;
-
-    #[derive(Debug, Clone)]
-    pub struct FromEnv(pub(crate) String);
 
     pub trait Sealed<S>: Clone + Send + Sync + 'static {
         type Error;
@@ -350,7 +322,22 @@ mod private {
         }
     }
 
-    impl<S> Sealed<S> for HttpProxyInfo
+    impl<S, T> Sealed<S> for Option<T>
+    where
+        T: Sealed<S>,
+        S: Send + Sync + 'static,
+    {
+        type Error = T::Error;
+
+        async fn info(&self, ctx: Context<S>) -> Result<HttpProxyOutput<S>, Self::Error> {
+            match self {
+                Some(s) => s.info(ctx).await,
+                None => Ok(HttpProxyOutput { address: None, ctx }),
+            }
+        }
+    }
+
+    impl<S> Sealed<S> for ProxyAddress
     where
         S: Send + Sync + 'static,
     {
@@ -358,7 +345,7 @@ mod private {
 
         async fn info(&self, ctx: Context<S>) -> Result<HttpProxyOutput<S>, Self::Error> {
             Ok(HttpProxyOutput {
-                info: Some(self.clone()),
+                address: Some(self.clone()),
                 ctx,
             })
         }
@@ -371,25 +358,8 @@ mod private {
         type Error = Infallible;
 
         async fn info(&self, ctx: Context<S>) -> Result<HttpProxyOutput<S>, Self::Error> {
-            let info = ctx.get::<HttpProxyInfo>().cloned();
-            Ok(HttpProxyOutput { info, ctx })
-        }
-    }
-
-    impl<S> Sealed<S> for FromEnv
-    where
-        S: Send + Sync + 'static,
-    {
-        type Error = Infallible;
-
-        async fn info(&self, ctx: Context<S>) -> Result<HttpProxyOutput<S>, Self::Error> {
-            match std::env::var(&self.0).ok() {
-                Some(raw_uri) => {
-                    let info = raw_uri.parse().ok();
-                    Ok(HttpProxyOutput { info, ctx })
-                }
-                None => Ok(HttpProxyOutput { info: None, ctx }),
-            }
+            let address = ctx.get::<ProxyAddress>().cloned();
+            Ok(HttpProxyOutput { address, ctx })
         }
     }
 }
