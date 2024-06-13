@@ -371,7 +371,7 @@ where
     Ok(client_builder.service(HttpClient::new(
         ServiceBuilder::new()
             .layer(HttpsConnectorLayer::auto().with_config(tls_client_config))
-            .layer(HttpProxyConnectorLayer::from_env_default())
+            .layer(HttpProxyConnectorLayer::try_from_env_default()?)
             .layer(HttpsConnectorLayer::tunnel())
             .service(HttpConnector::default()),
     )))

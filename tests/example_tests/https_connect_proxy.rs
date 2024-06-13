@@ -1,8 +1,7 @@
 use super::utils;
 use rama::{
     http::{response::Json, server::HttpServer, BodyExtractExt, Request},
-    net::user::Basic,
-    proxy::http::client::HttpProxyInfo,
+    net::address::ProxyAddress,
     rt::Executor,
     service::{service_fn, Context},
 };
@@ -31,11 +30,7 @@ async fn test_http_connect_proxy() {
     let runner = utils::ExampleRunner::interactive("https_connect_proxy");
 
     let mut ctx = Context::default();
-    ctx.insert(HttpProxyInfo {
-        proxy: "127.0.0.1:62016".parse().unwrap(),
-        secure: true,
-        credentials: Some(Basic::new("john", "secret")),
-    });
+    ctx.insert(ProxyAddress::try_from("http://john:secret@127.0.0.1:62016").unwrap());
 
     // test regular proxy flow
     let result = runner

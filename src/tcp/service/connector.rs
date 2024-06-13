@@ -3,8 +3,7 @@ use crate::{
         client::{ClientConnection, EstablishedClientConnection},
         Request, RequestContext,
     },
-    net::stream::ServerSocketAddr,
-    proxy::ProxySocketAddr,
+    net::{address::ProxyAddress, stream::ServerSocketAddr},
     service::{Context, Service},
 };
 use std::net::SocketAddr;
@@ -52,37 +51,41 @@ where
         mut ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        match ctx
-            .get::<ProxySocketAddr>()
-            .map(|proxy| *proxy.addr())
-            .or_else(|| ctx.get::<ServerSocketAddr>().map(|server| *server.addr()))
-        {
-            Some(addr) => {
-                let stream = TcpStream::connect(&addr).await?;
+        if let Some(proxy) = ctx.get::<ProxyAddress>() {
+            // TODO: can we do without stringifying?
+            let addr = resolve_authority(proxy.authority().to_string()).await?;
+            let stream = TcpStream::connect(&addr).await?;
+            return Ok(EstablishedClientConnection {
+                ctx,
+                req,
+                conn: ClientConnection::new(stream.peer_addr()?, stream),
+            });
+        }
+
+        if let Some(server) = ctx.get::<ServerSocketAddr>() {
+            let stream = TcpStream::connect(*server.addr()).await?;
+            return Ok(EstablishedClientConnection {
+                ctx,
+                req,
+                conn: ClientConnection::new(stream.peer_addr()?, stream),
+            });
+        }
+
+        let request_info = ctx.get_or_insert_with(|| RequestContext::new(&req));
+        match request_info.authority() {
+            Some(authority) => {
+                let socket_addr = resolve_authority(authority).await?;
+                let stream = TcpStream::connect(&socket_addr).await?;
                 Ok(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: ClientConnection::new(addr, stream),
+                    conn: ClientConnection::new(socket_addr, stream),
                 })
             }
-            None => {
-                let request_info = ctx.get_or_insert_with(|| RequestContext::new(&req));
-                match request_info.authority() {
-                    Some(authority) => {
-                        let socket_addr = resolve_authority(authority).await?;
-                        let stream = TcpStream::connect(&socket_addr).await?;
-                        Ok(EstablishedClientConnection {
-                            ctx,
-                            req,
-                            conn: ClientConnection::new(socket_addr, stream),
-                        })
-                    }
-                    None => Err(std::io::Error::new(
-                        std::io::ErrorKind::InvalidInput,
-                        "missing http authority",
-                    )),
-                }
-            }
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "missing http authority",
+            )),
         }
     }
 }
