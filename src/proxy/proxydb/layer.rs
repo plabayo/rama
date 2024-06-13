@@ -30,6 +30,7 @@
 //!     let db = MemoryProxyDB::try_from_iter([
 //!         Proxy {
 //!             id: "42".to_owned(),
+//!             address: "12.34.12.34:8080".try_into().unwrap(),
 //!             tcp: true,
 //!             udp: true,
 //!             http: true,
@@ -37,15 +38,14 @@
 //!             datacenter: false,
 //!             residential: true,
 //!             mobile: true,
-//!             authority: "12.34.12.34:8080".to_owned(),
 //!             pool_id: None,
 //!             country: Some("*".into()),
 //!             city: Some("*".into()),
 //!             carrier: Some("*".into()),
-//!             credentials: None,
 //!         },
 //!         Proxy {
 //!             id: "100".to_owned(),
+//!             address: "123.123.123.123:8080".try_into().unwrap(),
 //!             tcp: true,
 //!             udp: false,
 //!             http: true,
@@ -53,22 +53,20 @@
 //!             datacenter: true,
 //!             residential: false,
 //!             mobile: false,
-//!             authority: "123.123.123.123:8080".to_owned(),
 //!             pool_id: None,
 //!             country: Some("US".into()),
 //!             city: None,
 //!             carrier: None,
-//!             credentials: None,
 //!         },
 //!     ])
 //!     .unwrap();
-//!     
+//!
 //!     let service = ServiceBuilder::new()
 //!         .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Default))
 //!         .service_fn(|ctx: Context<()>, _: Request| async move {
 //!             Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
 //!         });
-//!     
+//!
 //!     let mut ctx = Context::default();
 //!     ctx.insert(ProxyFilter {
 //!         country: Some(vec!["BE".into()]),
@@ -76,14 +74,14 @@
 //!         residential: Some(true),
 //!         ..Default::default()
 //!     });
-//!     
+//!
 //!     let req = Request::builder()
 //!         .version(Version::HTTP_3)
 //!         .method("GET")
 //!         .uri("https://example.com")
 //!         .body(Body::empty())
 //!         .unwrap();
-//!     
+//!
 //!     let proxy = service.serve(ctx, req).await.unwrap();
 //!     assert_eq!(proxy.id, "42");
 //! }
@@ -409,17 +407,19 @@ mod tests {
     use super::*;
     use crate::{
         http::{Body, Version},
+        net::address::ProxyAddress,
         proxy::{MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader, StringFilter},
         service::ServiceBuilder,
     };
     use itertools::Itertools;
-    use std::{convert::Infallible, sync::Arc};
+    use std::{convert::Infallible, str::FromStr, sync::Arc};
 
     #[tokio::test]
     async fn test_proxy_db_default_happy_path_example() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
                 id: "42".to_owned(),
+                address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
                 tcp: true,
                 udp: true,
                 http: true,
@@ -427,15 +427,14 @@ mod tests {
                 datacenter: false,
                 residential: true,
                 mobile: true,
-                authority: "12.34.12.34:8080".to_owned(),
                 pool_id: None,
                 country: Some("*".into()),
                 city: Some("*".into()),
                 carrier: Some("*".into()),
-                credentials: None,
             },
             Proxy {
                 id: "100".to_owned(),
+                address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
                 tcp: true,
                 udp: false,
                 http: true,
@@ -443,12 +442,10 @@ mod tests {
                 datacenter: true,
                 residential: false,
                 mobile: false,
-                authority: "123.123.123.123:8080".to_owned(),
                 pool_id: None,
                 country: Some("US".into()),
                 city: None,
                 carrier: None,
-                credentials: None,
             },
         ])
         .unwrap();

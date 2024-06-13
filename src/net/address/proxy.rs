@@ -32,14 +32,29 @@ impl ProxyAddress {
         &self.protocol
     }
 
-    /// Returns the authority of this [`ProxyAddress`].
+    /// Overwrites the [`Protocol`] of this [`ProxyAddress`].
+    pub fn with_protocol(&mut self, proto: Protocol) {
+        self.protocol = proto;
+    }
+
+    /// Returns the [`Authority`] of this [`ProxyAddress`].
     pub fn authority(&self) -> &Authority {
         &self.authority
     }
 
-    /// Returns the credential of this [`ProxyAddress`].
+    /// Overwrites the [`Authority`] of this [`ProxyAddress`].
+    pub fn with_authority(&mut self, authority: Authority) {
+        self.authority = authority;
+    }
+
+    /// Returns the [`ProxyCredential`] of this [`ProxyAddress`].
     pub fn credential(&self) -> Option<&ProxyCredential> {
         self.credential.as_ref()
+    }
+
+    /// Overwrites the [`ProxyCredential`] of this [`ProxyAddress`].
+    pub fn with_credential(&mut self, credential: ProxyCredential) {
+        self.credential = Some(credential);
     }
 }
 
