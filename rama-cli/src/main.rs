@@ -81,10 +81,10 @@ async fn main() -> Result<(), BoxError> {
         Ok(()) => Ok(()),
         Err(err) => {
             if let Some(err) = err.downcast_ref::<error::ErrorWithExitCode>() {
-                tracing::error!(err = %err, "exit with error ({})", err.exit_code());
+                eprintln!("🚩 exit with error ({}): {}", err.exit_code(), err);
                 std::process::exit(err.exit_code());
             } else {
-                tracing::error!(err = %err, "exit with error");
+                eprintln!("🚩 exit with error: {}", err);
                 std::process::exit(1);
             }
         }

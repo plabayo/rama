@@ -16,7 +16,7 @@ pub use wrapper::OpaqueError;
 /// use rama::error::ErrorContext;
 ///
 /// let result = "hello".parse::<i32>().context("parse integer");
-/// assert_eq!("parse integer: invalid digit found in string", result.unwrap_err().to_string());
+/// assert_eq!("parse integer\r\n ↪ invalid digit found in string", result.unwrap_err().to_string());
 /// ```
 pub trait ErrorContext: private::SealedErrorContext {
     /// The resulting contexct type after adding context to the contained error.
@@ -102,7 +102,7 @@ impl<T> ErrorContext for Option<T> {
 /// impl std::error::Error for CustomError {}
 ///
 /// let error = CustomError.context("whoops");
-/// assert_eq!(error.to_string(), "whoops: Custom error");
+/// assert_eq!(error.to_string(), "whoops\r\n ↪ Custom error");
 /// ```
 pub trait ErrorExt: private::SealedErrorExt {
     /// Wrap the error in a context.
@@ -113,7 +113,7 @@ pub trait ErrorExt: private::SealedErrorExt {
     /// use rama::error::ErrorExt;
     ///
     /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").context("do I/O");
-    /// assert_eq!(error.to_string(), "do I/O: oh no!");
+    /// assert_eq!(error.to_string(), "do I/O\r\n ↪ oh no!");
     /// ```
     fn context<M>(self, context: M) -> OpaqueError
     where
@@ -129,7 +129,7 @@ pub trait ErrorExt: private::SealedErrorExt {
     /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").with_context(|| format!(
     ///    "do I/O ({})", 42,
     /// ));
-    /// assert_eq!(error.to_string(), "do I/O (42): oh no!");
+    /// assert_eq!(error.to_string(), "do I/O (42)\r\n ↪ oh no!");
     /// ```
     fn with_context<C, F>(self, context: F) -> OpaqueError
     where
@@ -211,14 +211,14 @@ mod tests {
     #[test]
     fn message_error_context() {
         let error = wrapper::MessageError("foo").context("context");
-        assert_eq!(error.to_string(), "context: foo");
+        assert_eq!(error.to_string(), "context\r\n ↪ foo");
     }
 
     #[test]
     fn box_error_context() {
         let error = Box::new(wrapper::MessageError("foo"));
         let error = error.context("context");
-        assert_eq!(error.to_string(), "context: foo");
+        assert_eq!(error.to_string(), "context\r\n ↪ foo");
     }
 
     #[derive(Debug)]
@@ -261,8 +261,6 @@ mod tests {
         let error = CustomError;
         let error = error.backtrace();
 
-        assert!(error
-            .to_string()
-            .starts_with("Initial error: Custom error\nError context:\n"));
+        assert!(error.to_string().starts_with("Initial error\r\n ↪"));
     }
 }

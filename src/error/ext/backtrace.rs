@@ -22,9 +22,16 @@ impl<E> BacktraceError<E> {
 
 impl<E: Error> Display for BacktraceError<E> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        writeln!(f, "Initial error: {:}", self.inner)?;
-        writeln!(f, "Error context:")?;
-        writeln!(f, "{:}", self.backtrace)
+        write!(
+            f,
+            "Initial error\r\n ↪ {:}\r\n============================\r\n",
+            self.inner
+        )?;
+        write!(
+            f,
+            " ⇒ backtrace: {:}\r\n============================\r\n",
+            self.backtrace
+        )
     }
 }
 

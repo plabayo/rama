@@ -24,7 +24,7 @@ where
     E: Display,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}: {}", self.context, self.error)
+        write!(f, "{}\r\n ↪ {}", self.context, self.error)
     }
 }
 

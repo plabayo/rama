@@ -57,8 +57,12 @@ impl HttpClientError {
 impl std::fmt::Display for HttpClientError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match &self.uri {
-            Some(uri) => write!(f, "http client error ({:?}) for uri: {}", self.inner, uri),
-            None => write!(f, "http client error ({:?})", self.inner),
+            Some(uri) => write!(
+                f,
+                "http client error for uri '{}'\r\n ↪ {}",
+                uri, self.inner
+            ),
+            None => write!(f, "http client error\r\n ↪ {}", self.inner),
         }
     }
 }

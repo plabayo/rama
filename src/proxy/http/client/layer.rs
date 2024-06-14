@@ -206,9 +206,16 @@ where
         }
 
         let established_conn =
-            self.inner.serve(ctx, req).await.map_err(|err| {
-                OpaqueError::from_boxed(err.into()).context("establish inner stream")
-            })?;
+            self.inner
+                .serve(ctx, req)
+                .await
+                .map_err(|err| match address.as_ref() {
+                    Some(address) => OpaqueError::from_boxed(err.into())
+                        .context(format!("establish connection to proxy {}", address)),
+                    None => {
+                        OpaqueError::from_boxed(err.into()).context("establish connection target")
+                    }
+                })?;
 
         // return early in case we did not use a proxy
         let address = match address {

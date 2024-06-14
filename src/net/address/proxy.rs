@@ -1,4 +1,4 @@
-use super::Authority;
+use super::{Authority, Host};
 use crate::{
     error::{ErrorContext, OpaqueError},
     net::{proto::try_to_extract_protocol_from_uri_scheme, user::ProxyCredential, Protocol},
@@ -111,7 +111,18 @@ impl Display for ProxyAddress {
         if let Some(credential) = &self.credential {
             write!(f, "{}@", credential.as_clear_string())?;
         }
-        self.authority.fmt(f)
+        let host = self.authority.host();
+        let port = self
+            .authority
+            .port()
+            .unwrap_or_else(|| self.protocol.default_port());
+        match host {
+            Host::Name(domain) => write!(f, "{}:{}", domain, port),
+            Host::Address(ip) => match ip {
+                std::net::IpAddr::V4(ip) => write!(f, "{}:{}", ip, port),
+                std::net::IpAddr::V6(ip) => write!(f, "[{}]:{}", ip, port),
+            },
+        }
     }
 }
 
@@ -190,11 +201,28 @@ mod tests {
                 Err(err) => panic!("invalid addr '{s}': {err}"),
             };
             let out = addr.to_string();
-            if s.contains("://") {
-                assert_eq!(s, out);
-            } else {
-                assert_eq!(format!("http://{s}"), out);
+            let mut s = s.to_owned();
+            if !s.contains("://") {
+                s = format!("http://{s}");
             }
+            if !s.ends_with(":8080") {
+                if s.contains("::1") {
+                    let mut it = s.split("://");
+                    let scheme = it.next().unwrap();
+                    let host = it.next().unwrap();
+                    if host.contains('@') {
+                        let mut it = host.split('@');
+                        let credential = it.next().unwrap();
+                        let host = it.next().unwrap();
+                        s = format!("{scheme}://{credential}@[{host}]:80");
+                    } else {
+                        s = format!("{scheme}://[{host}]:80");
+                    }
+                } else {
+                    s = format!("{s}:80");
+                }
+            }
+            assert_eq!(s, out);
         }
     }
 }

@@ -65,10 +65,10 @@
 //! use rama::error::{error, ErrorExt, OpaqueError};
 //!
 //! let error = error!("error").context("foo");
-//! assert_eq!(error.to_string(), "foo: error");
+//! assert_eq!(error.to_string(), "foo\r\n ↪ error");
 //!
 //! let error = error!("error {}", 404).context("foo");
-//! assert_eq!(error.to_string(), "foo: error 404");
+//! assert_eq!(error.to_string(), "foo\r\n ↪ error 404");
 //!
 //! #[derive(Debug)]
 //! struct CustomError;
@@ -83,7 +83,7 @@
 //!
 //! let error = error!(CustomError).context("foo");
 //!
-//! assert_eq!(error.to_string(), "foo: entity not found");
+//! assert_eq!(error.to_string(), "foo\r\n ↪ entity not found");
 //! ```
 //!
 //! ## Error Context
@@ -187,13 +187,13 @@ mod test {
     #[test]
     fn test_macro_error_string() {
         let error = error!("error").context("foo");
-        assert_eq!(error.to_string(), "foo: error");
+        assert_eq!(error.to_string(), "foo\r\n ↪ error");
     }
 
     #[test]
     fn test_macro_error_format_string() {
         let error = error!("error {}", 404).context("foo");
-        assert_eq!(error.to_string(), "foo: error 404");
+        assert_eq!(error.to_string(), "foo\r\n ↪ error 404");
     }
 
     #[derive(Debug)]
@@ -210,6 +210,6 @@ mod test {
     #[test]
     fn test_macro_error_from_error() {
         let error = error!(CustomError).context("foo");
-        assert_eq!(error.to_string(), "foo: entity not found");
+        assert_eq!(error.to_string(), "foo\r\n ↪ entity not found");
     }
 }

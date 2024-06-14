@@ -109,6 +109,17 @@ impl Protocol {
             Protocol::Custom(s) => s.as_ref(),
         }
     }
+
+    /// Return a port that can be used as default in case no port is defined.
+    ///
+    /// NOTE that this is not going to be valid for non-http ports.
+    pub fn default_port(&self) -> u16 {
+        match self {
+            Protocol::Https | Protocol::Wss => 443,
+            Protocol::Http | Protocol::Ws => 80,
+            Protocol::Socks5 | Protocol::Socks5h | Protocol::Custom(_) => 80, // \_(ツ)_/¯
+        }
+    }
 }
 
 crate::__static_str_error! {

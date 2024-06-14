@@ -30,31 +30,18 @@ impl RequestContext {
 
     /// Get the authority for this request, if defined.
     pub fn authority(&self) -> Option<Authority> {
-        self.host
-            .clone()
-            .map(|host| Authority::new(host, self.resolve_port()))
+        self.host.clone().map(|host| {
+            let port = self.port.unwrap_or_else(|| self.protocol.default_port());
+            Authority::new(host, Some(port))
+        })
     }
 
     /// Get the authority string for this request, if defined.
     pub fn authority_string(&self) -> Option<String> {
-        match &self.host {
-            Some(host) => match self.resolve_port() {
-                Some(port) => Some(format!("{host}:{port}")),
-                None => Some(host.to_string()),
-            },
-            None => None,
-        }
-    }
-
-    fn resolve_port(&self) -> Option<u16> {
-        match self.port {
-            Some(port) => Some(port),
-            None => match self.protocol {
-                Protocol::Https | Protocol::Wss => Some(443),
-                Protocol::Http | Protocol::Ws => Some(80),
-                Protocol::Custom(_) | Protocol::Socks5 | Protocol::Socks5h => None,
-            },
-        }
+        self.host.as_ref().map(|host| {
+            let port = self.port.unwrap_or_else(|| self.protocol.default_port());
+            format!("{host}:{port}")
+        })
     }
 }
 
