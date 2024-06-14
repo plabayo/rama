@@ -12,6 +12,20 @@ use std::{borrow::Cow, fmt};
 pub struct Domain(Cow<'static, str>);
 
 impl Domain {
+    /// Creates a domain at compile time.
+    ///
+    /// This function requires the static string to be a valid domain
+    ///
+    /// # Panics
+    ///
+    /// This function panics at **compile time** when the static string is not a valid domain.
+    pub const fn from_static(s: &'static str) -> Self {
+        if !is_valid_name(s.as_bytes()) {
+            panic!("static str is an invalid domain");
+        }
+        Self(Cow::Borrowed(s))
+    }
+
     /// Creates the localhost domain.
     pub fn localhost() -> Self {
         Domain(Cow::Borrowed("localhost"))
@@ -57,20 +71,8 @@ impl TryFrom<String> for Domain {
     type Error = OpaqueError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
-        if Self::is_valid_name(name.as_bytes()) {
+        if is_valid_name(name.as_bytes()) {
             Ok(Self(Cow::Owned(name)))
-        } else {
-            Err(OpaqueError::from_display("invalid domain"))
-        }
-    }
-}
-
-impl TryFrom<&'static str> for Domain {
-    type Error = OpaqueError;
-
-    fn try_from(name: &'static str) -> Result<Self, Self::Error> {
-        if Self::is_valid_name(name.as_bytes()) {
-            Ok(Self(Cow::Borrowed(name)))
         } else {
             Err(OpaqueError::from_display("invalid domain"))
         }
@@ -81,23 +83,9 @@ impl TryFrom<Vec<u8>> for Domain {
     type Error = OpaqueError;
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
-        if Self::is_valid_name(name.as_slice()) {
+        if is_valid_name(name.as_slice()) {
             Ok(Self(Cow::Owned(
                 String::from_utf8(name).context("convert domain bytes to utf-8 string")?,
-            )))
-        } else {
-            Err(OpaqueError::from_display("invalid domain"))
-        }
-    }
-}
-
-impl TryFrom<&'static [u8]> for Domain {
-    type Error = OpaqueError;
-
-    fn try_from(name: &'static [u8]) -> Result<Self, Self::Error> {
-        if Self::is_valid_name(name) {
-            Ok(Self(Cow::Borrowed(
-                std::str::from_utf8(name).context("convert domain bytes to utf-8 str")?,
             )))
         } else {
             Err(OpaqueError::from_display("invalid domain"))
@@ -147,53 +135,63 @@ impl Domain {
 
     /// The maximum length of a domain name.
     const MAX_NAME_LEN: usize = 253;
+}
 
-    /// Checks if the domain label is valid.
-    fn is_valid_label(label: &[u8]) -> bool {
-        if label.is_empty() {
-            true
-        } else if label.len() > Self::MAX_LABEL_LEN
-            || label[0] == b'-'
-            || label[label.len() - 1] == b'-'
-        {
-            false
-        } else {
-            for (i, c) in label.iter().enumerate() {
-                if !c.is_ascii_alphanumeric() && (*c != b'-' || label[i - 1] == b'-') {
-                    return false;
-                }
+const fn is_valid_label(name: &[u8], start: usize, stop: usize) -> bool {
+    if start >= stop
+        || stop - start > Domain::MAX_LABEL_LEN
+        || name[start] == b'-'
+        || start == stop
+        || name[stop - 1] == b'-'
+    {
+        false
+    } else {
+        let mut i = start;
+        while i < stop {
+            let c = name[i];
+            if !c.is_ascii_alphanumeric() && (c != b'-' || i == start || name[i - 1] == b'-') {
+                return false;
             }
-            true
+            i += 1;
         }
+        true
     }
+}
 
-    /// Checks if the domain name is valid.
-    fn is_valid_name(name: &[u8]) -> bool {
+/// Checks if the domain name is valid.
+const fn is_valid_name(name: &[u8]) -> bool {
+    if name.is_empty() || name.len() > Domain::MAX_NAME_LEN {
+        false
+    } else {
         let mut non_empty_groups = 0;
-        if name.is_empty() || name.len() > Self::MAX_NAME_LEN {
-            false
-        } else {
-            let mut rem: &[u8] = name;
-            while let Some(dot) = rem.iter().position(|c| *c == b'.') {
-                let label = &rem[..dot];
-                let rem_len = rem.len();
-                rem = &rem[dot + 1..];
-                if label.is_empty() {
-                    if rem_len != name.len() {
+        let mut i = 0;
+        let mut offset = 0;
+        while i < name.len() {
+            let c = name[i];
+            if c == b'.' {
+                if offset == i {
+                    // empty
+                    if i == 0 || i == name.len() - 1 {
+                        i += 1;
+                        offset = i + 1;
+                        continue;
+                    } else {
+                        // double dot not allowed
                         return false;
                     }
-                    continue;
                 }
-                if !Self::is_valid_label(label) {
+                if !is_valid_label(name, offset, i) {
                     return false;
                 }
+                offset = i + 1;
                 non_empty_groups += 1;
             }
-            if rem.is_empty() {
-                non_empty_groups > 0
-            } else {
-                Self::is_valid_label(rem)
-            }
+            i += 1;
+        }
+        if offset == i {
+            non_empty_groups > 0
+        } else {
+            is_valid_label(name, offset, i)
         }
     }
 }
@@ -223,9 +221,7 @@ mod tests {
             ".example.com.",
         ] {
             let msg = format!("to parse: {}", str);
-            assert_eq!(Domain::try_from(str).expect(msg.as_str()), str);
             assert_eq!(Domain::try_from(str.to_owned()).expect(msg.as_str()), str);
-            assert_eq!(Domain::try_from(str.as_bytes()).expect(msg.as_str()), str);
             assert_eq!(
                 Domain::try_from(str.as_bytes().to_vec()).expect(msg.as_str()),
                 str
@@ -257,9 +253,7 @@ mod tests {
             "example dot com",
             "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",
         ] {
-            assert!(Domain::try_from(str).is_err());
             assert!(Domain::try_from(str.to_owned()).is_err());
-            assert!(Domain::try_from(str.as_bytes()).is_err());
             assert!(Domain::try_from(str.as_bytes().to_vec()).is_err());
         }
     }
