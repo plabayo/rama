@@ -148,7 +148,7 @@ pub async fn get_request_info(
         .map(|a| a.to_string());
     let scheme = request_context
         .map(|ctx| ctx.protocol.to_string())
-        .unwrap_or_default();
+        .unwrap_or_else(|| "http".to_owned());
 
     RequestInfo {
         version: format!("{:?}", parts.version),

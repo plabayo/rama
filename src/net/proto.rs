@@ -1,6 +1,9 @@
+use std::borrow::Cow;
 use std::cmp::min;
-use std::convert::Infallible;
 use std::str::FromStr;
+
+use crate::__eq_ignore_ascii_case as eq_ignore_ascii_case;
+use crate::error::{ErrorContext, OpaqueError};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Web protocols that are relevant to Rama.
@@ -11,8 +14,6 @@ use std::str::FromStr;
 ///
 /// [repo]: https://github.com/plabayo/rama
 pub enum Protocol {
-    /// The explicit absence of a protocol.
-    Empty,
     /// The `http` protocol.
     Http,
     /// The `https` protocol.
@@ -39,7 +40,7 @@ pub enum Protocol {
     /// The difference with [`Self::Socks5`] is that the proxy resolves the URL hostname.
     Socks5h,
     /// Custom protocol.
-    Custom(String),
+    Custom(Cow<'static, str>),
 }
 
 const SCHEME_HTTP: &str = "http";
@@ -50,12 +51,45 @@ const SCHEME_WS: &str = "ws";
 const SCHEME_WSS: &str = "wss";
 
 impl Protocol {
+    /// Creates a Protocol from a str a compile time.
+    ///
+    /// This function requires the static string to be a valid protocol.
+    ///
+    /// It is intended to be used to facilitate the compile-time creation of
+    /// custom Protocols, as known protocols are easier created by using the desired
+    /// variant directly.
+    ///
+    /// # Panics
+    ///
+    /// This function panics at **compile time** when the static string is not a valid protocol.
+    pub const fn from_static(s: &'static str) -> Self {
+        // NOTE: once unwrapping is possible in const we can piggy back on
+        // `try_to_convert_str_to_non_custom_protocol`
+
+        if eq_ignore_ascii_case!(s, SCHEME_HTTPS) {
+            Protocol::Https
+        } else if s.is_empty() || eq_ignore_ascii_case!(s, SCHEME_HTTP) {
+            Protocol::Http
+        } else if eq_ignore_ascii_case!(s, SCHEME_SOCKS5) {
+            Protocol::Socks5
+        } else if eq_ignore_ascii_case!(s, SCHEME_SOCKS5H) {
+            Protocol::Socks5h
+        } else if eq_ignore_ascii_case!(s, SCHEME_WS) {
+            Protocol::Ws
+        } else if eq_ignore_ascii_case!(s, SCHEME_WSS) {
+            Protocol::Wss
+        } else if validate_scheme_str(s) {
+            Protocol::Custom(Cow::Borrowed(s))
+        } else {
+            panic!("invalid static protocol str");
+        }
+    }
+
     /// Returns `true` if this protocol is "secure" by itself.
     pub fn secure(&self) -> bool {
         match self {
             Protocol::Https | Protocol::Wss => true,
-            Protocol::Empty
-            | Protocol::Ws
+            Protocol::Ws
             | Protocol::Http
             | Protocol::Socks5
             | Protocol::Socks5h
@@ -64,122 +98,114 @@ impl Protocol {
     }
 
     /// Returns the scheme str for this protocol.
-    ///
-    /// `None` is returned in case `Self` is [`Protocol::Empty`].
-    pub fn as_scheme(&self) -> Option<&str> {
-        Some(match self {
+    pub fn as_scheme(&self) -> &str {
+        match self {
             Protocol::Https => SCHEME_HTTPS,
             Protocol::Http => SCHEME_HTTP,
             Protocol::Socks5 => SCHEME_SOCKS5,
             Protocol::Socks5h => SCHEME_SOCKS5H,
             Protocol::Ws => SCHEME_WS,
             Protocol::Wss => SCHEME_WSS,
-            Protocol::Custom(s) => s.as_str(),
-            Protocol::Empty => return None,
-        })
-    }
-}
-
-impl From<&str> for Protocol {
-    fn from(s: &str) -> Self {
-        if s.eq_ignore_ascii_case(SCHEME_HTTPS) {
-            Protocol::Https
-        } else if s.eq_ignore_ascii_case(SCHEME_HTTP) {
-            Protocol::Http
-        } else if s.eq_ignore_ascii_case(SCHEME_SOCKS5) {
-            Protocol::Socks5
-        } else if s.eq_ignore_ascii_case(SCHEME_SOCKS5H) {
-            Protocol::Socks5h
-        } else if s.eq_ignore_ascii_case(SCHEME_WS) {
-            Protocol::Ws
-        } else if s.eq_ignore_ascii_case(SCHEME_WSS) {
-            Protocol::Wss
-        } else if s.trim().is_empty() || !validate_scheme_str(s) {
-            Protocol::Empty
-        } else {
-            Protocol::Custom(s.to_owned())
+            Protocol::Custom(s) => s.as_ref(),
         }
     }
 }
 
-impl From<String> for Protocol {
-    fn from(s: String) -> Self {
-        if s.eq_ignore_ascii_case(SCHEME_HTTPS) {
-            Protocol::Https
-        } else if s.eq_ignore_ascii_case(SCHEME_HTTP) {
-            Protocol::Http
-        } else if s.eq_ignore_ascii_case(SCHEME_SOCKS5) {
-            Protocol::Socks5
-        } else if s.eq_ignore_ascii_case(SCHEME_SOCKS5H) {
-            Protocol::Socks5h
-        } else if s.eq_ignore_ascii_case(SCHEME_WS) {
-            Protocol::Ws
-        } else if s.eq_ignore_ascii_case(SCHEME_WSS) {
-            Protocol::Wss
-        } else if s.trim().is_empty() || !validate_scheme_str(&s) {
-            Protocol::Empty
-        } else {
-            Protocol::Custom(s)
-        }
+crate::__static_str_error! {
+    pub struct InvalidProtocolStr = "invalid protocol string";
+}
+
+fn try_to_convert_str_to_non_custom_protocol(
+    s: &str,
+) -> Result<Option<Protocol>, InvalidProtocolStr> {
+    Ok(Some(if eq_ignore_ascii_case!(s, SCHEME_HTTPS) {
+        Protocol::Https
+    } else if s.is_empty() || eq_ignore_ascii_case!(s, SCHEME_HTTP) {
+        Protocol::Http
+    } else if eq_ignore_ascii_case!(s, SCHEME_SOCKS5) {
+        Protocol::Socks5
+    } else if eq_ignore_ascii_case!(s, SCHEME_SOCKS5H) {
+        Protocol::Socks5h
+    } else if eq_ignore_ascii_case!(s, SCHEME_WS) {
+        Protocol::Ws
+    } else if eq_ignore_ascii_case!(s, SCHEME_WSS) {
+        Protocol::Wss
+    } else if validate_scheme_str(s) {
+        return Ok(None);
+    } else {
+        return Err(InvalidProtocolStr);
+    }))
+}
+
+impl TryFrom<&str> for Protocol {
+    type Error = InvalidProtocolStr;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        Ok(try_to_convert_str_to_non_custom_protocol(s)?
+            .unwrap_or_else(|| Protocol::Custom(Cow::Owned(s.to_owned()))))
+    }
+}
+
+impl TryFrom<String> for Protocol {
+    type Error = InvalidProtocolStr;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        Ok(try_to_convert_str_to_non_custom_protocol(&s)?
+            .unwrap_or(Protocol::Custom(Cow::Owned(s))))
+    }
+}
+
+impl TryFrom<&String> for Protocol {
+    type Error = InvalidProtocolStr;
+
+    fn try_from(s: &String) -> Result<Self, Self::Error> {
+        Ok(try_to_convert_str_to_non_custom_protocol(s)?
+            .unwrap_or_else(|| Protocol::Custom(Cow::Owned(s.clone()))))
     }
 }
 
 impl FromStr for Protocol {
-    type Err = Infallible;
+    type Err = InvalidProtocolStr;
 
-    fn from_str(s: &str) -> Result<Self, Infallible> {
-        Ok(s.into())
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        s.try_into()
     }
 }
 
 impl From<crate::http::Scheme> for Protocol {
     #[inline]
     fn from(s: crate::http::Scheme) -> Self {
-        Self::from(&s)
+        s.as_str()
+            .try_into()
+            .expect("http crate Scheme is pre-validated by promise")
     }
 }
 
 impl From<&crate::http::Scheme> for Protocol {
     fn from(s: &crate::http::Scheme) -> Self {
-        if s == &crate::http::Scheme::HTTP {
-            Protocol::Http
-        } else if s == &crate::http::Scheme::HTTPS {
-            Protocol::Https
-        } else if s == SCHEME_WS {
-            Protocol::Ws
-        } else if s == SCHEME_WSS {
-            Protocol::Wss
-        } else if s == SCHEME_SOCKS5 {
-            Protocol::Socks5
-        } else if s == SCHEME_SOCKS5H {
-            Protocol::Socks5h
-        } else if s == "" {
-            Protocol::Empty
-        } else {
-            // ASSUMPTION: http::uri::Scheme is _always_ valid
-            Protocol::Custom(s.to_string())
-        }
+        s.as_str()
+            .try_into()
+            .expect("http crate Scheme is pre-validated by promise")
     }
 }
 
 impl From<Option<crate::http::Scheme>> for Protocol {
     fn from(s: Option<crate::http::Scheme>) -> Self {
-        s.map(Into::into).unwrap_or(Protocol::Empty)
+        s.map(Into::into).unwrap_or(Protocol::Http)
     }
 }
 
 impl From<Option<&crate::http::Scheme>> for Protocol {
     fn from(s: Option<&crate::http::Scheme>) -> Self {
-        s.map(Into::into).unwrap_or(Protocol::Empty)
+        s.map(Into::into).unwrap_or(Protocol::Http)
     }
 }
 
 impl PartialEq<str> for Protocol {
     fn eq(&self, other: &str) -> bool {
         match self {
-            Protocol::Empty => other.is_empty(),
             Protocol::Https => other.eq_ignore_ascii_case(SCHEME_HTTPS),
-            Protocol::Http => other.eq_ignore_ascii_case(SCHEME_HTTP),
+            Protocol::Http => other.eq_ignore_ascii_case(SCHEME_HTTP) || other.is_empty(),
             Protocol::Socks5 => other.eq_ignore_ascii_case(SCHEME_SOCKS5),
             Protocol::Socks5h => other.eq_ignore_ascii_case(SCHEME_SOCKS5H),
             Protocol::Ws => other.eq_ignore_ascii_case("ws"),
@@ -221,54 +247,61 @@ impl PartialEq<Protocol> for &str {
 
 impl std::fmt::Display for Protocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self.as_scheme() {
-            Some(s) => s.fmt(f),
-            None => Ok(()),
-        }
+        self.as_scheme().fmt(f)
     }
 }
 
-pub(crate) fn try_to_extract_protocol_from_uri_scheme(s: &[u8]) -> Option<(Protocol, usize)> {
+pub(crate) fn try_to_extract_protocol_from_uri_scheme(
+    s: &[u8],
+) -> Result<(Protocol, usize), OpaqueError> {
     if s.is_empty() {
-        return None;
+        return Err(OpaqueError::from_display("empty uri contains no scheme"));
     }
 
-    for i in 0..min(s.len(), MAX_SCHEME_LEN) {
+    for i in 0..min(s.len(), 512) {
         let b = s[i];
 
-        match SCHEME_CHARS[b as usize] {
-            b':' => {
-                // Not enough data remaining
-                if s.len() < i + 3 {
-                    break;
-                }
-
-                // Not a scheme
-                if &s[i + 1..i + 3] != b"//" {
-                    break;
-                }
-
-                return match std::str::from_utf8(&s[..i]) {
-                    Ok(str) => Some((str.into(), i + 3)),
-                    Err(_) => None,
-                };
+        if b == b':' {
+            // Not enough data remaining
+            if s.len() < i + 3 {
+                break;
             }
-            // Invalid scheme character, abort
-            0 => break,
-            _ => {}
+
+            // Not a scheme
+            if &s[i + 1..i + 3] != b"//" {
+                break;
+            }
+
+            let str =
+                std::str::from_utf8(&s[..i]).context("interpret scheme bytes as utf-8 str")?;
+            let protocol = str
+                .try_into()
+                .context("parse scheme utf-8 str as protocol")?;
+            return Ok((protocol, i + 3));
         }
     }
 
-    None
+    Ok((Protocol::Http, 0))
 }
 
 #[inline]
-fn validate_scheme_str(s: &str) -> bool {
+const fn validate_scheme_str(s: &str) -> bool {
     validate_scheme_slice(s.as_bytes())
 }
 
-fn validate_scheme_slice(s: &[u8]) -> bool {
-    s.len() <= MAX_SCHEME_LEN && s.iter().all(|b| SCHEME_CHARS[*b as usize] != 0)
+const fn validate_scheme_slice(s: &[u8]) -> bool {
+    if s.is_empty() || s.len() > MAX_SCHEME_LEN {
+        return false;
+    }
+
+    let mut i = 0;
+    while i < s.len() {
+        if SCHEME_CHARS[s[i] as usize] == 0 {
+            return false;
+        }
+        i += 1;
+    }
+    true
 }
 
 // Require the scheme to not be too long in order to enable further
@@ -321,13 +354,13 @@ mod tests {
     #[test]
     fn test_from_str() {
         assert_eq!("http".parse(), Ok(Protocol::Http));
+        assert_eq!("".parse(), Ok(Protocol::Http));
         assert_eq!("https".parse(), Ok(Protocol::Https));
         assert_eq!("ws".parse(), Ok(Protocol::Ws));
         assert_eq!("wss".parse(), Ok(Protocol::Wss));
         assert_eq!("socks5".parse(), Ok(Protocol::Socks5));
         assert_eq!("socks5h".parse(), Ok(Protocol::Socks5h));
-        assert_eq!("".parse(), Ok(Protocol::Empty));
-        assert_eq!("custom".parse(), Ok(Protocol::Custom("custom".to_owned())));
+        assert_eq!("custom".parse(), Ok(Protocol::from_static("custom")));
     }
 
     #[test]
@@ -350,8 +383,7 @@ mod tests {
         assert!(!Protocol::Socks5h.secure());
         assert!(!Protocol::Ws.secure());
         assert!(Protocol::Wss.secure());
-        assert!(!Protocol::Empty.secure());
-        assert!(!Protocol::Custom("custom".to_owned()).secure());
+        assert!(!Protocol::from_static("custom").secure());
     }
 
     #[test]
@@ -366,15 +398,19 @@ mod tests {
             ("socks5h://example.com", Some((Protocol::Socks5h, 10))),
             (
                 "custom://example.com",
-                Some((Protocol::Custom("custom".to_owned()), 9)),
+                Some((Protocol::from_static("custom"), 9)),
             ),
             (" http://example.com", None),
             ("longlonglongwaytoolongforsomethingusefulorvaliddontyouthinkmydearreader://example.com", None),
         ] {
-            assert_eq!(
-                try_to_extract_protocol_from_uri_scheme(s.as_bytes()),
-                expected
-            );
+            let result = try_to_extract_protocol_from_uri_scheme(s.as_bytes());
+            match expected {
+                Some(t) => match result {
+                    Err(err) => panic!("unexpected err: {err} (case: {s}"),
+                    Ok(p) => assert_eq!(t, p, "case: {}", s),
+                },
+                None => assert!(result.is_err(), "case: {}, result: {:?}", s, result),
+            }
         }
     }
 }

@@ -256,8 +256,7 @@ where
         if let Some(new_scheme) = match request_ctx.protocol {
             Protocol::Http => Some(crate::http::dep::http::uri::Scheme::HTTPS),
             Protocol::Ws => Some("wss".parse().unwrap()),
-            Protocol::Empty
-            | Protocol::Custom(_)
+            Protocol::Custom(_)
             | Protocol::Https
             | Protocol::Wss
             | Protocol::Socks5

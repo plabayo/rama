@@ -2,6 +2,7 @@
 
 pub(crate) mod error;
 pub(crate) mod http_error;
+pub(crate) mod str;
 
 #[allow(unused_macros)]
 macro_rules! opaque_body {

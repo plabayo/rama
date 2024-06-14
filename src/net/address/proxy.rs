@@ -64,10 +64,9 @@ impl TryFrom<&str> for ProxyAddress {
     fn try_from(value: &str) -> Result<Self, Self::Error> {
         let slice = value.as_bytes();
 
-        let (protocol, slice) = match try_to_extract_protocol_from_uri_scheme(slice) {
-            Some((protocol, size)) => (protocol, &slice[size..]),
-            None => (Protocol::Empty, slice),
-        };
+        let (protocol, size) = try_to_extract_protocol_from_uri_scheme(slice)
+            .context("extract protocol from proxy address scheme")?;
+        let slice = &slice[size..];
 
         for i in 0..slice.len() {
             if slice[i] == b'@' {
@@ -108,9 +107,7 @@ impl FromStr for ProxyAddress {
 
 impl Display for ProxyAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        if let Some(scheme) = self.protocol.as_scheme() {
-            write!(f, "{}://", scheme)?;
-        }
+        write!(f, "{}://", self.protocol.as_scheme())?;
         if let Some(credential) = &self.credential {
             write!(f, "{}@", credential.as_clear_string())?;
         }
@@ -163,37 +160,41 @@ mod tests {
             "127.0.0.1:8080",
             "::1",
             "[::1]:8080",
-            "http://proxy.io",
-            "http://proxy.io:8080",
-            "http://127.0.0.1",
-            "http://127.0.0.1:8080",
-            "http://::1",
-            "http://[::1]:8080",
-            "http://foo@proxy.io",
-            "http://foo@proxy.io:8080",
-            "http://foo@127.0.0.1",
-            "http://foo@127.0.0.1:8080",
-            "http://foo@::1",
-            "http://foo@[::1]:8080",
-            "http://foo:@proxy.io",
-            "http://foo:@proxy.io:8080",
-            "http://foo:@127.0.0.1",
-            "http://foo:@127.0.0.1:8080",
-            "http://foo:@::1",
-            "http://foo:@[::1]:8080",
-            "http://foo:bar@proxy.io",
-            "http://foo:bar@proxy.io:8080",
-            "http://foo:bar@127.0.0.1",
-            "http://foo:bar@127.0.0.1:8080",
-            "http://foo:bar@::1",
-            "http://foo:bar@[::1]:8080",
+            "socks5://proxy.io",
+            "socks5://proxy.io:8080",
+            "socks5://127.0.0.1",
+            "socks5://127.0.0.1:8080",
+            "socks5://::1",
+            "socks5://[::1]:8080",
+            "socks5://foo@proxy.io",
+            "socks5://foo@proxy.io:8080",
+            "socks5://foo@127.0.0.1",
+            "socks5://foo@127.0.0.1:8080",
+            "socks5://foo@::1",
+            "socks5://foo@[::1]:8080",
+            "socks5://foo:@proxy.io",
+            "socks5://foo:@proxy.io:8080",
+            "socks5://foo:@127.0.0.1",
+            "socks5://foo:@127.0.0.1:8080",
+            "socks5://foo:@::1",
+            "socks5://foo:@[::1]:8080",
+            "socks5://foo:bar@proxy.io",
+            "socks5://foo:bar@proxy.io:8080",
+            "socks5://foo:bar@127.0.0.1",
+            "socks5://foo:bar@127.0.0.1:8080",
+            "socks5://foo:bar@::1",
+            "socks5://foo:bar@[::1]:8080",
         ] {
             let addr: ProxyAddress = match s.try_into() {
                 Ok(addr) => addr,
                 Err(err) => panic!("invalid addr '{s}': {err}"),
             };
             let out = addr.to_string();
-            assert_eq!(s, out);
+            if s.contains("://") {
+                assert_eq!(s, out);
+            } else {
+                assert_eq!(format!("http://{s}"), out);
+            }
         }
     }
 }

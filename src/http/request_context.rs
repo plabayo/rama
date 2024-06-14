@@ -52,9 +52,7 @@ impl RequestContext {
             None => match self.protocol {
                 Protocol::Https | Protocol::Wss => Some(443),
                 Protocol::Http | Protocol::Ws => Some(80),
-                Protocol::Empty | Protocol::Custom(_) | Protocol::Socks5 | Protocol::Socks5h => {
-                    None
-                }
+                Protocol::Custom(_) | Protocol::Socks5 | Protocol::Socks5h => None,
             },
         }
     }
@@ -95,9 +93,7 @@ impl From<&Parts> for RequestContext {
             None => match protocol {
                 Protocol::Https | Protocol::Wss => Some(443),
                 Protocol::Http | Protocol::Ws => Some(80),
-                Protocol::Empty | Protocol::Custom(_) | Protocol::Socks5 | Protocol::Socks5h => {
-                    None
-                }
+                Protocol::Custom(_) | Protocol::Socks5 | Protocol::Socks5h => None,
             },
         };
 
@@ -135,9 +131,7 @@ impl<Body> From<&Request<Body>> for RequestContext {
             None => match protocol {
                 Protocol::Https | Protocol::Wss => Some(443),
                 Protocol::Http | Protocol::Ws => Some(80),
-                Protocol::Empty | Protocol::Custom(_) | Protocol::Socks5 | Protocol::Socks5h => {
-                    None
-                }
+                Protocol::Custom(_) | Protocol::Socks5 | Protocol::Socks5h => None,
             },
         };
 

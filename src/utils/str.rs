@@ -17,7 +17,7 @@ impl NonEmptyString {
     ///
     /// # Panics
     ///
-    /// This function panics at **compile time** when the static string is a invalid header.
+    /// This function panics at **compile time** when the static string is empty.
     pub const fn from_static(src: &'static str) -> NonEmptyString {
         if src.is_empty() {
             panic!("empty static string");
