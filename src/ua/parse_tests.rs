@@ -135,6 +135,40 @@ fn test_parse_windows_chrome() {
 }
 
 #[test]
+fn test_parse_desktop_chrome() {
+    let ua_str = "desktop chrome";
+    let ua = UserAgent::new(ua_str);
+
+    assert_eq!(ua.header_str(), ua_str);
+    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(
+        ua.info(),
+        Some(UserAgentInfo {
+            kind: UserAgentKind::Chromium,
+            version: None,
+        })
+    );
+    assert!(ua.platform().is_none());
+}
+
+#[test]
+fn test_parse_desktop_chrome_with_version() {
+    let ua_str = "desktop chrome/124";
+    let ua = UserAgent::new(ua_str);
+
+    assert_eq!(ua.header_str(), ua_str);
+    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(
+        ua.info(),
+        Some(UserAgentInfo {
+            kind: UserAgentKind::Chromium,
+            version: Some(124),
+        })
+    );
+    assert!(ua.platform().is_none());
+}
+
+#[test]
 fn test_parse_windows_chrome_with_version() {
     let ua_str = "windows chrome/124";
     let mut ua = UserAgent::new(ua_str);
