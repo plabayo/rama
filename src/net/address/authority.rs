@@ -37,6 +37,12 @@ impl Authority {
         }
     }
 
+    /// Overwrites the given port
+    pub fn set_port(&mut self, port: u16) -> &mut Self {
+        self.port = Some(port);
+        self
+    }
+
     /// Gets the port, if defined
     pub fn port(&self) -> Option<u16> {
         self.port
