@@ -8,6 +8,7 @@ pub(crate) mod macros;
 pub mod graceful;
 pub mod info;
 pub mod latency;
+pub mod str;
 pub mod username;
 
 #[cfg(test)]

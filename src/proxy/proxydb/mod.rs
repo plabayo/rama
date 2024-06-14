@@ -1,12 +1,13 @@
-use crate::http::{RequestContext, Version};
+use crate::{
+    http::{RequestContext, Version},
+    utils::str::NonEmptyString,
+};
 use serde::Deserialize;
 use std::future::Future;
 use venndb::Any;
 
 mod internal;
-pub use internal::{
-    proxy_is_valid, Proxy, ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind,
-};
+pub use internal::{Proxy, ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind};
 
 pub mod layer;
 
@@ -41,7 +42,7 @@ pub use str::StringFilter;
 /// [`Extensions`]: crate::service::context::Extensions
 pub struct ProxyFilter {
     /// The ID of the proxy to select.
-    pub id: Option<String>,
+    pub id: Option<NonEmptyString>,
 
     /// The ID of the pool from which to select the proxy.
     #[serde(alias = "pool")]
@@ -437,7 +438,10 @@ impl MemoryProxyDBQueryError {
 mod tests {
     use std::str::FromStr;
 
-    use crate::net::{address::ProxyAddress, Protocol};
+    use crate::{
+        net::{address::ProxyAddress, Protocol},
+        utils::str::NonEmptyString,
+    };
 
     use super::*;
     use itertools::Itertools;
@@ -473,7 +477,7 @@ mod tests {
         let db = memproxydb().await;
         let ctx = h2_req_context();
         let filter = ProxyFilter {
-            id: Some("3031533634".to_owned()),
+            id: Some(NonEmptyString::from_static("3031533634")),
             ..Default::default()
         };
         let proxy = db.get_proxy(ctx, filter).await.unwrap();
@@ -485,7 +489,7 @@ mod tests {
         let db = memproxydb().await;
         let ctx = h2_req_context();
         let filter = ProxyFilter {
-            id: Some("3031533634".to_owned()),
+            id: Some(NonEmptyString::from_static("3031533634")),
             pool_id: Some(vec![StringFilter::new("poolF")]),
             country: Some(vec![StringFilter::new("JP")]),
             city: Some(vec![StringFilter::new("Yokohama")]),
@@ -503,7 +507,7 @@ mod tests {
         let db = memproxydb().await;
         let ctx = h2_req_context();
         let filter = ProxyFilter {
-            id: Some("notfound".to_owned()),
+            id: Some(NonEmptyString::from_static("notfound")),
             ..Default::default()
         };
         let err = db.get_proxy(ctx, filter).await.unwrap_err();
@@ -516,37 +520,37 @@ mod tests {
         let ctx = h2_req_context();
         let filters = [
             ProxyFilter {
-                id: Some("3031533634".to_owned()),
+                id: Some(NonEmptyString::from_static("3031533634")),
                 pool_id: Some(vec![StringFilter::new("poolB")]),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("3031533634".to_owned()),
+                id: Some(NonEmptyString::from_static("3031533634")),
                 country: Some(vec![StringFilter::new("US")]),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("3031533634".to_owned()),
+                id: Some(NonEmptyString::from_static("3031533634")),
                 city: Some(vec![StringFilter::new("New York")]),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("3031533634".to_owned()),
+                id: Some(NonEmptyString::from_static("3031533634")),
                 datacenter: Some(false),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("3031533634".to_owned()),
+                id: Some(NonEmptyString::from_static("3031533634")),
                 residential: Some(true),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("3031533634".to_owned()),
+                id: Some(NonEmptyString::from_static("3031533634")),
                 mobile: Some(false),
                 ..Default::default()
             },
             ProxyFilter {
-                id: Some("3031533634".to_owned()),
+                id: Some(NonEmptyString::from_static("3031533634")),
                 carrier: Some(vec![StringFilter::new("AT&T")]),
                 ..Default::default()
             },
@@ -571,7 +575,7 @@ mod tests {
         let db = memproxydb().await;
         let ctx = h3_req_context();
         let filter = ProxyFilter {
-            id: Some("3031533634".to_owned()),
+            id: Some(NonEmptyString::from_static("3031533634")),
             ..Default::default()
         };
         // this proxy does not support socks5 UDP, which is what we need
@@ -750,7 +754,7 @@ mod tests {
     #[tokio::test]
     async fn test_db_proxy_filter_any_use_filter_property() {
         let db = MemoryProxyDB::try_from_iter([Proxy {
-            id: "1".to_owned(),
+            id: NonEmptyString::from_static("1"),
             address: ProxyAddress::from_str("example.com").unwrap(),
             tcp: true,
             udp: true,
@@ -770,7 +774,7 @@ mod tests {
 
         for filter in [
             ProxyFilter {
-                id: Some("1".to_owned()),
+                id: Some(NonEmptyString::from_static("1")),
                 ..Default::default()
             },
             ProxyFilter {
@@ -837,7 +841,7 @@ mod tests {
     #[tokio::test]
     async fn test_db_proxy_filter_any_only_matches_any_value() {
         let db = MemoryProxyDB::try_from_iter([Proxy {
-            id: "1".to_owned(),
+            id: NonEmptyString::from_static("1"),
             address: ProxyAddress::from_str("example.com").unwrap(),
             tcp: true,
             udp: true,
@@ -902,7 +906,7 @@ mod tests {
     async fn test_search_proxy_for_any_of_given_pools() {
         let db = MemoryProxyDB::try_from_iter([
             Proxy {
-                id: "1".to_owned(),
+                id: NonEmptyString::from_static("1"),
                 address: ProxyAddress::from_str("example.com").unwrap(),
                 tcp: true,
                 udp: true,
@@ -917,7 +921,7 @@ mod tests {
                 carrier: Some("AT&T".into()),
             },
             Proxy {
-                id: "2".to_owned(),
+                id: NonEmptyString::from_static("2"),
                 address: ProxyAddress::from_str("example.com").unwrap(),
                 tcp: true,
                 udp: true,
@@ -932,7 +936,7 @@ mod tests {
                 carrier: Some("AT&T".into()),
             },
             Proxy {
-                id: "3".to_owned(),
+                id: NonEmptyString::from_static("3"),
                 address: ProxyAddress::from_str("example.com").unwrap(),
                 tcp: true,
                 udp: true,
@@ -947,7 +951,7 @@ mod tests {
                 carrier: Some("AT&T".into()),
             },
             Proxy {
-                id: "4".to_owned(),
+                id: NonEmptyString::from_static("4"),
                 address: ProxyAddress::from_str("example.com").unwrap(),
                 tcp: true,
                 udp: true,
@@ -991,7 +995,7 @@ mod tests {
             (
                 "id=1",
                 ProxyFilter {
-                    id: Some("1".into()),
+                    id: Some(NonEmptyString::from_static("1")),
                     ..Default::default()
                 },
             ),

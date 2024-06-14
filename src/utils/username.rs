@@ -84,12 +84,21 @@ where
         None => return Err(OpaqueError::from_display("missing username")),
     };
 
-    for label in label_it {
-        if parser.parse_label(label) == UsernameLabelState::Ignored {
-            return Err(OpaqueError::from_display(format!(
-                "ignored username label: {}",
-                label
-            )));
+    for (index, label) in label_it.enumerate() {
+        match parser.parse_label(label) {
+            UsernameLabelState::Used => (), // optimistic smiley
+            UsernameLabelState::Ignored => {
+                return Err(OpaqueError::from_display(format!(
+                    "ignored username label #{index}: {}",
+                    label
+                )));
+            }
+            UsernameLabelState::Abort => {
+                return Err(OpaqueError::from_display(format!(
+                    "invalid username label #{index}: {}",
+                    label
+                )));
+            }
         }
     }
 
@@ -118,6 +127,10 @@ pub enum UsernameLabelState {
     /// A parser-user can choose to error a request in case
     /// a label was ignored by its parser.
     Ignored,
+
+    /// Abort the parsing as a state has been reached
+    /// from which cannot be recovered.
+    Abort,
 }
 
 /// A parser which can parse labels from a username.
@@ -177,8 +190,10 @@ macro_rules! username_label_parser_tuple_impl {
                 let ($(ref mut $T,)+) = self;
                 let mut state = UsernameLabelState::Ignored;
                 $(
-                    if $T.parse_label(label) == UsernameLabelState::Used {
-                        state = UsernameLabelState::Used;
+                    match $T.parse_label(label) {
+                        UsernameLabelState::Ignored => (),
+                        UsernameLabelState::Used => state = UsernameLabelState::Used,
+                        UsernameLabelState::Abort => return UsernameLabelState::Abort,
                     }
                 )+
                 state
@@ -212,8 +227,10 @@ macro_rules! username_label_parser_tuple_exclusive_labels_impl {
             fn parse_label(&mut self, label: &str) -> UsernameLabelState {
                 let ($(ref mut $T,)+) = self.0;
                 $(
-                    if $T.parse_label(label) == UsernameLabelState::Used {
-                        return UsernameLabelState::Used;
+                    match $T.parse_label(label) {
+                        UsernameLabelState::Ignored => (),
+                        UsernameLabelState::Used => return UsernameLabelState::Used,
+                        UsernameLabelState::Abort => return UsernameLabelState::Abort,
                     }
                 )+
                 UsernameLabelState::Ignored
@@ -329,6 +346,22 @@ mod test {
 
         fn build(self, _ext: &mut Extensions) -> Result<(), Self::Error> {
             Ok(())
+        }
+    }
+
+    #[derive(Debug, Clone, Default)]
+    #[non_exhaustive]
+    struct UsernameLabelAbortParser;
+
+    impl UsernameLabelParser for UsernameLabelAbortParser {
+        type Error = Infallible;
+
+        fn parse_label(&mut self, _label: &str) -> UsernameLabelState {
+            UsernameLabelState::Abort
+        }
+
+        fn build(self, _ext: &mut Extensions) -> Result<(), Self::Error> {
+            unreachable!("should not happen")
         }
     }
 
@@ -508,5 +541,63 @@ mod test {
         );
 
         assert!(ext.get::<UsernameLabels>().is_none());
+    }
+
+    #[test]
+    fn test_username_label_parser_abort_tuple() {
+        let mut ext = Extensions::default();
+
+        let parser = (
+            UsernameLabelAbortParser::default(),
+            UsernameOpaqueLabelParser::default(),
+        );
+        assert!(parse_username(
+            &mut ext,
+            parser,
+            "username-foo",
+            DEFAULT_USERNAME_LABEL_SEPARATOR
+        )
+        .is_err());
+
+        let parser = (
+            UsernameOpaqueLabelParser::default(),
+            UsernameLabelAbortParser::default(),
+        );
+        assert!(parse_username(
+            &mut ext,
+            parser,
+            "username-foo",
+            DEFAULT_USERNAME_LABEL_SEPARATOR
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn test_username_label_parser_abort_exclusive_tuple() {
+        let mut ext = Extensions::default();
+
+        let parser = ExclusiveUsernameParsers((
+            UsernameLabelAbortParser::default(),
+            UsernameOpaqueLabelParser::default(),
+        ));
+        assert!(parse_username(
+            &mut ext,
+            parser,
+            "username-foo",
+            DEFAULT_USERNAME_LABEL_SEPARATOR
+        )
+        .is_err());
+
+        let parser = (
+            UsernameOpaqueLabelParser::default(),
+            UsernameLabelAbortParser::default(),
+        );
+        assert!(parse_username(
+            &mut ext,
+            parser,
+            "username-foo",
+            DEFAULT_USERNAME_LABEL_SEPARATOR
+        )
+        .is_err());
     }
 }

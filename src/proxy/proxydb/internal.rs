@@ -2,6 +2,7 @@ use super::{ProxyFilter, StringFilter};
 use crate::{
     http::{RequestContext, Version},
     net::{address::ProxyAddress, user::ProxyCredential},
+    utils::str::NonEmptyString,
 };
 use std::path::Path;
 use tokio::{
@@ -11,12 +12,12 @@ use tokio::{
 use venndb::VennDB;
 
 #[derive(Debug, Clone, VennDB)]
-#[venndb(validator = proxy_is_valid)]
+#[venndb(validator = proxydb_insert_validator)]
 /// The selected proxy to use to connect to the proxy.
 pub struct Proxy {
     #[venndb(key)]
     /// Unique identifier of the proxy.
-    pub id: String,
+    pub id: NonEmptyString,
 
     /// The address to be used to connect to the proxy, including credentials if needed.
     pub address: ProxyAddress,
@@ -60,9 +61,8 @@ pub struct Proxy {
 }
 
 /// Validate the proxy is valid according to rules that are not enforced by the type system.
-pub fn proxy_is_valid(proxy: &Proxy) -> bool {
-    !proxy.id.is_empty()
-        && (proxy.datacenter || proxy.residential || proxy.mobile)
+fn proxydb_insert_validator(proxy: &Proxy) -> bool {
+    (proxy.datacenter || proxy.residential || proxy.mobile)
         && ((proxy.http && proxy.tcp) || (proxy.socks5 && (proxy.tcp || proxy.udp)))
 }
 
@@ -193,13 +193,7 @@ fn strip_csv_quotes(p: &str) -> &str {
 fn parse_csv_row(row: &str) -> Option<Proxy> {
     let mut iter = row.split(',').map(strip_csv_quotes);
 
-    let id = iter.next().and_then(|s| {
-        if s.is_empty() {
-            None
-        } else {
-            Some(s.to_owned())
-        }
-    })?;
+    let id = iter.next().and_then(|s| s.try_into().ok())?;
 
     // TODO: remove double quotes if surrounding...
 
@@ -383,7 +377,7 @@ mod tests {
             (
                 "id,,,,,,,,authority,,,,,",
                 Proxy {
-                    id: "id".into(),
+                    id: NonEmptyString::from_static("id"),
                     address: ProxyAddress::from_str("authority").unwrap(),
                     tcp: false,
                     udp: false,
@@ -402,7 +396,7 @@ mod tests {
             (
                 "id,true,false,true,false,true,false,true,authority,pool_id,country,city,carrier,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
                 Proxy {
-                    id: "id".into(),
+                   id: NonEmptyString::from_static("id"),
                     address: ProxyAddress::from_str("username:password@authority").unwrap(),
                     tcp: true,
                     udp: false,
@@ -420,7 +414,7 @@ mod tests {
             (
                 "123,1,0,False,True,null,false,true,host:1234,,*,*,carrier,",
                 Proxy {
-                    id: "123".into(),
+                   id: NonEmptyString::from_static("123"),
                     address: ProxyAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
@@ -438,7 +432,7 @@ mod tests {
             (
                 "123,1,0,False,True,null,false,true,host:1234,,*,*,carrier",
                 Proxy {
-                    id: "123".into(),
+                   id: NonEmptyString::from_static("123"),
                     address: ProxyAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
@@ -456,7 +450,7 @@ mod tests {
             (
                 "foo,1,0,1,0,1,0,0,bar,baz,US,,",
                 Proxy {
-                    id: "foo".into(),
+                   id: NonEmptyString::from_static("foo"),
                     address: ProxyAddress::from_str("bar").unwrap(),
                     tcp: true,
                     udp: false,
@@ -600,7 +594,7 @@ mod tests {
     #[test]
     fn test_proxy_is_match_happy_path_explicit_h2() {
         let proxy = Proxy {
-            id: "id".into(),
+            id: NonEmptyString::from_static("id"),
             address: ProxyAddress::from_str("authority").unwrap(),
             tcp: true,
             udp: false,
@@ -623,7 +617,7 @@ mod tests {
         };
 
         let filter = ProxyFilter {
-            id: Some("id".to_owned()),
+            id: Some(NonEmptyString::from_static("id")),
             country: Some(vec![StringFilter::new("country")]),
             city: Some(vec![StringFilter::new("city")]),
             pool_id: Some(vec![StringFilter::new("pool_id")]),
@@ -639,7 +633,7 @@ mod tests {
     #[test]
     fn test_proxy_is_match_failure_tcp_explicit_h2() {
         let proxy = Proxy {
-            id: "id".into(),
+            id: NonEmptyString::from_static("id"),
             address: ProxyAddress::from_str("authority").unwrap(),
             tcp: false,
             udp: false,
@@ -662,7 +656,7 @@ mod tests {
         };
 
         let filter = ProxyFilter {
-            id: Some("id".into()),
+            id: Some(NonEmptyString::from_static("id")),
             country: Some(vec![StringFilter::new("country")]),
             city: Some(vec![StringFilter::new("city")]),
             pool_id: Some(vec![StringFilter::new("pool_id")]),
@@ -678,7 +672,7 @@ mod tests {
     #[test]
     fn test_proxy_is_match_happy_path_explicit_h3() {
         let proxy = Proxy {
-            id: "id".into(),
+            id: NonEmptyString::from_static("id"),
             address: ProxyAddress::from_str("authority").unwrap(),
             tcp: false,
             udp: true,
@@ -701,7 +695,7 @@ mod tests {
         };
 
         let filter = ProxyFilter {
-            id: Some("id".into()),
+            id: Some(NonEmptyString::from_static("id")),
             country: Some(vec![StringFilter::new("country")]),
             city: Some(vec![StringFilter::new("city")]),
             pool_id: Some(vec![StringFilter::new("pool_id")]),
@@ -717,7 +711,7 @@ mod tests {
     #[test]
     fn test_proxy_is_match_failure_udp_explicit_h3() {
         let proxy = Proxy {
-            id: "id".into(),
+            id: NonEmptyString::from_static("id"),
             address: ProxyAddress::from_str("authority").unwrap(),
             tcp: false,
             udp: false,
@@ -740,7 +734,7 @@ mod tests {
         };
 
         let filter = ProxyFilter {
-            id: Some("id".into()),
+            id: Some(NonEmptyString::from_static("id")),
             country: Some(vec![StringFilter::new("country")]),
             city: Some(vec![StringFilter::new("city")]),
             pool_id: Some(vec![StringFilter::new("pool_id")]),
@@ -756,7 +750,7 @@ mod tests {
     #[test]
     fn test_proxy_is_match_failure_socks5_explicit_h3() {
         let proxy = Proxy {
-            id: "id".into(),
+            id: NonEmptyString::from_static("id"),
             address: ProxyAddress::from_str("authority").unwrap(),
             tcp: false,
             udp: true,
@@ -779,7 +773,7 @@ mod tests {
         };
 
         let filter = ProxyFilter {
-            id: Some("id".into()),
+            id: Some(NonEmptyString::from_static("id")),
             country: Some(vec![StringFilter::new("country")]),
             city: Some(vec![StringFilter::new("city")]),
             pool_id: Some(vec![StringFilter::new("pool_id")]),
@@ -799,7 +793,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: None,
@@ -812,7 +806,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: Some(false),
                     residential: Some(false),
                     mobile: Some(false),
@@ -825,7 +819,7 @@ mod tests {
             (
                 "id,1,,1,,1,,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: Some(true),
                     residential: None,
                     mobile: None,
@@ -838,7 +832,7 @@ mod tests {
             (
                 "id,1,,1,,1,,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: Some(true),
                     residential: Some(false),
                     mobile: Some(false),
@@ -851,7 +845,7 @@ mod tests {
             (
                 "id,1,,1,,,1,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: Some(true),
                     mobile: None,
@@ -864,7 +858,7 @@ mod tests {
             (
                 "id,1,,1,,,1,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: Some(false),
                     residential: Some(true),
                     mobile: Some(false),
@@ -877,7 +871,7 @@ mod tests {
             (
                 "id,1,,1,,,,1,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: Some(true),
@@ -890,7 +884,7 @@ mod tests {
             (
                 "id,1,,1,,,,1,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: Some(false),
                     residential: Some(false),
                     mobile: Some(true),
@@ -903,7 +897,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,FooBAR,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: None,
@@ -916,7 +910,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,FooBAR,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: None,
@@ -929,7 +923,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,,FooBAR,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: None,
@@ -942,7 +936,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,,,FooBAR,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: None,
@@ -971,7 +965,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: Some(true),
                     residential: None,
                     mobile: None,
@@ -984,7 +978,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: Some(true),
                     mobile: Some(true),
@@ -997,7 +991,7 @@ mod tests {
             (
                 "id,1,,1,,1,,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: Some(false),
                     residential: None,
                     mobile: None,
@@ -1010,7 +1004,7 @@ mod tests {
             (
                 "id,1,,1,,,1,,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: Some(false),
                     mobile: None,
@@ -1023,7 +1017,7 @@ mod tests {
             (
                 "id,1,,1,,,,1,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: Some(false),
@@ -1036,7 +1030,7 @@ mod tests {
             (
                 "id,1,,1,,,,1,authority,,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: Some(false),
                     residential: Some(true),
                     mobile: Some(true),
@@ -1049,7 +1043,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,FooBAR,,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: None,
@@ -1062,7 +1056,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,FooBAR,,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: None,
@@ -1075,7 +1069,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,,FooBAR,,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: None,
@@ -1088,7 +1082,7 @@ mod tests {
             (
                 "id,1,,1,,,,,authority,,,,FooBAR,",
                 ProxyFilter {
-                    id: Some("id".into()),
+                    id: Some(NonEmptyString::from_static("id")),
                     datacenter: None,
                     residential: None,
                     mobile: None,

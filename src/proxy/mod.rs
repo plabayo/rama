@@ -39,7 +39,7 @@ pub mod pp;
 mod proxydb;
 #[doc(inline)]
 pub use proxydb::{
-    layer, proxy_is_valid, MemoryProxyDB, MemoryProxyDBInsertError, MemoryProxyDBInsertErrorKind,
+    layer, MemoryProxyDB, MemoryProxyDBInsertError, MemoryProxyDBInsertErrorKind,
     MemoryProxyDBQueryError, MemoryProxyDBQueryErrorKind, Proxy, ProxyCsvRowReader,
     ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind, ProxyDB, ProxyFilter, StringFilter,
 };
