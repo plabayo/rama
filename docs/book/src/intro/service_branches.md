@@ -49,7 +49,7 @@ The match concept is pretty powerful, be it by using [the `Matcher` trait](https
 
 Take a typical http client for example. As part of its work it needs to establish a connection to the target server. In the case of port `8080` this would be a plain `tcp` connection (for `http/1.1`), but in the case of port `443` that would require the `tcp` stream to be handled by a `Tls` client first (e.g. for `h2`).
 
-Using the tuple matchers you can wrap these two different flows in a two-element tuple with a [`SocketMatcher`](https://ramaproxy.org/docs/ramka/net/stream/matcher/struct.SocketMatcher.html) to match on the port (for example). And in fact that is more or less what [the HttpClient](https://ramaproxy.org/docs/rama/http/client/struct.HttpClient.html) does by default if you do not specify your own "Connection" service. We hope you can make happy use of it yourself.
+Using the tuple matchers you can wrap these two different flows in a two-element tuple with a [`SocketMatcher`](https://ramaproxy.org/docs/rama/net/stream/matcher/struct.SocketMatcher.html) to match on the port (for example). And in fact that is more or less what [the HttpClient](https://ramaproxy.org/docs/rama/http/client/struct.HttpClient.html) does by default if you do not specify your own "Connection" service. We hope you can make happy use of it yourself.
 
 ## Fallible middleware services
 
