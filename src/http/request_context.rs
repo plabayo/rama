@@ -32,7 +32,7 @@ impl RequestContext {
     pub fn authority(&self) -> Option<Authority> {
         self.host.clone().map(|host| {
             let port = self.port.unwrap_or_else(|| self.protocol.default_port());
-            Authority::new(host, Some(port))
+            Authority::new(host, port)
         })
     }
 
@@ -61,27 +61,22 @@ impl From<&Parts> for RequestContext {
     fn from(parts: &Parts) -> Self {
         let uri = &parts.uri;
 
-        let protocol = uri.scheme().into();
+        let protocol: Protocol = uri.scheme().into();
 
-        let maybe_authority = extract_authority_from_headers(&parts.headers).or_else(|| {
-            uri.host()
-                .and_then(|h| Host::try_from(h).ok().map(Into::into))
-        });
+        let maybe_authority =
+            extract_authority_from_headers(&protocol, &parts.headers).or_else(|| {
+                uri.host().and_then(|h| {
+                    Host::try_from(h).ok().map(|h| {
+                        (h, uri.port_u16().unwrap_or_else(|| protocol.default_port())).into()
+                    })
+                })
+            });
         let (host, port) = match maybe_authority {
             Some(authority) => {
                 let (host, port) = authority.into_parts();
-                (Some(host), port)
+                (Some(host), Some(port))
             }
             None => (None, None),
-        };
-
-        let port = match port.or_else(|| uri.port_u16()) {
-            Some(port) => Some(port),
-            None => match protocol {
-                Protocol::Https | Protocol::Wss => Some(443),
-                Protocol::Http | Protocol::Ws => Some(80),
-                Protocol::Custom(_) | Protocol::Socks5 | Protocol::Socks5h => None,
-            },
         };
 
         let http_version = parts.version;
@@ -99,16 +94,20 @@ impl<Body> From<&Request<Body>> for RequestContext {
     fn from(req: &Request<Body>) -> Self {
         let uri = &req.uri();
 
-        let protocol = uri.scheme().into();
+        let protocol: Protocol = uri.scheme().into();
 
-        let maybe_authority = extract_authority_from_headers(req.headers()).or_else(|| {
-            uri.host()
-                .and_then(|h| Host::try_from(h).ok().map(Into::into))
-        });
+        let maybe_authority =
+            extract_authority_from_headers(&protocol, req.headers()).or_else(|| {
+                uri.host().and_then(|h| {
+                    Host::try_from(h).ok().map(|h| {
+                        (h, uri.port_u16().unwrap_or_else(|| protocol.default_port())).into()
+                    })
+                })
+            });
         let (host, port) = match maybe_authority {
             Some(authority) => {
                 let (host, port) = authority.into_parts();
-                (Some(host), port)
+                (Some(host), Some(port))
             }
             None => (None, None),
         };
@@ -136,22 +135,24 @@ impl<Body> From<&Request<Body>> for RequestContext {
 // TODO: clean up forward mess once we have proper forward integration
 
 /// Extract the host from the headers ([`HeaderMap`]).
-fn extract_authority_from_headers(headers: &HeaderMap) -> Option<Authority> {
+fn extract_authority_from_headers(protocol: &Protocol, headers: &HeaderMap) -> Option<Authority> {
     if let Some(host) = parse_forwarded(headers).and_then(|v| v.try_into().ok()) {
         return Some(host);
     }
 
-    if let Some(host) = headers
-        .get(&X_FORWARDED_HOST)
-        .and_then(|host| host.try_into().ok())
-    {
+    if let Some(host) = headers.get(&X_FORWARDED_HOST).and_then(|host| {
+        host.try_into()
+            .or_else(|_| Host::try_from(host).map(|h| (h, protocol.default_port()).into()))
+            .ok()
+    }) {
         return Some(host);
     }
 
-    if let Some(host) = headers
-        .get(http::header::HOST)
-        .and_then(|host| host.try_into().ok())
-    {
+    if let Some(host) = headers.get(http::header::HOST).and_then(|host| {
+        host.try_into()
+            .or_else(|_| Host::try_from(host).map(|h| (h, protocol.default_port()).into()))
+            .ok()
+    }) {
         return Some(host);
     }
 

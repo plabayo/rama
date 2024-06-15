@@ -107,8 +107,7 @@ where
         if self.overwrite || !req.headers().contains_key(HOST) {
             if let Some(host) = ctx
                 .get_or_insert_with(|| RequestContext::from(&req))
-                .host
-                .clone()
+                .authority()
                 .map(Authority::from)
                 .and_then(|authority| {
                     crate::http::dep::http::uri::Authority::from_maybe_shared(authority.to_string())
@@ -163,7 +162,7 @@ mod test {
         let svc = ServiceBuilder::new()
             .layer(AddRequiredRequestHeadersLayer::new().overwrite(true))
             .service_fn(|_ctx: Context<()>, req: Request| async move {
-                assert_eq!(req.headers().get(HOST).unwrap(), "example.com");
+                assert_eq!(req.headers().get(HOST).unwrap(), "example.com:80");
                 assert_eq!(
                     req.headers().get(USER_AGENT).unwrap(),
                     RAMA_ID_HEADER_VALUE.to_str().unwrap()

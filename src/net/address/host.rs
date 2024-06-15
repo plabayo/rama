@@ -1,4 +1,4 @@
-use super::{Authority, Domain};
+use super::Domain;
 use crate::error::{ErrorContext, OpaqueError};
 use crate::http::HeaderValue;
 use std::{
@@ -14,14 +14,6 @@ pub enum Host {
 
     /// An IP address.
     Address(IpAddr),
-}
-
-impl Host {
-    /// Creates a new [`Host`] from a domain.
-    #[inline]
-    pub fn into_authority(self) -> Authority {
-        self.into()
-    }
 }
 
 impl PartialEq<str> for Host {

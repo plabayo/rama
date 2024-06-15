@@ -97,7 +97,7 @@ where
 
 async fn resolve_authority(authority: &Authority) -> Result<SocketAddr, std::io::Error> {
     let host = authority.host().clone();
-    let port = authority.port().unwrap_or(80);
+    let port = authority.port();
     crate::net::lookup_host(host, port)
         .await
         .and_then(|mut iter| match iter.next() {

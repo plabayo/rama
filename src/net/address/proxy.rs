@@ -75,16 +75,23 @@ impl TryFrom<&str> for ProxyAddress {
                         .context("parse proxy address: view credential as utf-8")?
                         .to_owned(),
                 )
-                .context("parse proxy address")?;
+                .context("parse proxy credential from address")?;
 
-                let authority: Authority =
-                    slice[i + 1..].try_into().context("parse proxy address")?;
+                let authority: Authority = slice[i + 1..]
+                    .try_into()
+                    .or_else(|_| {
+                        Host::try_from(&slice[i + 1..]).map(|h| (h, protocol.default_port()).into())
+                    })
+                    .context("parse proxy authority from address")?;
 
                 return Ok(ProxyAddress::new(protocol, authority, Some(credential)));
             }
         }
 
-        let authority: Authority = slice.try_into().context("parse proxy address")?;
+        let authority: Authority = slice
+            .try_into()
+            .or_else(|_| Host::try_from(slice).map(|h| (h, protocol.default_port()).into()))
+            .context("parse proxy authority from address")?;
         Ok(ProxyAddress::new(protocol, authority, None))
     }
 }
@@ -111,18 +118,7 @@ impl Display for ProxyAddress {
         if let Some(credential) = &self.credential {
             write!(f, "{}@", credential.as_clear_string())?;
         }
-        let host = self.authority.host();
-        let port = self
-            .authority
-            .port()
-            .unwrap_or_else(|| self.protocol.default_port());
-        match host {
-            Host::Name(domain) => write!(f, "{}:{}", domain, port),
-            Host::Address(ip) => match ip {
-                std::net::IpAddr::V4(ip) => write!(f, "{}:{}", ip, port),
-                std::net::IpAddr::V6(ip) => write!(f, "[{}]:{}", ip, port),
-            },
-        }
+        self.authority.fmt(f)
     }
 }
 
@@ -143,7 +139,7 @@ mod tests {
             addr,
             ProxyAddress::new(
                 Protocol::Https,
-                Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), Some(9999)),
+                Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), 9999),
                 Some(Basic::new("foo-cc-be", "baz").into()),
             )
         );
@@ -156,7 +152,7 @@ mod tests {
             addr,
             ProxyAddress::new(
                 Protocol::Socks5h,
-                Authority::new(Host::Address("::1".parse().unwrap()), Some(60000)),
+                Authority::new(Host::Address("::1".parse().unwrap()), 60000),
                 Some(Bearer::try_from_clear_str("foo").unwrap().into()),
             )
         );
