@@ -170,12 +170,9 @@ async fn http_connect_accept<S>(
 where
     S: Send + Sync + 'static,
 {
-    match ctx
-        .get_or_insert_with::<RequestContext>(|| RequestContext::from(&req))
-        .host
-        .as_ref()
-    {
-        Some(host) => tracing::info!("accept CONNECT to {host}"),
+    let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+    match &request_ctx.authority {
+        Some(authority) => tracing::info!("accept CONNECT to {authority}"),
         None => {
             tracing::error!("error extracting host");
             return Err(StatusCode::BAD_REQUEST.into_response());
@@ -189,10 +186,11 @@ async fn http_connect_proxy<S>(ctx: Context<S>, mut upgraded: Upgraded) -> Resul
 where
     S: Send + Sync + 'static,
 {
-    let authority = ctx
+    let authority = ctx // assumption validated by `http_connect_accept`
         .get::<RequestContext>()
         .unwrap()
-        .authority()
+        .authority
+        .as_ref()
         .unwrap()
         .to_string();
     tracing::info!("CONNECT to {}", authority);

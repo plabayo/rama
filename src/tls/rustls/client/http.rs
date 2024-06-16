@@ -188,7 +188,7 @@ where
             self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let (addr, stream) = conn.into_parts();
-        let request_ctx = ctx.get_or_insert_with(|| RequestContext::new(&req));
+        let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
 
         if !request_ctx.protocol.secure() {
             return Ok(EstablishedClientConnection {
@@ -203,8 +203,8 @@ where
             });
         }
 
-        let host = match request_ctx.host.as_ref() {
-            Some(host) => host.to_string(),
+        let host = match request_ctx.authority.as_ref() {
+            Some(authority) => authority.host().to_string(),
             None => {
                 return Err("missing http host".into());
             }
@@ -252,7 +252,9 @@ where
 
         let (addr, stream) = conn.into_parts();
 
-        let request_ctx = ctx.get_or_insert_with(|| RequestContext::new(&req)).clone();
+        let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+        let request_ctx = request_ctx.clone();
+
         if let Some(new_scheme) = match request_ctx.protocol {
             Protocol::Http => Some(crate::http::dep::http::uri::Scheme::HTTPS),
             Protocol::Ws => Some("wss".parse().unwrap()),
@@ -270,8 +272,8 @@ where
             ctx.insert(RequestContext::new(&req));
         }
 
-        let host = match request_ctx.host.as_ref() {
-            Some(host) => host.to_string(),
+        let host = match request_ctx.authority.as_ref() {
+            Some(authority) => authority.host().to_string(),
             None => {
                 return Err("missing http host".into());
             }

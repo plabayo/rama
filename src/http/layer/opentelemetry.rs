@@ -232,12 +232,10 @@ fn compute_attributes<State, Body>(ctx: &mut Context<State>, req: &Request<Body>
     }
 
     // server info
-    let request_ctx = ctx.get_or_insert_with::<RequestContext>(|| RequestContext::from(req));
-    if let Some(host) = request_ctx.host.as_ref() {
-        attributes.push(KeyValue::new(SERVER_ADDRESS, host.to_string()));
-    }
-    if let Some(port) = request_ctx.port {
-        attributes.push(KeyValue::new(SERVER_PORT, port as i64));
+    let request_ctx: &RequestContext = ctx.get_or_insert_from(req);
+    if let Some(authority) = request_ctx.authority.as_ref() {
+        attributes.push(KeyValue::new(SERVER_ADDRESS, authority.host().to_string()));
+        attributes.push(KeyValue::new(SERVER_PORT, authority.port() as i64));
     }
 
     // Request Info

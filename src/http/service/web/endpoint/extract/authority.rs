@@ -38,8 +38,8 @@ where
     async fn from_request_parts(ctx: &Context<S>, parts: &Parts) -> Result<Self, Self::Rejection> {
         Ok(Authority(
             ctx.get::<RequestContext>()
-                .map(|ctx| ctx.authority())
-                .unwrap_or_else(|| RequestContext::from(parts).authority())
+                .map(|ctx| ctx.authority.clone())
+                .unwrap_or_else(|| RequestContext::from(parts).authority.clone())
                 .ok_or(MissingAuthority)?,
         ))
     }

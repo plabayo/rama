@@ -144,7 +144,7 @@ pub async fn get_request_info(
 ) -> RequestInfo {
     let request_context = ctx.get::<RequestContext>();
     let authority = request_context
-        .and_then(RequestContext::authority)
+        .and_then(|ctx| ctx.authority.as_ref())
         .map(|a| a.to_string());
     let scheme = request_context
         .map(|ctx| ctx.protocol.to_string())

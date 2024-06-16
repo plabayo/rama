@@ -9,39 +9,30 @@ use crate::net::{
 #[derive(Debug, Clone)]
 /// The context of the [`Request`] being served by the [`HttpServer`]
 ///
-/// [`Request`]: crate::http::Request
 /// [`HttpServer`]: crate::http::server::HttpServer
 pub struct RequestContext {
     /// The HTTP Version.
     pub http_version: Version,
-    /// The [`Protocol`] as defined by the scheme of the [`Uri`](crate::http::Uri).
+    /// The [`Protocol`] of the [`Request`].
     pub protocol: Protocol,
-    /// The host component of the [`Uri`](crate::http::Uri).
-    pub host: Option<Host>,
-    /// The port component of the [`Uri`](crate::http::Uri).
-    pub port: Option<u16>,
+    /// The authority of the [`Request`].
+    ///
+    /// In http/1.1 this is typically defined by the `Host` header,
+    /// whereas for h2 and h3 this is found in the pseudo `:authority` header.
+    ///
+    /// This can be also manually set in case there is support for
+    /// forward headers (e.g. `Forwarded`, or `X-Forwarded-Host`)
+    /// or forward protocols (e.g. `HaProxy`).
+    ///
+    /// Strictly speaking an authority is always required. It is however up to the user
+    /// of this [`RequestContext`] to turn this into a dealbreaker if desired.
+    pub authority: Option<Authority>,
 }
 
 impl RequestContext {
     /// Create a new [`RequestContext`] from the given [`Request`](crate::http::Request)
     pub fn new<Body>(req: &Request<Body>) -> Self {
         req.into()
-    }
-
-    /// Get the authority for this request, if defined.
-    pub fn authority(&self) -> Option<Authority> {
-        self.host.clone().map(|host| {
-            let port = self.port.unwrap_or_else(|| self.protocol.default_port());
-            Authority::new(host, port)
-        })
-    }
-
-    /// Get the authority string for this request, if defined.
-    pub fn authority_string(&self) -> Option<String> {
-        self.host.as_ref().map(|host| {
-            let port = self.port.unwrap_or_else(|| self.protocol.default_port());
-            format!("{host}:{port}")
-        })
     }
 }
 
@@ -62,30 +53,20 @@ impl From<&Parts> for RequestContext {
         let uri = &parts.uri;
 
         let protocol: Protocol = uri.scheme().into();
+        let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
 
-        let maybe_authority =
-            extract_authority_from_headers(&protocol, &parts.headers).or_else(|| {
-                uri.host().and_then(|h| {
-                    Host::try_from(h).ok().map(|h| {
-                        (h, uri.port_u16().unwrap_or_else(|| protocol.default_port())).into()
-                    })
-                })
+        let authority =
+            extract_authority_from_headers(default_port, &parts.headers).or_else(|| {
+                uri.host()
+                    .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
             });
-        let (host, port) = match maybe_authority {
-            Some(authority) => {
-                let (host, port) = authority.into_parts();
-                (Some(host), Some(port))
-            }
-            None => (None, None),
-        };
 
         let http_version = parts.version;
 
         RequestContext {
             http_version,
             protocol,
-            host,
-            port,
+            authority,
         }
     }
 }
@@ -95,39 +76,19 @@ impl<Body> From<&Request<Body>> for RequestContext {
         let uri = &req.uri();
 
         let protocol: Protocol = uri.scheme().into();
+        let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
 
-        let maybe_authority =
-            extract_authority_from_headers(&protocol, req.headers()).or_else(|| {
-                uri.host().and_then(|h| {
-                    Host::try_from(h).ok().map(|h| {
-                        (h, uri.port_u16().unwrap_or_else(|| protocol.default_port())).into()
-                    })
-                })
-            });
-        let (host, port) = match maybe_authority {
-            Some(authority) => {
-                let (host, port) = authority.into_parts();
-                (Some(host), Some(port))
-            }
-            None => (None, None),
-        };
-
-        let port = match port.or_else(|| uri.port_u16()) {
-            Some(port) => Some(port),
-            None => match protocol {
-                Protocol::Https | Protocol::Wss => Some(443),
-                Protocol::Http | Protocol::Ws => Some(80),
-                Protocol::Custom(_) | Protocol::Socks5 | Protocol::Socks5h => None,
-            },
-        };
+        let authority = extract_authority_from_headers(default_port, req.headers()).or_else(|| {
+            uri.host()
+                .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
+        });
 
         let http_version = req.version();
 
         RequestContext {
             http_version,
             protocol,
-            host,
-            port,
+            authority,
         }
     }
 }
@@ -135,22 +96,22 @@ impl<Body> From<&Request<Body>> for RequestContext {
 // TODO: clean up forward mess once we have proper forward integration
 
 /// Extract the host from the headers ([`HeaderMap`]).
-fn extract_authority_from_headers(protocol: &Protocol, headers: &HeaderMap) -> Option<Authority> {
+fn extract_authority_from_headers(default_port: u16, headers: &HeaderMap) -> Option<Authority> {
     if let Some(host) = parse_forwarded(headers).and_then(|v| v.try_into().ok()) {
         return Some(host);
     }
 
     if let Some(host) = headers.get(&X_FORWARDED_HOST).and_then(|host| {
-        host.try_into()
-            .or_else(|_| Host::try_from(host).map(|h| (h, protocol.default_port()).into()))
+        host.try_into() // try to consume as Authority, otherwise as Host
+            .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
             .ok()
     }) {
         return Some(host);
     }
 
     if let Some(host) = headers.get(http::header::HOST).and_then(|host| {
-        host.try_into()
-            .or_else(|_| Host::try_from(host).map(|h| (h, protocol.default_port()).into()))
+        host.try_into() // try to consume as Authority, otherwise as Host
+            .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
             .ok()
     }) {
         return Some(host);
@@ -192,8 +153,7 @@ mod tests {
 
         assert_eq!(ctx.http_version, Version::HTTP_11);
         assert_eq!(ctx.protocol, Protocol::Http);
-        assert_eq!(ctx.host.unwrap(), "example.com");
-        assert_eq!(ctx.port, Some(8080));
+        assert_eq!(ctx.authority.unwrap().to_string(), "example.com:8080");
     }
 
     #[test]
@@ -209,8 +169,10 @@ mod tests {
 
         assert_eq!(ctx.http_version, Version::HTTP_11);
         assert_eq!(ctx.protocol, Protocol::Http);
-        assert_eq!(ctx.host.unwrap(), "example.com");
-        assert_eq!(ctx.port, Some(8080));
+        assert_eq!(
+            ctx.authority.unwrap(),
+            Authority::try_from("example.com:8080").unwrap()
+        );
     }
 
     #[test]
@@ -218,47 +180,10 @@ mod tests {
         let ctx = RequestContext {
             http_version: Version::HTTP_11,
             protocol: Protocol::Http,
-            host: Some("example.com".try_into().unwrap()),
-            port: Some(8080),
+            authority: Some("example.com:8080".try_into().unwrap()),
         };
 
-        assert_eq!(ctx.authority().unwrap().to_string(), "example.com:8080");
-
-        let ctx = RequestContext {
-            http_version: Version::HTTP_11,
-            protocol: Protocol::Http,
-            host: Some("example.com".try_into().unwrap()),
-            port: None,
-        };
-
-        assert_eq!(ctx.authority().unwrap().to_string(), "example.com:80");
-
-        let ctx = RequestContext {
-            http_version: Version::HTTP_11,
-            protocol: Protocol::Https,
-            host: Some("example.com".try_into().unwrap()),
-            port: None,
-        };
-
-        assert_eq!(ctx.authority().unwrap().to_string(), "example.com:443");
-
-        let ctx = RequestContext {
-            http_version: Version::HTTP_11,
-            protocol: Protocol::Ws,
-            host: Some("example.com".try_into().unwrap()),
-            port: None,
-        };
-
-        assert_eq!(ctx.authority().unwrap().to_string(), "example.com:80");
-
-        let ctx = RequestContext {
-            http_version: Version::HTTP_11,
-            protocol: Protocol::Wss,
-            host: Some("example.com".try_into().unwrap()),
-            port: None,
-        };
-
-        assert_eq!(ctx.authority().unwrap().to_string(), "example.com:443");
+        assert_eq!(ctx.authority.unwrap().to_string(), "example.com:8080");
     }
 
     #[test]

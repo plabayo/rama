@@ -1,4 +1,4 @@
-use crate::net::address::Host;
+use crate::net::address::Authority;
 
 /// Error type returned by the [`DnsService`].
 ///
@@ -8,7 +8,7 @@ pub enum DnsError<E> {
     /// The hostname was not found in the request, while it was required.
     HostnameNotFound,
     /// The hostname could not be mapped, for some unknown reason.
-    MappingNotFound(Option<Host>),
+    MappingNotFound(Option<Authority>),
     /// A used header was invalid.
     InvalidHeader(String),
     /// An error occurred while dynamically resolving the hostname.

@@ -144,6 +144,26 @@ impl TryFrom<&[u8]> for Host {
     }
 }
 
+impl serde::Serialize for Host {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let host = self.to_string();
+        host.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Host {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.try_into().map_err(serde::de::Error::custom)
+    }
+}
+
 fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
     if value.starts_with('[') || value.ends_with(']') {
         let value = value

@@ -229,7 +229,10 @@ impl<S> Context<S> {
     }
 
     /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns a mutable reference to the contained value.
+    /// then returns an immutable reference to the contained value.
+    ///
+    /// # Example
+    ///
     /// ```
     /// # use rama::service::Context;
     /// let mut ctx = Context::default();
@@ -243,6 +246,16 @@ impl<S> Context<S> {
         f: impl FnOnce() -> T,
     ) -> &T {
         self.extensions.get_or_insert_with(f)
+    }
+
+    /// Inserts a value into the map computed from converting `U` into `T if no value was already inserted is [`None`],
+    /// then returns an immutable reference to the contained value.
+    pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &T
+    where
+        T: Clone + Send + Sync + 'static,
+        U: Into<T>,
+    {
+        self.extensions.get_or_insert_from(src)
     }
 
     /// Retrieves a value of type `T` from the context.

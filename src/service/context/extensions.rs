@@ -82,7 +82,7 @@ impl Extensions {
     }
 
     /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns a mutable reference to the contained value.
+    /// then returns an immutable reference to the contained value.
     pub fn get_or_insert_with<T: Send + Sync + Clone + 'static>(
         &mut self,
         f: impl FnOnce() -> T,
@@ -90,6 +90,19 @@ impl Extensions {
         let map = self.map.get_or_insert_with(Box::default);
         let entry = map.entry(TypeId::of::<T>());
         let boxed = entry.or_insert_with(|| Box::new(f()));
+        (**boxed).as_any().downcast_ref().expect("type mismatch")
+    }
+
+    /// Inserts a value into the map computed by converting `U` into `T` if it is `None`
+    /// then returns an immutable reference to the contained value.
+    pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &T
+    where
+        T: Send + Sync + Clone + 'static,
+        U: Into<T>,
+    {
+        let map = self.map.get_or_insert_with(Box::default);
+        let entry = map.entry(TypeId::of::<T>());
+        let boxed = entry.or_insert_with(|| Box::new(src.into()));
         (**boxed).as_any().downcast_ref().expect("type mismatch")
     }
 

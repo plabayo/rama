@@ -234,7 +234,7 @@ where
 
         let (addr, stream) = conn.into_parts();
 
-        let request_context = ctx.get_or_insert_with(|| RequestContext::new(&req));
+        let request_context: &RequestContext = ctx.get_or_insert_from(&req);
 
         if !request_context.protocol.secure() {
             // unless the scheme is not secure, in such a case no handshake is required...
@@ -256,7 +256,7 @@ where
             });
         }
 
-        let authority = match request_context.authority() {
+        let authority = match request_context.authority.clone() {
             Some(authority) => authority,
             None => {
                 return Err("missing http authority".into());

@@ -122,6 +122,26 @@ impl Display for ProxyAddress {
     }
 }
 
+impl serde::Serialize for ProxyAddress {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let addr = self.to_string();
+        addr.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ProxyAddress {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.try_into().map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,13 +1,15 @@
 use serde::Deserialize;
 use std::{collections::HashMap, net::SocketAddr};
 
+use crate::net::address::Authority;
+
 /// A Static DNS resolver mapping that resolves host names to Socket addresses.
 ///
 /// It is not meant to be created directly,
 /// but instead it it used internally only to parse from the header.
 #[derive(Debug, Clone)]
 pub(crate) struct DnsMap {
-    map: HashMap<String, SocketAddr>,
+    map: HashMap<Authority, SocketAddr>,
 }
 
 impl<'a> Deserialize<'a> for DnsMap {
@@ -24,7 +26,7 @@ impl<'a> Deserialize<'a> for DnsMap {
 impl DnsMap {
     /// Lookup a host name and return the IP address,
     /// if the host name is not found, return `None`.
-    pub(crate) fn lookup_host(&self, host: impl AsRef<str>) -> Option<SocketAddr> {
-        self.map.get(host.as_ref()).cloned()
+    pub(crate) fn lookup_authority(&self, authority: &Authority) -> Option<SocketAddr> {
+        self.map.get(authority).cloned()
     }
 }

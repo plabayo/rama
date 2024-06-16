@@ -129,6 +129,25 @@ impl PartialEq<Domain> for String {
     }
 }
 
+impl serde::Serialize for Domain {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Domain {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.try_into().map_err(serde::de::Error::custom)
+    }
+}
+
 impl Domain {
     /// The maximum length of a domain label.
     const MAX_LABEL_LEN: usize = 63;

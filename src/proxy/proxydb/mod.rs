@@ -467,8 +467,7 @@ mod tests {
         RequestContext {
             http_version: Version::HTTP_2,
             protocol: Protocol::Https,
-            host: Some("localhost".try_into().unwrap()),
-            port: None,
+            authority: Some("localhost:8443".try_into().unwrap()),
         }
     }
 
@@ -565,8 +564,7 @@ mod tests {
         RequestContext {
             http_version: Version::HTTP_3,
             protocol: Protocol::Https,
-            host: Some("localhost".try_into().unwrap()),
-            port: Some(8443),
+            authority: Some("localhost:8443".try_into().unwrap()),
         }
     }
 

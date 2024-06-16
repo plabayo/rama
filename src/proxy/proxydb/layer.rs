@@ -269,7 +269,7 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let req_ctx = ctx.get_or_insert_with(|| RequestContext::from(&req));
+            let req_ctx: &RequestContext = ctx.get_or_insert_from(&req);
             let proxy = self
                 .db
                 .get_proxy(req_ctx.clone(), filter)
@@ -317,7 +317,7 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let req_ctx = ctx.get_or_insert_with(|| RequestContext::from(&req));
+            let req_ctx: &RequestContext = ctx.get_or_insert_from(&req);
             let proxy = self
                 .db
                 .get_proxy_if(req_ctx.clone(), filter, self.predicate.clone())

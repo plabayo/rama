@@ -55,7 +55,7 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(proxy) = ctx.get::<ProxyAddress>() {
-            let addr = resolve_authority(proxy.authority()).await?;
+            let addr = resolve_authority(proxy.authority().clone()).await?;
             let stream = TcpStream::connect(&addr).await?;
             return Ok(EstablishedClientConnection {
                 ctx,
@@ -64,6 +64,7 @@ where
             });
         }
 
+        // TODO: remove this once we have a cleaner DnsStack >>> CTX <<<< approach *yawn*
         if let Some(server) = ctx.get::<ServerSocketAddr>() {
             let stream = TcpStream::connect(*server.addr()).await?;
             return Ok(EstablishedClientConnection {
@@ -73,10 +74,10 @@ where
             });
         }
 
-        let request_info = ctx.get_or_insert_with(|| RequestContext::new(&req));
-        match request_info.authority() {
+        let request_info: &RequestContext = ctx.get_or_insert_from(&req);
+        match request_info.authority.clone() {
             Some(authority) => {
-                let socket_addr = resolve_authority(&authority).await?;
+                let socket_addr = resolve_authority(authority).await?;
                 let stream = TcpStream::connect(&socket_addr).await?;
                 Ok(EstablishedClientConnection {
                     ctx,
@@ -95,10 +96,8 @@ where
 // TODO: support custom dns resolvers
 // TODO: use addr iter instead of just first
 
-async fn resolve_authority(authority: &Authority) -> Result<SocketAddr, std::io::Error> {
-    let host = authority.host().clone();
-    let port = authority.port();
-    crate::net::lookup_host(host, port)
+async fn resolve_authority(authority: Authority) -> Result<SocketAddr, std::io::Error> {
+    crate::net::lookup_authority(authority)
         .await
         .and_then(|mut iter| match iter.next() {
             Some(addr) => Ok(addr),

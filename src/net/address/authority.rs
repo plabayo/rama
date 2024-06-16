@@ -158,6 +158,26 @@ fn split_port_from_str(s: &str) -> Result<(&str, u16), OpaqueError> {
     }
 }
 
+impl serde::Serialize for Authority {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let address = self.to_string();
+        address.serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Authority {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = String::deserialize(deserializer)?;
+        s.try_into().map_err(serde::de::Error::custom)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -30,8 +30,7 @@
 //!     ctx.insert(RequestContext{
 //!         http_version: Version::HTTP_11,
 //!         protocol: Protocol::Http,
-//!         host: Some("www.example.com".try_into().unwrap()),
-//!         port: None,
+//!         authority: Some("www.example.com:80".try_into().unwrap()),
 //!     });
 //!
 //!     let resp = service.serve(
@@ -138,7 +137,7 @@ impl<R> DnsLayer<R> {
     /// Enable the default resolver to be used for resolving DNS.
     pub fn default_resolver(self) -> DnsLayer<impl DynamicDnsResolver + Clone> {
         DnsLayer {
-            resolver: crate::net::lookup_host,
+            resolver: crate::net::lookup_authority,
             resolver_header: self.resolver_header,
             dns_map_header: self.dns_map_header,
         }
