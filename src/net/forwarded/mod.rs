@@ -2,21 +2,27 @@
 //!
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
-use super::{address::Authority, Protocol};
-use std::net::IpAddr;
-
 mod obfuscated;
 #[doc(inline)]
-pub use obfuscated::ObfuscatedString;
+use obfuscated::{ObfNode, ObfPort};
 
 mod node;
 #[doc(inline)]
-pub use node::{Node, NodeName, NodePort};
+pub use node::NodeId;
 
 mod entry;
 #[doc(inline)]
 pub use entry::ForwardedEntry;
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Forwarding information stored as a chain.
+///
+/// This extension (which can be stored and modified via the [`Context`])
+/// allows to keep track of the forward information. E.g. what was the original
+/// host used by the user, by which proxy it was forwarded, what was the intended
+/// protocol (e.g. https), etc...
+///
+/// [`Context`]: crate::service::Context
 pub struct Forwarded {
     entries: Vec<ForwardedEntry>,
 }
