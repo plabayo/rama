@@ -10,6 +10,8 @@ mod node;
 #[doc(inline)]
 pub use node::NodeId;
 
+mod element_parser;
+
 mod element;
 #[doc(inline)]
 pub use element::ForwardedElement;
