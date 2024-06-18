@@ -1,6 +1,5 @@
-use std::{collections::HashMap, net::IpAddr};
-
 use super::NodeId;
+use crate::http::HeaderValue;
 use crate::{
     error::{ErrorContext, OpaqueError},
     net::{
@@ -8,33 +7,38 @@ use crate::{
         Protocol,
     },
 };
+use std::{collections::HashMap, net::IpAddr};
+
+mod parser;
+#[doc(inline)]
+pub(crate) use parser::{parse_one_plus_forwarded_elements, parse_single_forwarded_element};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A single entry in the [`Forwarded`] chain.
 ///
 /// [`Forwarded`]: crate::net::forwarded::Forwarded
 pub struct ForwardedElement {
-    pub(super) by_node: Option<NodeId>,
-    pub(super) for_node: Option<NodeId>,
-    pub(super) authority: Option<ForwardedAuthority>,
-    pub(super) proto: Option<Protocol>,
+    by_node: Option<NodeId>,
+    for_node: Option<NodeId>,
+    authority: Option<ForwardedAuthority>,
+    proto: Option<Protocol>,
 
     // not expected, but if used these parameters (keys)
     // should be registered ideally also in
     // <https://www.iana.org/assignments/http-parameters/http-parameters.xhtml#forwarded>
-    pub(super) extensions: Option<HashMap<String, ExtensionValue>>,
+    extensions: Option<HashMap<String, ExtensionValue>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ExtensionValue {
-    pub(super) value: String,
-    pub(super) quoted: bool,
+struct ExtensionValue {
+    value: String,
+    quoted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ForwardedAuthority {
-    pub(super) host: Host,
-    pub(super) port: Option<u16>,
+struct ForwardedAuthority {
+    host: Host,
+    port: Option<u16>,
 }
 
 impl ForwardedElement {
@@ -147,7 +151,55 @@ impl std::str::FromStr for ForwardedElement {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        todo!();
+        parse_single_forwarded_element(s.as_bytes())
+    }
+}
+
+impl TryFrom<String> for ForwardedElement {
+    type Error = OpaqueError;
+
+    fn try_from(s: String) -> Result<Self, Self::Error> {
+        parse_single_forwarded_element(s.as_bytes())
+    }
+}
+
+impl TryFrom<&str> for ForwardedElement {
+    type Error = OpaqueError;
+
+    fn try_from(s: &str) -> Result<Self, Self::Error> {
+        parse_single_forwarded_element(s.as_bytes())
+    }
+}
+
+impl TryFrom<HeaderValue> for ForwardedElement {
+    type Error = OpaqueError;
+
+    fn try_from(header: HeaderValue) -> Result<Self, Self::Error> {
+        parse_single_forwarded_element(header.as_bytes())
+    }
+}
+
+impl TryFrom<&HeaderValue> for ForwardedElement {
+    type Error = OpaqueError;
+
+    fn try_from(header: &HeaderValue) -> Result<Self, Self::Error> {
+        parse_single_forwarded_element(header.as_bytes())
+    }
+}
+
+impl TryFrom<Vec<u8>> for ForwardedElement {
+    type Error = OpaqueError;
+
+    fn try_from(bytes: Vec<u8>) -> Result<Self, Self::Error> {
+        parse_single_forwarded_element(bytes.as_ref())
+    }
+}
+
+impl TryFrom<&[u8]> for ForwardedElement {
+    type Error = OpaqueError;
+
+    fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
+        parse_single_forwarded_element(bytes)
     }
 }
 
@@ -180,5 +232,49 @@ fn try_to_split_num_port_from_str(s: &str) -> (&str, Option<u16>) {
 
 #[cfg(test)]
 mod tests {
-    // TODO
+    use super::*;
+
+    // TODO: add tests: invalids, mini fuzz
+
+    #[test]
+    fn test_forwarded_element_parse_happy_spec() {
+        for (s, expected) in [
+            (
+                r##"for="_gazonk""##,
+                ForwardedElement::forwarded_for(NodeId::try_from("_gazonk").unwrap()),
+            ),
+            (
+                r##"For="[2001:db8:cafe::17]:4711""##,
+                ForwardedElement::forwarded_for(
+                    NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap(),
+                ),
+            ),
+            (
+                r##"For="[2001:db8:cafe::17]:4711";proto=http"##,
+                ForwardedElement {
+                    by_node: None,
+                    for_node: Some(NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap()),
+                    authority: None,
+                    proto: Some(Protocol::Http),
+                    extensions: None,
+                },
+            ),
+            (
+                r##"for=192.0.2.60;proto=http;by=203.0.113.43"##,
+                ForwardedElement {
+                    by_node: Some(NodeId::try_from("203.0.113.43").unwrap()),
+                    for_node: Some(NodeId::try_from("192.0.2.60").unwrap()),
+                    authority: None,
+                    proto: Some(Protocol::Http),
+                    extensions: None,
+                },
+            ),
+        ] {
+            let element = match ForwardedElement::try_from(s) {
+                Ok(el) => el,
+                Err(err) => panic!("failed to parse happy spec el '{s}': {err}"),
+            };
+            assert_eq!(element, expected, "input: {}", s);
+        }
+    }
 }
