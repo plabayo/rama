@@ -10,11 +10,11 @@ mod node;
 #[doc(inline)]
 pub use node::NodeId;
 
-mod entry;
+mod element;
 #[doc(inline)]
-pub use entry::ForwardedEntry;
+pub use element::ForwardedElement;
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Forwarding information stored as a chain.
 ///
 /// This extension (which can be stored and modified via the [`Context`])
@@ -24,5 +24,5 @@ pub use entry::ForwardedEntry;
 ///
 /// [`Context`]: crate::service::Context
 pub struct Forwarded {
-    entries: Vec<ForwardedEntry>,
+    elements: Vec<ForwardedElement>,
 }
