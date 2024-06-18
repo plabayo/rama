@@ -167,7 +167,7 @@ fn parse_next_forwarded_element(
                 },
                 _ => {
                     el.extensions.get_or_insert_with(Default::default)
-                        .insert(value.to_owned(), ExtensionValue{
+                        .insert(key.to_owned(), ExtensionValue{
                             value: value.to_owned(),
                             quoted,
                         });

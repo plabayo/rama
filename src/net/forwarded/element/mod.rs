@@ -42,6 +42,18 @@ struct ForwardedAuthority {
 }
 
 impl ForwardedElement {
+    /// Return the host if one is defined.
+    pub fn authority(&self) -> Option<(Host, Option<u16>)> {
+        self.authority
+            .as_ref()
+            .map(|authority| (authority.host.clone(), authority.port))
+    }
+
+    /// Return the protocol if one is defined.
+    pub fn proto(&self) -> Option<Protocol> {
+        self.proto.clone()
+    }
+
     /// Create a new [`ForwardedElement`] with the "host" parameter set
     /// using the given [`Host`].
     pub fn forwarded_host(host: Host) -> Self {
@@ -234,7 +246,21 @@ fn try_to_split_num_port_from_str(s: &str) -> (&str, Option<u16>) {
 mod tests {
     use super::*;
 
-    // TODO: add tests: invalids, mini fuzz
+    #[test]
+    fn test_forwarded_element_parse_invalid() {
+        for s in [
+            "",
+            "foobar",
+            "127.0.0.1",
+            "⌨️",
+            "for=_foo;for=_bar",
+            "for=foo,proto=http",
+        ] {
+            if let Ok(el) = ForwardedElement::try_from(s) {
+                panic!("unexpected parse success: input {s}: {el:?}");
+            }
+        }
+    }
 
     #[test]
     fn test_forwarded_element_parse_happy_spec() {
@@ -257,6 +283,25 @@ mod tests {
                     authority: None,
                     proto: Some(Protocol::Http),
                     extensions: None,
+                },
+            ),
+            (
+                r##"For="[2001:db8:cafe::17]:4711";proto=http;foo=bar"##,
+                ForwardedElement {
+                    by_node: None,
+                    for_node: Some(NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap()),
+                    authority: None,
+                    proto: Some(Protocol::Http),
+                    extensions: Some(
+                        [(
+                            "foo".to_owned(),
+                            ExtensionValue {
+                                value: "bar".to_owned(),
+                                quoted: false,
+                            },
+                        )]
+                        .into(),
+                    ),
                 },
             ),
             (

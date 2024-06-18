@@ -2,6 +2,7 @@
 //!
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
+use super::{address::Host, Protocol};
 use crate::error::OpaqueError;
 use crate::http::HeaderValue;
 
@@ -29,6 +30,34 @@ pub use element::ForwardedElement;
 pub struct Forwarded {
     first: ForwardedElement,
     others: Vec<ForwardedElement>,
+}
+
+impl Forwarded {
+    /// Return the client (host) if one is defined.
+    pub fn client_authority(&self) -> Option<(Host, Option<u16>)> {
+        self.first.authority()
+    }
+
+    /// Return the client protocol if one is defined.
+    pub fn client_proto(&self) -> Option<Protocol> {
+        self.first.proto()
+    }
+
+    /// Merge the other [`Forwarded`] extension with this one.
+    pub fn merge(&mut self, other: Forwarded) -> &mut Self {
+        self.others.push(other.first);
+        self.others.extend(other.others);
+        self
+    }
+}
+
+impl From<ForwardedElement> for Forwarded {
+    fn from(value: ForwardedElement) -> Self {
+        Self {
+            first: value,
+            others: Vec::new(),
+        }
+    }
 }
 
 impl std::str::FromStr for Forwarded {
@@ -98,7 +127,30 @@ impl TryFrom<&[u8]> for Forwarded {
 mod tests {
     use super::*;
 
-    // TODO: add tests: invalids, mini fuzz
+    #[test]
+    fn test_forwarded_parse_invalid() {
+        for s in [
+            "",
+            "foobar",
+            "127.0.0.1",
+            "⌨️",
+            "for=_foo;for=_bar",
+            ",",
+            "for=127.0.0.1,",
+            "for=127.0.0.1,foobar",
+            "for=127.0.0.1,127.0.0.1",
+            "for=127.0.0.1,⌨️",
+            "for=127.0.0.1,for=_foo;for=_bar",
+            "foobar,for=127.0.0.1",
+            "127.0.0.1,for=127.0.0.1",
+            "⌨️,for=127.0.0.1",
+            "for=_foo;for=_bar,for=127.0.0.1",
+        ] {
+            if let Ok(el) = Forwarded::try_from(s) {
+                panic!("unexpected parse success: input {s}: {el:?}");
+            }
+        }
+    }
 
     #[test]
     fn test_forwarded_parse_happy_spec() {
@@ -188,6 +240,41 @@ mod tests {
                 Err(err) => panic!("failed to parse happy spec el '{s}': {err}"),
             };
             assert_eq!(element, expected, "input: {}", s);
+        }
+    }
+
+    #[test]
+    fn test_forwarded_client_authority() {
+        for (s, expected) in [
+            (
+                r##"for=192.0.2.43,for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com"##,
+                None,
+            ),
+            (
+                r##"host=example.com,for=195.2.34.12"##,
+                Some((Host::try_from("example.com").unwrap(), None)),
+            ),
+            (
+                r##"host="example.com:443",for=195.2.34.12"##,
+                Some((Host::try_from("example.com").unwrap(), Some(443))),
+            ),
+        ] {
+            let forwarded = Forwarded::try_from(s).unwrap();
+            assert_eq!(forwarded.client_authority(), expected);
+        }
+    }
+
+    #[test]
+    fn test_forwarded_client_protoy() {
+        for (s, expected) in [
+            (
+                r##"for=192.0.2.43,for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com"##,
+                None,
+            ),
+            (r##"proto=http,for=195.2.34.12"##, Some(Protocol::Http)),
+        ] {
+            let forwarded = Forwarded::try_from(s).unwrap();
+            assert_eq!(forwarded.client_proto(), expected);
         }
     }
 }
