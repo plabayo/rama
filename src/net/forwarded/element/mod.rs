@@ -7,6 +7,8 @@ use crate::{
         Protocol,
     },
 };
+use std::fmt;
+use std::net::SocketAddr;
 use std::{collections::HashMap, net::IpAddr};
 
 mod parser;
@@ -36,9 +38,55 @@ struct ExtensionValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ForwardedAuthority {
+/// Similar to [`Authority`] but with the port being optional.
+pub struct ForwardedAuthority {
     host: Host,
     port: Option<u16>,
+}
+
+impl ForwardedAuthority {
+    /// Create a new [`ForwardedAuthority`]
+    pub fn new(host: Host, port: Option<u16>) -> Self {
+        Self { host, port }
+    }
+
+    /// Get a reference to the [`Host`] of this [`ForwardedAuthority`].
+    pub fn host(&self) -> &Host {
+        &self.host
+    }
+
+    /// Get a copy of the `port` of this [`ForwardedAuthority`] if it is set.
+    pub fn port(&self) -> Option<u16> {
+        self.port
+    }
+}
+
+impl Into<ForwardedAuthority> for Host {
+    fn into(self) -> ForwardedAuthority {
+        ForwardedAuthority {
+            host: self,
+            port: None,
+        }
+    }
+}
+
+impl Into<ForwardedAuthority> for SocketAddr {
+    fn into(self) -> ForwardedAuthority {
+        ForwardedAuthority {
+            host: self.ip().into(),
+            port: Some(self.port()),
+        }
+    }
+}
+
+impl Into<ForwardedAuthority> for Authority {
+    fn into(self) -> ForwardedAuthority {
+        let (host, port) = self.into_parts();
+        ForwardedAuthority {
+            host,
+            port: Some(port),
+        }
+    }
 }
 
 impl ForwardedElement {
@@ -55,48 +103,21 @@ impl ForwardedElement {
     }
 
     /// Create a new [`ForwardedElement`] with the "host" parameter set
-    /// using the given [`Host`].
-    pub fn forwarded_host(host: Host) -> Self {
+    /// using the given [`Host`], [`Authority`] or [`SocketAddr`].
+    pub fn forwarded_host(authority: impl Into<ForwardedAuthority>) -> Self {
         Self {
             by_node: None,
             for_node: None,
-            authority: Some(ForwardedAuthority { host, port: None }),
+            authority: Some(authority.into()),
             proto: None,
             extensions: None,
         }
     }
 
     /// Sets the "host" parameter in this [`ForwardedElement`] using
-    /// the given [`Host`].
-    pub fn set_forwarded_host(&mut self, host: Host) -> &mut Self {
-        self.authority = Some(ForwardedAuthority { host, port: None });
-        self
-    }
-
-    /// Create a new [`ForwardedElement`] with the "host" parameter set
-    /// using the given [`Authority`].
-    pub fn forwarded_authority(authority: Authority) -> Self {
-        let (host, port) = authority.into_parts();
-        Self {
-            by_node: None,
-            for_node: None,
-            authority: Some(ForwardedAuthority {
-                host,
-                port: Some(port),
-            }),
-            proto: None,
-            extensions: None,
-        }
-    }
-
-    /// Sets the "host" parameter in this [`ForwardedElement`] using
-    /// the given [`Authority`].
-    pub fn set_authority(&mut self, authority: Authority) -> &mut Self {
-        let (host, port) = authority.into_parts();
-        self.authority = Some(ForwardedAuthority {
-            host,
-            port: Some(port),
-        });
+    /// the given [`Host`], [`Authority`] or [`SocketAddr`].
+    pub fn set_forwarded_host(&mut self, authority: impl Into<ForwardedAuthority>) -> &mut Self {
+        self.authority = Some(authority.into());
         self
     }
 
@@ -115,7 +136,7 @@ impl ForwardedElement {
 
     /// Sets the "for" parameter for this [`ForwardedElement`] using the given valid node identifier.
     /// Examples are an Ip Address or Domain, with or without a port.
-    pub fn set_for(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
+    pub fn set_forwarded_for(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
         self.for_node = Some(node_id.into());
         self
     }
@@ -135,7 +156,7 @@ impl ForwardedElement {
 
     /// Sets the "by" parameter for this [`ForwardedElement`] usin the given valid node identifier.
     /// Examples are an Ip Address or Domain, with or without a port.
-    pub fn set_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
+    pub fn set_forwarded_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
         self.by_node = Some(node_id.into());
         self
     }
@@ -153,9 +174,58 @@ impl ForwardedElement {
     }
 
     /// Set the "proto" parameter to the given valid/recognised [`Protocol`].
-    pub fn set_proto(&mut self, protocol: Protocol) -> &mut Self {
+    pub fn set_forwarded_proto(&mut self, protocol: Protocol) -> &mut Self {
         self.proto = Some(protocol);
         self
+    }
+}
+
+impl fmt::Display for ForwardedAuthority {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.port {
+            Some(port) => match &self.host {
+                Host::Address(IpAddr::V6(ip)) => write!(f, "[{ip}]:{port}"),
+                host => write!(f, "{host}:{port}"),
+            },
+            None => self.host.fmt(f),
+        }
+    }
+}
+
+impl fmt::Display for ForwardedElement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut separator = "";
+
+        if let Some(ref by_node) = self.by_node {
+            write!(f, "by=")?;
+            by_node.fmt(f)?;
+            separator = ";";
+        }
+
+        if let Some(ref for_node) = self.for_node {
+            write!(f, "{separator}for=")?;
+            for_node.fmt(f)?;
+            separator = ";";
+        }
+
+        if let Some(ref authority) = self.authority {
+            write!(f, "{separator}host=")?;
+            let quoted =
+                authority.port.is_some() || matches!(authority.host, Host::Address(IpAddr::V6(_)));
+            if quoted {
+                write!(f, r##""{authority}""##)?;
+            } else {
+                authority.fmt(f)?;
+            }
+            separator = ";";
+        }
+
+        if let Some(ref proto) = self.proto {
+            write!(f, "{separator}proto=")?;
+            proto.fmt(f)?;
+        }
+
+        Ok(())
     }
 }
 

@@ -4,7 +4,9 @@
 
 use super::{address::Host, Protocol};
 use crate::error::OpaqueError;
+use crate::http::headers::Header;
 use crate::http::HeaderValue;
+use std::fmt;
 
 mod obfuscated;
 #[doc(inline)]
@@ -16,7 +18,7 @@ pub use node::NodeId;
 
 mod element;
 #[doc(inline)]
-pub use element::ForwardedElement;
+pub use element::{ForwardedAuthority, ForwardedElement};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Forwarding information stored as a chain.
@@ -33,6 +35,15 @@ pub struct Forwarded {
 }
 
 impl Forwarded {
+    /// Create a new [`Forwarded`] extension for the given [`ForwardedElement`]
+    /// as the client Element (the first element).
+    pub fn new(element: ForwardedElement) -> Self {
+        Self {
+            first: element,
+            others: Vec::new(),
+        }
+    }
+
     /// Return the client (host) if one is defined.
     pub fn client_authority(&self) -> Option<(Host, Option<u16>)> {
         self.first.authority()
@@ -49,14 +60,28 @@ impl Forwarded {
         self.others.extend(other.others);
         self
     }
+
+    /// Append a [`ForwardedElement`] to this [`Forwarded`] context.
+    pub fn append(&mut self, element: ForwardedElement) -> &mut Self {
+        self.others.push(element);
+        self
+    }
 }
 
 impl From<ForwardedElement> for Forwarded {
+    #[inline]
     fn from(value: ForwardedElement) -> Self {
-        Self {
-            first: value,
-            others: Vec::new(),
+        Self::new(value)
+    }
+}
+
+impl fmt::Display for Forwarded {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.first.fmt(f)?;
+        for other in &self.others {
+            write!(f, ",{other}")?;
         }
+        Ok(())
     }
 }
 
@@ -120,6 +145,40 @@ impl TryFrom<&[u8]> for Forwarded {
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let (first, others) = element::parse_one_plus_forwarded_elements(bytes)?;
         Ok(Forwarded { first, others })
+    }
+}
+
+// TODO: support Header <-> Forwarded
+// TODO: test header code
+// TODO: test Display code for Forwarded & ForwardedElement
+// TODO: modify Forwarded Code: IS NOT NOT NOT Response!!! it is is request, both, just one is Get, other is Set!
+// TODO: test SetForwardedLayerCode
+// TODO: test SetForwardedLayerCode with other layers interacted
+// TODO: develop GetForwardedLayerCode (new)
+// TODO: develop GetForwardedLayerCode (legacy)
+// TODO: test SetForwardedLayerCode (new)
+// TODO: test SetForwardedLayerCode (legacy)
+// TODO: test SetForwardedLayerCode with other layers interacted
+// TODO: test SetForwardedLayerCode (legacy) with other layers interacted
+
+impl Header for Forwarded {
+    fn name() -> &'static http::HeaderName {
+        &crate::http::header::FORWARDED
+    }
+
+    fn decode<'i, I>(values: &mut I) -> Result<Self, headers::Error>
+    where
+        Self: Sized,
+        I: Iterator<Item = &'i HeaderValue>,
+    {
+        let first_header = values
+            .next()
+            .ok_or_else(crate::http::headers::Error::invalid)?;
+        todo!();
+    }
+
+    fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
+        todo!();
     }
 }
 
