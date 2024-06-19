@@ -114,8 +114,10 @@ pub mod header {
     static_header![
         "x-forwarded-host",
         "x-forwarded-for",
+        "x-forwarded-proto",
         "keep-alive",
         "proxy-connection",
+        "via",
     ];
 
     /// Static Header Value that is can be used as `User-Agent` or `Server` header.
