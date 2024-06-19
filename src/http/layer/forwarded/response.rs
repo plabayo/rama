@@ -158,10 +158,10 @@ impl<S: Clone> Clone for ForwardedResponseService<S> {
     fn clone(&self) -> Self {
         ForwardedResponseService {
             inner: self.inner.clone(),
-            for_node: self.for_node.clone(),
+            for_node: self.for_node,
             by_node: self.by_node.clone(),
-            authority: self.authority.clone(),
-            proto: self.proto.clone(),
+            authority: self.authority,
+            proto: self.proto,
         }
     }
 }
@@ -300,9 +300,7 @@ where
         let mut forwarded_element = None;
 
         if let Some(socket_info) = socket_info.take() {
-            forwarded_element = Some(ForwardedElement::forwarded_for(
-                socket_info.peer_addr().clone(),
-            ));
+            forwarded_element = Some(ForwardedElement::forwarded_for(*socket_info.peer_addr()));
         }
 
         if let Some(node_id) = self.by_node.clone() {

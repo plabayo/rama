@@ -2,7 +2,6 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
-use std::sync::Arc;
 
 type AnyMap = HashMap<TypeId, Box<dyn AnyClone + Send + Sync>, BuildHasherDefault<IdHasher>>;
 
@@ -73,12 +72,20 @@ impl Extensions {
         }
     }
 
-    /// Get a reference to a type previously inserted on this `Extensions`.
+    /// Get a shared reference to a type previously inserted on this `Extensions`.
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        self.get_inner::<T>().or_else(|| {
-            self.get_inner::<ParentExtensions>()
-                .and_then(|parent| parent.extensions.get::<T>())
-        })
+        self.map
+            .as_ref()
+            .and_then(|map| map.get(&TypeId::of::<T>()))
+            .and_then(|boxed| (**boxed).as_any().downcast_ref())
+    }
+
+    /// Get an exlusive reference to a type previously inserted on this `Extensions`.
+    pub fn get_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T> {
+        self.map
+            .as_mut()
+            .and_then(|map| map.get_mut(&TypeId::of::<T>()))
+            .and_then(|boxed| (**boxed).as_any_mut().downcast_mut())
     }
 
     /// Inserts a value into the map computed from `f` into if it is [`None`],
@@ -125,29 +132,6 @@ impl Extensions {
     pub fn get_or_insert_default<T: Default + Clone + Send + Sync + 'static>(&mut self) -> &mut T {
         self.get_or_insert_with(T::default)
     }
-
-    fn get_inner<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        self.map
-            .as_ref()
-            .and_then(|map| map.get(&TypeId::of::<T>()))
-            .and_then(|boxed| (**boxed).as_any().downcast_ref())
-    }
-
-    /// Get a new extension map with the current extensions as parent.
-    ///
-    /// Note that later edits to parent won't be reflected here.
-    pub fn into_parent(self) -> Extensions {
-        let mut ext = Extensions::new();
-        ext.insert(ParentExtensions {
-            extensions: Arc::new(self),
-        });
-        ext
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ParentExtensions {
-    extensions: Arc<Extensions>,
 }
 
 impl fmt::Debug for Extensions {
@@ -200,18 +184,12 @@ fn test_extensions() {
     assert_eq!(extensions.get(), Some(&5i32));
 
     let mut ext2 = extensions.clone();
-    let mut ext3 = extensions.into_parent();
 
     ext2.insert(true);
-    ext3.insert(false);
 
     assert_eq!(ext2.get(), Some(&5i32));
     assert_eq!(ext2.get(), Some(&MyType(10)));
     assert_eq!(ext2.get(), Some(&true));
-
-    assert_eq!(ext3.get(), Some(&5i32));
-    assert_eq!(ext3.get(), Some(&MyType(10)));
-    assert_eq!(ext3.get(), Some(&false));
 
     // test extend
     let mut extensions = Extensions::new();

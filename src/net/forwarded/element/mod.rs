@@ -61,28 +61,28 @@ impl ForwardedAuthority {
     }
 }
 
-impl Into<ForwardedAuthority> for Host {
-    fn into(self) -> ForwardedAuthority {
-        ForwardedAuthority {
-            host: self,
+impl From<Host> for ForwardedAuthority {
+    fn from(value: Host) -> Self {
+        Self {
+            host: value,
             port: None,
         }
     }
 }
 
-impl Into<ForwardedAuthority> for SocketAddr {
-    fn into(self) -> ForwardedAuthority {
-        ForwardedAuthority {
-            host: self.ip().into(),
-            port: Some(self.port()),
+impl From<SocketAddr> for ForwardedAuthority {
+    fn from(value: SocketAddr) -> Self {
+        Self {
+            host: value.ip().into(),
+            port: Some(value.port()),
         }
     }
 }
 
-impl Into<ForwardedAuthority> for Authority {
-    fn into(self) -> ForwardedAuthority {
-        let (host, port) = self.into_parts();
-        ForwardedAuthority {
+impl From<Authority> for ForwardedAuthority {
+    fn from(value: Authority) -> Self {
+        let (host, port) = value.into_parts();
+        Self {
             host,
             port: Some(port),
         }

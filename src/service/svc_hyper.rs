@@ -19,7 +19,7 @@ impl<S, T> HyperService<S, T> {
     /// Create a new [`HyperService`] from a [`Context`] and a [`Service`].
     pub(crate) fn new(ctx: Context<S>, inner: T) -> Self {
         Self {
-            ctx: ctx.into_parent(),
+            ctx,
             inner: Arc::new(inner),
         }
     }
