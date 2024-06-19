@@ -229,7 +229,7 @@ impl<S> Context<S> {
     }
 
     /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns an immutable reference to the contained value.
+    /// then returns an exlusive reference to the contained value.
     ///
     /// # Example
     ///
@@ -238,19 +238,19 @@ impl<S> Context<S> {
     /// let mut ctx = Context::default();
     /// let value: &i32 = ctx.get_or_insert_with(|| 42);
     /// assert_eq!(*value, 42);
-    /// let existing_value: &i32 = ctx.get_or_insert_with(|| 0);
+    /// let existing_value: &mut i32 = ctx.get_or_insert_with(|| 0);
     /// assert_eq!(*existing_value, 42);
     /// ```
     pub fn get_or_insert_with<T: Clone + Send + Sync + 'static>(
         &mut self,
         f: impl FnOnce() -> T,
-    ) -> &T {
+    ) -> &mut T {
         self.extensions.get_or_insert_with(f)
     }
 
     /// Inserts a value into the map computed from converting `U` into `T if no value was already inserted is [`None`],
-    /// then returns an immutable reference to the contained value.
-    pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &T
+    /// then returns an exlusive reference to the contained value.
+    pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &mut T
     where
         T: Clone + Send + Sync + 'static,
         U: Into<T>,
@@ -261,7 +261,7 @@ impl<S> Context<S> {
     /// Retrieves a value of type `T` from the context.
     ///
     /// If the value does not exist, the provided value is inserted
-    /// and a reference to it is returned.
+    /// and an exlusive reference to it is returned.
     ///
     /// See [`Context::get`] for more details.
     ///
@@ -275,7 +275,7 @@ impl<S> Context<S> {
     /// assert_eq!(*ctx.get_or_insert::<i32>(10), 5);
     /// assert_eq!(*ctx.get_or_insert::<f64>(2.5), 2.5);
     /// ```
-    pub fn get_or_insert<T: Send + Sync + Clone + 'static>(&mut self, fallback: T) -> &T {
+    pub fn get_or_insert<T: Send + Sync + Clone + 'static>(&mut self, fallback: T) -> &mut T {
         self.extensions.get_or_insert(fallback)
     }
 
@@ -293,7 +293,7 @@ impl<S> Context<S> {
     /// assert_eq!(*ctx.get_or_insert_default::<i32>(), 5i32);
     /// assert_eq!(*ctx.get_or_insert_default::<f64>(), 0f64);
     /// ```
-    pub fn get_or_insert_default<T: Clone + Default + Send + Sync + 'static>(&mut self) -> &T {
+    pub fn get_or_insert_default<T: Clone + Default + Send + Sync + 'static>(&mut self) -> &mut T {
         self.extensions.get_or_insert_default()
     }
 
