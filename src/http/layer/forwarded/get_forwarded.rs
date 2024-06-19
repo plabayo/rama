@@ -1,11 +1,11 @@
 #[derive(Debug, Clone)]
 /// TODO
-pub struct ForwardedRequestLayer {
+pub struct GetForwardedLayer {
     // TODO
 }
 
 #[derive(Debug, Clone)]
 /// TODO
-pub struct ForwardedRequestService {
+pub struct GetForwardedService {
     // TODO
 }

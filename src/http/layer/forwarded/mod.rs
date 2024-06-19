@@ -1,9 +1,9 @@
 //! Middleware to support the reading and writing of Forwarded headers.
 
-mod request;
+mod get_forwarded;
 #[doc(inline)]
-pub use request::{ForwardedRequestLayer, ForwardedRequestService};
+pub use get_forwarded::{GetForwardedLayer, GetForwardedService};
 
-mod response;
+mod set_forwarded;
 #[doc(inline)]
-pub use response::{ForwardedResponseLayer, ForwardedResponseService};
+pub use set_forwarded::{SetForwardedLayer, SetForwardedService};

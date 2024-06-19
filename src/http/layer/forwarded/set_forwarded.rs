@@ -1,21 +1,24 @@
-use crate::http::{IntoResponse, Request, RequestContext, Response};
+use crate::http::headers::HeaderMapExt;
+use crate::http::{Request, RequestContext};
 use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
 use crate::net::stream::SocketInfo;
 use crate::service::{Context, Layer, Service};
 use std::fmt;
+use std::future::Future;
+use std::net::SocketAddr;
 
 #[derive(Debug, Clone)]
 /// Layer to write forwarded information for this proxy,
 /// added to the end of the chain of forwarded information already known.
-pub struct ForwardedResponseLayer {
+pub struct SetForwardedLayer {
     for_node: bool,
     by_node: Option<NodeId>,
     authority: bool,
     proto: bool,
 }
 
-impl ForwardedResponseLayer {
-    /// Create a [`ForwardedResponseLayer`] with the option enabled
+impl SetForwardedLayer {
+    /// Create a [`SetForwardedLayer`] with the option enabled
     /// to add the peer's [`SocketAddr`] as the "for" property.
     ///
     /// In case this information is not available it will not be written.
@@ -30,7 +33,7 @@ impl ForwardedResponseLayer {
         }
     }
 
-    /// Create a [`ForwardedResponseLayer`] with the option enabled
+    /// Create a [`SetForwardedLayer`] with the option enabled
     /// to add the given [`NodeId`] as the "by" property,
     /// identifying this proxy.
     pub fn forward_by(node_id: NodeId) -> Self {
@@ -42,7 +45,7 @@ impl ForwardedResponseLayer {
         }
     }
 
-    /// Create a [`ForwardedResponseLayer`] with the option enabled
+    /// Create a [`SetForwardedLayer`] with the option enabled
     /// to add the known [`Response`]'s [`Authority`] as the "host" property.
     ///
     /// In case this information is not available it will not be written.
@@ -58,7 +61,7 @@ impl ForwardedResponseLayer {
         }
     }
 
-    /// Create a [`ForwardedResponseLayer`] with the option enabled
+    /// Create a [`SetForwardedLayer`] with the option enabled
     /// to add the known [`Response`]'s [`Protocol`] as the "proto" property.
     ///
     /// In case this information is not available it will not be written.
@@ -77,7 +80,7 @@ impl ForwardedResponseLayer {
 
 /// Middleware [`Layer`] to write [`Forwarded`] information for this proxy,
 /// added to the end of the chain of forwarded information already known.
-impl ForwardedResponseLayer {
+impl SetForwardedLayer {
     /// Enables the option to add the peer's [`SocketAddr`] as the "for" property.
     ///
     /// In case this information is not available it will not be written.
@@ -118,8 +121,8 @@ impl ForwardedResponseLayer {
     }
 }
 
-impl<S> Layer<S> for ForwardedResponseLayer {
-    type Service = ForwardedResponseService<S>;
+impl<S> Layer<S> for SetForwardedLayer {
+    type Service = SetForwardedService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
         Self::Service {
@@ -134,7 +137,7 @@ impl<S> Layer<S> for ForwardedResponseLayer {
 
 /// Middleware [`Service`] to write [`Forwarded`] information for this proxy,
 /// added to the end of the chain of forwarded information already known.
-pub struct ForwardedResponseService<S> {
+pub struct SetForwardedService<S> {
     inner: S,
     for_node: bool,
     by_node: Option<NodeId>,
@@ -142,9 +145,9 @@ pub struct ForwardedResponseService<S> {
     proto: bool,
 }
 
-impl<S: fmt::Debug> fmt::Debug for ForwardedResponseService<S> {
+impl<S: fmt::Debug> fmt::Debug for SetForwardedService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("ForwardedResponseService")
+        f.debug_struct("SetForwardedService")
             .field("inner", &self.inner)
             .field("for_node", &self.for_node)
             .field("by_node", &self.by_node)
@@ -154,9 +157,9 @@ impl<S: fmt::Debug> fmt::Debug for ForwardedResponseService<S> {
     }
 }
 
-impl<S: Clone> Clone for ForwardedResponseService<S> {
+impl<S: Clone> Clone for SetForwardedService<S> {
     fn clone(&self) -> Self {
-        ForwardedResponseService {
+        SetForwardedService {
             inner: self.inner.clone(),
             for_node: self.for_node,
             by_node: self.by_node.clone(),
@@ -166,8 +169,8 @@ impl<S: Clone> Clone for ForwardedResponseService<S> {
     }
 }
 
-impl<S> ForwardedResponseService<S> {
-    /// Create a [`ForwardedResponseService`] with the option enabled
+impl<S> SetForwardedService<S> {
+    /// Create a [`SetForwardedService`] with the option enabled
     /// to add the peer's [`SocketAddr`] as the "for" property.
     ///
     /// In case this information is not available it will not be written.
@@ -183,7 +186,7 @@ impl<S> ForwardedResponseService<S> {
         }
     }
 
-    /// Create a [`ForwardedResponseService`] with the option enabled
+    /// Create a [`SetForwardedService`] with the option enabled
     /// to add the given [`NodeId`] as the "by" property,
     /// identifying this proxy.
     pub fn forward_by(inner: S, node_id: NodeId) -> Self {
@@ -196,7 +199,7 @@ impl<S> ForwardedResponseService<S> {
         }
     }
 
-    /// Create a [`ForwardedResponseService`] with the option enabled
+    /// Create a [`SetForwardedService`] with the option enabled
     /// to add the known [`Response`]'s [`Authority`] as the "host" property.
     ///
     /// In case this information is not available it will not be written.
@@ -213,7 +216,7 @@ impl<S> ForwardedResponseService<S> {
         }
     }
 
-    /// Create a [`ForwardedResponseService`] with the option enabled
+    /// Create a [`SetForwardedService`] with the option enabled
     /// to add the known [`Response`]'s [`Protocol`] as the "proto" property.
     ///
     /// In case this information is not available it will not be written.
@@ -231,7 +234,7 @@ impl<S> ForwardedResponseService<S> {
     }
 }
 
-impl<S> ForwardedResponseService<S> {
+impl<S> SetForwardedService<S> {
     /// Enables the option to add the peer's [`SocketAddr`] as the "for" property.
     ///
     /// In case this information is not available it will not be written.
@@ -272,35 +275,32 @@ impl<S> ForwardedResponseService<S> {
     }
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for ForwardedResponseService<S>
+impl<S, State, Body> Service<State, Request<Body>> for SetForwardedService<S>
 where
     S: Service<State, Request<Body>>,
-    S::Response: IntoResponse,
     Body: Send + 'static,
     State: Send + Sync + 'static,
 {
-    type Response = Response;
+    type Response = S::Response;
     type Error = S::Error;
 
-    async fn serve(
+    fn serve(
         &self,
         mut ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let request_ctx = ctx.get_or_insert_from::<RequestContext, _>(&req).clone();
-        let mut socket_info: Option<SocketInfo> = if self.for_node {
-            ctx.get().cloned()
+        mut req: Request<Body>,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        let mut peer_addr: Option<SocketAddr> = if self.for_node {
+            ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr())
         } else {
             None
         };
         let forwarded: Option<Forwarded> = ctx.get().cloned();
-
-        let mut response = self.inner.serve(ctx, req).await?.into_response();
+        let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
 
         let mut forwarded_element = None;
 
-        if let Some(socket_info) = socket_info.take() {
-            forwarded_element = Some(ForwardedElement::forwarded_for(*socket_info.peer_addr()));
+        if let Some(peer_addr) = peer_addr.take() {
+            forwarded_element = Some(ForwardedElement::forwarded_for(peer_addr));
         }
 
         if let Some(node_id) = self.by_node.clone() {
@@ -314,7 +314,7 @@ where
         }
 
         if self.authority {
-            if let Some(authority) = request_ctx.authority {
+            if let Some(authority) = request_ctx.authority.clone() {
                 forwarded_element = match forwarded_element.take() {
                     Some(mut forwarded_element) => {
                         forwarded_element.set_forwarded_host(authority);
@@ -328,10 +328,12 @@ where
         if self.proto {
             forwarded_element = match forwarded_element.take() {
                 Some(mut forwarded_element) => {
-                    forwarded_element.set_forwarded_proto(request_ctx.protocol);
+                    forwarded_element.set_forwarded_proto(request_ctx.protocol.clone());
                     Some(forwarded_element)
                 }
-                None => Some(ForwardedElement::forwarded_proto(request_ctx.protocol)),
+                None => Some(ForwardedElement::forwarded_proto(
+                    request_ctx.protocol.clone(),
+                )),
             };
         }
 
@@ -345,8 +347,10 @@ where
             }
         };
 
-        if let Some(forwarded) = forwarded {}
+        if let Some(forwarded) = forwarded {
+            req.headers_mut().typed_insert(forwarded);
+        }
 
-        Ok(response)
+        self.inner.serve(ctx, req)
     }
 }

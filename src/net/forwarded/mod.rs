@@ -174,11 +174,36 @@ impl Header for Forwarded {
         let first_header = values
             .next()
             .ok_or_else(crate::http::headers::Error::invalid)?;
-        todo!();
+
+        let mut forwarded: Forwarded = match first_header.as_bytes().try_into() {
+            Ok(f) => f,
+            Err(err) => {
+                tracing::trace!(err = %err, "failed to turn header into Forwarded extension");
+                return Err(crate::http::headers::Error::invalid());
+            }
+        };
+
+        for header in values {
+            let other: Forwarded = match header.as_bytes().try_into() {
+                Ok(f) => f,
+                Err(err) => {
+                    tracing::trace!(err = %err, "failed to turn header into Forwarded extension");
+                    return Err(crate::http::headers::Error::invalid());
+                }
+            };
+            forwarded.merge(other);
+        }
+
+        Ok(forwarded)
     }
 
     fn encode<E: Extend<HeaderValue>>(&self, values: &mut E) {
-        todo!();
+        let s = self.to_string();
+
+        let value = HeaderValue::from_str(&s)
+            .expect("Forwarded extension should always result in a valid header value");
+
+        values.extend(std::iter::once(value));
     }
 }
 
