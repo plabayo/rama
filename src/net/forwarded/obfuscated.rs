@@ -2,7 +2,7 @@ use crate::error::{ErrorContext, OpaqueError};
 use std::{borrow::Cow, fmt};
 
 macro_rules! create_obf_type {
-    ($name:ident, $val_fn:expr) => {
+    ($name:ident, $val_fn:expr, $fix_lossy:expr) => {
         #[doc = concat!(stringify!($name), "used by Forwarded extension")]
         #[doc = ""]
         #[doc = "See <https://datatracker.ietf.org/doc/html/rfc7239#section-6>."]
@@ -22,6 +22,39 @@ macro_rules! create_obf_type {
                     panic!(concat!("static str is an invalid ", stringify!($name)));
                 }
                 Self(Cow::Borrowed(s))
+            }
+
+            #[doc = concat!("Try to convert a vector of bytes to a [`", stringify!($name), "`].")]
+            pub fn try_from_bytes(vec: Vec<u8>) -> Result<Self, OpaqueError> {
+                vec.try_into()
+            }
+
+            #[doc = concat!("Try to convert a string slice to a [`", stringify!($name), "`].")]
+            pub fn try_from_str(s: &str) -> Result<Self, OpaqueError> {
+                s.to_owned().try_into()
+            }
+
+            #[doc = concat!("Converts a vector of bytes to a [`", stringify!($name), "`], converting invalid characters to underscore.")]
+            pub fn from_bytes_lossy(mut vec: Vec<u8>) -> Self {
+                vec = $fix_lossy(vec);
+
+                if vec.len() > OBF_MAX_LEN {
+                    vec = vec.into_iter().take(OBF_MAX_LEN).collect();
+                }
+
+                for b in vec.iter_mut() {
+                    if OBF_CHARS[*b as usize] == 0 {
+                        *b = b'_'
+                    }
+                }
+
+                vec.try_into().expect("sanitized bytes vec should always be correct")
+            }
+
+            #[doc = concat!("Converts a string slice to a [`", stringify!($name), "`], converting invalid characters to underscore.")]
+            pub fn from_str_lossy(s: &str) -> Self {
+                let vec = s.to_owned().into_bytes();
+                Self::from_bytes_lossy(vec)
             }
 
             #[doc = concat!("Gets the [`", stringify!($name), "`] as reference.")]
@@ -140,11 +173,22 @@ macro_rules! create_obf_type {
     };
 }
 
-create_obf_type!(ObfNode, is_valid_obf_node);
-create_obf_type!(ObfPort, is_valid_obf_port);
+create_obf_type!(ObfNode, is_valid_obf_node, fix_obf_node);
+create_obf_type!(ObfPort, is_valid_obf_port, fix_obf_port);
 
 const fn is_valid_obf_port(s: &[u8]) -> bool {
     is_valid_obf_node(s) && s[0] == b'_'
+}
+
+fn fix_obf_port(mut vec: Vec<u8>) -> Vec<u8> {
+    if vec.is_empty() {
+        vec![b'_']
+    } else if vec[0] != b'_' {
+        vec.insert(0, b'_');
+        vec
+    } else {
+        vec
+    }
 }
 
 const fn is_valid_obf_node(s: &[u8]) -> bool {
@@ -159,6 +203,14 @@ const fn is_valid_obf_node(s: &[u8]) -> bool {
             i += 1;
         }
         true
+    }
+}
+
+fn fix_obf_node(vec: Vec<u8>) -> Vec<u8> {
+    if vec.is_empty() {
+        vec![b'_']
+    } else {
+        vec
     }
 }
 
@@ -231,6 +283,25 @@ mod tests {
     }
 
     #[test]
+    fn test_obf_node_parse_lossy() {
+        for (str, expected) in [
+            ("_gazonk", "_gazonk"),
+            ("foo", "foo"),
+            ("", "_"),
+            ("@", "_"),
+            ("wh@t", "wh_t"),
+            ("😀", "____"),
+            ("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv"),
+        ] {
+            assert_eq!(ObfNode::from_str_lossy(str), expected);
+            assert_eq!(
+                ObfNode::from_bytes_lossy(str.as_bytes().to_vec()),
+                expected
+            );
+        }
+    }
+
+    #[test]
     fn test_obf_node_parse_invalid() {
         for str in [
             "",
@@ -262,6 +333,27 @@ mod tests {
             assert_eq!(
                 ObfPort::try_from(str.as_bytes().to_vec()).expect(msg.as_str()),
                 str
+            );
+        }
+    }
+
+    #[test]
+    fn test_obf_port_parse_lossy() {
+        for (str, expected) in [
+            ("_gazonk", "_gazonk"),
+            ("_83", "_83"),
+            ("83", "_83"),
+            ("-", "_-"),
+            ("", "_"),
+            ("@", "__"),
+            ("wh@t", "_wh_t"),
+            ("😀", "_____"),
+            ("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", "_abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstu"),
+        ] {
+            assert_eq!(ObfPort::from_str_lossy(str), expected);
+            assert_eq!(
+                ObfPort::from_bytes_lossy(str.as_bytes().to_vec()),
+                expected
             );
         }
     }

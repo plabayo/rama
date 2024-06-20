@@ -1,5 +1,9 @@
 pub use crate::net::forwarded::Forwarded;
 
+mod via;
+#[doc(inline)]
+pub use via::Via;
+
 mod x_forwarded_for;
 #[doc(inline)]
 pub use x_forwarded_for::XForwardedFor;
