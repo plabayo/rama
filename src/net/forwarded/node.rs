@@ -43,6 +43,57 @@ enum NodePort {
 }
 
 impl NodeId {
+    /// Try to convert a vector of bytes to a [`NodeId`].
+    pub fn try_from_bytes(vec: Vec<u8>) -> Result<Self, OpaqueError> {
+        vec.try_into()
+    }
+
+    /// Try to convert a string slice to a [`NodeId`].
+    pub fn try_from_str(s: &str) -> Result<Self, OpaqueError> {
+        s.to_owned().try_into()
+    }
+
+    #[inline]
+    /// Converts a vector of bytes to a [`NodeId`], converting invalid characters to underscore.
+    pub fn from_bytes_lossy(vec: &[u8]) -> Self {
+        let s = String::from_utf8_lossy(vec);
+        Self::from_str_lossy(&s)
+    }
+
+    /// Converts a string slice to a [`NodeId`], converting invalid characters to underscore.
+    pub fn from_str_lossy(s: &str) -> Self {
+        let s_original = s;
+
+        if s.eq_ignore_ascii_case(UNKNOWN_STR) {
+            return NodeId {
+                name: NodeName::Unknown,
+                port: None,
+            };
+        }
+
+        if let Ok(ip) = try_to_parse_str_to_ip(s) {
+            // early return to prevent stuff like `::1` to
+            // be interpreted as node { name = obf(:), port = num(1) }
+            return NodeId {
+                name: NodeName::Ip(ip),
+                port: None,
+            };
+        }
+
+        let (s, port) = try_to_split_node_port_lossy_from_str(s);
+        let name = try_to_parse_str_to_ip(s)
+            .map(NodeName::Ip)
+            .unwrap_or_else(|_| NodeName::Obf(ObfNode::from_str_lossy(s)));
+
+        match name {
+            NodeName::Ip(IpAddr::V6(_)) if port.is_some() && !s.starts_with('[') => NodeId {
+                name: NodeName::Obf(ObfNode::from_str_lossy(s_original)),
+                port: None,
+            },
+            _ => NodeId { name, port },
+        }
+    }
+
     /// Return the [`IpAddr`] if one was defined for this [`NodeId`].
     pub fn ip(&self) -> Option<IpAddr> {
         match &self.name {
@@ -73,6 +124,15 @@ impl NodeId {
                 .map(|domain| (domain, port).into()),
             _ => None,
         }
+    }
+}
+
+impl NodePort {
+    /// Converts a string slice to a [`NodePort`], converting invalid characters to underscore.
+    fn from_str_lossy(s: &str) -> Self {
+        s.parse::<u16>()
+            .map(NodePort::Num)
+            .unwrap_or_else(|_| NodePort::Obf(ObfPort::from_str_lossy(s)))
     }
 }
 
@@ -276,6 +336,16 @@ fn try_to_split_node_port_from_str(s: &str) -> (&str, Option<NodePort>) {
     }
 }
 
+fn try_to_split_node_port_lossy_from_str(s: &str) -> (&str, Option<NodePort>) {
+    if let Some(colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
+        let port = NodePort::from_str_lossy(&s[colon + 1..]);
+        let s = &s[..colon];
+        (s, Some(port))
+    } else {
+        (s, None)
+    }
+}
+
 impl std::str::FromStr for NodePort {
     type Err = OpaqueError;
 
@@ -413,6 +483,46 @@ mod tests {
         ] {
             let node_result = s.parse::<NodeId>();
             assert!(node_result.is_err(), "parse invalid: {}; parsed: {:?}", s, node_result);
+        }
+    }
+
+    #[test]
+    fn test_parse_node_id_lossy() {
+        for (s, expected) in [
+            ("", NodeId {
+                name: NodeName::Obf(ObfNode::from_static("_")),
+                port: None,
+            }),
+            ("@", NodeId {
+                name: NodeName::Obf(ObfNode::from_static("_")),
+                port: None,
+            }),
+            ("2001:db8:3333:4444:5555:6666:7777:8888:80", NodeId {
+                name: NodeName::Obf(ObfNode::from_static("2001_db8_3333_4444_5555_6666_7777_8888_80")),
+                port: None,
+            }),
+            ("foo:bar", NodeId {
+                name: NodeName::Obf(ObfNode::from_static("foo")),
+                port: Some(NodePort::Obf(ObfPort::from_static("_bar"))),
+            }),
+            ("foo:_b+r", NodeId {
+                name: NodeName::Obf(ObfNode::from_static("foo")),
+                port: Some(NodePort::Obf(ObfPort::from_static("_b_r"))),
+            }),
+            ("😀", NodeId {
+                name: NodeName::Obf(ObfNode::from_static("____")),
+                port: None,
+            }),
+            ("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", NodeId {
+                name: NodeName::Obf(ObfNode::from_static("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv")),
+                port: None,
+            }),
+        ] {
+            let node_id = NodeId::from_str_lossy(s);
+            assert_eq!(node_id, expected, "parse str: {}", s);
+
+            let node_id = NodeId::from_bytes_lossy(s.as_bytes());
+            assert_eq!(node_id, expected, "parse bytes: {}", s);
         }
     }
 }
