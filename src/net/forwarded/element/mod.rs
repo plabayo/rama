@@ -289,6 +289,12 @@ impl std::str::FromStr for ForwardedAuthority {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Ok(host) = Host::try_from(s) {
+            // first try host alone, as it is most common,
+            // and also prevents IPv6 to be seen by default with port
+            return Ok(ForwardedAuthority { host, port: None });
+        }
+
         let (s, port) = try_to_split_num_port_from_str(s);
         let host = Host::try_from(s).context("parse forwarded host")?;
 

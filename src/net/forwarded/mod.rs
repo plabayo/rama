@@ -28,6 +28,8 @@ pub use element::{ForwardedAuthority, ForwardedElement};
 /// host used by the user, by which proxy it was forwarded, what was the intended
 /// protocol (e.g. https), etc...
 ///
+/// RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
+///
 /// [`Context`]: crate::service::Context
 pub struct Forwarded {
     first: ForwardedElement,
