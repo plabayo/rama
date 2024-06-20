@@ -94,4 +94,15 @@ mod tests {
         Some(XForwardedProto(Protocol::Https))
     );
     test_header!(test3, vec!["http"], Some(XForwardedProto(Protocol::Http)));
+
+    #[test]
+    fn test_x_forwarded_proto_symmetric_encoder() {
+        for input in [Protocol::Http, Protocol::Https] {
+            let input = XForwardedProto(input);
+            let mut values = Vec::new();
+            input.encode(&mut values);
+            let output = XForwardedProto::decode(&mut values.iter()).unwrap();
+            assert_eq!(input, output);
+        }
+    }
 }

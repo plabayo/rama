@@ -163,4 +163,19 @@ mod tests {
             "198.51.100.178".parse().unwrap()
         ]))
     );
+
+    #[test]
+    fn test_x_forwarded_for_symmetric_encoder() {
+        for input in [
+            XForwardedFor(vec!["203.0.113.195".parse().unwrap()]),
+            XForwardedFor(vec![
+                "2001:db8:85a3:8d3:1319:8a2e:370:7348".parse().unwrap(),
+                "203.0.113.195".parse().unwrap(),
+            ]),
+        ] {
+            let mut values = Vec::new();
+            input.encode(&mut values);
+            assert_eq!(XForwardedFor::decode(&mut values.iter()).ok(), Some(input),);
+        }
+    }
 }

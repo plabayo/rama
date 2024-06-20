@@ -141,4 +141,17 @@ mod tests {
                 .unwrap()
         ))
     );
+
+    #[test]
+    fn test_x_forwarded_host_symmetry_encode() {
+        for input in [
+            XForwardedHost("id42.example-cdn.com".parse().unwrap()),
+            XForwardedHost("id42.example-cdn.com:443".parse().unwrap()),
+            XForwardedHost("127.0.0.1".parse().unwrap()),
+        ] {
+            let mut values = Vec::new();
+            input.encode(&mut values);
+            assert_eq!(XForwardedHost::decode(&mut values.iter()).unwrap(), input);
+        }
+    }
 }
