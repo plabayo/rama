@@ -61,6 +61,16 @@ impl XForwardedHost {
     pub fn port(&self) -> Option<u16> {
         self.0.port()
     }
+
+    /// Return a reference to the inner data of this [`Header`].
+    pub fn inner(&self) -> &ForwardedAuthority {
+        &self.0
+    }
+
+    /// Consume this [`Header`] into its inner data.
+    pub fn into_inner(self) -> ForwardedAuthority {
+        self.0
+    }
 }
 
 #[cfg(test)]

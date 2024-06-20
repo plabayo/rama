@@ -53,6 +53,11 @@ impl XForwardedProto {
     pub fn protocol(&self) -> &Protocol {
         &self.0
     }
+
+    /// Consume this [`Header`] into the inner data ([`Protocol`]).
+    pub fn into_protocol(self) -> Protocol {
+        self.0
+    }
 }
 
 #[cfg(test)]

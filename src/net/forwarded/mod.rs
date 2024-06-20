@@ -68,6 +68,12 @@ impl Forwarded {
         self.others.push(element);
         self
     }
+
+    /// Extend this [`Forwarded`] context with the given [`ForwardedElement`]s.
+    pub fn extend(&mut self, elements: impl IntoIterator<Item = ForwardedElement>) -> &mut Self {
+        self.others.extend(elements);
+        self
+    }
 }
 
 impl From<ForwardedElement> for Forwarded {

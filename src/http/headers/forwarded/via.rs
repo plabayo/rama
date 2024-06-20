@@ -115,6 +115,11 @@ impl Via {
     pub fn iter_nodes(&self) -> impl Iterator<Item = &NodeId> {
         self.0.iter().map(|el| &el.node_id)
     }
+
+    /// Consume self into the [`NodeId`]s defined in this [`Via`] [`Header`].
+    pub fn into_iter_nodes(self) -> impl Iterator<Item = NodeId> {
+        self.0.into_iter().map(|el| el.node_id)
+    }
 }
 
 impl std::str::FromStr for ViaElement {

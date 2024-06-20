@@ -1,4 +1,5 @@
-use crate::http::headers::HeaderMapExt;
+use crate::http::headers::{HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto};
+use crate::net::forwarded::ForwardedElement;
 use crate::{
     http::Request,
     net::forwarded::Forwarded,
@@ -62,63 +63,71 @@ where
 
     fn serve(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        // let mut forwarded_elements = Vec::with_capacity(1);
+        let mut forwarded_elements = Vec::with_capacity(1);
 
-        // // https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Forwarded-For
-        // if let Some() {
-        //     forwarded_element = Some(ForwardedElement::forwarded_for(peer_addr));
-        // }
+        if let Some(x_forwarded_for) = req.headers().typed_get::<XForwardedFor>() {
+            forwarded_elements.extend(
+                x_forwarded_for
+                    .iter()
+                    .map(|ip| ForwardedElement::forwarded_for(*ip)),
+            );
+        }
 
-        // if let Some(node_id) = self.by_node.clone() {
-        //     forwarded_element = match forwarded_element.take() {
-        //         Some(mut forwarded_element) => {
-        //             forwarded_element.set_forwarded_by(node_id);
-        //             Some(forwarded_element)
-        //         }
-        //         None => Some(ForwardedElement::forwarded_by(node_id)),
-        //     };
-        // }
+        if let Some(via) = req.headers().typed_get::<Via>() {
+            let mut via_iter = via.into_iter_nodes();
+            for element in forwarded_elements.iter_mut() {
+                match via_iter.next() {
+                    Some(node) => {
+                        element.set_forwarded_by(node);
+                    }
+                    None => break,
+                }
+            }
+            while let Some(node) = via_iter.next() {
+                forwarded_elements.push(ForwardedElement::forwarded_by(node));
+            }
+        }
 
-        // if self.authority {
-        //     if let Some(authority) = request_ctx.authority.clone() {
-        //         forwarded_element = match forwarded_element.take() {
-        //             Some(mut forwarded_element) => {
-        //                 forwarded_element.set_forwarded_host(authority);
-        //                 Some(forwarded_element)
-        //             }
-        //             None => Some(ForwardedElement::forwarded_host(authority)),
-        //         };
-        //     }
-        // }
+        if let Some(x_forwarded_host) = req.headers().typed_get::<XForwardedHost>() {
+            let authority = x_forwarded_host.into_inner();
+            match forwarded_elements.get_mut(0) {
+                Some(el) => {
+                    el.set_forwarded_host(authority);
+                }
+                None => {
+                    forwarded_elements.push(ForwardedElement::forwarded_host(authority));
+                }
+            }
+        }
 
-        // if self.proto {
-        //     forwarded_element = match forwarded_element.take() {
-        //         Some(mut forwarded_element) => {
-        //             forwarded_element.set_forwarded_proto(request_ctx.protocol.clone());
-        //             Some(forwarded_element)
-        //         }
-        //         None => Some(ForwardedElement::forwarded_proto(
-        //             request_ctx.protocol.clone(),
-        //         )),
-        //     };
-        // }
+        if let Some(x_forwarded_proto) = req.headers().typed_get::<XForwardedProto>() {
+            let proto = x_forwarded_proto.into_protocol();
+            match forwarded_elements.get_mut(0) {
+                Some(el) => {
+                    el.set_forwarded_proto(proto);
+                }
+                None => {
+                    forwarded_elements.push(ForwardedElement::forwarded_proto(proto));
+                }
+            }
+        }
 
-        // let forwarded = match (forwarded, forwarded_element) {
-        //     (None, None) => None,
-        //     (Some(forwarded), None) => Some(forwarded),
-        //     (None, Some(forwarded_element)) => Some(Forwarded::new(forwarded_element)),
-        //     (Some(mut forwarded), Some(forwarded_element)) => {
-        //         forwarded.append(forwarded_element);
-        //         Some(forwarded)
-        //     }
-        // };
-
-        // if let Some(forwarded) = forwarded {
-        //     req.headers_mut().typed_insert(forwarded);
-        // }
+        if !forwarded_elements.is_empty() {
+            match ctx.get_mut::<Forwarded>() {
+                Some(ref mut f) => {
+                    f.extend(forwarded_elements);
+                }
+                None => {
+                    let mut it = forwarded_elements.into_iter();
+                    let mut forwarded = Forwarded::new(it.next().unwrap());
+                    forwarded.extend(it);
+                    ctx.insert(forwarded);
+                }
+            }
+        }
 
         self.inner.serve(ctx, req)
     }
