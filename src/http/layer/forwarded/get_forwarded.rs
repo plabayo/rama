@@ -40,7 +40,7 @@ where
         if let Some(forwarded) = req.headers().typed_get::<Forwarded>() {
             match ctx.get_mut::<Forwarded>() {
                 Some(ref mut f) => {
-                    f.merge(forwarded);
+                    f.extend(forwarded);
                 }
                 None => {
                     ctx.insert(forwarded);
@@ -86,7 +86,7 @@ where
                     None => break,
                 }
             }
-            while let Some(node) = via_iter.next() {
+            for node in via_iter {
                 forwarded_elements.push(ForwardedElement::forwarded_by(node));
             }
         }

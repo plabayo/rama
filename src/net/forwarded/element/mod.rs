@@ -24,6 +24,7 @@ pub struct ForwardedElement {
     for_node: Option<NodeId>,
     authority: Option<ForwardedAuthority>,
     proto: Option<Protocol>,
+    proto_version: Option<ProtocolVersion>,
 
     // not expected, but if used these parameters (keys)
     // should be registered ideally also in
@@ -35,6 +36,12 @@ pub struct ForwardedElement {
 struct ExtensionValue {
     value: String,
     quoted: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ProtocolVersion {
+    Http(crate::http::Version),
+    Custom(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +65,11 @@ impl ForwardedAuthority {
     /// Get a copy of the `port` of this [`ForwardedAuthority`] if it is set.
     pub fn port(&self) -> Option<u16> {
         self.port
+    }
+
+    /// Consume self and return the inner [`Host`] and `port` if it is set.
+    pub fn into_parts(self) -> (Host, Option<u16>) {
+        (self.host, self.port)
     }
 }
 
@@ -90,16 +102,38 @@ impl From<Authority> for ForwardedAuthority {
 }
 
 impl ForwardedElement {
+    /// Merge the properties of another [`ForwardedElement`] into this one.
+    pub fn merge(&mut self, other: ForwardedElement) -> &mut Self {
+        if let Some(by_node) = other.by_node {
+            self.by_node = Some(by_node);
+        }
+        if let Some(for_node) = other.for_node {
+            self.for_node = Some(for_node);
+        }
+        if let Some(authority) = other.authority {
+            self.authority = Some(authority);
+        }
+        if let Some(proto) = other.proto {
+            self.proto = Some(proto);
+        }
+        if let Some(extensions) = other.extensions {
+            match &mut self.extensions {
+                Some(map) => {
+                    map.extend(extensions);
+                }
+                None => {
+                    self.extensions = Some(extensions);
+                }
+            }
+        }
+        self
+    }
+
     /// Return the host if one is defined.
     pub fn authority(&self) -> Option<(Host, Option<u16>)> {
         self.authority
             .as_ref()
             .map(|authority| (authority.host.clone(), authority.port))
-    }
-
-    /// Return the protocol if one is defined.
-    pub fn proto(&self) -> Option<Protocol> {
-        self.proto.clone()
     }
 
     /// Create a new [`ForwardedElement`] with the "host" parameter set
@@ -110,6 +144,7 @@ impl ForwardedElement {
             for_node: None,
             authority: Some(authority.into()),
             proto: None,
+            proto_version: None,
             extensions: None,
         }
     }
@@ -121,6 +156,11 @@ impl ForwardedElement {
         self
     }
 
+    /// Get a reference to the "host" parameter if it is set.
+    pub fn ref_forwarded_host(&self) -> Option<&ForwardedAuthority> {
+        self.authority.as_ref()
+    }
+
     /// Create a new [`ForwardedElement`] with the "for" parameter
     /// set to the given valid node identifier. Examples are
     /// an Ip Address or Domain, with or without a port.
@@ -130,6 +170,7 @@ impl ForwardedElement {
             for_node: Some(node_id.into()),
             authority: None,
             proto: None,
+            proto_version: None,
             extensions: None,
         }
     }
@@ -141,6 +182,11 @@ impl ForwardedElement {
         self
     }
 
+    /// Get a reference to the "for" parameter if it is set.
+    pub fn ref_forwarded_for(&self) -> Option<&NodeId> {
+        self.for_node.as_ref()
+    }
+
     /// Create a new [`ForwardedElement`] with the "by" parameter
     /// set to the given valid node identifier. Examples are
     /// an Ip Address or Domain, with or without a port.
@@ -150,6 +196,7 @@ impl ForwardedElement {
             for_node: None,
             authority: None,
             proto: None,
+            proto_version: None,
             extensions: None,
         }
     }
@@ -161,6 +208,11 @@ impl ForwardedElement {
         self
     }
 
+    /// Get a reference to the "by" parameter if it is set.
+    pub fn ref_forwarded_by(&self) -> Option<&NodeId> {
+        self.by_node.as_ref()
+    }
+
     /// Create a new [`ForwardedElement`] with the "proto" parameter
     /// set to the given valid/recognised [`Protocol`]
     pub fn forwarded_proto(protocol: Protocol) -> Self {
@@ -169,6 +221,7 @@ impl ForwardedElement {
             for_node: None,
             authority: None,
             proto: Some(protocol),
+            proto_version: None,
             extensions: None,
         }
     }
@@ -177,6 +230,69 @@ impl ForwardedElement {
     pub fn set_forwarded_proto(&mut self, protocol: Protocol) -> &mut Self {
         self.proto = Some(protocol);
         self
+    }
+
+    /// Get a reference to the "proto" parameter if it is set.
+    pub fn ref_forwarded_proto(&self) -> Option<&Protocol> {
+        self.proto.as_ref()
+    }
+
+    /// Create a new [`ForwardedElement`] with the "version" parameter
+    /// set to the given valid/recognised http [`Version`].
+    ///
+    /// [`Version`]: crate::http::Version
+    pub fn forwarded_proto_http_version(version: crate::http::Version) -> Self {
+        Self {
+            by_node: None,
+            for_node: None,
+            authority: None,
+            proto: None,
+            proto_version: Some(ProtocolVersion::Http(version)),
+            extensions: None,
+        }
+    }
+
+    /// Set the "version" parameter to the given valid/recognised http [`Version`].
+    ///
+    /// [`Version`]: crate::http::Version
+    pub fn set_forwarded_proto_http_version(&mut self, version: crate::http::Version) -> &mut Self {
+        self.proto_version = Some(ProtocolVersion::Http(version));
+        self
+    }
+
+    /// Get a reference to the "version" parameter if it is set for http.
+    pub fn ref_forwarded_proto_http_version(&self) -> Option<&crate::http::Version> {
+        self.proto_version.as_ref().and_then(|v| match v {
+            ProtocolVersion::Http(version) => Some(version),
+            ProtocolVersion::Custom(_) => None,
+        })
+    }
+
+    /// Create a new [`ForwardedElement`] with the "version" parameter
+    /// set to the given valid/recognised custom version.
+    pub fn forwarded_proto_custom_version(version: impl Into<Vec<u8>>) -> Self {
+        Self {
+            by_node: None,
+            for_node: None,
+            authority: None,
+            proto: None,
+            proto_version: Some(ProtocolVersion::Custom(version.into())),
+            extensions: None,
+        }
+    }
+
+    /// Set the "version" parameter to the given valid/recognised custom version.
+    pub fn set_forwarded_proto_custom_version(&mut self, version: impl Into<Vec<u8>>) -> &mut Self {
+        self.proto_version = Some(ProtocolVersion::Custom(version.into()));
+        self
+    }
+
+    /// Get a reference to the "version" parameter if it is set for custom version.
+    pub fn ref_forwarded_proto_custom_version(&self) -> Option<&[u8]> {
+        self.proto_version.as_ref().and_then(|v| match v {
+            ProtocolVersion::Custom(version) => Some(version.as_ref()),
+            ProtocolVersion::Http(_) => None,
+        })
     }
 }
 
@@ -358,6 +474,7 @@ mod tests {
                     for_node: Some(NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap()),
                     authority: None,
                     proto: Some(Protocol::Http),
+                    proto_version: None,
                     extensions: None,
                 },
             ),
@@ -368,6 +485,7 @@ mod tests {
                     for_node: Some(NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap()),
                     authority: None,
                     proto: Some(Protocol::Http),
+                    proto_version: None,
                     extensions: Some(
                         [(
                             "foo".to_owned(),
@@ -387,6 +505,7 @@ mod tests {
                     for_node: Some(NodeId::try_from("192.0.2.60").unwrap()),
                     authority: None,
                     proto: Some(Protocol::Http),
+                    proto_version: None,
                     extensions: None,
                 },
             ),

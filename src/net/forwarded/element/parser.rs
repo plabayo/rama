@@ -78,6 +78,7 @@ fn parse_next_forwarded_element(
         for_node: None,
         authority: None,
         proto: None,
+        proto_version: None,
         extensions: None,
     };
 

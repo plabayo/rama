@@ -2,7 +2,6 @@
 //!
 //! RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 
-use super::{address::Host, Protocol};
 use crate::error::OpaqueError;
 use crate::http::headers::Header;
 use crate::http::HeaderValue;
@@ -46,23 +45,6 @@ impl Forwarded {
         }
     }
 
-    /// Return the client (host) if one is defined.
-    pub fn client_authority(&self) -> Option<(Host, Option<u16>)> {
-        self.first.authority()
-    }
-
-    /// Return the client protocol if one is defined.
-    pub fn client_proto(&self) -> Option<Protocol> {
-        self.first.proto()
-    }
-
-    /// Merge the other [`Forwarded`] extension with this one.
-    pub fn merge(&mut self, other: Forwarded) -> &mut Self {
-        self.others.push(other.first);
-        self.others.extend(other.others);
-        self
-    }
-
     /// Append a [`ForwardedElement`] to this [`Forwarded`] context.
     pub fn append(&mut self, element: ForwardedElement) -> &mut Self {
         self.others.push(element);
@@ -73,6 +55,22 @@ impl Forwarded {
     pub fn extend(&mut self, elements: impl IntoIterator<Item = ForwardedElement>) -> &mut Self {
         self.others.extend(elements);
         self
+    }
+
+    /// Iterate over the [`ForwardedElement`]s in this [`Forwarded`] context.
+    pub fn iter(&self) -> impl Iterator<Item = &ForwardedElement> {
+        std::iter::once(&self.first).chain(self.others.iter())
+    }
+}
+
+impl IntoIterator for Forwarded {
+    type Item = ForwardedElement;
+    type IntoIter =
+        std::iter::Chain<std::iter::Once<ForwardedElement>, std::vec::IntoIter<ForwardedElement>>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let iter = self.others.into_iter();
+        std::iter::once(self.first).chain(iter)
     }
 }
 
@@ -199,7 +197,7 @@ impl Header for Forwarded {
                     return Err(crate::http::headers::Error::invalid());
                 }
             };
-            forwarded.merge(other);
+            forwarded.extend(other);
         }
 
         Ok(forwarded)
@@ -218,6 +216,7 @@ impl Header for Forwarded {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::net::{address::Host, Protocol};
 
     #[test]
     fn test_forwarded_parse_invalid() {
@@ -352,7 +351,14 @@ mod tests {
             ),
         ] {
             let forwarded = Forwarded::try_from(s).unwrap();
-            assert_eq!(forwarded.client_authority(), expected);
+            assert_eq!(
+                forwarded
+                    .iter()
+                    .next()
+                    .and_then(|el| el.ref_forwarded_host())
+                    .map(|host| host.clone().into_parts()),
+                expected
+            );
         }
     }
 
@@ -366,7 +372,14 @@ mod tests {
             (r##"proto=http,for=195.2.34.12"##, Some(Protocol::Http)),
         ] {
             let forwarded = Forwarded::try_from(s).unwrap();
-            assert_eq!(forwarded.client_proto(), expected);
+            assert_eq!(
+                forwarded
+                    .iter()
+                    .next()
+                    .and_then(|el| el.ref_forwarded_proto())
+                    .cloned(),
+                expected
+            );
         }
     }
 }
