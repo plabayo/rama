@@ -89,28 +89,23 @@ mod tests {
     test_header!(
         test1,
         vec!["https"],
-        Some(XForwardedProto(ForwardedProtocol::https()))
+        Some(XForwardedProto(ForwardedProtocol::HTTPS))
     );
     test_header!(
         test2,
         // 2nd one gets ignored
         vec!["https", "http"],
-        Some(XForwardedProto(ForwardedProtocol::https()))
+        Some(XForwardedProto(ForwardedProtocol::HTTPS))
     );
     test_header!(
         test3,
         vec!["http"],
-        Some(XForwardedProto(ForwardedProtocol::http()))
-    );
-    test_header!(
-        test4,
-        vec!["foobar"],
-        Some(XForwardedProto(ForwardedProtocol::from_static("foobar")))
+        Some(XForwardedProto(ForwardedProtocol::HTTP))
     );
 
     #[test]
     fn test_x_forwarded_proto_symmetric_encoder() {
-        for input in [ForwardedProtocol::http(), ForwardedProtocol::https()] {
+        for input in [ForwardedProtocol::HTTP, ForwardedProtocol::HTTPS] {
             let input = XForwardedProto(input);
             let mut values = Vec::new();
             input.encode(&mut values);

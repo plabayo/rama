@@ -264,7 +264,7 @@ mod tests {
         vec!["HTTP/1.1 proxy.example.re, 1.1 edge_1"],
         Some(Via(vec![
             ViaElement {
-                protocol: Some(ForwardedProtocol::http()),
+                protocol: Some(ForwardedProtocol::HTTP),
                 version: ForwardedVersion::HTTP_11,
                 node_id: NodeId::try_from_str("proxy.example.re").unwrap(),
             },
@@ -305,7 +305,7 @@ mod tests {
             ]),
             Via(vec![
                 ViaElement {
-                    protocol: Some(ForwardedProtocol::http()),
+                    protocol: Some(ForwardedProtocol::HTTP),
                     version: ForwardedVersion::HTTP_11,
                     node_id: NodeId::try_from_str("proxy.example.re").unwrap(),
                 },

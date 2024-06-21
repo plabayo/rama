@@ -379,7 +379,7 @@ mod tests {
             ),
             (
                 r##"proto=http,for=195.2.34.12"##,
-                Some(ForwardedProtocol::http()),
+                Some(ForwardedProtocol::HTTP),
             ),
         ] {
             let forwarded = Forwarded::try_from(s).unwrap();

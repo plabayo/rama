@@ -430,7 +430,7 @@ mod tests {
                     by_node: None,
                     for_node: Some(NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap()),
                     authority: None,
-                    proto: Some(ForwardedProtocol::http()),
+                    proto: Some(ForwardedProtocol::HTTP),
                     proto_version: None,
                     extensions: None,
                 },
@@ -441,7 +441,7 @@ mod tests {
                     by_node: None,
                     for_node: Some(NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap()),
                     authority: None,
-                    proto: Some(ForwardedProtocol::http()),
+                    proto: Some(ForwardedProtocol::HTTP),
                     proto_version: None,
                     extensions: Some(
                         [(
@@ -461,7 +461,7 @@ mod tests {
                     by_node: Some(NodeId::try_from("203.0.113.43").unwrap()),
                     for_node: Some(NodeId::try_from("192.0.2.60").unwrap()),
                     authority: None,
-                    proto: Some(ForwardedProtocol::http()),
+                    proto: Some(ForwardedProtocol::HTTP),
                     proto_version: None,
                     extensions: None,
                 },
