@@ -121,6 +121,14 @@ macro_rules! get_forwarded_service_combine_tuple {
 
 all_the_tuples_minus_one_no_last_special_case!(get_forwarded_service_combine_tuple);
 
+impl<S> GetForwardedService<S> {
+    #[inline]
+    /// Create a new `GetForwardedService` for the standard [`Forwarded`] header.
+    pub fn std(inner: S) -> Self {
+        Self::new(inner)
+    }
+}
+
 impl<S> GetForwardedService<S, (Via, XForwardedFor, XForwardedHost, XForwardedProto)> {
     #[inline]
     /// Create a new `GetForwardedService` for the legacy [`Via`],
@@ -194,3 +202,31 @@ macro_rules! get_forwarded_service_for_tuple {
 }
 
 all_the_tuples_no_last_special_case!(get_forwarded_service_for_tuple);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        error::OpaqueError,
+        http::{headers::TrueClientIp, IntoResponse, Response, StatusCode},
+        service::service_fn,
+    };
+
+    fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}
+
+    async fn dummy_service_fn() -> Result<Response, OpaqueError> {
+        Ok(StatusCode::OK.into_response())
+    }
+
+    #[test]
+    fn test_get_forwarded_service_is_service() {
+        assert_is_service(GetForwardedService::std(service_fn(dummy_service_fn)));
+        assert_is_service(GetForwardedService::legacy(service_fn(dummy_service_fn)));
+        assert_is_service(
+            GetForwardedService::legacy(service_fn(dummy_service_fn)).combine::<TrueClientIp>(),
+        );
+        assert_is_service(GetForwardedService::<_, (TrueClientIp,)>::new(service_fn(
+            dummy_service_fn,
+        )));
+    }
+}

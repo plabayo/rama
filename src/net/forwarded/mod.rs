@@ -6,6 +6,7 @@ use crate::error::OpaqueError;
 use crate::http::headers::Header;
 use crate::http::HeaderValue;
 use std::fmt;
+use std::net::IpAddr;
 
 mod obfuscated;
 #[doc(inline)]
@@ -51,6 +52,36 @@ impl Forwarded {
             first: element,
             others: Vec::new(),
         }
+    }
+
+    /// Return the client host of this [`Forwarded`] context,
+    /// if there is one defined.
+    ///
+    /// It is assumed that only the first element can be
+    /// described as client information.
+    pub fn client_host(&self) -> Option<&ForwardedAuthority> {
+        self.first.ref_forwarded_host()
+    }
+
+    /// Return the client Ip of this [`Forwarded`] context,
+    /// if there is one defined.
+    ///
+    /// It is assumed that only the first element can be
+    /// described as client information.
+    pub fn client_ip(&self) -> Option<IpAddr> {
+        self.first.ref_forwarded_for().and_then(|node| node.ip())
+    }
+
+    /// Return the client protocol of this [`Forwarded`] context,
+    /// if there is one defined.
+    pub fn client_proto(&self) -> Option<ForwardedProtocol> {
+        self.first.ref_forwarded_proto()
+    }
+
+    /// Return the client protocol version of this [`Forwarded`] context,
+    /// if there is one defined.
+    pub fn client_version(&self) -> Option<ForwardedVersion> {
+        self.first.ref_forwarded_version()
     }
 
     /// Append a [`ForwardedElement`] to this [`Forwarded`] context.
