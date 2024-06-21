@@ -1,143 +1,196 @@
-use crate::http::headers::{HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto};
+use crate::http::headers::{
+    ForwardHeader, HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto,
+};
 use crate::net::forwarded::ForwardedElement;
 use crate::{
     http::Request,
     net::forwarded::Forwarded,
-    service::{Context, Service},
+    service::{Context, Layer, Service},
 };
 use std::future::Future;
 use std::marker::PhantomData;
 
-use private::{ModeLegacy, ModeRFC7239};
-
 #[derive(Debug, Clone)]
-/// TODO
-pub struct GetForwardedLayer<M = ModeRFC7239> {
-    _mode: PhantomData<fn() -> M>,
+/// Layer to extract [`Forwarded`] information from the specified `T` headers.
+pub struct GetForwardedLayer<T = (Forwarded,)> {
+    _headers: PhantomData<fn() -> T>,
 }
 
+impl Default for GetForwardedLayer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T> GetForwardedLayer<T> {
+    /// Create a new `GetForwardedLayer` for the forward header `T`.
+    pub fn new() -> Self {
+        Self {
+            _headers: PhantomData,
+        }
+    }
+}
+
+macro_rules! get_forwarded_combine_tuple {
+    ( $($ty:ident),* $(,)? ) => {
+        #[allow(non_snake_case)]
+        impl<$($ty),*> GetForwardedLayer<($($ty,)*)> {
+            /// Combine the header `T` with the current headers for this [`GetForwardedLayer`].
+            pub fn combine<T>(self) -> GetForwardedLayer<($($ty,)* T)> {
+                GetForwardedLayer {
+                    _headers: PhantomData,
+                }
+            }
+        }
+    }
+}
+
+all_the_tuples_minus_one_no_last_special_case!(get_forwarded_combine_tuple);
+
+impl GetForwardedLayer {
+    #[inline]
+    /// Create a new `GetForwardedLayer` for the standard [`Forwarded`] header.
+    pub fn std() -> Self {
+        Self::new()
+    }
+}
+
+impl GetForwardedLayer<(Via, XForwardedFor, XForwardedHost, XForwardedProto)> {
+    #[inline]
+    /// Create a new `GetForwardedLayer` for the legacy [`Via`],
+    /// [`X-Forwarded-For`], [`X-Forwarded-Host`], and [`X-Forwarded-Proto`] headers.
+    ///
+    /// [`Via`]: crate::http::headers::Via
+    /// [`X-Forwarded-For`]: crate::http::headers::XForwardedFor
+    /// [`X-Forwarded-Host`]: crate::http::headers::XForwardedHost
+    /// [`X-Forwarded-Proto`]: crate::http::headers::XForwardedProto
+    pub fn legacy() -> Self {
+        Self::new()
+    }
+}
+
+macro_rules! get_forwarded_layer_for_tuple {
+    ( $($ty:ident),* $(,)? ) => {
+        #[allow(non_snake_case)]
+        impl<$($ty,)* S> Layer<S> for GetForwardedLayer<($($ty,)*)> {
+            type Service = GetForwardedService<S, ($($ty,)*)>;
+
+            fn layer(&self, inner: S) -> Self::Service {
+                Self::Service {
+                    inner,
+                    _headers: PhantomData,
+                }
+            }
+        }
+    }
+}
+
+all_the_tuples_no_last_special_case!(get_forwarded_layer_for_tuple);
+
 #[derive(Debug, Clone)]
-/// TODO
-pub struct GetForwardedService<S, M = ModeRFC7239> {
+/// Middleware service to extract [`Forwarded`] information from the specified `T` headers.
+pub struct GetForwardedService<S, T = (Forwarded,)> {
     inner: S,
-    _mode: PhantomData<fn() -> M>,
+    _headers: PhantomData<fn() -> T>,
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for GetForwardedService<S, ModeRFC7239>
-where
-    S: Service<State, Request<Body>>,
-    Body: Send + 'static,
-    State: Send + Sync + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-
-    fn serve(
-        &self,
-        mut ctx: Context<State>,
-        req: Request<Body>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        if let Some(forwarded) = req.headers().typed_get::<Forwarded>() {
-            match ctx.get_mut::<Forwarded>() {
-                Some(ref mut f) => {
-                    f.extend(forwarded);
-                }
-                None => {
-                    ctx.insert(forwarded);
-                }
-            }
+impl<S, T> GetForwardedService<S, T> {
+    /// Create a new `GetForwardedService` for the forward header `T`.
+    pub fn new(inner: S) -> Self {
+        Self {
+            inner,
+            _headers: PhantomData,
         }
-
-        self.inner.serve(ctx, req)
     }
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for GetForwardedService<S, ModeLegacy>
-where
-    S: Service<State, Request<Body>>,
-    Body: Send + 'static,
-    State: Send + Sync + 'static,
-{
-    type Response = S::Response;
-    type Error = S::Error;
-
-    fn serve(
-        &self,
-        mut ctx: Context<State>,
-        req: Request<Body>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let mut forwarded_elements = Vec::with_capacity(1);
-
-        if let Some(x_forwarded_for) = req.headers().typed_get::<XForwardedFor>() {
-            forwarded_elements.extend(
-                x_forwarded_for
-                    .iter()
-                    .map(|ip| ForwardedElement::forwarded_for(*ip)),
-            );
+macro_rules! get_forwarded_service_combine_tuple {
+    ( $($ty:ident),* $(,)? ) => {
+        #[allow(non_snake_case)]
+        impl<S, $($ty),*> GetForwardedService<S, ($($ty,)*)> {
+            /// Combine the header `T` with the current headers for this [`GetForwardedService`].
+            pub fn combine<T>(self) -> GetForwardedService<S, ($($ty,)* T)> {
+                GetForwardedService {
+                    inner: self.inner,
+                    _headers: PhantomData,
+                }
+            }
         }
+    }
+}
 
-        if let Some(via) = req.headers().typed_get::<Via>() {
-            let mut via_iter = via.into_iter_nodes();
-            for element in forwarded_elements.iter_mut() {
-                match via_iter.next() {
-                    Some(node) => {
-                        element.set_forwarded_by(node);
+all_the_tuples_minus_one_no_last_special_case!(get_forwarded_service_combine_tuple);
+
+impl<S> GetForwardedService<S, (Via, XForwardedFor, XForwardedHost, XForwardedProto)> {
+    #[inline]
+    /// Create a new `GetForwardedService` for the legacy [`Via`],
+    /// [`X-Forwarded-For`], [`X-Forwarded-Host`], and [`X-Forwarded-Proto`] headers.
+    ///
+    /// [`Via`]: crate::http::headers::Via
+    /// [`X-Forwarded-For`]: crate::http::headers::XForwardedFor
+    /// [`X-Forwarded-Host`]: crate::http::headers::XForwardedHost
+    /// [`X-Forwarded-Proto`]: crate::http::headers::XForwardedProto
+    pub fn legacy(inner: S) -> Self {
+        Self::new(inner)
+    }
+}
+
+macro_rules! get_forwarded_service_for_tuple {
+    ( $($ty:ident),* $(,)? ) => {
+        #[allow(non_snake_case)]
+        impl<$($ty,)* S, State, Body> Service<State, Request<Body>> for GetForwardedService<S, ($($ty,)*)>
+        where
+            $( $ty: ForwardHeader + Send + Sync + 'static, )*
+            S: Service<State, Request<Body>>,
+            Body: Send + 'static,
+            State: Send + Sync + 'static,
+        {
+            type Response = S::Response;
+            type Error = S::Error;
+
+            fn serve(
+                &self,
+                mut ctx: Context<State>,
+                req: Request<Body>,
+            ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+                let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
+
+                $(
+                    if let Some($ty) = req.headers().typed_get::<$ty>() {
+                        let mut iter = $ty.into_iter();
+                        for element in forwarded_elements.iter_mut() {
+                            let other = iter.next();
+                            match other {
+                                Some(other) => {
+                                    element.merge(other);
+                                }
+                                None => break,
+                            }
+                        }
+                        for other in iter {
+                            forwarded_elements.push(other);
+                        }
                     }
-                    None => break,
+                )*
+
+                if !forwarded_elements.is_empty() {
+                    match ctx.get_mut::<Forwarded>() {
+                        Some(ref mut f) => {
+                            f.extend(forwarded_elements);
+                        }
+                        None => {
+                            let mut it = forwarded_elements.into_iter();
+                            let mut forwarded = Forwarded::new(it.next().unwrap());
+                            forwarded.extend(it);
+                            ctx.insert(forwarded);
+                        }
+                    }
                 }
-            }
-            // TODO: set also proto / version
-            for node in via_iter {
-                forwarded_elements.push(ForwardedElement::forwarded_by(node));
+
+                self.inner.serve(ctx, req)
             }
         }
-
-        if let Some(x_forwarded_host) = req.headers().typed_get::<XForwardedHost>() {
-            let authority = x_forwarded_host.into_inner();
-            match forwarded_elements.get_mut(0) {
-                Some(el) => {
-                    el.set_forwarded_host(authority);
-                }
-                None => {
-                    forwarded_elements.push(ForwardedElement::forwarded_host(authority));
-                }
-            }
-        }
-
-        if let Some(x_forwarded_proto) = req.headers().typed_get::<XForwardedProto>() {
-            let proto = x_forwarded_proto.into_protocol();
-            match forwarded_elements.get_mut(0) {
-                Some(el) => {
-                    el.set_forwarded_proto(proto);
-                }
-                None => {
-                    forwarded_elements.push(ForwardedElement::forwarded_proto(proto));
-                }
-            }
-        }
-
-        if !forwarded_elements.is_empty() {
-            match ctx.get_mut::<Forwarded>() {
-                Some(ref mut f) => {
-                    f.extend(forwarded_elements);
-                }
-                None => {
-                    let mut it = forwarded_elements.into_iter();
-                    let mut forwarded = Forwarded::new(it.next().unwrap());
-                    forwarded.extend(it);
-                    ctx.insert(forwarded);
-                }
-            }
-        }
-
-        self.inner.serve(ctx, req)
     }
 }
 
-mod private {
-    #[derive(Debug, Clone)]
-    pub struct ModeRFC7239;
-
-    #[derive(Debug, Clone)]
-    pub struct ModeLegacy;
-}
+all_the_tuples_no_last_special_case!(get_forwarded_service_for_tuple);

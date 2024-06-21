@@ -82,7 +82,9 @@ pub use common::Accept;
 
 mod forwarded;
 #[doc(inline)]
-pub use forwarded::{Forwarded, Via, XForwardedFor, XForwardedHost, XForwardedProto};
+pub use forwarded::{
+    ForwardHeader, Forwarded, Via, XForwardedFor, XForwardedHost, XForwardedProto,
+};
 
 pub mod authorization {
     //! Authorization header and types.
