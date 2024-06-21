@@ -1,7 +1,7 @@
 use crate::http::headers::{self, Header};
 use crate::http::{HeaderName, HeaderValue};
 use crate::net::address::Host;
-use crate::net::forwarded::ForwardedAuthority;
+use crate::net::forwarded::{ForwardedAuthority, ForwardedElement};
 
 /// The X-Forwarded-Host (XFH) header is a de-facto standard header for identifying the
 /// original host requested by the client in the Host HTTP request header.
@@ -70,6 +70,27 @@ impl XForwardedHost {
     /// Consume this [`Header`] into its inner data.
     pub fn into_inner(self) -> ForwardedAuthority {
         self.0
+    }
+}
+
+impl IntoIterator for XForwardedHost {
+    type Item = ForwardedElement;
+    type IntoIter = XForwardedHostIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        XForwardedHostIterator(Some(self.0))
+    }
+}
+
+#[derive(Debug, Clone)]
+/// An iterator over the `XForwardedHost` header's elements.
+pub struct XForwardedHostIterator(Option<ForwardedAuthority>);
+
+impl Iterator for XForwardedHostIterator {
+    type Item = ForwardedElement;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.take().map(ForwardedElement::forwarded_host)
     }
 }
 

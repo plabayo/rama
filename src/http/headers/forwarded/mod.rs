@@ -28,3 +28,19 @@ impl<T> ForwardHeader for T where
     T: crate::http::headers::Header + IntoIterator<Item = ForwardedElement>
 {
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_forward_header<T: ForwardHeader>() {}
+
+    #[test]
+    fn test_forward_header_impls() {
+        assert_forward_header::<Forwarded>();
+        assert_forward_header::<Via>();
+        assert_forward_header::<XForwardedFor>();
+        assert_forward_header::<XForwardedHost>();
+        assert_forward_header::<XForwardedProto>();
+    }
+}

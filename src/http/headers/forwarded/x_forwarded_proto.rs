@@ -1,6 +1,6 @@
 use crate::http::headers::{self, Header};
 use crate::http::{HeaderName, HeaderValue};
-use crate::net::forwarded::ForwardedProtocol;
+use crate::net::forwarded::{ForwardedElement, ForwardedProtocol};
 
 /// The X-Forwarded-Proto (XFP) header is a de-facto standard header for
 /// identifying the protocol (HTTP or HTTPS) that a client used to connect to your proxy or load balancer.
@@ -57,6 +57,27 @@ impl XForwardedProto {
     /// Consume this [`Header`] into the inner data ([`ForwardedProtocol`]).
     pub fn into_protocol(self) -> ForwardedProtocol {
         self.0
+    }
+}
+
+impl IntoIterator for XForwardedProto {
+    type Item = ForwardedElement;
+    type IntoIter = XForwardedProtoIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        XForwardedProtoIterator(Some(self.0))
+    }
+}
+
+#[derive(Debug, Clone)]
+/// An iterator over the `XForwardedProto` header's elements.
+pub struct XForwardedProtoIterator(Option<ForwardedProtocol>);
+
+impl Iterator for XForwardedProtoIterator {
+    type Item = ForwardedElement;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.take().map(ForwardedElement::forwarded_proto)
     }
 }
 

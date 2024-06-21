@@ -1,5 +1,6 @@
 use crate::http::headers::{self, Header};
 use crate::http::{HeaderName, HeaderValue};
+use crate::net::forwarded::ForwardedElement;
 use std::iter::FromIterator;
 use std::net::IpAddr;
 
@@ -69,6 +70,27 @@ impl XForwardedFor {
     /// Returns an iterator over the defined [`IpAddr`].
     pub fn iter(&self) -> impl Iterator<Item = &IpAddr> {
         self.0.iter()
+    }
+}
+
+impl IntoIterator for XForwardedFor {
+    type Item = ForwardedElement;
+    type IntoIter = XForwardedForIterator;
+
+    fn into_iter(self) -> Self::IntoIter {
+        XForwardedForIterator(self.0.into_iter())
+    }
+}
+
+#[derive(Debug, Clone)]
+/// An iterator over the `XForwardedFor` header's elements.
+pub struct XForwardedForIterator(std::vec::IntoIter<IpAddr>);
+
+impl Iterator for XForwardedForIterator {
+    type Item = ForwardedElement;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(ForwardedElement::forwarded_for)
     }
 }
 

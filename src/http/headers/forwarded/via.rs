@@ -1,7 +1,7 @@
 use crate::error::{ErrorContext, OpaqueError};
 use crate::http::headers::{self, Header};
 use crate::http::{HeaderName, HeaderValue};
-use crate::net::forwarded::{ForwardedProtocol, ForwardedVersion, NodeId};
+use crate::net::forwarded::{ForwardedElement, ForwardedProtocol, ForwardedVersion, NodeId};
 
 /// The Via general header is added by proxies, both forward and reverse.
 ///
@@ -31,10 +31,21 @@ use crate::net::forwarded::{ForwardedProtocol, ForwardedVersion, NodeId};
 pub struct Via(Vec<ViaElement>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViaElement {
+struct ViaElement {
     protocol: Option<ForwardedProtocol>,
     version: ForwardedVersion,
     node_id: NodeId,
+}
+
+impl From<ViaElement> for ForwardedElement {
+    fn from(via: ViaElement) -> Self {
+        let mut el = ForwardedElement::forwarded_by(via.node_id);
+        el.set_forwarded_version(via.version);
+        if let Some(protocol) = via.protocol {
+            el.set_forwarded_proto(protocol);
+        }
+        el
+    }
 }
 
 impl Header for Via {
@@ -78,15 +89,24 @@ impl FromIterator<ViaElement> for Via {
     }
 }
 
-impl Via {
-    /// Iterate over the [`NodeId`]s defined in this [`Via`] [`Header`].
-    pub fn iter_nodes(&self) -> impl Iterator<Item = &NodeId> {
-        self.0.iter().map(|el| &el.node_id)
-    }
+impl IntoIterator for Via {
+    type Item = ForwardedElement;
+    type IntoIter = ViaIterator;
 
-    /// Consume self into the [`NodeId`]s defined in this [`Via`] [`Header`].
-    pub fn into_iter_nodes(self) -> impl Iterator<Item = NodeId> {
-        self.0.into_iter().map(|el| el.node_id)
+    fn into_iter(self) -> Self::IntoIter {
+        ViaIterator(self.0.into_iter())
+    }
+}
+
+#[derive(Debug, Clone)]
+/// An iterator over the `Via` header's elements.
+pub struct ViaIterator(std::vec::IntoIter<ViaElement>);
+
+impl Iterator for ViaIterator {
+    type Item = ForwardedElement;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next().map(Into::into)
     }
 }
 
