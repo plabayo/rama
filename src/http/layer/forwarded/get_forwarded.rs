@@ -86,6 +86,7 @@ where
                     None => break,
                 }
             }
+            // TODO: set also proto / version
             for node in via_iter {
                 forwarded_elements.push(ForwardedElement::forwarded_by(node));
             }

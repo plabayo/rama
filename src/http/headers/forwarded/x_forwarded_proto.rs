@@ -1,6 +1,6 @@
 use crate::http::headers::{self, Header};
 use crate::http::{HeaderName, HeaderValue};
-use crate::net::Protocol;
+use crate::net::forwarded::ForwardedProtocol;
 
 /// The X-Forwarded-Proto (XFP) header is a de-facto standard header for
 /// identifying the protocol (HTTP or HTTPS) that a client used to connect to your proxy or load balancer.
@@ -24,7 +24,7 @@ use crate::net::Protocol;
 /// * `https`
 /// * `http`
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct XForwardedProto(Protocol);
+pub struct XForwardedProto(ForwardedProtocol);
 
 impl Header for XForwardedProto {
     fn name() -> &'static HeaderName {
@@ -49,13 +49,13 @@ impl Header for XForwardedProto {
 }
 
 impl XForwardedProto {
-    /// Get a reference to the [`Protocol`] of this [`XForwardedProto`].
-    pub fn protocol(&self) -> &Protocol {
+    /// Get a reference to the [`ForwardedProtocol`] of this [`XForwardedProto`].
+    pub fn protocol(&self) -> &ForwardedProtocol {
         &self.0
     }
 
-    /// Consume this [`Header`] into the inner data ([`Protocol`]).
-    pub fn into_protocol(self) -> Protocol {
+    /// Consume this [`Header`] into the inner data ([`ForwardedProtocol`]).
+    pub fn into_protocol(self) -> ForwardedProtocol {
         self.0
     }
 }
@@ -86,18 +86,31 @@ mod tests {
     }
 
     // Tests from the Docs
-    test_header!(test1, vec!["https"], Some(XForwardedProto(Protocol::Https)));
+    test_header!(
+        test1,
+        vec!["https"],
+        Some(XForwardedProto(ForwardedProtocol::https()))
+    );
     test_header!(
         test2,
         // 2nd one gets ignored
         vec!["https", "http"],
-        Some(XForwardedProto(Protocol::Https))
+        Some(XForwardedProto(ForwardedProtocol::https()))
     );
-    test_header!(test3, vec!["http"], Some(XForwardedProto(Protocol::Http)));
+    test_header!(
+        test3,
+        vec!["http"],
+        Some(XForwardedProto(ForwardedProtocol::http()))
+    );
+    test_header!(
+        test4,
+        vec!["foobar"],
+        Some(XForwardedProto(ForwardedProtocol::from_static("foobar")))
+    );
 
     #[test]
     fn test_x_forwarded_proto_symmetric_encoder() {
-        for input in [Protocol::Http, Protocol::Https] {
+        for input in [ForwardedProtocol::http(), ForwardedProtocol::https()] {
             let input = XForwardedProto(input);
             let mut values = Vec::new();
             input.encode(&mut values);

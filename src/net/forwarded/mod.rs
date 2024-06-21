@@ -19,6 +19,10 @@ mod element;
 #[doc(inline)]
 pub use element::{ForwardedAuthority, ForwardedElement};
 
+mod proto;
+#[doc(inline)]
+pub use proto::ForwardedProtocol;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Forwarding information stored as a chain.
 ///
@@ -216,7 +220,7 @@ impl Header for Forwarded {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::{address::Host, Protocol};
+    use crate::net::address::Host;
 
     #[test]
     fn test_forwarded_parse_invalid() {
@@ -369,7 +373,10 @@ mod tests {
                 r##"for=192.0.2.43,for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com"##,
                 None,
             ),
-            (r##"proto=http,for=195.2.34.12"##, Some(Protocol::Http)),
+            (
+                r##"proto=http,for=195.2.34.12"##,
+                Some(ForwardedProtocol::http()),
+            ),
         ] {
             let forwarded = Forwarded::try_from(s).unwrap();
             assert_eq!(

@@ -97,19 +97,6 @@ impl Protocol {
         }
     }
 
-    /// Returns the scheme str for this protocol.
-    pub fn as_scheme(&self) -> &str {
-        match self {
-            Protocol::Https => SCHEME_HTTPS,
-            Protocol::Http => SCHEME_HTTP,
-            Protocol::Socks5 => SCHEME_SOCKS5,
-            Protocol::Socks5h => SCHEME_SOCKS5H,
-            Protocol::Ws => SCHEME_WS,
-            Protocol::Wss => SCHEME_WSS,
-            Protocol::Custom(s) => s.as_ref(),
-        }
-    }
-
     /// Return a port that can be used as default in case no port is defined.
     ///
     /// NOTE that this is not going to be valid for non-http ports.
@@ -118,6 +105,19 @@ impl Protocol {
             Protocol::Https | Protocol::Wss => 443,
             Protocol::Http | Protocol::Ws => 80,
             Protocol::Socks5 | Protocol::Socks5h | Protocol::Custom(_) => 80, // \_(ツ)_/¯
+        }
+    }
+
+    /// Returns the [`Protocol`] as a string.
+    pub fn as_str(&self) -> &str {
+        match self {
+            Protocol::Http => "http",
+            Protocol::Https => "https",
+            Protocol::Ws => "ws",
+            Protocol::Wss => "wss",
+            Protocol::Socks5 => "socks5",
+            Protocol::Socks5h => "socks5h",
+            Protocol::Custom(s) => s.as_ref(),
         }
     }
 }
@@ -258,7 +258,7 @@ impl PartialEq<Protocol> for &str {
 
 impl std::fmt::Display for Protocol {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.as_scheme().fmt(f)
+        self.as_str().fmt(f)
     }
 }
 

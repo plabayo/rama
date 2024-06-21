@@ -1,9 +1,7 @@
 use super::ExtensionValue;
 use super::{ForwardedElement, NodeId};
-use crate::{
-    error::{ErrorContext, OpaqueError},
-    net::Protocol,
-};
+use crate::error::{ErrorContext, OpaqueError};
+use crate::net::forwarded::ForwardedProtocol;
 
 pub(crate) fn parse_single_forwarded_element(
     bytes: &[u8],
@@ -164,7 +162,7 @@ fn parse_next_forwarded_element(
                 "proto" => if el.proto.is_some() {
                     return Err(OpaqueError::from_display("Forwarded Element can only contain one 'proto' property"));
                 } else {
-                    el.proto = Some(Protocol::try_from(value).context("parse Forwarded Element 'proto' protocol")?);
+                    el.proto = Some(ForwardedProtocol::try_from(value).context("parse Forwarded Element 'proto' protocol")?);
                 },
                 _ => {
                     el.extensions.get_or_insert_with(Default::default)

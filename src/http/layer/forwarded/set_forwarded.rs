@@ -1,6 +1,6 @@
 use crate::http::headers::HeaderMapExt;
 use crate::http::{Request, RequestContext};
-use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
+use crate::net::forwarded::{Forwarded, ForwardedElement, ForwardedProtocol, NodeId};
 use crate::net::stream::SocketInfo;
 use crate::service::{Context, Layer, Service};
 use std::fmt;
@@ -326,14 +326,13 @@ where
         }
 
         if self.proto {
+            let fowarded_proto: ForwardedProtocol = request_ctx.protocol.clone().into();
             forwarded_element = match forwarded_element.take() {
                 Some(mut forwarded_element) => {
-                    forwarded_element.set_forwarded_proto(request_ctx.protocol.clone());
+                    forwarded_element.set_forwarded_proto(fowarded_proto);
                     Some(forwarded_element)
                 }
-                None => Some(ForwardedElement::forwarded_proto(
-                    request_ctx.protocol.clone(),
-                )),
+                None => Some(ForwardedElement::forwarded_proto(fowarded_proto)),
             };
         }
 

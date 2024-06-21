@@ -1,11 +1,8 @@
-use super::NodeId;
+use super::{ForwardedProtocol, NodeId};
 use crate::http::HeaderValue;
 use crate::{
     error::{ErrorContext, OpaqueError},
-    net::{
-        address::{Authority, Host},
-        Protocol,
-    },
+    net::address::{Authority, Host},
 };
 use std::fmt;
 use std::net::SocketAddr;
@@ -23,7 +20,7 @@ pub struct ForwardedElement {
     by_node: Option<NodeId>,
     for_node: Option<NodeId>,
     authority: Option<ForwardedAuthority>,
-    proto: Option<Protocol>,
+    proto: Option<ForwardedProtocol>,
     proto_version: Option<ProtocolVersion>,
 
     // not expected, but if used these parameters (keys)
@@ -214,8 +211,8 @@ impl ForwardedElement {
     }
 
     /// Create a new [`ForwardedElement`] with the "proto" parameter
-    /// set to the given valid/recognised [`Protocol`]
-    pub fn forwarded_proto(protocol: Protocol) -> Self {
+    /// set to the given valid/recognised [`ForwardedProtocol`]
+    pub fn forwarded_proto(protocol: ForwardedProtocol) -> Self {
         Self {
             by_node: None,
             for_node: None,
@@ -226,14 +223,14 @@ impl ForwardedElement {
         }
     }
 
-    /// Set the "proto" parameter to the given valid/recognised [`Protocol`].
-    pub fn set_forwarded_proto(&mut self, protocol: Protocol) -> &mut Self {
+    /// Set the "proto" parameter to the given valid/recognised [`ForwardedProtocol`].
+    pub fn set_forwarded_proto(&mut self, protocol: ForwardedProtocol) -> &mut Self {
         self.proto = Some(protocol);
         self
     }
 
     /// Get a reference to the "proto" parameter if it is set.
-    pub fn ref_forwarded_proto(&self) -> Option<&Protocol> {
+    pub fn ref_forwarded_proto(&self) -> Option<&ForwardedProtocol> {
         self.proto.as_ref()
     }
 
@@ -473,7 +470,7 @@ mod tests {
                     by_node: None,
                     for_node: Some(NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap()),
                     authority: None,
-                    proto: Some(Protocol::Http),
+                    proto: Some(ForwardedProtocol::http()),
                     proto_version: None,
                     extensions: None,
                 },
@@ -484,7 +481,7 @@ mod tests {
                     by_node: None,
                     for_node: Some(NodeId::try_from("[2001:db8:cafe::17]:4711").unwrap()),
                     authority: None,
-                    proto: Some(Protocol::Http),
+                    proto: Some(ForwardedProtocol::http()),
                     proto_version: None,
                     extensions: Some(
                         [(
@@ -504,7 +501,7 @@ mod tests {
                     by_node: Some(NodeId::try_from("203.0.113.43").unwrap()),
                     for_node: Some(NodeId::try_from("192.0.2.60").unwrap()),
                     authority: None,
-                    proto: Some(Protocol::Http),
+                    proto: Some(ForwardedProtocol::http()),
                     proto_version: None,
                     extensions: None,
                 },
