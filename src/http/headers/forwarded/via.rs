@@ -89,6 +89,32 @@ impl FromIterator<ViaElement> for Via {
     }
 }
 
+impl super::ForwardHeader for Via {
+    fn try_from_forwarded<'a, I>(input: I) -> Option<Self>
+    where
+        I: IntoIterator<Item = &'a ForwardedElement>,
+    {
+        let vec: Vec<_> = input
+            .into_iter()
+            .filter_map(|el| {
+                let node_id = el.ref_forwarded_by()?.clone();
+                let version = el.ref_forwarded_version()?;
+                let protocol = el.ref_forwarded_proto();
+                Some(ViaElement {
+                    protocol,
+                    version,
+                    node_id,
+                })
+            })
+            .collect();
+        if vec.is_empty() {
+            None
+        } else {
+            Some(Via(vec))
+        }
+    }
+}
+
 impl IntoIterator for Via {
     type Item = ForwardedElement;
     type IntoIter = ViaIterator;

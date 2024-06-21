@@ -22,15 +22,29 @@ mod exotic_forward_ip;
 pub use exotic_forward_ip::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp};
 
 /// A trait for types headers that is used by middleware
-/// which supports headers that can be converted into Forward data.
+/// which supports headers that can be converted into and from Forward data.
 pub trait ForwardHeader:
     crate::http::headers::Header + IntoIterator<Item = ForwardedElement>
 {
+    /// Try to convert the given iterator of `ForwardedElement` into the header.
+    ///
+    /// `None` is returned if the conversion fails.
+    fn try_from_forwarded<'a, I>(into_it: I) -> Option<Self>
+    where
+        I: IntoIterator<Item = &'a ForwardedElement>,
+        Self: Sized;
 }
 
-impl<T> ForwardHeader for T where
-    T: crate::http::headers::Header + IntoIterator<Item = ForwardedElement>
-{
+impl ForwardHeader for Forwarded {
+    fn try_from_forwarded<'a, I>(input: I) -> Option<Self>
+    where
+        I: IntoIterator<Item = &'a ForwardedElement>,
+    {
+        let mut it = input.into_iter();
+        let mut forwarded = Forwarded::new(it.next()?.clone());
+        forwarded.extend(it.cloned());
+        Some(forwarded)
+    }
 }
 
 #[cfg(test)]

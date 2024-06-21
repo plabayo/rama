@@ -69,6 +69,16 @@ impl IntoIterator for XForwardedProto {
     }
 }
 
+impl super::ForwardHeader for XForwardedProto {
+    fn try_from_forwarded<'a, I>(input: I) -> Option<Self>
+    where
+        I: IntoIterator<Item = &'a ForwardedElement>,
+    {
+        let proto = input.into_iter().next()?.ref_forwarded_proto()?;
+        Some(XForwardedProto(proto))
+    }
+}
+
 #[derive(Debug, Clone)]
 /// An iterator over the `XForwardedProto` header's elements.
 pub struct XForwardedProtoIterator(Option<ForwardedProtocol>);

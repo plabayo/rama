@@ -224,8 +224,8 @@ impl ForwardedElement {
     }
 
     /// Get a reference to the "proto" parameter if it is set.
-    pub fn ref_forwarded_proto(&self) -> Option<&ForwardedProtocol> {
-        self.proto.as_ref()
+    pub fn ref_forwarded_proto(&self) -> Option<ForwardedProtocol> {
+        self.proto.clone()
     }
 
     /// Create a new [`ForwardedElement`] with the "version" parameter

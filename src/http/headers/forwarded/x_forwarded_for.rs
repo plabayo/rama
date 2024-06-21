@@ -66,6 +66,23 @@ impl FromIterator<IpAddr> for XForwardedFor {
     }
 }
 
+impl super::ForwardHeader for XForwardedFor {
+    fn try_from_forwarded<'a, I>(input: I) -> Option<Self>
+    where
+        I: IntoIterator<Item = &'a ForwardedElement>,
+    {
+        let vec: Vec<_> = input
+            .into_iter()
+            .filter_map(|el| el.ref_forwarded_for()?.ip())
+            .collect();
+        if vec.is_empty() {
+            None
+        } else {
+            Some(XForwardedFor(vec))
+        }
+    }
+}
+
 impl XForwardedFor {
     /// Returns an iterator over the defined [`IpAddr`].
     pub fn iter(&self) -> impl Iterator<Item = &IpAddr> {

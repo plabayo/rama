@@ -82,6 +82,17 @@ impl IntoIterator for XForwardedHost {
     }
 }
 
+impl super::ForwardHeader for XForwardedHost {
+    fn try_from_forwarded<'a, I>(input: I) -> Option<Self>
+    where
+        I: IntoIterator<Item = &'a ForwardedElement>,
+    {
+        let el = input.into_iter().next()?;
+        let host = el.ref_forwarded_host().cloned()?;
+        Some(XForwardedHost(host))
+    }
+}
+
 #[derive(Debug, Clone)]
 /// An iterator over the `XForwardedHost` header's elements.
 pub struct XForwardedHostIterator(Option<ForwardedAuthority>);

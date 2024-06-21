@@ -106,6 +106,21 @@ macro_rules! exotic_forward_ip_headers {
                 }
             }
 
+            impl super::ForwardHeader for $name {
+                fn try_from_forwarded<'a, I>(input: I) -> Option<Self>
+                where
+                    I: IntoIterator<Item = &'a ForwardedElement>,
+                {
+                    let node = input
+                        .into_iter()
+                        .next()?
+                        .ref_forwarded_for()?;
+                    let ip = node.ip()?;
+                    let port = node.port();
+                    Some($name(ClientAddr { ip, port }))
+                }
+            }
+
             paste! {
                 impl IntoIterator for $name {
                     type Item = ForwardedElement;

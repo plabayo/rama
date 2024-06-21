@@ -387,8 +387,7 @@ mod tests {
                 forwarded
                     .iter()
                     .next()
-                    .and_then(|el| el.ref_forwarded_proto())
-                    .cloned(),
+                    .and_then(|el| el.ref_forwarded_proto()),
                 expected
             );
         }
