@@ -152,7 +152,7 @@ mod tests {
         let ctx = RequestContext::from(&req);
 
         assert_eq!(ctx.http_version, Version::HTTP_11);
-        assert_eq!(ctx.protocol, Protocol::Http);
+        assert_eq!(ctx.protocol, Protocol::HTTP);
         assert_eq!(ctx.authority.unwrap().to_string(), "example.com:8080");
     }
 
@@ -168,7 +168,7 @@ mod tests {
         let ctx: RequestContext = parts.into();
 
         assert_eq!(ctx.http_version, Version::HTTP_11);
-        assert_eq!(ctx.protocol, Protocol::Http);
+        assert_eq!(ctx.protocol, Protocol::HTTP);
         assert_eq!(
             ctx.authority.unwrap(),
             Authority::try_from("example.com:8080").unwrap()
@@ -179,7 +179,7 @@ mod tests {
     fn test_request_context_authority() {
         let ctx = RequestContext {
             http_version: Version::HTTP_11,
-            protocol: Protocol::Http,
+            protocol: Protocol::HTTP,
             authority: Some("example.com:8080".try_into().unwrap()),
         };
 

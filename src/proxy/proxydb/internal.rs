@@ -611,7 +611,7 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
-            protocol: Protocol::Https,
+            protocol: Protocol::HTTPS,
             authority: Some("localhost:8443".try_into().unwrap()),
         };
 
@@ -649,7 +649,7 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
-            protocol: Protocol::Https,
+            protocol: Protocol::HTTPS,
             authority: Some("localhost:8443".try_into().unwrap()),
         };
 
@@ -687,7 +687,7 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_3,
-            protocol: Protocol::Https,
+            protocol: Protocol::HTTPS,
             authority: Some("localhost:8443".try_into().unwrap()),
         };
 
@@ -725,7 +725,7 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_3,
-            protocol: Protocol::Https,
+            protocol: Protocol::HTTPS,
             authority: Some("localhost:8443".try_into().unwrap()),
         };
 
@@ -763,7 +763,7 @@ mod tests {
 
         let ctx = RequestContext {
             http_version: Version::HTTP_3,
-            protocol: Protocol::Https,
+            protocol: Protocol::HTTPS,
             authority: Some("localhost:8443".try_into().unwrap()),
         };
 
@@ -945,7 +945,7 @@ mod tests {
             let proxy = parse_csv_row(proxy_csv).unwrap();
             let ctx = RequestContext {
                 http_version: Version::HTTP_2,
-                protocol: Protocol::Https,
+                protocol: Protocol::HTTPS,
                 authority: Some("localhost:8443".try_into().unwrap()),
             };
 
@@ -1090,7 +1090,7 @@ mod tests {
             let proxy = parse_csv_row(proxy_csv).unwrap();
             let ctx = RequestContext {
                 http_version: Version::HTTP_2,
-                protocol: Protocol::Https,
+                protocol: Protocol::HTTPS,
                 authority: Some("localhost:8443".try_into().unwrap()),
             };
 
@@ -1103,7 +1103,7 @@ mod tests {
         let proxy = parse_csv_row("id,1,,1,,,,,authority,*,*,*,*").unwrap();
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
-            protocol: Protocol::Https,
+            protocol: Protocol::HTTPS,
             authority: Some("localhost:8443".try_into().unwrap()),
         };
 
@@ -1178,7 +1178,7 @@ mod tests {
         let proxy = parse_csv_row("id,1,,1,,,,,authority,pool,country,city,carrier").unwrap();
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
-            protocol: Protocol::Https,
+            protocol: Protocol::HTTPS,
             authority: Some("localhost:8443".try_into().unwrap()),
         };
 

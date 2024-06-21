@@ -2,7 +2,6 @@ use crate::error::{BoxError, ErrorExt};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
 use crate::http::{Request, RequestContext};
 use crate::net::stream::Stream;
-use crate::net::Protocol;
 use crate::service::{Context, Service};
 use crate::tls::rustls::dep::pki_types::ServerName;
 use crate::tls::rustls::dep::rustls::RootCertStore;
@@ -190,7 +189,7 @@ where
         let (addr, stream) = conn.into_parts();
         let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
 
-        if !request_ctx.protocol.secure() {
+        if !request_ctx.protocol.is_secure() {
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
@@ -255,15 +254,15 @@ where
         let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
         let request_ctx = request_ctx.clone();
 
-        if let Some(new_scheme) = match request_ctx.protocol {
-            Protocol::Http => Some(crate::http::dep::http::uri::Scheme::HTTPS),
-            Protocol::Ws => Some("wss".parse().unwrap()),
-            Protocol::Custom(_)
-            | Protocol::Https
-            | Protocol::Wss
-            | Protocol::Socks5
-            | Protocol::Socks5h => None,
-        } {
+        if let Some(new_scheme) =
+            if request_ctx.protocol.is_http() && !request_ctx.protocol.is_secure() {
+                Some(crate::http::dep::http::uri::Scheme::HTTPS)
+            } else if request_ctx.protocol.is_ws() && !request_ctx.protocol.is_secure() {
+                Some("wss".parse().unwrap())
+            } else {
+                None
+            }
+        {
             let (mut parts, body) = req.into_parts();
             let mut uri_parts = parts.uri.into_parts();
             uri_parts.scheme = Some(new_scheme);

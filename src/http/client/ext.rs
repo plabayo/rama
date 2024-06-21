@@ -220,11 +220,12 @@ mod private {
     impl IntoUrlSealed for Uri {
         fn into_url(self) -> Result<Uri, HttpClientError> {
             let protocol: Protocol = self.scheme().into();
-            match protocol {
-                Protocol::Http | Protocol::Https => Ok(self),
-                _ => Err(HttpClientError::from_display(format!(
+            if protocol.is_http() {
+                Ok(self)
+            } else {
+                Err(HttpClientError::from_display(format!(
                     "Unsupported protocol: {protocol}"
-                ))),
+                )))
             }
         }
     }

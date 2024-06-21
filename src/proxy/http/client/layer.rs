@@ -198,7 +198,7 @@ where
         // in case the provider gave us a proxy info, we insert it into the context
         if let Some(address) = address.as_ref() {
             ctx.insert(address.clone());
-            if address.protocol().secure() {
+            if address.protocol().is_secure() {
                 ctx.insert(HttpsTunnel {
                     server_name: address.authority().host().to_string(),
                 });
@@ -236,7 +236,7 @@ where
 
         let request_context: &RequestContext = ctx.get_or_insert_from(&req);
 
-        if !request_context.protocol.secure() {
+        if !request_context.protocol.is_secure() {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
             if let Some(credential) = address.credential().cloned() {

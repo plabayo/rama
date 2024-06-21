@@ -73,8 +73,8 @@ impl ForwardedProtocol {
 impl From<ForwardedProtocol> for Protocol {
     fn from(p: ForwardedProtocol) -> Self {
         match p.0 {
-            ProtocolKind::Https => Protocol::Https,
-            ProtocolKind::Http => Protocol::Http,
+            ProtocolKind::Https => Protocol::HTTPS,
+            ProtocolKind::Http => Protocol::HTTP,
         }
     }
 }
@@ -88,10 +88,14 @@ impl TryFrom<Protocol> for ForwardedProtocol {
     type Error = UnknownProtocol;
 
     fn try_from(p: Protocol) -> Result<Self, Self::Error> {
-        match p {
-            Protocol::Http => Ok(ForwardedProtocol(ProtocolKind::Http)),
-            Protocol::Https => Ok(ForwardedProtocol(ProtocolKind::Https)),
-            _ => Err(UnknownProtocol),
+        if p.is_http() {
+            if p.is_secure() {
+                Ok(ForwardedProtocol(ProtocolKind::Https))
+            } else {
+                Ok(ForwardedProtocol(ProtocolKind::Http))
+            }
+        } else {
+            Err(UnknownProtocol)
         }
     }
 }
@@ -100,10 +104,14 @@ impl TryFrom<&Protocol> for ForwardedProtocol {
     type Error = UnknownProtocol;
 
     fn try_from(p: &Protocol) -> Result<Self, Self::Error> {
-        match *p {
-            Protocol::Http => Ok(ForwardedProtocol(ProtocolKind::Http)),
-            Protocol::Https => Ok(ForwardedProtocol(ProtocolKind::Https)),
-            _ => Err(UnknownProtocol),
+        if p.is_http() {
+            if p.is_secure() {
+                Ok(ForwardedProtocol(ProtocolKind::Https))
+            } else {
+                Ok(ForwardedProtocol(ProtocolKind::Http))
+            }
+        } else {
+            Err(UnknownProtocol)
         }
     }
 }
