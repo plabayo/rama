@@ -1,8 +1,7 @@
 use crate::error::{ErrorContext, OpaqueError};
 use crate::http::headers::{self, Header};
-use crate::http::{HeaderName, HeaderValue, Version};
-use crate::net::forwarded::NodeId;
-use crate::net::Protocol;
+use crate::http::{HeaderName, HeaderValue};
+use crate::net::forwarded::{ForwardedProtocol, ForwardedVersion, NodeId};
 
 /// The Via general header is added by proxies, both forward and reverse.
 ///
@@ -33,47 +32,9 @@ pub struct Via(Vec<ViaElement>);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViaElement {
-    protocol: Option<Protocol>,
-    version: ViaVersion,
+    protocol: Option<ForwardedProtocol>,
+    version: ForwardedVersion,
     node_id: NodeId,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ViaVersion {
-    HttpVersion(Version),
-    Custom(Vec<u8>),
-}
-
-impl From<&[u8]> for ViaVersion {
-    fn from(bytes: &[u8]) -> Self {
-        match bytes {
-            b"0.9" => Self::HttpVersion(Version::HTTP_09),
-            b"1" | b"1.0" => Self::HttpVersion(Version::HTTP_10),
-            b"1.1" => Self::HttpVersion(Version::HTTP_11),
-            b"2" | b"2.0" => Self::HttpVersion(Version::HTTP_2),
-            b"3" | b"3.0" => Self::HttpVersion(Version::HTTP_3),
-            custom => Self::Custom(custom.to_vec()),
-        }
-    }
-}
-
-impl std::fmt::Display for ViaVersion {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::HttpVersion(version) => match *version {
-                crate::http::Version::HTTP_09 => write!(f, "0.9"),
-                crate::http::Version::HTTP_10 => write!(f, "1.0"),
-                crate::http::Version::HTTP_11 => write!(f, "1.1"),
-                crate::http::Version::HTTP_2 => write!(f, "2.0"),
-                crate::http::Version::HTTP_3 => write!(f, "3.0"),
-                _ => write!(f, "???"),
-            },
-            Self::Custom(ref version) => match std::str::from_utf8(version) {
-                Ok(s) => write!(f, "{s}"),
-                Err(_) => write!(f, "{version:X?}"),
-            },
-        }
-    }
 }
 
 impl Header for Via {
@@ -140,7 +101,7 @@ impl std::str::FromStr for ViaElement {
         let (protocol, version) = match bytes.iter().position(|b| *b == b'/' || *b == b' ') {
             Some(index) => match bytes[index] {
                 b'/' => {
-                    let protocol: Protocol = std::str::from_utf8(&bytes[..index])
+                    let protocol: ForwardedProtocol = std::str::from_utf8(&bytes[..index])
                         .context("parse via protocol as utf-8")?
                         .try_into()
                         .context("parse via utf-8 protocol as protocol")?;
@@ -148,12 +109,14 @@ impl std::str::FromStr for ViaElement {
                     let index = bytes.iter().position(|b| *b == b' ').ok_or_else(|| {
                         OpaqueError::from_display("via str: missing space after protocol separator")
                     })?;
-                    let version = ViaVersion::from(&bytes[..index]);
+                    let version =
+                        ForwardedVersion::try_from(&bytes[..index]).context("parse via version")?;
                     bytes = &bytes[index + 1..];
                     (Some(protocol), version)
                 }
                 b' ' => {
-                    let version = ViaVersion::from(&bytes[..index]);
+                    let version =
+                        ForwardedVersion::try_from(&bytes[..index]).context("parse via version")?;
                     bytes = &bytes[index + 1..];
                     (None, version)
                 }
@@ -235,7 +198,7 @@ mod tests {
         vec!["1.1 vegur"],
         Some(Via(vec![ViaElement {
             protocol: None,
-            version: ViaVersion::HttpVersion(Version::HTTP_11),
+            version: ForwardedVersion::HTTP_11,
             node_id: NodeId::try_from_str("vegur").unwrap(),
         }]))
     );
@@ -244,7 +207,7 @@ mod tests {
         vec!["1.1     vegur    "],
         Some(Via(vec![ViaElement {
             protocol: None,
-            version: ViaVersion::HttpVersion(Version::HTTP_11),
+            version: ForwardedVersion::HTTP_11,
             node_id: NodeId::try_from_str("vegur").unwrap(),
         }]))
     );
@@ -254,12 +217,12 @@ mod tests {
         Some(Via(vec![
             ViaElement {
                 protocol: None,
-                version: ViaVersion::HttpVersion(Version::HTTP_10),
+                version: ForwardedVersion::HTTP_10,
                 node_id: NodeId::try_from_str("fred").unwrap(),
             },
             ViaElement {
                 protocol: None,
-                version: ViaVersion::HttpVersion(Version::HTTP_11),
+                version: ForwardedVersion::HTTP_11,
                 node_id: NodeId::try_from_str("p.example.net").unwrap(),
             }
         ]))
@@ -270,12 +233,12 @@ mod tests {
         Some(Via(vec![
             ViaElement {
                 protocol: None,
-                version: ViaVersion::HttpVersion(Version::HTTP_10),
+                version: ForwardedVersion::HTTP_10,
                 node_id: NodeId::try_from_str("fred").unwrap(),
             },
             ViaElement {
                 protocol: None,
-                version: ViaVersion::HttpVersion(Version::HTTP_11),
+                version: ForwardedVersion::HTTP_11,
                 node_id: NodeId::try_from_str("p.example.net").unwrap(),
             }
         ]))
@@ -286,12 +249,12 @@ mod tests {
         Some(Via(vec![
             ViaElement {
                 protocol: None,
-                version: ViaVersion::HttpVersion(Version::HTTP_10),
+                version: ForwardedVersion::HTTP_10,
                 node_id: NodeId::try_from_str("fred").unwrap(),
             },
             ViaElement {
                 protocol: None,
-                version: ViaVersion::HttpVersion(Version::HTTP_11),
+                version: ForwardedVersion::HTTP_11,
                 node_id: NodeId::try_from_str("p.example.net").unwrap(),
             }
         ]))
@@ -301,13 +264,13 @@ mod tests {
         vec!["HTTP/1.1 proxy.example.re, 1.1 edge_1"],
         Some(Via(vec![
             ViaElement {
-                protocol: Some(Protocol::Http),
-                version: ViaVersion::HttpVersion(Version::HTTP_11),
+                protocol: Some(ForwardedProtocol::http()),
+                version: ForwardedVersion::HTTP_11,
                 node_id: NodeId::try_from_str("proxy.example.re").unwrap(),
             },
             ViaElement {
                 protocol: None,
-                version: ViaVersion::HttpVersion(Version::HTTP_11),
+                version: ForwardedVersion::HTTP_11,
                 node_id: NodeId::try_from_str("edge_1").unwrap(),
             }
         ]))
@@ -317,7 +280,7 @@ mod tests {
         vec!["1.1 2e9b3ee4d534903f433e1ed8ea30e57a.cloudfront.net (CloudFront)"],
         Some(Via(vec![ViaElement {
             protocol: None,
-            version: ViaVersion::HttpVersion(Version::HTTP_11),
+            version: ForwardedVersion::HTTP_11,
             node_id: NodeId::try_from_str(
                 "2e9b3ee4d534903f433e1ed8ea30e57a.cloudfront.net__CloudFront_"
             )
@@ -331,30 +294,30 @@ mod tests {
             Via(vec![
                 ViaElement {
                     protocol: None,
-                    version: ViaVersion::HttpVersion(Version::HTTP_10),
+                    version: ForwardedVersion::HTTP_10,
                     node_id: NodeId::try_from_str("fred").unwrap(),
                 },
                 ViaElement {
                     protocol: None,
-                    version: ViaVersion::HttpVersion(Version::HTTP_11),
+                    version: ForwardedVersion::HTTP_11,
                     node_id: NodeId::try_from_str("p.example.net").unwrap(),
                 },
             ]),
             Via(vec![
                 ViaElement {
-                    protocol: Some(Protocol::Http),
-                    version: ViaVersion::HttpVersion(Version::HTTP_11),
+                    protocol: Some(ForwardedProtocol::http()),
+                    version: ForwardedVersion::HTTP_11,
                     node_id: NodeId::try_from_str("proxy.example.re").unwrap(),
                 },
                 ViaElement {
                     protocol: None,
-                    version: ViaVersion::HttpVersion(Version::HTTP_11),
+                    version: ForwardedVersion::HTTP_11,
                     node_id: NodeId::try_from_str("edge_1").unwrap(),
                 },
             ]),
             Via(vec![ViaElement {
                 protocol: None,
-                version: ViaVersion::HttpVersion(Version::HTTP_11),
+                version: ForwardedVersion::HTTP_11,
                 node_id: NodeId::try_from_str(
                     "2e9b3ee4d534903f433e1ed8ea30e57a.cloudfront.net__CloudFront_",
                 )

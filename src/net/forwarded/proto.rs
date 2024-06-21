@@ -141,7 +141,8 @@ impl From<Protocol> for ForwardedProtocol {
 }
 
 crate::__static_str_error! {
-    pub struct InvalidProtocolStr = "invalid fowarded protocol string";
+    #[doc = "invalid fowarded protocol string"]
+    pub struct InvalidProtocolStr;
 }
 
 fn try_to_convert_str_to_non_custom_protocol(

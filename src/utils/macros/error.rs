@@ -3,8 +3,9 @@
 #[macro_export]
 macro_rules! __static_str_error {
     (
+        #[doc = $desc:literal]
         $(#[$m:meta])*
-        pub struct $name:ident = $desc:literal;
+        pub struct $name:ident;
     ) => {
         $(#[$m])*
         #[derive(Debug, Default, Clone, PartialEq, Eq)]

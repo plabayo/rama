@@ -123,7 +123,8 @@ impl Protocol {
 }
 
 crate::__static_str_error! {
-    pub struct InvalidProtocolStr = "invalid protocol string";
+    #[doc = "invalid protocol string"]
+    pub struct InvalidProtocolStr;
 }
 
 fn try_to_convert_str_to_non_custom_protocol(

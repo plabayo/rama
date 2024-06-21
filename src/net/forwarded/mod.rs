@@ -23,6 +23,10 @@ mod proto;
 #[doc(inline)]
 pub use proto::ForwardedProtocol;
 
+mod version;
+#[doc(inline)]
+pub use version::ForwardedVersion;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Forwarding information stored as a chain.
 ///

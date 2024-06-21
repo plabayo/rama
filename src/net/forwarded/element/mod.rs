@@ -1,4 +1,4 @@
-use super::{ForwardedProtocol, NodeId};
+use super::{ForwardedProtocol, ForwardedVersion, NodeId};
 use crate::http::HeaderValue;
 use crate::{
     error::{ErrorContext, OpaqueError},
@@ -21,7 +21,7 @@ pub struct ForwardedElement {
     for_node: Option<NodeId>,
     authority: Option<ForwardedAuthority>,
     proto: Option<ForwardedProtocol>,
-    proto_version: Option<ProtocolVersion>,
+    proto_version: Option<ForwardedVersion>,
 
     // not expected, but if used these parameters (keys)
     // should be registered ideally also in
@@ -33,12 +33,6 @@ pub struct ForwardedElement {
 struct ExtensionValue {
     value: String,
     quoted: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum ProtocolVersion {
-    Http(crate::http::Version),
-    Custom(Vec<u8>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -235,61 +229,27 @@ impl ForwardedElement {
     }
 
     /// Create a new [`ForwardedElement`] with the "version" parameter
-    /// set to the given valid/recognised http [`Version`].
-    ///
-    /// [`Version`]: crate::http::Version
-    pub fn forwarded_proto_http_version(version: crate::http::Version) -> Self {
+    /// set to the given valid/recognised [`ForwardedVersion`].
+    pub fn forwarded_version(version: ForwardedVersion) -> Self {
         Self {
             by_node: None,
             for_node: None,
             authority: None,
             proto: None,
-            proto_version: Some(ProtocolVersion::Http(version)),
+            proto_version: Some(version),
             extensions: None,
         }
     }
 
-    /// Set the "version" parameter to the given valid/recognised http [`Version`].
-    ///
-    /// [`Version`]: crate::http::Version
-    pub fn set_forwarded_proto_http_version(&mut self, version: crate::http::Version) -> &mut Self {
-        self.proto_version = Some(ProtocolVersion::Http(version));
+    /// Set the "version" parameter to the given valid/recognised [`ForwardedVersion`].
+    pub fn set_forwarded_version(&mut self, version: ForwardedVersion) -> &mut Self {
+        self.proto_version = Some(version);
         self
     }
 
-    /// Get a reference to the "version" parameter if it is set for http.
-    pub fn ref_forwarded_proto_http_version(&self) -> Option<&crate::http::Version> {
-        self.proto_version.as_ref().and_then(|v| match v {
-            ProtocolVersion::Http(version) => Some(version),
-            ProtocolVersion::Custom(_) => None,
-        })
-    }
-
-    /// Create a new [`ForwardedElement`] with the "version" parameter
-    /// set to the given valid/recognised custom version.
-    pub fn forwarded_proto_custom_version(version: impl Into<Vec<u8>>) -> Self {
-        Self {
-            by_node: None,
-            for_node: None,
-            authority: None,
-            proto: None,
-            proto_version: Some(ProtocolVersion::Custom(version.into())),
-            extensions: None,
-        }
-    }
-
-    /// Set the "version" parameter to the given valid/recognised custom version.
-    pub fn set_forwarded_proto_custom_version(&mut self, version: impl Into<Vec<u8>>) -> &mut Self {
-        self.proto_version = Some(ProtocolVersion::Custom(version.into()));
-        self
-    }
-
-    /// Get a reference to the "version" parameter if it is set for custom version.
-    pub fn ref_forwarded_proto_custom_version(&self) -> Option<&[u8]> {
-        self.proto_version.as_ref().and_then(|v| match v {
-            ProtocolVersion::Custom(version) => Some(version.as_ref()),
-            ProtocolVersion::Http(_) => None,
-        })
+    /// Get a copy of the "version" parameter, if it is set.
+    pub fn ref_forwarded_version(&self) -> Option<ForwardedVersion> {
+        self.proto_version
     }
 }
 
