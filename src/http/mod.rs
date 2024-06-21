@@ -111,13 +111,19 @@ pub mod header {
         };
     }
 
+    // non-std conventional
+    static_header!["x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",];
+
+    // standard
+    static_header!["keep-alive", "proxy-connection", "via",];
+
+    // non-std client ip forward headers
     static_header![
-        "x-forwarded-host",
-        "x-forwarded-for",
-        "x-forwarded-proto",
-        "keep-alive",
-        "proxy-connection",
-        "via",
+        "cf-connecting-ip",
+        "true-client-ip",
+        "client-ip",
+        "x-client-ip",
+        "x-real-ip",
     ];
 
     /// Static Header Value that is can be used as `User-Agent` or `Server` header.

@@ -17,6 +17,10 @@ mod x_forwarded_proto;
 #[doc(inline)]
 pub use x_forwarded_proto::XForwardedProto;
 
+mod exotic_forward_ip;
+#[doc(inline)]
+pub use exotic_forward_ip::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp};
+
 /// A trait for types headers that is used by middleware
 /// which supports headers that can be converted into Forward data.
 pub trait ForwardHeader:
@@ -42,5 +46,10 @@ mod tests {
         assert_forward_header::<XForwardedFor>();
         assert_forward_header::<XForwardedHost>();
         assert_forward_header::<XForwardedProto>();
+        assert_forward_header::<CFConnectingIp>();
+        assert_forward_header::<TrueClientIp>();
+        assert_forward_header::<XClientIp>();
+        assert_forward_header::<ClientIp>();
+        assert_forward_header::<XRealIp>();
     }
 }

@@ -83,7 +83,8 @@ pub use common::Accept;
 mod forwarded;
 #[doc(inline)]
 pub use forwarded::{
-    ForwardHeader, Forwarded, Via, XForwardedFor, XForwardedHost, XForwardedProto,
+    CFConnectingIp, ClientIp, ForwardHeader, Forwarded, TrueClientIp, Via, XClientIp,
+    XForwardedFor, XForwardedHost, XForwardedProto, XRealIp,
 };
 
 pub mod authorization {
