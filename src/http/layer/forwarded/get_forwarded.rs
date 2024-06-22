@@ -7,23 +7,24 @@ use crate::{
     net::forwarded::Forwarded,
     service::{Context, Layer, Service},
 };
+use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 
 #[derive(Debug, Clone)]
 /// Layer to extract [`Forwarded`] information from the specified `T` headers.
-pub struct GetForwardedLayer<T = (Forwarded,)> {
+pub struct GetForwardedHeadersLayer<T = Forwarded> {
     _headers: PhantomData<fn() -> T>,
 }
 
-impl Default for GetForwardedLayer {
+impl Default for GetForwardedHeadersLayer {
     fn default() -> Self {
-        Self::new()
+        Self::forwarded()
     }
 }
 
-impl<T> GetForwardedLayer<T> {
-    /// Create a new `GetForwardedLayer` for the forward header `T`.
+impl<T> GetForwardedHeadersLayer<T> {
+    /// Create a new `GetForwardedHeadersLayer` for the specified headers `T`.
     pub fn new() -> Self {
         Self {
             _headers: PhantomData,
@@ -31,40 +32,42 @@ impl<T> GetForwardedLayer<T> {
     }
 }
 
-macro_rules! get_forwarded_combine_tuple {
-    ( $($ty:ident),* $(,)? ) => {
-        #[allow(non_snake_case)]
-        impl<$($ty),*> GetForwardedLayer<($($ty,)*)> {
-            /// Combine the header `T` with the current headers for this [`GetForwardedLayer`].
-            pub fn combine<T>(self) -> GetForwardedLayer<($($ty,)* T)> {
-                GetForwardedLayer {
-                    _headers: PhantomData,
-                }
-            }
-        }
-    }
-}
-
-all_the_tuples_minus_one_no_last_special_case!(get_forwarded_combine_tuple);
-
-impl GetForwardedLayer {
+impl GetForwardedHeadersLayer {
     #[inline]
-    /// Create a new `GetForwardedLayer` for the standard [`Forwarded`] header.
-    pub fn std() -> Self {
+    /// Create a new `GetForwardedHeadersLayer` for the standard [`Forwarded`] header.
+    pub fn forwarded() -> Self {
         Self::new()
     }
 }
 
-impl GetForwardedLayer<(Via, XForwardedFor, XForwardedHost, XForwardedProto)> {
+impl GetForwardedHeadersLayer<Via> {
     #[inline]
-    /// Create a new `GetForwardedLayer` for the legacy [`Via`],
-    /// [`X-Forwarded-For`], [`X-Forwarded-Host`], and [`X-Forwarded-Proto`] headers.
-    ///
-    /// [`Via`]: crate::http::headers::Via
-    /// [`X-Forwarded-For`]: crate::http::headers::XForwardedFor
-    /// [`X-Forwarded-Host`]: crate::http::headers::XForwardedHost
-    /// [`X-Forwarded-Proto`]: crate::http::headers::XForwardedProto
-    pub fn legacy() -> Self {
+    /// Create a new `GetForwardedHeadersLayer` for the canonical [`Via`] header.
+    pub fn via() -> Self {
+        Self::new()
+    }
+}
+
+impl GetForwardedHeadersLayer<XForwardedFor> {
+    #[inline]
+    /// Create a new `GetForwardedHeadersLayer` for the canonical [`X-Forwarded-For`] header.
+    pub fn x_forwarded_for() -> Self {
+        Self::new()
+    }
+}
+
+impl GetForwardedHeadersLayer<XForwardedHost> {
+    #[inline]
+    /// Create a new `GetForwardedHeadersLayer` for the canonical [`X-Forwarded-Host`] header.
+    pub fn x_forwarded_host() -> Self {
+        Self::new()
+    }
+}
+
+impl GetForwardedHeadersLayer<XForwardedProto> {
+    #[inline]
+    /// Create a new `GetForwardedHeadersLayer` for the canonical [`X-Forwarded-Proto`] header.
+    pub fn x_forwarded_proto() -> Self {
         Self::new()
     }
 }
@@ -72,8 +75,8 @@ impl GetForwardedLayer<(Via, XForwardedFor, XForwardedHost, XForwardedProto)> {
 macro_rules! get_forwarded_layer_for_tuple {
     ( $($ty:ident),* $(,)? ) => {
         #[allow(non_snake_case)]
-        impl<$($ty,)* S> Layer<S> for GetForwardedLayer<($($ty,)*)> {
-            type Service = GetForwardedService<S, ($($ty,)*)>;
+        impl<$($ty,)* S> Layer<S> for GetForwardedHeadersLayer<($($ty,)*)> {
+            type Service = GetForwardedHeadersService<S, ($($ty,)*)>;
 
             fn layer(&self, inner: S) -> Self::Service {
                 Self::Service {
@@ -87,15 +90,32 @@ macro_rules! get_forwarded_layer_for_tuple {
 
 all_the_tuples_no_last_special_case!(get_forwarded_layer_for_tuple);
 
-#[derive(Debug, Clone)]
 /// Middleware service to extract [`Forwarded`] information from the specified `T` headers.
-pub struct GetForwardedService<S, T = (Forwarded,)> {
+pub struct GetForwardedHeadersService<S, T = Forwarded> {
     inner: S,
     _headers: PhantomData<fn() -> T>,
 }
 
-impl<S, T> GetForwardedService<S, T> {
-    /// Create a new `GetForwardedService` for the forward header `T`.
+impl<S: fmt::Debug, T> fmt::Debug for GetForwardedHeadersService<S, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GetForwardedHeadersService")
+            .field("inner", &self.inner)
+            .field("_headers", &format_args!("{}", std::any::type_name::<T>()))
+            .finish()
+    }
+}
+
+impl<S: Clone, T> Clone for GetForwardedHeadersService<S, T> {
+    fn clone(&self) -> Self {
+        GetForwardedHeadersService {
+            inner: self.inner.clone(),
+            _headers: PhantomData,
+        }
+    }
+}
+
+impl<S, T> GetForwardedHeadersService<S, T> {
+    /// Create a new `GetForwardedHeadersService` for the specified headers `T`.
     pub fn new(inner: S) -> Self {
         Self {
             inner,
@@ -104,41 +124,42 @@ impl<S, T> GetForwardedService<S, T> {
     }
 }
 
-macro_rules! get_forwarded_service_combine_tuple {
-    ( $($ty:ident),* $(,)? ) => {
-        #[allow(non_snake_case)]
-        impl<S, $($ty),*> GetForwardedService<S, ($($ty,)*)> {
-            /// Combine the header `T` with the current headers for this [`GetForwardedService`].
-            pub fn combine<T>(self) -> GetForwardedService<S, ($($ty,)* T)> {
-                GetForwardedService {
-                    inner: self.inner,
-                    _headers: PhantomData,
-                }
-            }
-        }
-    }
-}
-
-all_the_tuples_minus_one_no_last_special_case!(get_forwarded_service_combine_tuple);
-
-impl<S> GetForwardedService<S> {
+impl<S> GetForwardedHeadersService<S> {
     #[inline]
-    /// Create a new `GetForwardedService` for the standard [`Forwarded`] header.
-    pub fn std(inner: S) -> Self {
+    /// Create a new `GetForwardedHeadersService` for the standard [`Forwarded`] header.
+    pub fn forwarded(inner: S) -> Self {
         Self::new(inner)
     }
 }
 
-impl<S> GetForwardedService<S, (Via, XForwardedFor, XForwardedHost, XForwardedProto)> {
+impl<S> GetForwardedHeadersService<S, Via> {
     #[inline]
-    /// Create a new `GetForwardedService` for the legacy [`Via`],
-    /// [`X-Forwarded-For`], [`X-Forwarded-Host`], and [`X-Forwarded-Proto`] headers.
-    ///
-    /// [`Via`]: crate::http::headers::Via
-    /// [`X-Forwarded-For`]: crate::http::headers::XForwardedFor
-    /// [`X-Forwarded-Host`]: crate::http::headers::XForwardedHost
-    /// [`X-Forwarded-Proto`]: crate::http::headers::XForwardedProto
-    pub fn legacy(inner: S) -> Self {
+    /// Create a new `GetForwardedHeadersService` for the canonical [`Via`] header.
+    pub fn via(inner: S) -> Self {
+        Self::new(inner)
+    }
+}
+
+impl<S> GetForwardedHeadersService<S, XForwardedFor> {
+    #[inline]
+    /// Create a new `GetForwardedHeadersService` for the canonical [`X-Forwarded-For`] header.
+    pub fn x_forwarded_for(inner: S) -> Self {
+        Self::new(inner)
+    }
+}
+
+impl<S> GetForwardedHeadersService<S, XForwardedHost> {
+    #[inline]
+    /// Create a new `GetForwardedHeadersService` for the canonical [`X-Forwarded-Host`] header.
+    pub fn x_forwarded_host(inner: S) -> Self {
+        Self::new(inner)
+    }
+}
+
+impl<S> GetForwardedHeadersService<S, XForwardedProto> {
+    #[inline]
+    /// Create a new `GetForwardedHeadersService` for the canonical [`X-Forwarded-Proto`] header.
+    pub fn x_forwarded_proto(inner: S) -> Self {
         Self::new(inner)
     }
 }
@@ -146,7 +167,7 @@ impl<S> GetForwardedService<S, (Via, XForwardedFor, XForwardedHost, XForwardedPr
 macro_rules! get_forwarded_service_for_tuple {
     ( $($ty:ident),* $(,)? ) => {
         #[allow(non_snake_case)]
-        impl<$($ty,)* S, State, Body> Service<State, Request<Body>> for GetForwardedService<S, ($($ty,)*)>
+        impl<$($ty,)* S, State, Body> Service<State, Request<Body>> for GetForwardedHeadersService<S, ($($ty,)*)>
         where
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
             S: Service<State, Request<Body>>,
@@ -201,6 +222,45 @@ macro_rules! get_forwarded_service_for_tuple {
     }
 }
 
+impl<H, S, State, Body> Service<State, Request<Body>> for GetForwardedHeadersService<S, H>
+where
+    H: ForwardHeader + Send + Sync + 'static,
+    S: Service<State, Request<Body>>,
+    Body: Send + 'static,
+    State: Send + Sync + 'static,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+
+    fn serve(
+        &self,
+        mut ctx: Context<State>,
+        req: Request<Body>,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        let mut forwarded_elements: Vec<ForwardedElement> = Vec::with_capacity(1);
+
+        if let Some(header) = req.headers().typed_get::<H>() {
+            forwarded_elements.extend(header);
+        }
+
+        if !forwarded_elements.is_empty() {
+            match ctx.get_mut::<Forwarded>() {
+                Some(ref mut f) => {
+                    f.extend(forwarded_elements);
+                }
+                None => {
+                    let mut it = forwarded_elements.into_iter();
+                    let mut forwarded = Forwarded::new(it.next().unwrap());
+                    forwarded.extend(it);
+                    ctx.insert(forwarded);
+                }
+            }
+        }
+
+        self.inner.serve(ctx, req)
+    }
+}
+
 all_the_tuples_no_last_special_case!(get_forwarded_service_for_tuple);
 
 #[cfg(test)]
@@ -208,7 +268,10 @@ mod tests {
     use super::*;
     use crate::{
         error::OpaqueError,
-        http::{headers::TrueClientIp, IntoResponse, Response, StatusCode},
+        http::{
+            headers::{TrueClientIp, XClientIp},
+            IntoResponse, Response, StatusCode,
+        },
         service::service_fn,
     };
 
@@ -220,13 +283,31 @@ mod tests {
 
     #[test]
     fn test_get_forwarded_service_is_service() {
-        assert_is_service(GetForwardedService::std(service_fn(dummy_service_fn)));
-        assert_is_service(GetForwardedService::legacy(service_fn(dummy_service_fn)));
-        assert_is_service(
-            GetForwardedService::legacy(service_fn(dummy_service_fn)).combine::<TrueClientIp>(),
-        );
-        assert_is_service(GetForwardedService::<_, (TrueClientIp,)>::new(service_fn(
+        assert_is_service(GetForwardedHeadersService::forwarded(service_fn(
             dummy_service_fn,
         )));
+        assert_is_service(GetForwardedHeadersService::via(service_fn(
+            dummy_service_fn,
+        )));
+        assert_is_service(GetForwardedHeadersService::x_forwarded_for(service_fn(
+            dummy_service_fn,
+        )));
+        assert_is_service(GetForwardedHeadersService::x_forwarded_proto(service_fn(
+            dummy_service_fn,
+        )));
+        assert_is_service(GetForwardedHeadersService::x_forwarded_host(service_fn(
+            dummy_service_fn,
+        )));
+        assert_is_service(GetForwardedHeadersService::<_, TrueClientIp>::new(
+            service_fn(dummy_service_fn),
+        ));
+        assert_is_service(GetForwardedHeadersService::<_, (TrueClientIp,)>::new(
+            service_fn(dummy_service_fn),
+        ));
+        assert_is_service(
+            GetForwardedHeadersService::<_, (TrueClientIp, XClientIp)>::new(service_fn(
+                dummy_service_fn,
+            )),
+        );
     }
 }

@@ -2,8 +2,8 @@
 
 mod get_forwarded;
 #[doc(inline)]
-pub use get_forwarded::{GetForwardedLayer, GetForwardedService};
+pub use get_forwarded::{GetForwardedHeadersLayer, GetForwardedHeadersService};
 
 mod set_forwarded;
 #[doc(inline)]
-pub use set_forwarded::{SetForwardedLayer, SetForwardedService};
+pub use set_forwarded::{SetForwardedHeadersLayer, SetForwardedHeadersService};
