@@ -51,7 +51,7 @@ use std::marker::PhantomData;
 ///
 /// ## Example
 ///
-/// This example shows you can extract the client IP from the `X-Fowarded-For`
+/// This example shows you can extract the client IP from the `X-Forwarded-For`
 /// header in case your application is behind a proxy which sets this header.
 ///
 /// ```rust
