@@ -89,7 +89,7 @@
 //! ```
 
 use crate::{
-    http::{Request, RequestContext},
+    http::{get_request_context, Request},
     service::{Context, Layer, Service},
 };
 
@@ -269,7 +269,7 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let req_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+            let req_ctx = get_request_context!(ctx, req);
             let proxy = self
                 .db
                 .get_proxy(req_ctx.clone(), filter)
@@ -317,7 +317,7 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let req_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+            let req_ctx = get_request_context!(ctx, req);
             let proxy = self
                 .db
                 .get_proxy_if(req_ctx.clone(), filter, self.predicate.clone())

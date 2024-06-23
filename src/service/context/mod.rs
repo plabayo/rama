@@ -204,7 +204,7 @@ impl<S> Context<S> {
         self.executor.spawn_task(future)
     }
 
-    /// Get a reference to an extension.
+    /// Get a shared reference to an extension.
     ///
     /// An extension is a type that implements `Send + Sync + 'static`,
     /// and can be used to inject dynamic data into the [`Context`].
@@ -214,7 +214,7 @@ impl<S> Context<S> {
     /// original [`Context`], or any other cloned [`Context`].
     ///
     /// Please use the statically typed state (see [`Context::state`]) for data that is shared between
-    /// all context clones, parent or not.
+    /// all context clones.
     ///
     /// # Example
     ///
@@ -228,8 +228,36 @@ impl<S> Context<S> {
         self.extensions.get::<T>()
     }
 
+    /// Get an exclusive reference to an extension.
+    ///
+    /// An extension is a type that implements `Send + Sync + 'static`,
+    /// and can be used to inject dynamic data into the [`Context`].
+    ///
+    /// Extensions are specific to this [`Context`]. It will be cloned when the [`Context`] is cloned,
+    /// but extensions inserted using [`Context::insert`] will not be visible the
+    /// original [`Context`], or any other cloned [`Context`].
+    ///
+    /// Please use the statically typed state (see [`Context::state`]) for data that is shared between
+    /// all context clones.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::Context;
+    /// # let mut ctx = Context::default();
+    /// # ctx.insert(5i32);
+    /// let x = ctx.get_mut::<i32>().unwrap();
+    /// assert_eq!(*x, 5i32);
+    /// *x = 8;
+    /// assert_eq!(*x, 8i32);
+    /// assert_eq!(ctx.get::<i32>(), Some(&8i32));
+    /// ```
+    pub fn get_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T> {
+        self.extensions.get_mut::<T>()
+    }
+
     /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns an immutable reference to the contained value.
+    /// then returns an exclusive reference to the contained value.
     ///
     /// # Example
     ///
@@ -238,19 +266,19 @@ impl<S> Context<S> {
     /// let mut ctx = Context::default();
     /// let value: &i32 = ctx.get_or_insert_with(|| 42);
     /// assert_eq!(*value, 42);
-    /// let existing_value: &i32 = ctx.get_or_insert_with(|| 0);
+    /// let existing_value: &mut i32 = ctx.get_or_insert_with(|| 0);
     /// assert_eq!(*existing_value, 42);
     /// ```
     pub fn get_or_insert_with<T: Clone + Send + Sync + 'static>(
         &mut self,
         f: impl FnOnce() -> T,
-    ) -> &T {
+    ) -> &mut T {
         self.extensions.get_or_insert_with(f)
     }
 
     /// Inserts a value into the map computed from converting `U` into `T if no value was already inserted is [`None`],
-    /// then returns an immutable reference to the contained value.
-    pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &T
+    /// then returns an exclusive reference to the contained value.
+    pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &mut T
     where
         T: Clone + Send + Sync + 'static,
         U: Into<T>,
@@ -261,7 +289,7 @@ impl<S> Context<S> {
     /// Retrieves a value of type `T` from the context.
     ///
     /// If the value does not exist, the provided value is inserted
-    /// and a reference to it is returned.
+    /// and an exclusive reference to it is returned.
     ///
     /// See [`Context::get`] for more details.
     ///
@@ -275,7 +303,7 @@ impl<S> Context<S> {
     /// assert_eq!(*ctx.get_or_insert::<i32>(10), 5);
     /// assert_eq!(*ctx.get_or_insert::<f64>(2.5), 2.5);
     /// ```
-    pub fn get_or_insert<T: Send + Sync + Clone + 'static>(&mut self, fallback: T) -> &T {
+    pub fn get_or_insert<T: Send + Sync + Clone + 'static>(&mut self, fallback: T) -> &mut T {
         self.extensions.get_or_insert(fallback)
     }
 
@@ -293,7 +321,7 @@ impl<S> Context<S> {
     /// assert_eq!(*ctx.get_or_insert_default::<i32>(), 5i32);
     /// assert_eq!(*ctx.get_or_insert_default::<f64>(), 0f64);
     /// ```
-    pub fn get_or_insert_default<T: Clone + Default + Send + Sync + 'static>(&mut self) -> &T {
+    pub fn get_or_insert_default<T: Clone + Default + Send + Sync + 'static>(&mut self) -> &mut T {
         self.extensions.get_or_insert_default()
     }
 
@@ -387,22 +415,5 @@ impl<S> Context<S> {
     /// if and only if the context was created within a graceful environment.
     pub fn guard(&self) -> Option<&ShutdownGuard> {
         self.executor.guard()
-    }
-
-    /// Turn this Context into a parent [`Context`].
-    ///
-    /// Naming is hard. Essentially it is meant to optimise the [`Context`] for cloning,
-    /// so that the extensions are not cloned upon [`Context`] cloning, but instead
-    /// are shared between the original [`Context`] and the cloned [`Context`].
-    ///
-    /// This is used when branching the [`Context`] into multiple [`Context`]s,
-    /// e.g. to go from a Transport Layer to a HTTP Layer, where the context is now
-    /// branched for each HTTP request.
-    pub fn into_parent(self) -> Self {
-        Self {
-            state: self.state,
-            executor: self.executor,
-            extensions: self.extensions.into_parent(),
-        }
     }
 }

@@ -77,7 +77,15 @@ pub use headers::{
 };
 
 mod common;
+#[doc(inline)]
 pub use common::Accept;
+
+mod forwarded;
+#[doc(inline)]
+pub use forwarded::{
+    CFConnectingIp, ClientIp, ForwardHeader, Forwarded, TrueClientIp, Via, XClientIp,
+    XForwardedFor, XForwardedHost, XForwardedProto, XRealIp,
+};
 
 pub mod authorization {
     //! Authorization header and types.

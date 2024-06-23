@@ -26,6 +26,7 @@
 use rama::{
     http::{
         client::HttpClient,
+        get_request_context,
         layer::{
             proxy_auth::ProxyAuthLayer,
             trace::TraceLayer,
@@ -170,7 +171,7 @@ async fn http_connect_accept<S>(
 where
     S: Send + Sync + 'static,
 {
-    let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+    let request_ctx = get_request_context!(ctx, req);
     match &request_ctx.authority {
         Some(authority) => tracing::info!("accept CONNECT to {authority}"),
         None => {

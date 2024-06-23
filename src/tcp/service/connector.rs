@@ -1,7 +1,7 @@
 use crate::{
     http::{
         client::{ClientConnection, EstablishedClientConnection},
-        Request, RequestContext,
+        get_request_context, Request,
     },
     net::{
         address::{Authority, ProxyAddress},
@@ -74,7 +74,7 @@ where
             });
         }
 
-        let request_info: &RequestContext = ctx.get_or_insert_from(&req);
+        let request_info = get_request_context!(ctx, req);
         match request_info.authority.clone() {
             Some(authority) => {
                 let socket_addr = resolve_authority(authority).await?;

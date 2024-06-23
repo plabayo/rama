@@ -114,7 +114,7 @@ impl FromStr for ProxyAddress {
 
 impl Display for ProxyAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}://", self.protocol.as_scheme())?;
+        write!(f, "{}://", self.protocol.as_str())?;
         if let Some(credential) = &self.credential {
             write!(f, "{}@", credential.as_clear_string())?;
         }
@@ -158,7 +158,7 @@ mod tests {
         assert_eq!(
             addr,
             ProxyAddress::new(
-                Protocol::Https,
+                Protocol::HTTPS,
                 Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), 9999),
                 Some(Basic::new("foo-cc-be", "baz").into()),
             )
@@ -171,7 +171,7 @@ mod tests {
         assert_eq!(
             addr,
             ProxyAddress::new(
-                Protocol::Socks5h,
+                Protocol::SOCKS5H,
                 Authority::new(Host::Address("::1".parse().unwrap()), 60000),
                 Some(Bearer::try_from_clear_str("foo").unwrap().into()),
             )

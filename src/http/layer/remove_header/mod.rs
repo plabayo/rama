@@ -39,6 +39,16 @@ fn remove_hop_by_hop_request_headers(headers: &mut HeaderMap) {
         &header::TRAILER,
         &header::TRANSFER_ENCODING,
         &header::UPGRADE,
+        &header::X_FORWARDED_FOR,
+        &header::X_FORWARDED_HOST,
+        &header::X_FORWARDED_PROTO,
+        &header::FORWARDED,
+        &header::VIA,
+        &header::CF_CONNECTING_IP,
+        &header::X_REAL_IP,
+        &header::X_CLIENT_IP,
+        &header::CLIENT_IP,
+        &header::TRUE_CLIENT_IP,
     ] {
         headers.remove(header);
     }

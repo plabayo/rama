@@ -45,6 +45,13 @@ impl Domain {
     pub fn as_str(&self) -> &str {
         self.as_ref()
     }
+
+    /// Returns the domain name inner Cow value.
+    ///
+    /// Should not be exposed in the public rama API.
+    pub(crate) fn into_inner(self) -> Cow<'static, str> {
+        self.0
+    }
 }
 
 impl AsRef<str> for Domain {

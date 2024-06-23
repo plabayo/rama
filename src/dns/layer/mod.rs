@@ -29,7 +29,7 @@
 //!     let mut ctx = Context::default();
 //!     ctx.insert(RequestContext{
 //!         http_version: Version::HTTP_11,
-//!         protocol: Protocol::Http,
+//!         protocol: Protocol::HTTP,
 //!         authority: Some("www.example.com:80".try_into().unwrap()),
 //!     });
 //!

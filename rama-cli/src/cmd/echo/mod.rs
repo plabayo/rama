@@ -10,6 +10,7 @@ use rama::{
         server::HttpServer,
         IntoResponse, Request, RequestContext, Response,
     },
+    net::forwarded::Forwarded,
     net::stream::{layer::http::BodyLimitLayer, SocketInfo},
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
@@ -178,7 +179,7 @@ async fn echo<State>(ctx: Context<State>, req: Request) -> Result<Response, Infa
             "payload": body,
         },
         "tls": tls_client_hello,
-        "ip": ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string()),
+        "ip": ctx.get::<Forwarded>().and_then(|f| f.client_ip().map(|ip| ip.to_string())).or_else(|| ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
     }))
     .into_response())
 }

@@ -466,7 +466,7 @@ mod tests {
     fn h2_req_context() -> RequestContext {
         RequestContext {
             http_version: Version::HTTP_2,
-            protocol: Protocol::Https,
+            protocol: Protocol::HTTPS,
             authority: Some("localhost:8443".try_into().unwrap()),
         }
     }
@@ -563,7 +563,7 @@ mod tests {
     fn h3_req_context() -> RequestContext {
         RequestContext {
             http_version: Version::HTTP_3,
-            protocol: Protocol::Https,
+            protocol: Protocol::HTTPS,
             authority: Some("localhost:8443".try_into().unwrap()),
         }
     }

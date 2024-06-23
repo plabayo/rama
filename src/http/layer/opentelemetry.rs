@@ -9,9 +9,9 @@ use crate::telemetry::opentelemetry::{
 };
 use crate::{
     http::{
-        self,
+        self, get_request_context,
         headers::{HeaderMapExt, UserAgent},
-        IntoResponse, Request, RequestContext, Response,
+        IntoResponse, Request, Response,
     },
     net::stream::SocketInfo,
     service::{Context, Layer, Service},
@@ -232,7 +232,7 @@ fn compute_attributes<State, Body>(ctx: &mut Context<State>, req: &Request<Body>
     }
 
     // server info
-    let request_ctx: &RequestContext = ctx.get_or_insert_from(req);
+    let request_ctx = get_request_context!(*ctx, *req);
     if let Some(authority) = request_ctx.authority.as_ref() {
         attributes.push(KeyValue::new(SERVER_ADDRESS, authority.host().to_string()));
         attributes.push(KeyValue::new(SERVER_PORT, authority.port() as i64));

@@ -7,7 +7,8 @@ use std::{borrow::Cow, fmt};
 pub struct NonEmptyString(Cow<'static, str>);
 
 crate::__static_str_error! {
-    pub struct EmptyStringErr = "empty string";
+    #[doc = "empty string"]
+    pub struct EmptyStringErr;
 }
 
 impl NonEmptyString {

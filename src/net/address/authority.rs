@@ -1,6 +1,7 @@
-use super::Host;
+use super::{Domain, Host};
 use crate::error::{ErrorContext, ErrorExt, OpaqueError};
 use crate::http::HeaderValue;
+use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{
     fmt,
     net::{IpAddr, SocketAddr},
@@ -37,6 +38,34 @@ impl Authority {
     /// Consume self into its parts: `(host, port)`
     pub fn into_parts(self) -> (Host, u16) {
         (self.host, self.port)
+    }
+}
+
+impl From<(Domain, u16)> for Authority {
+    #[inline]
+    fn from((domain, port): (Domain, u16)) -> Self {
+        (Host::Name(domain), port).into()
+    }
+}
+
+impl From<(IpAddr, u16)> for Authority {
+    #[inline]
+    fn from((ip, port): (IpAddr, u16)) -> Self {
+        (Host::Address(ip), port).into()
+    }
+}
+
+impl From<(Ipv4Addr, u16)> for Authority {
+    #[inline]
+    fn from((ip, port): (Ipv4Addr, u16)) -> Self {
+        (Host::Address(IpAddr::V4(ip)), port).into()
+    }
+}
+
+impl From<(Ipv6Addr, u16)> for Authority {
+    #[inline]
+    fn from((ip, port): (Ipv6Addr, u16)) -> Self {
+        (Host::Address(IpAddr::V6(ip)), port).into()
     }
 }
 

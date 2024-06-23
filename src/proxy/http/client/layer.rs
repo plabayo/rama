@@ -2,7 +2,7 @@ use crate::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
 use crate::http::headers::HeaderMapExt;
 use crate::http::headers::ProxyAuthorization;
-use crate::http::{Request, RequestContext};
+use crate::http::{get_request_context, Request};
 use crate::net::address::ProxyAddress;
 use crate::net::stream::Stream;
 use crate::net::user::ProxyCredential;
@@ -198,7 +198,7 @@ where
         // in case the provider gave us a proxy info, we insert it into the context
         if let Some(address) = address.as_ref() {
             ctx.insert(address.clone());
-            if address.protocol().secure() {
+            if address.protocol().is_secure() {
                 ctx.insert(HttpsTunnel {
                     server_name: address.authority().host().to_string(),
                 });
@@ -234,9 +234,9 @@ where
 
         let (addr, stream) = conn.into_parts();
 
-        let request_context: &RequestContext = ctx.get_or_insert_from(&req);
+        let request_context = get_request_context!(ctx, req);
 
-        if !request_context.protocol.secure() {
+        if !request_context.protocol.is_secure() {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
             if let Some(credential) = address.credential().cloned() {

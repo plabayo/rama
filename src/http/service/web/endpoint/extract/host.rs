@@ -40,7 +40,7 @@ where
             ctx.get::<RequestContext>()
                 .map(|ctx| ctx.authority.as_ref().map(|auth| auth.host().clone()))
                 .unwrap_or_else(|| {
-                    RequestContext::from(parts)
+                    RequestContext::from((ctx, parts))
                         .authority
                         .map(|auth| auth.host().clone())
                 })
@@ -55,14 +55,16 @@ mod tests {
 
     use crate::http::dep::http_body_util::BodyExt as _;
     use crate::http::header::X_FORWARDED_HOST;
+    use crate::http::layer::forwarded::GetForwardedHeadersService;
     use crate::http::service::web::WebService;
     use crate::http::StatusCode;
     use crate::http::{Body, HeaderName, Request};
     use crate::service::Service;
 
     async fn test_host_from_request(host: &str, headers: Vec<(&HeaderName, &str)>) {
-        let svc =
-            WebService::default().get("/", |Host(host): Host| async move { host.to_string() });
+        let svc = GetForwardedHeadersService::x_forwarded_host(
+            WebService::default().get("/", |Host(host): Host| async move { host.to_string() }),
+        );
 
         let mut builder = Request::builder().method("GET").uri("http://example.com/");
         for (header, value) in headers {

@@ -1,9 +1,10 @@
 use super::{dns_map::DnsMap, DnsError, DynamicDnsResolver};
 use crate::{
     http::{
+        get_request_context,
         layer::header_config::extract_header_config,
         utils::{HeaderValueErr, HeaderValueGetter},
-        HeaderName, Request, RequestContext,
+        HeaderName, Request,
     },
     net::{address::Authority, stream::ServerSocketAddr},
     service::{Context, Service},
@@ -68,7 +69,7 @@ where
         mut ctx: Context<State>,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        let request_ctx: &RequestContext = ctx.get_or_insert_from(&request);
+        let request_ctx = get_request_context!(ctx, request);
         let authority = request_ctx.authority.clone();
 
         if let Some(addresses) = self.lookup_authority(&request, authority).await? {

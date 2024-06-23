@@ -1,14 +1,15 @@
 //! protocol agnostic network modules
 
 pub mod address;
+pub mod forwarded;
 pub mod stream;
 pub mod user;
 
 pub(crate) mod proto;
-use std::net::SocketAddr;
-
 #[doc(inline)]
 pub use proto::Protocol;
+
+use std::net::SocketAddr;
 
 /// Performs a DNS resolution.
 ///

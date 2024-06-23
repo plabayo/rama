@@ -2,7 +2,6 @@ use std::any::{Any, TypeId};
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{BuildHasherDefault, Hasher};
-use std::sync::Arc;
 
 type AnyMap = HashMap<TypeId, Box<dyn AnyClone + Send + Sync>, BuildHasherDefault<IdHasher>>;
 
@@ -73,29 +72,40 @@ impl Extensions {
         }
     }
 
-    /// Get a reference to a type previously inserted on this `Extensions`.
+    /// Get a shared reference to a type previously inserted on this `Extensions`.
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        self.get_inner::<T>().or_else(|| {
-            self.get_inner::<ParentExtensions>()
-                .and_then(|parent| parent.extensions.get::<T>())
-        })
+        self.map
+            .as_ref()
+            .and_then(|map| map.get(&TypeId::of::<T>()))
+            .and_then(|boxed| (**boxed).as_any().downcast_ref())
+    }
+
+    /// Get an exclusive reference to a type previously inserted on this `Extensions`.
+    pub fn get_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T> {
+        self.map
+            .as_mut()
+            .and_then(|map| map.get_mut(&TypeId::of::<T>()))
+            .and_then(|boxed| (**boxed).as_any_mut().downcast_mut())
     }
 
     /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns an immutable reference to the contained value.
+    /// then returns an exclusive reference to the contained value.
     pub fn get_or_insert_with<T: Send + Sync + Clone + 'static>(
         &mut self,
         f: impl FnOnce() -> T,
-    ) -> &T {
+    ) -> &mut T {
         let map = self.map.get_or_insert_with(Box::default);
         let entry = map.entry(TypeId::of::<T>());
         let boxed = entry.or_insert_with(|| Box::new(f()));
-        (**boxed).as_any().downcast_ref().expect("type mismatch")
+        (**boxed)
+            .as_any_mut()
+            .downcast_mut()
+            .expect("type mismatch")
     }
 
     /// Inserts a value into the map computed by converting `U` into `T` if it is `None`
-    /// then returns an immutable reference to the contained value.
-    pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &T
+    /// then returns an exclusive reference to the contained value.
+    pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &mut T
     where
         T: Send + Sync + Clone + 'static,
         U: Into<T>,
@@ -103,45 +113,25 @@ impl Extensions {
         let map = self.map.get_or_insert_with(Box::default);
         let entry = map.entry(TypeId::of::<T>());
         let boxed = entry.or_insert_with(|| Box::new(src.into()));
-        (**boxed).as_any().downcast_ref().expect("type mismatch")
+        (**boxed)
+            .as_any_mut()
+            .downcast_mut()
+            .expect("type mismatch")
     }
 
     /// Retrieves a value of type `T` from the context.
     ///
-    /// If the value does not exist, the given value is inserted and a reference to it is returned.
-    pub fn get_or_insert<T: Clone + Send + Sync + 'static>(&mut self, fallback: T) -> &T {
+    /// If the value does not exist, the given value is inserted and an exclusive reference to it is returned.
+    pub fn get_or_insert<T: Clone + Send + Sync + 'static>(&mut self, fallback: T) -> &mut T {
         self.get_or_insert_with(|| fallback)
     }
 
     /// Get an extension or `T`'s [`Default`].
     ///
     /// see [`Extensions::get`] for more details.
-    pub fn get_or_insert_default<T: Default + Clone + Send + Sync + 'static>(&mut self) -> &T {
+    pub fn get_or_insert_default<T: Default + Clone + Send + Sync + 'static>(&mut self) -> &mut T {
         self.get_or_insert_with(T::default)
     }
-
-    fn get_inner<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        self.map
-            .as_ref()
-            .and_then(|map| map.get(&TypeId::of::<T>()))
-            .and_then(|boxed| (**boxed).as_any().downcast_ref())
-    }
-
-    /// Get a new extension map with the current extensions as parent.
-    ///
-    /// Note that later edits to parent won't be reflected here.
-    pub fn into_parent(self) -> Extensions {
-        let mut ext = Extensions::new();
-        ext.insert(ParentExtensions {
-            extensions: Arc::new(self),
-        });
-        ext
-    }
-}
-
-#[derive(Debug, Clone)]
-struct ParentExtensions {
-    extensions: Arc<Extensions>,
 }
 
 impl fmt::Debug for Extensions {
@@ -153,6 +143,7 @@ impl fmt::Debug for Extensions {
 trait AnyClone: Any {
     fn clone_box(&self) -> Box<dyn AnyClone + Send + Sync>;
     fn as_any(&self) -> &dyn Any;
+    fn as_any_mut(&mut self) -> &mut dyn Any;
     fn into_any(self: Box<Self>) -> Box<dyn Any>;
 }
 
@@ -162,6 +153,10 @@ impl<T: Clone + Send + Sync + 'static> AnyClone for T {
     }
 
     fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
 
@@ -189,18 +184,12 @@ fn test_extensions() {
     assert_eq!(extensions.get(), Some(&5i32));
 
     let mut ext2 = extensions.clone();
-    let mut ext3 = extensions.into_parent();
 
     ext2.insert(true);
-    ext3.insert(false);
 
     assert_eq!(ext2.get(), Some(&5i32));
     assert_eq!(ext2.get(), Some(&MyType(10)));
     assert_eq!(ext2.get(), Some(&true));
-
-    assert_eq!(ext3.get(), Some(&5i32));
-    assert_eq!(ext3.get(), Some(&MyType(10)));
-    assert_eq!(ext3.get(), Some(&false));
 
     // test extend
     let mut extensions = Extensions::new();
