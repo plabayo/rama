@@ -1,6 +1,6 @@
 use super::State;
 use rama::{
-    http::{dep::http::request::Parts, Request, RequestContext},
+    http::{dep::http::request::Parts, headers::Forwarded, Request, RequestContext},
     net::stream::SocketInfo,
     service::Context,
     tls::rustls::server::IncomingClientHello,
@@ -165,7 +165,10 @@ pub async fn get_request_info(
         initiator,
         path: parts.uri.path().to_owned(),
         uri: parts.uri.to_string(),
-        peer_addr: ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string()),
+        peer_addr: ctx
+            .get::<Forwarded>()
+            .and_then(|f| f.client_ip().map(|ip| ip.to_string()))
+            .or_else(|| ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
     }
 }
 
