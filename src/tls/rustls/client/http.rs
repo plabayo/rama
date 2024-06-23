@@ -1,6 +1,6 @@
 use crate::error::{BoxError, ErrorExt};
 use crate::http::client::{ClientConnection, EstablishedClientConnection};
-use crate::http::{Request, RequestContext};
+use crate::http::{get_request_context, Request};
 use crate::net::stream::Stream;
 use crate::service::{Context, Service};
 use crate::tls::rustls::dep::pki_types::ServerName;
@@ -187,7 +187,7 @@ where
             self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let (addr, stream) = conn.into_parts();
-        let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+        let request_ctx = get_request_context!(ctx, req);
 
         if !request_ctx.protocol.is_secure() {
             return Ok(EstablishedClientConnection {
@@ -251,7 +251,7 @@ where
 
         let (addr, stream) = conn.into_parts();
 
-        let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+        let request_ctx = get_request_context!(ctx, req);
         let request_ctx = request_ctx.clone();
 
         if let Some(new_scheme) =
@@ -268,7 +268,6 @@ where
             uri_parts.scheme = Some(new_scheme);
             parts.uri = crate::http::dep::http::uri::Uri::from_parts(uri_parts).unwrap();
             req = Request::from_parts(parts, body);
-            ctx.insert(RequestContext::new(&req));
         }
 
         let host = match request_ctx.authority.as_ref() {

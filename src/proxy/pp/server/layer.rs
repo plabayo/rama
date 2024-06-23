@@ -2,7 +2,11 @@ use std::net::SocketAddr;
 
 use crate::{
     error::BoxError,
-    net::stream::{ChainReader, HeapReader, SocketInfo, Stream},
+    http::headers::Forwarded,
+    net::{
+        forwarded::ForwardedElement,
+        stream::{ChainReader, HeapReader, Stream},
+    },
     proxy::pp::protocol::{v1, v2, HeaderResult, PartialResult},
     service::{Context, Layer, Service},
 };
@@ -80,13 +84,29 @@ where
                 match header.addresses {
                     v1::Addresses::Tcp4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let socket_info = SocketInfo::new(None, peer_addr);
-                        ctx.insert(socket_info);
+                        let el = ForwardedElement::forwarded_for(peer_addr);
+                        match ctx.get_mut::<Forwarded>() {
+                            Some(forwarded) => {
+                                forwarded.append(el);
+                            }
+                            None => {
+                                let forwarded = Forwarded::new(el);
+                                ctx.insert(forwarded);
+                            }
+                        }
                     }
                     v1::Addresses::Tcp6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let socket_info = SocketInfo::new(None, peer_addr);
-                        ctx.insert(socket_info);
+                        let el = ForwardedElement::forwarded_for(peer_addr);
+                        match ctx.get_mut::<Forwarded>() {
+                            Some(forwarded) => {
+                                forwarded.append(el);
+                            }
+                            None => {
+                                let forwarded = Forwarded::new(el);
+                                ctx.insert(forwarded);
+                            }
+                        }
                     }
                     v1::Addresses::Unknown => (),
                 };
@@ -96,13 +116,29 @@ where
                 match header.addresses {
                     v2::Addresses::IPv4(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let socket_info = SocketInfo::new(None, peer_addr);
-                        ctx.insert(socket_info);
+                        let el = ForwardedElement::forwarded_for(peer_addr);
+                        match ctx.get_mut::<Forwarded>() {
+                            Some(forwarded) => {
+                                forwarded.append(el);
+                            }
+                            None => {
+                                let forwarded = Forwarded::new(el);
+                                ctx.insert(forwarded);
+                            }
+                        }
                     }
                     v2::Addresses::IPv6(info) => {
                         let peer_addr: SocketAddr = (info.source_address, info.source_port).into();
-                        let socket_info = SocketInfo::new(None, peer_addr);
-                        ctx.insert(socket_info);
+                        let el = ForwardedElement::forwarded_for(peer_addr);
+                        match ctx.get_mut::<Forwarded>() {
+                            Some(forwarded) => {
+                                forwarded.append(el);
+                            }
+                            None => {
+                                let forwarded = Forwarded::new(el);
+                                ctx.insert(forwarded);
+                            }
+                        }
                     }
                     v2::Addresses::Unix(_) | v2::Addresses::Unspecified => (),
                 };

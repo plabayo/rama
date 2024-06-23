@@ -4,8 +4,9 @@
 //! as well as always a User-Agent for all versions.
 
 use crate::http::{
+    get_request_context,
     header::{self, RAMA_ID_HEADER_VALUE},
-    Request, RequestContext, Response,
+    Request, Response,
 };
 use crate::service::{Context, Layer, Service};
 use headers::HeaderMapExt;
@@ -102,7 +103,7 @@ where
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if self.overwrite || !req.headers().contains_key(HOST) {
-            let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+            let request_ctx = get_request_context!(ctx, req);
             if let Some(host) = request_ctx
                 .authority
                 .as_ref()

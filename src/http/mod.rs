@@ -14,7 +14,7 @@ pub use body_ext::BodyExtractExt;
 
 mod request_context;
 #[doc(inline)]
-pub use request_context::RequestContext;
+pub use request_context::{get_request_context, RequestContext};
 
 pub mod utils;
 

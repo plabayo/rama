@@ -63,6 +63,12 @@ impl Forwarded {
         self.first.ref_forwarded_host()
     }
 
+    /// Return the client port of this [`Forwarded`] context,
+    /// if there is one defined.
+    pub fn client_port(&self) -> Option<u16> {
+        self.first.ref_forwarded_for().and_then(|node| node.port())
+    }
+
     /// Return the client Ip of this [`Forwarded`] context,
     /// if there is one defined.
     ///

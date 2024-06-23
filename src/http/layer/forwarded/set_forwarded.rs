@@ -1,7 +1,7 @@
 use crate::http::headers::{
     ForwardHeader, HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
-use crate::http::{Request, RequestContext};
+use crate::http::{get_request_context, Request};
 use crate::net::address::Domain;
 use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
 use crate::net::stream::SocketInfo;
@@ -276,7 +276,7 @@ where
         let mut peer_addr: Option<SocketAddr> =
             ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr());
         let forwarded: Option<Forwarded> = ctx.get().cloned();
-        let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+        let request_ctx = get_request_context!(ctx, req);
 
         let mut forwarded_element = ForwardedElement::forwarded_by(self.by_node.clone());
 
@@ -331,7 +331,7 @@ macro_rules! set_forwarded_service_for_tuple {
                 let mut peer_addr: Option<SocketAddr> =
                     ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr());
                 let forwarded: Option<Forwarded> = ctx.get().cloned();
-                let request_ctx: &RequestContext = ctx.get_or_insert_from(&req);
+                let request_ctx = get_request_context!(ctx, req);
 
                 let mut forwarded_element = ForwardedElement::forwarded_by(self.by_node.clone());
 
