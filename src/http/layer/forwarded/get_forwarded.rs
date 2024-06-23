@@ -72,23 +72,16 @@ impl GetForwardedHeadersLayer<XForwardedProto> {
     }
 }
 
-macro_rules! get_forwarded_layer_for_tuple {
-    ( $($ty:ident),* $(,)? ) => {
-        #[allow(non_snake_case)]
-        impl<$($ty,)* S> Layer<S> for GetForwardedHeadersLayer<($($ty,)*)> {
-            type Service = GetForwardedHeadersService<S, ($($ty,)*)>;
+impl<H, S> Layer<S> for GetForwardedHeadersLayer<H> {
+    type Service = GetForwardedHeadersService<S, H>;
 
-            fn layer(&self, inner: S) -> Self::Service {
-                Self::Service {
-                    inner,
-                    _headers: PhantomData,
-                }
-            }
+    fn layer(&self, inner: S) -> Self::Service {
+        Self::Service {
+            inner,
+            _headers: PhantomData,
         }
     }
 }
-
-all_the_tuples_no_last_special_case!(get_forwarded_layer_for_tuple);
 
 /// Middleware service to extract [`Forwarded`] information from the specified `T` headers.
 pub struct GetForwardedHeadersService<S, T = Forwarded> {
@@ -269,10 +262,10 @@ mod tests {
     use crate::{
         error::OpaqueError,
         http::{
-            headers::{TrueClientIp, XClientIp},
+            headers::{ClientIp, TrueClientIp, XClientIp, XRealIp},
             IntoResponse, Response, StatusCode,
         },
-        service::service_fn,
+        service::{service_fn, ServiceBuilder},
     };
 
     fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}
@@ -308,6 +301,26 @@ mod tests {
             GetForwardedHeadersService::<_, (TrueClientIp, XClientIp)>::new(service_fn(
                 dummy_service_fn,
             )),
+        );
+        assert_is_service(
+            ServiceBuilder::new()
+                .layer(GetForwardedHeadersLayer::forwarded())
+                .service_fn(dummy_service_fn),
+        );
+        assert_is_service(
+            ServiceBuilder::new()
+                .layer(GetForwardedHeadersLayer::via())
+                .service_fn(dummy_service_fn),
+        );
+        assert_is_service(
+            ServiceBuilder::new()
+                .layer(GetForwardedHeadersLayer::<XRealIp>::new())
+                .service_fn(dummy_service_fn),
+        );
+        assert_is_service(
+            ServiceBuilder::new()
+                .layer(GetForwardedHeadersLayer::<(ClientIp, TrueClientIp)>::new())
+                .service_fn(dummy_service_fn),
         );
     }
 }

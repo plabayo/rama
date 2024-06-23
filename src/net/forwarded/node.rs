@@ -102,6 +102,12 @@ impl NodeId {
         }
     }
 
+    /// Return true if this [`NodeId`] has a any kind of port defined,
+    /// even if obfuscated.
+    pub fn has_any_port(&self) -> bool {
+        self.port.is_some()
+    }
+
     /// Return the numeric port if one was defined for this [`NodeId`].
     pub fn port(&self) -> Option<u16> {
         if let Some(NodePort::Num(n)) = self.port {

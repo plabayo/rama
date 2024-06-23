@@ -117,7 +117,7 @@ impl TryFrom<&Protocol> for ForwardedProtocol {
 }
 
 crate::__static_str_error! {
-    #[doc = "invalid fowarded protocol string"]
+    #[doc = "invalid forwarded protocol string"]
     pub struct InvalidProtocolStr;
 }
 

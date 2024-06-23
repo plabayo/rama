@@ -193,19 +193,6 @@ impl TryFrom<&[u8]> for Forwarded {
     }
 }
 
-// TODO: support Header <-> Forwarded
-// TODO: test header code
-// TODO: test Display code for Forwarded & ForwardedElement
-// TODO: modify Forwarded Code: IS NOT NOT NOT Response!!! it is is request, both, just one is Get, other is Set!
-// TODO: test SetForwardedLayerCode
-// TODO: test SetForwardedLayerCode with other layers interacted
-// TODO: develop GetForwardedLayerCode (new)
-// TODO: develop GetForwardedLayerCode (legacy)
-// TODO: test SetForwardedLayerCode (new)
-// TODO: test SetForwardedLayerCode (legacy)
-// TODO: test SetForwardedLayerCode with other layers interacted
-// TODO: test SetForwardedLayerCode (legacy) with other layers interacted
-
 impl Header for Forwarded {
     fn name() -> &'static http::HeaderName {
         &crate::http::header::FORWARDED
@@ -355,9 +342,33 @@ mod tests {
                 },
             ),
             (
+                r##"for=192.0.2.43, for="[2001:db8:cafe::17]:4000", for=unknown"##,
+                Forwarded {
+                    first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
+                    others: vec![
+                        ForwardedElement::forwarded_for(
+                            NodeId::try_from("[2001:db8:cafe::17]:4000").unwrap(),
+                        ),
+                        ForwardedElement::forwarded_for(NodeId::try_from("unknown").unwrap()),
+                    ],
+                },
+            ),
+            (
                 r##"for=192.0.2.43,for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com"##,
                 Forwarded {
                     first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
+                    others: vec![ForwardedElement::try_from(
+                        "for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com",
+                    )
+                    .unwrap()],
+                },
+            ),
+            (
+                r##"for="192.0.2.43:4000",for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com"##,
+                Forwarded {
+                    first: ForwardedElement::forwarded_for(
+                        NodeId::try_from("192.0.2.43:4000").unwrap(),
+                    ),
                     others: vec![ForwardedElement::try_from(
                         "for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com",
                     )

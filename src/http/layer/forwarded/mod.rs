@@ -1,4 +1,6 @@
 //! Middleware to support the reading and writing of Forwarded headers.
+//!
+//! See the [`GetForwardedHeadersLayer`] and [`SetForwardedHeadersLayer`] documentation for more details.
 
 mod get_forwarded;
 #[doc(inline)]

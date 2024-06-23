@@ -1,7 +1,7 @@
 use crate::http::Version;
 
 #[derive(Debug, PartialEq, PartialOrd, Copy, Clone, Eq, Ord, Hash)]
-/// Version of the fowarded protocol.
+/// Version of the forwarded protocol.
 pub struct ForwardedVersion(VersionKind);
 
 #[derive(Debug, PartialEq, PartialOrd, Copy, Clone, Eq, Ord, Hash)]

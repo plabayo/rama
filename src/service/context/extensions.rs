@@ -80,7 +80,7 @@ impl Extensions {
             .and_then(|boxed| (**boxed).as_any().downcast_ref())
     }
 
-    /// Get an exlusive reference to a type previously inserted on this `Extensions`.
+    /// Get an exclusive reference to a type previously inserted on this `Extensions`.
     pub fn get_mut<T: Send + Sync + 'static>(&mut self) -> Option<&mut T> {
         self.map
             .as_mut()
@@ -89,7 +89,7 @@ impl Extensions {
     }
 
     /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns an exlusive reference to the contained value.
+    /// then returns an exclusive reference to the contained value.
     pub fn get_or_insert_with<T: Send + Sync + Clone + 'static>(
         &mut self,
         f: impl FnOnce() -> T,
@@ -104,7 +104,7 @@ impl Extensions {
     }
 
     /// Inserts a value into the map computed by converting `U` into `T` if it is `None`
-    /// then returns an exlusive reference to the contained value.
+    /// then returns an exclusive reference to the contained value.
     pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &mut T
     where
         T: Send + Sync + Clone + 'static,
@@ -121,7 +121,7 @@ impl Extensions {
 
     /// Retrieves a value of type `T` from the context.
     ///
-    /// If the value does not exist, the given value is inserted and an exlusive reference to it is returned.
+    /// If the value does not exist, the given value is inserted and an exclusive reference to it is returned.
     pub fn get_or_insert<T: Clone + Send + Sync + 'static>(&mut self, fallback: T) -> &mut T {
         self.get_or_insert_with(|| fallback)
     }

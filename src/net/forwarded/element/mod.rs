@@ -192,7 +192,7 @@ impl ForwardedElement {
         }
     }
 
-    /// Sets the "by" parameter for this [`ForwardedElement`] usin the given valid node identifier.
+    /// Sets the "by" parameter for this [`ForwardedElement`] using the given valid node identifier.
     /// Examples are an Ip Address or Domain, with or without a port.
     pub fn set_forwarded_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
         self.by_node = Some(node_id.into());
@@ -271,13 +271,25 @@ impl fmt::Display for ForwardedElement {
 
         if let Some(ref by_node) = self.by_node {
             write!(f, "by=")?;
-            by_node.fmt(f)?;
+            let quoted =
+                by_node.has_any_port() || by_node.ip().map(|ip| ip.is_ipv6()).unwrap_or_default();
+            if quoted {
+                write!(f, r##""{by_node}""##)?;
+            } else {
+                by_node.fmt(f)?;
+            }
             separator = ";";
         }
 
         if let Some(ref for_node) = self.for_node {
             write!(f, "{separator}for=")?;
-            for_node.fmt(f)?;
+            let quoted =
+                for_node.has_any_port() || for_node.ip().map(|ip| ip.is_ipv6()).unwrap_or_default();
+            if quoted {
+                write!(f, r##""{for_node}""##)?;
+            } else {
+                for_node.fmt(f)?;
+            }
             separator = ";";
         }
 

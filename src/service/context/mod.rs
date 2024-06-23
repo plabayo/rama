@@ -257,7 +257,7 @@ impl<S> Context<S> {
     }
 
     /// Inserts a value into the map computed from `f` into if it is [`None`],
-    /// then returns an exlusive reference to the contained value.
+    /// then returns an exclusive reference to the contained value.
     ///
     /// # Example
     ///
@@ -277,7 +277,7 @@ impl<S> Context<S> {
     }
 
     /// Inserts a value into the map computed from converting `U` into `T if no value was already inserted is [`None`],
-    /// then returns an exlusive reference to the contained value.
+    /// then returns an exclusive reference to the contained value.
     pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &mut T
     where
         T: Clone + Send + Sync + 'static,
@@ -289,7 +289,7 @@ impl<S> Context<S> {
     /// Retrieves a value of type `T` from the context.
     ///
     /// If the value does not exist, the provided value is inserted
-    /// and an exlusive reference to it is returned.
+    /// and an exclusive reference to it is returned.
     ///
     /// See [`Context::get`] for more details.
     ///
