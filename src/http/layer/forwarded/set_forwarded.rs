@@ -34,6 +34,20 @@ use std::net::SocketAddr;
 /// [`IPv4`]: std::net::Ipv4Addr
 /// [`IPv6`]: std::net::Ipv6Addr
 ///
+/// Rama also has the following headers already implemented for you to use:
+///
+/// > [`X-Real-Ip`], [`X-Client-Ip`], [`Client-Ip`], [`CF-Connecting-Ip`] and [`True-Client-Ip`].
+///
+/// There are no [`SetForwardedHeadersLayer`] constructors for these headers,
+/// but you can use the [`SetForwardedHeadersLayer::new`] constructor and pass the header type as a type parameter,
+/// alone or in a tuple with other headers.
+///
+/// [`X-Real-Ip`]: crate::http::headers::XRealIp
+/// [`X-Client-Ip`]: crate::http::headers::XClientIp
+/// [`Client-Ip`]: crate::http::headers::ClientIp
+/// [`CF-Connecting-Ip`]: crate::http::headers::CFConnectingIp
+/// [`True-Client-Ip`]: crate::http::headers::TrueClientIp
+///
 /// ## Example
 ///
 /// This example shows how you could expose the real Client IP using the [`X-Real-IP`][`crate::http::headers::XRealIp`] header.
