@@ -554,7 +554,7 @@ impl From<RequestInfo> for Table {
                 ("Resource Type".to_owned(), info.resource_type.to_string()),
                 ("Initiator".to_owned(), info.initiator.to_string()),
                 (
-                    "Peer Address".to_owned(),
+                    "Socket Address".to_owned(),
                     info.peer_addr.unwrap_or_default(),
                 ),
             ],
