@@ -408,7 +408,7 @@ pub async fn echo(ctx: Context<State>, req: Request) -> Json<serde_json::Value> 
         "authority": request_info.authority,
         "path": request_info.path,
         "query": query,
-        "ip": request_info.peer_addr,
+        "socket_addr": request_info.peer_addr,
         "headers": http_info.headers,
         "parsedBody": String::from_utf8_lossy(body.collect().await.unwrap().to_bytes().deref()),
         "tls": tls_info,
@@ -444,17 +444,17 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        
+
             <title>ラマ | FP</title>
-        
+
             <link rel="icon"
                 href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%2210 0 100 100%22><text y=%22.90em%22 font-size=%2290%22>🦙</text></svg>">
-        
+
             <meta name="description" content="rama proxy fingerprinting service">
             <meta name="robots" content="none">
 
             <link rel="canonical" href="https://ramaproxy.org/">
-        
+
             <meta property="og:title" content="ramaproxy.org" />
             <meta property="og:locale" content="en_US" />
             <meta property="og:type" content="website">

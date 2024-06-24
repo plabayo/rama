@@ -5,17 +5,24 @@ use rama::{
     error::BoxError,
     http::{
         dep::http_body_util::BodyExt,
-        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
+        headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        layer::{
+            forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
+            trace::TraceLayer,
+        },
         response::Json,
         server::HttpServer,
         IntoResponse, Request, RequestContext, Response,
     },
-    net::forwarded::Forwarded,
-    net::stream::{layer::http::BodyLimitLayer, SocketInfo},
+    net::{
+        forwarded::Forwarded,
+        stream::{layer::http::BodyLimitLayer, SocketInfo},
+    },
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
-        layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
+        layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
+        util::combinators::Either7,
         Context, ServiceBuilder,
     },
     tcp::server::TcpListener,
@@ -39,12 +46,32 @@ pub struct CliCommandEcho {
     interface: String,
 
     #[arg(short = 'c', long, default_value_t = 0)]
-    /// the number of concurrent connections to allow (0 = no limit)
+    /// the number of concurrent connections to allow
+    ///
+    /// (0 = no limit)
     concurrent: usize,
 
     #[arg(short = 't', long, default_value_t = 8)]
-    /// the timeout in seconds for each connection (0 = no timeout)
+    /// the timeout in seconds for each connection
+    ///
+    /// (0 = no timeout)
     timeout: u64,
+
+    #[arg(long, short = 'f')]
+    /// enable support for one of the following "forward" headers
+    ///
+    /// Only used if `ha_proxy` is not enabled!!
+    ///
+    /// (only possible if used as Http service)
+    ///
+    /// Supported headers:
+    ///
+    /// Forwarded ("for="), X-Forwarded-For
+    ///
+    /// X-Client-IP Client-IP, X-Real-IP
+    ///
+    /// CF-Connecting-IP, True-Client-IP
+    forward: Option<String>,
 
     #[arg(short = 'a', long)]
     /// enable HaProxy PROXY Protocol
@@ -61,6 +88,44 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    // forward header layer optionally used (only possible if ha-proxy not enabled)
+    let http_forwarded_layer = match cfg.forward.as_deref() {
+        Some(header) if !cfg.ha_proxy => Some(match header.trim().to_lowercase().as_str() {
+            "forwarded" => {
+                tracing::info!("enabling Forwarded header support");
+                Either7::A(GetForwardedHeadersLayer::forwarded())
+            }
+            "x-forwarded-for" => {
+                tracing::info!("enabling X-Forwarded-For header support");
+                Either7::B(GetForwardedHeadersLayer::x_forwarded_for())
+            }
+            "x-client-ip" => {
+                tracing::info!("enabling X-Client-IP header support");
+                Either7::C(GetForwardedHeadersLayer::<XClientIp>::new())
+            }
+            "client-ip" => {
+                tracing::info!("enabling Client-IP header support");
+                Either7::D(GetForwardedHeadersLayer::<ClientIp>::new())
+            }
+            "x-real-ip" => {
+                tracing::info!("enabling X-Real-IP header support");
+                Either7::E(GetForwardedHeadersLayer::<XRealIp>::new())
+            }
+            "cf-connecting-ip" => {
+                tracing::info!("enabling CF-Connecting-IP header support");
+                Either7::F(GetForwardedHeadersLayer::<CFConnectingIp>::new())
+            }
+            "true-client-ip" => {
+                tracing::info!("enabling True-Client-IP header support");
+                Either7::G(GetForwardedHeadersLayer::<TrueClientIp>::new())
+            }
+            header => {
+                return Err(format!("unsupported forward header: {}", header).into());
+            }
+        }),
+        _ => None,
+    };
 
     let graceful = rama::utils::graceful::Shutdown::default();
 
@@ -91,6 +156,8 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
             .layer(TraceLayer::new_for_http())
             .layer(AddRequiredResponseHeadersLayer::default())
             .layer(UserAgentClassifierLayer::new())
+            .layer(ConsumeErrLayer::default())
+            .layer(http_forwarded_layer)
             .service_fn(echo);
 
         let tcp_service = tcp_service_builder
@@ -179,7 +246,7 @@ async fn echo<State>(ctx: Context<State>, req: Request) -> Result<Response, Infa
             "payload": body,
         },
         "tls": tls_client_hello,
-        "ip": ctx.get::<Forwarded>()
+        "socket_addr": ctx.get::<Forwarded>()
             .and_then(|f|
                     f.client_socket_addr().map(|addr| addr.to_string())
                         .or_else(|| f.client_ip().map(|ip| ip.to_string()))

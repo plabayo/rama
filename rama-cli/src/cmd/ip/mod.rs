@@ -4,19 +4,26 @@ use clap::Args;
 use rama::{
     error::BoxError,
     http::{
-        layer::{required_header::AddRequiredResponseHeadersLayer, trace::TraceLayer},
+        headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        layer::{
+            forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
+            trace::TraceLayer,
+        },
         server::HttpServer,
         IntoResponse, Request, Response, StatusCode,
     },
-    net::stream::{layer::http::BodyLimitLayer, SocketInfo, Stream},
+    net::{
+        forwarded::Forwarded,
+        stream::{layer::http::BodyLimitLayer, SocketInfo, Stream},
+    },
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
         layer::{
             limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
-            LimitLayer, TimeoutLayer,
+            ConsumeErrLayer, LimitLayer, TimeoutLayer,
         },
-        util::combinators::Either,
+        util::combinators::{Either, Either7},
         Context, ServiceBuilder,
     },
     tcp::server::TcpListener,
@@ -38,16 +45,36 @@ pub struct CliCommandIp {
     interface: String,
 
     #[arg(long, short = 'c', default_value_t = 0)]
-    /// the number of concurrent connections to allow (0 = no limit)
+    /// the number of concurrent connections to allow
+    ///
+    /// (0 = no limit)
     concurrent: usize,
 
     #[arg(long, short = 't', default_value = "8")]
-    /// the timeout in seconds for each connection (0 = default timeout of 30s)
+    /// the timeout in seconds for each connection
+    ///
+    /// (0 = default timeout of 30s)
     timeout: u64,
 
     #[arg(long, short = 'a')]
     /// enable HaProxy PROXY Protocol
     ha_proxy: bool,
+
+    #[arg(long, short = 'f')]
+    /// enable support for one of the following "forward" headers
+    ///
+    /// Only used if `ha_proxy` is not enabled!!
+    ///
+    /// (only possible if used as Http service)
+    ///
+    /// Supported headers:
+    ///
+    /// Forwarded ("for="), X-Forwarded-For
+    ///
+    /// X-Client-IP Client-IP, X-Real-IP
+    ///
+    /// CF-Connecting-IP, True-Client-IP
+    forward: Option<String>,
 
     #[arg(long, short = 'T')]
     /// operate the IP service on transport layer (tcp)
@@ -64,6 +91,46 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
+
+    // forward header layer optionally used for http service
+    let http_forwarded_layer = match cfg.forward.as_deref() {
+        Some(header) if !cfg.transport && !cfg.ha_proxy => {
+            Some(match header.trim().to_lowercase().as_str() {
+                "forwarded" => {
+                    tracing::info!("enabling Forwarded header support");
+                    Either7::A(GetForwardedHeadersLayer::forwarded())
+                }
+                "x-forwarded-for" => {
+                    tracing::info!("enabling X-Forwarded-For header support");
+                    Either7::B(GetForwardedHeadersLayer::x_forwarded_for())
+                }
+                "x-client-ip" => {
+                    tracing::info!("enabling X-Client-IP header support");
+                    Either7::C(GetForwardedHeadersLayer::<XClientIp>::new())
+                }
+                "client-ip" => {
+                    tracing::info!("enabling Client-IP header support");
+                    Either7::D(GetForwardedHeadersLayer::<ClientIp>::new())
+                }
+                "x-real-ip" => {
+                    tracing::info!("enabling X-Real-IP header support");
+                    Either7::E(GetForwardedHeadersLayer::<XRealIp>::new())
+                }
+                "cf-connecting-ip" => {
+                    tracing::info!("enabling CF-Connecting-IP header support");
+                    Either7::F(GetForwardedHeadersLayer::<CFConnectingIp>::new())
+                }
+                "true-client-ip" => {
+                    tracing::info!("enabling True-Client-IP header support");
+                    Either7::G(GetForwardedHeadersLayer::<TrueClientIp>::new())
+                }
+                header => {
+                    return Err(format!("unsupported forward header: {}", header).into());
+                }
+            })
+        }
+        _ => None,
+    };
 
     let graceful = rama::utils::graceful::Shutdown::default();
 
@@ -87,7 +154,10 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
             } else {
                 Duration::from_secs(30)
             }))
-            .layer((cfg.ha_proxy).then(HaProxyLayer::default));
+            .layer((cfg.ha_proxy).then(|| {
+                tracing::info!("enabling HaProxy PROXY Protocol");
+                HaProxyLayer::default()
+            }));
 
         // TODO document how one would force IPv4 or IPv6
 
@@ -103,6 +173,8 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
             let http_service = ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
                 .layer(AddRequiredResponseHeadersLayer::default())
+                .layer(ConsumeErrLayer::default())
+                .layer(http_forwarded_layer)
                 .service_fn(ip);
 
             let tcp_service = tcp_service_builder
@@ -127,12 +199,15 @@ async fn ip<State>(ctx: Context<State>, _: Request) -> Result<Response, Infallib
 where
     State: Send + Sync + 'static,
 {
-    Ok(
-        match ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string()) {
-            Some(ip) => ip.into_response(),
-            None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-        },
-    )
+    let peer_ip = ctx
+        .get::<Forwarded>()
+        .and_then(|f| f.client_ip())
+        .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
+
+    Ok(match peer_ip {
+        Some(ip) => ip.to_string().into_response(),
+        None => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -151,17 +226,21 @@ where
         ctx: rama::service::Context<State>,
         stream: Input,
     ) -> Result<Self::Response, Self::Error> {
-        let socket_info = match ctx.get::<SocketInfo>() {
-            Some(socket_info) => socket_info,
+        let peer_ip = ctx
+            .get::<Forwarded>()
+            .and_then(|f| f.client_ip())
+            .or_else(|| ctx.get::<SocketInfo>().map(|s| s.peer_addr().ip()));
+        let peer_ip = match peer_ip {
+            Some(peer_ip) => peer_ip,
             None => {
-                tracing::error!("missing socket info");
+                tracing::error!("missing peer information");
                 return Ok(());
             }
         };
 
         let mut stream = std::pin::pin!(stream);
 
-        match socket_info.peer_addr().ip() {
+        match peer_ip {
             std::net::IpAddr::V4(ip) => {
                 if let Err(err) = stream.write_all(&ip.octets()).await {
                     tracing::error!("error writing IPv4 of peer to peer: {}", err);
