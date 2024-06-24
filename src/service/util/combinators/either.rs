@@ -1,9 +1,11 @@
+use crate::dns::DnsResolver;
 use crate::error::BoxError;
 use crate::http::{self, layer::retry};
 use crate::service::{
     context::Extensions, layer::limit, matcher::Matcher, Context, Layer, Service,
 };
 use std::io::IoSlice;
+use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context as TaskContext, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, Error as IoError, ReadBuf, Result as IoResult};
@@ -20,6 +22,7 @@ macro_rules! create_either {
         /// - the [`Matcher`] trait;
         /// - the [`limit::Policy`] trait;
         /// - the [`retry::Policy`] trait;
+        /// - the [`dns::DnsResolver`] trait;
         ///
         /// and will delegate the functionality to the type that is wrapped in the `Either` type.
         /// To keep it easy all wrapped types are expected to work with the same inputs and outputs.
@@ -29,6 +32,7 @@ macro_rules! create_either {
         /// [`Matcher`]: crate::service::matcher::Matcher
         /// [`Service`]: crate::service::Service
         /// [`Layer`]: crate::service::Layer
+        /// [`dns::DnsResolver`]: crate::dns::DnsResolver
         pub enum $id<$($param),+> {
             $(
                 /// one of the Either variants
@@ -252,8 +256,25 @@ macro_rules! create_either {
                 }
             }
         }
+
+        impl<$($param),+> DnsResolver for $id<$($param),+>
+        where
+            $($param: DnsResolver),+,
+        {
+            async fn next_addr(&mut self) -> Option<SocketAddr> {
+                match self {
+                    $(
+                        $id::$param(ref mut resolver) => resolver.next_addr().await,
+                    )+
+                }
+            }
+        }
     };
 }
+
+// TODO: split these impls to the corresponding modules,
+// and exposing the macro used to create these impls macros
+// as part of the public API, making the `Either` code to be more usable for Rama users.
 
 create_either!(Either, A, B,);
 create_either!(Either3, A, B, C,);
