@@ -1,5 +1,5 @@
-use super::{DnsResolver, DnsService};
-use crate::{net::address::Authority, service::Context};
+use super::DnsService;
+use crate::net::address::Authority;
 use serde::Deserialize;
 use std::{collections::HashMap, net::SocketAddr, sync::Arc};
 
@@ -29,11 +29,10 @@ impl<'a> Deserialize<'a> for DnsMap {
     }
 }
 
-impl<State> DnsService<State> for DnsMap
-where
-    State: Send + Sync + 'static,
-{
-    fn lookup(&self, _ctx: &Context<State>, authority: Authority) -> impl DnsResolver {
+impl DnsService for DnsMap {
+    type Resolver = std::vec::IntoIter<SocketAddr>;
+
+    fn lookup(&self, authority: Authority) -> Self::Resolver {
         self.map
             .get(&authority)
             .cloned()

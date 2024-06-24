@@ -1,5 +1,5 @@
 use super::{DnsResolver, DnsService};
-use crate::{net::address::Authority, service::Context};
+use crate::net::address::Authority;
 use std::future::Future;
 use std::pin::Pin;
 use std::{fmt, net::SocketAddr};
@@ -32,13 +32,14 @@ impl<F: Clone> Clone for DnsServiceFn<F> {
     }
 }
 
-impl<F, State, Fut, R> DnsService<State> for DnsServiceFn<F>
+impl<F, Fut, R> DnsService for DnsServiceFn<F>
 where
-    F: Fn(Authority) -> Fut + Send + Sync + 'static,
+    F: Fn(Authority) -> Fut,
     Fut: Future<Output = R> + Send + 'static,
     R: DnsResolver,
 {
-    fn lookup(&self, _ctx: &Context<State>, authority: Authority) -> impl DnsResolver {
+    type Resolver = DnsServiceFnResolver<Fut, R>;
+    fn lookup(&self, authority: Authority) -> Self::Resolver {
         let fut = self.0(authority);
         DnsServiceFnResolver {
             state: DnsServiceFnResolverState::Init(Box::pin(fut)),
@@ -84,7 +85,7 @@ mod tests {
         let service = dns_service_fn(|_| async move {
             vec![SocketAddr::from(([127, 0, 0, 1], 8080))].into_iter()
         });
-        let mut resolver = service.lookup(&Context::default(), "localhost:8080".parse().unwrap());
+        let mut resolver = service.lookup("localhost:8080".parse().unwrap());
         assert_eq!(
             resolver.next_addr().await,
             Some(SocketAddr::from(([127, 0, 0, 1], 8080)))
@@ -94,7 +95,7 @@ mod tests {
 
     #[test]
     fn test_tokio_net_lookup() {
-        fn assert_dns_service<T: DnsService<()>>(_: T) {}
+        fn assert_dns_service<T: DnsService>(_: T) {}
         assert_dns_service(dns_service_fn(|authority: Authority| async move {
             match tokio::net::lookup_host(authority.to_string()).await {
                 Ok(iter) => Either::A(iter),
