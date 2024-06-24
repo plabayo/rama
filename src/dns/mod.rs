@@ -4,33 +4,21 @@ use crate::{
     net::address::Authority,
     service::{util::combinators::Either, Context},
 };
-use std::{future::Future, iter::empty, net::SocketAddr, sync::Arc};
+use std::{iter::empty, net::SocketAddr, sync::Arc};
 
 pub mod layer;
+
+mod resolver;
+#[doc(inline)]
+pub use resolver::DnsResolver;
 
 mod map;
 #[doc(inline)]
 pub use map::DnsMap;
 
-/// Generator-like trait that resolves a [`Authority`] to a list of [`SocketAddr`]esses.
-pub trait DnsResolver: Send + 'static {
-    /// Returns the next [`SocketAddr`] in the list of resolved addresses.
-    ///
-    /// If there are no more addresses to resolve, it should return `None`.
-    ///
-    /// Errors should be handled by the resolver itself, and not propagated to the caller.
-    /// The result of an error should be the same as if no more addresses were found.
-    fn next_addr(&mut self) -> impl Future<Output = Option<SocketAddr>> + Send + '_;
-}
-
-impl<I> DnsResolver for I
-where
-    I: Iterator<Item = SocketAddr> + Send + 'static,
-{
-    async fn next_addr(&mut self) -> Option<SocketAddr> {
-        self.next()
-    }
-}
+mod svc_fn;
+#[doc(inline)]
+pub use svc_fn::{dns_service_fn, DnsServiceFn};
 
 /// A DNS service that resolves an [`Authority`] to a list of [`SocketAddr`]esses.
 pub trait DnsService<State>: Send + Sync + 'static {
