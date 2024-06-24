@@ -167,7 +167,11 @@ pub async fn get_request_info(
         uri: parts.uri.to_string(),
         peer_addr: ctx
             .get::<Forwarded>()
-            .and_then(|f| f.client_ip().map(|ip| ip.to_string()))
+            .and_then(|f| {
+                f.client_socket_addr()
+                    .map(|addr| addr.to_string())
+                    .or_else(|| f.client_ip().map(|ip| ip.to_string()))
+            })
             .or_else(|| ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
     }
 }

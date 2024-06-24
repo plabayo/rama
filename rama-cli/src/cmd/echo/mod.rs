@@ -179,7 +179,11 @@ async fn echo<State>(ctx: Context<State>, req: Request) -> Result<Response, Infa
             "payload": body,
         },
         "tls": tls_client_hello,
-        "ip": ctx.get::<Forwarded>().and_then(|f| f.client_ip().map(|ip| ip.to_string())).or_else(|| ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
+        "ip": ctx.get::<Forwarded>()
+            .and_then(|f|
+                    f.client_socket_addr().map(|addr| addr.to_string())
+                        .or_else(|| f.client_ip().map(|ip| ip.to_string()))
+            ).or_else(|| ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
     }))
     .into_response())
 }

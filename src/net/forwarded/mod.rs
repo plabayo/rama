@@ -5,8 +5,8 @@
 use crate::error::OpaqueError;
 use crate::http::headers::Header;
 use crate::http::HeaderValue;
-use std::fmt;
 use std::net::IpAddr;
+use std::{fmt, net::SocketAddr};
 
 mod obfuscated;
 #[doc(inline)]
@@ -63,6 +63,20 @@ impl Forwarded {
         self.first.ref_forwarded_host()
     }
 
+    /// Return the client [`SocketAddr`] of this [`Forwarded`] context,
+    /// if both an Ip and a port are defined.
+    ///
+    /// You can try to fallback to [`Self::client_ip`],
+    /// in case this method returns `None`.
+    pub fn client_socket_addr(&self) -> Option<SocketAddr> {
+        self.first
+            .ref_forwarded_for()
+            .and_then(|node| match (node.ip(), node.port()) {
+                (Some(ip), Some(port)) => Some((ip, port).into()),
+                _ => None,
+            })
+    }
+
     /// Return the client port of this [`Forwarded`] context,
     /// if there is one defined.
     pub fn client_port(&self) -> Option<u16> {
@@ -71,6 +85,9 @@ impl Forwarded {
 
     /// Return the client Ip of this [`Forwarded`] context,
     /// if there is one defined.
+    ///
+    /// This method may return None because there is no forwarded "for"
+    /// information for the client element or because the IP is obfuscated.
     ///
     /// It is assumed that only the first element can be
     /// described as client information.
