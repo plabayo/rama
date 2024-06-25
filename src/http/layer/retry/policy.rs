@@ -9,7 +9,7 @@ use std::future::Future;
 /// ```
 /// use rama::service::Context;
 /// use rama::http::Request;
-/// use rama::http::layer::retry::{Policy, PolicyResult, RetryBody};
+/// use rama::http::layer::{Policy, PolicyResult, RetryBody};
 /// use std::sync::Arc;
 /// use parking_lot::Mutex;
 ///
@@ -155,3 +155,42 @@ where
         }
     }
 }
+
+macro_rules! impl_retry_policy_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+, State, Response, Error> Policy<State, Response, Error> for crate::utils::combinators::$id<$($param),+>
+        where
+            $($param: Policy<State, Response, Error>),+,
+            State: Send + Sync + 'static,
+            Response: Send + 'static,
+            Error: Send + Sync + 'static,
+        {
+            async fn retry(
+                &self,
+                ctx: Context<State>,
+                req: http::Request<RetryBody>,
+                result: Result<Response, Error>,
+            ) -> PolicyResult<State, Response, Error> {
+                match self {
+                    $(
+                        crate::utils::combinators::$id::$param(policy) => policy.retry(ctx, req, result).await,
+                    )+
+                }
+            }
+
+            fn clone_input(
+                &self,
+                ctx: &Context<State>,
+                req: &http::Request<RetryBody>,
+            ) -> Option<(Context<State>, http::Request<RetryBody>)> {
+                match self {
+                    $(
+                        crate::utils::combinators::$id::$param(policy) => policy.clone_input(ctx, req),
+                    )+
+                }
+            }
+        }
+    };
+}
+
+crate::utils::combinators::impl_either!(impl_retry_policy_either);

@@ -17,12 +17,12 @@ impl<L, S> Layer<S> for Option<L>
 where
     L: Layer<S>,
 {
-    type Service = Either<L::Service, S>;
+    type Service = crate::utils::combinators::Either<L::Service, S>;
 
     fn layer(&self, inner: S) -> Self::Service {
         match self {
-            Some(layer) => Either::A(layer.layer(inner)),
-            None => Either::B(inner),
+            Some(layer) => crate::utils::combinators::Either::A(layer.layer(inner)),
+            None => crate::utils::combinators::Either::B(inner),
         }
     }
 }
@@ -92,6 +92,25 @@ pub use limit::{Limit, LimitLayer};
 pub mod add_extension;
 pub use add_extension::{AddExtension, AddExtensionLayer};
 
-use super::util::combinators::Either;
-
 pub mod http;
+
+macro_rules! impl_layer_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+, S> Layer<S> for crate::utils::combinators::$id<$($param),+>
+        where
+            $($param: Layer<S>),+,
+        {
+            type Service = crate::utils::combinators::$id<$($param::Service),+>;
+
+            fn layer(&self, inner: S) -> Self::Service {
+                match self {
+                    $(
+                        crate::utils::combinators::$id::$param(layer) => crate::utils::combinators::$id::$param(layer.layer(inner)),
+                    )+
+                }
+            }
+        }
+    };
+}
+
+crate::utils::combinators::impl_either!(impl_layer_either);

@@ -132,4 +132,4 @@ Please do [open an issue](https://github.com/plabayo/rama/issues) if you notice 
 
 Another option is to use [`Either`] on the internal policy/config items used by your layer.
 
-[`Either`]: https://ramaproxy.org/docs/rama/service/util/combinators/enum.Either.html
+[`Either`]: https://ramaproxy.org/docs/rama/utils/combinators/enum.Either.html

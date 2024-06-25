@@ -3,7 +3,7 @@ use std::fmt::Display;
 use std::time::Duration;
 use tokio::time;
 
-use crate::service::util::rng::{HasherRng, Rng};
+use crate::utils::rng::{HasherRng, Rng};
 
 use super::Backoff;
 

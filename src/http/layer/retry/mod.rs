@@ -176,10 +176,8 @@ mod test {
         http::{
             layer::retry::managed::DoNotRetry, BodyExtractExt, IntoResponse, Response, StatusCode,
         },
-        service::{
-            util::{backoff::ExponentialBackoff, rng::HasherRng},
-            Context, ServiceBuilder,
-        },
+        service::{Context, ServiceBuilder},
+        utils::{backoff::ExponentialBackoff, rng::HasherRng},
     };
     use std::{
         sync::{atomic::AtomicUsize, Arc},

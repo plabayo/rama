@@ -47,6 +47,7 @@ macro_rules! __get_request_context {
     }};
 }
 
+#[doc(inline)]
 pub use crate::__get_request_context as get_request_context;
 
 impl RequestContext {

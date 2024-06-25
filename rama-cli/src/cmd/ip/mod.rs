@@ -23,10 +23,10 @@ use rama::{
             limit::policy::{ConcurrentPolicy, UnlimitedPolicy},
             ConsumeErrLayer, LimitLayer, TimeoutLayer,
         },
-        util::combinators::{Either, Either7},
         Context, ServiceBuilder,
     },
     tcp::server::TcpListener,
+    utils::combinators::{Either, Either7},
 };
 use std::{convert::Infallible, time::Duration};
 use tokio::io::AsyncWriteExt;

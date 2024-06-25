@@ -49,9 +49,9 @@ use rama::{
             limit::policy::{ConcurrentPolicy, LimitReached},
             LimitLayer,
         },
-        util::{backoff::ExponentialBackoff, combinators::Either},
         ServiceBuilder,
     },
+    utils::{backoff::ExponentialBackoff, combinators::Either},
 };
 use serde_json::json;
 

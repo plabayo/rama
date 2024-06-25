@@ -15,12 +15,10 @@ use rama::{
     },
     net::stream::Stream,
     proxy::http::client::HttpProxyConnectorLayer,
-    service::{
-        util::{backoff::ExponentialBackoff, rng::HasherRng},
-        BoxService, Service, ServiceBuilder,
-    },
+    service::{BoxService, Service, ServiceBuilder},
     tcp::service::HttpConnector,
     tls::rustls::client::HttpsConnectorLayer,
+    utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 use std::{
     process::{Child, ExitStatus},

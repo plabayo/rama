@@ -7,7 +7,8 @@
 use super::{Policy, PolicyResult, RetryBody};
 use crate::{
     http::{Request, Response},
-    service::{util::backoff::Backoff, Context},
+    service::Context,
+    utils::backoff::Backoff,
 };
 use std::future::Future;
 
@@ -309,7 +310,7 @@ mod tests {
     use super::*;
     use crate::{
         http::{IntoResponse, StatusCode},
-        service::util::{backoff::ExponentialBackoff, rng::HasherRng},
+        utils::{backoff::ExponentialBackoff, rng::HasherRng},
     };
     use std::time::Duration;
 

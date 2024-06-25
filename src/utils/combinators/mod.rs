@@ -4,4 +4,6 @@
 
 mod either;
 #[doc(inline)]
-pub use either::{Either, Either3, Either4, Either5, Either6, Either7, Either8, Either9};
+pub use either::{
+    impl_either, Either, Either3, Either4, Either5, Either6, Either7, Either8, Either9,
+};

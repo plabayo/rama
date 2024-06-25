@@ -25,7 +25,8 @@
 //! ```
 
 use super::{Policy, PolicyOutput, PolicyResult};
-use crate::service::{util::backoff::Backoff, Context};
+use crate::service::Context;
+use crate::utils::backoff::Backoff;
 use parking_lot::Mutex;
 use std::sync::Arc;
 

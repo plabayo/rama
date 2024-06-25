@@ -28,8 +28,8 @@ pub enum Either<A, B> {
 }
 ```
 
-Rama provides [the `rama::service::util::combinator::Either`](https://ramaproxy.org/docs/rama/service/util/combinators/enum.Either.html) combinator,
-for two variants, up to nine ([`Either9`](https://ramaproxy.org/docs/rama/service/util/combinators/enum.Either9.html)). These have as the sole purpose
+Rama provides [the `rama::utils::combinator::Either`](https://ramaproxy.org/docs/rama/utils/combinators/enum.Either.html) combinator,
+for two variants, up to nine ([`Either9`](https://ramaproxy.org/docs/rama/utils/combinators/enum.Either9.html)). These have as the sole purpose
 to provide you with an easy way to dynamically dispatch a [`Layer`](https://ramaproxy.org/docs/rama/service/layer/trait.Layer.html)s, [`Service`](https://ramaproxy.org/docs/rama/service/trait.Service.html)s, [`retry::Policy`](https://ramaproxy.org/docs/rama/http/layer/retry/trait.Policy.html) and a [`limit::Policy`](https://ramaproxy.org/docs/rama/service/layer/limit/policy/trait.Policy.html).
 
 You can also implement it for your own traits in case you have the need for it.

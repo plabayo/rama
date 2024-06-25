@@ -20,9 +20,7 @@ use rama::{
         layer::{
             limit::policy::ConcurrentPolicy, ConsumeErrLayer, HijackLayer, LimitLayer, TimeoutLayer,
         },
-        service_fn,
-        util::backoff::ExponentialBackoff,
-        ServiceBuilder,
+        service_fn, ServiceBuilder,
     },
     tcp::server::TcpListener,
     telemetry::{opentelemetry, prometheus},
@@ -34,6 +32,7 @@ use rama::{
         server::{TlsAcceptorLayer, TlsClientConfigHandler},
     },
     ua::UserAgentClassifierLayer,
+    utils::backoff::ExponentialBackoff,
 };
 use std::{convert::Infallible, io::BufReader, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;

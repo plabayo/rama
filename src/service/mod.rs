@@ -34,5 +34,3 @@ pub use identity::IdentityService;
 
 pub mod matcher;
 pub use matcher::Matcher;
-
-pub mod util;

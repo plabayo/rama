@@ -22,12 +22,12 @@ use rama::{
     rt::Executor,
     service::{
         layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
-        util::combinators::Either7,
         Context, ServiceBuilder,
     },
     tcp::server::TcpListener,
     tls::rustls::server::IncomingClientHello,
     ua::{UserAgent, UserAgentClassifierLayer},
+    utils::combinators::Either7,
 };
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};

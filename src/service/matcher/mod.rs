@@ -118,5 +118,31 @@ impl<State, Request> Matcher<State, Request> for bool {
     }
 }
 
+macro_rules! impl_matcher_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+, State, Request> Matcher<State, Request> for crate::utils::combinators::$id<$($param),+>
+        where
+            $($param: Matcher<State, Request>),+,
+            Request: Send + 'static,
+            State: Send + Sync + 'static,
+        {
+            fn matches(
+                &self,
+                ext: Option<&mut Extensions>,
+                ctx: &Context<State>,
+                req: &Request
+            ) -> bool{
+                match self {
+                    $(
+                        crate::utils::combinators::$id::$param(layer) => layer.matches(ext, ctx, req),
+                    )+
+                }
+            }
+        }
+    };
+}
+
+crate::utils::combinators::impl_either!(impl_matcher_either);
+
 #[cfg(test)]
 mod test;

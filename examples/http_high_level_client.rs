@@ -29,10 +29,8 @@ use rama::{
         Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
     },
     rt::Executor,
-    service::{
-        util::{backoff::ExponentialBackoff, rng::HasherRng},
-        Context, Service, ServiceBuilder,
-    },
+    service::{Context, Service, ServiceBuilder},
+    utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 
 // Everything else we need is provided by the standard library, community crates or tokio.

@@ -678,7 +678,8 @@ mod test {
             },
             IntoResponse,
         },
-        service::{util::backoff::ExponentialBackoff, BoxService, ServiceBuilder},
+        service::{BoxService, ServiceBuilder},
+        utils::backoff::ExponentialBackoff,
     };
     use std::convert::Infallible;
 

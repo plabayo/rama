@@ -5,7 +5,7 @@ use rama::{
         WriterMode,
     },
     rt::Executor,
-    service::util::combinators::Either,
+    utils::combinators::Either,
 };
 use std::path::PathBuf;
 use tokio::{fs::OpenOptions, io::stdout, sync::mpsc::Sender};

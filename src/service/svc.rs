@@ -1,6 +1,7 @@
 //! [`Service`] and [`BoxService`] traits.
 
 use super::Context;
+use crate::error::BoxError;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -137,6 +138,34 @@ where
         self.inner.serve_box(ctx, req)
     }
 }
+
+macro_rules! impl_service_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+, State, Request, Response> Service<State, Request> for crate::utils::combinators::$id<$($param),+>
+        where
+            $(
+                $param: Service<State, Request, Response = Response>,
+                $param::Error: Into<BoxError>,
+            )+
+            Request: Send + 'static,
+            State: Send + Sync + 'static,
+            Response: Send + 'static,
+        {
+            type Response = Response;
+            type Error = BoxError;
+
+            async fn serve(&self, ctx: Context<State>, req: Request) -> Result<Self::Response, Self::Error> {
+                match self {
+                    $(
+                        crate::utils::combinators::$id::$param(s) => s.serve(ctx, req).await.map_err(Into::into),
+                    )+
+                }
+            }
+        }
+    };
+}
+
+crate::utils::combinators::impl_either!(impl_service_either);
 
 #[cfg(test)]
 mod tests {

@@ -27,6 +27,7 @@
 //! [`Extensions`]: crate::service::context::Extensions
 //! [`http_listener_hello.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
 
+use crate::error::BoxError;
 use crate::service::Context;
 use std::{convert::Infallible, sync::Arc};
 
@@ -199,3 +200,53 @@ where
         }
     }
 }
+
+macro_rules! impl_limit_policy_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+, State, Request> Policy<State, Request> for crate::utils::combinators::$id<$($param),+>
+        where
+            $(
+                $param: Policy<State, Request>,
+                $param::Error: Into<BoxError>,
+            )+
+            Request: Send + 'static,
+            State: Send + Sync + 'static,
+        {
+            type Guard = crate::utils::combinators::$id<$($param::Guard),+>;
+            type Error = BoxError;
+
+            async fn check(
+                &self,
+                ctx: Context<State>,
+                req: Request,
+            ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+                match self {
+                    $(
+                        crate::utils::combinators::$id::$param(policy) => {
+                            let result = policy.check(ctx, req).await;
+                            match result.output {
+                                PolicyOutput::Ready(guard) => PolicyResult {
+                                    ctx: result.ctx,
+                                    request: result.request,
+                                    output: PolicyOutput::Ready(crate::utils::combinators::$id::$param(guard)),
+                                },
+                                PolicyOutput::Abort(err) => PolicyResult {
+                                    ctx: result.ctx,
+                                    request: result.request,
+                                    output: PolicyOutput::Abort(err.into()),
+                                },
+                                PolicyOutput::Retry => PolicyResult {
+                                    ctx: result.ctx,
+                                    request: result.request,
+                                    output: PolicyOutput::Retry,
+                                },
+                            }
+                        }
+                    )+
+                }
+            }
+        }
+    };
+}
+
+crate::utils::combinators::impl_either!(impl_limit_policy_either);
