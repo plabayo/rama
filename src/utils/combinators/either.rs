@@ -84,6 +84,35 @@ macro_rules! define_either {
 
 impl_either!(define_either);
 
+macro_rules! impl_iterator_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+, Item> Iterator for $id<$($param),+>
+        where
+            $($param: Iterator<Item = Item>),+,
+        {
+            type Item = Item;
+
+            fn next(&mut self) -> Option<Item> {
+                match self {
+                    $(
+                        $id::$param(iter) => iter.next(),
+                    )+
+                }
+            }
+
+            fn size_hint(&self) -> (usize, Option<usize>) {
+                match self {
+                    $(
+                        $id::$param(iter) => iter.size_hint(),
+                    )+
+                }
+            }
+        }
+    };
+}
+
+impl_either!(impl_iterator_either);
+
 macro_rules! impl_async_read_write_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
         impl<$($param),+> AsyncRead for $id<$($param),+>
