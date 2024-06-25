@@ -1,9 +1,9 @@
-//! Layer to support DNS lookup overwrites.
-
 use super::DnsMapService;
 use crate::{http::HeaderName, service::Layer};
 
 /// Layer which can extend [`Dns`] overwrites with mappings.
+///
+/// See [the module level documentation](crate::dns::layer) for more information.
 ///
 /// [`Dns`]: crate::dns::Dns
 #[derive(Debug, Clone)]
