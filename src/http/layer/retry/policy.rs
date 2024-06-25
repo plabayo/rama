@@ -9,7 +9,7 @@ use std::future::Future;
 /// ```
 /// use rama::service::Context;
 /// use rama::http::Request;
-/// use rama::http::layer::{Policy, PolicyResult, RetryBody};
+/// use rama::http::layer::retry::{Policy, PolicyResult, RetryBody};
 /// use std::sync::Arc;
 /// use parking_lot::Mutex;
 ///
