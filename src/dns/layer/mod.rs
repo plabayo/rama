@@ -52,3 +52,8 @@
 
 mod dns_map;
 pub use dns_map::{DnsMapLayer, DnsMapService};
+
+mod dns_resolve;
+pub use dns_resolve::{
+    DnsResolveMode, DnsResolveModeLayer, DnsResolveModeService, DnsResolveModeUsernameParser,
+};
