@@ -80,10 +80,7 @@ impl<State> From<(&Context<State>, &Parts)> for RequestContext {
             .and_then(|f| f.client_proto().map(Into::into))
             .unwrap_or_else(|| uri.scheme().into());
 
-        let default_port = forwarded
-            .and_then(|f| f.client_port())
-            .or_else(|| uri.port_u16())
-            .unwrap_or_else(|| protocol.default_port());
+        let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
 
         let authority = forwarded
             .and_then(|f| {
@@ -138,10 +135,7 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
             .and_then(|f| f.client_proto().map(Into::into))
             .unwrap_or_else(|| uri.scheme().into());
 
-        let default_port = forwarded
-            .and_then(|f| f.client_port())
-            .or_else(|| uri.port_u16())
-            .unwrap_or_else(|| protocol.default_port());
+        let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
 
         let authority = forwarded
             .and_then(|f| {
