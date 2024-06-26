@@ -20,7 +20,7 @@ use rama::{
     proxy::http::client::HttpProxyConnectorLayer,
     rt::Executor,
     service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
-    tcp::service::HttpConnector,
+    tcp::client::service::HttpConnector,
     tls::rustls::client::HttpsConnectorLayer,
     utils::graceful::{self, Shutdown, ShutdownGuard},
 };

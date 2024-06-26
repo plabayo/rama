@@ -94,6 +94,9 @@ webpki-roots = "0.26.1"
 terminal-prompt = "0.2.3"
 parking_lot = "0.12.3"
 const_format = "0.2.32"
+hickory-resolver = { version = "0.24.1", default-features = false, features = [
+    "tokio-runtime",
+] }
 
 [package]
 name = "rama"
@@ -141,6 +144,7 @@ futures-core = { workspace = true }
 futures-lite = { workspace = true }
 h2 = { workspace = true }
 headers = { workspace = true }
+hickory-resolver = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }

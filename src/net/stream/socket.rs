@@ -1,29 +1,6 @@
 use std::io::Result;
 use std::net::SocketAddr;
 
-#[derive(Debug, Clone)]
-/// An address that can be set by any service or middleware,
-/// to make connectors connect to the specified [`SocketAddr`],
-/// instead of resolving it first (e.g. from the [`Request`] [`Uri`])
-///
-/// [`Request`]: crate::http::Request
-/// [`Uri`]: crate::http::Uri
-pub struct ServerSocketAddr(SocketAddr);
-
-impl ServerSocketAddr {
-    /// Create a new [`ServerSocketAddr`] for the given target [`SocketAddr`].
-    pub fn new(target: SocketAddr) -> Self {
-        Self(target)
-    }
-
-    /// Get the target [`SocketAddr`] of this [`ServerSocketAddr`].
-    ///
-    /// [`SocketAddr`]: std::net::SocketAddr
-    pub fn addr(&self) -> &SocketAddr {
-        &self.0
-    }
-}
-
 /// Common information exposed by a Socket-like construct.
 ///
 /// For now this is implemented for TCP and UDP, as these

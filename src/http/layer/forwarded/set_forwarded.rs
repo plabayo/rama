@@ -313,7 +313,7 @@ where
 macro_rules! set_forwarded_service_for_tuple {
     ( $($ty:ident),* $(,)? ) => {
         #[allow(non_snake_case)]
-        impl<$($ty,)* S, State, Body> Service<State, Request<Body>> for SetForwardedHeadersService<S, ($($ty,)*)>
+        impl<S, $($ty),* , State, Body> Service<State, Request<Body>> for SetForwardedHeadersService<S, ($($ty,)*)>
         where
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
             S: Service<State, Request<Body>>,
@@ -328,14 +328,12 @@ macro_rules! set_forwarded_service_for_tuple {
                 mut ctx: Context<State>,
                 mut req: Request<Body>,
             ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-                let mut peer_addr: Option<SocketAddr> =
-                    ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr());
                 let forwarded: Option<Forwarded> = ctx.get().cloned();
                 let request_ctx = get_request_context!(ctx, req);
 
                 let mut forwarded_element = ForwardedElement::forwarded_by(self.by_node.clone());
 
-                if let Some(peer_addr) = peer_addr.take() {
+                if let Some(peer_addr) = ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr()) {
                     forwarded_element.set_forwarded_for(peer_addr);
                 }
 
@@ -366,7 +364,7 @@ macro_rules! set_forwarded_service_for_tuple {
                 self.inner.serve(ctx, req)
             }
         }
-    }
+    };
 }
 all_the_tuples_no_last_special_case!(set_forwarded_service_for_tuple);
 

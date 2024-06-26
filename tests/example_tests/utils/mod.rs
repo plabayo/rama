@@ -16,7 +16,7 @@ use rama::{
     net::stream::Stream,
     proxy::http::client::HttpProxyConnectorLayer,
     service::{BoxService, Service, ServiceBuilder},
-    tcp::service::HttpConnector,
+    tcp::client::service::HttpConnector,
     tls::rustls::client::HttpsConnectorLayer,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
