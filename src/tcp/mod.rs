@@ -1,5 +1,5 @@
 //! TCP module for Rama.
 
+pub mod client;
 pub mod server;
-pub mod service;
 pub mod utils;

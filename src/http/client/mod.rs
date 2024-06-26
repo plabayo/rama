@@ -6,7 +6,7 @@ use crate::{
     http::{Request, Response, Version},
     net::stream::Stream,
     service::{Context, Service},
-    tcp::service::HttpConnector,
+    tcp::client::service::HttpConnector,
     tls::rustls::client::{AutoTlsStream, HttpsConnector},
 };
 use hyper_util::rt::TokioIo;

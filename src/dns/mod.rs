@@ -83,9 +83,13 @@ impl Dns {
     /// Performs a 'A' DNS record lookup.
     pub async fn ipv4_lookup(
         &self,
-        domain: &Domain,
+        domain: Domain,
     ) -> Result<impl Iterator<Item = Ipv4Addr>, OpaqueError> {
-        if let Some(addresses) = self.overwrites.as_ref().and_then(|cache| cache.get(domain)) {
+        if let Some(addresses) = self
+            .overwrites
+            .as_ref()
+            .and_then(|cache| cache.get(&domain))
+        {
             return Ok(Either::A(addresses.clone().into_iter().filter_map(
                 |ip| match ip {
                     IpAddr::V4(ip) => Some(ip),
@@ -107,9 +111,13 @@ impl Dns {
     /// Performs a 'AAAA' DNS record lookup.
     pub async fn ipv6_lookup(
         &self,
-        domain: &Domain,
+        domain: Domain,
     ) -> Result<impl Iterator<Item = Ipv6Addr>, OpaqueError> {
-        if let Some(addresses) = self.overwrites.as_ref().and_then(|cache| cache.get(domain)) {
+        if let Some(addresses) = self
+            .overwrites
+            .as_ref()
+            .and_then(|cache| cache.get(&domain))
+        {
             return Ok(Either::A(addresses.clone().into_iter().filter_map(
                 |ip| match ip {
                     IpAddr::V4(_) => None,
@@ -129,7 +137,7 @@ impl Dns {
     }
 }
 
-fn domain_str_as_fqdn(domain: &Domain) -> Result<Name, OpaqueError> {
+fn domain_str_as_fqdn(domain: Domain) -> Result<Name, OpaqueError> {
     let mut name = domain
         .to_string()
         .into_name()

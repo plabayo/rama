@@ -50,10 +50,20 @@ mod tests {
                     Host::Address(ip) => panic!("unexpected host: {ip}"),
                 };
 
-                let addresses: Vec<_> = ctx.dns().ipv4_lookup(domain).await.unwrap().collect();
+                let addresses: Vec<_> = ctx
+                    .dns()
+                    .ipv4_lookup(domain.clone())
+                    .await
+                    .unwrap()
+                    .collect();
                 assert_eq!(addresses, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))]);
 
-                let addresses: Vec<_> = ctx.dns().ipv6_lookup(domain).await.unwrap().collect();
+                let addresses: Vec<_> = ctx
+                    .dns()
+                    .ipv6_lookup(domain.clone())
+                    .await
+                    .unwrap()
+                    .collect();
                 assert!(addresses.is_empty());
 
                 Ok::<_, Infallible>(())

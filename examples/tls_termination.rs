@@ -34,7 +34,7 @@ use rama::tls::rustls::dep::{pki_types::PrivatePkcs8KeyDer, rustls::ServerConfig
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     service::ServiceBuilder,
-    tcp::{server::TcpListener, service::Forwarder},
+    tcp::{client::service::Forwarder, server::TcpListener},
     tls::rustls::server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
     utils::graceful::Shutdown,
 };
