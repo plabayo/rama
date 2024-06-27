@@ -1,15 +1,24 @@
 use crate::{
+    dns::Dns,
     error::{ErrorContext, OpaqueError},
     net::address::{Authority, Domain, Host},
     service::Context,
+    utils::combinators::Either,
 };
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 use tokio::{
     net::TcpStream,
-    sync::mpsc::{channel, Receiver},
+    sync::{
+        mpsc::{channel, Sender},
+        Semaphore,
+    },
 };
 
 /// Establish a TCP connection for the given authority.
@@ -44,23 +53,48 @@ where
     //
     // See <https://datatracker.ietf.org/doc/html/rfc8305> for more information.
 
-    let mut resolver = HappyResolver::new(ctx, &domain);
-    let mut delay = Duration::ZERO;
-    while let Some(ip) = resolver.next_ip().await {
-        let addr = (ip, port).into();
+    let (tx, mut rx) = channel(1);
 
-        if !delay.is_zero() {
-            tokio::time::sleep(delay).await;
-        }
+    let connected = Arc::new(AtomicBool::new(false));
 
-        match TcpStream::connect(&addr).await {
-            Ok(stream) => return Ok((stream, addr)),
-            Err(err) => {
-                tracing::trace!(err = %err, "tcp connector failed to connect");
-                delay = (delay + Duration::from_micros(250)) * 2;
-                continue;
-            }
-        };
+    // IPv6
+    let ipv6_tx = tx.clone();
+    let ipv6_domain = domain.clone();
+    let ipv6_dns = ctx.dns().clone();
+    let ipv6_connected = connected.clone();
+    ctx.spawn(tcp_connect(
+        ipv6_dns,
+        IpKind::Ipv6,
+        ipv6_domain,
+        port,
+        ipv6_tx,
+        ipv6_connected,
+    ));
+
+    // IPv4
+    let ipv4_tx = tx;
+    let ipv4_domain = domain.clone();
+    let ipv4_dns = ctx.dns().clone();
+    let ipv4_connected = connected.clone();
+    ctx.spawn(async move {
+        // give Ipv6 a headstart
+        tokio::time::sleep(Duration::from_micros(500)).await;
+        tcp_connect(
+            ipv4_dns,
+            IpKind::Ipv4,
+            ipv4_domain,
+            port,
+            ipv4_tx,
+            ipv4_connected,
+        )
+        .await;
+    });
+
+    // wait for the first connection to succeed,
+    // ignore the rest of the connections (sorry, but not sorry)
+    if let Some((stream, addr)) = rx.recv().await {
+        connected.store(true, Ordering::SeqCst);
+        return Ok((stream, addr));
     }
 
     Err(OpaqueError::from_display(format!(
@@ -68,148 +102,75 @@ where
     )))
 }
 
-#[derive(Debug)]
-struct HappyResolver {
-    ipv4_rx: Option<Receiver<Ipv4Addr>>,
-    ipv6_rx: Option<Receiver<Ipv6Addr>>,
-    last_ip_kind: IpKind,
-}
-
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum IpKind {
     Ipv4,
     Ipv6,
 }
 
-impl HappyResolver {
-    fn new<State>(ctx: &Context<State>, domain: &Domain) -> Self {
-        let ipv4_dns = ctx.dns().clone();
-        let (ipv4_tx, ipv4_rx) = channel(1);
-        let ipv4_domain = domain.clone();
-        ctx.spawn(async move {
-            tokio::time::sleep(Duration::from_micros(500)).await; // give Ipv6 a head start
-            let ip_it = match ipv4_dns.ipv4_lookup(ipv4_domain).await {
-                Ok(it) => it,
+async fn tcp_connect(
+    dns: Dns,
+    ip_kind: IpKind,
+    domain: Domain,
+    port: u16,
+    tx: Sender<(TcpStream, SocketAddr)>,
+    connected: Arc<AtomicBool>,
+) {
+    let ip_it = match ip_kind {
+        IpKind::Ipv4 => match dns.ipv4_lookup(domain).await {
+            Ok(it) => Either::A(it.map(IpAddr::V4)),
+            Err(err) => {
+                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
+                return;
+            }
+        },
+        IpKind::Ipv6 => match dns.ipv6_lookup(domain).await {
+            Ok(it) => Either::B(it.map(IpAddr::V6)),
+            Err(err) => {
+                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv6 addresses");
+                return;
+            }
+        },
+    };
+
+    const CONCURRENT_CONNECTIONS: usize = 2;
+
+    let sem = Arc::new(Semaphore::new(CONCURRENT_CONNECTIONS));
+
+    for (index, ip) in ip_it.enumerate() {
+        let addr = (ip, port).into();
+
+        let sem = sem.clone();
+        let tx = tx.clone();
+        let connected = connected.clone();
+
+        // back off retries exponentially
+        if index > 0 && index % CONCURRENT_CONNECTIONS == 0 {
+            let multiplier = index / CONCURRENT_CONNECTIONS;
+            let delay = Duration::from_micros((50 * 2 * multiplier) as u64);
+            tokio::time::sleep(delay).await;
+        }
+
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.unwrap();
+            if connected.load(Ordering::SeqCst) {
+                tracing::trace!("[{ip_kind:?}] #{index}: abort attempt to {addr} (connection already established)");
+                return;
+            }
+
+            tracing::trace!("[{ip_kind:?}] #{index}: tcp connect attempt to {addr}");
+
+            match TcpStream::connect(&addr).await {
+                Ok(stream) => {
+                    tracing::trace!("[{ip_kind:?}] #{index}: tcp connection stablished to {addr}");
+                    if let Err(err) = tx.send((stream, addr)).await {
+                        tracing::trace!(err = %err, "[{ip_kind:?}] #{index}: failed to send resolved IP address");
+                    }
+                }
                 Err(err) => {
-                    tracing::trace!(err = %err, "failed to resolve domain to IPv4 addresses");
-                    return;
+                    tracing::trace!(err = %err, "[{ip_kind:?}] #{index}: tcp connector failed to connect");
                 }
             };
-            for ip in ip_it {
-                if let Err(err) = ipv4_tx.send(ip).await {
-                    tracing::trace!(err = %err, "failed to send resolved IPv4 address");
-                    return;
-                }
-            }
         });
-
-        let ipv6_dns = ctx.dns().clone();
-        let (ipv6_tx, ipv6_rx) = channel(1);
-        let ipv6_domain = domain.clone();
-        ctx.spawn(async move {
-            let ip_it = match ipv6_dns.ipv6_lookup(ipv6_domain).await {
-                Ok(it) => it,
-                Err(err) => {
-                    tracing::trace!(err = %err, "failed to resolve domain to IPv6 addresses");
-                    return;
-                }
-            };
-            for ip in ip_it {
-                if let Err(err) = ipv6_tx.send(ip).await {
-                    tracing::trace!(err = %err, "failed to send resolved IPv6 address");
-                    return;
-                }
-            }
-        });
-
-        Self {
-            ipv4_rx: Some(ipv4_rx),
-            ipv6_rx: Some(ipv6_rx),
-            last_ip_kind: IpKind::Ipv6,
-        }
-    }
-
-    async fn next_ip(&mut self) -> Option<IpAddr> {
-        let (ipv4_rx, ipv6_rx) = (self.ipv4_rx.take(), self.ipv6_rx.take());
-        match (ipv4_rx, ipv6_rx) {
-            (None, None) => None,
-            (Some(mut ipv4_rx), None) => match ipv4_rx.recv().await {
-                Some(ip) => {
-                    self.last_ip_kind = IpKind::Ipv4;
-                    self.ipv4_rx = Some(ipv4_rx);
-                    tracing::trace!("resolved IPv4 address: {ip}");
-                    Some(IpAddr::V4(ip))
-                }
-                None => None,
-            },
-            (None, Some(mut ipv6_rx)) => match ipv6_rx.recv().await {
-                Some(ip) => {
-                    self.last_ip_kind = IpKind::Ipv6;
-                    self.ipv6_rx = Some(ipv6_rx);
-                    tracing::trace!("resolved IPv6 address: {ip}");
-                    Some(IpAddr::V6(ip))
-                }
-                None => None,
-            },
-            (Some(mut ipv4_rx), Some(mut ipv6_rx)) => {
-                let (maybe_ip, ip_kind) = match self.last_ip_kind {
-                    IpKind::Ipv4 => {
-                        tokio::select! {
-                            biased;
-                            ip = ipv6_rx.recv() => (ip.map(IpAddr::V6), IpKind::Ipv6),
-                            ip = ipv4_rx.recv() => (ip.map(IpAddr::V4), IpKind::Ipv4),
-                        }
-                    }
-                    IpKind::Ipv6 => {
-                        tokio::select! {
-                            biased;
-                            ip = ipv4_rx.recv() => (ip.map(IpAddr::V4), IpKind::Ipv4),
-                            ip = ipv6_rx.recv() => (ip.map(IpAddr::V6), IpKind::Ipv6),
-                        }
-                    }
-                };
-                match maybe_ip {
-                    Some(ip) => {
-                        tracing::trace!("resolved to {ip_kind:?} address: {ip}");
-                        self.last_ip_kind = ip_kind;
-                        self.ipv4_rx = Some(ipv4_rx);
-                        self.ipv6_rx = Some(ipv6_rx);
-                        Some(ip)
-                    }
-                    None => match ip_kind {
-                        IpKind::Ipv4 => {
-                            // drop Ipv4 receiver, since it's exhausted
-                            // and try again with ipv6...
-                            match ipv6_rx.recv().await {
-                                Some(ip) => {
-                                    self.last_ip_kind = IpKind::Ipv6;
-                                    self.ipv6_rx = Some(ipv6_rx);
-                                    tracing::trace!(
-                                        "resolved to IPv6 address after exhausting IPv4: {ip}"
-                                    );
-                                    Some(IpAddr::V6(ip))
-                                }
-                                None => None, // X_X
-                            }
-                        }
-                        IpKind::Ipv6 => {
-                            // drop Ipv6 receiver, since it's exhausted
-                            // and try again with ipv4...
-                            match ipv4_rx.recv().await {
-                                Some(ip) => {
-                                    self.last_ip_kind = IpKind::Ipv4;
-                                    self.ipv4_rx = Some(ipv4_rx);
-                                    tracing::trace!(
-                                        "resolved to IPv4 address after exhausting IPv6: {ip}"
-                                    );
-                                    Some(IpAddr::V4(ip))
-                                }
-                                None => None, // X_X
-                            }
-                        }
-                    },
-                }
-            }
-        }
     }
 }
