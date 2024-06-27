@@ -24,10 +24,9 @@ use tokio::{
 /// Establish a TCP connection for the given authority.
 ///
 /// In the case where the authority is already an IP address, we can directly connect to it.
-/// Otherwise, we'll use [the Happy Eye Balls algorithm][`rfc8305`] to resolve the domain
-/// to a valid IP address and establish a connection to it, with a bias towards IPv6.
-///
-/// [`rfc8305`]: https://datatracker.ietf.org/doc/html/rfc8305
+/// Otherwise, we'll try to establish a connection with dual-stack parallel connections,
+/// meaning that we'll try to connect to the domain using both IPv4 and IPv6,
+/// with multiple concurrent connection attempts.
 pub async fn connect<State>(
     ctx: &Context<State>,
     authority: Authority,
@@ -48,10 +47,8 @@ where
         }
     };
 
-    //... otherwise we'll use the Happy Eye Balls algorithm to
-    // resolve the domain to a valid IP address and establish a connection to it.
-    //
-    // See <https://datatracker.ietf.org/doc/html/rfc8305> for more information.
+    //... otherwise we'll try to establish a connection,
+    // with dual-stack parallel connections...
 
     let (tx, mut rx) = channel(1);
 
@@ -76,19 +73,14 @@ where
     let ipv4_domain = domain.clone();
     let ipv4_dns = ctx.dns().clone();
     let ipv4_connected = connected.clone();
-    ctx.spawn(async move {
-        // give Ipv6 a headstart
-        tokio::time::sleep(Duration::from_micros(500)).await;
-        tcp_connect(
-            ipv4_dns,
-            IpKind::Ipv4,
-            ipv4_domain,
-            port,
-            ipv4_tx,
-            ipv4_connected,
-        )
-        .await;
-    });
+    ctx.spawn(tcp_connect(
+        ipv4_dns,
+        IpKind::Ipv4,
+        ipv4_domain,
+        port,
+        ipv4_tx,
+        ipv4_connected,
+    ));
 
     // wait for the first connection to succeed,
     // ignore the rest of the connections (sorry, but not sorry)
