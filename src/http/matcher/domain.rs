@@ -1,5 +1,5 @@
 use crate::{
-    http::Request,
+    http::{Request, RequestContext},
     service::{context::Extensions, Context},
 };
 use std::cmp::Ordering;
@@ -60,14 +60,23 @@ impl<State, Body> crate::service::Matcher<State, Request<Body>> for DomainMatche
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
-        _ctx: &Context<State>,
+        ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
-        let host = match req.uri().host() {
-            Some(host) => host,
-            None => return false,
-        };
-        self.matches_host(host)
+        let host = ctx
+            .get::<RequestContext>()
+            .map(|ctx| ctx.authority.as_ref().map(|auth| auth.host().to_string()))
+            .unwrap_or_else(|| {
+                RequestContext::from((ctx, req)).authority.map(|auth| {
+                    let (host, _) = auth.into_parts();
+                    host.to_string()
+                })
+            });
+
+        match host {
+            Some(host) => self.matches_host(host.as_ref()),
+            None => false,
+        }
     }
 }
 
