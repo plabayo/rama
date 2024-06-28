@@ -72,6 +72,14 @@ impl Extensions {
         }
     }
 
+    /// Returns true if the `Extensions` contains the given type.
+    pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
+        self.map
+            .as_ref()
+            .map(|map| map.contains_key(&TypeId::of::<T>()))
+            .unwrap_or_default()
+    }
+
     /// Get a shared reference to a type previously inserted on this `Extensions`.
     pub fn get<T: Send + Sync + 'static>(&self) -> Option<&T> {
         self.map

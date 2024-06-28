@@ -218,6 +218,14 @@ impl<S> Context<S> {
         self.executor.spawn_task(future)
     }
 
+    /// Returns true if the `Context` contains the given type.
+    ///
+    /// Use [`Self::get`] in case you want to have access to the type
+    /// or [`Self::get_mut`] if you also need to mutate it.
+    pub fn contains<T: Send + Sync + 'static>(&self) -> bool {
+        self.extensions.contains::<T>()
+    }
+
     /// Get a shared reference to an extension.
     ///
     /// An extension is a type that implements `Send + Sync + 'static`,

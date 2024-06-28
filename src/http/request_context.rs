@@ -5,6 +5,7 @@ use crate::net::{
     Protocol,
 };
 use crate::service::Context;
+use crate::tls::rustls::server::IncomingClientHello;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context of the [`Request`] being served by the [`HttpServer`]
@@ -78,9 +79,21 @@ impl<State> From<(&Context<State>, &Parts)> for RequestContext {
 
         let protocol: Protocol = forwarded
             .and_then(|f| f.client_proto().map(Into::into))
+            .or_else(|| {
+                // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
+                // both the scheme and authority for the request, making us not detect
+                // it correctly as https protocol (port 443 by default). The presence of the client hello
+                // config does reveal this information to us which assumes that our tls terminators
+                // do set this information, otherwise we would never the less be in the blind.
+                // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
+                ctx.contains::<IncomingClientHello>()
+                    .then_some(Protocol::HTTPS)
+            })
             .unwrap_or_else(|| uri.scheme().into());
+        tracing::trace!(uri = %uri, "request context: detected protocol: {protocol}",);
 
         let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
+        tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
         let authority = forwarded
             .and_then(|f| {
@@ -104,6 +117,7 @@ impl<State> From<(&Context<State>, &Parts)> for RequestContext {
                 uri.host()
                     .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
             });
+        tracing::trace!(uri = %uri, "request context: maybe detected authority: {authority:?}");
 
         let http_version = forwarded
             .and_then(|f| {
@@ -116,6 +130,7 @@ impl<State> From<(&Context<State>, &Parts)> for RequestContext {
                 })
             })
             .unwrap_or(parts.version);
+        tracing::trace!(uri = %uri, "request context: maybe detected http version: {http_version:?}");
 
         RequestContext {
             http_version,
@@ -133,9 +148,24 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
 
         let protocol: Protocol = forwarded
             .and_then(|f| f.client_proto().map(Into::into))
+            .or_else(|| {
+                // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
+                // both the scheme and authority for the request, making us not detect
+                // it correctly as https protocol (port 443 by default). The presence of the client hello
+                // config does reveal this information to us which assumes that our tls terminators
+                // do set this information, otherwise we would never the less be in the blind.
+                // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
+                ctx.contains::<IncomingClientHello>()
+                    .then_some(Protocol::HTTPS)
+            })
             .unwrap_or_else(|| uri.scheme().into());
+        tracing::trace!(
+            uri = %uri, "request context: detected protocol: {protocol} (scheme: {:?})",
+            uri.scheme()
+        );
 
         let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
+        tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
         let authority = forwarded
             .and_then(|f| {
@@ -158,6 +188,7 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
                 uri.host()
                     .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
             });
+        tracing::trace!(uri = %uri, "request context: maybe detected authority: {authority:?}");
 
         let http_version = forwarded
             .and_then(|f| {
@@ -170,6 +201,7 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
                 })
             })
             .unwrap_or_else(|| req.version());
+        tracing::trace!(uri = %uri, "request context: maybe detected http version: {http_version:?}");
 
         RequestContext {
             http_version,
@@ -183,6 +215,7 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
 mod tests {
     use super::*;
     use crate::http::header::FORWARDED;
+    use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
     use crate::service::Service;
     use crate::{http::layer::forwarded::GetForwardedHeadersLayer, service::ServiceBuilder};
     use std::convert::Infallible;
@@ -294,5 +327,31 @@ mod tests {
 
             assert_eq!(req_ctx, expected, "Failed for {:?}", forwarded_str_vec);
         }
+    }
+
+    #[test]
+    fn test_request_ctx_https_request_behind_haproxy() {
+        let req = Request::builder()
+            .uri("https://echo.ramaproxy.org/en/reservation/roomdetails")
+            .version(Version::HTTP_11)
+            .header("host", "echo.ramaproxy.org")
+            .header("user-agent", "curl/8.6.0")
+            .header("accept", "*/*")
+            .body(())
+            .unwrap();
+
+        let mut ctx = Context::default();
+        ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+            NodeId::try_from("127.0.0.1:61234").unwrap(),
+        )));
+
+        let req_ctx = get_request_context!(ctx, req);
+
+        assert_eq!(req_ctx.http_version, Version::HTTP_11);
+        assert_eq!(req_ctx.protocol, "https");
+        assert_eq!(
+            req_ctx.authority.as_ref().unwrap().to_string(),
+            "echo.ramaproxy.org:443"
+        );
     }
 }

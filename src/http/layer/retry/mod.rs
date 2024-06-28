@@ -203,7 +203,7 @@ mod test {
             ctx: Context<State>,
             result: Result<Response, E>,
         ) -> (Context<State>, Result<Response, E>, bool) {
-            if ctx.get::<DoNotRetry>().is_some() {
+            if ctx.contains::<DoNotRetry>() {
                 panic!("unexpected retry: should be disabled");
             }
 
