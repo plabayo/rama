@@ -53,12 +53,14 @@ where
     let (tx, mut rx) = channel(1);
 
     let connected = Arc::new(AtomicBool::new(false));
+    let sem = Arc::new(Semaphore::new(3));
 
     // IPv6
     let ipv6_tx = tx.clone();
     let ipv6_domain = domain.clone();
     let ipv6_dns = ctx.dns().clone();
     let ipv6_connected = connected.clone();
+    let ipv6_sem = sem.clone();
     ctx.spawn(tcp_connect(
         ipv6_dns,
         IpKind::Ipv6,
@@ -66,6 +68,7 @@ where
         port,
         ipv6_tx,
         ipv6_connected,
+        ipv6_sem,
     ));
 
     // IPv4
@@ -73,6 +76,7 @@ where
     let ipv4_domain = domain.clone();
     let ipv4_dns = ctx.dns().clone();
     let ipv4_connected = connected.clone();
+    let ipv4_sem = sem;
     ctx.spawn(tcp_connect(
         ipv4_dns,
         IpKind::Ipv4,
@@ -80,6 +84,7 @@ where
         port,
         ipv4_tx,
         ipv4_connected,
+        ipv4_sem,
     ));
 
     // wait for the first connection to succeed,
@@ -107,6 +112,7 @@ async fn tcp_connect(
     port: u16,
     tx: Sender<(TcpStream, SocketAddr)>,
     connected: Arc<AtomicBool>,
+    sem: Arc<Semaphore>,
 ) {
     let ip_it = match ip_kind {
         IpKind::Ipv4 => match dns.ipv4_lookup(domain).await {
@@ -125,10 +131,6 @@ async fn tcp_connect(
         },
     };
 
-    const CONCURRENT_CONNECTIONS: usize = 2;
-
-    let sem = Arc::new(Semaphore::new(CONCURRENT_CONNECTIONS));
-
     for (index, ip) in ip_it.enumerate() {
         let addr = (ip, port).into();
 
@@ -137,16 +139,23 @@ async fn tcp_connect(
         let connected = connected.clone();
 
         // back off retries exponentially
-        if index > 0 && index % CONCURRENT_CONNECTIONS == 0 {
-            let multiplier = index / CONCURRENT_CONNECTIONS;
-            let delay = Duration::from_micros((50 * 2 * multiplier) as u64);
+        if index > 0 {
+            let delay = match ip_kind {
+                IpKind::Ipv4 => Duration::from_micros((35 * 2 * index) as u64),
+                IpKind::Ipv6 => Duration::from_micros((21 * 2 * index) as u64),
+            };
             tokio::time::sleep(delay).await;
+        }
+
+        if connected.load(Ordering::SeqCst) {
+            tracing::trace!("[{ip_kind:?}] #{index}: abort connect loop to {addr} (connection already established)");
+            return;
         }
 
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             if connected.load(Ordering::SeqCst) {
-                tracing::trace!("[{ip_kind:?}] #{index}: abort attempt to {addr} (connection already established)");
+                tracing::trace!("[{ip_kind:?}] #{index}: abort spawned attempt to {addr} (connection already established)");
                 return;
             }
 
