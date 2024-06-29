@@ -64,7 +64,7 @@ where
     type Response = S::Response;
     type Error = TlsAcceptorError<S::Error>;
 
-    async fn serve(&self, ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, mut ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
         let acceptor = TlsAcceptor::from(self.config.clone());
 
         let stream = acceptor
@@ -72,6 +72,7 @@ where
             .await
             .map_err(TlsAcceptorError::Accept)?;
 
+        ctx.insert(SecureTransport::default());
         self.inner
             .serve(ctx, stream)
             .await
@@ -103,6 +104,7 @@ where
             .await
             .map_err(TlsAcceptorError::Accept)?;
 
+        ctx.insert(SecureTransport::default());
         self.inner
             .serve(ctx, stream)
             .await
@@ -127,7 +129,6 @@ where
 
         let accepted_client_hello = IncomingClientHello::from(start.client_hello());
 
-        ctx.insert(SecureTransport::default());
         if self.client_config_handler.store_client_hello {
             ctx.insert(accepted_client_hello.clone());
         }
@@ -145,6 +146,7 @@ where
             .await
             .map_err(TlsAcceptorError::Accept)?;
 
+        ctx.insert(SecureTransport::default());
         self.inner
             .serve(ctx, stream)
             .await
