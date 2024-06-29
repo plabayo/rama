@@ -723,7 +723,7 @@ mod test {
     }
 
     #[test]
-    fn test_matcher_ands_combination() {
+    fn test_matcher_and_combination() {
         for v in [true, false].into_iter().permutations(3) {
             let expected = v[0] && v[1] && v[2];
             let a = HttpMatcher::custom(BooleanMatcher(v[0]));
@@ -743,7 +743,7 @@ mod test {
     }
 
     #[test]
-    fn test_matcher_negation_with_ands_combination() {
+    fn test_matcher_negation_with_and_combination() {
         for v in [true, false].into_iter().permutations(3) {
             let expected = !v[0] && v[1] && v[2];
             let a = HttpMatcher::custom(BooleanMatcher(v[0]));
@@ -763,7 +763,7 @@ mod test {
     }
 
     #[test]
-    fn test_matcher_ands_combination_negated() {
+    fn test_matcher_and_combination_negated() {
         for v in [true, false].into_iter().permutations(3) {
             let expected = !(v[0] && v[1] && v[2]);
             let a = HttpMatcher::custom(BooleanMatcher(v[0]));

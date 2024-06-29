@@ -99,7 +99,7 @@ impl<S: fmt::Debug> fmt::Debug for HttpProxyAddressService<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpProxyAddressService")
             .field("inner", &self.inner)
-            .field("adress", &self.preserve)
+            .field("address", &self.address)
             .field("preserve", &self.preserve)
             .finish()
     }

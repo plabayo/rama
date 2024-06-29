@@ -147,11 +147,11 @@ where
             if let Some(credential) = address.credential().cloned() {
                 match credential {
                     ProxyCredential::Basic(basic) => {
-                        tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: inserted proxy Basic credentails into plain-text (http) request");
+                        tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: inserted proxy Basic credentials into plain-text (http) request");
                         req.headers_mut().typed_insert(ProxyAuthorization(basic))
                     }
                     ProxyCredential::Bearer(bearer) => {
-                        tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: inserted proxy Bearer credentails into plain-text (http) request");
+                        tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: inserted proxy Bearer credentials into plain-text (http) request");
                         req.headers_mut().typed_insert(ProxyAuthorization(bearer))
                     }
                 }
