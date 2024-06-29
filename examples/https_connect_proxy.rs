@@ -30,7 +30,6 @@ use rama::{
         layer::{
             proxy_auth::ProxyAuthLayer,
             trace::TraceLayer,
-            traffic_writer::{RequestWriterLayer, WriterMode},
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
@@ -39,7 +38,7 @@ use rama::{
     },
     net::{stream::layer::http::BodyLimitLayer, user::Basic},
     rt::Executor,
-    service::{layer::ConsumeErrLayer, service_fn, Context, Service, ServiceBuilder},
+    service::{service_fn, Context, Service, ServiceBuilder},
     tcp::{server::TcpListener, utils::is_connection_error},
     tls::{
         dep::rcgen::KeyPair,
@@ -56,7 +55,7 @@ use rama::{
 
 use std::convert::Infallible;
 use std::time::Duration;
-use tracing::{metadata::LevelFilter, Level};
+use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
@@ -133,13 +132,6 @@ async fn main() {
         let http_service = HttpServer::auto(exec.clone()).service(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
-                // NOTE: a real proxy should have no request writer layer,
-                // as that might expose sensitive data to logs
-                .layer(ConsumeErrLayer::trace(Level::ERROR))
-                .layer(RequestWriterLayer::stdout_unbounded(
-                    &exec,
-                    Some(WriterMode::All),
-                ))
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filter
                 .layer(ProxyAuthLayer::new(Basic::new("john", "secret")))

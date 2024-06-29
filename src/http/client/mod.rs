@@ -5,6 +5,7 @@ use crate::{
     error::BoxError,
     http::{
         dep::http::uri::PathAndQuery,
+        get_request_context,
         header::HOST,
         headers::{self, HeaderMapExt},
         Request, Response, Version,
@@ -181,6 +182,9 @@ fn sanitize_client_req_header<S, B>(
         _ => {
             // GET | HEAD | POST | PUT | DELETE | OPTIONS | TRACE | PATCH
             if !ctx.contains::<ProxyAddress>() && req.uri().host().is_some() {
+                // ensure request context is defined prior to doing this, as otherwise we can get issues
+                let _ = get_request_context!(*ctx, req);
+
                 tracing::trace!("remove authority and scheme from non-connect direct http request");
                 let (mut parts, body) = req.into_parts();
                 let mut uri_parts = parts.uri.into_parts();
