@@ -1,8 +1,13 @@
 use crate::{
     net::stream::Stream,
     service::{Context, Service},
-    tls::rustls::dep::tokio_rustls::{server::TlsStream, TlsAcceptor},
-    tls::rustls::dep::{rustls::server::Acceptor, tokio_rustls::LazyConfigAcceptor},
+    tls::{
+        rustls::dep::{
+            rustls::server::Acceptor,
+            tokio_rustls::{server::TlsStream, LazyConfigAcceptor, TlsAcceptor},
+        },
+        SecureTransport,
+    },
 };
 use rustls::ServerConfig;
 use std::sync::Arc;
@@ -122,6 +127,7 @@ where
 
         let accepted_client_hello = IncomingClientHello::from(start.client_hello());
 
+        ctx.insert(SecureTransport::default());
         if self.client_config_handler.store_client_hello {
             ctx.insert(accepted_client_hello.clone());
         }

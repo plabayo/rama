@@ -30,6 +30,7 @@ use rama::{
         layer::{
             proxy_auth::ProxyAuthLayer,
             trace::TraceLayer,
+            traffic_writer::{RequestWriterLayer, WriterMode},
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
@@ -38,7 +39,7 @@ use rama::{
     },
     net::{stream::layer::http::BodyLimitLayer, user::Basic},
     rt::Executor,
-    service::{service_fn, Context, Service, ServiceBuilder},
+    service::{layer::ConsumeErrLayer, service_fn, Context, Service, ServiceBuilder},
     tcp::{server::TcpListener, utils::is_connection_error},
     tls::{
         dep::rcgen::KeyPair,
@@ -55,7 +56,7 @@ use rama::{
 
 use std::convert::Infallible;
 use std::time::Duration;
-use tracing::metadata::LevelFilter;
+use tracing::{metadata::LevelFilter, Level};
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
 #[tokio::main]
@@ -129,11 +130,18 @@ async fn main() {
             .expect("bind tcp proxy to 127.0.0.1:62016");
 
         let exec = Executor::graceful(guard.clone());
-        let http_service = HttpServer::auto(exec).service(
+        let http_service = HttpServer::auto(exec.clone()).service(
             ServiceBuilder::new()
                 .layer(TraceLayer::new_for_http())
+                // NOTE: a real proxy should have no request writer layer,
+                // as that might expose sensitive data to logs
+                .layer(ConsumeErrLayer::trace(Level::ERROR))
+                .layer(RequestWriterLayer::stdout_unbounded(
+                    &exec,
+                    Some(WriterMode::All),
+                ))
                 // See [`ProxyAuthLayer::with_labels`] for more information,
-                // e.g. can also be used to extract upstream proxy filters
+                // e.g. can also be used to extract upstream proxy filter
                 .layer(ProxyAuthLayer::new(Basic::new("john", "secret")))
                 .layer(UpgradeLayer::new(
                     MethodMatcher::CONNECT,
@@ -215,10 +223,12 @@ where
     S: Send + Sync + 'static,
 {
     let client = HttpClient::default();
+    let uri = req.uri().clone();
+    tracing::debug!(uri = %req.uri(), "proxy connect plain text request");
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
-            tracing::error!(error = %err, "error in client request");
+            tracing::error!(error = %err, uri = %uri, "error in client request");
             Ok(Response::builder()
                 .status(StatusCode::INTERNAL_SERVER_ERROR)
                 .body(Body::empty())

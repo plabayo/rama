@@ -5,12 +5,11 @@ use crate::{
     error::BoxError,
     http::{
         dep::http::uri::PathAndQuery,
-        get_request_context,
         header::HOST,
         headers::{self, HeaderMapExt},
         Request, Response, Version,
     },
-    net::stream::Stream,
+    net::{address::ProxyAddress, stream::Stream},
     service::{Context, Service},
     tcp::client::service::HttpConnector,
     tls::rustls::client::{AutoTlsStream, HttpsConnector},
@@ -164,10 +163,6 @@ where
     }
 }
 
-// TODO: move sanitize_client_req_header to http encoder
-// also make sure this is more complete, and also correct for the different http versions,
-// e.g. not sure the Host header is desired here for h2
-
 fn sanitize_client_req_header<S, B>(
     ctx: &mut Context<S>,
     req: Request<B>,
@@ -176,43 +171,17 @@ fn sanitize_client_req_header<S, B>(
         &http::Method::CONNECT => {
             // CONNECT
             if req.uri().host().is_none() {
-                let req_ctx = get_request_context!(*ctx, req);
-
-                let authority = crate::http::dep::http::uri::Authority::from_maybe_shared(
-                    req_ctx
-                        .authority
-                        .as_ref()
-                        .ok_or_else(|| {
-                            HttpClientError::from_display("missing authority in CONNECT request")
-                                .with_uri(req.uri().clone())
-                        })?
-                        .to_string(),
-                )
-                .map_err(HttpClientError::from_std)?;
-
-                let (mut parts, body) = req.into_parts();
-                let mut uri_parts = parts.uri.into_parts();
-                uri_parts.scheme = Some(
-                    req_ctx
-                        .protocol
-                        .as_str()
-                        .parse()
-                        .map_err(HttpClientError::from_std)?,
+                return Err(
+                    HttpClientError::from_display("missing host in CONNECT request")
+                        .with_uri(req.uri().clone()),
                 );
-                parts
-                    .headers
-                    .typed_insert(headers::Host::from(authority.clone()));
-                uri_parts.authority = Some(authority);
-                parts.uri =
-                    crate::http::Uri::from_parts(uri_parts).map_err(HttpClientError::from_std)?;
-                Request::from_parts(parts, body)
-            } else {
-                req
             }
+            req
         }
         _ => {
             // GET | HEAD | POST | PUT | DELETE | OPTIONS | TRACE | PATCH
-            if req.uri().host().is_some() {
+            if !ctx.contains::<ProxyAddress>() && req.uri().host().is_some() {
+                tracing::trace!("remove authority and scheme from non-connect direct http request");
                 let (mut parts, body) = req.into_parts();
                 let mut uri_parts = parts.uri.into_parts();
                 uri_parts.scheme = None;

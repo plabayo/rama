@@ -23,3 +23,12 @@ pub mod dep {
         pub use rcgen::*;
     }
 }
+
+#[derive(Debug, Clone, Default)]
+/// An [`Extensions`] value that can be added to the [`Context`]
+/// of a transport layer to signal that the transport is secure.
+///
+/// [`Extensions`]: crate::service::context::Extensions
+/// [`Context`]: crate::service::Context
+#[non_exhaustive]
+pub struct SecureTransport;

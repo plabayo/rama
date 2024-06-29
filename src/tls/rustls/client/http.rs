@@ -190,6 +190,7 @@ where
         let request_ctx = get_request_context!(ctx, req);
 
         if !request_ctx.protocol.is_secure() {
+            tracing::trace!(uri = %req.uri(), "HttpsConnector(auto): protocol not secure, return inner connection");
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
@@ -214,6 +215,7 @@ where
 
         let stream = self.handshake(domain, stream).await?;
 
+        tracing::trace!(uri = %req.uri(), "HttpsConnector(auto): protocol secure, established tls connection");
         Ok(EstablishedClientConnection {
             ctx,
             req,
@@ -248,6 +250,8 @@ where
             mut req,
             conn,
         } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+
+        tracing::trace!(uri = %req.uri(), "HttpsConnector(secure): attempt to secure inner connection");
 
         let (addr, stream) = conn.into_parts();
 
@@ -316,6 +320,7 @@ where
                 .map_err(|err| err.context("invalid DNS Hostname (tls) for https tunnel"))?
                 .to_owned(),
             None => {
+                tracing::trace!(uri = %req.uri(), "HttpsConnector(tunnel): return inner connection: no Https tunnel is requested");
                 return Ok(EstablishedClientConnection {
                     ctx,
                     req,
@@ -331,6 +336,7 @@ where
 
         let stream = self.handshake(domain, stream).await?;
 
+        tracing::trace!(uri = %req.uri(), "HttpsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection {
             ctx,
             req,

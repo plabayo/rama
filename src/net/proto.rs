@@ -272,18 +272,6 @@ impl From<&crate::http::Scheme> for Protocol {
     }
 }
 
-impl From<Option<crate::http::Scheme>> for Protocol {
-    fn from(s: Option<crate::http::Scheme>) -> Self {
-        s.map(Into::into).unwrap_or(Protocol::HTTP)
-    }
-}
-
-impl From<Option<&crate::http::Scheme>> for Protocol {
-    fn from(s: Option<&crate::http::Scheme>) -> Self {
-        s.map(Into::into).unwrap_or(Protocol::HTTP)
-    }
-}
-
 impl PartialEq<str> for Protocol {
     fn eq(&self, other: &str) -> bool {
         match &self.0 {
@@ -454,7 +442,7 @@ mod tests {
         .iter()
         {
             let uri = crate::http::Uri::from_str(format!("{}://example.com", s).as_str()).unwrap();
-            assert_eq!(Protocol::from(uri.scheme()), *s);
+            assert_eq!(Protocol::from(uri.scheme().unwrap()), *s);
         }
     }
 

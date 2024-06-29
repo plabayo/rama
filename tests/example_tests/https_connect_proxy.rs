@@ -1,27 +1,34 @@
 use super::utils;
 use rama::{
-    http::{response::Json, server::HttpServer, BodyExtractExt, Request},
+    http::{
+        headers::Accept, layer::compression::CompressionLayer, response::Json, server::HttpServer,
+        BodyExtractExt, IntoResponse, Request,
+    },
     net::address::ProxyAddress,
     rt::Executor,
-    service::{service_fn, Context},
+    service::{Context, ServiceBuilder},
 };
 use serde_json::{json, Value};
 
 #[tokio::test]
 #[ignore]
-async fn test_http_connect_proxy() {
+async fn test_https_connect_proxy() {
     utils::init_tracing();
 
     tokio::spawn(async {
         HttpServer::auto(Executor::default())
             .listen(
                 "127.0.0.1:63002",
-                service_fn(|req: Request| async move {
-                    Ok(Json(json!({
-                        "method": req.method().as_str(),
-                        "path": req.uri().path(),
-                    })))
-                }),
+                ServiceBuilder::new()
+                    .layer(CompressionLayer::new())
+                    .service_fn(|req: Request| async move {
+                        tracing::debug!(uri = %req.uri(), "serve request");
+                        Ok(Json(json!({
+                            "method": req.method().as_str(),
+                            "path": req.uri().path(),
+                        }))
+                        .into_response())
+                    }),
             )
             .await
             .unwrap();
@@ -34,7 +41,8 @@ async fn test_http_connect_proxy() {
 
     // test regular proxy flow
     let result = runner
-        .get("http://127.0.0.1:63002/foo/bar")
+        .post("http://127.0.0.1:63002/foo/bar")
+        .typed_header(Accept::json())
         .send(ctx.clone())
         .await
         .unwrap()

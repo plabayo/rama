@@ -219,13 +219,18 @@ mod private {
 
     impl IntoUrlSealed for Uri {
         fn into_url(self) -> Result<Uri, HttpClientError> {
-            let protocol: Protocol = self.scheme().into();
-            if protocol.is_http() {
-                Ok(self)
-            } else {
-                Err(HttpClientError::from_display(format!(
-                    "Unsupported protocol: {protocol}"
-                )))
+            let protocol: Option<Protocol> = self.scheme().map(Into::into);
+            match protocol {
+                Some(protocol) => {
+                    if protocol.is_http() {
+                        Ok(self)
+                    } else {
+                        Err(HttpClientError::from_display(format!(
+                            "Unsupported protocol: {protocol}"
+                        )))
+                    }
+                }
+                None => Err(HttpClientError::from_display("Missing scheme in URI")),
             }
         }
     }

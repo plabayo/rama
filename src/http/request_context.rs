@@ -1,11 +1,12 @@
 use super::{dep::http::request::Parts, Request, Version};
+use crate::http::Uri;
 use crate::net::forwarded::Forwarded;
 use crate::net::{
     address::{Authority, Host},
     Protocol,
 };
 use crate::service::Context;
-use crate::tls::rustls::server::IncomingClientHello;
+use crate::tls::SecureTransport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context of the [`Request`] being served by the [`HttpServer`]
@@ -71,31 +72,46 @@ impl<State> From<(Context<State>, Parts)> for RequestContext {
     }
 }
 
+fn protocol_from_uri_or_context<State>(ctx: &Context<State>, uri: &Uri) -> Protocol {
+    ctx.get::<Forwarded>()
+        .and_then(|f| f.client_proto().map(|p| {
+            tracing::trace!(uri = %uri, "request context: detected protocol from forwarded client proto");
+            p.into()
+        }))
+        .or_else(|| uri.scheme().map(|s| {
+            tracing::trace!(uri = %uri, "request context: detected protocol from scheme");
+            s.into()
+        }))
+        .or_else(|| {
+            // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
+            // both the scheme and authority for the request, making us not detect
+            // it correctly as https protocol (port 443 by default). The presence of the client hello
+            // config does reveal this information to us which assumes that our tls terminators
+            // do set this information, otherwise we would never the less be in the blind.
+            // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
+            ctx.contains::<SecureTransport>().then(|| {
+                tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTPS (secure transport)");
+                Protocol::HTTPS
+            })
+        })
+        .unwrap_or_else(|| {
+            tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTP");
+            Protocol::HTTP
+        })
+}
+
 impl<State> From<(&Context<State>, &Parts)> for RequestContext {
     fn from((ctx, parts): (&Context<State>, &Parts)) -> Self {
         let uri = &parts.uri;
 
-        let forwarded: Option<&Forwarded> = ctx.get();
-
-        let protocol: Protocol = forwarded
-            .and_then(|f| f.client_proto().map(Into::into))
-            .or_else(|| {
-                // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
-                // both the scheme and authority for the request, making us not detect
-                // it correctly as https protocol (port 443 by default). The presence of the client hello
-                // config does reveal this information to us which assumes that our tls terminators
-                // do set this information, otherwise we would never the less be in the blind.
-                // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
-                ctx.contains::<IncomingClientHello>()
-                    .then_some(Protocol::HTTPS)
-            })
-            .unwrap_or_else(|| uri.scheme().into());
+        let protocol = protocol_from_uri_or_context(ctx, uri);
         tracing::trace!(uri = %uri, "request context: detected protocol: {protocol}",);
 
         let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let authority = forwarded
+        let authority = ctx
+            .get::<Forwarded>()
             .and_then(|f| {
                 f.client_host().map(|fauth| {
                     let (host, port) = fauth.clone().into_parts();
@@ -119,7 +135,8 @@ impl<State> From<(&Context<State>, &Parts)> for RequestContext {
             });
         tracing::trace!(uri = %uri, "request context: maybe detected authority: {authority:?}");
 
-        let http_version = forwarded
+        let http_version = ctx
+            .get::<Forwarded>()
             .and_then(|f| {
                 f.client_version().map(|v| match v {
                     crate::net::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
@@ -144,21 +161,7 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
     fn from((ctx, req): (&Context<State>, &Request<Body>)) -> Self {
         let uri = req.uri();
 
-        let forwarded: Option<&Forwarded> = ctx.get();
-
-        let protocol: Protocol = forwarded
-            .and_then(|f| f.client_proto().map(Into::into))
-            .or_else(|| {
-                // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
-                // both the scheme and authority for the request, making us not detect
-                // it correctly as https protocol (port 443 by default). The presence of the client hello
-                // config does reveal this information to us which assumes that our tls terminators
-                // do set this information, otherwise we would never the less be in the blind.
-                // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
-                ctx.contains::<IncomingClientHello>()
-                    .then_some(Protocol::HTTPS)
-            })
-            .unwrap_or_else(|| uri.scheme().into());
+        let protocol = protocol_from_uri_or_context(ctx, uri);
         tracing::trace!(
             uri = %uri, "request context: detected protocol: {protocol} (scheme: {:?})",
             uri.scheme()
@@ -167,7 +170,8 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
         let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let authority = forwarded
+        let authority = ctx
+            .get::<Forwarded>()
             .and_then(|f| {
                 f.client_host().map(|fauth| {
                     let (host, port) = fauth.clone().into_parts();
@@ -190,7 +194,8 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
             });
         tracing::trace!(uri = %uri, "request context: maybe detected authority: {authority:?}");
 
-        let http_version = forwarded
+        let http_version = ctx
+            .get::<Forwarded>()
             .and_then(|f| {
                 f.client_version().map(|v| match v {
                     crate::net::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
@@ -330,9 +335,9 @@ mod tests {
     }
 
     #[test]
-    fn test_request_ctx_https_request_behind_haproxy() {
+    fn test_request_ctx_https_request_behind_haproxy_plain() {
         let req = Request::builder()
-            .uri("https://echo.ramaproxy.org/en/reservation/roomdetails")
+            .uri("/en/reservation/roomdetails")
             .version(Version::HTTP_11)
             .header("host", "echo.ramaproxy.org")
             .header("user-agent", "curl/8.6.0")
@@ -344,6 +349,33 @@ mod tests {
         ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
             NodeId::try_from("127.0.0.1:61234").unwrap(),
         )));
+
+        let req_ctx = get_request_context!(ctx, req);
+
+        assert_eq!(req_ctx.http_version, Version::HTTP_11);
+        assert_eq!(req_ctx.protocol, "http");
+        assert_eq!(
+            req_ctx.authority.as_ref().unwrap().to_string(),
+            "echo.ramaproxy.org:80"
+        );
+    }
+
+    #[test]
+    fn test_request_ctx_https_request_behind_haproxy_secure() {
+        let req = Request::builder()
+            .uri("/en/reservation/roomdetails")
+            .version(Version::HTTP_11)
+            .header("host", "echo.ramaproxy.org")
+            .header("user-agent", "curl/8.6.0")
+            .header("accept", "*/*")
+            .body(())
+            .unwrap();
+
+        let mut ctx = Context::default();
+        ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+            NodeId::try_from("127.0.0.1:61234").unwrap(),
+        )));
+        ctx.insert(SecureTransport::default());
 
         let req_ctx = get_request_context!(ctx, req);
 
