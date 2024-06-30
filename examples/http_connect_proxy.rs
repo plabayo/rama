@@ -72,7 +72,7 @@ use rama::{
         service::web::{extract::Path, match_service},
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
-    net::{stream::layer::http::BodyLimitLayer, user::Basic},
+    net::{address::Domain, stream::layer::http::BodyLimitLayer, user::Basic},
     rt::Executor,
     service::{
         context::Extensions, layer::HijackLayer, service_fn, Context, Service, ServiceBuilder,
@@ -120,7 +120,7 @@ async fn main() {
                     .layer(ProxyAuthLayer::new(Basic::new("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>())
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
-                        DomainMatcher::new("echo.example.internal"),
+                        DomainMatcher::new(Domain::from_static("echo.example.internal")),
                         Arc::new(match_service!{
                             HttpMatcher::post("/lucky/:number") => |path: Path<APILuckyParams>| async move {
                                 Json(json!({

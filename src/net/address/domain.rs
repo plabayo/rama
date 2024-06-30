@@ -1,6 +1,6 @@
 use super::Host;
 use crate::error::{ErrorContext, OpaqueError};
-use std::{borrow::Cow, fmt};
+use std::{borrow::Cow, cmp::Ordering, fmt};
 
 /// A domain.
 ///
@@ -26,19 +26,60 @@ impl Domain {
         Self(Cow::Borrowed(s))
     }
 
-    /// Creates the localhost domain.
-    pub fn localhost() -> Self {
-        Domain(Cow::Borrowed("localhost"))
+    /// Creates the example [`Domain].
+    pub fn example() -> Self {
+        Self::from_static("example.com")
     }
 
-    /// Creates the example domain.
-    pub fn example() -> Self {
-        Domain(Cow::Borrowed("example.com"))
+    /// Create an new apex [`Domain`] (TLD) meant for loopback purposes.
+    ///
+    /// As proposed in
+    /// <https://itp.cdn.icann.org/en/files/security-and-stability-advisory-committee-ssac-reports/sac-113-en.pdf>.
+    ///
+    /// In specific this means that it will match on any domain with the TLD `.internal`.
+    pub fn tld_private() -> Self {
+        Self::from_static("internal")
+    }
+
+    /// Creates the localhost [`Domain`].
+    pub fn tld_localhost() -> Self {
+        Self::from_static("localhost")
     }
 
     /// Consumes the domain as a host.
     pub fn into_host(self) -> Host {
         Host::Name(self)
+    }
+
+    /// Returns `true` if this domain is a Fully Qualified Domain Name.
+    pub fn is_fqdn(&self) -> bool {
+        self.0.ends_with('.')
+    }
+
+    /// Returns `true` if this [`Domain`] is a parent of the other.
+    ///
+    /// Note that a [`Domain`] is a sub of itself.
+    pub fn is_sub_of(&self, other: &Domain) -> bool {
+        let a = self.0.as_ref().trim_matches('.');
+        let b = other.0.as_ref().trim_matches('.');
+        match a.len().cmp(&b.len()) {
+            Ordering::Equal => a.eq_ignore_ascii_case(b),
+            Ordering::Greater => {
+                let n = a.len() - b.len();
+                let dot_char = a.chars().nth(n - 1);
+                let host_parent = &a[n..];
+                dot_char == Some('.') && b.eq_ignore_ascii_case(host_parent)
+            }
+            Ordering::Less => false,
+        }
+    }
+
+    #[inline]
+    /// Returns `true` if this [`Domain`] is a subdomain of the other.
+    ///
+    /// Note that a [`Domain`] is a sub of itself.
+    pub fn is_parent_of(&self, other: &Domain) -> bool {
+        other.is_sub_of(self)
     }
 
     /// Gets the domain name as reference.
@@ -229,7 +270,8 @@ mod tests {
 
     #[test]
     fn test_specials() {
-        assert_eq!(Domain::localhost(), "localhost");
+        assert_eq!(Domain::tld_localhost(), "localhost");
+        assert_eq!(Domain::tld_private(), "internal");
         assert_eq!(Domain::example(), "example.com");
     }
 
@@ -281,6 +323,44 @@ mod tests {
         ] {
             assert!(Domain::try_from(str.to_owned()).is_err());
             assert!(Domain::try_from(str.as_bytes().to_vec()).is_err());
+        }
+    }
+
+    #[test]
+    fn is_parent() {
+        let test_cases = vec![
+            ("www.example.com", "www.example.com"),
+            ("www.example.com", "www.example.com."),
+            ("www.example.com", ".www.example.com."),
+            (".www.example.com", "www.example.com"),
+            (".www.example.com", "www.example.com."),
+            (".www.example.com.", "www.example.com."),
+            ("www.example.com", "WwW.ExamplE.COM"),
+            ("example.com", "www.example.com"),
+            ("example.com", "m.example.com"),
+            ("example.com", "www.EXAMPLE.com"),
+            ("example.com", "M.example.com"),
+        ];
+        for (a, b) in test_cases.into_iter() {
+            let a = Domain::from_static(a);
+            let b = Domain::from_static(b);
+            assert!(a.is_parent_of(&b), "({:?}).is_parent_of({})", a, b);
+        }
+    }
+
+    #[test]
+    fn is_not_parent() {
+        let test_cases = vec![
+            ("www.example.com", "www.example.co"),
+            ("www.example.com", "www.ejemplo.com"),
+            ("www.example.com", "www3.example.com"),
+            ("w.example.com", "www.example.com"),
+            ("gel.com", "kegel.com"),
+        ];
+        for (a, b) in test_cases.into_iter() {
+            let a = Domain::from_static(a);
+            let b = Domain::from_static(b);
+            assert!(!a.is_parent_of(&b), "!({:?}).is_parent_of({})", a, b);
         }
     }
 }
