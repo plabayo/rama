@@ -3,7 +3,7 @@ use crate::{
     error::{ErrorContext, OpaqueError},
     net::address::{Authority, Domain, Host},
     service::Context,
-    utils::combinators::Either,
+    utils::combinators::Either4,
 };
 use std::{
     net::{IpAddr, SocketAddr},
@@ -27,9 +27,27 @@ use tokio::{
 /// Otherwise, we'll try to establish a connection with dual-stack parallel connections,
 /// meaning that we'll try to connect to the domain using both IPv4 and IPv6,
 /// with multiple concurrent connection attempts.
-pub async fn connect<State>(
+pub async fn connect<State: Send + Sync + 'static>(
     ctx: &Context<State>,
     authority: Authority,
+) -> Result<(TcpStream, SocketAddr), OpaqueError> {
+    connect_inner(ctx, authority, false).await
+}
+
+/// Establish a TCP connection for the given authority.
+///
+/// Same as [`connect`] but without allowing DNS overwrites.
+pub async fn connect_trusted<State: Send + Sync + 'static>(
+    ctx: &Context<State>,
+    authority: Authority,
+) -> Result<(TcpStream, SocketAddr), OpaqueError> {
+    connect_inner(ctx, authority, true).await
+}
+
+async fn connect_inner<State>(
+    ctx: &Context<State>,
+    authority: Authority,
+    trusted_only: bool,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     State: Send + Sync + 'static,
@@ -69,6 +87,7 @@ where
         ipv6_tx,
         ipv6_connected,
         ipv6_sem,
+        trusted_only,
     ));
 
     // IPv4
@@ -85,6 +104,7 @@ where
         ipv4_tx,
         ipv4_connected,
         ipv4_sem,
+        trusted_only,
     ));
 
     // wait for the first connection to succeed,
@@ -105,6 +125,7 @@ enum IpKind {
     Ipv6,
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn tcp_connect(
     dns: Dns,
     ip_kind: IpKind,
@@ -113,19 +134,34 @@ async fn tcp_connect(
     tx: Sender<(TcpStream, SocketAddr)>,
     connected: Arc<AtomicBool>,
     sem: Arc<Semaphore>,
+    trusted_only: bool,
 ) {
-    let ip_it = match ip_kind {
-        IpKind::Ipv4 => match dns.ipv4_lookup(domain).await {
-            Ok(it) => Either::A(it.map(IpAddr::V4)),
+    let ip_it = match (ip_kind, trusted_only) {
+        (IpKind::Ipv4, false) => match dns.ipv4_lookup(domain).await {
+            Ok(it) => Either4::A(it.map(IpAddr::V4)),
             Err(err) => {
                 tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
                 return;
             }
         },
-        IpKind::Ipv6 => match dns.ipv6_lookup(domain).await {
-            Ok(it) => Either::B(it.map(IpAddr::V6)),
+        (IpKind::Ipv4, true) => match dns.ipv4_lookup_trusted(domain).await {
+            Ok(it) => Either4::B(it.map(IpAddr::V4)),
+            Err(err) => {
+                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to trusted IPv4 addresses");
+                return;
+            }
+        },
+        (IpKind::Ipv6, false) => match dns.ipv6_lookup(domain).await {
+            Ok(it) => Either4::C(it.map(IpAddr::V6)),
             Err(err) => {
                 tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv6 addresses");
+                return;
+            }
+        },
+        (IpKind::Ipv6, true) => match dns.ipv6_lookup_trusted(domain).await {
+            Ok(it) => Either4::D(it.map(IpAddr::V6)),
+            Err(err) => {
+                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to trusted IPv6 addresses");
                 return;
             }
         },

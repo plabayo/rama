@@ -97,15 +97,24 @@ impl Dns {
                 },
             )));
         }
+        Ok(Either::B(self.ipv4_lookup_trusted(domain).await?))
+    }
 
-        Ok(Either::B(
-            self.resolver
-                .ipv4_lookup(domain_str_as_fqdn(domain)?)
-                .await
-                .context("lookup IPv4 address(es)")?
-                .into_iter()
-                .map(|A(ip)| ip),
-        ))
+    /// Performs a 'A' DNS record lookup.
+    ///
+    /// Same as [`Self::ipv4_lookup`] but without consulting
+    /// the overwrites first.
+    pub async fn ipv4_lookup_trusted(
+        &self,
+        domain: Domain,
+    ) -> Result<impl Iterator<Item = Ipv4Addr>, OpaqueError> {
+        Ok(self
+            .resolver
+            .ipv4_lookup(domain_str_as_fqdn(domain)?)
+            .await
+            .context("lookup IPv4 address(es)")?
+            .into_iter()
+            .map(|A(ip)| ip))
     }
 
     /// Performs a 'AAAA' DNS record lookup.
@@ -125,15 +134,24 @@ impl Dns {
                 },
             )));
         }
+        Ok(Either::B(self.ipv6_lookup_trusted(domain).await?))
+    }
 
-        Ok(Either::B(
-            self.resolver
-                .ipv6_lookup(domain_str_as_fqdn(domain)?)
-                .await
-                .context("lookup IPv6 address(es)")?
-                .into_iter()
-                .map(|AAAA(ip)| ip),
-        ))
+    /// Performs a 'AAAA' DNS record lookup.
+    ///
+    /// Same as [`Self::ipv6_lookup`] but without
+    /// consulting the overwrites first.
+    pub async fn ipv6_lookup_trusted(
+        &self,
+        domain: Domain,
+    ) -> Result<impl Iterator<Item = Ipv6Addr>, OpaqueError> {
+        Ok(self
+            .resolver
+            .ipv6_lookup(domain_str_as_fqdn(domain)?)
+            .await
+            .context("lookup IPv6 address(es)")?
+            .into_iter()
+            .map(|AAAA(ip)| ip))
     }
 }
 

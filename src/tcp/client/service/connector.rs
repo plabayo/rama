@@ -49,7 +49,7 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(proxy) = ctx.get::<ProxyAddress>() {
-            let (stream, addr) = tcp::client::connect(&ctx, proxy.authority().clone())
+            let (stream, addr) = tcp::client::connect_trusted(&ctx, proxy.authority().clone())
                 .await
                 .context("tcp connector: conncept to proxy")?;
             return Ok(EstablishedClientConnection {
