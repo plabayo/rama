@@ -40,9 +40,12 @@
 //!             residential: true,
 //!             mobile: true,
 //!             pool_id: None,
+//!             continent: Some("*".into()),
 //!             country: Some("*".into()),
+//!             state: Some("*".into()),
 //!             city: Some("*".into()),
 //!             carrier: Some("*".into()),
+//!             asn: None,
 //!         },
 //!         Proxy {
 //!             id: NonEmptyString::from_static("100"),
@@ -55,9 +58,12 @@
 //!             residential: false,
 //!             mobile: false,
 //!             pool_id: None,
+//!             continent: None,
 //!             country: Some("US".into()),
+//!             state: None,
 //!             city: None,
 //!             carrier: None,
+//!             asn: None,
 //!         },
 //!     ])
 //!     .unwrap();
@@ -408,7 +414,7 @@ mod tests {
     use super::*;
     use crate::{
         http::{Body, Version},
-        net::address::ProxyAddress,
+        net::{address::ProxyAddress, asn::Asn},
         proxy::{MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader, StringFilter},
         service::ServiceBuilder,
         utils::str::NonEmptyString,
@@ -430,9 +436,12 @@ mod tests {
                 residential: true,
                 mobile: true,
                 pool_id: None,
+                continent: Some("*".into()),
                 country: Some("*".into()),
+                state: Some("*".into()),
                 city: Some("*".into()),
                 carrier: Some("*".into()),
+                asn: Some(Asn::unspecified()),
             },
             Proxy {
                 id: NonEmptyString::from_static("100"),
@@ -445,9 +454,12 @@ mod tests {
                 residential: false,
                 mobile: false,
                 pool_id: None,
+                continent: Some("americas".into()),
                 country: Some("US".into()),
+                state: None,
                 city: None,
                 carrier: None,
+                asn: Some(Asn::unspecified()),
             },
         ])
         .unwrap();

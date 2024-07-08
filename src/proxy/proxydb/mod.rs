@@ -1,5 +1,6 @@
 use crate::{
     http::{RequestContext, Version},
+    net::asn::Asn,
     utils::str::NonEmptyString,
 };
 use serde::Deserialize;
@@ -48,8 +49,14 @@ pub struct ProxyFilter {
     #[serde(alias = "pool")]
     pub pool_id: Option<Vec<StringFilter>>,
 
+    /// The continent of the proxy.
+    pub continent: Option<Vec<StringFilter>>,
+
     /// The country of the proxy.
     pub country: Option<Vec<StringFilter>>,
+
+    /// The state of the proxy.
+    pub state: Option<Vec<StringFilter>>,
 
     /// The city of the proxy.
     pub city: Option<Vec<StringFilter>>,
@@ -65,6 +72,9 @@ pub struct ProxyFilter {
 
     /// The mobile carrier desired.
     pub carrier: Option<Vec<StringFilter>>,
+
+    ///  Autonomous System Number (ASN).
+    pub asn: Option<Vec<Asn>>,
 }
 
 /// The trait to implement to provide a proxy database to other facilities,
@@ -179,14 +189,23 @@ impl MemoryProxyDB {
         for pool_id in filter.pool_id.into_iter().flatten() {
             query.pool_id(pool_id);
         }
+        for continent in filter.continent.into_iter().flatten() {
+            query.continent(continent);
+        }
         for country in filter.country.into_iter().flatten() {
             query.country(country);
+        }
+        for state in filter.state.into_iter().flatten() {
+            query.state(state);
         }
         for city in filter.city.into_iter().flatten() {
             query.city(city);
         }
         for carrier in filter.carrier.into_iter().flatten() {
             query.carrier(carrier);
+        }
+        for asn in filter.asn.into_iter().flatten() {
+            query.asn(asn);
         }
 
         if let Some(value) = filter.datacenter {
@@ -282,20 +301,23 @@ fn combine_proxy_filter(proxy: &Proxy, filter: ProxyFilter) -> Proxy {
         datacenter: proxy.datacenter,
         residential: proxy.residential,
         mobile: proxy.mobile,
-        pool_id: use_preferred_string_filter(filter.pool_id, &proxy.pool_id),
-        country: use_preferred_string_filter(filter.country, &proxy.country),
-        city: use_preferred_string_filter(filter.city, &proxy.city),
-        carrier: use_preferred_string_filter(filter.carrier, &proxy.carrier),
+        pool_id: use_preferred_multi_any_filter(filter.pool_id, &proxy.pool_id),
+        continent: use_preferred_multi_any_filter(filter.continent, &proxy.continent),
+        country: use_preferred_multi_any_filter(filter.country, &proxy.country),
+        state: use_preferred_multi_any_filter(filter.state, &proxy.state),
+        city: use_preferred_multi_any_filter(filter.city, &proxy.city),
+        carrier: use_preferred_multi_any_filter(filter.carrier, &proxy.carrier),
+        asn: use_preferred_multi_any_filter(filter.asn, &proxy.asn),
     }
 }
 
 /// - In case we only have a single non-any filter, we use that (no cloning needed)
 /// - In case we have no filters or the proxy value is any, we use the filter value (cloning required)
 /// - If multiple filters are defined but the proxy value is any we returned first filter, assuming it is the most important one
-fn use_preferred_string_filter(
-    filter: Option<Vec<StringFilter>>,
-    returned_value: &Option<StringFilter>,
-) -> Option<StringFilter> {
+fn use_preferred_multi_any_filter<T: Any + Clone>(
+    filter: Option<Vec<T>>,
+    returned_value: &Option<T>,
+) -> Option<T> {
     let mut filter_values = filter.unwrap_or_default();
     match filter_values.len() {
         0 => returned_value.clone(),
@@ -496,6 +518,7 @@ mod tests {
             residential: Some(false),
             mobile: Some(true),
             carrier: Some(vec![StringFilter::new("Verizon")]),
+            ..Default::default()
         };
         let proxy = db.get_proxy(ctx, filter).await.unwrap();
         assert_eq!(proxy.id, "3031533634");
@@ -535,6 +558,16 @@ mod tests {
             },
             ProxyFilter {
                 id: Some(NonEmptyString::from_static("3031533634")),
+                continent: Some(vec![StringFilter::new("americas")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some(NonEmptyString::from_static("3732488183")),
+                state: Some(vec![StringFilter::new("Texas")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some(NonEmptyString::from_static("3031533634")),
                 datacenter: Some(false),
                 ..Default::default()
             },
@@ -551,6 +584,11 @@ mod tests {
             ProxyFilter {
                 id: Some(NonEmptyString::from_static("3031533634")),
                 carrier: Some(vec![StringFilter::new("AT&T")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some(NonEmptyString::from_static("292096733")),
+                asn: Some(vec![Asn::from_static(1)]),
                 ..Default::default()
             },
         ];
@@ -646,6 +684,54 @@ mod tests {
         assert_eq!(
             found_ids.iter().sorted().join(","),
             r#"2141152822,2593294918,2912880381,371209663,767809962"#,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memorydb_get_illinois_proxies() {
+        let db = memproxydb().await;
+        let ctx = h2_req_context();
+        let filter = ProxyFilter {
+            // this will also work for proxies that have 'any' state
+            state: Some(vec!["illinois".into()]),
+            ..Default::default()
+        };
+        let mut found_ids = Vec::new();
+        for _ in 0..5000 {
+            let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
+            if found_ids.contains(&proxy.id) {
+                continue;
+            }
+            found_ids.push(proxy.id);
+        }
+        assert_eq!(found_ids.len(), 9);
+        assert_eq!(
+            found_ids.iter().sorted().join(","),
+            r#"2141152822,2521901221,2560727338,2593294918,2912880381,292096733,371209663,39048766,767809962"#,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_memorydb_get_asn_proxies() {
+        let db = memproxydb().await;
+        let ctx = h2_req_context();
+        let filter = ProxyFilter {
+            // this will also work for proxies that have 'any' ASN
+            asn: Some(vec![Asn::from_static(42)]),
+            ..Default::default()
+        };
+        let mut found_ids = Vec::new();
+        for _ in 0..5000 {
+            let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
+            if found_ids.contains(&proxy.id) {
+                continue;
+            }
+            found_ids.push(proxy.id);
+        }
+        assert_eq!(found_ids.len(), 4);
+        assert_eq!(
+            found_ids.iter().sorted().join(","),
+            r#"2141152822,2912880381,292096733,3481200027"#,
         );
     }
 
@@ -762,9 +848,12 @@ mod tests {
             residential: true,
             mobile: true,
             pool_id: Some("*".into()),
+            continent: Some("*".into()),
             country: Some("*".into()),
+            state: Some("*".into()),
             city: Some("*".into()),
             carrier: Some("*".into()),
+            asn: Some(Asn::unspecified()),
         }])
         .unwrap();
 
@@ -849,9 +938,12 @@ mod tests {
             residential: true,
             mobile: true,
             pool_id: Some("hq".into()),
+            continent: Some("americas".into()),
             country: Some("US".into()),
+            state: Some("NY".into()),
             city: Some("NY".into()),
             carrier: Some("AT&T".into()),
+            asn: Some(Asn::from_static(7018)),
         }])
         .unwrap();
 
@@ -863,7 +955,15 @@ mod tests {
                 ..Default::default()
             },
             ProxyFilter {
+                continent: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
                 country: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                state: Some(vec![StringFilter::new("*")]),
                 ..Default::default()
             },
             ProxyFilter {
@@ -872,13 +972,20 @@ mod tests {
             },
             ProxyFilter {
                 carrier: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                asn: Some(vec![Asn::unspecified()]),
                 ..Default::default()
             },
             ProxyFilter {
                 pool_id: Some(vec![StringFilter::new("*")]),
+                continent: Some(vec![StringFilter::new("*")]),
                 country: Some(vec![StringFilter::new("*")]),
+                state: Some(vec![StringFilter::new("*")]),
                 city: Some(vec![StringFilter::new("*")]),
                 carrier: Some(vec![StringFilter::new("*")]),
+                asn: Some(vec![Asn::unspecified()]),
                 ..Default::default()
             },
         ] {
@@ -914,9 +1021,12 @@ mod tests {
                 residential: true,
                 mobile: true,
                 pool_id: Some("a".into()),
+                continent: Some("americas".into()),
                 country: Some("US".into()),
+                state: Some("NY".into()),
                 city: Some("NY".into()),
                 carrier: Some("AT&T".into()),
+                asn: Some(Asn::from_static(7018)),
             },
             Proxy {
                 id: NonEmptyString::from_static("2"),
@@ -929,9 +1039,12 @@ mod tests {
                 residential: true,
                 mobile: true,
                 pool_id: Some("b".into()),
+                continent: Some("americas".into()),
                 country: Some("US".into()),
+                state: Some("NY".into()),
                 city: Some("NY".into()),
                 carrier: Some("AT&T".into()),
+                asn: Some(Asn::from_static(7018)),
             },
             Proxy {
                 id: NonEmptyString::from_static("3"),
@@ -944,9 +1057,12 @@ mod tests {
                 residential: true,
                 mobile: true,
                 pool_id: Some("b".into()),
+                continent: Some("americas".into()),
                 country: Some("US".into()),
+                state: Some("NY".into()),
                 city: Some("NY".into()),
                 carrier: Some("AT&T".into()),
+                asn: Some(Asn::from_static(7018)),
             },
             Proxy {
                 id: NonEmptyString::from_static("4"),
@@ -959,9 +1075,12 @@ mod tests {
                 residential: true,
                 mobile: true,
                 pool_id: Some("c".into()),
+                continent: Some("americas".into()),
                 country: Some("US".into()),
+                state: Some("NY".into()),
                 city: Some("NY".into()),
                 carrier: Some("AT&T".into()),
+                asn: Some(Asn::from_static(7018)),
             },
         ])
         .unwrap();
@@ -1018,6 +1137,32 @@ mod tests {
                 ProxyFilter {
                     pool_id: Some(vec![StringFilter::new("a"), StringFilter::new("b")]),
                     country: Some(vec![StringFilter::new("uk")]),
+                    ..Default::default()
+                },
+            ),
+            (
+                "continent=europe&continent=asia",
+                ProxyFilter {
+                    continent: Some(vec![StringFilter::new("europe"), StringFilter::new("asia")]),
+                    ..Default::default()
+                },
+            ),
+            (
+                "continent=americas&country=us&state=NY&city=buffalo&carrier=AT%26T&asn=7018",
+                ProxyFilter {
+                    continent: Some(vec![StringFilter::new("americas")]),
+                    country: Some(vec![StringFilter::new("us")]),
+                    state: Some(vec![StringFilter::new("ny")]),
+                    city: Some(vec![StringFilter::new("buffalo")]),
+                    carrier: Some(vec![StringFilter::new("at&t")]),
+                    asn: Some(vec![Asn::from_static(7018)]),
+                    ..Default::default()
+                },
+            ),
+            (
+                "asn=1&asn=2",
+                ProxyFilter {
+                    asn: Some(vec![Asn::from_static(1), Asn::from_static(2)]),
                     ..Default::default()
                 },
             ),
