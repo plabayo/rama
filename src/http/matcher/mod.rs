@@ -345,26 +345,49 @@ impl<State, Body> HttpMatcher<State, Body> {
         self.or(Self::method_trace())
     }
 
-    /// Create a [`DomainMatcher`] matcher.
+    /// Create a [`DomainMatcher`] matcher, matching on the exact given [`Domain`].
     pub fn domain(domain: Domain) -> Self {
         Self {
-            kind: HttpMatcherKind::Domain(DomainMatcher::new(domain)),
+            kind: HttpMatcherKind::Domain(DomainMatcher::exact(domain)),
+            negate: false,
+        }
+    }
+
+    /// Create a [`DomainMatcher`] matcher, matching on the exact given [`Domain`]
+    /// or a subdomain of it.
+    pub fn subdomain(domain: Domain) -> Self {
+        Self {
+            kind: HttpMatcherKind::Domain(DomainMatcher::sub(domain)),
             negate: false,
         }
     }
 
     /// Create a [`DomainMatcher`] matcher to also match on top of the existing set of [`HttpMatcher`] matchers.
     ///
-    /// See [`DomainMatcher`] for more information.
+    /// See [`Self::domain`] for more information.
     pub fn and_domain(self, domain: Domain) -> Self {
         self.and(Self::domain(domain))
     }
 
+    /// Create a sub [`DomainMatcher`] matcher to also match on top of the existing set of [`HttpMatcher`] matchers.
+    ///
+    /// See [`Self::subdomain`] for more information.
+    pub fn and_subdomain(self, domain: Domain) -> Self {
+        self.and(Self::subdomain(domain))
+    }
+
     /// Create a [`DomainMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
-    /// See [`DomainMatcher`] for more information.
+    /// See [`Self::domain`] for more information.
     pub fn or_domain(self, domain: Domain) -> Self {
         self.or(Self::domain(domain))
+    }
+
+    /// Create a sub [`DomainMatcher`] matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
+    ///
+    /// See [`Self::subdomain`] for more information.
+    pub fn or_subdomain(self, domain: Domain) -> Self {
+        self.or(Self::subdomain(domain))
     }
 
     /// Create a [`VersionMatcher`] matcher.

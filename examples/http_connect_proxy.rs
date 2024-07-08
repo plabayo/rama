@@ -120,7 +120,7 @@ async fn main() {
                     .layer(ProxyAuthLayer::new(Basic::new("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>())
                     // example of how one might insert an API layer into their proxy
                     .layer(HijackLayer::new(
-                        DomainMatcher::new(Domain::from_static("echo.example.internal")),
+                        DomainMatcher::exact(Domain::from_static("echo.example.internal")),
                         Arc::new(match_service!{
                             HttpMatcher::post("/lucky/:number") => |path: Path<APILuckyParams>| async move {
                                 Json(json!({
@@ -252,7 +252,10 @@ impl UsernameLabelParser for PriorityUsernameLabelParser {
                 "high" => self.priority = Some(Priority::High),
                 "medium" => self.priority = Some(Priority::Medium),
                 "low" => self.priority = Some(Priority::Low),
-                _ => return UsernameLabelState::Ignored,
+                _ => {
+                    tracing::trace!("invalid priority username label value: {label}");
+                    return UsernameLabelState::Abort;
+                }
             }
         } else if label == "priority" {
             self.key_seen = true;
