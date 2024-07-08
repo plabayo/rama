@@ -1,4 +1,4 @@
-use std::net::SocketAddr;
+use std::{fmt, net::SocketAddr};
 
 use crate::{
     error::BoxError,
@@ -36,7 +36,6 @@ impl<S> Layer<S> for HaProxyLayer {
 ///
 /// This service will decode the HaProxy Protocol header and pass the decoded
 /// information to the inner service.
-#[derive(Debug, Clone)]
 pub struct HaProxyService<S> {
     inner: S,
 }
@@ -45,6 +44,22 @@ impl<S> HaProxyService<S> {
     /// Create a new [`HaProxyService`] with the given inner service.
     pub fn new(inner: S) -> Self {
         HaProxyService { inner }
+    }
+}
+
+impl<S: fmt::Debug> fmt::Debug for HaProxyService<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HaProxyService")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for HaProxyService<S> {
+    fn clone(&self) -> Self {
+        HaProxyService {
+            inner: self.inner.clone(),
+        }
     }
 }
 

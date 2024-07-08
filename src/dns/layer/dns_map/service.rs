@@ -1,3 +1,5 @@
+use std::fmt;
+
 use super::DnsMap;
 use crate::{
     error::OpaqueError,
@@ -16,7 +18,6 @@ use crate::{
 ///
 /// [`Dns`]: crate::dns::Dns
 /// [`DnsMapLayer`]: crate::dns::layer::DnsMapLayer
-#[derive(Debug, Clone)]
 pub struct DnsMapService<S> {
     inner: S,
     header_name: HeaderName,
@@ -29,6 +30,23 @@ impl<S> DnsMapService<S> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<S: fmt::Debug> fmt::Debug for DnsMapService<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DnsMapService")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for DnsMapService<S> {
+    fn clone(&self) -> Self {
+        DnsMapService {
+            inner: self.inner.clone(),
+            header_name: self.header_name.clone(),
+        }
+    }
 }
 
 impl<State, Body, E, S> Service<State, Request<Body>> for DnsMapService<S>

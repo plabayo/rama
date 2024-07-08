@@ -41,6 +41,7 @@
 
 use base64::Engine as _;
 use std::convert::TryFrom;
+use std::fmt;
 
 use crate::http::{HeaderValue, Request, Response};
 use crate::service::{Context, Layer, Service};
@@ -150,7 +151,6 @@ impl<S> Layer<S> for AddAuthorizationLayer {
 ///
 /// [`Authorization`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization
 /// [`SetRequestHeader`]: crate::http::layer::set_header::SetRequestHeader
-#[derive(Debug, Clone)]
 pub struct AddAuthorization<S> {
     inner: S,
     value: Option<HeaderValue>,
@@ -209,6 +209,26 @@ impl<S> AddAuthorization<S> {
     pub fn if_not_present(mut self) -> Self {
         self.if_not_present = true;
         self
+    }
+}
+
+impl<S: fmt::Debug> fmt::Debug for AddAuthorization<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AddAuthorization")
+            .field("inner", &self.inner)
+            .field("value", &self.value)
+            .field("if_not_present", &self.if_not_present)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for AddAuthorization<S> {
+    fn clone(&self) -> Self {
+        AddAuthorization {
+            inner: self.inner.clone(),
+            value: self.value.clone(),
+            if_not_present: self.if_not_present,
+        }
     }
 }
 

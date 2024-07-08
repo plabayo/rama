@@ -85,6 +85,7 @@
 //! ```
 
 use futures_lite::future::FutureExt;
+use std::fmt;
 use std::{any::Any, panic::AssertUnwindSafe};
 
 use crate::http::{Body, HeaderValue, Request, Response, StatusCode};
@@ -135,7 +136,6 @@ where
 /// Middleware that catches panics and converts them into `500 Internal Server` responses.
 ///
 /// See the [module docs](self) for an example.
-#[derive(Debug, Clone, Copy)]
 pub struct CatchPanic<S, T> {
     inner: S,
     panic_handler: T,
@@ -165,6 +165,26 @@ impl<S, T> CatchPanic<S, T> {
         }
     }
 }
+
+impl<S: fmt::Debug, T: fmt::Debug> fmt::Debug for CatchPanic<S, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CatchPanic")
+            .field("inner", &self.inner)
+            .field("panic_handler", &self.panic_handler)
+            .finish()
+    }
+}
+
+impl<S: Clone, T: Clone> Clone for CatchPanic<S, T> {
+    fn clone(&self) -> Self {
+        CatchPanic {
+            inner: self.inner.clone(),
+            panic_handler: self.panic_handler.clone(),
+        }
+    }
+}
+
+impl<S: Copy, T: Copy> Copy for CatchPanic<S, T> {}
 
 impl<State, S, T, ReqBody, ResBody> Service<State, Request<ReqBody>> for CatchPanic<S, T>
 where

@@ -1,3 +1,5 @@
+use std::fmt;
+
 use super::{body::BodyInner, DecompressionBody};
 use crate::http::dep::http_body::Body;
 use crate::http::layer::util::{
@@ -16,7 +18,6 @@ use crate::service::{Context, Service};
 /// bodies based on the `Content-Encoding` header.
 ///
 /// See the [module docs](crate::http::layer::decompression) for more details.
-#[derive(Debug, Clone)]
 pub struct Decompression<S> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,
@@ -79,6 +80,24 @@ impl<S> Decompression<S> {
     pub fn no_zstd(mut self) -> Self {
         self.accept.set_zstd(false);
         self
+    }
+}
+
+impl<S: fmt::Debug> fmt::Debug for Decompression<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Decompression")
+            .field("inner", &self.inner)
+            .field("accept", &self.accept)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for Decompression<S> {
+    fn clone(&self) -> Self {
+        Decompression {
+            inner: self.inner.clone(),
+            accept: self.accept,
+        }
     }
 }
 

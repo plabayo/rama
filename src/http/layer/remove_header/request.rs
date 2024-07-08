@@ -31,6 +31,7 @@
 
 use crate::http::{Request, Response};
 use crate::service::{Context, Layer, Service};
+use std::fmt;
 use std::future::Future;
 
 #[derive(Debug, Clone)]
@@ -90,7 +91,6 @@ impl<S> Layer<S> for RemoveRequestHeaderLayer {
 }
 
 /// Middleware that removes headers from a request.
-#[derive(Debug, Clone)]
 pub struct RemoveRequestHeader<S> {
     inner: S,
     mode: RemoveRequestHeaderMode,
@@ -120,6 +120,24 @@ impl<S> RemoveRequestHeader<S> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<S: fmt::Debug> fmt::Debug for RemoveRequestHeader<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RemoveRequestHeader")
+            .field("inner", &self.inner)
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for RemoveRequestHeader<S> {
+    fn clone(&self) -> Self {
+        RemoveRequestHeader {
+            inner: self.inner.clone(),
+            mode: self.mode.clone(),
+        }
+    }
 }
 
 impl<ReqBody, ResBody, State, S> Service<State, Request<ReqBody>> for RemoveRequestHeader<S>

@@ -56,6 +56,8 @@
 //! # }
 //! ```
 
+use std::fmt;
+
 use crate::http::{
     header::{HeaderName, HeaderValue},
     Request, Response,
@@ -156,11 +158,30 @@ where
 ///
 /// Additionally [`RequestId`] will be inserted into [`Request::extensions`] so other
 /// services can access it.
-#[derive(Debug, Clone)]
 pub struct SetRequestId<S, M> {
     inner: S,
     header_name: HeaderName,
     make_request_id: M,
+}
+
+impl<S: fmt::Debug, M: fmt::Debug> fmt::Debug for SetRequestId<S, M> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SetRequestId")
+            .field("inner", &self.inner)
+            .field("header_name", &self.header_name)
+            .field("make_request_id", &self.make_request_id)
+            .finish()
+    }
+}
+
+impl<S: Clone, M: Clone> Clone for SetRequestId<S, M> {
+    fn clone(&self) -> Self {
+        SetRequestId {
+            inner: self.inner.clone(),
+            header_name: self.header_name.clone(),
+            make_request_id: self.make_request_id.clone(),
+        }
+    }
 }
 
 impl<S, M> SetRequestId<S, M> {
@@ -258,7 +279,6 @@ impl<S> Layer<S> for PropagateRequestIdLayer {
 ///
 /// If the request contains a matching header that header will be applied to responses. If a
 /// [`RequestId`] extension is also present it will be propagated as well.
-#[derive(Debug, Clone)]
 pub struct PropagateRequestId<S> {
     inner: S,
     header_name: HeaderName,
@@ -276,6 +296,24 @@ impl<S> PropagateRequestId<S> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<S: fmt::Debug> fmt::Debug for PropagateRequestId<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PropagateRequestId")
+            .field("inner", &self.inner)
+            .field("header_name", &self.header_name)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for PropagateRequestId<S> {
+    fn clone(&self) -> Self {
+        PropagateRequestId {
+            inner: self.inner.clone(),
+            header_name: self.header_name.clone(),
+        }
+    }
 }
 
 impl<State, S, ReqBody, ResBody> Service<State, Request<ReqBody>> for PropagateRequestId<S>

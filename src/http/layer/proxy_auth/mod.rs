@@ -9,6 +9,7 @@ use crate::http::headers::{
 };
 use crate::http::{Request, Response, StatusCode};
 use crate::service::{Context, Layer, Service};
+use std::fmt;
 use std::marker::PhantomData;
 
 mod auth;
@@ -70,7 +71,6 @@ where
 /// If the request is not authorized a `407 Proxy Authentication Required` response will be sent.
 ///
 /// See the [module docs](self) for an example.
-#[derive(Debug, Clone)]
 pub struct ProxyAuthService<A, C, S, L = ()> {
     proxy_auth: A,
     inner: S,
@@ -88,6 +88,29 @@ impl<A, C, S, L> ProxyAuthService<A, C, S, L> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<A: fmt::Debug, C, S: fmt::Debug, L> fmt::Debug for ProxyAuthService<A, C, S, L> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProxyAuthService")
+            .field("proxy_auth", &self.proxy_auth)
+            .field("inner", &self.inner)
+            .field(
+                "_phantom",
+                &format_args!("{}", std::any::type_name::<fn(C, L) -> ()>()),
+            )
+            .finish()
+    }
+}
+
+impl<A: Clone, C, S: Clone, L> Clone for ProxyAuthService<A, C, S, L> {
+    fn clone(&self) -> Self {
+        ProxyAuthService {
+            proxy_auth: self.proxy_auth.clone(),
+            inner: self.inner.clone(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<A, C, L, S, State, ReqBody, ResBody> Service<State, Request<ReqBody>>

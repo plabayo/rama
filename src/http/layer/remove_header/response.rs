@@ -29,6 +29,8 @@
 //! # }
 //! ```
 
+use std::fmt;
+
 use crate::http::{Request, Response};
 use crate::service::{Context, Layer, Service};
 
@@ -89,7 +91,6 @@ impl<S> Layer<S> for RemoveResponseHeaderLayer {
 }
 
 /// Middleware that removes response headers from a request.
-#[derive(Debug, Clone)]
 pub struct RemoveResponseHeader<S> {
     inner: S,
     mode: RemoveResponseHeaderMode,
@@ -119,6 +120,24 @@ impl<S> RemoveResponseHeader<S> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<S: fmt::Debug> fmt::Debug for RemoveResponseHeader<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RemoveResponseHeader")
+            .field("inner", &self.inner)
+            .field("mode", &self.mode)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for RemoveResponseHeader<S> {
+    fn clone(&self) -> Self {
+        RemoveResponseHeader {
+            inner: self.inner.clone(),
+            mode: self.mode.clone(),
+        }
+    }
 }
 
 impl<ReqBody, ResBody, State, S> Service<State, Request<ReqBody>> for RemoveResponseHeader<S>

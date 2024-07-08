@@ -8,7 +8,7 @@ use crate::{
     service::{context::Extensions, service_fn, BoxService, Context, Matcher, Service},
 };
 use paste::paste;
-use std::{convert::Infallible, future::Future, marker::PhantomData, sync::Arc};
+use std::{convert::Infallible, fmt, future::Future, marker::PhantomData, sync::Arc};
 
 /// A basic web service that can be used to serve HTTP requests.
 ///
@@ -167,9 +167,19 @@ where
     }
 }
 
-#[derive(Debug, Clone)]
-#[non_exhaustive]
 struct NestedService<S>(S);
+
+impl<S: fmt::Debug> fmt::Debug for NestedService<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("NestedService").field(&self.0).finish()
+    }
+}
+
+impl<S: Clone> Clone for NestedService<S> {
+    fn clone(&self) -> Self {
+        NestedService(self.0.clone())
+    }
+}
 
 impl<S, State> Service<State, Request> for NestedService<S>
 where

@@ -1,3 +1,5 @@
+use std::fmt;
+
 use super::DnsResolveMode;
 use crate::{
     error::OpaqueError,
@@ -16,7 +18,6 @@ use crate::{
 /// See [`Dns`] and [`DnsResolveMode`] for more information.
 ///
 /// [`Dns`]: crate::dns::Dns
-#[derive(Debug, Clone)]
 pub struct DnsResolveModeService<S> {
     inner: S,
     header_name: HeaderName,
@@ -29,6 +30,23 @@ impl<S> DnsResolveModeService<S> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<S: fmt::Debug> fmt::Debug for DnsResolveModeService<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DnsResolveModeService")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for DnsResolveModeService<S> {
+    fn clone(&self) -> Self {
+        DnsResolveModeService {
+            inner: self.inner.clone(),
+            header_name: self.header_name.clone(),
+        }
+    }
 }
 
 impl<State, Body, E, S> Service<State, Request<Body>> for DnsResolveModeService<S>

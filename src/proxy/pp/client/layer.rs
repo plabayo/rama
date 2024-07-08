@@ -1,4 +1,4 @@
-use std::{marker::PhantomData, net::IpAddr};
+use std::{fmt, marker::PhantomData, net::IpAddr};
 
 use crate::{
     error::{BoxError, ErrorContext, OpaqueError},
@@ -94,7 +94,6 @@ impl<S, P, V: Clone> Layer<S> for HaProxyLayer<P, V> {
 ///
 /// This connector should in most cases
 /// happen as the first thing after establishing the connection.
-#[derive(Debug, Clone)]
 pub struct HaProxyService<S, P = protocol::Tcp, V = version::Two> {
     inner: S,
     version: V,
@@ -158,6 +157,29 @@ impl<S, P> HaProxyService<S, P> {
     pub fn payload(mut self, payload: Vec<u8>) -> Self {
         self.version.payload = Some(payload);
         self
+    }
+}
+
+impl<S: fmt::Debug, P, V: fmt::Debug> fmt::Debug for HaProxyService<S, P, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HaProxyService")
+            .field("inner", &self.inner)
+            .field("version", &self.version)
+            .field(
+                "_phantom",
+                &format_args!("{}", std::any::type_name::<fn(P)>()),
+            )
+            .finish()
+    }
+}
+
+impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
+    fn clone(&self) -> Self {
+        HaProxyService {
+            inner: self.inner.clone(),
+            version: self.version.clone(),
+            _phantom: PhantomData,
+        }
     }
 }
 

@@ -40,6 +40,7 @@
 //!
 //! [`Infallible`]: std::convert::Infallible
 
+use std::fmt;
 use std::time::Duration;
 
 use crate::http::{Request, Response, StatusCode};
@@ -74,7 +75,6 @@ impl<S> Layer<S> for TimeoutLayer {
 /// Request Timeout` response will be sent.
 ///
 /// See the [module docs](super) for an example.
-#[derive(Debug, Clone, Copy)]
 pub struct Timeout<S> {
     inner: S,
     timeout: Duration,
@@ -88,6 +88,26 @@ impl<S> Timeout<S> {
 
     define_inner_service_accessors!();
 }
+
+impl<S: fmt::Debug> fmt::Debug for Timeout<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Timeout")
+            .field("inner", &self.inner)
+            .field("timeout", &self.timeout)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for Timeout<S> {
+    fn clone(&self) -> Self {
+        Timeout {
+            inner: self.inner.clone(),
+            timeout: self.timeout,
+        }
+    }
+}
+
+impl<S: Copy> Copy for Timeout<S> {}
 
 impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for Timeout<S>
 where

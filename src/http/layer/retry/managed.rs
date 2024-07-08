@@ -265,7 +265,7 @@ where
 
 #[derive(Debug, Clone)]
 #[non_exhaustive]
-/// An type to represent the undefined default type,
+/// A type to represent the undefined default type,
 /// which is used as the placeholder in the [`ManagedPolicy`],
 /// when the user does not provide a specific type.
 pub struct Undefined;
