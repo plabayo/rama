@@ -6,6 +6,7 @@
 [![Apache 2.0 License][license-apache-badge]][license-apache-url]
 [![rust version][rust-version-badge]][rust-version-url]
 [![Build Status][actions-badge]][actions-url]
+[![Lines of Code][loc-badge]][loc-url]
 
 [crates-badge]: https://img.shields.io/crates/v/rama.svg
 [crates-url]: https://crates.io/crates/rama
@@ -19,6 +20,8 @@
 [rust-version-url]: https://www.rust-lang.org
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions
+[loc-badge]: https://img.shields.io/endpoint?url=https://ghloc.vercel.app/api/plabayo/rama/badge?filter=.rs$&style=flat&logoColor=white&label=LoC
+[loc-url]: https://github.com/plabayo/rama
 
 [discord-badge]: https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white
 [discord-url]: https://discord.gg/29EetaSYCD
