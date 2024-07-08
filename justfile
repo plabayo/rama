@@ -37,6 +37,9 @@ qa: lint check clippy doc test
 
 qa-full: lint check clippy doc hack test test-ignored fuzz-60s
 
+upgrades:
+    cargo upgrades
+
 watch-docs:
 	cargo watch -x doc
 

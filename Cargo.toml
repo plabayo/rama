@@ -62,7 +62,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
     "ring",
 ] }
-rustls-native-certs = "=0.7.0"
+rustls-native-certs = "=0.7.1"
 rustls-pemfile = "2.1"
 rustversion = "1.0.9"
 serde = "1.0"
@@ -78,7 +78,7 @@ tokio-rustls = { version = "0.26", default-features = false, features = [
     "tls12",
     "ring",
 ] }
-tokio-test = "0.4.3"
+tokio-test = "0.4.4"
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = "0.3.17"
