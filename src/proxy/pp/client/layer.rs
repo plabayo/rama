@@ -35,16 +35,6 @@ impl HaProxyLayer {
         }
     }
 
-    /// Attach a custom bytes payload to the PROXY header.
-    ///
-    /// NOTE this is only possible in Version two of the PROXY Protocol.
-    /// In case you downgrade this [`HaProxyLayer`] to version one later
-    /// using [`Self::v1`] this payload will be dropped.
-    pub fn payload(mut self, payload: Vec<u8>) -> Self {
-        self.version.payload = Some(payload);
-        self
-    }
-
     /// Use version one of PROXY protocol, instead of the
     /// default version two.
     ///
@@ -72,6 +62,18 @@ impl HaProxyLayer<protocol::Udp> {
             version: Default::default(),
             _phantom: PhantomData,
         }
+    }
+}
+
+impl<P> HaProxyLayer<P> {
+    /// Attach a custom bytes payload to the PROXY header.
+    ///
+    /// NOTE this is only possible in Version two of the PROXY Protocol.
+    /// In case you downgrade this [`HaProxyLayer`] to version one later
+    /// using [`Self::v1`] this payload will be dropped.
+    pub fn payload(mut self, payload: Vec<u8>) -> Self {
+        self.version.payload = Some(payload);
+        self
     }
 }
 
@@ -115,16 +117,6 @@ impl<S> HaProxyService<S> {
         }
     }
 
-    /// Attach a custom bytes payload to the PROXY header.
-    ///
-    /// NOTE this is only possible in Version two of the PROXY Protocol.
-    /// In case you downgrade this [`HaProxyLayer`] to version one later
-    /// using [`Self::v1`] this payload will be dropped.
-    pub fn payload(mut self, payload: Vec<u8>) -> Self {
-        self.version.payload = Some(payload);
-        self
-    }
-
     /// Use version one of PROXY protocol, instead of the
     /// default version two.
     ///
@@ -154,6 +146,18 @@ impl<S> HaProxyService<S, protocol::Udp> {
             version: Default::default(),
             _phantom: PhantomData,
         }
+    }
+}
+
+impl<S, P> HaProxyService<S, P> {
+    /// Attach a custom bytes payload to the PROXY header.
+    ///
+    /// NOTE this is only possible in Version two of the PROXY Protocol.
+    /// In case you downgrade this [`HaProxyLayer`] to version one later
+    /// using [`Self::v1`] this payload will be dropped.
+    pub fn payload(mut self, payload: Vec<u8>) -> Self {
+        self.version.payload = Some(payload);
+        self
     }
 }
 
@@ -326,6 +330,494 @@ pub mod protocol {
     impl Protocol for Udp {
         fn v2_protocol() -> v2::Protocol {
             v2::Protocol::Datagram
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::convert::Infallible;
+
+    use super::*;
+    use crate::{
+        http::client::ClientConnection,
+        net::forwarded::{ForwardedElement, NodeId},
+        service::ServiceBuilder,
+    };
+    use tokio_test::io::Builder;
+
+    #[tokio::test]
+    async fn test_v1_tcp() {
+        for (expected_line, input_ctx, target_addr) in [
+            (
+                "PROXY TCP4 127.0.1.2 192.168.1.101 80 443\r\n",
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ctx
+                },
+                "192.168.1.101:443",
+            ),
+            (
+                "PROXY TCP4 127.0.1.2 192.168.1.101 80 443\r\n",
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(None, "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443".parse().unwrap()));
+                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(NodeId::try_from("127.0.1.2:80").unwrap())));
+                    ctx
+                },
+                "192.168.1.101:443",
+            ),
+            (
+                "PROXY TCP6 1234:5678:90ab:cdef:fedc:ba09:8765:4321 4321:8765:ba09:fedc:cdef:90ab:5678:1234 443 65535\r\n",
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(None, "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443".parse().unwrap()));
+                    ctx
+                },
+                "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
+            ),
+            (
+                "PROXY TCP6 1234:5678:90ab:cdef:fedc:ba09:8765:4321 4321:8765:ba09:fedc:cdef:90ab:5678:1234 443 65535\r\n",
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443").unwrap())));
+                    ctx
+                },
+                "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
+            ),
+        ] {
+            let svc = ServiceBuilder::new()
+                .layer(HaProxyLayer::tcp().v1())
+                .service_fn(move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            target_addr.parse().unwrap(),
+                            Builder::new().write(expected_line.as_bytes()).build(),
+                        ),
+                    })
+                });
+            svc.serve(input_ctx, Request::new(())).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v1_tcp_ip_version_mismatch() {
+        for (input_ctx, target_addr) in [
+            (
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(
+                        None,
+                        "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
+                            .parse()
+                            .unwrap(),
+                    ));
+                    ctx
+                },
+                "192.168.1.101:443",
+            ),
+            (
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                        NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
+                    )));
+                    ctx
+                },
+                "192.168.1.101:443",
+            ),
+            (
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ctx
+                },
+                "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
+            ),
+            (
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(
+                        None,
+                        "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
+                            .parse()
+                            .unwrap(),
+                    ));
+                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                        NodeId::try_from("127.0.1.2:80").unwrap(),
+                    )));
+                    ctx
+                },
+                "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
+            ),
+        ] {
+            let svc = ServiceBuilder::new()
+                .layer(HaProxyLayer::tcp().v1())
+                .service_fn(move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            target_addr.parse().unwrap(),
+                            Builder::new().build(),
+                        ),
+                    })
+                });
+            assert!(svc.serve(input_ctx, Request::new(())).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v1_tcp_missing_src() {
+        for (input_ctx, target_addr) in [
+            (Context::default(), "192.168.1.101:443"),
+            (
+                Context::default(),
+                "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443",
+            ),
+        ] {
+            let svc = ServiceBuilder::new()
+                .layer(HaProxyLayer::tcp().v1())
+                .service_fn(move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            target_addr.parse().unwrap(),
+                            Builder::new().build(),
+                        ),
+                    })
+                });
+            assert!(svc.serve(input_ctx, Request::new(())).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v2_tcp4() {
+        for input_ctx in [
+            {
+                let mut ctx = Context::default();
+                ctx.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
+                ctx
+            },
+            {
+                let mut ctx = Context::default();
+                ctx.insert(SocketInfo::new(
+                    None,
+                    "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
+                        .parse()
+                        .unwrap(),
+                ));
+                ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    NodeId::try_from("127.0.0.1:80").unwrap(),
+                )));
+                ctx
+            },
+        ] {
+            let svc = ServiceBuilder::new()
+                .layer(HaProxyLayer::tcp().payload(vec![42]))
+                .service_fn(move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            "192.168.1.1:443".parse().unwrap(),
+                            Builder::new()
+                                .write(&[
+                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
+                                    b'I', b'T', b'\n', 0x21, 0x11, 0, 13, 127, 0, 0, 1, 192, 168,
+                                    1, 1, 0, 80, 1, 187, 42,
+                                ])
+                                .build(),
+                        ),
+                    })
+                });
+            svc.serve(input_ctx, Request::new(())).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v2_udp4() {
+        for input_ctx in [
+            {
+                let mut ctx = Context::default();
+                ctx.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
+                ctx
+            },
+            {
+                let mut ctx = Context::default();
+                ctx.insert(SocketInfo::new(
+                    None,
+                    "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
+                        .parse()
+                        .unwrap(),
+                ));
+                ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    NodeId::try_from("127.0.0.1:80").unwrap(),
+                )));
+                ctx
+            },
+        ] {
+            let svc = ServiceBuilder::new()
+                .layer(HaProxyLayer::udp().payload(vec![42]))
+                .service_fn(move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            "192.168.1.1:443".parse().unwrap(),
+                            Builder::new()
+                                .write(&[
+                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
+                                    b'I', b'T', b'\n', 0x21, 0x12, 0, 13, 127, 0, 0, 1, 192, 168,
+                                    1, 1, 0, 80, 1, 187, 42,
+                                ])
+                                .build(),
+                        ),
+                    })
+                });
+            svc.serve(input_ctx, Request::new(())).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v2_tcp6() {
+        for input_ctx in [
+            {
+                let mut ctx = Context::default();
+                ctx.insert(SocketInfo::new(
+                    None,
+                    "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
+                        .parse()
+                        .unwrap(),
+                ));
+                ctx
+            },
+            {
+                let mut ctx = Context::default();
+                ctx.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
+                ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
+                )));
+                ctx
+            },
+        ] {
+            let svc = ServiceBuilder::new()
+                .layer(HaProxyLayer::tcp().payload(vec![42]))
+                .service_fn(move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
+                                .parse()
+                                .unwrap(),
+                            Builder::new()
+                                .write(&[
+                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
+                                    b'I', b'T', b'\n', 0x21, 0x21, 0, 37, 0x12, 0x34, 0x56, 0x78,
+                                    0x90, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09, 0x87, 0x65,
+                                    0x43, 0x21, 0x43, 0x21, 0x87, 0x65, 0xba, 0x09, 0xfe, 0xdc,
+                                    0xcd, 0xef, 0x90, 0xab, 0x56, 0x78, 0x12, 0x34, 0, 80, 1, 187,
+                                    42,
+                                ])
+                                .build(),
+                        ),
+                    })
+                });
+            svc.serve(input_ctx, Request::new(())).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v2_udp6() {
+        for input_ctx in [
+            {
+                let mut ctx = Context::default();
+                ctx.insert(SocketInfo::new(
+                    None,
+                    "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
+                        .parse()
+                        .unwrap(),
+                ));
+                ctx
+            },
+            {
+                let mut ctx = Context::default();
+                ctx.insert(SocketInfo::new(None, "127.0.0.1:80".parse().unwrap()));
+                ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                    NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
+                )));
+                ctx
+            },
+        ] {
+            let svc = ServiceBuilder::new()
+                .layer(HaProxyLayer::udp().payload(vec![42]))
+                .service_fn(move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
+                                .parse()
+                                .unwrap(),
+                            Builder::new()
+                                .write(&[
+                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
+                                    b'I', b'T', b'\n', 0x21, 0x22, 0, 37, 0x12, 0x34, 0x56, 0x78,
+                                    0x90, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09, 0x87, 0x65,
+                                    0x43, 0x21, 0x43, 0x21, 0x87, 0x65, 0xba, 0x09, 0xfe, 0xdc,
+                                    0xcd, 0xef, 0x90, 0xab, 0x56, 0x78, 0x12, 0x34, 0, 80, 1, 187,
+                                    42,
+                                ])
+                                .build(),
+                        ),
+                    })
+                });
+            svc.serve(input_ctx, Request::new(())).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v2_ip_version_mismatch() {
+        for (input_ctx, target_addr) in [
+            (
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(
+                        None,
+                        "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
+                            .parse()
+                            .unwrap(),
+                    ));
+                    ctx
+                },
+                "192.168.1.101:443",
+            ),
+            (
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                        NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80").unwrap(),
+                    )));
+                    ctx
+                },
+                "192.168.1.101:443",
+            ),
+            (
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
+                    ctx
+                },
+                "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
+            ),
+            (
+                {
+                    let mut ctx = Context::default();
+                    ctx.insert(SocketInfo::new(
+                        None,
+                        "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:80"
+                            .parse()
+                            .unwrap(),
+                    ));
+                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                        NodeId::try_from("127.0.1.2:80").unwrap(),
+                    )));
+                    ctx
+                },
+                "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
+            ),
+        ] {
+            // TCP
+
+            let svc = ServiceBuilder::new().layer(HaProxyLayer::tcp()).service_fn(
+                move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            target_addr.parse().unwrap(),
+                            Builder::new().build(),
+                        ),
+                    })
+                },
+            );
+            assert!(svc
+                .serve(input_ctx.clone(), Request::new(()))
+                .await
+                .is_err());
+
+            // UDP
+
+            let svc = ServiceBuilder::new().layer(HaProxyLayer::udp()).service_fn(
+                move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            target_addr.parse().unwrap(),
+                            Builder::new().build(),
+                        ),
+                    })
+                },
+            );
+            assert!(svc.serve(input_ctx, Request::new(())).await.is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_v2_missing_src() {
+        for (input_ctx, target_addr) in [
+            (Context::default(), "192.168.1.101:443"),
+            (
+                Context::default(),
+                "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443",
+            ),
+        ] {
+            // TCP
+
+            let svc = ServiceBuilder::new().layer(HaProxyLayer::tcp()).service_fn(
+                move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            target_addr.parse().unwrap(),
+                            Builder::new().build(),
+                        ),
+                    })
+                },
+            );
+            assert!(svc
+                .serve(input_ctx.clone(), Request::new(()))
+                .await
+                .is_err());
+
+            // UDP
+
+            let svc = ServiceBuilder::new().layer(HaProxyLayer::udp()).service_fn(
+                move |ctx, req| async move {
+                    Ok::<_, Infallible>(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: ClientConnection::new(
+                            target_addr.parse().unwrap(),
+                            Builder::new().build(),
+                        ),
+                    })
+                },
+            );
+            assert!(svc
+                .serve(input_ctx.clone(), Request::new(()))
+                .await
+                .is_err());
         }
     }
 }
