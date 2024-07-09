@@ -489,7 +489,7 @@ mod tests {
         RequestContext {
             http_version: Version::HTTP_2,
             protocol: Protocol::HTTPS,
-            authority: Some("localhost:8443".try_into().unwrap()),
+            authority: "localhost:8443".try_into().unwrap(),
         }
     }
 
@@ -602,7 +602,7 @@ mod tests {
         RequestContext {
             http_version: Version::HTTP_3,
             protocol: Protocol::HTTPS,
-            authority: Some("localhost:8443".try_into().unwrap()),
+            authority: "localhost:8443".try_into().unwrap(),
         }
     }
 

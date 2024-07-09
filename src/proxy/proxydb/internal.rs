@@ -695,7 +695,7 @@ mod tests {
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
             protocol: Protocol::HTTPS,
-            authority: Some("localhost:8443".try_into().unwrap()),
+            authority: "localhost:8443".try_into().unwrap(),
         };
 
         let filter = ProxyFilter {
@@ -739,7 +739,7 @@ mod tests {
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
             protocol: Protocol::HTTPS,
-            authority: Some("localhost:8443".try_into().unwrap()),
+            authority: "localhost:8443".try_into().unwrap(),
         };
 
         let filter = ProxyFilter {
@@ -776,7 +776,7 @@ mod tests {
         let ctx = RequestContext {
             http_version: Version::HTTP_3,
             protocol: Protocol::HTTPS,
-            authority: Some("localhost:8443".try_into().unwrap()),
+            authority: "localhost:8443".try_into().unwrap(),
         };
 
         let filter = ProxyFilter {
@@ -813,7 +813,7 @@ mod tests {
         let ctx = RequestContext {
             http_version: Version::HTTP_3,
             protocol: Protocol::HTTPS,
-            authority: Some("localhost:8443".try_into().unwrap()),
+            authority: "localhost:8443".try_into().unwrap(),
         };
 
         let filter = ProxyFilter {
@@ -850,7 +850,7 @@ mod tests {
         let ctx = RequestContext {
             http_version: Version::HTTP_3,
             protocol: Protocol::HTTPS,
-            authority: Some("localhost:8443".try_into().unwrap()),
+            authority: "localhost:8443".try_into().unwrap(),
         };
 
         let filter = ProxyFilter {
@@ -1002,7 +1002,7 @@ mod tests {
             let ctx = RequestContext {
                 http_version: Version::HTTP_2,
                 protocol: Protocol::HTTPS,
-                authority: Some("localhost:8443".try_into().unwrap()),
+                authority: "localhost:8443".try_into().unwrap(),
             };
 
             assert!(proxy.is_match(&ctx, &filter), "filter: {:?}", filter);
@@ -1116,7 +1116,7 @@ mod tests {
             let ctx = RequestContext {
                 http_version: Version::HTTP_2,
                 protocol: Protocol::HTTPS,
-                authority: Some("localhost:8443".try_into().unwrap()),
+                authority: "localhost:8443".try_into().unwrap(),
             };
 
             assert!(
@@ -1134,7 +1134,7 @@ mod tests {
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
             protocol: Protocol::HTTPS,
-            authority: Some("localhost:8443".try_into().unwrap()),
+            authority: "localhost:8443".try_into().unwrap(),
         };
 
         for filter in [
@@ -1184,7 +1184,7 @@ mod tests {
         let ctx = RequestContext {
             http_version: Version::HTTP_2,
             protocol: Protocol::HTTPS,
-            authority: Some("localhost:8443".try_into().unwrap()),
+            authority: "localhost:8443".try_into().unwrap(),
         };
 
         for filter in [

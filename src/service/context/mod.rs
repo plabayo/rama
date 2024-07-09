@@ -298,6 +298,63 @@ impl<S> Context<S> {
         self.extensions.get_or_insert_with(f)
     }
 
+    /// Inserts a value into the map computed from `f` into if it is [`None`],
+    /// then returns an exclusive reference to the contained value.
+    ///
+    /// Use the cheaper [`Self::get_or_insert_with`] in case you do not need access to
+    /// the [`Context`] for the creation of `T`, as this function comes with
+    /// an extra cost.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use rama::service::Context;
+    /// # use std::sync::Arc;
+    /// # #[derive(Debug, Clone)]
+    /// struct State {
+    ///     mul: i32,
+    /// }
+    /// let mut ctx = Context::with_state(Arc::new(State{ mul: 2 }));
+    /// ctx.insert(true);
+    /// let value: &i32 = ctx.get_or_insert_with_ctx(|ctx| ctx.state().mul * 21);
+    /// assert_eq!(*value, 42);
+    /// let existing_value: &mut i32 = ctx.get_or_insert_default();
+    /// assert_eq!(*existing_value, 42);
+    /// ```
+    pub fn get_or_insert_with_ctx<T: Clone + Send + Sync + 'static>(
+        &mut self,
+        f: impl FnOnce(&Self) -> T,
+    ) -> &mut T {
+        if self.extensions.contains::<T>() {
+            // NOTE: once <https://github.com/rust-lang/polonius>
+            // is merged into rust we can use directly `if let Some(v) = self.extensions.get_mut()`,
+            // until then we need this work around.
+            return self.extensions.get_mut().unwrap();
+        }
+        let v = f(self);
+        self.extensions.insert(v);
+        self.extensions.get_mut().unwrap()
+    }
+
+    /// Try to insert a value into the map computed from `f` into if it is [`None`],
+    /// then returns an exclusive reference to the contained value.
+    ///
+    /// Similar to [`Self::get_or_insert_with_ctx`] but fallible.
+    pub fn get_or_try_insert_with_ctx<T: Clone + Send + Sync + 'static, E>(
+        &mut self,
+        f: impl FnOnce(&Self) -> Result<T, E>,
+    ) -> Result<&mut T, E> {
+        if self.extensions.contains::<T>() {
+            // NOTE: once <https://github.com/rust-lang/polonius>
+            // is merged into rust we can use directly `if let Some(v) = self.extensions.get_mut()`,
+            // until then we need this work around.
+            return Ok(self.extensions.get_mut().unwrap());
+        }
+        let v = f(self)?;
+        self.extensions.insert(v);
+        Ok(self.extensions.get_mut().unwrap())
+    }
+
     /// Inserts a value into the map computed from converting `U` into `T if no value was already inserted is [`None`],
     /// then returns an exclusive reference to the contained value.
     pub fn get_or_insert_from<T, U>(&mut self, src: U) -> &mut T

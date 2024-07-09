@@ -30,43 +30,47 @@ impl<S> Layer<S> for DnsMapLayer {
 mod tests {
     use super::*;
     use crate::{
-        http::{get_request_context, Request},
+        http::{Request, RequestContext},
         net::address::Host,
         service::{Context, Service, ServiceBuilder},
     };
-    use std::{
-        convert::Infallible,
-        net::{IpAddr, Ipv4Addr},
-    };
+    use std::net::{IpAddr, Ipv4Addr};
 
     #[tokio::test]
     async fn test_dns_map_layer() {
         let svc = ServiceBuilder::new()
             .layer(DnsMapLayer::new(HeaderName::from_static("x-dns-map")))
             .service_fn(|mut ctx: Context<()>, req: Request<()>| async move {
-                let req_ctx = get_request_context!(ctx, req);
-                let domain = match req_ctx.authority.as_ref().unwrap().host() {
-                    Host::Name(domain) => domain,
-                    Host::Address(ip) => panic!("unexpected host: {ip}"),
-                };
+                match ctx
+                    .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
+                    .map(|req_ctx| req_ctx.authority.host().clone())
+                {
+                    Ok(host) => {
+                        let domain = match host {
+                            Host::Name(domain) => domain,
+                            Host::Address(ip) => panic!("unexpected host: {ip}"),
+                        };
 
-                let addresses: Vec<_> = ctx
-                    .dns()
-                    .ipv4_lookup(domain.clone())
-                    .await
-                    .unwrap()
-                    .collect();
-                assert_eq!(addresses, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))]);
+                        let addresses: Vec<_> = ctx
+                            .dns()
+                            .ipv4_lookup(domain.clone())
+                            .await
+                            .unwrap()
+                            .collect();
+                        assert_eq!(addresses, vec![IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))]);
 
-                let addresses: Vec<_> = ctx
-                    .dns()
-                    .ipv6_lookup(domain.clone())
-                    .await
-                    .unwrap()
-                    .collect();
-                assert!(addresses.is_empty());
+                        let addresses: Vec<_> = ctx
+                            .dns()
+                            .ipv6_lookup(domain.clone())
+                            .await
+                            .unwrap()
+                            .collect();
+                        assert!(addresses.is_empty());
 
-                Ok::<_, Infallible>(())
+                        Ok(())
+                    }
+                    Err(err) => Err(err),
+                }
             });
 
         let ctx = Context::default();

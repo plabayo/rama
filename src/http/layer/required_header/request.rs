@@ -3,12 +3,16 @@
 //! For now this only sets `Host` header on http/1.1,
 //! as well as always a User-Agent for all versions.
 
-use crate::http::{
-    get_request_context,
-    header::{self, RAMA_ID_HEADER_VALUE},
-    Request, Response,
-};
+use crate::error::ErrorContext;
+use crate::http::RequestContext;
 use crate::service::{Context, Layer, Service};
+use crate::{
+    error::BoxError,
+    http::{
+        header::{self, RAMA_ID_HEADER_VALUE},
+        Request, Response,
+    },
+};
 use headers::HeaderMapExt;
 use http::header::{HOST, USER_AGENT};
 use std::fmt;
@@ -93,9 +97,10 @@ where
     ResBody: Send + 'static,
     State: Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S::Error: Into<BoxError>,
 {
     type Response = S::Response;
-    type Error = S::Error;
+    type Error = BoxError;
 
     async fn serve(
         &self,
@@ -103,18 +108,17 @@ where
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
         if self.overwrite || !req.headers().contains_key(HOST) {
-            let request_ctx = get_request_context!(ctx, req);
-            if let Some(host) = request_ctx
-                .authority
-                .as_ref()
-                .and_then(|authority| {
-                    crate::http::dep::http::uri::Authority::from_maybe_shared(authority.to_string())
-                        .ok()
-                })
-                .map(crate::http::headers::Host::from)
-            {
-                req.headers_mut().typed_insert(host);
-            };
+            let request_ctx: &mut RequestContext = ctx
+                .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
+                .context(
+                    "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
+                )?;
+            let host = crate::http::dep::http::uri::Authority::from_maybe_shared(
+                request_ctx.authority.to_string(),
+            )
+            .map(crate::http::headers::Host::from)
+            .context("AddRequiredRequestHeaders: set authority")?;
+            req.headers_mut().typed_insert(host);
         }
 
         if self.overwrite {
@@ -124,7 +128,7 @@ where
             header.insert(RAMA_ID_HEADER_VALUE.clone());
         }
 
-        self.inner.serve(ctx, req).await
+        self.inner.serve(ctx, req).await.map_err(Into::into)
     }
 }
 
@@ -175,23 +179,6 @@ mod test {
             .body(Body::empty())
             .unwrap();
 
-        let resp = svc.serve(Context::default(), req).await.unwrap();
-
-        assert!(!resp.headers().contains_key(HOST));
-        assert!(!resp.headers().contains_key(USER_AGENT));
-    }
-
-    #[tokio::test]
-    async fn add_required_request_headers_no_host() {
-        let svc = ServiceBuilder::new()
-            .layer(AddRequiredRequestHeadersLayer::default())
-            .service_fn(|_ctx: Context<()>, req: Request| async move {
-                assert!(!req.headers().contains_key(HOST));
-                assert!(req.headers().contains_key(USER_AGENT));
-                Ok::<_, Infallible>(http::Response::new(Body::empty()))
-            });
-
-        let req = Request::builder().body(Body::empty()).unwrap();
         let resp = svc.serve(Context::default(), req).await.unwrap();
 
         assert!(!resp.headers().contains_key(HOST));

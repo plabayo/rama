@@ -2,14 +2,17 @@
 //!
 //! [`Layer`]: crate::service::Layer
 
-use crate::telemetry::opentelemetry::{
-    global,
-    metrics::{Histogram, Meter, Unit, UpDownCounter},
-    semantic_conventions, KeyValue,
+use crate::{
+    http::RequestContext,
+    telemetry::opentelemetry::{
+        global,
+        metrics::{Histogram, Meter, Unit, UpDownCounter},
+        semantic_conventions, KeyValue,
+    },
 };
 use crate::{
     http::{
-        self, get_request_context,
+        self,
         headers::{HeaderMapExt, UserAgent},
         IntoResponse, Request, Response,
     },
@@ -232,8 +235,10 @@ fn compute_attributes<State, Body>(ctx: &mut Context<State>, req: &Request<Body>
     }
 
     // server info
-    let request_ctx = get_request_context!(*ctx, *req);
-    if let Some(authority) = request_ctx.authority.as_ref() {
+    let request_ctx: Option<&mut RequestContext> = ctx
+        .get_or_try_insert_with_ctx(|ctx| (ctx, req).try_into())
+        .ok();
+    if let Some(authority) = request_ctx.as_ref().map(|rc| &rc.authority) {
         attributes.push(KeyValue::new(SERVER_ADDRESS, authority.host().to_string()));
         attributes.push(KeyValue::new(SERVER_PORT, authority.port() as i64));
     }
@@ -248,20 +253,22 @@ fn compute_attributes<State, Body>(ctx: &mut Context<State>, req: &Request<Body>
         Some("") | None => (),
         Some(query) => attributes.push(KeyValue::new(URL_QUERY, query.to_owned())),
     }
-    attributes.push(KeyValue::new(URL_SCHEME, request_ctx.protocol.to_string()));
+    if let Some(protocol) = request_ctx.as_ref().map(|rc| &rc.protocol) {
+        attributes.push(KeyValue::new(URL_SCHEME, protocol.to_string()));
+    }
 
     // Common attrs (Request Info)
     // <https://github.com/open-telemetry/semantic-conventions/blob/v1.21.0/docs/http/http-spans.md#common-attributes>
 
     attributes.push(KeyValue::new(HTTP_REQUEST_METHOD, req.method().to_string()));
-    if let Some(http_version) = match request_ctx.http_version {
+    if let Some(http_version) = request_ctx.as_ref().and_then(|rc| match rc.http_version {
         http::Version::HTTP_09 => Some("0.9"),
         http::Version::HTTP_10 => Some("1.0"),
         http::Version::HTTP_11 => Some("1.1"),
         http::Version::HTTP_2 => Some("2"),
         http::Version::HTTP_3 => Some("3"),
         _ => None,
-    } {
+    }) {
         attributes.push(KeyValue::new(NETWORK_PROTOCOL_VERSION, http_version));
     }
 

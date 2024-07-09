@@ -2,12 +2,12 @@ use super::HttpProxyConnector;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     http::{
-        client::{ClientConnection, EstablishedClientConnection},
         headers::{HeaderMapExt, ProxyAuthorization},
         Request,
     },
     net::{
         address::{Authority, Host, ProxyAddress},
+        client::{ClientConnection, EstablishedClientConnection},
         stream::Stream,
         user::ProxyCredential,
         Protocol,
@@ -69,13 +69,17 @@ impl<S> HttpProxyConnectorService<S> {
 
 impl<S, State, Body, T> Service<State, Request<Body>> for HttpProxyConnectorService<S>
 where
-    S: Service<State, Request<Body>, Response = EstablishedClientConnection<T, Body, State>>,
+    S: Service<
+        State,
+        Request<Body>,
+        Response = EstablishedClientConnection<T, State, Request<Body>>,
+    >,
     T: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Body: Send + 'static,
 {
-    type Response = EstablishedClientConnection<T, Body, State>;
+    type Response = EstablishedClientConnection<T, State, Request<Body>>;
     type Error = BoxError;
 
     async fn serve(

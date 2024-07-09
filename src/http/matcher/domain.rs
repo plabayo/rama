@@ -30,29 +30,33 @@ impl DomainMatcher {
 impl<State, Body> crate::service::Matcher<State, Request<Body>> for DomainMatcher {
     fn matches(
         &self,
-        _ext: Option<&mut Extensions>,
+        ext: Option<&mut Extensions>,
         ctx: &Context<State>,
         req: &Request<Body>,
     ) -> bool {
-        let host = ctx
-            .get::<RequestContext>()
-            .map(|ctx| ctx.authority.as_ref().map(|auth| auth.host().clone()))
-            .unwrap_or_else(|| {
-                RequestContext::from((ctx, req)).authority.map(|auth| {
-                    let (host, _) = auth.into_parts();
-                    host
-                })
-            });
-
+        let host = match ctx.get::<RequestContext>() {
+            Some(req_ctx) => req_ctx.authority.host().clone(),
+            None => {
+                let req_ctx: RequestContext = match (ctx, req).try_into() {
+                    Ok(req_ctx) => req_ctx,
+                    Err(_) => return false,
+                };
+                let host = req_ctx.authority.host().clone();
+                if let Some(ext) = ext {
+                    ext.insert(req_ctx);
+                }
+                host
+            }
+        };
         match host {
-            Some(Host::Name(domain)) => {
+            Host::Name(domain) => {
                 if self.sub {
                     self.domain.is_parent_of(&domain)
                 } else {
                     self.domain == domain
                 }
             }
-            _ => false,
+            Host::Address(_) => false,
         }
     }
 }

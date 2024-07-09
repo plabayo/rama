@@ -36,12 +36,13 @@ where
     type Rejection = MissingAuthority;
 
     async fn from_request_parts(ctx: &Context<S>, parts: &Parts) -> Result<Self, Self::Rejection> {
-        Ok(Authority(
-            ctx.get::<RequestContext>()
-                .map(|ctx| ctx.authority.clone())
-                .unwrap_or_else(|| RequestContext::from((ctx, parts)).authority.clone())
-                .ok_or(MissingAuthority)?,
-        ))
+        Ok(Authority(match ctx.get::<RequestContext>() {
+            Some(ctx) => ctx.authority.clone(),
+            None => RequestContext::try_from((ctx, parts))
+                .map_err(|_| MissingAuthority)?
+                .authority
+                .clone(),
+        }))
     }
 }
 

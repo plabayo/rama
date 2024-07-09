@@ -1,15 +1,14 @@
+use crate::error::BoxError;
 use crate::http::headers::{
     ForwardHeader, HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
-use crate::http::{get_request_context, Request};
+use crate::http::{Request, RequestContext};
 use crate::net::address::Domain;
 use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
 use crate::net::stream::SocketInfo;
 use crate::service::{Context, Layer, Service};
 use std::fmt;
-use std::future::Future;
 use std::marker::PhantomData;
-use std::net::SocketAddr;
 
 #[derive(Debug, Clone)]
 /// Layer to write [`Forwarded`] information for this proxy,
@@ -78,7 +77,7 @@ use std::net::SocketAddr;
 ///     .layer(SetForwardedHeadersLayer::<XRealIp>::new())
 ///     .service_fn(svc);
 ///
-/// # let req = Request::new(());
+/// # let req = Request::builder().uri("example.com").body(()).unwrap();
 /// # let mut ctx = Context::default();
 /// # ctx.insert(SocketInfo::new(None, "42.37.100.50:62345".parse().unwrap()));
 /// service.serve(ctx, req).await.unwrap();
@@ -261,32 +260,30 @@ impl<S> SetForwardedHeadersService<S, XForwardedProto> {
 impl<S, H, State, Body> Service<State, Request<Body>> for SetForwardedHeadersService<S, H>
 where
     S: Service<State, Request<Body>>,
+    S::Error: Into<BoxError>,
     H: ForwardHeader + Send + Sync + 'static,
     Body: Send + 'static,
     State: Send + Sync + 'static,
 {
     type Response = S::Response;
-    type Error = S::Error;
+    type Error = BoxError;
 
-    fn serve(
+    async fn serve(
         &self,
         mut ctx: Context<State>,
         mut req: Request<Body>,
-    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let mut peer_addr: Option<SocketAddr> =
-            ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr());
+    ) -> Result<Self::Response, Self::Error> {
         let forwarded: Option<Forwarded> = ctx.get().cloned();
-        let request_ctx = get_request_context!(ctx, req);
 
         let mut forwarded_element = ForwardedElement::forwarded_by(self.by_node.clone());
 
-        if let Some(peer_addr) = peer_addr.take() {
+        if let Some(peer_addr) = ctx.get::<SocketInfo>().map(|socket| *socket.peer_addr()) {
             forwarded_element.set_forwarded_for(peer_addr);
         }
+        let request_ctx: &mut RequestContext =
+            ctx.get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())?;
 
-        if let Some(authority) = request_ctx.authority.clone() {
-            forwarded_element.set_forwarded_host(authority);
-        }
+        forwarded_element.set_forwarded_host(request_ctx.authority.clone());
 
         if let Ok(forwarded_proto) = (&request_ctx.protocol).try_into() {
             forwarded_element.set_forwarded_proto(forwarded_proto);
@@ -306,7 +303,7 @@ where
             }
         }
 
-        self.inner.serve(ctx, req)
+        self.inner.serve(ctx, req).await.map_err(Into::into)
     }
 }
 
@@ -317,19 +314,19 @@ macro_rules! set_forwarded_service_for_tuple {
         where
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
             S: Service<State, Request<Body>>,
+            S::Error: Into<BoxError>,
             Body: Send + 'static,
             State: Send + Sync + 'static,
         {
             type Response = S::Response;
-            type Error = S::Error;
+            type Error = BoxError;
 
-            fn serve(
+            async fn serve(
                 &self,
                 mut ctx: Context<State>,
                 mut req: Request<Body>,
-            ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+            ) -> Result<Self::Response, Self::Error> {
                 let forwarded: Option<Forwarded> = ctx.get().cloned();
-                let request_ctx = get_request_context!(ctx, req);
 
                 let mut forwarded_element = ForwardedElement::forwarded_by(self.by_node.clone());
 
@@ -337,9 +334,10 @@ macro_rules! set_forwarded_service_for_tuple {
                     forwarded_element.set_forwarded_for(peer_addr);
                 }
 
-                if let Some(authority) = request_ctx.authority.clone() {
-                    forwarded_element.set_forwarded_host(authority);
-                }
+                let request_ctx: &mut RequestContext =
+                    ctx.get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())?;
+
+                forwarded_element.set_forwarded_host(request_ctx.authority.clone());
 
                 if let Ok(forwarded_proto) = (&request_ctx.protocol).try_into() {
                     forwarded_element.set_forwarded_proto(forwarded_proto);
@@ -361,7 +359,7 @@ macro_rules! set_forwarded_service_for_tuple {
                     )*
                 }
 
-                self.inner.serve(ctx, req)
+                self.inner.serve(ctx, req).await.map_err(Into::into)
             }
         }
     };
@@ -437,13 +435,13 @@ mod tests {
         async fn svc(request: Request<()>) -> Result<(), Infallible> {
             assert_eq!(
                 request.headers().get("Forwarded").unwrap(),
-                "by=rama;proto=http"
+                "by=rama;host=\"example.com:80\";proto=http"
             );
             Ok(())
         }
 
         let service = SetForwardedHeadersService::forwarded(service_fn(svc));
-        let req = Request::new(());
+        let req = Request::builder().uri("example.com").body(()).unwrap();
         service.serve(Context::default(), req).await.unwrap();
     }
 

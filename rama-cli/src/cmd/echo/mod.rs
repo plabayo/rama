@@ -189,9 +189,7 @@ async fn echo<State>(ctx: Context<State>, req: Request) -> Result<Response, Infa
         .unwrap_or_default();
 
     let request_context = ctx.get::<RequestContext>();
-    let authority = request_context
-        .and_then(|ctx| ctx.authority.as_ref())
-        .map(|a| a.to_string());
+    let authority = request_context.map(|ctx| ctx.authority.to_string());
     let scheme = request_context
         .map(|ctx| ctx.protocol.to_string())
         .unwrap_or_default();

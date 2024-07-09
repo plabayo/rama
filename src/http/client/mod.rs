@@ -5,12 +5,11 @@ use crate::{
     error::BoxError,
     http::{
         dep::http::uri::PathAndQuery,
-        get_request_context,
         header::HOST,
         headers::{self, HeaderMapExt},
-        Request, Response, Version,
+        Request, RequestContext, Response, Version,
     },
-    net::{address::ProxyAddress, stream::Stream},
+    net::{address::ProxyAddress, client::EstablishedClientConnection, stream::Stream},
     service::{Context, Service},
     tcp::client::service::HttpConnector,
     tls::rustls::client::{AutoTlsStream, HttpsConnector},
@@ -26,10 +25,6 @@ pub use error::HttpClientError;
 mod ext;
 #[doc(inline)]
 pub use ext::{HttpClientExt, IntoUrl, RequestBuilder};
-
-mod conn;
-#[doc(inline)]
-pub use conn::{ClientConnection, EstablishedClientConnection};
 
 /// An http client that can be used to serve HTTP requests.
 ///
@@ -83,7 +78,11 @@ where
     Body: http_body::Body + Unpin + Send + 'static,
     Body::Data: Send + 'static,
     Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    C: Service<State, Request<Body>, Response = EstablishedClientConnection<S, Body, State>>,
+    C: Service<
+        State,
+        Request<Body>,
+        Response = EstablishedClientConnection<S, State, Request<Body>>,
+    >,
     C::Error: Into<BoxError>,
     S: Stream + Unpin,
 {
@@ -183,7 +182,9 @@ fn sanitize_client_req_header<S, B>(
             // GET | HEAD | POST | PUT | DELETE | OPTIONS | TRACE | PATCH
             if !ctx.contains::<ProxyAddress>() && req.uri().host().is_some() {
                 // ensure request context is defined prior to doing this, as otherwise we can get issues
-                let _ = get_request_context!(*ctx, req);
+                let _ = ctx
+                    .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
+                    .map_err(HttpClientError::from_std)?;
 
                 tracing::trace!("remove authority and scheme from non-connect direct http request");
                 let (mut parts, body) = req.into_parts();

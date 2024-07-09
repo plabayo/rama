@@ -1,20 +1,20 @@
-use crate::{http::Request, service::Context};
+use crate::service::Context;
 use pin_project_lite::pin_project;
 use std::{fmt, net::SocketAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// The established connection to a server returned for the http client to be used.
-pub struct EstablishedClientConnection<S, Body, State> {
-    /// The [`Context`] of the [`Request`] for which a connection was established.
+pub struct EstablishedClientConnection<S, State, Request> {
+    /// The [`Context`] of the `Request` for which a connection was established.
     pub ctx: Context<State>,
-    /// The [`Request`] for which a connection was established.
-    pub req: Request<Body>,
+    /// The `Request` for which a connection was established.
+    pub req: Request,
     /// The established [`ClientConnection`] to the server.
     pub conn: ClientConnection<S>,
 }
 
-impl<S: fmt::Debug, Body: fmt::Debug, State: fmt::Debug> fmt::Debug
-    for EstablishedClientConnection<S, Body, State>
+impl<S: fmt::Debug, State: fmt::Debug, Request: fmt::Debug> fmt::Debug
+    for EstablishedClientConnection<S, State, Request>
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EstablishedClientConnection")
@@ -25,7 +25,7 @@ impl<S: fmt::Debug, Body: fmt::Debug, State: fmt::Debug> fmt::Debug
     }
 }
 
-impl<S: Clone, Body: Clone, State> Clone for EstablishedClientConnection<S, Body, State> {
+impl<S: Clone, State, Request: Clone> Clone for EstablishedClientConnection<S, State, Request> {
     fn clone(&self) -> Self {
         Self {
             ctx: self.ctx.clone(),

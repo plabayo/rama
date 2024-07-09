@@ -1,4 +1,5 @@
 use super::{dep::http::request::Parts, Request, Version};
+use crate::error::OpaqueError;
 use crate::http::Uri;
 use crate::net::forwarded::Forwarded;
 use crate::net::{
@@ -25,140 +26,13 @@ pub struct RequestContext {
     /// This can be also manually set in case there is support for
     /// forward headers (e.g. `Forwarded`, or `X-Forwarded-Host`)
     /// or forward protocols (e.g. `HaProxy`).
-    ///
-    /// Strictly speaking an authority is always required. It is however up to the user
-    /// of this [`RequestContext`] to turn this into a dealbreaker if desired.
-    pub authority: Option<Authority>,
+    pub authority: Authority,
 }
 
-#[doc(hidden)]
-#[macro_export]
-/// Get the [`RequestContext`] from the given [`Context`] and [`Request`],
-/// either because it is already present in the [`Context`] or by creating a new one.
-macro_rules! __get_request_context {
-    ($ctx:expr, $req:expr) => {{
-        let req_ctx: &$crate::http::RequestContext = match $ctx.get() {
-            Some(req_ctx) => req_ctx,
-            None => {
-                let req_ctx: $crate::http::RequestContext = (&$ctx, &$req).into();
-                $ctx.insert(req_ctx);
-                $ctx.get().unwrap()
-            }
-        };
-        req_ctx
-    }};
-}
+impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext {
+    type Error = OpaqueError;
 
-#[doc(inline)]
-pub use crate::__get_request_context as get_request_context;
-
-impl RequestContext {
-    /// Create a new [`RequestContext`] from the given [`Request`](crate::http::Request)
-    /// and [`Context`](crate::service::Context).
-    pub fn new<State, Body>(ctx: &Context<State>, req: &Request<Body>) -> Self {
-        (ctx, req).into()
-    }
-}
-
-impl<State, Body> From<(Context<State>, Request<Body>)> for RequestContext {
-    fn from((ctx, req): (Context<State>, Request<Body>)) -> Self {
-        RequestContext::from((&ctx, &req))
-    }
-}
-
-impl<State> From<(Context<State>, Parts)> for RequestContext {
-    fn from((ctx, parts): (Context<State>, Parts)) -> Self {
-        RequestContext::from((&ctx, &parts))
-    }
-}
-
-fn protocol_from_uri_or_context<State>(ctx: &Context<State>, uri: &Uri) -> Protocol {
-    ctx.get::<Forwarded>()
-        .and_then(|f| f.client_proto().map(|p| {
-            tracing::trace!(uri = %uri, "request context: detected protocol from forwarded client proto");
-            p.into()
-        }))
-        .or_else(|| uri.scheme().map(|s| {
-            tracing::trace!(uri = %uri, "request context: detected protocol from scheme");
-            s.into()
-        }))
-        .or_else(|| {
-            // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
-            // both the scheme and authority for the request, making us not detect
-            // it correctly as https protocol (port 443 by default). The presence of the client hello
-            // config does reveal this information to us which assumes that our tls terminators
-            // do set this information, otherwise we would never the less be in the blind.
-            // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
-            ctx.contains::<SecureTransport>().then(|| {
-                tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTPS (secure transport)");
-                Protocol::HTTPS
-            })
-        })
-        .unwrap_or_else(|| {
-            tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTP");
-            Protocol::HTTP
-        })
-}
-
-impl<State> From<(&Context<State>, &Parts)> for RequestContext {
-    fn from((ctx, parts): (&Context<State>, &Parts)) -> Self {
-        let uri = &parts.uri;
-
-        let protocol = protocol_from_uri_or_context(ctx, uri);
-        tracing::trace!(uri = %uri, "request context: detected protocol: {protocol}",);
-
-        let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
-        tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
-
-        let authority = ctx
-            .get::<Forwarded>()
-            .and_then(|f| {
-                f.client_host().map(|fauth| {
-                    let (host, port) = fauth.clone().into_parts();
-                    let port = port.unwrap_or(default_port);
-                    (host, port).into()
-                })
-            })
-            .or_else(|| {
-                parts
-                    .headers
-                    .get(crate::http::header::HOST)
-                    .and_then(|host| {
-                        host.try_into() // try to consume as Authority, otherwise as Host
-                            .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
-                            .ok()
-                    })
-            })
-            .or_else(|| {
-                uri.host()
-                    .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
-            });
-        tracing::trace!(uri = %uri, "request context: maybe detected authority: {authority:?}");
-
-        let http_version = ctx
-            .get::<Forwarded>()
-            .and_then(|f| {
-                f.client_version().map(|v| match v {
-                    crate::net::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
-                    crate::net::forwarded::ForwardedVersion::HTTP_10 => Version::HTTP_10,
-                    crate::net::forwarded::ForwardedVersion::HTTP_11 => Version::HTTP_11,
-                    crate::net::forwarded::ForwardedVersion::HTTP_2 => Version::HTTP_2,
-                    crate::net::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
-                })
-            })
-            .unwrap_or(parts.version);
-        tracing::trace!(uri = %uri, "request context: maybe detected http version: {http_version:?}");
-
-        RequestContext {
-            http_version,
-            protocol,
-            authority,
-        }
-    }
-}
-
-impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
-    fn from((ctx, req): (&Context<State>, &Request<Body>)) -> Self {
+    fn try_from((ctx, req): (&Context<State>, &Request<Body>)) -> Result<Self, Self::Error> {
         let uri = req.uri();
 
         let protocol = protocol_from_uri_or_context(ctx, uri);
@@ -191,8 +65,12 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
             .or_else(|| {
                 uri.host()
                     .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
-            });
-        tracing::trace!(uri = %uri, "request context: maybe detected authority: {authority:?}");
+            })
+            .ok_or_else(|| {
+                OpaqueError::from_display("RequestContext: no authourity found in http::Request")
+            })?;
+
+        tracing::trace!(uri = %uri, "request context: detected authority: {authority}");
 
         let http_version = ctx
             .get::<Forwarded>()
@@ -208,12 +86,108 @@ impl<State, Body> From<(&Context<State>, &Request<Body>)> for RequestContext {
             .unwrap_or_else(|| req.version());
         tracing::trace!(uri = %uri, "request context: maybe detected http version: {http_version:?}");
 
-        RequestContext {
+        Ok(RequestContext {
             http_version,
             protocol,
             authority,
-        }
+        })
     }
+}
+
+impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
+    type Error = OpaqueError;
+
+    fn try_from((ctx, parts): (&Context<State>, &Parts)) -> Result<Self, Self::Error> {
+        let uri = &parts.uri;
+
+        let protocol = protocol_from_uri_or_context(ctx, uri);
+        tracing::trace!(
+            uri = %uri, "request context: detected protocol: {protocol} (scheme: {:?})",
+            uri.scheme()
+        );
+
+        let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
+        tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
+
+        let authority = ctx
+            .get::<Forwarded>()
+            .and_then(|f| {
+                f.client_host().map(|fauth| {
+                    let (host, port) = fauth.clone().into_parts();
+                    let port = port.unwrap_or(default_port);
+                    (host, port).into()
+                })
+            })
+            .or_else(|| {
+                parts
+                    .headers
+                    .get(crate::http::header::HOST)
+                    .and_then(|host| {
+                        host.try_into() // try to consume as Authority, otherwise as Host
+                            .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
+                            .ok()
+                    })
+            })
+            .or_else(|| {
+                uri.host()
+                    .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
+            })
+            .ok_or_else(|| {
+                OpaqueError::from_display(
+                    "RequestContext: no authourity found in http::request::Parts",
+                )
+            })?;
+
+        tracing::trace!(uri = %uri, "request context: detected authority: {authority}");
+
+        let http_version = ctx
+            .get::<Forwarded>()
+            .and_then(|f| {
+                f.client_version().map(|v| match v {
+                    crate::net::forwarded::ForwardedVersion::HTTP_09 => Version::HTTP_09,
+                    crate::net::forwarded::ForwardedVersion::HTTP_10 => Version::HTTP_10,
+                    crate::net::forwarded::ForwardedVersion::HTTP_11 => Version::HTTP_11,
+                    crate::net::forwarded::ForwardedVersion::HTTP_2 => Version::HTTP_2,
+                    crate::net::forwarded::ForwardedVersion::HTTP_3 => Version::HTTP_3,
+                })
+            })
+            .unwrap_or(parts.version);
+        tracing::trace!(uri = %uri, "request context: maybe detected http version: {http_version:?}");
+
+        Ok(RequestContext {
+            http_version,
+            protocol,
+            authority,
+        })
+    }
+}
+
+fn protocol_from_uri_or_context<State>(ctx: &Context<State>, uri: &Uri) -> Protocol {
+    ctx.get::<Forwarded>()
+        .and_then(|f| f.client_proto().map(|p| {
+            tracing::trace!(uri = %uri, "request context: detected protocol from forwarded client proto");
+            p.into()
+        }))
+        .or_else(|| uri.scheme().map(|s| {
+            tracing::trace!(uri = %uri, "request context: detected protocol from scheme");
+            s.into()
+        }))
+        .or_else(|| {
+            // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
+            // both the scheme and authority for the request, making us not detect
+            // it correctly as https protocol (port 443 by default). The presence of the client hello
+            // config does reveal this information to us which assumes that our tls terminators
+            // do set this information, otherwise we would never the less be in the blind.
+            // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
+            ctx.contains::<SecureTransport>().then(|| {
+                tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTPS (secure transport)");
+                Protocol::HTTPS
+            })
+        })
+        .unwrap_or_else(|| {
+            tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTP");
+            Protocol::HTTP
+        })
 }
 
 #[cfg(test)]
@@ -223,7 +197,6 @@ mod tests {
     use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
     use crate::service::Service;
     use crate::{http::layer::forwarded::GetForwardedHeadersLayer, service::ServiceBuilder};
-    use std::convert::Infallible;
 
     #[test]
     fn test_request_context_from_request() {
@@ -235,11 +208,11 @@ mod tests {
 
         let ctx = Context::default();
 
-        let req_ctx = RequestContext::from((&ctx, &req));
+        let req_ctx = RequestContext::try_from((&ctx, &req)).unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, Protocol::HTTP);
-        assert_eq!(req_ctx.authority.unwrap().to_string(), "example.com:8080");
+        assert_eq!(req_ctx.authority.to_string(), "example.com:8080");
     }
 
     #[test]
@@ -253,12 +226,12 @@ mod tests {
         let (parts, _) = req.into_parts();
 
         let ctx = Context::default();
-        let req_ctx = RequestContext::from((&ctx, &parts));
+        let req_ctx = RequestContext::try_from((&ctx, &parts)).unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, Protocol::HTTP);
         assert_eq!(
-            req_ctx.authority.unwrap(),
+            req_ctx.authority,
             Authority::try_from("example.com:8080").unwrap()
         );
     }
@@ -268,10 +241,10 @@ mod tests {
         let ctx = RequestContext {
             http_version: Version::HTTP_11,
             protocol: Protocol::HTTP,
-            authority: Some("example.com:8080".try_into().unwrap()),
+            authority: "example.com:8080".try_into().unwrap(),
         };
 
-        assert_eq!(ctx.authority.unwrap().to_string(), "example.com:8080");
+        assert_eq!(ctx.authority.to_string(), "example.com:8080");
     }
 
     #[tokio::test]
@@ -283,7 +256,7 @@ mod tests {
                 RequestContext {
                     http_version: Version::HTTP_11,
                     protocol: Protocol::HTTP,
-                    authority: Some("192.0.2.60:80".parse().unwrap()),
+                    authority: "192.0.2.60:80".parse().unwrap(),
                 },
             ),
             // ipv6
@@ -292,7 +265,7 @@ mod tests {
                 RequestContext {
                     http_version: Version::HTTP_11,
                     protocol: Protocol::HTTP,
-                    authority: Some("[2001:db8:cafe::17]:4711".parse().unwrap()),
+                    authority: "[2001:db8:cafe::17]:4711".parse().unwrap(),
                 },
             ),
             // multiple values in one header
@@ -301,7 +274,7 @@ mod tests {
                 RequestContext {
                     http_version: Version::HTTP_11,
                     protocol: Protocol::HTTP,
-                    authority: Some("192.0.2.60:80".parse().unwrap()),
+                    authority: "192.0.2.60:80".parse().unwrap(),
                 },
             ),
             // multiple header values
@@ -310,15 +283,17 @@ mod tests {
                 RequestContext {
                     http_version: Version::HTTP_11,
                     protocol: Protocol::HTTP,
-                    authority: Some("192.0.2.60:80".parse().unwrap()),
+                    authority: "192.0.2.60:80".parse().unwrap(),
                 },
             ),
         ] {
             let svc = ServiceBuilder::new()
                 .layer(GetForwardedHeadersLayer::forwarded())
                 .service_fn(|mut ctx: Context<()>, req: Request<()>| async move {
-                    let req_ctx = get_request_context!(ctx, req);
-                    Ok::<_, Infallible>(req_ctx.clone())
+                    ctx.get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| {
+                        (ctx, &req).try_into()
+                    })
+                    .cloned()
                 });
 
             let mut req_builder = Request::builder();
@@ -350,14 +325,13 @@ mod tests {
             NodeId::try_from("127.0.0.1:61234").unwrap(),
         )));
 
-        let req_ctx = get_request_context!(ctx, req);
+        let req_ctx: &mut RequestContext = ctx
+            .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
+            .unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, "http");
-        assert_eq!(
-            req_ctx.authority.as_ref().unwrap().to_string(),
-            "echo.ramaproxy.org:80"
-        );
+        assert_eq!(req_ctx.authority.to_string(), "echo.ramaproxy.org:80");
     }
 
     #[test]
@@ -377,13 +351,12 @@ mod tests {
         )));
         ctx.insert(SecureTransport::default());
 
-        let req_ctx = get_request_context!(ctx, req);
+        let req_ctx: &mut RequestContext = ctx
+            .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
+            .unwrap();
 
         assert_eq!(req_ctx.http_version, Version::HTTP_11);
         assert_eq!(req_ctx.protocol, "https");
-        assert_eq!(
-            req_ctx.authority.as_ref().unwrap().to_string(),
-            "echo.ramaproxy.org:443"
-        );
+        assert_eq!(req_ctx.authority.to_string(), "echo.ramaproxy.org:443");
     }
 }

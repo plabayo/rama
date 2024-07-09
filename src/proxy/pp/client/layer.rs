@@ -2,7 +2,8 @@ use std::{fmt, marker::PhantomData, net::IpAddr};
 
 use crate::{
     error::{BoxError, ErrorContext, OpaqueError},
-    http::{client::EstablishedClientConnection, headers::Forwarded, Request},
+    net::client::EstablishedClientConnection,
+    net::forwarded::Forwarded,
     net::stream::{SocketInfo, Stream},
     proxy::pp::protocol::{v1, v2},
     service::{Context, Layer, Service},
@@ -183,22 +184,22 @@ impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
     }
 }
 
-impl<S, P, State, Body, T> Service<State, Request<Body>> for HaProxyService<S, P, version::One>
+impl<S, P, State, Request, T> Service<State, Request> for HaProxyService<S, P, version::One>
 where
-    S: Service<State, Request<Body>, Response = EstablishedClientConnection<T, Body, State>>,
+    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
     S::Error: Into<BoxError>,
     P: Send + 'static,
     State: Send + Sync + 'static,
-    Body: Send + 'static,
+    Request: Send + 'static,
     T: Stream + Unpin,
 {
-    type Response = EstablishedClientConnection<T, Body, State>;
+    type Response = EstablishedClientConnection<T, State, Request>;
     type Error = BoxError;
 
     async fn serve(
         &self,
         ctx: Context<State>,
-        req: Request<Body>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { ctx, req, mut conn } =
             self.inner.serve(ctx, req).await.map_err(Into::into)?;
@@ -235,22 +236,22 @@ where
     }
 }
 
-impl<S, P, State, Body, T> Service<State, Request<Body>> for HaProxyService<S, P, version::Two>
+impl<S, P, State, Request, T> Service<State, Request> for HaProxyService<S, P, version::Two>
 where
-    S: Service<State, Request<Body>, Response = EstablishedClientConnection<T, Body, State>>,
+    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
     S::Error: Into<BoxError>,
     P: protocol::Protocol + Send + 'static,
     State: Send + Sync + 'static,
-    Body: Send + 'static,
+    Request: Send + 'static,
     T: Stream + Unpin,
 {
-    type Response = EstablishedClientConnection<T, Body, State>;
+    type Response = EstablishedClientConnection<T, State, Request>;
     type Error = BoxError;
 
     async fn serve(
         &self,
         ctx: Context<State>,
-        req: Request<Body>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { ctx, req, mut conn } =
             self.inner.serve(ctx, req).await.map_err(Into::into)?;
@@ -362,7 +363,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        http::client::ClientConnection,
+        net::client::ClientConnection,
         net::forwarded::{ForwardedElement, NodeId},
         service::ServiceBuilder,
     };
@@ -422,7 +423,7 @@ mod tests {
                         ),
                     })
                 });
-            svc.serve(input_ctx, Request::new(())).await.unwrap();
+            svc.serve(input_ctx, ()).await.unwrap();
         }
     }
 
@@ -490,7 +491,7 @@ mod tests {
                         ),
                     })
                 });
-            assert!(svc.serve(input_ctx, Request::new(())).await.is_err());
+            assert!(svc.serve(input_ctx, ()).await.is_err());
         }
     }
 
@@ -515,7 +516,7 @@ mod tests {
                         ),
                     })
                 });
-            assert!(svc.serve(input_ctx, Request::new(())).await.is_err());
+            assert!(svc.serve(input_ctx, ()).await.is_err());
         }
     }
 
@@ -559,7 +560,7 @@ mod tests {
                         ),
                     })
                 });
-            svc.serve(input_ctx, Request::new(())).await.unwrap();
+            svc.serve(input_ctx, ()).await.unwrap();
         }
     }
 
@@ -603,7 +604,7 @@ mod tests {
                         ),
                     })
                 });
-            svc.serve(input_ctx, Request::new(())).await.unwrap();
+            svc.serve(input_ctx, ()).await.unwrap();
         }
     }
 
@@ -652,7 +653,7 @@ mod tests {
                         ),
                     })
                 });
-            svc.serve(input_ctx, Request::new(())).await.unwrap();
+            svc.serve(input_ctx, ()).await.unwrap();
         }
     }
 
@@ -701,7 +702,7 @@ mod tests {
                         ),
                     })
                 });
-            svc.serve(input_ctx, Request::new(())).await.unwrap();
+            svc.serve(input_ctx, ()).await.unwrap();
         }
     }
 
@@ -771,10 +772,7 @@ mod tests {
                     })
                 },
             );
-            assert!(svc
-                .serve(input_ctx.clone(), Request::new(()))
-                .await
-                .is_err());
+            assert!(svc.serve(input_ctx.clone(), ()).await.is_err());
 
             // UDP
 
@@ -790,7 +788,7 @@ mod tests {
                     })
                 },
             );
-            assert!(svc.serve(input_ctx, Request::new(())).await.is_err());
+            assert!(svc.serve(input_ctx, ()).await.is_err());
         }
     }
 
@@ -817,10 +815,7 @@ mod tests {
                     })
                 },
             );
-            assert!(svc
-                .serve(input_ctx.clone(), Request::new(()))
-                .await
-                .is_err());
+            assert!(svc.serve(input_ctx.clone(), ()).await.is_err());
 
             // UDP
 
@@ -836,10 +831,7 @@ mod tests {
                     })
                 },
             );
-            assert!(svc
-                .serve(input_ctx.clone(), Request::new(()))
-                .await
-                .is_err());
+            assert!(svc.serve(input_ctx.clone(), ()).await.is_err());
         }
     }
 }

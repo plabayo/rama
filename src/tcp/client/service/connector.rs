@@ -1,10 +1,10 @@
 use crate::{
-    error::{ErrorContext, OpaqueError},
-    http::{
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    net::{
+        address::ProxyAddress,
         client::{ClientConnection, EstablishedClientConnection},
-        get_request_context, Request,
+        transport::TryRefIntoTransportContext,
     },
-    net::address::ProxyAddress,
     service::{Context, Service},
     tcp,
 };
@@ -35,18 +35,19 @@ impl Default for HttpConnector {
     }
 }
 
-impl<State, Body> Service<State, Request<Body>> for HttpConnector
+impl<State, Request> Service<State, Request> for HttpConnector
 where
     State: Send + Sync + 'static,
-    Body: Send + 'static,
+    Request: TryRefIntoTransportContext<State> + Send + 'static,
+    Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<TcpStream, Body, State>;
-    type Error = OpaqueError;
+    type Response = EstablishedClientConnection<TcpStream, State, Request>;
+    type Error = BoxError;
 
     async fn serve(
         &self,
         mut ctx: Context<State>,
-        req: Request<Body>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(proxy) = ctx.get::<ProxyAddress>() {
             let (stream, addr) = tcp::client::connect_trusted(&ctx, proxy.authority().clone())
@@ -59,21 +60,23 @@ where
             });
         }
 
-        let request_info = get_request_context!(ctx, req);
-        match request_info.authority.clone() {
-            Some(authority) => {
-                let (stream, addr) = tcp::client::connect(&ctx, authority)
-                    .await
-                    .context("tcp connector: connect to server")?;
-                Ok(EstablishedClientConnection {
-                    ctx,
-                    req,
-                    conn: ClientConnection::new(addr, stream),
-                })
-            }
-            None => Err(OpaqueError::from_display(
-                "tcp connector: missing authority in request ctx",
-            )),
-        }
+        let authority = ctx
+            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
+            .map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .context("tcp connecter: compute transport context to get authority")
+            })?
+            .authority
+            .clone();
+
+        let (stream, addr) = tcp::client::connect(&ctx, authority)
+            .await
+            .context("tcp connector: connect to server")?;
+
+        Ok(EstablishedClientConnection {
+            ctx,
+            req,
+            conn: ClientConnection::new(addr, stream),
+        })
     }
 }

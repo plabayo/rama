@@ -26,7 +26,6 @@
 use rama::{
     http::{
         client::HttpClient,
-        get_request_context,
         layer::{
             proxy_auth::ProxyAuthLayer,
             trace::TraceLayer,
@@ -171,11 +170,10 @@ async fn http_connect_accept<S>(
 where
     S: Send + Sync + 'static,
 {
-    let request_ctx = get_request_context!(ctx, req);
-    match &request_ctx.authority {
-        Some(authority) => tracing::info!("accept CONNECT to {authority}"),
-        None => {
-            tracing::error!("error extracting host");
+    match ctx.get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into()) {
+        Ok(request_ctx) => tracing::info!("accept CONNECT to {}", request_ctx.authority),
+        Err(err) => {
+            tracing::error!(err = %err, "error extracting authority");
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
@@ -191,8 +189,6 @@ where
         .get::<RequestContext>()
         .unwrap()
         .authority
-        .as_ref()
-        .unwrap()
         .to_string();
     tracing::info!("CONNECT to {}", authority);
     let mut stream = match tokio::net::TcpStream::connect(authority).await {

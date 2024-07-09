@@ -1,7 +1,7 @@
-use crate::error::{BoxError, ErrorExt};
-use crate::http::client::{ClientConnection, EstablishedClientConnection};
-use crate::http::{get_request_context, Request};
+use crate::error::{BoxError, ErrorExt, OpaqueError};
+use crate::net::client::{ClientConnection, EstablishedClientConnection};
 use crate::net::stream::Stream;
+use crate::net::transport::TryRefIntoTransportContext;
 use crate::service::{Context, Service};
 use crate::tls::rustls::dep::pki_types::ServerName;
 use crate::tls::rustls::dep::rustls::RootCertStore;
@@ -167,30 +167,44 @@ impl<S> HttpsConnector<S, ConnectorKindTunnel> {
     }
 }
 
-impl<S, State, Body, T> Service<State, Request<Body>> for HttpsConnector<S, ConnectorKindAuto>
+/// this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
+
+impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindAuto>
 where
-    S: Service<State, Request<Body>, Response = EstablishedClientConnection<T, Body, State>>,
+    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
     T: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
-    Body: Send + 'static,
+    Request: TryRefIntoTransportContext<State> + Send + 'static,
+    Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<T>, Body, State>;
+    type Response = EstablishedClientConnection<AutoTlsStream<T>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
         &self,
         ctx: Context<State>,
-        req: Request<Body>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { mut ctx, req, conn } =
             self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let (addr, stream) = conn.into_parts();
-        let request_ctx = get_request_context!(ctx, req);
 
-        if !request_ctx.protocol.is_secure() {
-            tracing::trace!(uri = %req.uri(), "HttpsConnector(auto): protocol not secure, return inner connection");
+        let transport_ctx = ctx
+            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
+            .map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .context("HttpsConnector(auto): compute transport context")
+            })?;
+
+        if !transport_ctx
+            .protocol
+            .as_ref()
+            .map(|p| p.is_secure())
+            .unwrap_or_default()
+        {
+            tracing::trace!(authority = %transport_ctx.authority, "HttpsConnector(auto): protocol not secure, return inner connection");
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
@@ -203,19 +217,13 @@ where
             });
         }
 
-        let host = match request_ctx.authority.as_ref() {
-            Some(authority) => authority.host().to_string(),
-            None => {
-                return Err("missing http host".into());
-            }
-        };
-        let domain = pki_types::ServerName::try_from(host)
-            .map_err(|err| err.context("invalid DNS Hostname (tls)"))?
+        let domain = pki_types::ServerName::try_from(transport_ctx.authority.host().to_string())
+            .map_err(|err| err.context("HttpsConnector(auto): invalid DNS Hostname (tls)"))?
             .to_owned();
 
         let stream = self.handshake(domain, stream).await?;
 
-        tracing::trace!(uri = %req.uri(), "HttpsConnector(auto): protocol secure, established tls connection");
+        tracing::trace!(authority = %transport_ctx.authority, "HttpsConnector(auto): protocol secure, established tls connection");
         Ok(EstablishedClientConnection {
             ctx,
             req,
@@ -229,57 +237,37 @@ where
     }
 }
 
-impl<S, State, Body, T> Service<State, Request<Body>> for HttpsConnector<S, ConnectorKindSecure>
+impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindSecure>
 where
-    S: Service<State, Request<Body>, Response = EstablishedClientConnection<T, Body, State>>,
+    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
     T: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
-    Body: Send + 'static,
+    Request: TryRefIntoTransportContext<State> + Send + 'static,
+    Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<TlsStream<T>, Body, State>;
+    type Response = EstablishedClientConnection<TlsStream<T>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
         &self,
         ctx: Context<State>,
-        req: Request<Body>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection {
-            mut ctx,
-            mut req,
-            conn,
-        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
-
-        tracing::trace!(uri = %req.uri(), "HttpsConnector(secure): attempt to secure inner connection");
+        let EstablishedClientConnection { mut ctx, req, conn } =
+            self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let (addr, stream) = conn.into_parts();
 
-        let request_ctx = get_request_context!(ctx, req);
-        let request_ctx = request_ctx.clone();
+        let transport_ctx = ctx
+            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
+            .map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .context("HttpsConnector(auto): compute transport context")
+            })?;
+        tracing::trace!(authority = %transport_ctx.authority, "HttpsConnector(secure): attempt to secure inner connection");
 
-        if let Some(new_scheme) =
-            if request_ctx.protocol.is_http() && !request_ctx.protocol.is_secure() {
-                Some(crate::http::dep::http::uri::Scheme::HTTPS)
-            } else if request_ctx.protocol.is_ws() && !request_ctx.protocol.is_secure() {
-                Some("wss".parse().unwrap())
-            } else {
-                None
-            }
-        {
-            let (mut parts, body) = req.into_parts();
-            let mut uri_parts = parts.uri.into_parts();
-            uri_parts.scheme = Some(new_scheme);
-            parts.uri = crate::http::dep::http::uri::Uri::from_parts(uri_parts).unwrap();
-            req = Request::from_parts(parts, body);
-        }
-
-        let host = match request_ctx.authority.as_ref() {
-            Some(authority) => authority.host().to_string(),
-            None => {
-                return Err("missing http host".into());
-            }
-        };
+        let host = transport_ctx.authority.host().to_string();
         let domain = pki_types::ServerName::try_from(host)
             .map_err(|err| err.context("invalid DNS Hostname (tls)"))?
             .to_owned();
@@ -294,21 +282,21 @@ where
     }
 }
 
-impl<S, State, Body, T> Service<State, Request<Body>> for HttpsConnector<S, ConnectorKindTunnel>
+impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindTunnel>
 where
-    S: Service<State, Request<Body>, Response = EstablishedClientConnection<T, Body, State>>,
+    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
     T: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
-    Body: Send + 'static,
+    Request: Send + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<T>, Body, State>;
+    type Response = EstablishedClientConnection<AutoTlsStream<T>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
         &self,
         ctx: Context<State>,
-        req: Request<Body>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection { ctx, req, conn } =
             self.inner.serve(ctx, req).await.map_err(Into::into)?;
@@ -320,7 +308,9 @@ where
                 .map_err(|err| err.context("invalid DNS Hostname (tls) for https tunnel"))?
                 .to_owned(),
             None => {
-                tracing::trace!(uri = %req.uri(), "HttpsConnector(tunnel): return inner connection: no Https tunnel is requested");
+                tracing::trace!(
+                    "HttpsConnector(tunnel): return inner connection: no Https tunnel is requested"
+                );
                 return Ok(EstablishedClientConnection {
                     ctx,
                     req,
@@ -336,7 +326,7 @@ where
 
         let stream = self.handshake(domain, stream).await?;
 
-        tracing::trace!(uri = %req.uri(), "HttpsConnector(tunnel): connection secured");
+        tracing::trace!("HttpsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection {
             ctx,
             req,

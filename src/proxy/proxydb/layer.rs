@@ -95,7 +95,8 @@
 //! ```
 
 use crate::{
-    http::{get_request_context, Request},
+    error::{BoxError, ErrorContext},
+    http::{Request, RequestContext},
     service::{Context, Layer, Service},
 };
 
@@ -132,65 +133,6 @@ pub enum ProxySelectMode {
     Required,
     /// The [`ProxyFilter`] is optional, and if not present, the provided fallback [`ProxyFilter`] is used.
     Fallback(ProxyFilter),
-}
-
-#[derive(Debug)]
-/// The error type for the [`ProxyDBService`],
-/// wrapping all errors that can happen in its lifetime.
-pub enum ProxySelectError<E1, E2> {
-    /// The [`ProxyFilter`] is missing in the [`Context`], while it is required ([`ProxySelectMode::Required`]).
-    MissingFilter,
-    /// An error happened while querying the [`ProxyDB`] for a [`Proxy`].
-    ///
-    /// Most common errors are I/O errors, not found errors (for the given [`ProxyFilter`]), or
-    /// a mismatch in the proxy returned and the current context. This error is in generally not recoverable,
-    /// as the proxy db is expected to handle recoverable errors itself.
-    ProxyDBError(E1),
-    /// An error happened while serving the inner [`Service`],
-    /// what this means is outside the scope of this layer.
-    ServiceError(E2),
-}
-
-impl<E1, E2> Clone for ProxySelectError<E1, E2>
-where
-    E1: Clone,
-    E2: Clone,
-{
-    fn clone(&self) -> Self {
-        match self {
-            Self::MissingFilter => Self::MissingFilter,
-            Self::ProxyDBError(e) => Self::ProxyDBError(e.clone()),
-            Self::ServiceError(e) => Self::ServiceError(e.clone()),
-        }
-    }
-}
-
-impl<E1, E2> std::fmt::Display for ProxySelectError<E1, E2>
-where
-    E1: std::fmt::Display,
-    E2: std::fmt::Display,
-{
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MissingFilter => write!(f, "Missing ProxyFilter in Context"),
-            Self::ProxyDBError(e) => write!(f, "ProxyDB Error: {}", e),
-            Self::ServiceError(e) => write!(f, "Service Error: {}", e),
-        }
-    }
-}
-
-impl<E1, E2> std::error::Error for ProxySelectError<E1, E2>
-where
-    E1: std::error::Error + 'static,
-    E2: std::error::Error + 'static,
-{
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            Self::MissingFilter => None,
-            Self::ProxyDBError(e) => Some(e),
-            Self::ServiceError(e) => Some(e),
-        }
-    }
 }
 
 impl<S, D, P> Clone for ProxyDBService<S, D, P>
@@ -244,14 +186,14 @@ impl<S, D, P> ProxyDBService<S, D, P> {
 impl<S, D, State, Body> Service<State, Request<Body>> for ProxyDBService<S, D>
 where
     S: Service<State, Request<Body>>,
-    S::Error: Send + Sync + 'static,
+    S::Error: Into<BoxError> + Send + 'static,
     D: ProxyDB,
-    D::Error: Send + Sync + 'static,
+    D::Error: Into<BoxError> + Send + 'static,
     State: Send + Sync + 'static,
     Body: Send + 'static,
 {
     type Response = S::Response;
-    type Error = ProxySelectError<D::Error, S::Error>;
+    type Error = BoxError;
 
     async fn serve(
         &self,
@@ -267,7 +209,7 @@ where
             ProxySelectMode::Required => Some(
                 ctx.get::<ProxyFilter>()
                     .cloned()
-                    .ok_or(ProxySelectError::MissingFilter)?,
+                    .context("missing proxy filter")?,
             ),
             ProxySelectMode::Fallback(ref filter) => {
                 ctx.get::<ProxyFilter>().cloned().or(Some(filter.clone()))
@@ -275,34 +217,32 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let req_ctx = get_request_context!(ctx, req);
+            let req_ctx: &mut RequestContext =
+                ctx.get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())?;
             let proxy = self
                 .db
                 .get_proxy(req_ctx.clone(), filter)
                 .await
-                .map_err(ProxySelectError::ProxyDBError)?;
+                .map_err(Into::into)?;
             ctx.insert(proxy);
         }
 
-        self.inner
-            .serve(ctx, req)
-            .await
-            .map_err(ProxySelectError::ServiceError)
+        self.inner.serve(ctx, req).await.map_err(Into::into)
     }
 }
 
 impl<S, D, P, State, Body> Service<State, Request<Body>> for ProxyDBService<S, D, P>
 where
     S: Service<State, Request<Body>>,
-    S::Error: Send + Sync + 'static,
+    S::Error: Into<BoxError> + Send + Sync + 'static,
     D: ProxyDB,
-    D::Error: Send + Sync + 'static,
+    D::Error: Into<BoxError> + Send + Sync + 'static,
     P: Fn(&Proxy) -> bool + Clone + Send + Sync + 'static,
     State: Send + Sync + 'static,
     Body: Send + 'static,
 {
     type Response = S::Response;
-    type Error = ProxySelectError<D::Error, S::Error>;
+    type Error = BoxError;
 
     async fn serve(
         &self,
@@ -315,7 +255,7 @@ where
             ProxySelectMode::Required => Some(
                 ctx.get::<ProxyFilter>()
                     .cloned()
-                    .ok_or(ProxySelectError::MissingFilter)?,
+                    .context("missing proxy filter")?,
             ),
             ProxySelectMode::Fallback(ref filter) => {
                 ctx.get::<ProxyFilter>().cloned().or(Some(filter.clone()))
@@ -323,19 +263,17 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let req_ctx = get_request_context!(ctx, req);
+            let req_ctx: &mut RequestContext =
+                ctx.get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())?;
             let proxy = self
                 .db
                 .get_proxy_if(req_ctx.clone(), filter, self.predicate.clone())
                 .await
-                .map_err(ProxySelectError::ProxyDBError)?;
+                .map_err(Into::into)?;
             ctx.insert(proxy);
         }
 
-        self.inner
-            .serve(ctx, req)
-            .await
-            .map_err(ProxySelectError::ServiceError)
+        self.inner.serve(ctx, req).await.map_err(Into::into)
     }
 }
 
@@ -415,7 +353,7 @@ mod tests {
     use crate::{
         http::{Body, Version},
         net::{address::ProxyAddress, asn::Asn},
-        proxy::{MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader, StringFilter},
+        proxy::{MemoryProxyDB, ProxyCsvRowReader, StringFilter},
         service::ServiceBuilder,
         utils::str::NonEmptyString,
     };
@@ -683,7 +621,7 @@ mod tests {
         for (filter, expected, req) in [
             (
                 None,
-                Err(ProxySelectError::MissingFilter::<MemoryProxyDBQueryError, Infallible>),
+                None,
                 Request::builder()
                     .version(Version::HTTP_11)
                     .method("GET")
@@ -698,7 +636,7 @@ mod tests {
                     residential: Some(true),
                     ..Default::default()
                 }),
-                Ok("2593294918".to_owned()),
+                Some("2593294918".to_owned()),
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -711,9 +649,7 @@ mod tests {
                     id: Some(NonEmptyString::from_static("FooBar")),
                     ..Default::default()
                 }),
-                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
-                    MemoryProxyDBQueryError::not_found(),
-                )),
+                None,
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -729,9 +665,7 @@ mod tests {
                     residential: Some(true),
                     ..Default::default()
                 }),
-                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
-                    MemoryProxyDBQueryError::mismatch(),
-                )),
+                None,
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -747,16 +681,12 @@ mod tests {
 
             let proxy_result = service.serve(ctx, req).await;
             match expected {
-                Ok(expected_id) => {
+                Some(expected_id) => {
                     assert_eq!(proxy_result.unwrap().id, expected_id);
                 }
-                Err(expected_err) => match (proxy_result.unwrap_err(), expected_err) {
-                    (ProxySelectError::MissingFilter, ProxySelectError::MissingFilter) => {}
-                    (ProxySelectError::ProxyDBError(a), ProxySelectError::ProxyDBError(b)) => {
-                        assert_eq!(a.kind(), b.kind())
-                    }
-                    (err, _) => panic!("Expected MissingFilter error: {:?}", err),
-                },
+                None => {
+                    assert!(proxy_result.is_err());
+                }
             }
         }
     }
@@ -778,7 +708,7 @@ mod tests {
         for (filter, expected, req) in [
             (
                 None,
-                Err(ProxySelectError::MissingFilter::<MemoryProxyDBQueryError, Infallible>),
+                None,
                 Request::builder()
                     .version(Version::HTTP_11)
                     .method("GET")
@@ -793,7 +723,7 @@ mod tests {
                     residential: Some(true),
                     ..Default::default()
                 }),
-                Ok("2593294918".to_owned()),
+                Some("2593294918".to_owned()),
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -806,9 +736,7 @@ mod tests {
                     id: Some(NonEmptyString::from_static("FooBar")),
                     ..Default::default()
                 }),
-                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
-                    MemoryProxyDBQueryError::not_found(),
-                )),
+                None,
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -824,9 +752,7 @@ mod tests {
                     residential: Some(true),
                     ..Default::default()
                 }),
-                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
-                    MemoryProxyDBQueryError::mismatch(),
-                )),
+                None,
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -840,9 +766,7 @@ mod tests {
                     id: Some(NonEmptyString::from_static("1316455915")),
                     ..Default::default()
                 }),
-                Err(ProxySelectError::ProxyDBError::<_, Infallible>(
-                    MemoryProxyDBQueryError::mismatch(),
-                )),
+                None,
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -858,16 +782,12 @@ mod tests {
 
             let proxy_result = service.serve(ctx, req).await;
             match expected {
-                Ok(expected_id) => {
+                Some(expected_id) => {
                     assert_eq!(proxy_result.unwrap().id, expected_id);
                 }
-                Err(expected_err) => match (proxy_result.unwrap_err(), expected_err) {
-                    (ProxySelectError::MissingFilter, ProxySelectError::MissingFilter) => {}
-                    (ProxySelectError::ProxyDBError(a), ProxySelectError::ProxyDBError(b)) => {
-                        assert_eq!(a.kind(), b.kind())
-                    }
-                    (err, _) => panic!("Expected MissingFilter error: {:?}", err),
-                },
+                None => {
+                    assert!(proxy_result.is_err());
+                }
             }
         }
     }
