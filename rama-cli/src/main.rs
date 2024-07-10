@@ -45,7 +45,7 @@ use clap::{Parser, Subcommand};
 use rama::error::BoxError;
 
 pub mod cmd;
-use cmd::{echo, http, ip, proxy};
+use cmd::{echo, http, ip, probe, proxy};
 
 pub mod error;
 
@@ -64,6 +64,7 @@ enum CliCommands {
     Echo(echo::CliCommandEcho),
     Http(http::CliCommandHttp),
     Proxy(proxy::CliCommandProxy),
+    Probe(probe::CliCommandProbe),
     Ip(ip::CliCommandIp),
 }
 
@@ -75,6 +76,7 @@ async fn main() -> Result<(), BoxError> {
     match match cli.cmds {
         CliCommands::Echo(cfg) => echo::run(cfg).await,
         CliCommands::Http(cfg) => http::run(cfg).await,
+        CliCommands::Probe(cfg) => probe::run(cfg).await,
         CliCommands::Proxy(cfg) => proxy::run(cfg).await,
         CliCommands::Ip(cfg) => ip::run(cfg).await,
     } {
