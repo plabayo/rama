@@ -62,10 +62,24 @@ impl From<(Ipv4Addr, u16)> for Authority {
     }
 }
 
+impl From<([u8; 4], u16)> for Authority {
+    #[inline]
+    fn from((ip, port): ([u8; 4], u16)) -> Self {
+        (Host::Address(IpAddr::V4(ip.into())), port).into()
+    }
+}
+
 impl From<(Ipv6Addr, u16)> for Authority {
     #[inline]
     fn from((ip, port): (Ipv6Addr, u16)) -> Self {
         (Host::Address(IpAddr::V6(ip)), port).into()
+    }
+}
+
+impl From<([u8; 16], u16)> for Authority {
+    #[inline]
+    fn from((ip, port): ([u8; 16], u16)) -> Self {
+        (Host::Address(IpAddr::V6(ip.into())), port).into()
     }
 }
 

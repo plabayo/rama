@@ -8,6 +8,11 @@
 //! decrypts the TLS and forwards the plain transport stream to another service.
 //! You can learn more about this kind of proxy in [the rama book](https://ramaproxy.org/book/) at the [TLS Termination Proxy](https://ramaproxy.org/book/proxies/tls.html) section.
 //!
+//! This example also demonstrates the full HaProxy (v2, tcp) protocol usage,
+//! should you ever need it. We expect that mostly you will need it from a service POV,
+//! in case you host your rama-driven proxy on a cloud provider such as fly.io. Such
+//! providers set you behind a cloud provider, so the only way to get the client original IP is using something like this.
+//!
 //! # Run the example
 //!
 //! ```sh
@@ -20,29 +25,52 @@
 //!
 //! ```sh
 //! curl -v https://127.0.0.1:62800
+//! ```
+//!
+//! The above will fail, due to not being haproxy encoded, but also because it is not a tls service...
+//!
+//! This one will work however:
+//!
+//! ```sh
 //! curl -k -v https://127.0.0.1:63800
 //! ```
 //!
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
 
-use pki_types::CertificateDer;
 // these dependencies are re-exported by rama for your convenience,
 // as to make it easy to use them and ensure that the versions remain compatible
 // (given most do not have a stable release yet)
-use rama::tls::rustls::dep::{pki_types::PrivatePkcs8KeyDer, rustls::ServerConfig};
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    service::ServiceBuilder,
-    tcp::{client::service::Forwarder, server::TcpListener},
-    tls::rustls::server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
+    net::{
+        forwarded::Forwarded,
+        stream::{SocketInfo, Stream},
+    },
+    proxy::pp::{
+        client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
+    },
+    service::{layer::ConsumeErrLayer, Context, ServiceBuilder},
+    tcp::{
+        client::service::{Forwarder, HttpConnector},
+        server::TcpListener,
+    },
+    tls::{
+        dep::rcgen::KeyPair,
+        rustls::{
+            dep::{
+                pki_types::{CertificateDer, PrivatePkcs8KeyDer},
+                rustls::ServerConfig,
+            },
+            server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
+        },
+    },
     utils::graceful::Shutdown,
 };
-use rcgen::KeyPair;
 
 // everything else is provided by the standard library, community crates or tokio
-use std::time::Duration;
-use tokio::{io::AsyncWriteExt, net::TcpStream};
+use std::{convert::Infallible, time::Duration};
+use tokio::io::AsyncWriteExt;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -116,7 +144,14 @@ async fn main() {
                 tls_server_config,
                 tls_client_config_handler,
             ))
-            .service(Forwarder::target("127.0.0.1:62800".parse().unwrap()));
+            .service(
+                Forwarder::new(([127, 0, 0, 1], 62800)).connector(
+                    ServiceBuilder::new()
+                        // ha proxy protocol used to fowarded the client original IP
+                        .layer(HaProxyClientLayer::tcp())
+                        .service(HttpConnector::new()),
+                ),
+            );
 
         TcpListener::bind("127.0.0.1:63800")
             .await
@@ -127,22 +162,15 @@ async fn main() {
 
     // create http server
     shutdown.spawn_task_fn(|guard| async {
+        let tcp_service = ServiceBuilder::new()
+            .layer(ConsumeErrLayer::default())
+            .layer(HaProxyServerLayer::new())
+            .service_fn(internal_tcp_service_fn);
+
         TcpListener::bind("127.0.0.1:62800")
             .await
             .expect("bind TCP Listener: http")
-            .serve_fn_graceful(guard, |mut stream: TcpStream| async move {
-                stream
-                    .write_all(
-                        &b"HTTP/1.0 200 ok\r\n\
-                    Connection: close\r\n\
-                    Content-length: 12\r\n\
-                    \r\n\
-                    Hello world!"[..],
-                    )
-                    .await
-                    .expect("write to stream");
-                Ok::<_, std::convert::Infallible>(())
-            })
+            .serve_graceful(guard, tcp_service)
             .await;
     });
 
@@ -150,4 +178,39 @@ async fn main() {
         .shutdown_with_limit(Duration::from_secs(30))
         .await
         .expect("graceful shutdown");
+}
+
+async fn internal_tcp_service_fn<S>(ctx: Context<()>, mut stream: S) -> Result<(), Infallible>
+where
+    S: Stream + Unpin,
+{
+    // REMARK: builds on the assumption that we are using the haproxy protocol
+    let client_addr = ctx
+        .get::<Forwarded>()
+        .unwrap()
+        .client_socket_addr()
+        .unwrap();
+    // REMARK: builds on the assumption that rama's TCP servoce sets this for you :)
+    let proxy_addr = ctx.get::<SocketInfo>().unwrap().peer_addr();
+
+    // create the minmal http response
+    let payload = format!(
+        "hello client {client_addr}, you were served by tls terminator proxy {proxy_addr}\r\n"
+    );
+    let response = format!(
+        "HTTP/1.0 200 ok\r\n\
+                            Connection: close\r\n\
+                            Content-length: {}\r\n\
+                            \r\n\
+                            {}",
+        payload.len(),
+        payload
+    );
+
+    stream
+        .write_all(response.as_bytes())
+        .await
+        .expect("write to stream");
+
+    Ok(())
 }

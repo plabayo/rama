@@ -2,7 +2,7 @@
 
 mod forward;
 #[doc(inline)]
-pub use forward::{ForwardAddress, Forwarder};
+pub use forward::{ForwardAuthority, Forwarder};
 
 mod connector;
 #[doc(inline)]
