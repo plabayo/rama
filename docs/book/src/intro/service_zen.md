@@ -81,6 +81,8 @@ Speaking about `Connectors`, those are a nice example of a type of [`Service`][s
 [`Extension`]: https://ramaproxy.org/docs/rama/service/context/struct.Extensions.html
 [`Context`] https://ramaproxy.org/docs/rama/service/context/struct.Context.html
 
+[`ProxyAddress`]: https://ramaproxy.org/docs/rama/net/address/struct.ProxyAddress.html
+
 [email]: mailto:glen@plabayo.tech
 [gh-issue]: https://github.com/plabayo/rama/issues/new
 [discord]: https://discord.gg/29EetaSYCD
