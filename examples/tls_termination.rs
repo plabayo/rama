@@ -147,7 +147,7 @@ async fn main() {
             .service(
                 Forwarder::new(([127, 0, 0, 1], 62800)).connector(
                     ServiceBuilder::new()
-                        // ha proxy protocol used to fowarded the client original IP
+                        // ha proxy protocol used to forwarded the client original IP
                         .layer(HaProxyClientLayer::tcp())
                         .service(HttpConnector::new()),
                 ),
@@ -190,10 +190,10 @@ where
         .unwrap()
         .client_socket_addr()
         .unwrap();
-    // REMARK: builds on the assumption that rama's TCP servoce sets this for you :)
+    // REMARK: builds on the assumption that rama's TCP service sets this for you :)
     let proxy_addr = ctx.get::<SocketInfo>().unwrap().peer_addr();
 
-    // create the minmal http response
+    // create the minimal http response
     let payload = format!(
         "hello client {client_addr}, you were served by tls terminator proxy {proxy_addr}\r\n"
     );

@@ -76,7 +76,7 @@ impl<State> TryFrom<(&Context<State>, &crate::http::dep::http::request::Parts)>
 
 /// Utility trait to support trait bounds where you wish
 /// to turn combined types into a [`TransportContext`],
-/// not expressable with [`Into`].
+/// not expressible with [`Into`].
 ///
 /// e.g. `&Request: Into<TransportContext>` would not work if it needs also [`Context`] and be a ref.
 pub trait TryRefIntoTransportContext<State> {
