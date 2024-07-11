@@ -92,7 +92,12 @@ where
         // in case the provider gave us a proxy info, we insert it into the context
         if let Some(address) = &address {
             ctx.insert(address.clone());
-            if address.protocol.is_secure() {
+            if address
+                .protocol
+                .as_ref()
+                .map(|p| p.is_secure())
+                .unwrap_or_default()
+            {
                 tracing::trace!(uri = %req.uri(), "http proxy connector: preparing proxy connection for tls tunnel");
                 ctx.insert(HttpsTunnel {
                     server_name: address.authority.host().to_string(),

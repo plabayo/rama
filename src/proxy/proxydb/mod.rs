@@ -7,7 +7,6 @@ use crate::{
 };
 use serde::Deserialize;
 use std::future::Future;
-use venndb::Any;
 
 mod internal;
 pub use internal::{Proxy, ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind};
@@ -81,7 +80,7 @@ pub struct ProxyFilter {
 
 /// The trait to implement to provide a proxy database to other facilities,
 /// such as connection pools, to provide a proxy based on the given
-/// [`RequestContext`] and [`ProxyFilter`].
+/// [`TransportContext`] and [`ProxyFilter`].
 pub trait ProxyDB: Send + Sync + 'static {
     /// The error type that can be returned by the proxy database
     ///
@@ -98,7 +97,7 @@ pub trait ProxyDB: Send + Sync + 'static {
         predicate: impl ProxyQueryPredicate,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
 
-    /// Get a [`Proxy`] based on the given [`RequestContext`] and [`ProxyFilter`],
+    /// Get a [`Proxy`] based on the given [`TransportContext`] and [`ProxyFilter`],
     /// or return an error in case no [`Proxy`] could be returned.
     fn get_proxy(
         &self,
@@ -283,7 +282,7 @@ impl ProxyDB for MemoryProxyDB {
                 None => Err(MemoryProxyDBQueryError::not_found()),
                 Some(proxy) => {
                     if proxy.is_match(&ctx, &filter) && predicate.execute(proxy) {
-                        Ok(combine_proxy_filter(proxy, filter))
+                        Ok(proxy.clone())
                     } else {
                         Err(MemoryProxyDBQueryError::mismatch())
                     }
@@ -297,57 +296,8 @@ impl ProxyDB for MemoryProxyDB {
                     .map(|result| result.any())
                 {
                     None => Err(MemoryProxyDBQueryError::not_found()),
-                    Some(proxy) => Ok(combine_proxy_filter(proxy, filter)),
+                    Some(proxy) => Ok(proxy.clone()),
                 }
-            }
-        }
-    }
-}
-
-fn combine_proxy_filter(proxy: &Proxy, filter: ProxyFilter) -> Proxy {
-    Proxy {
-        id: proxy.id.clone(),
-        address: proxy.address.clone(),
-        tcp: proxy.tcp,
-        udp: proxy.udp,
-        http: proxy.http,
-        socks5: proxy.socks5,
-        datacenter: proxy.datacenter,
-        residential: proxy.residential,
-        mobile: proxy.mobile,
-        pool_id: use_preferred_multi_any_filter(filter.pool_id, &proxy.pool_id),
-        continent: use_preferred_multi_any_filter(filter.continent, &proxy.continent),
-        country: use_preferred_multi_any_filter(filter.country, &proxy.country),
-        state: use_preferred_multi_any_filter(filter.state, &proxy.state),
-        city: use_preferred_multi_any_filter(filter.city, &proxy.city),
-        carrier: use_preferred_multi_any_filter(filter.carrier, &proxy.carrier),
-        asn: use_preferred_multi_any_filter(filter.asn, &proxy.asn),
-    }
-}
-
-/// - In case we only have a single non-any filter, we use that (no cloning needed)
-/// - In case we have no filters or the proxy value is any, we use the filter value (cloning required)
-/// - If multiple filters are defined but the proxy value is any we returned first filter, assuming it is the most important one
-fn use_preferred_multi_any_filter<T: Any + Clone>(
-    filter: Option<Vec<T>>,
-    returned_value: &Option<T>,
-) -> Option<T> {
-    let mut filter_values = filter.unwrap_or_default();
-    match filter_values.len() {
-        0 => returned_value.clone(),
-        1 => match filter_values.pop() {
-            Some(value) if !value.is_any() => Some(value),
-            _ => returned_value.clone(),
-        },
-        _ => {
-            if returned_value
-                .as_ref()
-                .map(|v| v.is_any())
-                .unwrap_or_default()
-            {
-                filter_values.pop()
-            } else {
-                returned_value.clone()
             }
         }
     }
@@ -857,7 +807,9 @@ mod tests {
             tcp: true,
             udp: true,
             http: true,
+            https: true,
             socks5: true,
+            socks5h: true,
             datacenter: true,
             residential: true,
             mobile: true,
@@ -947,7 +899,9 @@ mod tests {
             tcp: true,
             udp: true,
             http: true,
+            https: true,
             socks5: true,
+            socks5h: true,
             datacenter: true,
             residential: true,
             mobile: true,
@@ -1030,7 +984,9 @@ mod tests {
                 tcp: true,
                 udp: true,
                 http: true,
+                https: true,
                 socks5: true,
+                socks5h: true,
                 datacenter: true,
                 residential: true,
                 mobile: true,
@@ -1048,7 +1004,9 @@ mod tests {
                 tcp: true,
                 udp: true,
                 http: true,
+                https: true,
                 socks5: true,
+                socks5h: true,
                 datacenter: true,
                 residential: true,
                 mobile: true,
@@ -1066,7 +1024,9 @@ mod tests {
                 tcp: true,
                 udp: true,
                 http: true,
+                https: true,
                 socks5: true,
+                socks5h: true,
                 datacenter: true,
                 residential: true,
                 mobile: true,
@@ -1084,7 +1044,9 @@ mod tests {
                 tcp: true,
                 udp: true,
                 http: true,
+                https: true,
                 socks5: true,
+                socks5h: true,
                 datacenter: true,
                 residential: true,
                 mobile: true,

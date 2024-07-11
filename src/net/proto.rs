@@ -324,7 +324,7 @@ impl std::fmt::Display for Protocol {
 
 pub(crate) fn try_to_extract_protocol_from_uri_scheme(
     s: &[u8],
-) -> Result<(Protocol, usize), OpaqueError> {
+) -> Result<(Option<Protocol>, usize), OpaqueError> {
     if s.is_empty() {
         return Err(OpaqueError::from_display("empty uri contains no scheme"));
     }
@@ -348,11 +348,11 @@ pub(crate) fn try_to_extract_protocol_from_uri_scheme(
             let protocol = str
                 .try_into()
                 .context("parse scheme utf-8 str as protocol")?;
-            return Ok((protocol, i + 3));
+            return Ok((Some(protocol), i + 3));
         }
     }
 
-    Ok((Protocol::HTTP, 0))
+    Ok((None, 0))
 }
 
 #[inline]
@@ -461,17 +461,20 @@ mod tests {
     fn test_try_to_extract_protocol_from_uri_scheme() {
         for (s, expected) in [
             ("", None),
-            ("http://example.com", Some((Protocol::HTTP, 7))),
-            ("https://example.com", Some((Protocol::HTTPS, 8))),
-            ("ws://example.com", Some((Protocol::WS, 5))),
-            ("wss://example.com", Some((Protocol::WSS, 6))),
-            ("socks5://example.com", Some((Protocol::SOCKS5, 9))),
-            ("socks5h://example.com", Some((Protocol::SOCKS5H, 10))),
+            ("http://example.com", Some((Some(Protocol::HTTP), 7))),
+            ("https://example.com", Some((Some(Protocol::HTTPS), 8))),
+            ("ws://example.com", Some((Some(Protocol::WS), 5))),
+            ("wss://example.com", Some((Some(Protocol::WSS), 6))),
+            ("socks5://example.com", Some((Some(Protocol::SOCKS5), 9))),
+            ("socks5h://example.com", Some((Some(Protocol::SOCKS5H), 10))),
             (
                 "custom://example.com",
-                Some((Protocol::from_static("custom"), 9)),
+                Some((Some(Protocol::from_static("custom")), 9)),
             ),
             (" http://example.com", None),
+            ("example.com", Some((None, 0))),
+            ("127.0.0.1", Some((None, 0))),
+            ("127.0.0.1:8080", Some((None, 0))),
             ("longlonglongwaytoolongforsomethingusefulorvaliddontyouthinkmydearreader://example.com", None),
         ] {
             let result = try_to_extract_protocol_from_uri_scheme(s.as_bytes());
