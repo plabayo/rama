@@ -92,10 +92,15 @@ where
         // in case the provider gave us a proxy info, we insert it into the context
         if let Some(address) = &address {
             ctx.insert(address.clone());
-            if address.protocol().is_secure() {
+            if address
+                .protocol
+                .as_ref()
+                .map(|p| p.is_secure())
+                .unwrap_or_default()
+            {
                 tracing::trace!(uri = %req.uri(), "http proxy connector: preparing proxy connection for tls tunnel");
                 ctx.insert(HttpsTunnel {
-                    server_name: address.authority().host().to_string(),
+                    server_name: address.authority.host().to_string(),
                 });
             }
         }
@@ -148,7 +153,7 @@ where
         if !protocol.is_secure() {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
-            if let Some(credential) = address.credential().cloned() {
+            if let Some(credential) = address.credential.clone() {
                 match credential {
                     ProxyCredential::Basic(basic) => {
                         tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: inserted proxy Basic credentials into plain-text (http) request");
@@ -169,7 +174,7 @@ where
         }
 
         let mut connector = HttpProxyConnector::new(authority);
-        if let Some(credential) = address.credential().cloned() {
+        if let Some(credential) = address.credential.clone() {
             match credential {
                 ProxyCredential::Basic(basic) => {
                     connector.with_typed_header(ProxyAuthorization(basic));

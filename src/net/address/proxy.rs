@@ -8,54 +8,14 @@ use std::{fmt::Display, str::FromStr};
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Address of a proxy that can be connected to.
 pub struct ProxyAddress {
-    protocol: Protocol,
-    authority: Authority,
-    credential: Option<ProxyCredential>,
-}
+    /// [`Protocol`] used by the proxy.
+    pub protocol: Option<Protocol>,
 
-impl ProxyAddress {
-    /// Creates a new [`ProxyAddress`] with the given [`Protocol`], [`Authority`], and optional [`ProxyCredential`].
-    pub fn new(
-        protocol: Protocol,
-        authority: Authority,
-        credential: Option<ProxyCredential>,
-    ) -> Self {
-        Self {
-            protocol,
-            authority,
-            credential,
-        }
-    }
+    /// [`Authority`] of the proxy.
+    pub authority: Authority,
 
-    /// Returns the protocol of this [`ProxyAddress`].
-    pub fn protocol(&self) -> &Protocol {
-        &self.protocol
-    }
-
-    /// Overwrites the [`Protocol`] of this [`ProxyAddress`].
-    pub fn with_protocol(&mut self, proto: Protocol) {
-        self.protocol = proto;
-    }
-
-    /// Returns the [`Authority`] of this [`ProxyAddress`].
-    pub fn authority(&self) -> &Authority {
-        &self.authority
-    }
-
-    /// Overwrites the [`Authority`] of this [`ProxyAddress`].
-    pub fn with_authority(&mut self, authority: Authority) {
-        self.authority = authority;
-    }
-
-    /// Returns the [`ProxyCredential`] of this [`ProxyAddress`].
-    pub fn credential(&self) -> Option<&ProxyCredential> {
-        self.credential.as_ref()
-    }
-
-    /// Overwrites the [`ProxyCredential`] of this [`ProxyAddress`].
-    pub fn with_credential(&mut self, credential: ProxyCredential) {
-        self.credential = Some(credential);
-    }
+    /// [`ProxyCredential`] of the proxy.
+    pub credential: Option<ProxyCredential>,
 }
 
 impl TryFrom<&str> for ProxyAddress {
@@ -80,19 +40,41 @@ impl TryFrom<&str> for ProxyAddress {
                 let authority: Authority = slice[i + 1..]
                     .try_into()
                     .or_else(|_| {
-                        Host::try_from(&slice[i + 1..]).map(|h| (h, protocol.default_port()).into())
+                        Host::try_from(&slice[i + 1..]).map(|h| {
+                            (
+                                h,
+                                protocol.as_ref().unwrap_or(&Protocol::HTTP).default_port(),
+                            )
+                                .into()
+                        })
                     })
                     .context("parse proxy authority from address")?;
 
-                return Ok(ProxyAddress::new(protocol, authority, Some(credential)));
+                return Ok(ProxyAddress {
+                    protocol,
+                    authority,
+                    credential: Some(credential),
+                });
             }
         }
 
         let authority: Authority = slice
             .try_into()
-            .or_else(|_| Host::try_from(slice).map(|h| (h, protocol.default_port()).into()))
+            .or_else(|_| {
+                Host::try_from(slice).map(|h| {
+                    (
+                        h,
+                        protocol.as_ref().unwrap_or(&Protocol::HTTP).default_port(),
+                    )
+                        .into()
+                })
+            })
             .context("parse proxy authority from address")?;
-        Ok(ProxyAddress::new(protocol, authority, None))
+        Ok(ProxyAddress {
+            protocol,
+            authority,
+            credential: None,
+        })
     }
 }
 
@@ -114,7 +96,9 @@ impl FromStr for ProxyAddress {
 
 impl Display for ProxyAddress {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}://", self.protocol.as_str())?;
+        if let Some(protocol) = &self.protocol {
+            write!(f, "{}://", protocol.as_str())?;
+        }
         if let Some(credential) = &self.credential {
             write!(f, "{}@", credential.as_clear_string())?;
         }
@@ -151,17 +135,82 @@ mod tests {
     };
 
     #[test]
+    fn test_valid_proxy() {
+        let addr: ProxyAddress = "127.0.0.1:8080".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress {
+                protocol: None,
+                authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
+                credential: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_valid_domain_proxy() {
+        let addr: ProxyAddress = "proxy.example.com".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress {
+                protocol: None,
+                authority: Authority::new(Host::Name("proxy.example.com".parse().unwrap()), 80),
+                credential: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_valid_proxy_with_credential() {
+        let addr: ProxyAddress = "foo:bar@127.0.0.1:8080".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress {
+                protocol: None,
+                authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
+                credential: Some(Basic::new("foo", "bar").into()),
+            }
+        );
+    }
+
+    #[test]
     fn test_valid_http_proxy() {
+        let addr: ProxyAddress = "http://127.0.0.1:8080".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress {
+                protocol: Some(Protocol::HTTP),
+                authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
+                credential: None,
+            }
+        );
+    }
+
+    #[test]
+    fn test_valid_http_proxy_with_credential() {
+        let addr: ProxyAddress = "http://foo:bar@127.0.0.1:8080".try_into().unwrap();
+        assert_eq!(
+            addr,
+            ProxyAddress {
+                protocol: Some(Protocol::HTTP),
+                authority: Authority::new(Host::Address("127.0.0.1".parse().unwrap()), 8080),
+                credential: Some(Basic::new("foo", "bar").into()),
+            }
+        );
+    }
+
+    #[test]
+    fn test_valid_https_proxy() {
         let addr: ProxyAddress = "https://foo-cc-be:baz@my.proxy.io.:9999"
             .try_into()
             .unwrap();
         assert_eq!(
             addr,
-            ProxyAddress::new(
-                Protocol::HTTPS,
-                Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), 9999),
-                Some(Basic::new("foo-cc-be", "baz").into()),
-            )
+            ProxyAddress {
+                protocol: Some(Protocol::HTTPS),
+                authority: Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), 9999),
+                credential: Some(Basic::new("foo-cc-be", "baz").into()),
+            }
         );
     }
 
@@ -170,11 +219,11 @@ mod tests {
         let addr: ProxyAddress = "socks5h://foo@[::1]:60000".try_into().unwrap();
         assert_eq!(
             addr,
-            ProxyAddress::new(
-                Protocol::SOCKS5H,
-                Authority::new(Host::Address("::1".parse().unwrap()), 60000),
-                Some(Bearer::try_from_clear_str("foo").unwrap().into()),
-            )
+            ProxyAddress {
+                protocol: Some(Protocol::SOCKS5H),
+                authority: Authority::new(Host::Address("::1".parse().unwrap()), 60000),
+                credential: Some(Bearer::try_from_clear_str("foo").unwrap().into()),
+            }
         );
     }
 
@@ -218,21 +267,24 @@ mod tests {
             };
             let out = addr.to_string();
             let mut s = s.to_owned();
-            if !s.contains("://") {
-                s = format!("http://{s}");
-            }
             if !s.ends_with(":8080") {
                 if s.contains("::1") {
                     let mut it = s.split("://");
-                    let scheme = it.next().unwrap();
-                    let host = it.next().unwrap();
+                    let mut scheme = Some(it.next().unwrap());
+                    let host = it.next().unwrap_or_else(|| scheme.take().unwrap());
                     if host.contains('@') {
                         let mut it = host.split('@');
                         let credential = it.next().unwrap();
                         let host = it.next().unwrap();
-                        s = format!("{scheme}://{credential}@[{host}]:80");
+                        s = match scheme {
+                            Some(scheme) => format!("{scheme}://{credential}@[{host}]:80"),
+                            None => format!("{credential}@[{host}]:80"),
+                        };
                     } else {
-                        s = format!("{scheme}://[{host}]:80");
+                        s = match scheme {
+                            Some(scheme) => format!("{scheme}://[{host}]:80"),
+                            None => format!("[{host}]:80"),
+                        };
                     }
                 } else {
                     s = format!("{s}:80");

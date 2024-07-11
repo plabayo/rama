@@ -1,11 +1,12 @@
 use crate::{
-    http::{RequestContext, Version},
-    net::asn::Asn,
+    net::{
+        asn::Asn,
+        transport::{TransportContext, TransportProtocol},
+    },
     utils::str::NonEmptyString,
 };
 use serde::Deserialize;
 use std::future::Future;
-use venndb::Any;
 
 mod internal;
 pub use internal::{Proxy, ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind};
@@ -79,7 +80,7 @@ pub struct ProxyFilter {
 
 /// The trait to implement to provide a proxy database to other facilities,
 /// such as connection pools, to provide a proxy based on the given
-/// [`RequestContext`] and [`ProxyFilter`].
+/// [`TransportContext`] and [`ProxyFilter`].
 pub trait ProxyDB: Send + Sync + 'static {
     /// The error type that can be returned by the proxy database
     ///
@@ -87,22 +88,24 @@ pub trait ProxyDB: Send + Sync + 'static {
     /// even more common if no proxy match could be found.
     type Error;
 
-    /// Get a [`Proxy`] based on the given [`RequestContext`] and [`ProxyFilter`],
-    /// or return an error in case no [`Proxy`] could be returned.
-    fn get_proxy(
-        &self,
-        ctx: RequestContext,
-        filter: ProxyFilter,
-    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
-
     /// Same as [`Self::get_proxy`] but with a predicate
     /// to filter out found proxies that do not match the given predicate.
     fn get_proxy_if(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
-        predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
+        predicate: impl ProxyQueryPredicate,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
+
+    /// Get a [`Proxy`] based on the given [`TransportContext`] and [`ProxyFilter`],
+    /// or return an error in case no [`Proxy`] could be returned.
+    fn get_proxy(
+        &self,
+        ctx: TransportContext,
+        filter: ProxyFilter,
+    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
+        self.get_proxy_if(ctx, filter, true)
+    }
 }
 
 impl<T> ProxyDB for std::sync::Arc<T>
@@ -112,22 +115,50 @@ where
     type Error = T::Error;
 
     #[inline]
-    fn get_proxy(
-        &self,
-        ctx: RequestContext,
-        filter: ProxyFilter,
-    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
-        (**self).get_proxy(ctx, filter)
-    }
-
-    #[inline]
     fn get_proxy_if(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
-        predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
+        predicate: impl ProxyQueryPredicate,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
         (**self).get_proxy_if(ctx, filter, predicate)
+    }
+}
+
+/// Trait that is used by the [`ProxyDB`] for providing an optional
+/// filter predicate to rule out returned results.
+pub trait ProxyQueryPredicate: Clone + Send + Sync + 'static {
+    /// Execute the predicate.
+    fn execute(&self, proxy: &Proxy) -> bool;
+}
+
+impl ProxyQueryPredicate for bool {
+    fn execute(&self, _proxy: &Proxy) -> bool {
+        *self
+    }
+}
+
+impl<F> ProxyQueryPredicate for F
+where
+    F: Fn(&Proxy) -> bool + Clone + Send + Sync + 'static,
+{
+    fn execute(&self, proxy: &Proxy) -> bool {
+        (self)(proxy)
+    }
+}
+
+impl ProxyDB for Proxy {
+    type Error = MemoryProxyDBQueryError;
+
+    async fn get_proxy_if(
+        &self,
+        ctx: TransportContext,
+        filter: ProxyFilter,
+        predicate: impl ProxyQueryPredicate,
+    ) -> Result<Proxy, Self::Error> {
+        (self.is_match(&ctx, &filter) && predicate.execute(self))
+            .then(|| self.clone())
+            .ok_or_else(MemoryProxyDBQueryError::mismatch)
     }
 }
 
@@ -181,7 +212,7 @@ impl MemoryProxyDB {
 
     fn query_from_filter(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
     ) -> internal::ProxyDBQuery {
         let mut query = self.data.query();
@@ -218,58 +249,40 @@ impl MemoryProxyDB {
             query.mobile(value);
         }
 
-        if ctx.http_version == Version::HTTP_3 {
-            query.udp(true);
-            query.socks5(true);
-        } else {
-            query.tcp(true);
+        match ctx.protocol {
+            TransportProtocol::Tcp => {
+                query.tcp(true);
+            }
+            TransportProtocol::Udp => {
+                query.udp(true).socks5(true);
+            }
         }
 
         query
     }
 }
 
+// TODO: custom query filters using ProxyQueryPredicate
+// might be a lot faster for cases where we want to filter a big batch of proxies,
+// in which case a bitmap could be supported by a future VennDB version...
+//
+// Would just need to figure out how to allow this to happen.
+
 impl ProxyDB for MemoryProxyDB {
     type Error = MemoryProxyDBQueryError;
 
-    async fn get_proxy(
-        &self,
-        ctx: RequestContext,
-        filter: ProxyFilter,
-    ) -> Result<Proxy, Self::Error> {
-        match &filter.id {
-            Some(id) => match self.data.get_by_id(id) {
-                None => Err(MemoryProxyDBQueryError::not_found()),
-                Some(proxy) => {
-                    if proxy.is_match(&ctx, &filter) {
-                        Ok(combine_proxy_filter(proxy, filter))
-                    } else {
-                        Err(MemoryProxyDBQueryError::mismatch())
-                    }
-                }
-            },
-            None => {
-                let query = self.query_from_filter(ctx, filter.clone());
-                match query.execute().map(|result| result.any()) {
-                    None => Err(MemoryProxyDBQueryError::not_found()),
-                    Some(proxy) => Ok(combine_proxy_filter(proxy, filter)),
-                }
-            }
-        }
-    }
-
     async fn get_proxy_if(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
-        predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
+        predicate: impl ProxyQueryPredicate,
     ) -> Result<Proxy, Self::Error> {
         match &filter.id {
             Some(id) => match self.data.get_by_id(id) {
                 None => Err(MemoryProxyDBQueryError::not_found()),
                 Some(proxy) => {
-                    if proxy.is_match(&ctx, &filter) && predicate(proxy) {
-                        Ok(combine_proxy_filter(proxy, filter))
+                    if proxy.is_match(&ctx, &filter) && predicate.execute(proxy) {
+                        Ok(proxy.clone())
                     } else {
                         Err(MemoryProxyDBQueryError::mismatch())
                     }
@@ -279,61 +292,12 @@ impl ProxyDB for MemoryProxyDB {
                 let query = self.query_from_filter(ctx, filter.clone());
                 match query
                     .execute()
-                    .and_then(|result| result.filter(predicate))
+                    .and_then(|result| result.filter(|proxy| predicate.execute(proxy)))
                     .map(|result| result.any())
                 {
                     None => Err(MemoryProxyDBQueryError::not_found()),
-                    Some(proxy) => Ok(combine_proxy_filter(proxy, filter)),
+                    Some(proxy) => Ok(proxy.clone()),
                 }
-            }
-        }
-    }
-}
-
-fn combine_proxy_filter(proxy: &Proxy, filter: ProxyFilter) -> Proxy {
-    Proxy {
-        id: proxy.id.clone(),
-        address: proxy.address.clone(),
-        tcp: proxy.tcp,
-        udp: proxy.udp,
-        http: proxy.http,
-        socks5: proxy.socks5,
-        datacenter: proxy.datacenter,
-        residential: proxy.residential,
-        mobile: proxy.mobile,
-        pool_id: use_preferred_multi_any_filter(filter.pool_id, &proxy.pool_id),
-        continent: use_preferred_multi_any_filter(filter.continent, &proxy.continent),
-        country: use_preferred_multi_any_filter(filter.country, &proxy.country),
-        state: use_preferred_multi_any_filter(filter.state, &proxy.state),
-        city: use_preferred_multi_any_filter(filter.city, &proxy.city),
-        carrier: use_preferred_multi_any_filter(filter.carrier, &proxy.carrier),
-        asn: use_preferred_multi_any_filter(filter.asn, &proxy.asn),
-    }
-}
-
-/// - In case we only have a single non-any filter, we use that (no cloning needed)
-/// - In case we have no filters or the proxy value is any, we use the filter value (cloning required)
-/// - If multiple filters are defined but the proxy value is any we returned first filter, assuming it is the most important one
-fn use_preferred_multi_any_filter<T: Any + Clone>(
-    filter: Option<Vec<T>>,
-    returned_value: &Option<T>,
-) -> Option<T> {
-    let mut filter_values = filter.unwrap_or_default();
-    match filter_values.len() {
-        0 => returned_value.clone(),
-        1 => match filter_values.pop() {
-            Some(value) if !value.is_any() => Some(value),
-            _ => returned_value.clone(),
-        },
-        _ => {
-            if returned_value
-                .as_ref()
-                .map(|v| v.is_any())
-                .unwrap_or_default()
-            {
-                filter_values.pop()
-            } else {
-                returned_value.clone()
             }
         }
     }
@@ -485,10 +449,10 @@ mod tests {
         assert_eq!(db.len(), 64);
     }
 
-    fn h2_req_context() -> RequestContext {
-        RequestContext {
-            http_version: Version::HTTP_2,
-            protocol: Protocol::HTTPS,
+    fn h2_transport_context() -> TransportContext {
+        TransportContext {
+            protocol: TransportProtocol::Tcp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         }
     }
@@ -496,7 +460,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_found() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             id: Some(NonEmptyString::from_static("3031533634")),
             ..Default::default()
@@ -508,7 +472,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_found_correct_filters() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             id: Some(NonEmptyString::from_static("3031533634")),
             pool_id: Some(vec![StringFilter::new("poolF")]),
@@ -527,7 +491,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_not_found() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             id: Some(NonEmptyString::from_static("notfound")),
             ..Default::default()
@@ -539,7 +503,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_mismatch_filter() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filters = [
             ProxyFilter {
                 id: Some(NonEmptyString::from_static("3031533634")),
@@ -598,10 +562,10 @@ mod tests {
         }
     }
 
-    fn h3_req_context() -> RequestContext {
-        RequestContext {
-            http_version: Version::HTTP_3,
-            protocol: Protocol::HTTPS,
+    fn h3_transport_context() -> TransportContext {
+        TransportContext {
+            protocol: TransportProtocol::Udp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         }
     }
@@ -609,7 +573,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_mismatch_req_context() {
         let db = memproxydb().await;
-        let ctx = h3_req_context();
+        let ctx = h3_transport_context();
         let filter = ProxyFilter {
             id: Some(NonEmptyString::from_static("3031533634")),
             ..Default::default()
@@ -622,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_h3_capable_proxies() {
         let db = memproxydb().await;
-        let ctx = h3_req_context();
+        let ctx = h3_transport_context();
         let filter = ProxyFilter::default();
         let mut found_ids = Vec::new();
         for _ in 0..5000 {
@@ -644,7 +608,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_h2_capable_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter::default();
         let mut found_ids = Vec::new();
         for _ in 0..5000 {
@@ -665,7 +629,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_any_country_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             // there are no explicit BE proxies,
             // so these will only match the proxies that have a wildcard country
@@ -690,7 +654,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_illinois_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             // this will also work for proxies that have 'any' state
             state: Some(vec!["illinois".into()]),
@@ -714,7 +678,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_asn_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             // this will also work for proxies that have 'any' ASN
             asn: Some(vec![Asn::from_static(42)]),
@@ -738,7 +702,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_h3_capable_mobile_residential_be_asterix_proxies() {
         let db = memproxydb().await;
-        let ctx = h3_req_context();
+        let ctx = h3_transport_context();
         let filter = ProxyFilter {
             country: Some(vec!["BE".into()]),
             mobile: Some(true),
@@ -754,7 +718,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_blocked_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter::default();
 
         let mut blocked_proxies = vec![
@@ -815,7 +779,7 @@ mod tests {
 
             assert_eq!(
                 MemoryProxyDBQueryErrorKind::NotFound,
-                db.get_proxy_if(ctx.clone(), filter.clone(), move |proxy| {
+                db.get_proxy_if(ctx.clone(), filter.clone(), move |proxy: &Proxy| {
                     !blocked_proxies.contains(&proxy.id.as_str())
                 })
                 .await
@@ -827,7 +791,7 @@ mod tests {
         let last_proxy_id = blocked_proxies.pop().unwrap();
 
         let proxy = db
-            .get_proxy_if(ctx, filter.clone(), move |proxy| {
+            .get_proxy_if(ctx, filter.clone(), move |proxy: &Proxy| {
                 !blocked_proxies.contains(&proxy.id.as_str())
             })
             .await
@@ -843,7 +807,9 @@ mod tests {
             tcp: true,
             udp: true,
             http: true,
+            https: true,
             socks5: true,
+            socks5h: true,
             datacenter: true,
             residential: true,
             mobile: true,
@@ -857,7 +823,7 @@ mod tests {
         }])
         .unwrap();
 
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
 
         for filter in [
             ProxyFilter {
@@ -933,7 +899,9 @@ mod tests {
             tcp: true,
             udp: true,
             http: true,
+            https: true,
             socks5: true,
+            socks5h: true,
             datacenter: true,
             residential: true,
             mobile: true,
@@ -947,7 +915,7 @@ mod tests {
         }])
         .unwrap();
 
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
 
         for filter in [
             ProxyFilter {
@@ -1016,7 +984,9 @@ mod tests {
                 tcp: true,
                 udp: true,
                 http: true,
+                https: true,
                 socks5: true,
+                socks5h: true,
                 datacenter: true,
                 residential: true,
                 mobile: true,
@@ -1034,7 +1004,9 @@ mod tests {
                 tcp: true,
                 udp: true,
                 http: true,
+                https: true,
                 socks5: true,
+                socks5h: true,
                 datacenter: true,
                 residential: true,
                 mobile: true,
@@ -1052,7 +1024,9 @@ mod tests {
                 tcp: true,
                 udp: true,
                 http: true,
+                https: true,
                 socks5: true,
+                socks5h: true,
                 datacenter: true,
                 residential: true,
                 mobile: true,
@@ -1070,7 +1044,9 @@ mod tests {
                 tcp: true,
                 udp: true,
                 http: true,
+                https: true,
                 socks5: true,
+                socks5h: true,
                 datacenter: true,
                 residential: true,
                 mobile: true,
@@ -1085,7 +1061,7 @@ mod tests {
         ])
         .unwrap();
 
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
 
         let filter = ProxyFilter {
             pool_id: Some(vec![StringFilter::new("a"), StringFilter::new("c")]),

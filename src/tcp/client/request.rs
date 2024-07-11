@@ -3,7 +3,7 @@ use std::convert::Infallible;
 use crate::{
     net::{
         address::Authority,
-        transport::{TransportContext, TryRefIntoTransportContext},
+        transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext},
         Protocol,
     },
     service::Context,
@@ -67,7 +67,8 @@ impl Request {
 impl From<&Request> for TransportContext {
     fn from(value: &Request) -> Self {
         TransportContext {
-            protocol: value.protocol.clone(),
+            protocol: TransportProtocol::Tcp,
+            app_protocol: value.protocol.clone(),
             authority: value.authority.clone(),
         }
     }
@@ -76,7 +77,8 @@ impl From<&Request> for TransportContext {
 impl From<Request> for TransportContext {
     fn from(value: Request) -> Self {
         TransportContext {
-            protocol: value.protocol,
+            protocol: TransportProtocol::Tcp,
+            app_protocol: value.protocol,
             authority: value.authority,
         }
     }
@@ -109,7 +111,8 @@ impl From<Request> for Parts {
 impl From<&Parts> for TransportContext {
     fn from(value: &Parts) -> Self {
         TransportContext {
-            protocol: value.protocol.clone(),
+            protocol: TransportProtocol::Tcp,
+            app_protocol: value.protocol.clone(),
             authority: value.authority.clone(),
         }
     }
@@ -118,7 +121,8 @@ impl From<&Parts> for TransportContext {
 impl From<Parts> for TransportContext {
     fn from(value: Parts) -> Self {
         TransportContext {
-            protocol: value.protocol,
+            protocol: TransportProtocol::Tcp,
+            app_protocol: value.protocol,
             authority: value.authority,
         }
     }

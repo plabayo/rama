@@ -41,5 +41,6 @@ mod proxydb;
 pub use proxydb::{
     layer, MemoryProxyDB, MemoryProxyDBInsertError, MemoryProxyDBInsertErrorKind,
     MemoryProxyDBQueryError, MemoryProxyDBQueryErrorKind, Proxy, ProxyCsvRowReader,
-    ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind, ProxyDB, ProxyFilter, StringFilter,
+    ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind, ProxyDB, ProxyFilter, ProxyQueryPredicate,
+    StringFilter,
 };

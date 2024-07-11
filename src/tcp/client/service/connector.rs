@@ -3,7 +3,7 @@ use crate::{
     net::{
         address::ProxyAddress,
         client::{ClientConnection, EstablishedClientConnection},
-        transport::TryRefIntoTransportContext,
+        transport::{TransportProtocol, TryRefIntoTransportContext},
     },
     service::{Context, Service},
     tcp,
@@ -50,7 +50,7 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(proxy) = ctx.get::<ProxyAddress>() {
-            let (stream, addr) = tcp::client::connect_trusted(&ctx, proxy.authority().clone())
+            let (stream, addr) = tcp::client::connect_trusted(&ctx, proxy.authority.clone())
                 .await
                 .context("tcp connector: conncept to proxy")?;
             return Ok(EstablishedClientConnection {
@@ -60,15 +60,25 @@ where
             });
         }
 
-        let authority = ctx
+        let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
             .map_err(|err| {
                 OpaqueError::from_boxed(err.into())
                     .context("tcp connecter: compute transport context to get authority")
-            })?
-            .authority
-            .clone();
+            })?;
 
+        match transport_ctx.protocol {
+            TransportProtocol::Tcp => (), // a-ok :)
+            TransportProtocol::Udp => {
+                // sanity check, shouldn't happen, but in case someone makes a weird stack, it can
+                return Err(OpaqueError::from_display(
+                    "Tcp Connector Service cannot establish a UDP transport",
+                )
+                .into());
+            }
+        }
+
+        let authority = transport_ctx.authority.clone();
         let (stream, addr) = tcp::client::connect(&ctx, authority)
             .await
             .context("tcp connector: connect to server")?;

@@ -199,7 +199,7 @@ where
             })?;
 
         if !transport_ctx
-            .protocol
+            .app_protocol
             .as_ref()
             .map(|p| p.is_secure())
             .unwrap_or_default()
