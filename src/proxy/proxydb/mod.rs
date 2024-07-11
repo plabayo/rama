@@ -87,22 +87,24 @@ pub trait ProxyDB: Send + Sync + 'static {
     /// even more common if no proxy match could be found.
     type Error;
 
-    /// Get a [`Proxy`] based on the given [`RequestContext`] and [`ProxyFilter`],
-    /// or return an error in case no [`Proxy`] could be returned.
-    fn get_proxy(
-        &self,
-        ctx: RequestContext,
-        filter: ProxyFilter,
-    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
-
     /// Same as [`Self::get_proxy`] but with a predicate
     /// to filter out found proxies that do not match the given predicate.
     fn get_proxy_if(
         &self,
         ctx: RequestContext,
         filter: ProxyFilter,
-        predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
+        predicate: impl ProxyQueryPredicate,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
+
+    /// Get a [`Proxy`] based on the given [`RequestContext`] and [`ProxyFilter`],
+    /// or return an error in case no [`Proxy`] could be returned.
+    fn get_proxy(
+        &self,
+        ctx: RequestContext,
+        filter: ProxyFilter,
+    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
+        self.get_proxy_if(ctx, filter, true)
+    }
 }
 
 impl<T> ProxyDB for std::sync::Arc<T>
@@ -112,22 +114,50 @@ where
     type Error = T::Error;
 
     #[inline]
-    fn get_proxy(
-        &self,
-        ctx: RequestContext,
-        filter: ProxyFilter,
-    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
-        (**self).get_proxy(ctx, filter)
-    }
-
-    #[inline]
     fn get_proxy_if(
         &self,
         ctx: RequestContext,
         filter: ProxyFilter,
-        predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
+        predicate: impl ProxyQueryPredicate,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
         (**self).get_proxy_if(ctx, filter, predicate)
+    }
+}
+
+/// Trait that is used by the [`ProxyDB`] for providing an optional
+/// filter predicate to rule out returned results.
+pub trait ProxyQueryPredicate: Clone + Send + Sync + 'static {
+    /// Execute the predicate.
+    fn execute(&self, proxy: &Proxy) -> bool;
+}
+
+impl ProxyQueryPredicate for bool {
+    fn execute(&self, _proxy: &Proxy) -> bool {
+        *self
+    }
+}
+
+impl<F> ProxyQueryPredicate for F
+where
+    F: Fn(&Proxy) -> bool + Clone + Send + Sync + 'static,
+{
+    fn execute(&self, proxy: &Proxy) -> bool {
+        (self)(proxy)
+    }
+}
+
+impl ProxyDB for Proxy {
+    type Error = MemoryProxyDBQueryError;
+
+    async fn get_proxy_if(
+        &self,
+        ctx: RequestContext,
+        filter: ProxyFilter,
+        predicate: impl ProxyQueryPredicate,
+    ) -> Result<Proxy, Self::Error> {
+        (self.is_match(&ctx, &filter) && predicate.execute(self))
+            .then(|| self.clone())
+            .ok_or_else(MemoryProxyDBQueryError::mismatch)
     }
 }
 
@@ -229,46 +259,26 @@ impl MemoryProxyDB {
     }
 }
 
+// TODO: custom query filters using ProxyQueryPredicate
+// might be a lot faster for cases where we want to filter a big batch of proxies,
+// in which case a bitmap could be supported by a future VennDB version...
+//
+// Would just need to figure out how to allow this to happen.
+
 impl ProxyDB for MemoryProxyDB {
     type Error = MemoryProxyDBQueryError;
-
-    async fn get_proxy(
-        &self,
-        ctx: RequestContext,
-        filter: ProxyFilter,
-    ) -> Result<Proxy, Self::Error> {
-        match &filter.id {
-            Some(id) => match self.data.get_by_id(id) {
-                None => Err(MemoryProxyDBQueryError::not_found()),
-                Some(proxy) => {
-                    if proxy.is_match(&ctx, &filter) {
-                        Ok(combine_proxy_filter(proxy, filter))
-                    } else {
-                        Err(MemoryProxyDBQueryError::mismatch())
-                    }
-                }
-            },
-            None => {
-                let query = self.query_from_filter(ctx, filter.clone());
-                match query.execute().map(|result| result.any()) {
-                    None => Err(MemoryProxyDBQueryError::not_found()),
-                    Some(proxy) => Ok(combine_proxy_filter(proxy, filter)),
-                }
-            }
-        }
-    }
 
     async fn get_proxy_if(
         &self,
         ctx: RequestContext,
         filter: ProxyFilter,
-        predicate: impl Fn(&Proxy) -> bool + Send + Sync + 'static,
+        predicate: impl ProxyQueryPredicate,
     ) -> Result<Proxy, Self::Error> {
         match &filter.id {
             Some(id) => match self.data.get_by_id(id) {
                 None => Err(MemoryProxyDBQueryError::not_found()),
                 Some(proxy) => {
-                    if proxy.is_match(&ctx, &filter) && predicate(proxy) {
+                    if proxy.is_match(&ctx, &filter) && predicate.execute(proxy) {
                         Ok(combine_proxy_filter(proxy, filter))
                     } else {
                         Err(MemoryProxyDBQueryError::mismatch())
@@ -279,7 +289,7 @@ impl ProxyDB for MemoryProxyDB {
                 let query = self.query_from_filter(ctx, filter.clone());
                 match query
                     .execute()
-                    .and_then(|result| result.filter(predicate))
+                    .and_then(|result| result.filter(|proxy| predicate.execute(proxy)))
                     .map(|result| result.any())
                 {
                     None => Err(MemoryProxyDBQueryError::not_found()),
@@ -815,7 +825,7 @@ mod tests {
 
             assert_eq!(
                 MemoryProxyDBQueryErrorKind::NotFound,
-                db.get_proxy_if(ctx.clone(), filter.clone(), move |proxy| {
+                db.get_proxy_if(ctx.clone(), filter.clone(), move |proxy: &Proxy| {
                     !blocked_proxies.contains(&proxy.id.as_str())
                 })
                 .await
@@ -827,7 +837,7 @@ mod tests {
         let last_proxy_id = blocked_proxies.pop().unwrap();
 
         let proxy = db
-            .get_proxy_if(ctx, filter.clone(), move |proxy| {
+            .get_proxy_if(ctx, filter.clone(), move |proxy: &Proxy| {
                 !blocked_proxies.contains(&proxy.id.as_str())
             })
             .await

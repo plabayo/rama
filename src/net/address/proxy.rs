@@ -8,54 +8,17 @@ use std::{fmt::Display, str::FromStr};
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Address of a proxy that can be connected to.
 pub struct ProxyAddress {
-    protocol: Protocol,
-    authority: Authority,
-    credential: Option<ProxyCredential>,
-}
+    /// [`Protocol`] used by the proxy.
+    ///
+    /// TODO: support multiple and instead have it as one,
+    /// be it meaning the protocols that this proxy supports ?!
+    pub protocol: Protocol,
 
-impl ProxyAddress {
-    /// Creates a new [`ProxyAddress`] with the given [`Protocol`], [`Authority`], and optional [`ProxyCredential`].
-    pub fn new(
-        protocol: Protocol,
-        authority: Authority,
-        credential: Option<ProxyCredential>,
-    ) -> Self {
-        Self {
-            protocol,
-            authority,
-            credential,
-        }
-    }
+    /// [`Authority`] of the proxy.
+    pub authority: Authority,
 
-    /// Returns the protocol of this [`ProxyAddress`].
-    pub fn protocol(&self) -> &Protocol {
-        &self.protocol
-    }
-
-    /// Overwrites the [`Protocol`] of this [`ProxyAddress`].
-    pub fn with_protocol(&mut self, proto: Protocol) {
-        self.protocol = proto;
-    }
-
-    /// Returns the [`Authority`] of this [`ProxyAddress`].
-    pub fn authority(&self) -> &Authority {
-        &self.authority
-    }
-
-    /// Overwrites the [`Authority`] of this [`ProxyAddress`].
-    pub fn with_authority(&mut self, authority: Authority) {
-        self.authority = authority;
-    }
-
-    /// Returns the [`ProxyCredential`] of this [`ProxyAddress`].
-    pub fn credential(&self) -> Option<&ProxyCredential> {
-        self.credential.as_ref()
-    }
-
-    /// Overwrites the [`ProxyCredential`] of this [`ProxyAddress`].
-    pub fn with_credential(&mut self, credential: ProxyCredential) {
-        self.credential = Some(credential);
-    }
+    /// [`ProxyCredential`] of the proxy.
+    pub credential: Option<ProxyCredential>,
 }
 
 impl TryFrom<&str> for ProxyAddress {
@@ -84,7 +47,11 @@ impl TryFrom<&str> for ProxyAddress {
                     })
                     .context("parse proxy authority from address")?;
 
-                return Ok(ProxyAddress::new(protocol, authority, Some(credential)));
+                return Ok(ProxyAddress {
+                    protocol,
+                    authority,
+                    credential: Some(credential),
+                });
             }
         }
 
@@ -92,7 +59,11 @@ impl TryFrom<&str> for ProxyAddress {
             .try_into()
             .or_else(|_| Host::try_from(slice).map(|h| (h, protocol.default_port()).into()))
             .context("parse proxy authority from address")?;
-        Ok(ProxyAddress::new(protocol, authority, None))
+        Ok(ProxyAddress {
+            protocol,
+            authority,
+            credential: None,
+        })
     }
 }
 
@@ -157,11 +128,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             addr,
-            ProxyAddress::new(
-                Protocol::HTTPS,
-                Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), 9999),
-                Some(Basic::new("foo-cc-be", "baz").into()),
-            )
+            ProxyAddress {
+                protocol: Protocol::HTTPS,
+                authority: Authority::new(Host::Name("my.proxy.io.".parse().unwrap()), 9999),
+                credential: Some(Basic::new("foo-cc-be", "baz").into()),
+            }
         );
     }
 
@@ -170,11 +141,11 @@ mod tests {
         let addr: ProxyAddress = "socks5h://foo@[::1]:60000".try_into().unwrap();
         assert_eq!(
             addr,
-            ProxyAddress::new(
-                Protocol::SOCKS5H,
-                Authority::new(Host::Address("::1".parse().unwrap()), 60000),
-                Some(Bearer::try_from_clear_str("foo").unwrap().into()),
-            )
+            ProxyAddress {
+                protocol: Protocol::SOCKS5H,
+                authority: Authority::new(Host::Address("::1".parse().unwrap()), 60000),
+                credential: Some(Bearer::try_from_clear_str("foo").unwrap().into()),
+            }
         );
     }
 

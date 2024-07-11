@@ -380,7 +380,7 @@ where
                 if let Some(proxy_user) = cfg.proxy_user {
                     let credential = ProxyCredential::try_from_clear_str(proxy_user)
                         .context("parse proxy credentials")?;
-                    proxy_address.with_credential(credential);
+                    proxy_address.credential = Some(credential);
                 }
                 HttpProxyAddressLayer::maybe(Some(proxy_address))
             }

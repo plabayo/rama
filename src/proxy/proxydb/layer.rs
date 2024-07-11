@@ -6,6 +6,13 @@
 //! in case you support that as part of your transport-layer authentication. And of course you can
 //! combine the two approaches.
 //!
+//! You can also give a single [`Proxy`] as "proxy db".
+//!
+//! The end result is that a [`ProxyAddress`] will be set in case a proxy was selected,
+//! an error is returned in case no proxy could be selected while one was expected
+//! or of course because the inner [`Service`] failed.
+//!
+//! [`ProxyAddress`]: crate::net::address::ProxyAddress
 //! [`ProxyDB`]: crate::proxy::ProxyDB
 //! [`Context`]: crate::service::Context
 //! [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
@@ -17,10 +24,11 @@
 //!    http::{Body, Version, Request},
 //!    proxy::{
 //!         MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader, Proxy,
-//!         layer::{ProxyDBLayer, ProxySelectMode},
+//!         layer::{ProxyDBLayer, ProxyFilterMode},
 //!         ProxyFilter,
 //!    },
 //!    service::{Context, ServiceBuilder, Service, Layer},
+//!    net::address::ProxyAddress,
 //!    utils::str::NonEmptyString,
 //! };
 //! use itertools::Itertools;
@@ -69,9 +77,9 @@
 //!     .unwrap();
 //!
 //!     let service = ServiceBuilder::new()
-//!         .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Default))
+//!         .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default))
 //!         .service_fn(|ctx: Context<()>, _: Request| async move {
-//!             Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+//!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
 //!         });
 //!
 //!     let mut ctx = Context::default();
@@ -89,32 +97,35 @@
 //!         .body(Body::empty())
 //!         .unwrap();
 //!
-//!     let proxy = service.serve(ctx, req).await.unwrap();
-//!     assert_eq!(proxy.id, "42");
+//!     let proxy_address = service.serve(ctx, req).await.unwrap();
+//!     assert_eq!(proxy_address.authority.to_string(), "12.34.12.34:8080");
 //! }
 //! ```
 
+use std::fmt;
+
 use crate::{
-    error::{BoxError, ErrorContext},
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     http::{Request, RequestContext},
+    net::user::{Basic, ProxyCredential},
     service::{Context, Layer, Service},
 };
 
-use super::{Proxy, ProxyDB, ProxyFilter};
+use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
 
-#[derive(Debug)]
 /// A [`Service`] which selects a [`Proxy`] based on the given [`Context`].
 ///
-/// Depending on the [`ProxySelectMode`] the selection proxies might be optional,
+/// Depending on the [`ProxyFilterMode`] the selection proxies might be optional,
 /// or use the default [`ProxyFilter`] in case none is defined.
 ///
 /// A predicate can be used to provide additional filtering on the found proxies,
 /// that otherwise did match the used [`ProxyFilter`].
-pub struct ProxyDBService<S, D, P = ()> {
+pub struct ProxyDBService<S, D, P, F> {
     inner: S,
     db: D,
-    mode: ProxySelectMode,
+    mode: ProxyFilterMode,
     predicate: P,
+    username_formatter: F,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -123,7 +134,7 @@ pub struct ProxyDBService<S, D, P = ()> {
 ///
 /// More advanced behaviour can be achieved by combining one of these modi
 /// with another (custom) layer prepending the parent.
-pub enum ProxySelectMode {
+pub enum ProxyFilterMode {
     #[default]
     /// The [`ProxyFilter`] is optional, and if not present, no proxy is selected.
     Optional,
@@ -135,11 +146,30 @@ pub enum ProxySelectMode {
     Fallback(ProxyFilter),
 }
 
-impl<S, D, P> Clone for ProxyDBService<S, D, P>
+impl<S, D, P, F> fmt::Debug for ProxyDBService<S, D, P, F>
+where
+    S: fmt::Debug,
+    D: fmt::Debug,
+    P: fmt::Debug,
+    F: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProxyDBService")
+            .field("inner", &self.inner)
+            .field("db", &self.db)
+            .field("mode", &self.mode)
+            .field("predicate", &self.predicate)
+            .field("username_formatter", &self.username_formatter)
+            .finish()
+    }
+}
+
+impl<S, D, P, F> Clone for ProxyDBService<S, D, P, F>
 where
     S: Clone,
     D: Clone,
     P: Clone,
+    F: Clone,
 {
     fn clone(&self) -> Self {
         Self {
@@ -147,97 +177,71 @@ where
             db: self.db.clone(),
             mode: self.mode.clone(),
             predicate: self.predicate.clone(),
+            username_formatter: self.username_formatter.clone(),
         }
     }
 }
 
-impl<S, D> ProxyDBService<S, D> {
-    /// Create a new [`ProxyDBService`] with the given inner [`Service`], [`ProxyDB`], and [`ProxySelectMode`].
-    ///
-    /// Use [`ProxyDBService::with_predicate`] if you want to add a predicate to the service,
-    /// to provide custom additional filtering on the found proxies.
-    pub fn new(inner: S, db: D, mode: ProxySelectMode) -> Self {
+impl<S, D> ProxyDBService<S, D, bool, ()> {
+    /// Create a new [`ProxyDBService`] with the given inner [`Service`] and [`ProxyDB`].
+    pub fn new(inner: S, db: D) -> Self {
         Self {
             inner,
             db,
-            mode,
-            predicate: (),
+            mode: ProxyFilterMode::Optional,
+            predicate: true,
+            username_formatter: (),
+        }
+    }
+}
+
+impl<S, D, P, F> ProxyDBService<S, D, P, F> {
+    /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
+    /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
+    /// or what to do if it is optional and not available.
+    pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Set a [`ProxyQueryPredicate`] that will be used
+    /// to possibly filter out proxies that according to the filters are correct,
+    /// but not according to the predicate.
+    pub fn select_predicate<Predicate>(self, p: Predicate) -> ProxyDBService<S, D, Predicate, F> {
+        ProxyDBService {
+            inner: self.inner,
+            db: self.db,
+            mode: self.mode,
+            predicate: p,
+            username_formatter: self.username_formatter,
+        }
+    }
+
+    /// Set a [`UsernameFormatter`] that will be used to format
+    /// the username based on the selected [`Proxy`]. This is required
+    /// in case the proxy is a router that accepts or maybe even requires
+    /// username labels to configure proxies further down/up stream.
+    pub fn username_formatter<Formatter>(self, f: Formatter) -> ProxyDBService<S, D, P, Formatter> {
+        ProxyDBService {
+            inner: self.inner,
+            db: self.db,
+            mode: self.mode,
+            predicate: self.predicate,
+            username_formatter: f,
         }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S, D, P> ProxyDBService<S, D, P> {
-    /// Create a new [`ProxyDBService`] with the given inner [`Service`], [`ProxyDB`], [`ProxySelectMode`], and predicate.
-    ///
-    /// This is the same as [`ProxyDBService::new`] but with an additional predicate,
-    /// that will be used as an additional filter when selecting a [`Proxy`].
-    pub fn with_predicate(inner: S, db: D, mode: ProxySelectMode, predicate: P) -> Self {
-        Self {
-            inner,
-            db,
-            mode,
-            predicate,
-        }
-    }
-}
-
-impl<S, D, State, Body> Service<State, Request<Body>> for ProxyDBService<S, D>
-where
-    S: Service<State, Request<Body>>,
-    S::Error: Into<BoxError> + Send + 'static,
-    D: ProxyDB,
-    D::Error: Into<BoxError> + Send + 'static,
-    State: Send + Sync + 'static,
-    Body: Send + 'static,
-{
-    type Response = S::Response;
-    type Error = BoxError;
-
-    async fn serve(
-        &self,
-        mut ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let maybe_filter = match self.mode {
-            ProxySelectMode::Optional => ctx.get::<ProxyFilter>().cloned(),
-            ProxySelectMode::Default => ctx
-                .get::<ProxyFilter>()
-                .cloned()
-                .or_else(|| Some(ProxyFilter::default())),
-            ProxySelectMode::Required => Some(
-                ctx.get::<ProxyFilter>()
-                    .cloned()
-                    .context("missing proxy filter")?,
-            ),
-            ProxySelectMode::Fallback(ref filter) => {
-                ctx.get::<ProxyFilter>().cloned().or(Some(filter.clone()))
-            }
-        };
-
-        if let Some(filter) = maybe_filter {
-            let req_ctx: &mut RequestContext =
-                ctx.get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())?;
-            let proxy = self
-                .db
-                .get_proxy(req_ctx.clone(), filter)
-                .await
-                .map_err(Into::into)?;
-            ctx.insert(proxy);
-        }
-
-        self.inner.serve(ctx, req).await.map_err(Into::into)
-    }
-}
-
-impl<S, D, P, State, Body> Service<State, Request<Body>> for ProxyDBService<S, D, P>
+impl<S, D, P, F, State, Body> Service<State, Request<Body>> for ProxyDBService<S, D, P, F>
 where
     S: Service<State, Request<Body>>,
     S::Error: Into<BoxError> + Send + Sync + 'static,
     D: ProxyDB,
     D::Error: Into<BoxError> + Send + Sync + 'static,
-    P: Fn(&Proxy) -> bool + Clone + Send + Sync + 'static,
+    P: ProxyQueryPredicate,
+    F: UsernameFormatter,
     State: Send + Sync + 'static,
     Body: Send + 'static,
 {
@@ -250,14 +254,14 @@ where
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let maybe_filter = match self.mode {
-            ProxySelectMode::Optional => ctx.get::<ProxyFilter>().cloned(),
-            ProxySelectMode::Default => Some(ctx.get_or_insert_default::<ProxyFilter>().clone()),
-            ProxySelectMode::Required => Some(
+            ProxyFilterMode::Optional => ctx.get::<ProxyFilter>().cloned(),
+            ProxyFilterMode::Default => Some(ctx.get_or_insert_default::<ProxyFilter>().clone()),
+            ProxyFilterMode::Required => Some(
                 ctx.get::<ProxyFilter>()
                     .cloned()
                     .context("missing proxy filter")?,
             ),
-            ProxySelectMode::Fallback(ref filter) => {
+            ProxyFilterMode::Fallback(ref filter) => {
                 ctx.get::<ProxyFilter>().cloned().or(Some(filter.clone()))
             }
         };
@@ -265,85 +269,159 @@ where
         if let Some(filter) = maybe_filter {
             let req_ctx: &mut RequestContext =
                 ctx.get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())?;
+
             let proxy = self
                 .db
                 .get_proxy_if(req_ctx.clone(), filter, self.predicate.clone())
                 .await
-                .map_err(Into::into)?;
-            ctx.insert(proxy);
+                .map_err(|err| OpaqueError::from_boxed(err.into()).context("select proxy in DB"))?;
+
+            let mut proxy_address = proxy.address.clone();
+            proxy_address.credential = proxy_address.credential.take().map(|credential| {
+                match credential {
+                    ProxyCredential::Basic(ref basic) => {
+                        match self
+                            .username_formatter
+                            .fmt_username(&proxy, basic.username())
+                        {
+                            Some(username) => ProxyCredential::Basic(Basic::new(
+                                username,
+                                basic.password().to_owned(),
+                            )),
+                            None => credential, // nothing to do
+                        }
+                    }
+                    ProxyCredential::Bearer(_) => credential, // Remark: we can support this in future too if needed
+                }
+            });
+
+            // insert proxy address in context so it will be used
+            ctx.insert(proxy_address);
         }
 
         self.inner.serve(ctx, req).await.map_err(Into::into)
     }
 }
 
-#[derive(Debug)]
 /// A [`Layer`] which wraps an inner [`Service`] to select a [`Proxy`] based on the given [`Context`],
 /// and insert, if a [`Proxy`] is selected, it in the [`Context`] for further processing.
 ///
 /// See [`ProxyDBService`] for more details.
-pub struct ProxyDBLayer<D, P = ()> {
+pub struct ProxyDBLayer<D, P, F> {
     db: D,
-    mode: ProxySelectMode,
+    mode: ProxyFilterMode,
     predicate: P,
+    username_formatter: F,
 }
 
-impl<D, P> Clone for ProxyDBLayer<D, P>
+impl<D, P, F> fmt::Debug for ProxyDBLayer<D, P, F>
+where
+    D: fmt::Debug,
+    P: fmt::Debug,
+    F: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProxyDBLayer")
+            .field("db", &self.db)
+            .field("mode", &self.mode)
+            .field("predicate", &self.predicate)
+            .field("username_formatter", &self.username_formatter)
+            .finish()
+    }
+}
+
+impl<D, P, F> Clone for ProxyDBLayer<D, P, F>
 where
     D: Clone,
     P: Clone,
+    F: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             db: self.db.clone(),
             mode: self.mode.clone(),
             predicate: self.predicate.clone(),
+            username_formatter: self.username_formatter.clone(),
         }
     }
 }
 
-impl<D> ProxyDBLayer<D> {
-    /// Create a new [`ProxyDBLayer`] with the given [`ProxyDB`] and [`ProxySelectMode`].
-    ///
-    /// Use [`ProxyDBLayer::with_predicate`] if you want to add a predicate to the [`ProxyDBService`],
-    /// to provide custom additional filtering on the found proxies.
-    pub fn new(db: D, mode: ProxySelectMode) -> Self {
+impl<D> ProxyDBLayer<D, bool, ()> {
+    /// Create a new [`ProxyDBLayer`] with the given [`ProxyDB`].
+    pub fn new(db: D) -> Self {
         Self {
             db,
-            mode,
-            predicate: (),
+            mode: ProxyFilterMode::Optional,
+            predicate: true,
+            username_formatter: (),
         }
     }
 }
 
-impl<D, P> ProxyDBLayer<D, P> {
-    /// Create a new [`ProxyDBLayer`] with the given [`ProxyDB`], [`ProxySelectMode`], and predicate.
-    ///
-    /// This is the same as [`ProxyDBLayer::new`] but with an additional predicate,
-    /// that will be used as an additional filter when selecting a [`Proxy`] in the [`ProxyDBService`].
-    pub fn with_predicate(db: D, mode: ProxySelectMode, predicate: P) -> Self {
-        Self {
-            db,
-            mode,
-            predicate,
+impl<D, P, F> ProxyDBLayer<D, P, F> {
+    /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
+    /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
+    /// or what to do if it is optional and not available.
+    pub fn filter_mode(mut self, mode: ProxyFilterMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// Set a [`ProxyQueryPredicate`] that will be used
+    /// to possibly filter out proxies that according to the filters are correct,
+    /// but not according to the predicate.
+    pub fn select_predicate<Predicate>(self, p: Predicate) -> ProxyDBLayer<D, Predicate, F> {
+        ProxyDBLayer {
+            db: self.db,
+            mode: self.mode,
+            predicate: p,
+            username_formatter: self.username_formatter,
+        }
+    }
+
+    /// Set a [`UsernameFormatter`] that will be used to format
+    /// the username based on the selected [`Proxy`]. This is required
+    /// in case the proxy is a router that accepts or maybe even requires
+    /// username labels to configure proxies further down/up stream.
+    pub fn username_formatter<Formatter>(self, f: Formatter) -> ProxyDBLayer<D, P, Formatter> {
+        ProxyDBLayer {
+            db: self.db,
+            mode: self.mode,
+            predicate: self.predicate,
+            username_formatter: f,
         }
     }
 }
 
-impl<S, D, P> Layer<S> for ProxyDBLayer<D, P>
+impl<S, D, P, F> Layer<S> for ProxyDBLayer<D, P, F>
 where
     D: Clone,
     P: Clone,
+    F: Clone,
 {
-    type Service = ProxyDBService<S, D, P>;
+    type Service = ProxyDBService<S, D, P, F>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        ProxyDBService::with_predicate(
+        ProxyDBService {
             inner,
-            self.db.clone(),
-            self.mode.clone(),
-            self.predicate.clone(),
-        )
+            db: self.db.clone(),
+            mode: self.mode.clone(),
+            predicate: self.predicate.clone(),
+            username_formatter: self.username_formatter.clone(),
+        }
+    }
+}
+
+/// Trait that is used to allow the formatting of a username,
+/// e.g. to allow proxy routers to have proxy config labels in the username.
+pub trait UsernameFormatter: Send + Sync + 'static {
+    /// format the username based on the root properties of the given proxy.
+    fn fmt_username(&self, proxy: &Proxy, username: &str) -> Option<String>;
+}
+
+impl UsernameFormatter for () {
+    fn fmt_username(&self, _proxy: &Proxy, _username: &str) -> Option<String> {
+        None
     }
 }
 
@@ -352,7 +430,10 @@ mod tests {
     use super::*;
     use crate::{
         http::{Body, Version},
-        net::{address::ProxyAddress, asn::Asn},
+        net::{
+            address::{Authority, ProxyAddress},
+            asn::Asn,
+        },
         proxy::{MemoryProxyDB, ProxyCsvRowReader, StringFilter},
         service::ServiceBuilder,
         utils::str::NonEmptyString,
@@ -383,7 +464,7 @@ mod tests {
             },
             Proxy {
                 id: NonEmptyString::from_static("100"),
-                address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
+                address: ProxyAddress::from_str("12.34.12.35:8080").unwrap(),
                 tcp: true,
                 udp: false,
                 http: true,
@@ -403,9 +484,9 @@ mod tests {
         .unwrap();
 
         let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Default))
+            .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default))
             .service_fn(|ctx: Context<()>, _: Request| async move {
-                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             });
 
         let mut ctx = Context::default();
@@ -423,8 +504,11 @@ mod tests {
             .body(Body::empty())
             .unwrap();
 
-        let proxy = service.serve(ctx, req).await.unwrap();
-        assert_eq!(proxy.id, "42");
+        let proxy_address = service.serve(ctx, req).await.unwrap();
+        assert_eq!(
+            proxy_address.authority,
+            Authority::try_from("12.34.12.34:8080").unwrap()
+        );
     }
 
     const RAW_CSV_DATA: &str = include_str!("./test_proxydb_rows.csv");
@@ -443,12 +527,12 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Optional))
+            .layer(ProxyDBLayer::new(Arc::new(db)))
             .service_fn(|ctx: Context<()>, _: Request| async move {
-                Ok::<_, Infallible>(ctx.get::<Proxy>().cloned())
+                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().cloned())
             });
 
-        for (filter, expected_id, req) in [
+        for (filter, expected_authority, req) in [
             (
                 None,
                 None,
@@ -464,7 +548,7 @@ mod tests {
                     id: Some(NonEmptyString::from_static("3031533634")),
                     ..Default::default()
                 }),
-                Some(NonEmptyString::from_static("3031533634")),
+                Some("105.150.55.60:4898"),
                 Request::builder()
                     .version(Version::HTTP_11)
                     .method("GET")
@@ -479,7 +563,7 @@ mod tests {
                     residential: Some(true),
                     ..Default::default()
                 }),
-                Some(NonEmptyString::from_static("2593294918")),
+                Some("140.249.154.18:5800"),
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -493,9 +577,12 @@ mod tests {
                 ctx.insert(filter);
             }
 
-            let maybe_proxy = service.serve(ctx, req).await.unwrap();
+            let maybe_proxy_address = service.serve(ctx, req).await.unwrap();
 
-            assert_eq!(maybe_proxy.map(|p| p.id), expected_id);
+            assert_eq!(
+                maybe_proxy_address.map(|p| p.authority),
+                expected_authority.map(|s| Authority::try_from(s).unwrap())
+            );
         }
     }
 
@@ -504,13 +591,13 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Default))
+            .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default))
             .service_fn(|ctx: Context<()>, _: Request| async move {
-                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             });
 
-        for (filter, expected_ids, req_info) in [
-            (None, "1125300915,1259341971,1264821985,129108927,1316455915,1425588737,1571861931,1810781137,1836040682,1844412609,1885107293,2021561518,2079461709,2107229589,2141152822,2438596154,2497865606,2521901221,2551759475,2560727338,2593294918,2798907087,2854473221,2880295577,2909724448,2912880381,292096733,2951529660,3031533634,3187902553,3269411602,3269465574,339020035,3481200027,3498810974,3503691556,362091157,3679054656,371209663,3861736957,39048766,3976711563,4062553709,49590203,56402588,724884866,738626121,767809962,846528631,906390012", (Version::HTTP_11, "GET", "http://example.com")),
+        for (filter, expected_addresses, req_info) in [
+            (None, "0.20.204.227:8373,104.207.92.167:9387,105.150.55.60:4898,106.213.197.28:9110,113.6.21.212:4525,115.29.251.35:5712,119.146.94.132:7851,129.204.152.130:6524,134.190.189.202:5772,136.186.95.10:7095,137.220.180.169:4929,140.249.154.18:5800,145.57.31.149:6304,151.254.135.9:6961,153.206.209.221:8696,162.97.174.152:1673,169.179.161.206:6843,171.174.56.89:5744,178.189.117.217:6496,182.34.76.182:2374,184.209.230.177:1358,193.188.239.29:3541,193.26.37.125:3780,204.168.216.113:1096,208.224.120.97:7118,209.176.177.182:4311,215.49.63.89:9458,223.234.242.63:7211,230.159.143.41:7296,233.22.59.115:1653,24.155.249.112:2645,247.118.71.100:1033,249.221.15.121:7434,252.69.242.136:4791,253.138.153.41:2640,28.139.151.127:2809,4.20.243.186:9155,42.54.35.118:6846,45.59.69.12:5934,46.247.45.238:3522,54.226.47.54:7442,61.112.212.160:3842,66.142.40.209:4251,66.171.139.181:4449,69.246.162.84:8964,75.43.123.181:7719,76.128.58.167:4797,85.14.163.105:8362,92.227.104.237:6161,97.192.206.72:6067", (Version::HTTP_11, "GET", "http://example.com")),
             (
                 Some(ProxyFilter {
                     country: Some(vec![StringFilter::new("BE")]),
@@ -518,11 +605,11 @@ mod tests {
                     residential: Some(true),
                     ..Default::default()
                 }),
-                "2593294918",
+                "140.249.154.18:5800",
                 (Version::HTTP_3, "GET", "https://example.com"),
             ),
         ] {
-            let mut seen_ids = Vec::new();
+            let mut seen_addresses = Vec::new();
             for _ in 0..5000 {
                 let mut ctx = Context::default();
                 if let Some(filter) = filter.clone() {
@@ -536,14 +623,14 @@ mod tests {
                     .body(Body::empty())
                     .unwrap();
 
-                let proxy = service.serve(ctx, req).await.unwrap();
-                if !seen_ids.contains(&proxy.id) {
-                    seen_ids.push(proxy.id);
+                let proxy_address = service.serve(ctx, req).await.unwrap().authority.to_string();
+                if !seen_addresses.contains(&proxy_address) {
+                    seen_addresses.push(proxy_address);
                 }
             }
 
-            let seen_ids = seen_ids.into_iter().sorted().map(String::from).join(",");
-            assert_eq!(seen_ids, expected_ids);
+            let seen_addresses = seen_addresses.into_iter().sorted().join(",");
+            assert_eq!(seen_addresses, expected_addresses);
         }
     }
 
@@ -552,24 +639,24 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(
-                Arc::new(db),
-                // useful if you want to have a fallback that doesn't blow your budget
-                ProxySelectMode::Fallback(ProxyFilter {
-                    datacenter: Some(true),
-                    residential: Some(false),
-                    mobile: Some(false),
-                    ..Default::default()
-                }),
-            ))
+            .layer(
+                ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Fallback(
+                    ProxyFilter {
+                        datacenter: Some(true),
+                        residential: Some(false),
+                        mobile: Some(false),
+                        ..Default::default()
+                    },
+                )),
+            )
             .service_fn(|ctx: Context<()>, _: Request| async move {
-                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             });
 
-        for (filter, expected_ids, req_info) in [
+        for (filter, expected_addresses, req_info) in [
             (
                 None,
-                "1316455915,2521901221,3679054656,3861736957,3976711563,4062553709,49590203",
+                "113.6.21.212:4525,119.146.94.132:7851,136.186.95.10:7095,137.220.180.169:4929,247.118.71.100:1033,249.221.15.121:7434,92.227.104.237:6161",
                 (Version::HTTP_11, "GET", "http://example.com"),
             ),
             (
@@ -579,11 +666,11 @@ mod tests {
                     residential: Some(true),
                     ..Default::default()
                 }),
-                "2593294918",
+                "140.249.154.18:5800",
                 (Version::HTTP_3, "GET", "https://example.com"),
             ),
         ] {
-            let mut seen_ids = Vec::new();
+            let mut seen_addresses = Vec::new();
             for _ in 0..5000 {
                 let mut ctx = Context::default();
                 if let Some(filter) = filter.clone() {
@@ -597,14 +684,14 @@ mod tests {
                     .body(Body::empty())
                     .unwrap();
 
-                let proxy = service.serve(ctx, req).await.unwrap();
-                if !seen_ids.contains(&proxy.id) {
-                    seen_ids.push(proxy.id);
+                let proxy_address = service.serve(ctx, req).await.unwrap().authority.to_string();
+                if !seen_addresses.contains(&proxy_address) {
+                    seen_addresses.push(proxy_address);
                 }
             }
 
-            let seen_ids = seen_ids.into_iter().sorted().join(",");
-            assert_eq!(seen_ids, expected_ids);
+            let seen_addresses = seen_addresses.into_iter().sorted().join(",");
+            assert_eq!(seen_addresses, expected_addresses);
         }
     }
 
@@ -613,12 +700,12 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(db), ProxySelectMode::Required))
+            .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Required))
             .service_fn(|ctx: Context<()>, _: Request| async move {
-                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             });
 
-        for (filter, expected, req) in [
+        for (filter, expected_address, req) in [
             (
                 None,
                 None,
@@ -636,7 +723,7 @@ mod tests {
                     residential: Some(true),
                     ..Default::default()
                 }),
-                Some("2593294918".to_owned()),
+                Some("140.249.154.18:5800"),
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -679,13 +766,16 @@ mod tests {
                 ctx.insert(filter);
             }
 
-            let proxy_result = service.serve(ctx, req).await;
-            match expected {
-                Some(expected_id) => {
-                    assert_eq!(proxy_result.unwrap().id, expected_id);
+            let proxy_address_result = service.serve(ctx, req).await;
+            match expected_address {
+                Some(expected_address) => {
+                    assert_eq!(
+                        proxy_address_result.unwrap().authority,
+                        Authority::try_from(expected_address).unwrap()
+                    );
                 }
                 None => {
-                    assert!(proxy_result.is_err());
+                    assert!(proxy_address_result.is_err());
                 }
             }
         }
@@ -696,13 +786,13 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::with_predicate(
-                Arc::new(db),
-                ProxySelectMode::Required,
-                |proxy: &Proxy| proxy.mobile,
-            ))
+            .layer(
+                ProxyDBLayer::new(Arc::new(db))
+                    .filter_mode(ProxyFilterMode::Required)
+                    .select_predicate(|proxy: &Proxy| proxy.mobile),
+            )
             .service_fn(|ctx: Context<()>, _: Request| async move {
-                Ok::<_, Infallible>(ctx.get::<Proxy>().unwrap().clone())
+                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             });
 
         for (filter, expected, req) in [
@@ -723,7 +813,7 @@ mod tests {
                     residential: Some(true),
                     ..Default::default()
                 }),
-                Some("2593294918".to_owned()),
+                Some("140.249.154.18:5800"),
                 Request::builder()
                     .version(Version::HTTP_3)
                     .method("GET")
@@ -782,8 +872,11 @@ mod tests {
 
             let proxy_result = service.serve(ctx, req).await;
             match expected {
-                Some(expected_id) => {
-                    assert_eq!(proxy_result.unwrap().id, expected_id);
+                Some(expected_address) => {
+                    assert_eq!(
+                        proxy_result.unwrap().authority,
+                        Authority::try_from(expected_address).unwrap()
+                    );
                 }
                 None => {
                     assert!(proxy_result.is_err());

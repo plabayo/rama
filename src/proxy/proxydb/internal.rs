@@ -263,7 +263,7 @@ fn parse_csv_row(row: &str) -> Option<Proxy> {
             let credential = ProxyCredential::try_from_header_str(value)
                 .or_else(|_| ProxyCredential::try_from_clear_str(value.to_owned()))
                 .ok()?;
-            address.with_credential(credential);
+            address.credential = Some(credential);
         }
     }
 
