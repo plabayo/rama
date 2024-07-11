@@ -2,6 +2,8 @@
 //!
 //! See [`TransportContext`] for the centerpiece of this module.
 
+use http::Version;
+
 use crate::{
     error::OpaqueError,
     http::RequestContext,
@@ -13,8 +15,11 @@ use crate::{
 /// The context as relevant to the transport layer,
 /// often used when operating on Tcp/Udp/Tls.
 pub struct TransportContext {
+    /// the protocol used on the transport layer. One of the infamous two.
+    pub protocol: TransportProtocol,
+
     /// The [`Protocol`] of the application layer, if known.
-    pub protocol: Option<Protocol>,
+    pub app_protocol: Option<Protocol>,
 
     /// The authority of the target,
     /// from where this comes depends on the kind of
@@ -22,10 +27,24 @@ pub struct TransportContext {
     pub authority: Authority,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// The protocol used for the transport layer.
+pub enum TransportProtocol {
+    /// The `tcp` protocol.
+    Tcp,
+    /// The `udp` protocol.
+    Udp,
+}
+
 impl From<RequestContext> for TransportContext {
     fn from(value: RequestContext) -> Self {
         Self {
-            protocol: Some(value.protocol),
+            protocol: if value.http_version == Version::HTTP_3 {
+                TransportProtocol::Udp
+            } else {
+                TransportProtocol::Tcp
+            },
+            app_protocol: Some(value.protocol),
             authority: value.authority,
         }
     }
@@ -34,7 +53,12 @@ impl From<RequestContext> for TransportContext {
 impl From<&RequestContext> for TransportContext {
     fn from(value: &RequestContext) -> Self {
         Self {
-            protocol: Some(value.protocol.clone()),
+            protocol: if value.http_version == Version::HTTP_3 {
+                TransportProtocol::Udp
+            } else {
+                TransportProtocol::Tcp
+            },
+            app_protocol: Some(value.protocol.clone()),
             authority: value.authority.clone(),
         }
     }

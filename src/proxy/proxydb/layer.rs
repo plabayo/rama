@@ -106,9 +106,9 @@ use std::fmt;
 
 use crate::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
-    http::{Request, RequestContext},
     net::{
         address::ProxyAddress,
+        transport::TryRefIntoTransportContext,
         user::{Basic, ProxyCredential},
     },
     service::{Context, Layer, Service},
@@ -254,16 +254,17 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     define_inner_service_accessors!();
 }
 
-impl<S, D, P, F, State, Body> Service<State, Request<Body>> for ProxyDBService<S, D, P, F>
+impl<S, D, P, F, State, Request> Service<State, Request> for ProxyDBService<S, D, P, F>
 where
-    S: Service<State, Request<Body>>,
+    S: Service<State, Request>,
     S::Error: Into<BoxError> + Send + Sync + 'static,
     D: ProxyDB,
     D::Error: Into<BoxError> + Send + Sync + 'static,
     P: ProxyQueryPredicate,
     F: UsernameFormatter,
     State: Send + Sync + 'static,
-    Body: Send + 'static,
+    Request: TryRefIntoTransportContext<State> + Send + 'static,
+    Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = BoxError;
@@ -271,7 +272,7 @@ where
     async fn serve(
         &self,
         mut ctx: Context<State>,
-        req: Request<Body>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
         if self.preserve && ctx.contains::<ProxyAddress>() {
             // shortcut in case a proxy address is already set,
@@ -293,12 +294,14 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let req_ctx: &mut RequestContext =
-                ctx.get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())?;
+            let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .context("proxydb: select proxy: get transport context")
+            })?;
 
             let proxy = self
                 .db
-                .get_proxy_if(req_ctx.clone(), filter, self.predicate.clone())
+                .get_proxy_if(transport_ctx.clone(), filter, self.predicate.clone())
                 .await
                 .map_err(|err| OpaqueError::from_boxed(err.into()).context("select proxy in DB"))?;
 
@@ -473,10 +476,11 @@ impl UsernameFormatter for () {
 mod tests {
     use super::*;
     use crate::{
-        http::{Body, Version},
+        http::{Body, Request, Version},
         net::{
             address::{Authority, ProxyAddress},
             asn::Asn,
+            Protocol,
         },
         proxy::{MemoryProxyDB, ProxyCsvRowReader, StringFilter},
         service::ServiceBuilder,
@@ -547,6 +551,72 @@ mod tests {
             .uri("https://example.com")
             .body(Body::empty())
             .unwrap();
+
+        let proxy_address = service.serve(ctx, req).await.unwrap();
+        assert_eq!(
+            proxy_address.authority,
+            Authority::try_from("12.34.12.34:8080").unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_db_default_happy_path_example_transport_layer() {
+        let db = MemoryProxyDB::try_from_iter([
+            Proxy {
+                id: NonEmptyString::from_static("42"),
+                address: ProxyAddress::from_str("12.34.12.34:8080").unwrap(),
+                tcp: true,
+                udp: true,
+                http: true,
+                socks5: true,
+                datacenter: false,
+                residential: true,
+                mobile: true,
+                pool_id: None,
+                continent: Some("*".into()),
+                country: Some("*".into()),
+                state: Some("*".into()),
+                city: Some("*".into()),
+                carrier: Some("*".into()),
+                asn: Some(Asn::unspecified()),
+            },
+            Proxy {
+                id: NonEmptyString::from_static("100"),
+                address: ProxyAddress::from_str("12.34.12.35:8080").unwrap(),
+                tcp: true,
+                udp: false,
+                http: true,
+                socks5: false,
+                datacenter: true,
+                residential: false,
+                mobile: false,
+                pool_id: None,
+                continent: Some("americas".into()),
+                country: Some("US".into()),
+                state: None,
+                city: None,
+                carrier: None,
+                asn: Some(Asn::unspecified()),
+            },
+        ])
+        .unwrap();
+
+        let service = ServiceBuilder::new()
+            .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default))
+            .service_fn(|ctx: Context<()>, _| async move {
+                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            });
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyFilter {
+            country: Some(vec!["BE".into()]),
+            mobile: Some(true),
+            residential: Some(true),
+            ..Default::default()
+        });
+
+        let req = crate::tcp::client::Request::new("www.example.com:443".parse().unwrap())
+            .with_protocol(Protocol::HTTPS);
 
         let proxy_address = service.serve(ctx, req).await.unwrap();
         assert_eq!(

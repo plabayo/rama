@@ -1,6 +1,8 @@
 use crate::{
-    http::{RequestContext, Version},
-    net::asn::Asn,
+    net::{
+        asn::Asn,
+        transport::{TransportContext, TransportProtocol},
+    },
     utils::str::NonEmptyString,
 };
 use serde::Deserialize;
@@ -91,7 +93,7 @@ pub trait ProxyDB: Send + Sync + 'static {
     /// to filter out found proxies that do not match the given predicate.
     fn get_proxy_if(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
         predicate: impl ProxyQueryPredicate,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_;
@@ -100,7 +102,7 @@ pub trait ProxyDB: Send + Sync + 'static {
     /// or return an error in case no [`Proxy`] could be returned.
     fn get_proxy(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
         self.get_proxy_if(ctx, filter, true)
@@ -116,7 +118,7 @@ where
     #[inline]
     fn get_proxy_if(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
         predicate: impl ProxyQueryPredicate,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
@@ -151,7 +153,7 @@ impl ProxyDB for Proxy {
 
     async fn get_proxy_if(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
         predicate: impl ProxyQueryPredicate,
     ) -> Result<Proxy, Self::Error> {
@@ -211,7 +213,7 @@ impl MemoryProxyDB {
 
     fn query_from_filter(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
     ) -> internal::ProxyDBQuery {
         let mut query = self.data.query();
@@ -248,11 +250,13 @@ impl MemoryProxyDB {
             query.mobile(value);
         }
 
-        if ctx.http_version == Version::HTTP_3 {
-            query.udp(true);
-            query.socks5(true);
-        } else {
-            query.tcp(true);
+        match ctx.protocol {
+            TransportProtocol::Tcp => {
+                query.tcp(true);
+            }
+            TransportProtocol::Udp => {
+                query.udp(true).socks5(true);
+            }
         }
 
         query
@@ -270,7 +274,7 @@ impl ProxyDB for MemoryProxyDB {
 
     async fn get_proxy_if(
         &self,
-        ctx: RequestContext,
+        ctx: TransportContext,
         filter: ProxyFilter,
         predicate: impl ProxyQueryPredicate,
     ) -> Result<Proxy, Self::Error> {
@@ -495,10 +499,10 @@ mod tests {
         assert_eq!(db.len(), 64);
     }
 
-    fn h2_req_context() -> RequestContext {
-        RequestContext {
-            http_version: Version::HTTP_2,
-            protocol: Protocol::HTTPS,
+    fn h2_transport_context() -> TransportContext {
+        TransportContext {
+            protocol: TransportProtocol::Tcp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         }
     }
@@ -506,7 +510,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_found() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             id: Some(NonEmptyString::from_static("3031533634")),
             ..Default::default()
@@ -518,7 +522,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_found_correct_filters() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             id: Some(NonEmptyString::from_static("3031533634")),
             pool_id: Some(vec![StringFilter::new("poolF")]),
@@ -537,7 +541,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_not_found() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             id: Some(NonEmptyString::from_static("notfound")),
             ..Default::default()
@@ -549,7 +553,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_mismatch_filter() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filters = [
             ProxyFilter {
                 id: Some(NonEmptyString::from_static("3031533634")),
@@ -608,10 +612,10 @@ mod tests {
         }
     }
 
-    fn h3_req_context() -> RequestContext {
-        RequestContext {
-            http_version: Version::HTTP_3,
-            protocol: Protocol::HTTPS,
+    fn h3_transport_context() -> TransportContext {
+        TransportContext {
+            protocol: TransportProtocol::Udp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         }
     }
@@ -619,7 +623,7 @@ mod tests {
     #[tokio::test]
     async fn test_memproxydb_get_proxy_by_id_mismatch_req_context() {
         let db = memproxydb().await;
-        let ctx = h3_req_context();
+        let ctx = h3_transport_context();
         let filter = ProxyFilter {
             id: Some(NonEmptyString::from_static("3031533634")),
             ..Default::default()
@@ -632,7 +636,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_h3_capable_proxies() {
         let db = memproxydb().await;
-        let ctx = h3_req_context();
+        let ctx = h3_transport_context();
         let filter = ProxyFilter::default();
         let mut found_ids = Vec::new();
         for _ in 0..5000 {
@@ -654,7 +658,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_h2_capable_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter::default();
         let mut found_ids = Vec::new();
         for _ in 0..5000 {
@@ -675,7 +679,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_any_country_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             // there are no explicit BE proxies,
             // so these will only match the proxies that have a wildcard country
@@ -700,7 +704,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_illinois_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             // this will also work for proxies that have 'any' state
             state: Some(vec!["illinois".into()]),
@@ -724,7 +728,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_asn_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter {
             // this will also work for proxies that have 'any' ASN
             asn: Some(vec![Asn::from_static(42)]),
@@ -748,7 +752,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_h3_capable_mobile_residential_be_asterix_proxies() {
         let db = memproxydb().await;
-        let ctx = h3_req_context();
+        let ctx = h3_transport_context();
         let filter = ProxyFilter {
             country: Some(vec!["BE".into()]),
             mobile: Some(true),
@@ -764,7 +768,7 @@ mod tests {
     #[tokio::test]
     async fn test_memorydb_get_blocked_proxies() {
         let db = memproxydb().await;
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
         let filter = ProxyFilter::default();
 
         let mut blocked_proxies = vec![
@@ -867,7 +871,7 @@ mod tests {
         }])
         .unwrap();
 
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
 
         for filter in [
             ProxyFilter {
@@ -957,7 +961,7 @@ mod tests {
         }])
         .unwrap();
 
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
 
         for filter in [
             ProxyFilter {
@@ -1095,7 +1099,7 @@ mod tests {
         ])
         .unwrap();
 
-        let ctx = h2_req_context();
+        let ctx = h2_transport_context();
 
         let filter = ProxyFilter {
             pool_id: Some(vec![StringFilter::new("a"), StringFilter::new("c")]),

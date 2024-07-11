@@ -1,9 +1,9 @@
 use super::{ProxyFilter, StringFilter};
 use crate::{
-    http::{RequestContext, Version},
     net::{
         address::ProxyAddress,
         asn::{Asn, InvalidAsn},
+        transport::{TransportContext, TransportProtocol},
         user::ProxyCredential,
     },
     utils::str::NonEmptyString,
@@ -84,17 +84,24 @@ fn proxydb_insert_validator(proxy: &Proxy) -> bool {
 
 impl Proxy {
     /// Check if the proxy is a match for the given[`RequestContext`] and [`ProxyFilter`].
-    pub fn is_match(&self, ctx: &RequestContext, filter: &ProxyFilter) -> bool {
+    pub fn is_match(&self, ctx: &TransportContext, filter: &ProxyFilter) -> bool {
         if let Some(id) = &filter.id {
             if id != &self.id {
                 return false;
             }
         }
 
-        if (ctx.http_version == Version::HTTP_3 && (!self.socks5 || !self.udp))
-            || (ctx.http_version != Version::HTTP_3 && (!self.tcp || !(self.http || self.socks5)))
-        {
-            return false;
+        match ctx.protocol {
+            TransportProtocol::Udp => {
+                if !self.socks5 || !self.udp {
+                    return false;
+                }
+            }
+            TransportProtocol::Tcp => {
+                if !self.tcp || !(self.http || self.socks5) {
+                    return false;
+                }
+            }
         }
 
         return filter
@@ -692,9 +699,9 @@ mod tests {
             asn: Some(Asn::from_static(1)),
         };
 
-        let ctx = RequestContext {
-            http_version: Version::HTTP_2,
-            protocol: Protocol::HTTPS,
+        let ctx = TransportContext {
+            protocol: TransportProtocol::Tcp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -736,9 +743,9 @@ mod tests {
             asn: Some(Asn::from_static(1)),
         };
 
-        let ctx = RequestContext {
-            http_version: Version::HTTP_2,
-            protocol: Protocol::HTTPS,
+        let ctx = TransportContext {
+            protocol: TransportProtocol::Tcp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -773,9 +780,9 @@ mod tests {
             asn: None,
         };
 
-        let ctx = RequestContext {
-            http_version: Version::HTTP_3,
-            protocol: Protocol::HTTPS,
+        let ctx = TransportContext {
+            protocol: TransportProtocol::Udp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -810,9 +817,9 @@ mod tests {
             asn: None,
         };
 
-        let ctx = RequestContext {
-            http_version: Version::HTTP_3,
-            protocol: Protocol::HTTPS,
+        let ctx = TransportContext {
+            protocol: TransportProtocol::Udp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -847,9 +854,9 @@ mod tests {
             asn: None,
         };
 
-        let ctx = RequestContext {
-            http_version: Version::HTTP_3,
-            protocol: Protocol::HTTPS,
+        let ctx = TransportContext {
+            protocol: TransportProtocol::Udp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -999,9 +1006,9 @@ mod tests {
                 Some(proxy) => proxy,
                 None => panic!("failed to parse proxy row: `{proxy_csv}`"),
             };
-            let ctx = RequestContext {
-                http_version: Version::HTTP_2,
-                protocol: Protocol::HTTPS,
+            let ctx = TransportContext {
+                protocol: TransportProtocol::Tcp,
+                app_protocol: Some(Protocol::HTTPS),
                 authority: "localhost:8443".try_into().unwrap(),
             };
 
@@ -1113,9 +1120,9 @@ mod tests {
             ),
         ] {
             let proxy = parse_csv_row(proxy_csv).unwrap();
-            let ctx = RequestContext {
-                http_version: Version::HTTP_2,
-                protocol: Protocol::HTTPS,
+            let ctx = TransportContext {
+                protocol: TransportProtocol::Tcp,
+                app_protocol: Some(Protocol::HTTPS),
                 authority: "localhost:8443".try_into().unwrap(),
             };
 
@@ -1131,9 +1138,9 @@ mod tests {
     #[test]
     fn test_proxy_is_match_happy_path_proxy_with_any_filter_string_cases() {
         let proxy = parse_csv_row("id,1,,1,,,,,authority,*,*,*,*,*,*,0").unwrap();
-        let ctx = RequestContext {
-            http_version: Version::HTTP_2,
-            protocol: Protocol::HTTPS,
+        let ctx = TransportContext {
+            protocol: TransportProtocol::Tcp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -1181,9 +1188,9 @@ mod tests {
         let proxy =
             parse_csv_row("id,1,,1,,,,,authority,pool,continent,country,state,city,carrier,42")
                 .unwrap();
-        let ctx = RequestContext {
-            http_version: Version::HTTP_2,
-            protocol: Protocol::HTTPS,
+        let ctx = TransportContext {
+            protocol: TransportProtocol::Tcp,
+            app_protocol: Some(Protocol::HTTPS),
             authority: "localhost:8443".try_into().unwrap(),
         };
 
