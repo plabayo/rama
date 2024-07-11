@@ -13,7 +13,6 @@
 //! or of course because the inner [`Service`] failed.
 //!
 //! [`ProxyAddress`]: crate::net::address::ProxyAddress
-//! [`Proxy`]: crate::proxy::Proxy
 //! [`ProxyDB`]: crate::proxy::ProxyDB
 //! [`Context`]: crate::service::Context
 //! [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
@@ -106,6 +105,101 @@
 //!     assert_eq!(proxy_address.authority.to_string(), "12.34.12.34:8080");
 //! }
 //! ```
+//!
+//! ## Single Proxy Router
+//!
+//! Another example is a single proxy through which
+//! one can connect with config for further downstream proxies
+//! passed by username labels.
+//!
+//! Note that the username formatter is available for any proxy db,
+//! it is not specific to the usage of a single proxy.
+//!
+//! ```rust
+//! use rama::{
+//!    http::{Body, Version, Request},
+//!    proxy::{
+//!         Proxy,
+//!         layer::{ProxyDBLayer, ProxyFilterMode},
+//!         ProxyFilter,
+//!    },
+//!    service::{Context, ServiceBuilder, Service, Layer},
+//!    net::address::ProxyAddress,
+//!    utils::str::NonEmptyString,
+//! };
+//! use itertools::Itertools;
+//! use std::{convert::Infallible, sync::Arc};
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     let proxy = Proxy {
+//!         id: NonEmptyString::from_static("1"),
+//!         address: "john:secret@proxy.example.com:60000".try_into().unwrap(),
+//!         tcp: true,
+//!         udp: true,
+//!         http: true,
+//!         https: false,
+//!         socks5: true,
+//!         socks5h: false,
+//!         datacenter: false,
+//!         residential: true,
+//!         mobile: false,
+//!         pool_id: None,
+//!         continent: Some("*".into()),
+//!         country: Some("*".into()),
+//!         state: Some("*".into()),
+//!         city: Some("*".into()),
+//!         carrier: Some("*".into()),
+//!         asn: None,
+//!     };
+//!
+//!     let service = ServiceBuilder::new()
+//!         .layer(ProxyDBLayer::new(Arc::new(proxy))
+//!              .filter_mode(ProxyFilterMode::Default)
+//!              .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+//!                  use std::fmt::Write;
+//!
+//!                  let mut output = String::new();
+//!
+//!                  if let Some(countries) =
+//!                      filter.country.as_ref().filter(|t| !t.is_empty())
+//!                  {
+//!                      let _ = write!(output, "country-{}", countries[0]);
+//!                  }
+//!                  if let Some(states) =
+//!                      filter.state.as_ref().filter(|t| !t.is_empty())
+//!                  {
+//!                      let _ = write!(output, "state-{}", states[0]);
+//!                  }
+//!
+//!                  (!output.is_empty()).then(|| format!("{username}-{output}"))
+//!              }),
+//!         )
+//!         .service_fn(|ctx: Context<()>, _: Request| async move {
+//!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+//!         });
+//!
+//!     let mut ctx = Context::default();
+//!     ctx.insert(ProxyFilter {
+//!         country: Some(vec!["BE".into()]),
+//!         residential: Some(true),
+//!         ..Default::default()
+//!     });
+//!
+//!     let req = Request::builder()
+//!         .version(Version::HTTP_3)
+//!         .method("GET")
+//!         .uri("https://example.com")
+//!         .body(Body::empty())
+//!         .unwrap();
+//!
+//!     let proxy_address = service.serve(ctx, req).await.unwrap();
+//!     assert_eq!(
+//!         "socks5://john-country-be:secret@proxy.example.com:60000",
+//!         proxy_address.to_string()
+//!     );
+//! }
+//! ```
 
 use std::fmt;
 
@@ -120,7 +214,7 @@ use crate::{
     service::{Context, Layer, Service},
 };
 
-use super::{ProxyDB, ProxyFilter, ProxyQueryPredicate};
+use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
 
 /// A [`Service`] which selects a [`Proxy`] based on the given [`Context`].
 ///
@@ -146,8 +240,6 @@ pub struct ProxyDBService<S, D, P, F> {
 ///
 /// More advanced behaviour can be achieved by combining one of these modi
 /// with another (custom) layer prepending the parent.
-///
-/// [`Proxy`]: crate::proxy::Proxy
 pub enum ProxyFilterMode {
     #[default]
     /// The [`ProxyFilter`] is optional, and if not present, no proxy is selected.
@@ -250,8 +342,6 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     /// the username based on the selected [`Proxy`]. This is required
     /// in case the proxy is a router that accepts or maybe even requires
     /// username labels to configure proxies further down/up stream.
-    ///
-    /// [`Proxy`]: crate::proxy::Proxy
     pub fn username_formatter<Formatter>(self, f: Formatter) -> ProxyDBService<S, D, P, Formatter> {
         ProxyDBService {
             inner: self.inner,
@@ -327,10 +417,11 @@ where
             proxy_address.credential = proxy_address.credential.take().map(|credential| {
                 match credential {
                     ProxyCredential::Basic(ref basic) => {
-                        match self
-                            .username_formatter
-                            .fmt_username(&filter, basic.username())
-                        {
+                        match self.username_formatter.fmt_username(
+                            &proxy,
+                            &filter,
+                            basic.username(),
+                        ) {
                             Some(username) => ProxyCredential::Basic(Basic::new(
                                 username,
                                 basic.password().to_owned(),
@@ -395,8 +486,6 @@ where
 /// and insert, if a [`Proxy`] is selected, it in the [`Context`] for further processing.
 ///
 /// See [`ProxyDBService`] for more details.
-///
-/// [`Proxy`]: crate::proxy::Proxy
 pub struct ProxyDBLayer<D, P, F> {
     db: D,
     mode: ProxyFilterMode,
@@ -489,8 +578,6 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
     /// the username based on the selected [`Proxy`]. This is required
     /// in case the proxy is a router that accepts or maybe even requires
     /// username labels to configure proxies further down/up stream.
-    ///
-    /// [`Proxy`]: crate::proxy::Proxy
     pub fn username_formatter<Formatter>(self, f: Formatter) -> ProxyDBLayer<D, P, Formatter> {
         ProxyDBLayer {
             db: self.db,
@@ -526,21 +613,26 @@ where
 /// e.g. to allow proxy routers to have proxy config labels in the username.
 pub trait UsernameFormatter: Send + Sync + 'static {
     /// format the username based on the root properties of the given proxy.
-    fn fmt_username(&self, filter: &ProxyFilter, username: &str) -> Option<String>;
+    fn fmt_username(&self, proxy: &Proxy, filter: &ProxyFilter, username: &str) -> Option<String>;
 }
 
 impl UsernameFormatter for () {
-    fn fmt_username(&self, _filter: &ProxyFilter, _username: &str) -> Option<String> {
+    fn fmt_username(
+        &self,
+        _proxy: &Proxy,
+        _filter: &ProxyFilter,
+        _username: &str,
+    ) -> Option<String> {
         None
     }
 }
 
 impl<F> UsernameFormatter for F
 where
-    F: Fn(&ProxyFilter, &str) -> Option<String> + Send + Sync + 'static,
+    F: Fn(&Proxy, &ProxyFilter, &str) -> Option<String> + Send + Sync + 'static,
 {
-    fn fmt_username(&self, filter: &ProxyFilter, username: &str) -> Option<String> {
-        (self)(filter, username)
+    fn fmt_username(&self, proxy: &Proxy, filter: &ProxyFilter, username: &str) -> Option<String> {
+        (self)(proxy, filter, username)
     }
 }
 
@@ -684,6 +776,85 @@ mod tests {
         assert_eq!(
             proxy_address.authority,
             Authority::try_from("12.34.12.34:8080").unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_proxy_db_single_proxy_with_username_formatter() {
+        let proxy = Proxy {
+            id: NonEmptyString::from_static("42"),
+            address: ProxyAddress::from_str("john:secret@12.34.12.34:8080").unwrap(),
+            tcp: true,
+            udp: true,
+            http: true,
+            https: true,
+            socks5: true,
+            socks5h: true,
+            datacenter: false,
+            residential: true,
+            mobile: true,
+            pool_id: Some("routers".into()),
+            continent: Some("*".into()),
+            country: Some("*".into()),
+            state: Some("*".into()),
+            city: Some("*".into()),
+            carrier: Some("*".into()),
+            asn: Some(Asn::unspecified()),
+        };
+
+        let service = ServiceBuilder::new()
+            .layer(
+                ProxyDBLayer::new(Arc::new(proxy))
+                    .filter_mode(ProxyFilterMode::Default)
+                    .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+                        if proxy
+                            .pool_id
+                            .as_ref()
+                            .map(|id| id.as_ref() == "routers")
+                            .unwrap_or_default()
+                        {
+                            use std::fmt::Write;
+
+                            let mut output = String::new();
+
+                            if let Some(countries) =
+                                filter.country.as_ref().filter(|t| !t.is_empty())
+                            {
+                                let _ = write!(output, "country-{}", countries[0]);
+                            }
+                            if let Some(states) = filter.state.as_ref().filter(|t| !t.is_empty()) {
+                                let _ = write!(output, "state-{}", states[0]);
+                            }
+
+                            return (!output.is_empty()).then(|| format!("{username}-{output}"));
+                        }
+
+                        None
+                    }),
+            )
+            .service_fn(|ctx: Context<()>, _: Request| async move {
+                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            });
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyFilter {
+            country: Some(vec!["BE".into()]),
+            mobile: Some(true),
+            residential: Some(true),
+            ..Default::default()
+        });
+
+        let req = Request::builder()
+            .version(Version::HTTP_3)
+            .method("GET")
+            .uri("https://example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let proxy_address = service.serve(ctx, req).await.unwrap();
+        assert_eq!(
+            "socks5://john-country-be:secret@12.34.12.34:8080",
+            proxy_address.to_string()
         );
     }
 
