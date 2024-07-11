@@ -107,7 +107,10 @@ use std::fmt;
 use crate::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     http::{Request, RequestContext},
-    net::user::{Basic, ProxyCredential},
+    net::{
+        address::ProxyAddress,
+        user::{Basic, ProxyCredential},
+    },
     service::{Context, Layer, Service},
 };
 
@@ -126,6 +129,7 @@ pub struct ProxyDBService<S, D, P, F> {
     mode: ProxyFilterMode,
     predicate: P,
     username_formatter: F,
+    preserve: bool,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -160,6 +164,7 @@ where
             .field("mode", &self.mode)
             .field("predicate", &self.predicate)
             .field("username_formatter", &self.username_formatter)
+            .field("preserve", &self.preserve)
             .finish()
     }
 }
@@ -178,6 +183,7 @@ where
             mode: self.mode.clone(),
             predicate: self.predicate.clone(),
             username_formatter: self.username_formatter.clone(),
+            preserve: self.preserve,
         }
     }
 }
@@ -191,6 +197,7 @@ impl<S, D> ProxyDBService<S, D, bool, ()> {
             mode: ProxyFilterMode::Optional,
             predicate: true,
             username_formatter: (),
+            preserve: false,
         }
     }
 }
@@ -204,6 +211,17 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
         self
     }
 
+    /// Define whether or not an existing [`ProxyAddress`] (in the [`Context`])
+    /// should be overwritten or not. By default `preserve=false`,
+    /// meaning we will overwrite the proxy address in case we selected one now.
+    ///
+    /// NOTE even when `preserve=false` it might still be that there's
+    /// a [`ProxyAddress`] in case it was set by a previous layer.
+    pub fn preserve_proxy(mut self, preserve: bool) -> Self {
+        self.preserve = preserve;
+        self
+    }
+
     /// Set a [`ProxyQueryPredicate`] that will be used
     /// to possibly filter out proxies that according to the filters are correct,
     /// but not according to the predicate.
@@ -214,6 +232,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
             mode: self.mode,
             predicate: p,
             username_formatter: self.username_formatter,
+            preserve: self.preserve,
         }
     }
 
@@ -228,6 +247,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
             mode: self.mode,
             predicate: self.predicate,
             username_formatter: f,
+            preserve: self.preserve,
         }
     }
 
@@ -253,6 +273,12 @@ where
         mut ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
+        if self.preserve && ctx.contains::<ProxyAddress>() {
+            // shortcut in case a proxy address is already set,
+            // and we wish to preserve it
+            return self.inner.serve(ctx, req).await.map_err(Into::into);
+        }
+
         let maybe_filter = match self.mode {
             ProxyFilterMode::Optional => ctx.get::<ProxyFilter>().cloned(),
             ProxyFilterMode::Default => Some(ctx.get_or_insert_default::<ProxyFilter>().clone()),
@@ -312,6 +338,7 @@ pub struct ProxyDBLayer<D, P, F> {
     mode: ProxyFilterMode,
     predicate: P,
     username_formatter: F,
+    preserve: bool,
 }
 
 impl<D, P, F> fmt::Debug for ProxyDBLayer<D, P, F>
@@ -326,6 +353,7 @@ where
             .field("mode", &self.mode)
             .field("predicate", &self.predicate)
             .field("username_formatter", &self.username_formatter)
+            .field("preserve", &self.preserve)
             .finish()
     }
 }
@@ -342,6 +370,7 @@ where
             mode: self.mode.clone(),
             predicate: self.predicate.clone(),
             username_formatter: self.username_formatter.clone(),
+            preserve: self.preserve,
         }
     }
 }
@@ -354,6 +383,7 @@ impl<D> ProxyDBLayer<D, bool, ()> {
             mode: ProxyFilterMode::Optional,
             predicate: true,
             username_formatter: (),
+            preserve: false,
         }
     }
 }
@@ -367,6 +397,17 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
         self
     }
 
+    /// Define whether or not an existing [`ProxyAddress`] (in the [`Context`])
+    /// should be overwritten or not. By default `preserve=false`,
+    /// meaning we will overwrite the proxy address in case we selected one now.
+    ///
+    /// NOTE even when `preserve=false` it might still be that there's
+    /// a [`ProxyAddress`] in case it was set by a previous layer.
+    pub fn preserve_proxy(mut self, preserve: bool) -> Self {
+        self.preserve = preserve;
+        self
+    }
+
     /// Set a [`ProxyQueryPredicate`] that will be used
     /// to possibly filter out proxies that according to the filters are correct,
     /// but not according to the predicate.
@@ -376,6 +417,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
             mode: self.mode,
             predicate: p,
             username_formatter: self.username_formatter,
+            preserve: self.preserve,
         }
     }
 
@@ -389,6 +431,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
             mode: self.mode,
             predicate: self.predicate,
             username_formatter: f,
+            preserve: self.preserve,
         }
     }
 }
@@ -408,6 +451,7 @@ where
             mode: self.mode.clone(),
             predicate: self.predicate.clone(),
             username_formatter: self.username_formatter.clone(),
+            preserve: self.preserve,
         }
     }
 }
@@ -520,6 +564,35 @@ mod tests {
             rows.push(proxy);
         }
         MemoryProxyDB::try_from_rows(rows).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_proxy_db_service_preserve_proxy_address() {
+        let db = memproxydb().await;
+
+        let service = ServiceBuilder::new()
+            .layer(
+                ProxyDBLayer::new(Arc::new(db))
+                    .preserve_proxy(true)
+                    .filter_mode(ProxyFilterMode::Default),
+            )
+            .service_fn(|ctx: Context<()>, _: Request| async move {
+                Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
+            });
+
+        let mut ctx = Context::default();
+        ctx.insert(ProxyAddress::try_from("http://john:secret@1.2.3.4:1234").unwrap());
+
+        let req = Request::builder()
+            .version(Version::HTTP_11)
+            .method("GET")
+            .uri("http://example.com")
+            .body(Body::empty())
+            .unwrap();
+
+        let proxy_address = service.serve(ctx, req).await.unwrap();
+
+        assert_eq!(proxy_address.authority.to_string(), "1.2.3.4:1234");
     }
 
     #[tokio::test]
