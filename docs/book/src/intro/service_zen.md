@@ -63,7 +63,7 @@ a proxy for a tcp/udp connector, and that can be defined in any way you wish.
 It gives you the full flexibility of how you want to allow a developer to let
 the [`ProxyAddress`] to be defined, without having to have any of that in your connect service and without having to do anything at all.
 
-Speaking about `Connectors`, those are a nice example of a type of [`Service`][service] that you might not expect. Because in rama we practise the zen of [services][service:
+Speaking about `Connectors`, those are a nice example of a type of [`Service`][service] that you might not expect. Because in rama we practise the zen of [services][service]:
 
 - Transport streams and dataframes are passed in [service] stacks
 - Application layers such as http work in service stacks
