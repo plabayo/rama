@@ -29,7 +29,7 @@ impl Request {
     }
 
     /// Attach an application protocol to this [`Request`]
-    /// on which the established connecton will operate.
+    /// on which the established connection will operate.
     pub fn with_protocol(mut self, protocol: Protocol) -> Self {
         self.protocol = Some(protocol);
         self

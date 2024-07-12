@@ -79,7 +79,7 @@ Speaking about `Connectors`, those are a nice example of a type of [`Service`][s
 [a Limit layer]: https://ramaproxy.org/docs/rama/service/layer/limit/struct.Limit.html
 
 [`Extension`]: https://ramaproxy.org/docs/rama/service/context/struct.Extensions.html
-[`Context`] https://ramaproxy.org/docs/rama/service/context/struct.Context.html
+[`Context`]: https://ramaproxy.org/docs/rama/service/context/struct.Context.html
 
 [`ProxyAddress`]: https://ramaproxy.org/docs/rama/net/address/struct.ProxyAddress.html
 

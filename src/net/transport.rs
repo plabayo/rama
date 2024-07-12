@@ -107,7 +107,7 @@ pub trait TryRefIntoTransportContext<State> {
     /// The error that can happen when trying to turn the self reference into the TransportContext.
     type Error;
 
-    /// Try to turn the reference to self within the given contect into the TransportContext.
+    /// Try to turn the reference to self within the given context into the TransportContext.
     fn try_ref_into_transport_ctx(
         &self,
         ctx: &Context<State>,
