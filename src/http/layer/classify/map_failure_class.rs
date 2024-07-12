@@ -7,7 +7,6 @@ use std::fmt;
 ///
 /// Created with [`ClassifyResponse::map_failure_class`] or
 /// [`ClassifyEos::map_failure_class`].
-#[derive(Clone, Copy)]
 pub struct MapFailureClass<C, F> {
     inner: C,
     f: F,
@@ -22,12 +21,26 @@ impl<C, F> MapFailureClass<C, F> {
 impl<C, F> fmt::Debug for MapFailureClass<C, F>
 where
     C: fmt::Debug,
+    F: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("MapFailureClass")
             .field("inner", &self.inner)
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &self.f)
             .finish()
+    }
+}
+
+impl<C, F> Clone for MapFailureClass<C, F>
+where
+    C: Clone,
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            f: self.f.clone(),
+        }
     }
 }
 

@@ -19,10 +19,30 @@ pub use auth::{ProxyAuthority, ProxyAuthoritySync};
 /// Layer that applies the [`ProxyAuthService`] middleware which apply a timeout to requests.
 ///
 /// See the [module docs](super) for an example.
-#[derive(Debug, Clone)]
 pub struct ProxyAuthLayer<A, C = Basic, L = ()> {
     proxy_auth: A,
     _phantom: PhantomData<fn(C, L) -> ()>,
+}
+
+impl<A: fmt::Debug, C, L> fmt::Debug for ProxyAuthLayer<A, C, L> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("ProxyAuthLayer")
+            .field("proxy_auth", &self.proxy_auth)
+            .field(
+                "_phantom",
+                &format_args!("{}", std::any::type_name::<fn(C, L) -> ()>()),
+            )
+            .finish()
+    }
+}
+
+impl<A: Clone, C, L> Clone for ProxyAuthLayer<A, C, L> {
+    fn clone(&self) -> Self {
+        Self {
+            proxy_auth: self.proxy_auth.clone(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<A, C> ProxyAuthLayer<A, C, ()> {

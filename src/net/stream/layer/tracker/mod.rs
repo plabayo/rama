@@ -2,7 +2,7 @@ use crate::{
     net::stream::Stream,
     service::{Context, Layer, Service},
 };
-use std::future::Future;
+use std::{fmt, future::Future};
 
 mod bytes;
 use bytes::BytesRWTracker;
@@ -13,9 +13,16 @@ pub use bytes::BytesRWTrackerHandle;
 ///
 /// [`Service`]: crate::service::Service
 /// [`Stream`]: crate::net::stream::Stream
-#[derive(Debug)]
 pub struct BytesTrackerService<S> {
     inner: S,
+}
+
+impl<S: fmt::Debug> fmt::Debug for BytesTrackerService<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BytesTrackerService")
+            .field("inner", &self.inner)
+            .finish()
+    }
 }
 
 impl<S> BytesTrackerService<S> {

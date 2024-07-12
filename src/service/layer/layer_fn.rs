@@ -17,7 +17,6 @@ pub fn layer_fn<T>(f: T) -> LayerFn<T> {
 }
 
 /// A `Layer` implemented by a closure. See the docs for [`layer_fn`] for more details.
-#[derive(Clone, Copy)]
 pub struct LayerFn<F> {
     f: F,
 }
@@ -30,6 +29,15 @@ where
 
     fn layer(&self, inner: S) -> Self::Service {
         (self.f.clone())(inner)
+    }
+}
+
+impl<F> Clone for LayerFn<F>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self { f: self.f.clone() }
     }
 }
 
@@ -58,8 +66,25 @@ mod tests {
         use crate::service::{service_fn, Context, Service};
         use std::convert::Infallible;
 
-        #[derive(Debug)]
         struct ToUpper<S>(S);
+
+        impl<S> fmt::Debug for ToUpper<S>
+        where
+            S: fmt::Debug,
+        {
+            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.debug_tuple("ToUpper").field(&self.0).finish()
+            }
+        }
+
+        impl<S> Clone for ToUpper<S>
+        where
+            S: Clone,
+        {
+            fn clone(&self) -> Self {
+                Self(self.0.clone())
+            }
+        }
 
         impl<S, State, Request> Service<State, Request> for ToUpper<S>
         where
@@ -77,15 +102,6 @@ mod tests {
             ) -> Result<Self::Response, Self::Error> {
                 let res = self.0.serve(ctx, req).await;
                 res.map(|msg| msg.to_uppercase())
-            }
-        }
-
-        impl<S> Clone for ToUpper<S>
-        where
-            S: Clone,
-        {
-            fn clone(&self) -> Self {
-                ToUpper(self.0.clone())
             }
         }
 

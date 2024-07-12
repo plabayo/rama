@@ -1,5 +1,5 @@
 use parking_lot::Mutex;
-use std::fmt::Display;
+use std::fmt::{self, Display};
 use std::time::Duration;
 use tokio::time;
 
@@ -15,13 +15,24 @@ use super::Backoff;
 ///
 /// [exponential backoff]: https://en.wikipedia.org/wiki/Exponential_backoff
 /// [random jitter]: https://aws.amazon.com/blogs/architecture/exponential-backoff-and-jitter/
-#[derive(Debug)]
 pub struct ExponentialBackoff<F, R = HasherRng> {
     min: time::Duration,
     max: time::Duration,
     jitter: f64,
     rng_creator: F,
     state: Mutex<ExponentialBackoffState<R>>,
+}
+
+impl<F: fmt::Debug, R: fmt::Debug> fmt::Debug for ExponentialBackoff<F, R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExponentialBackoff")
+            .field("min", &self.min)
+            .field("max", &self.max)
+            .field("jitter", &self.jitter)
+            .field("rng_creator", &self.rng_creator)
+            .field("state", &self.state)
+            .finish()
+    }
 }
 
 impl<F, R> Clone for ExponentialBackoff<F, R>
@@ -58,10 +69,18 @@ impl Clone for ExponentialBackoff<(), HasherRng> {
     }
 }
 
-#[derive(Debug)]
 struct ExponentialBackoffState<R = HasherRng> {
     rng: R,
     iterations: u32,
+}
+
+impl<R: fmt::Debug> fmt::Debug for ExponentialBackoffState<R> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExponentialBackoffState")
+            .field("rng", &self.rng)
+            .field("iterations", &self.iterations)
+            .finish()
+    }
 }
 
 impl<F, R> ExponentialBackoff<F, R>

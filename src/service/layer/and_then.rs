@@ -14,11 +14,12 @@ pub struct AndThen<S, F> {
 impl<S, F> fmt::Debug for AndThen<S, F>
 where
     S: fmt::Debug,
+    F: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AndThen")
             .field("inner", &self.inner)
-            .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("f", &self.f)
             .finish()
     }
 }
@@ -39,7 +40,6 @@ where
 /// A [`Layer`] that produces a [`AndThen`] service.
 ///
 /// [`Layer`]: crate::service::Layer
-#[derive(Debug)]
 pub struct AndThenLayer<F> {
     f: F,
 }
@@ -51,6 +51,15 @@ impl<S, F> AndThen<S, F> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<F> fmt::Debug for AndThenLayer<F>
+where
+    F: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AndThenLayer").field("f", &self.f).finish()
+    }
 }
 
 impl<F> Clone for AndThenLayer<F>

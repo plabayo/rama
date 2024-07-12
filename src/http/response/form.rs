@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::error::OpaqueError;
 use crate::http::dep::http::header::CONTENT_TYPE;
 use crate::http::dep::http::StatusCode;
@@ -60,9 +62,19 @@ use serde::Serialize;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, Copy, Default)]
-#[must_use]
 pub struct Form<T>(pub T);
+
+impl<T: fmt::Debug> fmt::Debug for Form<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Form").field(&self.0).finish()
+    }
+}
+
+impl<T: Clone> Clone for Form<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl_deref!(Form);
 

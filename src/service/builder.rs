@@ -250,11 +250,10 @@ where
 
 #[cfg(test)]
 mod test {
-    use std::convert::Infallible;
-
-    use crate::service::{Context, Service};
-
     use super::*;
+    use crate::service::{Context, Service};
+    use std::convert::Infallible;
+    use std::fmt;
 
     #[test]
     fn assert_send() {
@@ -274,8 +273,25 @@ mod test {
         assert_sync::<ServiceBuilder<Stack<Identity, Stack<Identity, Identity>>>>();
     }
 
-    #[derive(Debug)]
     struct ToUpper<S>(S);
+
+    impl<S> fmt::Debug for ToUpper<S>
+    where
+        S: fmt::Debug,
+    {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.debug_tuple("ToUpper").field(&self.0).finish()
+        }
+    }
+
+    impl<S> Clone for ToUpper<S>
+    where
+        S: Clone,
+    {
+        fn clone(&self) -> Self {
+            Self(self.0.clone())
+        }
+    }
 
     impl<S, State, Request> Service<State, Request> for ToUpper<S>
     where
@@ -294,15 +310,6 @@ mod test {
         ) -> Result<Self::Response, Self::Error> {
             let res = self.0.serve(ctx, req).await;
             res.map(|msg| msg.as_ref().to_uppercase())
-        }
-    }
-
-    impl<S> Clone for ToUpper<S>
-    where
-        S: Clone,
-    {
-        fn clone(&self) -> Self {
-            ToUpper(self.0.clone())
         }
     }
 

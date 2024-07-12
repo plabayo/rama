@@ -155,9 +155,16 @@ where
 }
 
 /// Error returned if converting a value to a header fails.
-#[derive(Debug)]
 pub struct TryIntoHeaderError<K, V> {
     kind: TryIntoHeaderErrorKind<K, V>,
+}
+
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for TryIntoHeaderError<K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TryIntoHeaderError")
+            .field("kind", &self.kind)
+            .finish()
+    }
 }
 
 impl<K, V> TryIntoHeaderError<K, V> {
@@ -174,10 +181,18 @@ impl<K, V> TryIntoHeaderError<K, V> {
     }
 }
 
-#[derive(Debug)]
 enum TryIntoHeaderErrorKind<K, V> {
     Key(K),
     Value(V),
+}
+
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for TryIntoHeaderErrorKind<K, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Key(key) => write!(f, "TryIntoHeaderErrorKind::Key({key:?})"),
+            Self::Value(value) => write!(f, "TryIntoHeaderErrorKind::Value({value:?})"),
+        }
+    }
 }
 
 impl<K, V> IntoResponse for TryIntoHeaderError<K, V>

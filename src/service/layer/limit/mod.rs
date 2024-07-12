@@ -2,6 +2,8 @@
 //!
 //! See [`Limit`].
 
+use std::fmt;
+
 use crate::error::BoxError;
 use crate::service::{Context, Service};
 
@@ -16,7 +18,6 @@ pub use layer::LimitLayer;
 /// Limit requests based on a [`Policy`].
 ///
 /// [`Policy`]: crate::service::layer::limit::Policy
-#[derive(Debug)]
 pub struct Limit<S, P> {
     inner: S,
     policy: P,
@@ -41,6 +42,15 @@ impl<T> Limit<T, UnlimitedPolicy> {
             inner,
             policy: UnlimitedPolicy,
         }
+    }
+}
+
+impl<T: fmt::Debug, P: fmt::Debug> fmt::Debug for Limit<T, P> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Limit")
+            .field("inner", &self.inner)
+            .field("policy", &self.policy)
+            .finish()
     }
 }
 

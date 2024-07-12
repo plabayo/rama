@@ -28,13 +28,22 @@ use super::{Policy, PolicyOutput, PolicyResult};
 use crate::service::Context;
 use crate::utils::backoff::Backoff;
 use parking_lot::Mutex;
+use std::fmt;
 use std::sync::Arc;
 
 /// A [`Policy`] that limits the number of concurrent requests.
-#[derive(Debug)]
 pub struct ConcurrentPolicy<B, C> {
     tracker: C,
     backoff: B,
+}
+
+impl<B: fmt::Debug, C: fmt::Debug> std::fmt::Debug for ConcurrentPolicy<B, C> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConcurrentPolicy")
+            .field("tracker", &self.tracker)
+            .field("backoff", &self.backoff)
+            .finish()
+    }
 }
 
 impl<B, C> Clone for ConcurrentPolicy<B, C>

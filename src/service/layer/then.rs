@@ -37,7 +37,6 @@ where
 /// A [`Layer`] that produces a [`Then`] service.
 ///
 /// [`Layer`]: crate::service::Layer
-#[derive(Debug)]
 pub struct ThenLayer<F> {
     f: F,
 }
@@ -49,6 +48,12 @@ impl<S, F> Then<S, F> {
     }
 
     define_inner_service_accessors!();
+}
+
+impl<F: fmt::Debug> fmt::Debug for ThenLayer<F> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Then").field("f", &self.f).finish()
+    }
 }
 
 impl<F> Clone for ThenLayer<F>

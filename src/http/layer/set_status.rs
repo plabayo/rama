@@ -39,7 +39,7 @@ use crate::http::{Request, Response, StatusCode};
 use crate::service::{Context, Layer, Service};
 
 /// Layer that applies [`SetStatus`] which overrides the status codes.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct SetStatusLayer {
     status: StatusCode,
 }

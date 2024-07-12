@@ -95,13 +95,34 @@ use crate::service::{Context, Layer, Service};
 /// `500 Internal Server` responses.
 ///
 /// See the [module docs](self) for an example.
-#[derive(Debug, Clone, Copy, Default)]
 pub struct CatchPanicLayer<T> {
     panic_handler: T,
 }
 
+impl<T: fmt::Debug> fmt::Debug for CatchPanicLayer<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("CatchPanicLayer")
+            .field("panic_handler", &self.panic_handler)
+            .finish()
+    }
+}
+
+impl<T: Clone> Clone for CatchPanicLayer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            panic_handler: self.panic_handler.clone(),
+        }
+    }
+}
+
+impl Default for CatchPanicLayer<DefaultResponseForPanic> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CatchPanicLayer<DefaultResponseForPanic> {
-    /// Create a new `CatchPanicLayer` with the default panic handler.
+    /// Create a new `CatchPanicLayer` with the [`Default`]] panic handler.
     pub fn new() -> Self {
         CatchPanicLayer {
             panic_handler: DefaultResponseForPanic,
@@ -184,8 +205,6 @@ impl<S: Clone, T: Clone> Clone for CatchPanic<S, T> {
     }
 }
 
-impl<S: Copy, T: Copy> Copy for CatchPanic<S, T> {}
-
 impl<State, S, T, ReqBody, ResBody> Service<State, Request<ReqBody>> for CatchPanic<S, T>
 where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
@@ -237,7 +256,7 @@ where
 ///
 /// It will log the panic message and return a `500 Internal Server` error response with an empty
 /// body.
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Default, Clone)]
 #[non_exhaustive]
 pub struct DefaultResponseForPanic;
 

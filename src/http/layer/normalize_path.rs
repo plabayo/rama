@@ -39,13 +39,15 @@
 use crate::http::{Request, Response, Uri};
 use crate::service::{Context, Layer, Service};
 use std::borrow::Cow;
+use std::fmt;
 use std::future::Future;
 
 /// Layer that applies [`NormalizePath`] which normalizes paths.
 ///
 /// See the [module docs](self) for more details.
-#[derive(Debug, Copy, Clone)]
-pub struct NormalizePathLayer {}
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct NormalizePathLayer;
 
 impl NormalizePathLayer {
     /// Create a new [`NormalizePathLayer`].
@@ -53,7 +55,7 @@ impl NormalizePathLayer {
     /// Any trailing slashes from request paths will be removed. For example, a request with `/foo/`
     /// will be changed to `/foo` before reaching the inner service.
     pub fn trim_trailing_slash() -> Self {
-        NormalizePathLayer {}
+        NormalizePathLayer
     }
 }
 
@@ -68,9 +70,24 @@ impl<S> Layer<S> for NormalizePathLayer {
 /// Middleware that normalizes paths.
 ///
 /// See the [module docs](self) for more details.
-#[derive(Debug, Copy, Clone)]
 pub struct NormalizePath<S> {
     inner: S,
+}
+
+impl<S: fmt::Debug> fmt::Debug for NormalizePath<S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("NormalizePath")
+            .field("inner", &self.inner)
+            .finish()
+    }
+}
+
+impl<S: Clone> Clone for NormalizePath<S> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<S> NormalizePath<S> {

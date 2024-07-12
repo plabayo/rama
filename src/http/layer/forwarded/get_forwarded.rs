@@ -11,7 +11,6 @@ use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 
-#[derive(Debug, Clone)]
 /// Layer to extract [`Forwarded`] information from the specified `T` headers.
 ///
 /// This layer can be used to extract the [`Forwarded`] information from any specified header `T`,
@@ -85,6 +84,25 @@ use std::marker::PhantomData;
 /// ```
 pub struct GetForwardedHeadersLayer<T = Forwarded> {
     _headers: PhantomData<fn() -> T>,
+}
+
+impl<T: fmt::Debug> fmt::Debug for GetForwardedHeadersLayer<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("GetForwardedHeadersLayer")
+            .field(
+                "_headers",
+                &format_args!("{}", std::any::type_name::<fn() -> T>()),
+            )
+            .finish()
+    }
+}
+
+impl<T: Clone> Clone for GetForwardedHeadersLayer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            _headers: PhantomData,
+        }
+    }
 }
 
 impl Default for GetForwardedHeadersLayer {

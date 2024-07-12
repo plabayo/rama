@@ -1,7 +1,7 @@
 use crate::tls::rustls::dep::rustls::{
     server::ClientHello, CipherSuite, ServerConfig, SignatureScheme,
 };
-use std::{future::Future, sync::Arc};
+use std::{fmt, future::Future, sync::Arc};
 
 /// A struct containing the information of the accepted client hello.
 #[derive(Debug, Clone)]
@@ -54,13 +54,36 @@ impl From<ClientHello<'_>> for IncomingClientHello {
 
 /// A handler that allows you to define what to do with the client config,
 /// upon receiving it during the Tls handshake.
-#[derive(Debug, Clone)]
 pub struct TlsClientConfigHandler<F> {
     /// Whether to store the client config in the [`Context`]'s [`Extension`].
     pub(crate) store_client_hello: bool,
     /// A function that returns a [`Future`] which resolves to a [`ServerConfig`],
     /// or an error.
     pub(crate) server_config_provider: F,
+}
+
+impl<F> fmt::Debug for TlsClientConfigHandler<F>
+where
+    F: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TlsClientConfigHandler")
+            .field("store_client_hello", &self.store_client_hello)
+            .field("server_config_provider", &self.server_config_provider)
+            .finish()
+    }
+}
+
+impl<F> Clone for TlsClientConfigHandler<F>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            store_client_hello: self.store_client_hello,
+            server_config_provider: self.server_config_provider.clone(),
+        }
+    }
 }
 
 impl Default for TlsClientConfigHandler<()> {

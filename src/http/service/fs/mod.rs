@@ -5,7 +5,7 @@ use futures_lite::Stream;
 use http_body::{Body, Frame};
 use pin_project_lite::pin_project;
 use std::{
-    io,
+    fmt, io,
     pin::Pin,
     task::{Context, Poll},
 };
@@ -24,10 +24,20 @@ pub use self::{
 pin_project! {
     // NOTE: This could potentially be upstreamed to `http-body`.
     /// Adapter that turns an [`impl AsyncRead`][tokio::io::AsyncRead] to an [`impl Body`][http_body::Body].
-    #[derive(Debug)]
     pub struct AsyncReadBody<T> {
         #[pin]
         reader: ReaderStream<T>,
+    }
+}
+
+impl<T> fmt::Debug for AsyncReadBody<T>
+where
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AsyncReadBody")
+            .field("reader", &self.reader)
+            .finish()
     }
 }
 

@@ -10,7 +10,7 @@ use crate::{
     },
 };
 use rustls::ServerConfig;
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 
 use super::{client_config::IncomingClientHello, ServerConfigProvider, TlsClientConfigHandler};
 
@@ -155,13 +155,21 @@ where
 }
 
 /// Errors that can happen when using [`TlsAcceptorService`].
-#[derive(Debug)]
 pub enum TlsAcceptorError<E> {
     /// An error occurred while accepting a TLS connection.
     Accept(std::io::Error),
     /// An error occurred while serving the underlying transport stream
     /// using the inner service.
     Service(E),
+}
+
+impl<E: fmt::Debug> fmt::Debug for TlsAcceptorError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Accept(err) => write!(f, "TlsAcceptorError::Accept({err:?})"),
+            Self::Service(err) => write!(f, "TlsAcceptorError::Service({err:?})"),
+        }
+    }
 }
 
 impl<E> std::fmt::Display for TlsAcceptorError<E>

@@ -10,7 +10,7 @@
 //! [`AsyncWrite`]: crate::net::stream::AsyncWrite
 
 use std::{
-    io,
+    fmt, io,
     pin::Pin,
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -33,7 +33,6 @@ pin_project! {
     ///
     /// [`AsyncRead`]: crate::net::stream::AsyncRead
     /// [`AsyncWrite`]: crate::net::stream::AsyncWrite
-    #[derive(Debug)]
     pub struct BytesRWTracker<S> {
         read: Arc<AtomicUsize>,
         written: Arc<AtomicUsize>,
@@ -41,6 +40,17 @@ pin_project! {
         stream: S,
     }
 }
+
+impl<S: fmt::Debug> fmt::Debug for BytesRWTracker<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BytesRWTracker")
+            .field("read", &self.read)
+            .field("written", &self.written)
+            .field("stream", &self.stream)
+            .finish()
+    }
+}
+
 impl<S> BytesRWTracker<S> {
     /// Create a new [`BytesRWTracker`] that wraps the
     /// given [`AsyncRead`] and/or [`AsyncWrite`].

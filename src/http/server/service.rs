@@ -13,6 +13,7 @@ use hyper_util::server::conn::auto::Builder as AutoConnBuilder;
 use hyper_util::server::conn::auto::Http1Builder as InnerAutoHttp1Builder;
 use hyper_util::server::conn::auto::Http2Builder as InnerAutoHttp2Builder;
 use std::convert::Infallible;
+use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,9 +25,19 @@ use tokio_graceful::ShutdownGuard;
 /// Supported Protocols: HTTP/1, H2, Auto (HTTP/1 + H2)
 ///
 /// [`Service`]: crate::service::Service
-#[derive(Debug)]
 pub struct HttpServer<B> {
     builder: B,
+}
+
+impl<B> fmt::Debug for HttpServer<B>
+where
+    B: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpServer")
+            .field("builder", &self.builder)
+            .finish()
+    }
 }
 
 impl<B> Clone for HttpServer<B>

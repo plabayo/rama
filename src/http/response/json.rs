@@ -1,3 +1,5 @@
+use std::fmt;
+
 use crate::http::response::{IntoResponse, Response};
 use crate::{
     error::OpaqueError,
@@ -63,9 +65,19 @@ use serde::Serialize;
 ///     }
 /// }
 /// ```
-#[derive(Debug, Clone, Copy, Default)]
-#[must_use]
 pub struct Json<T>(pub T);
+
+impl<T: fmt::Debug> fmt::Debug for Json<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Json").field(&self.0).finish()
+    }
+}
+
+impl<T: Clone> Clone for Json<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl_deref!(Json);
 

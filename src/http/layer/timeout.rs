@@ -49,7 +49,7 @@ use crate::service::{Context, Layer, Service};
 /// Layer that applies the [`Timeout`] middleware which apply a timeout to requests.
 ///
 /// See the [module docs](super) for an example.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct TimeoutLayer {
     timeout: Duration,
 }

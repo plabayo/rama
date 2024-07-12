@@ -29,7 +29,7 @@
 
 use crate::error::BoxError;
 use crate::service::Context;
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, fmt, sync::Arc};
 
 mod concurrent;
 #[doc(inline)]
@@ -37,7 +37,6 @@ pub use concurrent::{ConcurrentCounter, ConcurrentPolicy, ConcurrentTracker, Lim
 
 mod matcher;
 
-#[derive(Debug)]
 /// The full result of a limit policy.
 pub struct PolicyResult<State, Request, Guard, Error> {
     /// The input context
@@ -48,8 +47,19 @@ pub struct PolicyResult<State, Request, Guard, Error> {
     pub output: PolicyOutput<Guard, Error>,
 }
 
+impl<State: fmt::Debug, Request: fmt::Debug, Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug
+    for PolicyResult<State, Request, Guard, Error>
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PolicyResult")
+            .field("ctx", &self.ctx)
+            .field("request", &self.request)
+            .field("output", &self.output)
+            .finish()
+    }
+}
+
 /// The output part of a limit policy.
-#[derive(Debug)]
 pub enum PolicyOutput<Guard, Error> {
     /// The request is allowed to proceed,
     /// and the guard is returned to release the limit when it is dropped,
@@ -59,6 +69,16 @@ pub enum PolicyOutput<Guard, Error> {
     Abort(Error),
     /// The request is not allowed to proceed, but should be retried.
     Retry,
+}
+
+impl<Guard: fmt::Debug, Error: fmt::Debug> std::fmt::Debug for PolicyOutput<Guard, Error> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Ready(guard) => write!(f, "PolicyOutput::Ready({guard:?})"),
+            Self::Abort(error) => write!(f, "PolicyOutput::Abort({error:?})"),
+            Self::Retry => write!(f, "PolicyOutput::Retry"),
+        }
+    }
 }
 
 /// A limit [`Policy`] is used to determine whether a request is allowed to proceed,

@@ -396,10 +396,12 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let transport_ctx = req.try_ref_into_transport_ctx(&ctx).map_err(|err| {
-                OpaqueError::from_boxed(err.into())
-                    .context("proxydb: select proxy: get transport context")
-            })?;
+            let transport_ctx = ctx
+                .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
+                .map_err(|err| {
+                    OpaqueError::from_boxed(err.into())
+                        .context("proxydb: select proxy: get transport context")
+                })?;
 
             let proxy = self
                 .db

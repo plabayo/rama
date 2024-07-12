@@ -4,6 +4,7 @@ use crate::service::handler::{Factory, FromContextRequest};
 use crate::service::Context;
 use crate::service::Service;
 use crate::utils::graceful::ShutdownGuard;
+use std::fmt;
 use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
@@ -11,10 +12,21 @@ use std::{io, net::SocketAddr};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
 
 /// Builder for `TcpListener`.
-#[derive(Debug)]
 pub struct TcpListenerBuilder<S> {
     ttl: Option<u32>,
     state: Arc<S>,
+}
+
+impl<S> fmt::Debug for TcpListenerBuilder<S>
+where
+    S: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TcpListenerBuilder")
+            .field("ttl", &self.ttl)
+            .field("state", &self.state)
+            .finish()
+    }
 }
 
 impl TcpListenerBuilder<()> {
@@ -88,10 +100,21 @@ where
 
 /// A TCP socket server, listening for incoming connections once served
 /// using one of the `serve` methods such as [`TcpListener::serve`].
-#[derive(Debug)]
 pub struct TcpListener<S> {
     inner: TokioTcpListener,
     state: Arc<S>,
+}
+
+impl<S> fmt::Debug for TcpListener<S>
+where
+    S: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TcpListener")
+            .field("inner", &self.inner)
+            .field("state", &self.state)
+            .finish()
+    }
 }
 
 impl TcpListener<()> {

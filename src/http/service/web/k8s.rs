@@ -1,8 +1,7 @@
 //! k8s web service
 
-use std::{convert::Infallible, marker::PhantomData, sync::Arc};
-
 use http::StatusCode;
+use std::{convert::Infallible, fmt, marker::PhantomData, sync::Arc};
 
 use crate::{
     http::{matcher::HttpMatcher, IntoResponse, Request, Response},
@@ -24,7 +23,6 @@ where
     k8s_health_builder().build()
 }
 
-#[derive(Debug)]
 /// builder to easily create a k8s web service
 ///
 /// by default its endpoints will always return 200 (OK),
@@ -37,7 +35,30 @@ where
 pub struct K8sHealthServiceBuilder<A, R, S> {
     alive: A,
     ready: R,
-    _phantom: PhantomData<S>,
+    _phantom: PhantomData<fn(S) -> ()>,
+}
+
+impl<A: fmt::Debug, R: fmt::Debug, S> std::fmt::Debug for K8sHealthServiceBuilder<A, R, S> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("K8sHealthServiceBuilder")
+            .field("alive", &self.alive)
+            .field("ready", &self.ready)
+            .field(
+                "_phantom",
+                &format_args!("{}", std::any::type_name::<fn(S) -> ()>()),
+            )
+            .finish()
+    }
+}
+
+impl<A: Clone, R: Clone, S> Clone for K8sHealthServiceBuilder<A, R, S> {
+    fn clone(&self) -> Self {
+        Self {
+            alive: self.alive.clone(),
+            ready: self.ready.clone(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<S> K8sHealthServiceBuilder<(), (), S> {
@@ -112,9 +133,14 @@ where
     }
 }
 
-#[derive(Debug)]
 struct K8sService<F> {
     f: F,
+}
+
+impl<F: fmt::Debug> std::fmt::Debug for K8sService<F> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("K8sService").field("f", &self.f).finish()
+    }
 }
 
 impl<F: Clone> Clone for K8sService<F> {

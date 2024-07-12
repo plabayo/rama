@@ -2,8 +2,8 @@ use crate::{
     http::{matcher::HttpMatcher, Body, IntoResponse, Request, Response},
     service::{BoxService, Context, Service, ServiceBuilder},
 };
-use std::convert::Infallible;
 use std::future::Future;
+use std::{convert::Infallible, fmt};
 
 pub mod extract;
 
@@ -81,8 +81,25 @@ where
     }
 }
 
-#[derive(Debug)]
 struct StaticService<R>(R);
+
+impl<T> fmt::Debug for StaticService<T>
+where
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("StaticService").field(&self.0).finish()
+    }
+}
+
+impl<R> Clone for StaticService<R>
+where
+    R: Clone,
+{
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl<R, State> Service<State, Request> for StaticService<R>
 where
@@ -97,10 +114,24 @@ where
     }
 }
 
-#[derive(Debug)]
 struct InfallibleServiceFn<F, A> {
     inner: F,
     _marker: std::marker::PhantomData<fn(A) -> ()>,
+}
+
+impl<F, A> fmt::Debug for InfallibleServiceFn<F, A>
+where
+    F: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("InfallibleServiceFn")
+            .field("inner", &self.inner)
+            .field(
+                "_marker",
+                &format_args!("{}", std::any::type_name::<fn(A) -> ()>()),
+            )
+            .finish()
+    }
 }
 
 impl<F, Fut, R, State> Service<State, Request> for InfallibleServiceFn<F, (Context<State>, Fut, R)>
@@ -137,16 +168,6 @@ where
         Ok((self.inner)(ctx, req).await.into_response())
     }
 }
-
-impl<R> Clone for StaticService<R>
-where
-    R: Clone,
-{
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
 mod service;
 #[doc(inline)]
 pub use service::EndpointServiceFn;
@@ -156,9 +177,15 @@ struct EndpointServiceFnWrapper<F, S, T> {
     _marker: std::marker::PhantomData<fn(S, T) -> ()>,
 }
 
-impl<F, S, T> std::fmt::Debug for EndpointServiceFnWrapper<F, S, T> {
+impl<F: std::fmt::Debug, S, T> std::fmt::Debug for EndpointServiceFnWrapper<F, S, T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EndpointServiceFnWrapper").finish()
+        f.debug_struct("EndpointServiceFnWrapper")
+            .field("inner", &self.inner)
+            .field(
+                "_marker",
+                &format_args!("{}", std::any::type_name::<fn(S, T) -> ()>()),
+            )
+            .finish()
     }
 }
 

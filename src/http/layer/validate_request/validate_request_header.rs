@@ -1,3 +1,5 @@
+use std::fmt;
+
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
 use crate::service::{Layer, Service};
 use crate::{
@@ -8,9 +10,16 @@ use crate::{
 /// Layer that applies [`ValidateRequestHeader`] which validates all requests.
 ///
 /// See the [module docs](crate::http::layer::validate_request) for an example.
-#[derive(Debug)]
 pub struct ValidateRequestHeaderLayer<T> {
     validate: T,
+}
+
+impl<T: fmt::Debug> fmt::Debug for ValidateRequestHeaderLayer<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValidateRequestHeaderLayer")
+            .field("validate", &self.validate)
+            .finish()
+    }
 }
 
 impl<T> Clone for ValidateRequestHeaderLayer<T>
@@ -82,10 +91,18 @@ where
 /// Middleware that validates requests.
 ///
 /// See the [module docs](crate::http::layer::validate_request) for an example.
-#[derive(Debug)]
 pub struct ValidateRequestHeader<S, T> {
     inner: S,
     validate: T,
+}
+
+impl<S: fmt::Debug, T: fmt::Debug> fmt::Debug for ValidateRequestHeader<S, T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ValidateRequestHeader")
+            .field("inner", &self.inner)
+            .field("validate", &self.validate)
+            .finish()
+    }
 }
 
 impl<S, T> Clone for ValidateRequestHeader<S, T>

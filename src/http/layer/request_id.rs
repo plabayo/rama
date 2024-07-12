@@ -107,10 +107,27 @@ impl From<HeaderValue> for RequestId {
 /// This layer applies the [`SetRequestId`] middleware.
 ///
 /// See the [module docs](self) and [`SetRequestId`] for more details.
-#[derive(Debug, Clone)]
 pub struct SetRequestIdLayer<M> {
     header_name: HeaderName,
     make_request_id: M,
+}
+
+impl<M: fmt::Debug> fmt::Debug for SetRequestIdLayer<M> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("SetRequestIdLayer")
+            .field("header_name", &self.header_name)
+            .field("make_request_id", &self.make_request_id)
+            .finish()
+    }
+}
+
+impl<M: Clone> Clone for SetRequestIdLayer<M> {
+    fn clone(&self) -> Self {
+        Self {
+            header_name: self.header_name.clone(),
+            make_request_id: self.make_request_id.clone(),
+        }
+    }
 }
 
 impl<M> SetRequestIdLayer<M> {

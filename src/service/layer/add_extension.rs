@@ -51,14 +51,34 @@
 //! # }
 //! ```
 
+use std::fmt;
+
 use crate::service::{Context, Layer, Service};
 
 /// [`Layer`] for adding some shareable value to incoming [Context].
 ///
 /// [Context]: https://docs.rs/rama/latest/rama/service/context/struct.Context.html
-#[derive(Clone, Copy, Debug)]
 pub struct AddExtensionLayer<T> {
     value: T,
+}
+
+impl<T: fmt::Debug> std::fmt::Debug for AddExtensionLayer<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AddExtensionLayer")
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
+impl<T> Clone for AddExtensionLayer<T>
+where
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            value: self.value.clone(),
+        }
+    }
 }
 
 impl<T> AddExtensionLayer<T> {
@@ -85,10 +105,31 @@ where
 /// Middleware for adding some shareable value to incoming [Context].
 ///
 /// [Context]: https://docs.rs/rama/latest/rama/service/context/struct.Context.html
-#[derive(Clone, Copy, Debug)]
 pub struct AddExtension<S, T> {
     inner: S,
     value: T,
+}
+
+impl<S: fmt::Debug, T: fmt::Debug> std::fmt::Debug for AddExtension<S, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AddExtension")
+            .field("inner", &self.inner)
+            .field("value", &self.value)
+            .finish()
+    }
+}
+
+impl<S, T> Clone for AddExtension<S, T>
+where
+    S: Clone,
+    T: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            value: self.value.clone(),
+        }
+    }
 }
 
 impl<S, T> AddExtension<S, T> {

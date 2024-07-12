@@ -1,10 +1,11 @@
+use std::fmt;
+
 use super::{policy::UnlimitedPolicy, Limit};
 use crate::service::Layer;
 
 /// Limit requests based on a [`Policy`].
 ///
 /// [`Policy`]: crate::service::layer::limit::Policy
-#[derive(Debug)]
 pub struct LimitLayer<P> {
     policy: P,
 }
@@ -22,6 +23,14 @@ impl LimitLayer<UnlimitedPolicy> {
     /// Meaning that all requests are allowed to proceed.
     pub fn unlimited() -> Self {
         Self::new(UnlimitedPolicy::default())
+    }
+}
+
+impl<P: fmt::Debug> std::fmt::Debug for LimitLayer<P> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LimitLayer")
+            .field("policy", &self.policy)
+            .finish()
     }
 }
 

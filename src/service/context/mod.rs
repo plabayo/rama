@@ -114,7 +114,7 @@
 //! ```
 
 use crate::{dns::Dns, rt::Executor};
-use std::{future::Future, sync::Arc};
+use std::{fmt, future::Future, sync::Arc};
 use tokio::task::JoinHandle;
 use tokio_graceful::ShutdownGuard;
 
@@ -129,12 +129,22 @@ mod state;
 /// Context passed to and between services as input.
 ///
 /// See [`crate::service::context`] for more information.
-#[derive(Debug)]
 pub struct Context<S> {
     state: Arc<S>,
     dns: Dns,
     executor: Executor,
     extensions: Extensions,
+}
+
+impl<S: fmt::Debug> fmt::Debug for Context<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Context")
+            .field("state", &self.state)
+            .field("dns", &self.dns)
+            .field("executor", &self.executor)
+            .field("extensions", &self.extensions)
+            .finish()
+    }
 }
 
 impl Default for Context<()> {

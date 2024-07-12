@@ -44,7 +44,7 @@
 
 use crate::http::header::AsHeaderName;
 use serde::de::DeserializeOwned;
-use std::marker::PhantomData;
+use std::{fmt, marker::PhantomData};
 
 use crate::{
     error::BoxError,
@@ -72,12 +72,11 @@ where
 /// and inserts it into the [`Extensions`] of that object.
 ///
 /// [`Extensions`]: crate::service::context::Extensions
-#[derive(Debug)]
 pub struct HeaderConfigService<T, S> {
     inner: S,
     key: String,
     optional: bool,
-    _marker: PhantomData<T>,
+    _marker: PhantomData<fn() -> T>,
 }
 
 impl<T, S> HeaderConfigService<T, S> {
@@ -108,6 +107,20 @@ impl<T, S> HeaderConfigService<T, S> {
     /// and which will gracefully accept if the header is missing.
     pub fn optional(inner: S, key: String) -> Self {
         Self::new(inner, key, true)
+    }
+}
+
+impl<T, S: fmt::Debug> fmt::Debug for HeaderConfigService<T, S> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("HeaderConfigService")
+            .field("inner", &self.inner)
+            .field("key", &self.key)
+            .field("optional", &self.optional)
+            .field(
+                "_marker",
+                &format_args!("{}", std::any::type_name::<fn() -> T>()),
+            )
+            .finish()
     }
 }
 
@@ -163,11 +176,33 @@ where
 /// from a request or response and inserts it into the [`Extensions`] of that object.
 ///
 /// [`Extensions`]: crate::service::context::Extensions
-#[derive(Debug)]
 pub struct HeaderConfigLayer<T> {
     key: String,
     optional: bool,
-    _marker: PhantomData<T>,
+    _marker: PhantomData<fn() -> T>,
+}
+
+impl<T> fmt::Debug for HeaderConfigLayer<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("HeaderConfigLayer")
+            .field("key", &self.key)
+            .field("optional", &self.optional)
+            .field(
+                "_marker",
+                &format_args!("{}", std::any::type_name::<fn() -> T>()),
+            )
+            .finish()
+    }
+}
+
+impl<T> Clone for HeaderConfigLayer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key.clone(),
+            optional: self.optional,
+            _marker: PhantomData,
+        }
+    }
 }
 
 impl<T> HeaderConfigLayer<T> {

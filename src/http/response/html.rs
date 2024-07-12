@@ -1,11 +1,22 @@
 use crate::http::{header, Body, HeaderValue, IntoResponse, Response};
+use std::fmt;
 
 /// An HTML response.
 ///
 /// Will automatically get `Content-Type: text/html`.
-#[derive(Clone, Copy, Debug)]
-#[must_use]
 pub struct Html<T>(pub T);
+
+impl<T: fmt::Debug> fmt::Debug for Html<T> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Html").field(&self.0).finish()
+    }
+}
+
+impl<T: Clone> Clone for Html<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 impl_deref!(Html);
 

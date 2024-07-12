@@ -10,7 +10,6 @@ use crate::service::{Context, Layer, Service};
 use std::fmt;
 use std::marker::PhantomData;
 
-#[derive(Debug, Clone)]
 /// Layer to write [`Forwarded`] information for this proxy,
 /// added to the end of the chain of forwarded information already known.
 ///
@@ -86,6 +85,27 @@ use std::marker::PhantomData;
 pub struct SetForwardedHeadersLayer<T = Forwarded> {
     by_node: NodeId,
     _headers: PhantomData<fn() -> T>,
+}
+
+impl<T: fmt::Debug> fmt::Debug for SetForwardedHeadersLayer<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("SetForwardedHeadersLayer")
+            .field("by_node", &self.by_node)
+            .field(
+                "_headers",
+                &format_args!("{}", std::any::type_name::<fn() -> T>()),
+            )
+            .finish()
+    }
+}
+
+impl<T: Clone> Clone for SetForwardedHeadersLayer<T> {
+    fn clone(&self) -> Self {
+        Self {
+            by_node: self.by_node.clone(),
+            _headers: PhantomData,
+        }
+    }
 }
 
 impl<T> SetForwardedHeadersLayer<T> {

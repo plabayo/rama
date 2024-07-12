@@ -1,3 +1,5 @@
+use std::fmt;
+
 use super::HttpConnector;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
@@ -43,10 +45,33 @@ enum ForwarderKind {
 }
 
 /// A TCP forwarder.
-#[derive(Debug, Clone)]
 pub struct Forwarder<C> {
     kind: ForwarderKind,
     connector: C,
+}
+
+impl<C> fmt::Debug for Forwarder<C>
+where
+    C: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Forwarder")
+            .field("kind", &self.kind)
+            .field("connector", &self.connector)
+            .finish()
+    }
+}
+
+impl<C> Clone for Forwarder<C>
+where
+    C: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            connector: self.connector.clone(),
+        }
+    }
 }
 
 impl Forwarder<super::HttpConnector> {

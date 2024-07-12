@@ -1,6 +1,6 @@
 use super::{Context, Service};
 use crate::http::{BodyLimit, IntoResponse, Request};
-use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
+use std::{convert::Infallible, fmt, future::Future, pin::Pin, sync::Arc};
 
 /// Wrapper service that implements [`hyper::service::Service`].
 ///
@@ -9,7 +9,6 @@ use std::{convert::Infallible, future::Future, pin::Pin, sync::Arc};
 /// Currently we require a clone of the service for each request.
 /// This is because we need to be able to Box the future returned by the service.
 /// Once we can specify such associated types using `impl Trait` we can skip this.
-#[derive(Debug)]
 pub(crate) struct HyperService<S, T> {
     ctx: Context<S>,
     inner: Arc<T>,
@@ -55,6 +54,19 @@ where
                 None => resp,
             })
         })
+    }
+}
+
+impl<S, T> fmt::Debug for HyperService<S, T>
+where
+    S: fmt::Debug,
+    T: fmt::Debug,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HyperService")
+            .field("ctx", &self.ctx)
+            .field("inner", &self.inner)
+            .finish()
     }
 }
 
