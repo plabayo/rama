@@ -12,7 +12,7 @@ As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramapr
 
 ## Http Client Example
 
-> The full example can be found at <https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs>.
+> The full "high level" example can be found at <https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs>.
 
 ```rust
 use rama::http::client::HttpClientExt;
