@@ -68,7 +68,7 @@ where
     /// This function panics if the server process cannot be spawned.
     pub fn interactive(example_name: impl AsRef<str>) -> Self {
         let child = escargot::CargoBuild::new()
-            .arg("--all-features")
+            .arg("--features=full")
             .example(example_name.as_ref())
             .manifest_path("Cargo.toml")
             .target_dir("./target/")
