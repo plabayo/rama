@@ -224,6 +224,8 @@ use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
 /// A predicate can be used to provide additional filtering on the found proxies,
 /// that otherwise did match the used [`ProxyFilter`].
 ///
+/// See [the module docs](self) for examples and more info on the usage of this service.
+///
 /// [`Proxy`]: crate::proxy::Proxy
 pub struct ProxyDBService<S, D, P, F> {
     inner: S,
@@ -487,7 +489,7 @@ where
 /// A [`Layer`] which wraps an inner [`Service`] to select a [`Proxy`] based on the given [`Context`],
 /// and insert, if a [`Proxy`] is selected, it in the [`Context`] for further processing.
 ///
-/// See [`ProxyDBService`] for more details.
+/// See [the module docs](self) for examples and more info on the usage of this service.
 pub struct ProxyDBLayer<D, P, F> {
     db: D,
     mode: ProxyFilterMode,
