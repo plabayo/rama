@@ -132,7 +132,7 @@ impl<H> EchoServiceBuilder<H> {
 impl<H> EchoServiceBuilder<H>
 where
     H: Layer<EchoService>,
-    H::Service: Service<(), Request, Response = Response, Error = Infallible>,
+    H::Service: Service<(), Request, Response = Response, Error = BoxError>,
 {
     /// build a tcp service ready to echo http traffic back
     pub fn build(
@@ -210,9 +210,13 @@ pub struct EchoService;
 
 impl Service<(), Request> for EchoService {
     type Response = Response;
-    type Error = Infallible;
+    type Error = BoxError;
 
-    async fn serve(&self, ctx: Context<()>, req: Request) -> Result<Self::Response, Self::Error> {
+    async fn serve(
+        &self,
+        mut ctx: Context<()>,
+        req: Request,
+    ) -> Result<Self::Response, Self::Error> {
         let user_agent_info = ctx
             .get()
             .map(|ua: &UserAgent| {
@@ -225,11 +229,10 @@ impl Service<(), Request> for EchoService {
             })
             .unwrap_or_default();
 
-        let request_context = ctx.get::<RequestContext>();
-        let authority = request_context.map(|ctx| ctx.authority.to_string());
-        let scheme = request_context
-            .map(|ctx| ctx.protocol.to_string())
-            .unwrap_or_default();
+        let request_context =
+            ctx.get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())?;
+        let authority = request_context.authority.to_string();
+        let scheme = request_context.protocol.to_string();
 
         // TODO: get in correct order
         // TODO: get in correct case
