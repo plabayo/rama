@@ -7,7 +7,7 @@
 
 use crate::{
     cli::{ForwardKind, TlsServerCertKeyPair},
-    error::BoxError,
+    error::{BoxError, ErrorContext, OpaqueError},
     http::{
         dep::http_body_util::BodyExt,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
@@ -117,6 +117,13 @@ impl<H> EchoServiceBuilder<H> {
         self
     }
 
+    /// maybe define a tls server cert config to be used for tls terminaton
+    /// by the echo service.
+    pub fn maybe_tls_server_config(mut self, cfg: Option<TlsServerCertKeyPair>) -> Self {
+        self.tls_server_config = cfg;
+        self
+    }
+
     /// add a custom http layer which will be applied to the existing http layers
     pub fn http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<Stack<H2, H>> {
         EchoServiceBuilder {
@@ -174,7 +181,11 @@ where
 
         let tls_server_cfg = match self.tls_server_config.take() {
             None => None,
-            Some(cfg) => Some(cfg.into_server_config()?),
+            Some(cfg) => Some(
+                cfg.into_server_config()
+                    .map_err(OpaqueError::from_boxed)
+                    .context("build server config from env tls key/cert pair")?,
+            ),
         };
 
         let tcp_service_builder = ServiceBuilder::new()
