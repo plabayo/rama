@@ -6,6 +6,8 @@ use std::{
     thread,
 };
 
+use base64::Engine;
+
 #[derive(Debug)]
 /// A wrapper around a rama service process.
 pub struct RamaService {
@@ -50,14 +52,34 @@ impl RamaService {
     }
 
     /// Start the rama echo service with the given port.
-    pub fn echo(port: u16) -> Self {
-        let mut process = escargot::CargoBuild::new()
+    pub fn echo(port: u16, secure: bool, acme_data: Option<String>) -> Self {
+        let mut builder = escargot::CargoBuild::new()
             .package("rama-cli")
             .bin("rama")
             .target_dir("./target/")
             .run()
             .unwrap()
-            .command()
+            .command();
+
+        if let Some(acme_data) = acme_data {
+            builder.env("RAMA_ACME_DATA", acme_data);
+        }
+
+        if secure {
+            const BASE64: base64::engine::GeneralPurpose =
+                base64::engine::general_purpose::STANDARD;
+
+            builder.env(
+                "RAMA_TLS_CRT",
+                BASE64.encode(include_bytes!("./example_tls.crt")),
+            );
+            builder.env(
+                "RAMA_TLS_KEY",
+                BASE64.encode(include_bytes!("./example_tls.key")),
+            );
+        }
+
+        let mut process = builder
             .stdout(std::process::Stdio::piped())
             .arg("echo")
             .arg("-p")
@@ -107,7 +129,7 @@ impl RamaService {
 
     /// Run the http command
     pub fn http(input_args: Vec<&'static str>) -> Result<String, Box<dyn std::error::Error>> {
-        let mut args = vec!["http", "--debug", "-v", "--all", "-F"];
+        let mut args = vec!["http", "--debug", "-v", "--all", "-F", "-k"];
         args.extend(input_args);
         Self::run(args)
     }

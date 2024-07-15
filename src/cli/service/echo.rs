@@ -32,7 +32,7 @@ use crate::{
         },
         Context, Layer, Service, ServiceBuilder,
     },
-    tls::rustls::server::{IncomingClientHello, TlsAcceptorLayer},
+    tls::rustls::server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
     ua::{UserAgent, UserAgentClassifierLayer},
     utils::combinators::Either7,
 };
@@ -198,7 +198,12 @@ where
             .layer(tcp_forwarded_layer)
             // Limit the body size to 1MB for requests
             .layer(BodyLimitLayer::request_only(1024 * 1024))
-            .layer(tls_server_cfg.map(TlsAcceptorLayer::new));
+            .layer(tls_server_cfg.map(|cfg| {
+                TlsAcceptorLayer::with_client_config_handler(
+                    cfg,
+                    TlsClientConfigHandler::default().store_client_hello(),
+                )
+            }));
 
         // TODO: support opt-in TLS)
 

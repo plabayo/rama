@@ -69,6 +69,9 @@ browserstack-rama-fp:
 example NAME:
 		cargo run -p rama --example {{NAME}}
 
+self-signed-certs CRT KEY:
+    openssl req -new -newkey rsa:4096 -x509 -sha256 -days 3650 -nodes -out {{CRT}} -keyout {{KEY}}
+
 report-code-lines:
 	find . -type f -name '*.rs' -exec cat {} + \
 		| grep -v target | tr -d ' ' | grep -v '^$' | grep -v '^//' \
