@@ -6,26 +6,12 @@
 app = 'rama-echo'
 primary_region = 'lhr'
 
-[experimental]
-cmd = [
-    './rama',
-    'echo',
-    '-i',
-    '0.0.0.0',
-    '-p',
-    '8080',
-    '-c',
-    '2048',
-    '-t',
-    '16',
-]
+[processes]
+app_secure = "./rama echo -i 0.0.0.0 -p 8443 -c 2048 -t 16 -f haproxy -s"
+app_insecure = "./rama echo -i 0.0.0.0 -p 8080 -c 2048 -t 16 -f haproxy"
 
 [build]
 image = 'glendc/rama:latest'
-
-[metrics]
-port = 9091
-path = "/metrics"
 
 [[services]]
 protocol = 'tcp'
@@ -33,7 +19,7 @@ internal_port = 8080
 auto_stop_machines = true
 auto_start_machines = true
 min_machines_running = 1
-processes = ['app']
+processes = ['app_insecure']
 
 [[services.ports]]
 handlers = ["proxy_proto"]
@@ -45,7 +31,7 @@ internal_port = 8443
 auto_stop_machines = true
 auto_start_machines = true
 min_machines_running = 1
-processes = ['app']
+processes = ['app_secure']
 
 [[services.ports]]
 handlers = ["proxy_proto"]

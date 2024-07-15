@@ -276,7 +276,7 @@ impl Service<(), Request> for EchoService {
                     .iter()
                     .map(|v| format!("{:?}", v))
                     .collect::<Vec<_>>(),
-                "alpn": hello.alpn.clone(),
+                 "alpn": hello.alpn.as_ref().map(|v| v.iter().map(|v| String::from_utf8_lossy(v).to_string()).collect::<Vec<_>>()),
                 "cipher_suites": hello
                     .cipher_suites
                     .iter()

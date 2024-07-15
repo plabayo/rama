@@ -49,6 +49,10 @@ pub struct CliCommandEcho {
     ///
     /// Or using HaProxy protocol.
     forward: Option<ForwardKind>,
+
+    #[arg(long, short = 's')]
+    /// run echo service in secure mode (enable TLS)
+    secure: bool,
 }
 
 /// run the rama echo service
@@ -62,12 +66,11 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         )
         .init();
 
-    let maybe_tls_server_cert_key_pair = std::env::var("RAMA_TLS_CRT")
-        .map(|tls_crt_pem_raw| {
-            let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
-            TlsServerCertKeyPair::new(tls_crt_pem_raw, tls_key_pem_raw)
-        })
-        .ok();
+    let maybe_tls_server_cert_key_pair = cfg.secure.then(|| {
+        let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
+        let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
+        TlsServerCertKeyPair::new(tls_crt_pem_raw, tls_key_pem_raw)
+    });
 
     let maybe_acme_service = std::env::var("RAMA_ACME_DATA")
         .map(|data| {
