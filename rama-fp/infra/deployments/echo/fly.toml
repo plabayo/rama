@@ -8,19 +8,20 @@ primary_region = 'lhr'
 
 [experimental]
 cmd = [
-    './rama-fp',
+    './rama',
+    'echo',
     '-i',
     '0.0.0.0',
     '-p',
     '8080',
-    '--http-version',
-    'auto',
-    '-f',
-    'echo',
+    '-c',
+    '2048',
+    '-t',
+    '16',
 ]
 
 [build]
-image = 'glendc/rama-fp:latest'
+image = 'glendc/rama:latest'
 
 [metrics]
 port = 9091
