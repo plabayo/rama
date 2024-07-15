@@ -37,11 +37,7 @@ pub struct CliCommandEcho {
     timeout: u64,
 
     #[arg(long, short = 'f')]
-    /// enable support for one of the following "forward" headers
-    ///
-    /// Only used if `ha_proxy` is not enabled!!
-    ///
-    /// (only possible if used as Http service)
+    /// enable support for one of the following "forward" headers or protocols
     ///
     /// Supported headers:
     ///
@@ -50,6 +46,8 @@ pub struct CliCommandEcho {
     /// X-Client-IP Client-IP, X-Real-IP
     ///
     /// CF-Connecting-IP, True-Client-IP
+    ///
+    /// Or using HaProxy protocol.
     forward: Option<ForwardKind>,
 }
 
@@ -102,7 +100,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         let tcp_listener = TcpListener::build()
             .bind(address)
             .await
-            .expect("bind echo service to 127.0.0.1:62001");
+            .expect("bind echo service");
 
         tracing::info!("echo service ready");
         tcp_listener.serve_graceful(guard, tcp_service).await;

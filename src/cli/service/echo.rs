@@ -205,8 +205,6 @@ where
                 )
             }));
 
-        // TODO: support opt-in TLS)
-
         let http_service = ServiceBuilder::new()
             .layer(TraceLayer::new_for_http())
             .layer(AddRequiredResponseHeadersLayer::default())
