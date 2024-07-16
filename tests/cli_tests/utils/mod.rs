@@ -79,11 +79,17 @@ impl RamaService {
             );
         }
 
-        let mut process = builder
+        builder
             .stdout(std::process::Stdio::piped())
             .arg("echo")
             .arg("-p")
-            .arg(port.to_string())
+            .arg(port.to_string());
+
+        if secure {
+            builder.args("-s");
+        }
+
+        let mut process =
             .spawn()
             .unwrap();
 
