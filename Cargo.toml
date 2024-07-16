@@ -115,7 +115,7 @@ rust-version = { workspace = true }
 
 [features]
 default = ["compression"]
-full = ["telemetry", "compression", "cli-extra"]
+full = ["telemetry", "compression"]
 telemetry = [
     "dep:prometheus",
     "dep:opentelemetry",
@@ -124,7 +124,6 @@ telemetry = [
     "dep:opentelemetry-semantic-conventions",
 ]
 compression = ["dep:async-compression"]
-cli-extra = ["dep:hex"]
 rustls-ring = ["tokio-rustls/ring", "rustls/ring"]
 
 [build-dependencies]
@@ -146,7 +145,7 @@ futures-core = { workspace = true }
 futures-lite = { workspace = true }
 h2 = { workspace = true }
 headers = { workspace = true }
-hex = { workspace = true, optional = true }
+hex = { workspace = true }
 hickory-resolver = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }

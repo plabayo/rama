@@ -1,8 +1,6 @@
 //! rama cli utilities
 
 pub mod args;
-
-#[cfg(feature = "cli-extra")]
 pub mod service;
 
 mod forward;
