@@ -86,12 +86,10 @@ impl RamaService {
             .arg(port.to_string());
 
         if secure {
-            builder.args("-s");
+            builder.arg("-s");
         }
 
-        let mut process =
-            .spawn()
-            .unwrap();
+        let mut process = builder.spawn().unwrap();
 
         let stdout = process.stdout.take().unwrap();
         let mut stdout = BufReader::new(stdout).lines();
