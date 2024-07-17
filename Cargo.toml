@@ -97,6 +97,7 @@ const_format = "0.2.32"
 hickory-resolver = { version = "0.24.1", default-features = false, features = [
     "tokio-runtime",
 ] }
+arc-swap = "1.7.1"
 
 [package]
 name = "rama"
@@ -130,6 +131,7 @@ rustls-ring = ["tokio-rustls/ring", "rustls/ring"]
 rustversion = { workspace = true }
 
 [dependencies]
+arc-swap = { workspace = true }
 async-compression = { workspace = true, features = [
     "tokio",
     "brotli",
