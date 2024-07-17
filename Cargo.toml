@@ -42,15 +42,14 @@ percent-encoding = "2.1"
 pin-project-lite = "0.2.13"
 pki-types = { package = "rustls-pki-types", version = "^1" }
 proc-macro2 = "1.0"
-opentelemetry = { version = "0.23", default-features = false, features = [
+opentelemetry = { version = "0.24", default-features = false, features = [
     "trace",
 ] }
-opentelemetry_sdk = { version = "0.23", default-features = false, features = [
+opentelemetry-otlp = { version = "0.17", features = [ "tokio" ] }
+opentelemetry_sdk = { version = "0.24", default-features = false, features = [
     "trace",
 ] }
-opentelemetry-prometheus = { version = "0.16" }
-opentelemetry-semantic-conventions = "0.15"
-prometheus = "0.13.3"
+opentelemetry-semantic-conventions = "0.16"
 quickcheck = "1.0"
 quote = "1.0"
 ratatui = "0.26"
@@ -118,10 +117,8 @@ rust-version = { workspace = true }
 default = ["compression"]
 full = ["telemetry", "compression"]
 telemetry = [
-    "dep:prometheus",
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
-    "dep:opentelemetry-prometheus",
     "dep:opentelemetry-semantic-conventions",
 ]
 compression = ["dep:async-compression"]
@@ -161,7 +158,6 @@ iri-string = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
-opentelemetry-prometheus = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 parking_lot = { workspace = true }
@@ -169,7 +165,6 @@ paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 pki-types = { workspace = true }
-prometheus = { workspace = true, optional = true }
 quickcheck = { workspace = true }
 rama-macros = { version = "0.2.0-alpha.1", path = "rama-macros" }
 rcgen = { workspace = true }
@@ -197,6 +192,8 @@ divan = { workspace = true }
 escargot = { workspace = true }
 flate2 = { workspace = true }
 itertools = { workspace = true }
+opentelemetry-otlp = { workspace = true }
+opentelemetry_sdk = { workspace = true, features = [ "rt-tokio"] }
 rustversion = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }

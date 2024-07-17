@@ -4,7 +4,7 @@
 
 use crate::telemetry::opentelemetry::{
     global,
-    metrics::{Histogram, Meter, Unit, UpDownCounter},
+    metrics::{Histogram, Meter, UpDownCounter},
     semantic_conventions, KeyValue,
 };
 use crate::{
@@ -31,7 +31,7 @@ impl Metrics {
         let network_connection_duration = meter
             .f64_histogram(NETWORK_CONNECTION_DURATION)
             .with_description("Measures the duration of inbound network connections.")
-            .with_unit(Unit::new("s"))
+            .with_unit("s")
             .init();
 
         let network_active_connections = meter

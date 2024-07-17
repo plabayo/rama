@@ -8,8 +8,15 @@
 //! [`opentelemetry`]: https://opentelemetry.io/
 //! [`tracing`]: https://tracing.rs/
 //!
-//! This example will create a server that listens on `127.0.0.1:62012 for the http service
-//! and on `127.0.0.1:63012` for the prometheus exportor.
+//! This example will create a server that listens on `127.0.0.1:62012.
+//!
+//! It also expects you to run the OT collector, e.g.:
+//!
+//! ```
+//! docker run \
+//!   -p 127.0.0.1:4317:4317 \
+//!   otel/opentelemetry-collector:latest
+//! ```
 //!
 //! # Run the example
 //!
@@ -19,23 +26,29 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:62012` and `:63012`. You can use `curl`:
+//! The server will start and listen on `:62012`. You can use `curl`:
 //!
 //! ```sh
 //! curl -v http://127.0.0.1:62012
-//! curl -v http://127.0.0.1:63012/metrics
 //! ```
 //!
-//! With the seecoresponse you should see a response with `HTTP/1.1 200` and the `
+//! With the seecoresponse you should see a response with `HTTP/1.1 200` and a greeting.
+//!
+//! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4317 over GRPC.
 
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 
+use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig};
+use opentelemetry_sdk::{
+    metrics::reader::{DefaultAggregationSelector, DefaultTemporalitySelector},
+    Resource,
+};
 use rama::{
     http::{
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
         response::Html,
         server::HttpServer,
-        service::web::{extract::State, PrometheusMetricsHandler, WebService},
+        service::web::{extract::State, WebService},
     },
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,
@@ -50,7 +63,6 @@ use rama::{
         },
         KeyValue,
     },
-    telemetry::prometheus,
 };
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
@@ -63,7 +75,7 @@ struct Metrics {
 impl Metrics {
     pub fn new() -> Self {
         let meter = opentelemetry::global::meter_with_version(
-            "example.http_prometheus",
+            "example.http_telemetry",
             Some(env!("CARGO_PKG_VERSION")),
             Some(semantic_conventions::SCHEMA_URL),
             Some(vec![
@@ -88,25 +100,36 @@ async fn main() {
         )
         .init();
 
-    // prometheus registry & exporter
-    let registry = prometheus::Registry::new();
-    let exporter = prometheus::exporter()
-        .with_registry(registry.clone())
+    // configure OT metrics exporter
+    let export_config = ExportConfig {
+        endpoint: "http://localhost:4317".to_string(),
+        timeout: Duration::from_secs(3),
+        protocol: Protocol::Grpc,
+    };
+
+    let meter = opentelemetry_otlp::new_pipeline()
+        .metrics(opentelemetry_sdk::runtime::Tokio)
+        .with_exporter(
+            opentelemetry_otlp::new_exporter()
+                .tonic()
+                .with_export_config(export_config),
+            // can also config it using with_* functions like the tracing part above.
+        )
+        .with_resource(Resource::new(vec![KeyValue::new(
+            "service.name",
+            "http_telemetry",
+        )]))
+        .with_period(Duration::from_secs(3))
+        .with_timeout(Duration::from_secs(10))
+        .with_aggregation_selector(DefaultAggregationSelector::new())
+        .with_temporality_selector(DefaultTemporalitySelector::new())
         .build()
-        .unwrap();
+        .expect("build OT meter");
 
-    // set up a meter meter to create instruments
-    let provider = opentelemetry::sdk::metrics::SdkMeterProvider::builder()
-        .with_reader(exporter)
-        .build();
-
-    opentelemetry::global::set_meter_provider(provider);
+    opentelemetry::global::set_meter_provider(meter);
 
     // state for our custom app metrics
     let state = Metrics::new();
-
-    // prometheus metrics http handler (exporter)
-    let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
 
     let graceful = rama::utils::graceful::Shutdown::default();
 
@@ -139,19 +162,6 @@ async fn main() {
                     .service(http_service),
             )
             .await;
-    });
-
-    // prometheus web exporter
-    graceful.spawn_task_fn(|guard| async move {
-        let exec = Executor::graceful(guard.clone());
-        HttpServer::auto(exec)
-            .listen_graceful(
-                guard,
-                "127.0.0.1:63012",
-                WebService::default().get("/metrics", metrics_http_handler),
-            )
-            .await
-            .unwrap();
     });
 
     // wait for graceful shutdown

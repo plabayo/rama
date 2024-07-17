@@ -20,10 +20,6 @@ struct Cli {
     #[arg(long, short = 's', default_value_t = 8443)]
     secure_port: u16,
 
-    /// the port to listen on for the TLS service
-    #[arg(long, short = 't', default_value_t = 9091)]
-    prometheus_port: u16,
-
     /// http version to serve FP Service from
     #[arg(long, default_value = "auto")]
     http_version: String,
@@ -66,7 +62,6 @@ async fn main() -> Result<(), BoxError> {
                 interface: args.interface,
                 port: args.port,
                 secure_port: args.secure_port,
-                prometheus_port: args.prometheus_port,
                 http_version: args.http_version,
                 ha_proxy: args.ha_proxy,
             })
@@ -77,7 +72,6 @@ async fn main() -> Result<(), BoxError> {
                 interface: args.interface,
                 port: args.port,
                 secure_port: args.secure_port,
-                prometheus_port: args.prometheus_port,
                 http_version: args.http_version,
                 ha_proxy: args.ha_proxy,
             })
