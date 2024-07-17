@@ -45,7 +45,7 @@ cargo binstall rama-cli@0.2.0-alpha.0
 On 🍎 MacOS you can also install the `rama` binary using [HomeBrew](https://brew.sh/):
 
 ```
-brew install tap/plabayo/rama
+brew install plabayo/rama/rama
 ```
 
 > Contributions to the homebrew distributions can be made via
