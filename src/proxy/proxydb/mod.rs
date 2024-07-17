@@ -8,6 +8,10 @@ use crate::{
 use serde::Deserialize;
 use std::future::Future;
 
+mod update;
+#[doc(inline)]
+pub use update::{proxy_db_updater, LiveUpdateProxyDB, LiveUpdateProxyDBSetter};
+
 mod internal;
 pub use internal::{Proxy, ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind};
 
