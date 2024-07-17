@@ -4,16 +4,16 @@ use rama::{
     http::{
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
-            opentelemetry::RequestMetricsLayer, required_header::AddRequiredResponseHeadersLayer,
-            set_header::SetResponseHeaderLayer, trace::TraceLayer,
+            required_header::AddRequiredResponseHeadersLayer, set_header::SetResponseHeaderLayer,
+            trace::TraceLayer,
         },
         matcher::HttpMatcher,
         response::Redirect,
         server::HttpServer,
-        service::web::{match_service, PrometheusMetricsHandler},
+        service::web::match_service,
         HeaderName, HeaderValue, IntoResponse,
     },
-    net::stream::layer::{http::BodyLimitLayer, opentelemetry::NetworkMetricsLayer},
+    net::stream::layer::http::BodyLimitLayer,
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
@@ -23,7 +23,6 @@ use rama::{
         service_fn, ServiceBuilder,
     },
     tcp::server::TcpListener,
-    telemetry::{opentelemetry, prometheus},
     tls::rustls::{
         dep::{
             pemfile,
@@ -55,7 +54,6 @@ pub struct Config {
     pub interface: String,
     pub port: u16,
     pub secure_port: u16,
-    pub prometheus_port: u16,
     pub http_version: String,
     pub ha_proxy: bool,
 }
@@ -69,23 +67,6 @@ pub async fn run(cfg: Config) -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
-
-    // prometheus registry & exporter
-    let registry = prometheus::Registry::new();
-    let exporter = prometheus::exporter()
-        .with_registry(registry.clone())
-        .build()
-        .unwrap();
-
-    // set up a meter meter to create instruments
-    let provider = opentelemetry::sdk::metrics::SdkMeterProvider::builder()
-        .with_reader(exporter)
-        .build();
-
-    opentelemetry::global::set_meter_provider(provider);
-
-    // prometheus metrics http handler (exporter)
-    let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
 
     let graceful = rama::utils::graceful::Shutdown::default();
 
@@ -106,7 +87,6 @@ pub async fn run(cfg: Config) -> Result<(), BoxError> {
 
     let http_address = format!("{}:{}", cfg.interface, cfg.port);
     let https_address = format!("{}:{}", cfg.interface, cfg.secure_port);
-    let prometheus_address = format!("{}:{}", cfg.interface, cfg.prometheus_port);
 
     let ha_proxy = cfg.ha_proxy;
 
@@ -155,7 +135,6 @@ pub async fn run(cfg: Config) -> Result<(), BoxError> {
 
         let http_service = ServiceBuilder::new()
             .layer(TraceLayer::new_for_http())
-            .layer(RequestMetricsLayer::default())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
             .layer(AddRequiredResponseHeadersLayer::default())
@@ -193,7 +172,6 @@ pub async fn run(cfg: Config) -> Result<(), BoxError> {
 
         let tcp_service_builder = ServiceBuilder::new()
             .layer(ConsumeErrLayer::trace(tracing::Level::WARN))
-            .layer(NetworkMetricsLayer::default())
             .layer(TimeoutLayer::new(Duration::from_secs(16)))
             .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
@@ -319,21 +297,6 @@ pub async fn run(cfg: Config) -> Result<(), BoxError> {
         }
     });
 
-    graceful.spawn_task_fn(|guard| async move {
-        let exec = Executor::graceful(guard.clone());
-        HttpServer::auto(exec)
-            .listen_graceful(
-                guard,
-                prometheus_address,
-                match_service!{
-                    HttpMatcher::get("/metrics") => metrics_http_handler,
-                    _ => service_fn(|_| async { Ok::<_, Infallible>(Redirect::temporary("/metrics").into_response()) }),
-                },
-            )
-            .await
-            .unwrap();
-    });
-
     graceful
         .shutdown_with_limit(Duration::from_secs(30))
         .await?;
@@ -350,23 +313,6 @@ pub async fn echo(cfg: Config) -> Result<(), BoxError> {
                 .from_env_lossy(),
         )
         .init();
-
-    // prometheus registry & exporter
-    let registry = prometheus::Registry::new();
-    let exporter = prometheus::exporter()
-        .with_registry(registry.clone())
-        .build()
-        .unwrap();
-
-    // set up a meter meter to create instruments
-    let provider = opentelemetry::sdk::metrics::SdkMeterProvider::builder()
-        .with_reader(exporter)
-        .build();
-
-    opentelemetry::global::set_meter_provider(provider);
-
-    // prometheus metrics http handler (exporter)
-    let metrics_http_handler = Arc::new(PrometheusMetricsHandler::new().with_registry(registry));
 
     let graceful = rama::utils::graceful::Shutdown::default();
 
@@ -387,13 +333,11 @@ pub async fn echo(cfg: Config) -> Result<(), BoxError> {
 
     let http_address = format!("{}:{}", cfg.interface, cfg.port);
     let https_address = format!("{}:{}", cfg.interface, cfg.secure_port);
-    let prometheus_address = format!("{}:{}", cfg.interface, cfg.prometheus_port);
     let ha_proxy = cfg.ha_proxy;
 
     graceful.spawn_task_fn(move |guard| async move {
         let http_service = ServiceBuilder::new()
             .layer(TraceLayer::new_for_http())
-            .layer(RequestMetricsLayer::default())
             .layer(CompressionLayer::new())
             .layer(CatchPanicLayer::new())
             .layer(AddRequiredResponseHeadersLayer::default())
@@ -411,7 +355,6 @@ pub async fn echo(cfg: Config) -> Result<(), BoxError> {
 
         let tcp_service_builder = ServiceBuilder::new()
             .layer(ConsumeErrLayer::trace(tracing::Level::WARN))
-            .layer(NetworkMetricsLayer::default())
             .layer(TimeoutLayer::new(Duration::from_secs(16)))
             // Why the below layer makes it no longer cloneable?!?!
             .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
@@ -536,21 +479,6 @@ pub async fn echo(cfg: Config) -> Result<(), BoxError> {
                 panic!("unsupported http version: {}", cfg.http_version)
             }
         }
-    });
-
-    graceful.spawn_task_fn(|guard| async move {
-        let exec = Executor::graceful(guard.clone());
-        HttpServer::auto(exec)
-            .listen_graceful(
-                guard,
-                prometheus_address,
-                match_service!{
-                    HttpMatcher::get("/metrics") => metrics_http_handler,
-                    _ => service_fn(|_| async { Ok::<_, Infallible>(Redirect::temporary("/metrics").into_response()) }),
-                },
-            )
-            .await
-            .unwrap();
     });
 
     graceful

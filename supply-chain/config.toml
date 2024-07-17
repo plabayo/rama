@@ -303,10 +303,6 @@ criteria = "safe-to-deploy"
 version = "0.22.0"
 criteria = "safe-to-deploy"
 
-[[exemptions.opentelemetry-prometheus]]
-version = "0.15.0"
-criteria = "safe-to-deploy"
-
 [[exemptions.opentelemetry-semantic-conventions]]
 version = "0.14.0"
 criteria = "safe-to-deploy"
@@ -349,10 +345,6 @@ criteria = "safe-to-deploy"
 
 [[exemptions.ppv-lite86]]
 version = "0.2.17"
-criteria = "safe-to-deploy"
-
-[[exemptions.prometheus]]
-version = "0.13.4"
 criteria = "safe-to-deploy"
 
 [[exemptions.protobuf]]

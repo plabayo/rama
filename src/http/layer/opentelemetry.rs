@@ -6,7 +6,7 @@ use crate::{
     http::RequestContext,
     telemetry::opentelemetry::{
         global,
-        metrics::{Histogram, Meter, Unit, UpDownCounter},
+        metrics::{Histogram, Meter, UpDownCounter},
         semantic_conventions, KeyValue,
     },
 };
@@ -25,7 +25,7 @@ use std::{fmt, sync::Arc, time::SystemTime};
 // Follows the experimental semantic conventions for HTTP metrics:
 // https://github.com/open-telemetry/opentelemetry-specification/blob/main/specification/metrics/semantic_conventions/http-metrics.md
 
-use semantic_conventions::trace::{
+use semantic_conventions::attribute::{
     CLIENT_ADDRESS, CLIENT_PORT, HTTP_REQUEST_BODY_SIZE, HTTP_REQUEST_METHOD,
     HTTP_RESPONSE_BODY_SIZE, HTTP_RESPONSE_STATUS_CODE, NETWORK_PROTOCOL_VERSION, SERVER_ADDRESS,
     SERVER_PORT, URL_PATH, URL_QUERY, URL_SCHEME, USER_AGENT_ORIGINAL,
@@ -61,7 +61,7 @@ impl Metrics {
         let http_server_duration = meter
             .f64_histogram(HTTP_SERVER_DURATION)
             .with_description("Measures the duration of inbound HTTP requests.")
-            .with_unit(Unit::new("s"))
+            .with_unit("s")
             .init();
 
         let http_server_active_requests = meter

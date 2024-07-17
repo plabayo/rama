@@ -26,18 +26,20 @@ and provides middlewares for collecting metrics on:
 - the http layer: <https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html>
 - the transport layer: <https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html>
 
-Rama also provides a [Prometheus](https://prometheus.io/) exportor to easily export your [OpenTelemetry](https://opentelemetry.io/) metrics
-over http, to be consumed by tools such as [Grafana](https://grafana.com/):
+Rama does not provide specific exporters or consumers of these metrics.
+Instead — similar to tracing — you'll have to add your own dependency for it.
 
-- <https://ramaproxy.org/docs/rama/http/service/web/struct.PrometheusMetricsHandler.html>
+We recommend you to use <https://crates.io/crates/opentelemetry-otlp> as it
+plays nicely with the openetelemetry dependencies used by Rama as well as
+popular ingestion tools such as [Prometheus](https://prometheus.io/).
 
 ### Rama Telemetry Example
 
 > Source Code: [/examples/http_telemetry.rs](https://github.com/plabayo/rama/tree/main/examples/http_telemetry.rs)
 
-In this example you can see a web service which keeps track of a visitor counter as a custom opentelemetry counter metric. It also makes use of the rama provided [`RequestMetricsLayer`](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/struct.RequestMetricsLayer.html) and [`NetworkMetricsLayer`](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/struct.NetworkMetricsLayer.html) layers to also some insights in the traffic both on the network- and application (http) layers. These metrics are exported using the [`PrometheusMetricsHandler`](https://ramaproxy.org/docs/rama/http/service/web/struct.PrometheusMetricsHandler.html).
+In this example you can see a web service which keeps track of a visitor counter as a custom opentelemetry counter metric. It also makes use of the rama provided [`RequestMetricsLayer`](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/struct.RequestMetricsLayer.html) and [`NetworkMetricsLayer`](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/struct.NetworkMetricsLayer.html) layers to also some insights in the traffic both on the network- and application (http) layers. These metrics are exported using the <https://crates.io/crates/opentelemetry-otlp> dependency.
 
-With that example setup you can use a tool like [Grafana](https://grafana.com/) or [Prometheus](https://prometheus.io/) to make a dashboard with your own sharts.
+With that example setup you can use a tool like [Grafana](https://grafana.com/) or [Prometheus](https://prometheus.io/) to make a dashboard with your own charts.
 
 [tracing]: https://tracing.rs/tracing/
 [spans]: https://tracing.rs/tracing/#spans
