@@ -11,7 +11,7 @@ use std::str::FromStr;
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(dead_code)]
-pub enum FetchMode {
+pub(super) enum FetchMode {
     Cors,
     #[default]
     Navigate,
@@ -49,7 +49,7 @@ impl FromStr for FetchMode {
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(dead_code)]
-pub enum ResourceType {
+pub(super) enum ResourceType {
     #[default]
     Document,
     Xhr,
@@ -68,7 +68,7 @@ impl std::fmt::Display for ResourceType {
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(dead_code)]
-pub enum Initiator {
+pub(super) enum Initiator {
     #[default]
     Navigator,
     Fetch,
@@ -88,9 +88,9 @@ impl std::fmt::Display for Initiator {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct DataSource {
-    pub name: String,
-    pub version: String,
+pub(super) struct DataSource {
+    pub(super) name: String,
+    pub(super) version: String,
 }
 
 impl Default for DataSource {
@@ -103,28 +103,28 @@ impl Default for DataSource {
 }
 
 #[derive(Debug, Default, Clone, Serialize)]
-pub struct UserAgentInfo {
-    pub user_agent: String,
-    pub kind: Option<String>,
-    pub version: Option<usize>,
-    pub platform: Option<String>,
+pub(super) struct UserAgentInfo {
+    pub(super) user_agent: String,
+    pub(super) kind: Option<String>,
+    pub(super) version: Option<usize>,
+    pub(super) platform: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct RequestInfo {
-    pub version: String,
-    pub scheme: String,
-    pub authority: Option<String>,
-    pub method: String,
-    pub fetch_mode: FetchMode,
-    pub resource_type: ResourceType,
-    pub initiator: Initiator,
-    pub path: String,
-    pub uri: String,
-    pub peer_addr: Option<String>,
+pub(super) struct RequestInfo {
+    pub(super) version: String,
+    pub(super) scheme: String,
+    pub(super) authority: Option<String>,
+    pub(super) method: String,
+    pub(super) fetch_mode: FetchMode,
+    pub(super) resource_type: ResourceType,
+    pub(super) initiator: Initiator,
+    pub(super) path: String,
+    pub(super) uri: String,
+    pub(super) peer_addr: Option<String>,
 }
 
-pub async fn get_user_agent_info(ctx: &Context<State>) -> UserAgentInfo {
+pub(super) async fn get_user_agent_info(ctx: &Context<State>) -> UserAgentInfo {
     ctx.get()
         .map(|ua: &UserAgent| UserAgentInfo {
             user_agent: ua.header_str().to_owned(),
@@ -135,7 +135,7 @@ pub async fn get_user_agent_info(ctx: &Context<State>) -> UserAgentInfo {
         .unwrap_or_default()
 }
 
-pub async fn get_request_info(
+pub(super) async fn get_request_info(
     fetch_mode: FetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
@@ -175,11 +175,11 @@ pub async fn get_request_info(
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct HttpInfo {
-    pub headers: Vec<(String, String)>,
+pub(super) struct HttpInfo {
+    pub(super) headers: Vec<(String, String)>,
 }
 
-pub fn get_http_info(req: &Request) -> HttpInfo {
+pub(super) fn get_http_info(req: &Request) -> HttpInfo {
     // TODO: get in correct order
     // TODO: get in correct case
     // TODO: get also pseudo headers (or separate?!)
@@ -198,18 +198,18 @@ pub fn get_http_info(req: &Request) -> HttpInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct TlsInfo {
-    pub server_name: Option<String>,
-    pub signature_schemes: Vec<String>,
-    pub alpn: Option<Vec<Vec<u8>>>,
-    pub cipher_suites: Vec<String>,
+pub(super) struct TlsInfo {
+    pub(super) server_name: Option<String>,
+    pub(super) signature_schemes: Vec<String>,
+    pub(super) alpn: Option<Vec<Vec<u8>>>,
+    pub(super) cipher_suites: Vec<String>,
 }
 
 // TODO: important to not extract these as strings, but instead as a custom struct,
 // so we can store them in DB as their raw value, for use emulation,
 // because unknown for rustls might be known for boringssl, etc...
 
-pub fn get_tls_info(ctx: &Context<State>) -> Option<TlsInfo> {
+pub(super) fn get_tls_info(ctx: &Context<State>) -> Option<TlsInfo> {
     let client_hello: &IncomingClientHello = ctx.get()?;
 
     Some(TlsInfo {

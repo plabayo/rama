@@ -6,15 +6,15 @@ use super::data::DataSource;
 
 #[derive(Debug, AsRef)]
 #[non_exhaustive]
-pub struct State {
-    pub data_source: DataSource,
-    pub counter: AtomicUsize,
-    pub acme: ACMEData,
+pub(super) struct State {
+    pub(super) data_source: DataSource,
+    pub(super) counter: AtomicUsize,
+    pub(super) acme: ACMEData,
 }
 
 impl State {
     /// Create a new instance of [`State`].
-    pub fn new(acme: ACMEData) -> Self {
+    pub(super) fn new(acme: ACMEData) -> Self {
         State {
             data_source: DataSource::default(),
             counter: AtomicUsize::new(0),
@@ -24,18 +24,18 @@ impl State {
 }
 
 #[derive(Debug, Clone)]
-pub struct ACMEData {
+pub(super) struct ACMEData {
     challenges: HashMap<String, String>,
 }
 
 impl ACMEData {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Self {
             challenges: HashMap::new(),
         }
     }
 
-    pub fn with_challenges(challenges: Vec<(impl Into<String>, impl Into<String>)>) -> Self {
+    pub(super) fn with_challenges(challenges: Vec<(impl Into<String>, impl Into<String>)>) -> Self {
         Self {
             challenges: challenges
                 .into_iter()
@@ -44,7 +44,7 @@ impl ACMEData {
         }
     }
 
-    pub fn get_challenge(&self, key: impl AsRef<str>) -> Option<&str> {
+    pub(super) fn get_challenge(&self, key: impl AsRef<str>) -> Option<&str> {
         self.challenges.get(key.as_ref()).map(|v| v.as_str())
     }
 }

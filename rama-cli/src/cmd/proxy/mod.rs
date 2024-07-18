@@ -27,7 +27,7 @@ use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Debug, Args)]
-/// rama proxy runner
+/// rama proxy server
 pub struct CliCommandProxy {
     #[arg(long, short = 'p', default_value_t = 8080)]
     /// the port to listen on
