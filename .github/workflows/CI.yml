@@ -452,71 +452,6 @@ jobs:
         with:
           rust-toolchain: ${{env.RUST_TOOLCHAIN}}
 
-  deploy-rama-fp-docker:
-    runs-on: ubuntu-latest
-    needs:
-      - test
-      - test-all-features
-      - test-examples
-      - test-msrv
-      - test-beta
-      - test-examples-msrv
-      - test-examples-beta
-      - test-ignored
-      - test-ignored-msrv
-      - test-ignored-beta
-      - test-docs
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          push: true
-          tags: glendc/rama-fp:latest
-          file: rama-fp/infra/Dockerfile
-
-  deploy-rama-fp-fly:
-    runs-on: ubuntu-latest
-    needs: deploy-rama-fp-docker
-    steps:
-      - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: |
-          cd rama-fp/infra/deployments/fp
-          flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
-  deploy-rama-fp-h1-fly:
-    runs-on: ubuntu-latest
-    needs: deploy-rama-fp-docker
-    steps:
-      - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: |
-          cd rama-fp/infra/deployments/fp-h1
-          flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
-  deploy-rama-echo-fly:
-    runs-on: ubuntu-latest
-    needs: deploy-rama-fp-docker
-    steps:
-      - uses: actions/checkout@v4
-      - uses: superfly/flyctl-actions/setup-flyctl@master
-      - run: |
-          cd rama-fp/infra/deployments/echo
-          flyctl deploy --remote-only
-        env:
-          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
-
   deploy-rama-cli-docker:
     runs-on: ubuntu-latest
     needs:
@@ -545,3 +480,39 @@ jobs:
           push: true
           tags: glendc/rama:latest
           file: rama-cli/infra/Dockerfile
+
+  deploy-rama-fp-fly:
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          cd rama-fp/infra/deployments/fp
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-fp-h1-fly:
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          cd rama-fp/infra/deployments/fp-h1
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+
+  deploy-rama-echo-fly:
+    runs-on: ubuntu-latest
+    needs: deploy-rama-cli-docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: |
+          cd rama-fp/infra/deployments/echo
+          flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}

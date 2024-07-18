@@ -1,11 +1,12 @@
 app = 'rama-fp-h1'
 primary_region = 'lhr'
 
-[experimental]
-cmd = ['./rama-fp', '-i', '0.0.0.0', '-p', '8080', '--http-version', 'h1', '-f']
+[processes]
+app_secure = "./rama fp -i 0.0.0.0 -p 8443 -c 2048 -t 16 -f haproxy --http-version h1 -s"
+app_insecure = "./rama fp -i 0.0.0.0 -p 8080 -c 2048 -t 16 -f haproxy --http-version h1"
 
 [build]
-image = 'glendc/rama-fp:latest'
+image = "glendc/rama:latest"
 
 [[services]]
 protocol = 'tcp'
@@ -13,7 +14,7 @@ internal_port = 8080
 auto_stop_machines = true
 auto_start_machines = true
 min_machines_running = 1
-processes = ['app']
+processes = ['app_insecure']
 
 [[services.ports]]
 handlers = ["proxy_proto"]
@@ -26,7 +27,7 @@ force_https = false
 auto_stop_machines = true
 auto_start_machines = true
 min_machines_running = 1
-processes = ['app']
+processes = ['app_secure']
 
 [[services.ports]]
 handlers = ["proxy_proto"]
