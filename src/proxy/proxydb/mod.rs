@@ -1,4 +1,5 @@
 use crate::{
+    error::BoxError,
     net::{
         asn::Asn,
         transport::{TransportContext, TransportProtocol},
@@ -127,7 +128,59 @@ where
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
         (**self).get_proxy_if(ctx, filter, predicate)
     }
+
+    #[inline]
+    fn get_proxy(
+        &self,
+        ctx: TransportContext,
+        filter: ProxyFilter,
+    ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
+        (**self).get_proxy(ctx, filter)
+    }
 }
+
+macro_rules! impl_proxydb_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+> ProxyDB for crate::utils::combinators::$id<$($param),+>
+        where
+            $(
+                $param: ProxyDB,
+                $param::Error: Into<BoxError>,
+            )+
+    {
+        type Error = BoxError;
+
+        #[inline]
+        async fn get_proxy_if(
+            &self,
+            ctx: TransportContext,
+            filter: ProxyFilter,
+            predicate: impl ProxyQueryPredicate,
+        ) -> Result<Proxy, Self::Error> {
+            match self {
+                $(
+                    crate::utils::combinators::$id::$param(s) => s.get_proxy_if(ctx, filter, predicate).await.map_err(Into::into),
+                )+
+            }
+        }
+
+        #[inline]
+        async fn get_proxy(
+            &self,
+            ctx: TransportContext,
+            filter: ProxyFilter,
+        ) -> Result<Proxy, Self::Error> {
+            match self {
+                $(
+                    crate::utils::combinators::$id::$param(s) => s.get_proxy(ctx, filter).await.map_err(Into::into),
+                )+
+            }
+        }
+        }
+    };
+}
+
+crate::utils::combinators::impl_either!(impl_proxydb_either);
 
 /// Trait that is used by the [`ProxyDB`] for providing an optional
 /// filter predicate to rule out returned results.

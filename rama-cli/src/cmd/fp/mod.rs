@@ -31,7 +31,7 @@ use rama::{
     ua::UserAgentClassifierLayer,
     utils::{backoff::ExponentialBackoff, combinators::Either7},
 };
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -83,7 +83,7 @@ pub struct CliCommandFingerprint {
 
     /// http version to serve FP Service from
     #[arg(long, default_value = "auto")]
-    http_version: String,
+    http_version: HttpVersion,
 
     #[arg(long, short = 's')]
     /// run echo service in secure mode (enable TLS)
@@ -154,16 +154,8 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     let tls_server_cfg = cfg.secure.then(|| {
         let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
         let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
-        TlsServerCertKeyPair::new(tls_crt_pem_raw, tls_key_pem_raw).maybe_http_version(
-            match cfg.http_version.as_str() {
-                "" | "auto" => None,
-                "h1" | "http1" | "http/1" | "http/1.0" | "http/1.1" => Some(Version::HTTP_11),
-                "h2" | "http2" | "http/2" | "http/2.0" => Some(Version::HTTP_2),
-                _version => {
-                    panic!("unsupported http version: {}", cfg.http_version)
-                }
-            },
-        )
+        TlsServerCertKeyPair::new(tls_crt_pem_raw, tls_key_pem_raw)
+            .maybe_http_version(cfg.http_version.as_version())
     });
 
     let tls_server_cfg = match tls_server_cfg {
@@ -280,8 +272,8 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             .await
             .expect("bind TCP Listener");
 
-        match cfg.http_version.as_str() {
-            "" | "auto" => {
+        match cfg.http_version {
+            HttpVersion::Auto => {
                 tracing::info!("FP Service (auto) listening on: {address}");
                 tcp_listener
                     .serve_graceful(
@@ -292,7 +284,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                     )
                     .await;
             }
-            "h1" | "http1" | "http/1" | "http/1.0" | "http/1.1" => {
+            HttpVersion::H1 => {
                 tracing::info!("FP Service (http/1.1) listening on: {address}");
                 tcp_listener
                     .serve_graceful(
@@ -301,7 +293,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                     )
                     .await;
             }
-            "h2" | "http2" | "http/2" | "http/2.0" => {
+            HttpVersion::H2 => {
                 tracing::info!("FP Service (h2) listening on: {address}");
                 tcp_listener
                     .serve_graceful(
@@ -312,9 +304,6 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                     )
                     .await;
             }
-            _version => {
-                panic!("unsupported http version: {}", cfg.http_version)
-            }
         }
     });
 
@@ -323,4 +312,38 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         .await?;
 
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialOrd, Ord, PartialEq, Eq, Hash)]
+enum HttpVersion {
+    Auto,
+    H1,
+    H2,
+}
+
+impl HttpVersion {
+    fn as_version(self) -> Option<Version> {
+        match self {
+            Self::Auto => None,
+            Self::H1 => Some(Version::HTTP_11),
+            Self::H2 => Some(Version::HTTP_2),
+        }
+    }
+}
+
+impl FromStr for HttpVersion {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Ok(match s.trim().to_lowercase().as_str() {
+            "" | "auto" => Self::Auto,
+            "h1" | "http1" | "http/1" | "http/1.0" | "http/1.1" => Self::H1,
+            "h2" | "http2" | "http/2" | "http/2.0" => Self::H2,
+            version => {
+                return Err(OpaqueError::from_display(format!(
+                    "unsupported http version: {version}"
+                )))
+            }
+        })
+    }
 }
