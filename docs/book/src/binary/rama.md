@@ -60,5 +60,5 @@ The `rama` "cli" is also available as a docker image:
 
 ```
 docker pull glendc/rama:latest
-docker run --rm glendc/rama:latest ./rama http example.com
+docker run --rm glendc/rama:latest http example.com
 ```
