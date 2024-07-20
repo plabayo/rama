@@ -50,3 +50,14 @@ brew install plabayo/rama/rama
 
 > Contributions to the homebrew distributions can be made via
 > <https://github.com/plabayo/homebrew-rama>.
+
+## Docker
+
+The `rama` "cli" is also available as a docker image:
+
+> 🔗 <https://hub.docker.com/r/glendc/rama>
+
+```
+docker pull glendc/rama:latest
+docker run --rm glendc/rama:latest ./rama http example.com
+```
