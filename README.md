@@ -106,6 +106,13 @@ and data extracted using [`rama-fp`](https://github.com/plabayo/rama/tree/main/r
 > Feel free to make use of while crafting distorted http requests,
 > but please do so with moderation. In case you have ideas on how to improve
 > the service, please let us know [by opening an issue](https://github.com/plabayo/rama/issues).
+>
+> Using the [`rama` binary](https://ramaproxy.org/book/binary/rama.html)
+> you can also run both the `echo` and `fp` service yourself, locally or as an
+> external facing web service.
+>
+> Please run your own echo service instead of using `echo.ramaproxy.org`
+> in case you are planning to send a lot of traffic to the echo service.
 
 [BrowserStack](https://browserstack.com) sponsors Rama by providing automated cross-platform browser testing
 on real devices, which [uses the public fingerprinting service](./rama-fp/browserstack/main.py) to aid in automated fingerprint collection

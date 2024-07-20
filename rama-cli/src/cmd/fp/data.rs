@@ -1,5 +1,6 @@
 use super::State;
 use rama::{
+    error::{BoxError, ErrorContext},
     http::{dep::http::request::Parts, headers::Forwarded, Request, RequestContext},
     net::stream::SocketInfo,
     service::Context,
@@ -114,7 +115,7 @@ pub(super) struct UserAgentInfo {
 pub(super) struct RequestInfo {
     pub(super) version: String,
     pub(super) scheme: String,
-    pub(super) authority: Option<String>,
+    pub(super) authority: String,
     pub(super) method: String,
     pub(super) fetch_mode: FetchMode,
     pub(super) resource_type: ResourceType,
@@ -139,16 +140,17 @@ pub(super) async fn get_request_info(
     fetch_mode: FetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
-    ctx: &Context<State>,
+    ctx: &mut Context<State>,
     parts: &Parts,
-) -> RequestInfo {
-    let request_context = ctx.get::<RequestContext>();
-    let authority = request_context.map(|ctx| ctx.authority.to_string());
-    let scheme = request_context
-        .map(|ctx| ctx.protocol.to_string())
-        .unwrap_or_else(|| "http".to_owned());
+) -> Result<RequestInfo, BoxError> {
+    let request_context = ctx
+        .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, parts).try_into())
+        .context("get or compose RequestContext")?;
 
-    RequestInfo {
+    let authority = request_context.authority.to_string();
+    let scheme = request_context.protocol.to_string();
+
+    Ok(RequestInfo {
         version: format!("{:?}", parts.version),
         scheme,
         authority,
@@ -171,7 +173,7 @@ pub(super) async fn get_request_info(
                     .or_else(|| f.client_ip().map(|ip| ip.to_string()))
             })
             .or_else(|| ctx.get::<SocketInfo>().map(|v| v.peer_addr().to_string())),
-    }
+    })
 }
 
 #[derive(Debug, Clone, Serialize)]

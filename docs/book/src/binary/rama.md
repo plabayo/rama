@@ -14,10 +14,11 @@ rama cli to move and transform network packets
 Usage: rama <COMMAND>
 
 Commands:
-  echo   rama echo service (echos the http request and tls client config)
   http   rama http client
-  proxy  rama proxy runner
+  proxy  rama proxy server
+  echo   rama echo service (echos the http request and tls client config)
   ip     rama ip service (returns the ip address of the client)
+  fp     rama fp service (used for FP collection in purpose of UA emulation)
   help   Print this message or the help of the given subcommand(s)
 
 Options:

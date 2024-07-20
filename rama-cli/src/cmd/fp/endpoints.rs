@@ -74,7 +74,7 @@ pub(super) async fn get_consent() -> impl IntoResponse {
     ))
 }
 
-pub(super) async fn get_report(ctx: Context<State>, req: Request) -> Html {
+pub(super) async fn get_report(mut ctx: Context<State>, req: Request) -> Result<Html, Response> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -85,10 +85,11 @@ pub(super) async fn get_report(ctx: Context<State>, req: Request) -> Html {
         FetchMode::Navigate,
         ResourceType::Document,
         Initiator::Navigator,
-        &ctx,
+        &mut ctx,
         &parts,
     )
-    .await;
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let head = r#"<script src="/assets/script.js"></script>"#.to_owned();
 
@@ -107,7 +108,12 @@ pub(super) async fn get_report(ctx: Context<State>, req: Request) -> Html {
         tables.push(tls_info.into());
     }
 
-    render_report("🕵️ Fingerprint Report", head, String::new(), tables)
+    Ok(render_report(
+        "🕵️ Fingerprint Report",
+        head,
+        String::new(),
+        tables,
+    ))
 }
 
 //------------------------------------------
@@ -146,9 +152,9 @@ pub(super) struct APINumberParams {
 }
 
 pub(super) async fn get_api_fetch_number(
-    ctx: Context<State>,
+    mut ctx: Context<State>,
     req: Request,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -159,14 +165,15 @@ pub(super) async fn get_api_fetch_number(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &ctx,
+        &mut ctx,
         &parts,
     )
-    .await;
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
 
-    Json(json!({
+    Ok(Json(json!({
         "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         "fp": {
             "user_agent_info": user_agent_info,
@@ -174,13 +181,13 @@ pub(super) async fn get_api_fetch_number(
             "tls_info": tls_info,
             "http_info": http_info,
         }
-    }))
+    })))
 }
 
 pub(super) async fn post_api_fetch_number(
-    ctx: Context<State>,
+    mut ctx: Context<State>,
     req: Request,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -199,14 +206,15 @@ pub(super) async fn post_api_fetch_number(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &ctx,
+        &mut ctx,
         &parts,
     )
-    .await;
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
 
-    Json(json!({
+    Ok(Json(json!({
         "number": number,
         "fp": {
             "user_agent_info": user_agent_info,
@@ -214,13 +222,13 @@ pub(super) async fn post_api_fetch_number(
             "tls_info": tls_info,
             "http_info": http_info,
         }
-    }))
+    })))
 }
 
 pub(super) async fn get_api_xml_http_request_number(
-    ctx: Context<State>,
+    mut ctx: Context<State>,
     req: Request,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -231,25 +239,26 @@ pub(super) async fn get_api_xml_http_request_number(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &ctx,
+        &mut ctx,
         &parts,
     )
-    .await;
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    Json(json!({
+    Ok(Json(json!({
         "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
         "fp": {
             "headers": http_info.headers,
             "user_agent_info": user_agent_info,
             "request_info": request_info,
         }
-    }))
+    })))
 }
 
 pub(super) async fn post_api_xml_http_request_number(
-    ctx: Context<State>,
+    mut ctx: Context<State>,
     req: Request,
-) -> Json<serde_json::Value> {
+) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -268,14 +277,15 @@ pub(super) async fn post_api_xml_http_request_number(
         FetchMode::SameOrigin,
         ResourceType::Xhr,
         Initiator::Fetch,
-        &ctx,
+        &mut ctx,
         &parts,
     )
-    .await;
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
 
-    Json(json!({
+    Ok(Json(json!({
         "number": number,
         "fp": {
             "user_agent_info": user_agent_info,
@@ -283,14 +293,14 @@ pub(super) async fn post_api_xml_http_request_number(
             "tls_info": tls_info,
             "http_info": http_info,
         }
-    }))
+    })))
 }
 
 //------------------------------------------
 // endpoints: form
 //------------------------------------------
 
-pub(super) async fn form(ctx: Context<State>, req: Request) -> Html {
+pub(super) async fn form(mut ctx: Context<State>, req: Request) -> Result<Html, Response> {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
 
@@ -304,10 +314,11 @@ pub(super) async fn form(ctx: Context<State>, req: Request) -> Html {
         FetchMode::SameOrigin,
         ResourceType::Form,
         Initiator::Form,
-        &ctx,
+        &mut ctx,
         &parts,
     )
-    .await;
+    .await
+    .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     let mut content = String::new();
 
@@ -343,12 +354,12 @@ pub(super) async fn form(ctx: Context<State>, req: Request) -> Html {
         tables.push(tls_info.into());
     }
 
-    render_report(
+    Ok(render_report(
         "🕵️ Fingerprint Report » Form",
         String::new(),
         content,
         tables,
-    )
+    ))
 }
 
 //------------------------------------------
@@ -508,7 +519,7 @@ impl From<RequestInfo> for Table {
                 ("Version".to_owned(), info.version),
                 ("Method".to_owned(), info.method),
                 ("Scheme".to_owned(), info.scheme),
-                ("Authority".to_owned(), info.authority.unwrap_or_default()),
+                ("Authority".to_owned(), info.authority),
                 ("Path".to_owned(), info.path),
                 ("Fetch Mode".to_owned(), info.fetch_mode.to_string()),
                 ("Resource Type".to_owned(), info.resource_type.to_string()),

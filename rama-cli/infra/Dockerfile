@@ -16,4 +16,4 @@ WORKDIR /app
 COPY --from=builder /usr/src/app/bin/rama /app/rama
 
 # Run the app
-CMD ./rama
+ENTRYPOINT ["/app/rama"]
