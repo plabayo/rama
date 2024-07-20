@@ -7,7 +7,6 @@ use super::{
 };
 use rama::{
     http::{
-        dep::http_body_util::BodyExt,
         response::Json,
         service::web::extract::{self, FromRequestParts, Path},
         Body, IntoResponse, Request, Response, StatusCode,
@@ -16,7 +15,6 @@ use rama::{
 };
 use serde::Deserialize;
 use serde_json::json;
-use std::ops::Deref;
 
 type Html = rama::http::response::Html<String>;
 
@@ -28,7 +26,7 @@ fn html<T: Into<String>>(inner: T) -> Html {
 // endpoints: navigations
 //------------------------------------------
 
-pub async fn get_consent() -> impl IntoResponse {
+pub(super) async fn get_consent() -> impl IntoResponse {
     ([("Set-Cookie", "rama-fp=ready; Max-Age=60")], render_page(
         "🕵️ Fingerprint Consent",
         String::new(),
@@ -76,7 +74,7 @@ pub async fn get_consent() -> impl IntoResponse {
     ))
 }
 
-pub async fn get_report(ctx: Context<State>, req: Request) -> Html {
+pub(super) async fn get_report(ctx: Context<State>, req: Request) -> Html {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -117,11 +115,11 @@ pub async fn get_report(ctx: Context<State>, req: Request) -> Html {
 //------------------------------------------
 
 #[derive(Debug, Deserialize)]
-pub struct AcmeChallengeParams {
+pub(super) struct AcmeChallengeParams {
     token: String,
 }
 
-pub async fn get_acme_challenge(
+pub(super) async fn get_acme_challenge(
     extract::State(state): extract::State<State>,
     Path(params): Path<AcmeChallengeParams>,
 ) -> Response {
@@ -143,11 +141,14 @@ pub async fn get_acme_challenge(
 //------------------------------------------
 
 #[derive(Deserialize)]
-pub struct APINumberParams {
+pub(super) struct APINumberParams {
     number: usize,
 }
 
-pub async fn get_api_fetch_number(ctx: Context<State>, req: Request) -> Json<serde_json::Value> {
+pub(super) async fn get_api_fetch_number(
+    ctx: Context<State>,
+    req: Request,
+) -> Json<serde_json::Value> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -176,7 +177,10 @@ pub async fn get_api_fetch_number(ctx: Context<State>, req: Request) -> Json<ser
     }))
 }
 
-pub async fn post_api_fetch_number(ctx: Context<State>, req: Request) -> Json<serde_json::Value> {
+pub(super) async fn post_api_fetch_number(
+    ctx: Context<State>,
+    req: Request,
+) -> Json<serde_json::Value> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -213,7 +217,7 @@ pub async fn post_api_fetch_number(ctx: Context<State>, req: Request) -> Json<se
     }))
 }
 
-pub async fn get_api_xml_http_request_number(
+pub(super) async fn get_api_xml_http_request_number(
     ctx: Context<State>,
     req: Request,
 ) -> Json<serde_json::Value> {
@@ -242,7 +246,7 @@ pub async fn get_api_xml_http_request_number(
     }))
 }
 
-pub async fn post_api_xml_http_request_number(
+pub(super) async fn post_api_xml_http_request_number(
     ctx: Context<State>,
     req: Request,
 ) -> Json<serde_json::Value> {
@@ -286,7 +290,7 @@ pub async fn post_api_xml_http_request_number(
 // endpoints: form
 //------------------------------------------
 
-pub async fn form(ctx: Context<State>, req: Request) -> Html {
+pub(super) async fn form(ctx: Context<State>, req: Request) -> Html {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
 
@@ -351,9 +355,9 @@ pub async fn form(ctx: Context<State>, req: Request) -> Html {
 // endpoints: assets
 //------------------------------------------
 
-const STYLE_CSS: &str = include_str!("../assets/style.css");
+const STYLE_CSS: &str = include_str!("../../../assets/style.css");
 
-pub async fn get_assets_style() -> Response {
+pub(super) async fn get_assets_style() -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/css")
@@ -361,58 +365,14 @@ pub async fn get_assets_style() -> Response {
         .expect("build css response")
 }
 
-const SCRIPT_JS: &str = include_str!("../assets/script.js");
+const SCRIPT_JS: &str = include_str!("../../../assets/script.js");
 
-pub async fn get_assets_script() -> Response {
+pub(super) async fn get_assets_script() -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "text/javascript")
         .body(SCRIPT_JS.into())
         .expect("build js response")
-}
-
-//------------------------------------------
-// endpoints: echo
-//------------------------------------------
-
-pub async fn echo(ctx: Context<State>, req: Request) -> Json<serde_json::Value> {
-    let http_info: super::data::HttpInfo = get_http_info(&req);
-
-    let query = req.uri().query().map(str::to_owned);
-
-    let (parts, body) = req.into_parts();
-
-    let tls_info = get_tls_info(&ctx).map(|tls_info| json!({
-        "server_name": tls_info.server_name,
-        "signature_schemes": tls_info.signature_schemes,
-        "alpn": tls_info.alpn.map(|v| v.iter().map(|v| String::from_utf8_lossy(v).to_string()).collect::<Vec<_>>()),
-        "cipher_suites": tls_info.cipher_suites,
-    }));
-
-    let user_agent_info = get_user_agent_info(&ctx).await;
-
-    let request_info = get_request_info(
-        FetchMode::SameOrigin,
-        ResourceType::Document,
-        Initiator::Navigator,
-        &ctx,
-        &parts,
-    )
-    .await;
-
-    Json(json!({
-        "ua": user_agent_info,
-        "version": request_info.version,
-        "scheme": request_info.scheme,
-        "method": request_info.method,
-        "authority": request_info.authority,
-        "path": request_info.path,
-        "query": query,
-        "socket_addr": request_info.peer_addr,
-        "headers": http_info.headers,
-        "parsedBody": String::from_utf8_lossy(body.collect().await.unwrap().to_bytes().deref()),
-        "tls": tls_info,
-    }))
 }
 
 //------------------------------------------

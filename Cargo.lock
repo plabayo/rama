@@ -1703,22 +1703,9 @@ dependencies = [
  "clap",
  "hex",
  "rama",
- "serde_json",
- "terminal-prompt",
- "tokio",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "rama-fp"
-version = "0.2.0-alpha.1"
-dependencies = [
- "base64 0.22.1",
- "clap",
- "rama",
  "serde",
  "serde_json",
+ "terminal-prompt",
  "tokio",
  "tracing",
  "tracing-subscriber",

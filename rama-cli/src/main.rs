@@ -45,7 +45,7 @@ use clap::{Parser, Subcommand};
 use rama::error::BoxError;
 
 pub mod cmd;
-use cmd::{echo, http, ip, proxy};
+use cmd::{echo, fp, http, ip, proxy};
 
 pub mod error;
 
@@ -61,10 +61,11 @@ struct Cli {
 #[derive(Debug, Subcommand)]
 #[allow(clippy::large_enum_variant)]
 enum CliCommands {
-    Echo(echo::CliCommandEcho),
     Http(http::CliCommandHttp),
     Proxy(proxy::CliCommandProxy),
+    Echo(echo::CliCommandEcho),
     Ip(ip::CliCommandIp),
+    Fp(fp::CliCommandFingerprint),
 }
 
 #[tokio::main]
@@ -73,10 +74,11 @@ async fn main() -> Result<(), BoxError> {
 
     #[allow(clippy::exit)]
     match match cli.cmds {
-        CliCommands::Echo(cfg) => echo::run(cfg).await,
         CliCommands::Http(cfg) => http::run(cfg).await,
         CliCommands::Proxy(cfg) => proxy::run(cfg).await,
+        CliCommands::Echo(cfg) => echo::run(cfg).await,
         CliCommands::Ip(cfg) => ip::run(cfg).await,
+        CliCommands::Fp(cfg) => fp::run(cfg).await,
     } {
         Ok(()) => Ok(()),
         Err(err) => {
