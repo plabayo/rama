@@ -26,6 +26,14 @@ impl TlsServerCertKeyPair {
         }
     }
 
+    /// Maybe define a specific http [`Version`].
+    ///
+    /// Used to defined the version in the ALPN.
+    pub fn maybe_http_version(mut self, version: Option<Version>) -> Self {
+        self.http_version = version;
+        self
+    }
+
     /// Define a specific http [`Version`] instead of using the default `auto`.
     ///
     /// Used to defined the version in the ALPN.

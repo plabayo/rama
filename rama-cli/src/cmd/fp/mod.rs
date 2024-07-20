@@ -15,7 +15,7 @@ use rama::{
         response::Redirect,
         server::HttpServer,
         service::web::match_service,
-        HeaderName, HeaderValue, IntoResponse,
+        HeaderName, HeaderValue, IntoResponse, Version,
     },
     net::stream::layer::http::BodyLimitLayer,
     proxy::pp::server::HaProxyLayer,
@@ -154,7 +154,16 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     let tls_server_cfg = cfg.secure.then(|| {
         let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
         let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
-        TlsServerCertKeyPair::new(tls_crt_pem_raw, tls_key_pem_raw)
+        TlsServerCertKeyPair::new(tls_crt_pem_raw, tls_key_pem_raw).maybe_http_version(
+            match cfg.http_version.as_str() {
+                "" | "auto" => None,
+                "h1" | "http1" | "http/1" | "http/1.0" | "http/1.1" => Some(Version::HTTP_11),
+                "h2" | "http2" | "http/2" | "http/2.0" => Some(Version::HTTP_2),
+                _version => {
+                    panic!("unsupported http version: {}", cfg.http_version)
+                }
+            },
+        )
     });
 
     let tls_server_cfg = match tls_server_cfg {
