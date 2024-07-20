@@ -37,7 +37,6 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 mod data;
 mod endpoints;
-mod report;
 mod state;
 
 #[doc(inline)]
