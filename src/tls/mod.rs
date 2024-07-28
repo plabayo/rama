@@ -1,5 +1,6 @@
 //! TLS module for Rama.
 
+pub mod client;
 pub mod rustls;
 
 #[derive(Debug, Clone)]
