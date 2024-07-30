@@ -1,5 +1,10 @@
 //! TLS module for Rama.
 
+mod enums;
+pub use enums::{
+    CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme, SupportedGroup,
+};
+
 pub mod client;
 pub mod rustls;
 
