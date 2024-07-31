@@ -2,3 +2,4 @@
 ratatui = "ratatui"
 ba = "ba"
 flate = "flate"
+ede = "ede"

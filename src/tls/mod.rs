@@ -2,7 +2,8 @@
 
 mod enums;
 pub use enums::{
-    CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme, SupportedGroup,
+    ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme,
+    SupportedGroup,
 };
 
 pub mod client;

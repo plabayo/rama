@@ -10,6 +10,100 @@ macro_rules! enum_builder {
         enum_builder!(u16: $(#[$comment])* $($enum)+);
     };
     (
+        $(#[$comment:meta])*
+        @Bytes
+        $enum_vis:vis enum $enum_name:ident
+        { $( $enum_var: ident => $enum_val: expr ),* $(,)? }
+    ) => {
+        $(#[$comment])*
+        #[non_exhaustive]
+        #[derive(Debug, PartialEq, Eq, Clone)]
+        $enum_vis enum $enum_name {
+            $( $enum_var),*
+            ,Unknown(Vec<u8>)
+        }
+
+        impl $enum_name {
+            // NOTE(allow) generated irrespective if there are callers
+            #[allow(dead_code)]
+            $enum_vis fn as_bytes(&self) -> &[u8] {
+                match self {
+                    $( $enum_name::$enum_var => $enum_val),*
+                    ,$enum_name::Unknown(v) => &v[..],
+                }
+            }
+
+            // NOTE(allow) generated irrespective if there are callers
+            #[allow(dead_code)]
+            $enum_vis fn as_str(&self) -> Option<&'static str> {
+                match self {
+                    $( $enum_name::$enum_var => Some(stringify!($enum_var))),*
+                    ,$enum_name::Unknown(_) => None,
+                }
+            }
+        }
+
+        impl<'a> From<&'a [u8]> for $enum_name {
+            fn from(b: &'a [u8]) -> Self {
+                match b {
+                    $($enum_val => $enum_name::$enum_var),*
+                    , b => $enum_name::Unknown(b.to_vec()),
+                }
+            }
+        }
+
+        impl<'a> From<&'a str> for $enum_name {
+            fn from(s: &'a str) -> Self {
+                match s.as_bytes() {
+                    $($enum_val => $enum_name::$enum_var),*
+                    , b => $enum_name::Unknown(b.to_vec()),
+                }
+            }
+        }
+
+        impl ::std::str::FromStr for $enum_name {
+            type Err = ::std::convert::Infallible;
+
+            fn from_str(s: &str) -> Result<Self, Self::Err> {
+                Ok(s.into())
+            }
+        }
+
+        impl From<String> for $enum_name {
+            fn from(s: String) -> Self {
+                let b = s.into_bytes();
+                b.into()
+            }
+        }
+
+        impl From<Vec<u8>> for $enum_name {
+            fn from(b: Vec<u8>) -> Self {
+                match &b[..] {
+                    $($enum_val => $enum_name::$enum_var),*
+                    , _ => $enum_name::Unknown(b),
+                }
+            }
+        }
+
+        impl From<$enum_name> for Vec<u8> {
+            fn from(e: $enum_name) -> Self {
+                match e {
+                    $($enum_name::$enum_var => $enum_val.to_vec()),*
+                    , $enum_name::Unknown(v) => v,
+                }
+            }
+        }
+
+        impl From<&$enum_name> for Vec<u8> {
+            fn from(e: &$enum_name) -> Self {
+                match e {
+                    $($enum_name::$enum_var => $enum_val.to_vec()),*
+                    , $enum_name::Unknown(ref v) => v.clone(),
+                }
+            }
+        }
+    };
+    (
         $uint:ty:
         $(#[$comment:meta])*
         $enum_vis:vis enum $enum_name:ident
@@ -667,5 +761,48 @@ enum_builder! {
         SECP256R1KYBER768DRAFT00 => 0x639a,
         ARBITRARY_EXPLICIT_PRIME_CURVES => 0xff01,
         ARBITRARY_EXPLICIT_CHAR2_CURVES => 0xff02,
+    }
+}
+
+enum_builder! {
+    /// The Application Layer Negotiation Protocol (ALPN) identifiers
+    /// as found in the IANA registry for Tls ExtensionType values.
+    @Bytes
+    pub enum ApplicationProtocol {
+        HTTP_09 => b"http/0.9",
+        HTTP_10 => b"http/1.0",
+        HTTP_11 => b"http/1.1",
+        SPDY_1 => b"spdy/1",
+        SPDY_2 => b"spdy/2",
+        SPDY_3 => b"spdy/3",
+        STUN_TURN => b"stun.turn",
+        STUN_NAT_DISCOVERY => b"stun.nat-discovery",
+        HTTP_2 => b"h2",
+        HTTP_2_TCP => b"h2c",
+        WebRTC => b"webrtc",
+        CWebRTC => b"c-webrtc",
+        FTP => b"ftp",
+        IMAP => b"imap",
+        POP3 => b"pop3",
+        ManageSieve => b"managesieve",
+        CoAP_TLS => b"coap",
+        CoAP_DTLS => b"co",
+        XMPP_CLIENT => b"xmpp-client",
+        XMPP_SERVER => b"xmpp-server",
+        ACME_TLS => b"acme-tls/1",
+        MQTT => b"mqtt",
+        DNS_OVER_TLS => b"dot",
+        NTSKE_1 => b"ntske/1",
+        SunRPC => b"sunrpc",
+        HTTP_3 => b"h3",
+        SMB2 => b"smb",
+        IRC => b"irc",
+        NNTP => b"nntp",
+        NNSP => b"nnsp",
+        DoQ => b"doq",
+        SIP => b"sip/2",
+        TDS_80 => b"tds/8.0",
+        DICOM => b"dicom",
+        PostgreSQL => b"postgresql",
     }
 }
