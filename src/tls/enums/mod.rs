@@ -35,17 +35,26 @@ macro_rules! enum_builder {
 
             // NOTE(allow) generated irrespective if there are callers
             #[allow(dead_code)]
-            $enum_vis fn as_str(&self) -> Option<&'static str> {
-                match self {
-                    $( $enum_name::$enum_var => Some(stringify!($enum_var))),*
-                    ,$enum_name::Unknown(_) => None,
-                }
+            $enum_vis fn try_as_str(&self) -> Option<&str> {
+                ::std::str::from_utf8(match self {
+                    $( $enum_name::$enum_var => $enum_val),*
+                    ,$enum_name::Unknown(b) => b,
+                }).ok()
             }
         }
 
         impl<'a> From<&'a [u8]> for $enum_name {
             fn from(b: &'a [u8]) -> Self {
                 match b {
+                    $($enum_val => $enum_name::$enum_var),*
+                    , b => $enum_name::Unknown(b.to_vec()),
+                }
+            }
+        }
+
+        impl<'a, const N: usize> From<&'a [u8; N]> for $enum_name {
+            fn from(b: &'a [u8; N]) -> Self {
+                match &b[..] {
                     $($enum_val => $enum_name::$enum_var),*
                     , b => $enum_name::Unknown(b.to_vec()),
                 }
@@ -102,6 +111,21 @@ macro_rules! enum_builder {
                 }
             }
         }
+
+        impl ::std::fmt::Display for $enum_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $( $enum_name::$enum_var => match ::std::str::from_utf8($enum_val) {
+                        Ok(x) => write!(f, "{x}"),
+                        Err(_) => write!(f, concat!(stringify!($enum_var), " (0x{:x?})"), $enum_val),
+                    }),*
+                    ,$enum_name::Unknown(x) => match ::std::str::from_utf8(x) {
+                        Ok(x) => write!(f, "Unknown ({x})"),
+                        Err(_) => write!(f, "Unknown (0x{x:x?}"),
+                    }
+                }
+            }
+        }
     };
     (
         $uint:ty:
@@ -115,23 +139,6 @@ macro_rules! enum_builder {
         $enum_vis enum $enum_name {
             $( $enum_var),*
             ,Unknown($uint)
-        }
-
-        impl $enum_name {
-            // NOTE(allow) generated irrespective if there are callers
-            #[allow(dead_code)]
-            $enum_vis fn to_array(self) -> [u8; core::mem::size_of::<$uint>()] {
-                <$uint>::from(self).to_be_bytes()
-            }
-
-            // NOTE(allow) generated irrespective if there are callers
-            #[allow(dead_code)]
-            $enum_vis fn as_str(&self) -> Option<&'static str> {
-                match self {
-                    $( $enum_name::$enum_var => Some(stringify!($enum_var))),*
-                    ,$enum_name::Unknown(_) => None,
-                }
-            }
         }
 
         impl From<$uint> for $enum_name {
@@ -148,6 +155,15 @@ macro_rules! enum_builder {
                 match value {
                     $( $enum_name::$enum_var => $enum_val),*
                     ,$enum_name::Unknown(x) => x
+                }
+            }
+        }
+
+        impl ::std::fmt::Display for $enum_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " (0x{:x?})"), $enum_val)),*
+                    ,$enum_name::Unknown(x) => write!(f, "Unknown (0x{x:x?})")
                 }
             }
         }
@@ -804,5 +820,26 @@ enum_builder! {
         TDS_80 => b"tds/8.0",
         DICOM => b"dicom",
         PostgreSQL => b"postgresql",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_enum_uint_display() {
+        assert_eq!("X25519 (0x1d)", SupportedGroup::X25519.to_string());
+        assert_eq!("Unknown (0xffff)", SupportedGroup::from(0xffff).to_string())
+    }
+
+    #[test]
+    fn test_enum_bytes_display() {
+        assert_eq!("http/1.1", ApplicationProtocol::HTTP_11.to_string());
+        assert_eq!(
+            "Unknown (h42)",
+            ApplicationProtocol::from(b"h42").to_string()
+        );
+        assert_eq!("Unknown (\0)", ApplicationProtocol::from(&[0]).to_string());
     }
 }
