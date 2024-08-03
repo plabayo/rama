@@ -1,6 +1,8 @@
 #![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 
+mod rustls;
+
 /// A macro which defines an enum type.
 macro_rules! enum_builder {
     ($(#[$comment:meta])* @U8 $($enum:tt)+) => {

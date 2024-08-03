@@ -19,7 +19,7 @@ pub use service::{TlsAcceptorError, TlsAcceptorService};
 
 mod client_config;
 #[doc(inline)]
-pub use client_config::{IncomingClientHello, ServerConfigProvider, TlsClientConfigHandler};
+pub use client_config::{ServerConfigProvider, TlsClientConfigHandler};
 
 mod layer;
 #[doc(inline)]

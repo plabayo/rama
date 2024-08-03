@@ -471,22 +471,17 @@ impl From<TlsInfo> for Table {
             rows: vec![
                 (
                     "Server Name".to_owned(),
-                    info.server_name.unwrap_or_default(),
+                    info.server_name.map(|d| d.to_string()).unwrap_or_default(),
                 ),
                 (
                     "Signature Schemes".to_owned(),
-                    info.signature_schemes.join(", "),
+                    info.signature_schemes
+                        .map(|ss| ss.join(", "))
+                        .unwrap_or_default(),
                 ),
                 (
                     "ALPN".to_owned(),
-                    info.alpn
-                        .map(|v| {
-                            v.iter()
-                                .map(|v| String::from_utf8_lossy(v).to_string())
-                                .collect::<Vec<_>>()
-                                .join(", ")
-                        })
-                        .unwrap_or_default(),
+                    info.alpn.map(|alpn| alpn.join(", ")).unwrap_or_default(),
                 ),
                 ("Cipher Suites".to_owned(), info.cipher_suites.join(", ")),
             ],

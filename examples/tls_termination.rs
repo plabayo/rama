@@ -56,13 +56,14 @@ use rama::{
         server::TcpListener,
     },
     tls::{
+        client::ClientHello,
         dep::rcgen::KeyPair,
         rustls::{
             dep::{
                 pki_types::{CertificateDer, PrivatePkcs8KeyDer},
                 rustls::ServerConfig,
             },
-            server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
+            server::{TlsAcceptorLayer, TlsClientConfigHandler},
         },
     },
     utils::graceful::Shutdown,
@@ -122,7 +123,7 @@ async fn main() {
     shutdown.spawn_task_fn(|guard| async move {
         let tls_client_config_handler = TlsClientConfigHandler::default()
             .store_client_hello()
-            .server_config_provider(|client_hello: IncomingClientHello| async move {
+            .server_config_provider(|client_hello: ClientHello| async move {
                 tracing::debug!(?client_hello, "client hello");
 
                 // Return None in case you want to use the default acceptor Tls config

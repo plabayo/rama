@@ -2,6 +2,7 @@ use crate::{
     net::stream::Stream,
     service::{Context, Service},
     tls::{
+        client::ClientHello,
         rustls::dep::{
             rustls::server::Acceptor,
             tokio_rustls::{server::TlsStream, LazyConfigAcceptor, TlsAcceptor},
@@ -12,7 +13,7 @@ use crate::{
 use rustls::ServerConfig;
 use std::{fmt, sync::Arc};
 
-use super::{client_config::IncomingClientHello, ServerConfigProvider, TlsClientConfigHandler};
+use super::{ServerConfigProvider, TlsClientConfigHandler};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
@@ -95,7 +96,7 @@ where
         let start = acceptor.await.map_err(TlsAcceptorError::Accept)?;
 
         if self.client_config_handler.store_client_hello {
-            let accepted_client_hello = IncomingClientHello::from(start.client_hello());
+            let accepted_client_hello = ClientHello::from(start.client_hello());
             ctx.insert(accepted_client_hello);
         }
 
@@ -127,7 +128,7 @@ where
 
         let start = acceptor.await.map_err(TlsAcceptorError::Accept)?;
 
-        let accepted_client_hello = IncomingClientHello::from(start.client_hello());
+        let accepted_client_hello = ClientHello::from(start.client_hello());
 
         if self.client_config_handler.store_client_hello {
             ctx.insert(accepted_client_hello.clone());

@@ -1,0 +1,38 @@
+use crate::tls::{ApplicationProtocol, CipherSuite, SignatureScheme};
+
+use super::ClientHelloExtension;
+
+impl<'a> From<rustls::server::ClientHello<'a>> for super::ClientHello {
+    fn from(value: rustls::server::ClientHello<'a>) -> Self {
+        let cipher_suites = value
+            .cipher_suites()
+            .iter()
+            .map(|cs| CipherSuite::from(*cs))
+            .collect();
+
+        let mut extensions = Vec::with_capacity(3);
+
+        extensions.push(ClientHelloExtension::SignatureAlgorithms(
+            value
+                .signature_schemes()
+                .iter()
+                .map(|sc| SignatureScheme::from(*sc))
+                .collect(),
+        ));
+
+        if let Some(domain) = value.server_name().and_then(|d| d.parse().ok()) {
+            extensions.push(ClientHelloExtension::ServerName(domain));
+        }
+
+        if let Some(alpn) = value.alpn() {
+            extensions.push(ClientHelloExtension::ApplicationLayerProtocolNegotiation(
+                alpn.map(ApplicationProtocol::from).collect(),
+            ));
+        }
+
+        Self {
+            cipher_suites,
+            extensions,
+        }
+    }
+}
