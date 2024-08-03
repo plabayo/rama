@@ -32,7 +32,10 @@ use crate::{
         },
         Context, Layer, Service, ServiceBuilder,
     },
-    tls::rustls::server::{IncomingClientHello, TlsAcceptorLayer, TlsClientConfigHandler},
+    tls::{
+        rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler},
+        SecureTransport,
+    },
     ua::{UserAgent, UserAgentClassifierLayer},
     utils::combinators::Either7,
 };
@@ -268,22 +271,22 @@ impl Service<(), Request> for EchoService {
         let body = body.collect().await.unwrap().to_bytes();
         let body = hex::encode(body.as_ref());
 
-        let tls_client_hello = ctx.get::<IncomingClientHello>().map(|hello| {
-            json!({
-                "server_name": hello.server_name.clone(),
-                "signature_schemes": hello
-                    .signature_schemes
-                    .iter()
-                    .map(|v| format!("{:?}", v))
-                    .collect::<Vec<_>>(),
-                 "alpn": hello.alpn.as_ref().map(|v| v.iter().map(|v| String::from_utf8_lossy(v).to_string()).collect::<Vec<_>>()),
-                "cipher_suites": hello
-                    .cipher_suites
-                    .iter()
-                    .map(|v| format!("{:?}", v))
-                    .collect::<Vec<_>>(),
-            })
-        });
+        let tls_client_hello = ctx
+            .get::<SecureTransport>()
+            .and_then(|st| st.client_hello())
+            .map(|hello| {
+                json!({
+                    "server_name": hello.ext_server_name().clone(),
+                    "signature_schemes": hello
+                        .ext_signature_algorithms()
+                        .map(|slice| slice.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                    "alpn": hello
+                        .ext_alpn()
+                        .map(|slice| slice.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+                    "cipher_suites": hello
+                        .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                })
+            });
 
         Ok(Json(json!({
             "ua": user_agent_info,

@@ -2,9 +2,9 @@ use super::State;
 use rama::{
     error::{BoxError, ErrorContext},
     http::{dep::http::request::Parts, headers::Forwarded, Request, RequestContext},
-    net::stream::SocketInfo,
+    net::{address::Domain, stream::SocketInfo},
     service::Context,
-    tls::rustls::server::IncomingClientHello,
+    tls::{client::ClientHello, SecureTransport},
     ua::UserAgent,
 };
 use serde::Serialize;
@@ -201,9 +201,9 @@ pub(super) fn get_http_info(req: &Request) -> HttpInfo {
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TlsInfo {
-    pub(super) server_name: Option<String>,
-    pub(super) signature_schemes: Vec<String>,
-    pub(super) alpn: Option<Vec<Vec<u8>>>,
+    pub(super) server_name: Option<Domain>,
+    pub(super) signature_schemes: Option<Vec<String>>,
+    pub(super) alpn: Option<Vec<String>>,
     pub(super) cipher_suites: Vec<String>,
 }
 
@@ -212,20 +212,22 @@ pub(super) struct TlsInfo {
 // because unknown for rustls might be known for boringssl, etc...
 
 pub(super) fn get_tls_info(ctx: &Context<State>) -> Option<TlsInfo> {
-    let client_hello: &IncomingClientHello = ctx.get()?;
+    let client_hello: &ClientHello = ctx
+        .get::<SecureTransport>()
+        .and_then(|st| st.client_hello())?;
 
     Some(TlsInfo {
-        server_name: client_hello.server_name.clone(),
+        server_name: client_hello.ext_server_name().cloned(),
         signature_schemes: client_hello
-            .signature_schemes
-            .iter()
-            .map(|v| format!("{:?}", v))
-            .collect(),
-        alpn: client_hello.alpn.clone(),
+            .ext_signature_algorithms()
+            .map(|slice| slice.iter().map(|s| s.to_string()).collect()),
+        alpn: client_hello
+            .ext_alpn()
+            .map(|slice| slice.iter().map(|s| s.to_string()).collect()),
         cipher_suites: client_hello
-            .cipher_suites
+            .cipher_suites()
             .iter()
-            .map(|v| format!("{:?}", v))
+            .map(|s| s.to_string())
             .collect(),
     })
 }
