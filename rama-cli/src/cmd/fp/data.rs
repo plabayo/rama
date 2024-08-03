@@ -4,7 +4,7 @@ use rama::{
     http::{dep::http::request::Parts, headers::Forwarded, Request, RequestContext},
     net::{address::Domain, stream::SocketInfo},
     service::Context,
-    tls::client::ClientHello,
+    tls::{client::ClientHello, SecureTransport},
     ua::UserAgent,
 };
 use serde::Serialize;
@@ -212,7 +212,9 @@ pub(super) struct TlsInfo {
 // because unknown for rustls might be known for boringssl, etc...
 
 pub(super) fn get_tls_info(ctx: &Context<State>) -> Option<TlsInfo> {
-    let client_hello: &ClientHello = ctx.get()?;
+    let client_hello: &ClientHello = ctx
+        .get::<SecureTransport>()
+        .and_then(|st| st.client_hello())?;
 
     Some(TlsInfo {
         server_name: client_hello.ext_server_name().cloned(),

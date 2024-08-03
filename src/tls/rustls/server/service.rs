@@ -95,17 +95,18 @@ where
 
         let start = acceptor.await.map_err(TlsAcceptorError::Accept)?;
 
-        if self.client_config_handler.store_client_hello {
-            let accepted_client_hello = ClientHello::from(start.client_hello());
-            ctx.insert(accepted_client_hello);
-        }
+        let secure_transport = if self.client_config_handler.store_client_hello {
+            SecureTransport::with_client_hello(start.client_hello().into())
+        } else {
+            SecureTransport::default()
+        };
 
         let stream = start
             .into_stream(self.config.clone())
             .await
             .map_err(TlsAcceptorError::Accept)?;
 
-        ctx.insert(SecureTransport::default());
+        ctx.insert(secure_transport);
         self.inner
             .serve(ctx, stream)
             .await
@@ -130,9 +131,11 @@ where
 
         let accepted_client_hello = ClientHello::from(start.client_hello());
 
-        if self.client_config_handler.store_client_hello {
-            ctx.insert(accepted_client_hello.clone());
-        }
+        let secure_transport = if self.client_config_handler.store_client_hello {
+            SecureTransport::with_client_hello(accepted_client_hello.clone())
+        } else {
+            SecureTransport::default()
+        };
 
         let config = self
             .client_config_handler
@@ -147,7 +150,7 @@ where
             .await
             .map_err(TlsAcceptorError::Accept)?;
 
-        ctx.insert(SecureTransport::default());
+        ctx.insert(secure_transport);
         self.inner
             .serve(ctx, stream)
             .await
