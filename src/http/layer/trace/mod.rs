@@ -346,9 +346,9 @@
 //! [`TraceLayer`] comes with convenience methods for using common classifiers:
 //!
 //! - [`TraceLayer::new_for_http`] classifies based on the status code. It doesn't consider
-//! streaming responses.
+//!   streaming responses.
 //! - [`TraceLayer::new_for_grpc`] classifies based on the gRPC protocol and supports streaming
-//! responses.
+//!   responses.
 //!
 //! [tracing]: https://crates.io/crates/tracing
 //! [`Service`]: crate::service::Service

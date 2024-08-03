@@ -1,4 +1,3 @@
-#![cfg_attr(nightly_error_messages, feature(diagnostic_namespace))]
 //! 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 //! The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 //!
