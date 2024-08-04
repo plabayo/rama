@@ -3,13 +3,119 @@
 
 mod rustls;
 
+// https://www.rfc-editor.org/rfc/rfc8701.html
+const GREASE_VALUES: [u16; 16] = [
+    0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a, 0xaaaa, 0xbaba,
+    0xcaca, 0xdada, 0xeaea, 0xfafa,
+];
+
+// https://www.rfc-editor.org/rfc/rfc8701.html
+const GREASE_BYTES_VALUES: [[u8; 2]; 16] = [
+    [0x0a, 0x0a],
+    [0x1a, 0x1a],
+    [0x2a, 0x2a],
+    [0x3a, 0x3a],
+    [0x4a, 0x4a],
+    [0x5a, 0x5a],
+    [0x6a, 0x6a],
+    [0x7a, 0x7a],
+    [0x8a, 0x8a],
+    [0x9a, 0x9a],
+    [0xaa, 0xaa],
+    [0xba, 0xba],
+    [0xca, 0xca],
+    [0xda, 0xda],
+    [0xea, 0xea],
+    [0xfa, 0xfa],
+];
+
 /// A macro which defines an enum type.
 macro_rules! enum_builder {
-    ($(#[$comment:meta])* @U8 $($enum:tt)+) => {
-        enum_builder!(u8: $(#[$comment])* $($enum)+);
+    (
+        $(#[$comment:meta])*
+        @U8
+        $enum_vis:vis enum $enum_name:ident
+        { $( $enum_var: ident => $enum_val: expr ),* $(,)? }
+    ) => {
+        $(#[$comment])*
+        #[non_exhaustive]
+        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        $enum_vis enum $enum_name {
+            $( $enum_var),*
+            ,Unknown(u8)
+        }
+
+        impl From<u8> for $enum_name {
+            fn from(x: u8) -> Self {
+                match x {
+                    $($enum_val => $enum_name::$enum_var),*
+                    , x => $enum_name::Unknown(x),
+                }
+            }
+        }
+
+        impl From<$enum_name> for u8 {
+            fn from(value: $enum_name) -> Self {
+                match value {
+                    $( $enum_name::$enum_var => $enum_val),*
+                    ,$enum_name::Unknown(x) => x
+                }
+            }
+        }
+
+        impl ::std::fmt::Display for $enum_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $enum_val)),*
+                    ,$enum_name::Unknown(x) => write!(f, "Unknown ({x:#06x})"),
+                }
+            }
+        }
     };
-    ($(#[$comment:meta])* @U16 $($enum:tt)+) => {
-        enum_builder!(u16: $(#[$comment])* $($enum)+);
+    (
+        $(#[$comment:meta])*
+        @U16
+        $enum_vis:vis enum $enum_name:ident
+        { $( $enum_var: ident => $enum_val: expr ),* $(,)? }
+    ) => {
+        $(#[$comment])*
+        #[non_exhaustive]
+        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        $enum_vis enum $enum_name {
+            $( $enum_var),*
+            ,Unknown(u16)
+        }
+
+        impl From<u16> for $enum_name {
+            fn from(x: u16) -> Self {
+                match x {
+                    $($enum_val => $enum_name::$enum_var),*
+                    , x => $enum_name::Unknown(x),
+                }
+            }
+        }
+
+        impl From<$enum_name> for u16 {
+            fn from(value: $enum_name) -> Self {
+                match value {
+                    $( $enum_name::$enum_var => $enum_val),*
+                    ,$enum_name::Unknown(x) => x
+                }
+            }
+        }
+
+        impl ::std::fmt::Display for $enum_name {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                match self {
+                    $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $enum_val)),*
+                    ,$enum_name::Unknown(x) => if GREASE_VALUES.iter().any(|v| v == x) {
+                        write!(f, "GREASE ({x:#06x})")
+                        } else {
+                        write!(f, "Unknown ({x:#06x})")
+                        }
+                }
+            }
+        }
     };
     (
         $(#[$comment:meta])*
@@ -121,51 +227,15 @@ macro_rules! enum_builder {
                         Ok(x) => write!(f, "{x}"),
                         Err(_) => write!(f, concat!(stringify!($enum_var), " (0x{:x?})"), $enum_val),
                     }),*
-                    ,$enum_name::Unknown(x) => match ::std::str::from_utf8(x) {
-                        Ok(x) => write!(f, "Unknown ({x})"),
-                        Err(_) => write!(f, "Unknown (0x{x:x?}"),
-                    }
-                }
-            }
-        }
-    };
-    (
-        $uint:ty:
-        $(#[$comment:meta])*
-        $enum_vis:vis enum $enum_name:ident
-        { $( $enum_var: ident => $enum_val: expr ),* $(,)? }
-    ) => {
-        $(#[$comment])*
-        #[non_exhaustive]
-        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
-        $enum_vis enum $enum_name {
-            $( $enum_var),*
-            ,Unknown($uint)
-        }
-
-        impl From<$uint> for $enum_name {
-            fn from(x: $uint) -> Self {
-                match x {
-                    $($enum_val => $enum_name::$enum_var),*
-                    , x => $enum_name::Unknown(x),
-                }
-            }
-        }
-
-        impl From<$enum_name> for $uint {
-            fn from(value: $enum_name) -> Self {
-                match value {
-                    $( $enum_name::$enum_var => $enum_val),*
-                    ,$enum_name::Unknown(x) => x
-                }
-            }
-        }
-
-        impl ::std::fmt::Display for $enum_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                match self {
-                    $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " (0x{:x?})"), $enum_val)),*
-                    ,$enum_name::Unknown(x) => write!(f, "Unknown (0x{x:x?})")
+                    ,$enum_name::Unknown(x) =>
+                        if GREASE_BYTES_VALUES.iter().any(|v| &v[..] == &x[..]) {
+                            write!(f, "GREASE (0x{})", hex::encode(x))
+                        } else {
+                            match ::std::str::from_utf8(x) {
+                                Ok(x) => write!(f, "Unknown ({x})"),
+                                Err(_) => write!(f, "Unknown (0x{})", hex::encode(x)),
+                            }
+                        }
                 }
             }
         }
@@ -831,8 +901,9 @@ mod tests {
 
     #[test]
     fn test_enum_uint_display() {
-        assert_eq!("X25519 (0x1d)", SupportedGroup::X25519.to_string());
-        assert_eq!("Unknown (0xffff)", SupportedGroup::from(0xffff).to_string())
+        assert_eq!("X25519 (0x001d)", SupportedGroup::X25519.to_string());
+        assert_eq!("Unknown (0xffff)", SupportedGroup::from(0xffff).to_string());
+        assert_eq!("GREASE (0xdada)", SupportedGroup::from(0xdada).to_string());
     }
 
     #[test]
@@ -841,6 +912,10 @@ mod tests {
         assert_eq!(
             "Unknown (h42)",
             ApplicationProtocol::from(b"h42").to_string()
+        );
+        assert_eq!(
+            "GREASE (0xdada)",
+            ApplicationProtocol::from(&[0xda, 0xda]).to_string()
         );
         assert_eq!("Unknown (\0)", ApplicationProtocol::from(&[0]).to_string());
     }
