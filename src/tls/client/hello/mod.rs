@@ -8,6 +8,9 @@ use crate::{
 
 mod rustls;
 
+#[cfg(feature = "boring")]
+mod boring;
+
 #[derive(Debug, Clone)]
 /// When a client first connects to a server, it is required to send
 /// the ClientHello as its first message.

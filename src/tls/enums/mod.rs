@@ -1,6 +1,8 @@
 #![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 
+use crate::error::OpaqueError;
+
 mod rustls;
 
 // https://www.rfc-editor.org/rfc/rfc8701.html
@@ -39,7 +41,7 @@ macro_rules! enum_builder {
     ) => {
         $(#[$comment])*
         #[non_exhaustive]
-        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
         $enum_vis enum $enum_name {
             $( $enum_var),*
             ,Unknown(u8)
@@ -80,7 +82,7 @@ macro_rules! enum_builder {
     ) => {
         $(#[$comment])*
         #[non_exhaustive]
-        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
         $enum_vis enum $enum_name {
             $( $enum_var),*
             ,Unknown(u16)
@@ -892,6 +894,22 @@ enum_builder! {
         TDS_80 => b"tds/8.0",
         DICOM => b"dicom",
         PostgreSQL => b"postgresql",
+    }
+}
+
+impl ApplicationProtocol {
+    pub fn encode_wire_format(&self, w: &mut impl std::io::Write) -> std::io::Result<usize> {
+        let b = self.as_bytes();
+        if b.len() > 255 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                OpaqueError::from_display("application protocol is too large"),
+            ));
+        }
+
+        w.write_all(&[b.len() as u8])?;
+        w.write_all(b)?;
+        Ok(b.len() + 1)
     }
 }
 
