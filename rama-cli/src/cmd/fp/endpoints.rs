@@ -1,7 +1,9 @@
+use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
+
 use super::{
     data::{
-        get_http_info, get_request_info, get_tls_info, get_user_agent_info, DataSource, FetchMode,
-        Initiator, RequestInfo, ResourceType, TlsInfo, UserAgentInfo,
+        get_http_info, get_request_info, get_tls_display_info, get_user_agent_info, DataSource,
+        FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo, UserAgentInfo,
     },
     State,
 };
@@ -103,9 +105,10 @@ pub(super) async fn get_report(mut ctx: Context<State>, req: Request) -> Result<
         },
     ];
 
-    let tls_info = get_tls_info(&ctx);
+    let tls_info = get_tls_display_info(&ctx);
     if let Some(tls_info) = tls_info {
-        tables.push(tls_info.into());
+        let mut tls_tables = tls_info.into();
+        tables.append(&mut tls_tables);
     }
 
     Ok(render_report(
@@ -171,7 +174,7 @@ pub(super) async fn get_api_fetch_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+    let tls_info = get_tls_display_info(&ctx);
 
     Ok(Json(json!({
         "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
@@ -212,7 +215,7 @@ pub(super) async fn post_api_fetch_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+    let tls_info = get_tls_display_info(&ctx);
 
     Ok(Json(json!({
         "number": number,
@@ -283,7 +286,7 @@ pub(super) async fn post_api_xml_http_request_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
-    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+    let tls_info = get_tls_display_info(&ctx);
 
     Ok(Json(json!({
         "number": number,
@@ -349,9 +352,10 @@ pub(super) async fn form(mut ctx: Context<State>, req: Request) -> Result<Html, 
         },
     ];
 
-    let tls_info: Option<TlsInfo> = get_tls_info(&ctx);
+    let tls_info = get_tls_display_info(&ctx);
     if let Some(tls_info) = tls_info {
-        tables.push(tls_info.into());
+        let mut tls_tables = tls_info.into();
+        tables.append(&mut tls_tables);
     }
 
     Ok(render_report(
@@ -464,28 +468,35 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
     ))
 }
 
-impl From<TlsInfo> for Table {
-    fn from(info: TlsInfo) -> Self {
-        Self {
-            title: "🔒 TLS Info".to_owned(),
-            rows: vec![
-                (
-                    "Server Name".to_owned(),
-                    info.server_name.map(|d| d.to_string()).unwrap_or_default(),
-                ),
-                (
-                    "Signature Schemes".to_owned(),
-                    info.signature_schemes
-                        .map(|ss| ss.join(", "))
-                        .unwrap_or_default(),
-                ),
-                (
-                    "ALPN".to_owned(),
-                    info.alpn.map(|alpn| alpn.join(", ")).unwrap_or_default(),
-                ),
-                ("Cipher Suites".to_owned(), info.cipher_suites.join(", ")),
-            ],
+impl From<TlsDisplayInfo> for Vec<Table> {
+    fn from(info: TlsDisplayInfo) -> Self {
+        let mut vec = Vec::with_capacity(info.extensions.len() + 1);
+        vec.push(Table {
+            title: "🔒 TLS Client Hello — Header".to_owned(),
+            rows: vec![("Cipher Suites".to_owned(), info.cipher_suites.join(", "))],
+        });
+        for extension in info.extensions {
+            let mut rows = Vec::with_capacity(4);
+            rows.push(("ID".to_owned(), extension.id));
+            if let Some(name) = extension.name {
+                rows.push(("Name".to_owned(), name.to_owned()));
+            }
+            if let Some(name_alt) = extension.name_alt {
+                rows.push(("Name (Alt)".to_owned(), name_alt.to_owned()));
+            }
+            rows.push((
+                "Data".to_owned(),
+                match extension.data {
+                    TlsDisplayInfoExtensionData::Single(s) => s,
+                    TlsDisplayInfoExtensionData::Multi(v) => v.join(", "),
+                },
+            ));
+            vec.push(Table {
+                title: "🔒 TLS Client Hello — Extension".to_owned(),
+                rows,
+            });
         }
+        vec
     }
 }
 

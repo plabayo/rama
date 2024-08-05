@@ -2,9 +2,12 @@ use super::State;
 use rama::{
     error::{BoxError, ErrorContext},
     http::{dep::http::request::Parts, headers::Forwarded, Request, RequestContext},
-    net::{address::Domain, stream::SocketInfo},
+    net::stream::SocketInfo,
     service::Context,
-    tls::{client::ClientHello, SecureTransport},
+    tls::{
+        client::{ClientHello, ClientHelloExtension},
+        SecureTransport,
+    },
     ua::UserAgent,
 };
 use serde::Serialize;
@@ -200,34 +203,95 @@ pub(super) fn get_http_info(req: &Request) -> HttpInfo {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(super) struct TlsInfo {
-    pub(super) server_name: Option<Domain>,
-    pub(super) signature_schemes: Option<Vec<String>>,
-    pub(super) alpn: Option<Vec<String>>,
+pub(super) struct TlsDisplayInfo {
     pub(super) cipher_suites: Vec<String>,
+    pub(super) extensions: Vec<TlsDisplayInfoExtension>,
 }
 
-// TODO: important to not extract these as strings, but instead as a custom struct,
-// so we can store them in DB as their raw value, for use emulation,
-// because unknown for rustls might be known for boringssl, etc...
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct TlsDisplayInfoExtension {
+    pub(super) id: String,
+    pub(super) name: Option<&'static str>,
+    pub(super) name_alt: Option<&'static str>,
+    pub(super) data: TlsDisplayInfoExtensionData,
+}
 
-pub(super) fn get_tls_info(ctx: &Context<State>) -> Option<TlsInfo> {
-    let client_hello: &ClientHello = ctx
+#[derive(Debug, Clone, Serialize)]
+pub(super) enum TlsDisplayInfoExtensionData {
+    Single(String),
+    Multi(Vec<String>),
+}
+
+pub(super) fn get_tls_display_info(ctx: &Context<State>) -> Option<TlsDisplayInfo> {
+    let hello: &ClientHello = ctx
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())?;
 
-    Some(TlsInfo {
-        server_name: client_hello.ext_server_name().cloned(),
-        signature_schemes: client_hello
-            .ext_signature_algorithms()
-            .map(|slice| slice.iter().map(|s| s.to_string()).collect()),
-        alpn: client_hello
-            .ext_alpn()
-            .map(|slice| slice.iter().map(|s| s.to_string()).collect()),
-        cipher_suites: client_hello
+    Some(TlsDisplayInfo {
+        cipher_suites: hello
             .cipher_suites()
             .iter()
             .map(|s| s.to_string())
-            .collect(),
+            .collect::<Vec<_>>(),
+        extensions: hello
+            .extensions()
+            .iter()
+            .map(|extension| match extension {
+                ClientHelloExtension::ServerName(domain) => TlsDisplayInfoExtension {
+                    id: extension.id().to_string(),
+                    name: Some("servername"),
+                    name_alt: Some("SNI"),
+                    data: TlsDisplayInfoExtensionData::Single(domain.to_string()),
+                },
+                ClientHelloExtension::SignatureAlgorithms(v) => TlsDisplayInfoExtension {
+                    id: extension.id().to_string(),
+                    name: Some("signature algorithms"),
+                    name_alt: None,
+                    data: TlsDisplayInfoExtensionData::Multi(
+                        v.iter().map(|s| s.to_string()).collect(),
+                    ),
+                },
+                ClientHelloExtension::SupportedVersions(v) => TlsDisplayInfoExtension {
+                    id: extension.id().to_string(),
+                    name: Some("supported versions"),
+                    name_alt: None,
+                    data: TlsDisplayInfoExtensionData::Multi(
+                        v.iter().map(|s| s.to_string()).collect(),
+                    ),
+                },
+                ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => {
+                    TlsDisplayInfoExtension {
+                        id: extension.id().to_string(),
+                        name: Some("application layer protocol negotation"),
+                        name_alt: Some("ALPN"),
+                        data: TlsDisplayInfoExtensionData::Multi(
+                            v.iter().map(|s| s.to_string()).collect(),
+                        ),
+                    }
+                }
+                ClientHelloExtension::SupportedGroups(v) => TlsDisplayInfoExtension {
+                    id: extension.id().to_string(),
+                    name: Some("supported groups"),
+                    name_alt: None,
+                    data: TlsDisplayInfoExtensionData::Multi(
+                        v.iter().map(|s| s.to_string()).collect(),
+                    ),
+                },
+                ClientHelloExtension::ECPointFormats(v) => TlsDisplayInfoExtension {
+                    id: extension.id().to_string(),
+                    name: Some("EC point formats"),
+                    name_alt: None,
+                    data: TlsDisplayInfoExtensionData::Multi(
+                        v.iter().map(|s| s.to_string()).collect(),
+                    ),
+                },
+                ClientHelloExtension::Opaque { id, data } => TlsDisplayInfoExtension {
+                    id: id.to_string(),
+                    name: None,
+                    name_alt: None,
+                    data: TlsDisplayInfoExtensionData::Single(format!("0x{}", hex::encode(data))),
+                },
+            })
+            .collect::<Vec<_>>(),
     })
 }

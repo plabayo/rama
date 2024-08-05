@@ -186,7 +186,7 @@ pub enum ClientHelloExtension {
     /// as it is still to be done or considered out of scope.
     Opaque {
         /// extension id
-        id: u16,
+        id: ExtensionId,
         /// extension data
         data: Vec<u8>,
     },
@@ -204,7 +204,7 @@ impl ClientHelloExtension {
                 ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
             }
             ClientHelloExtension::SupportedVersions(_) => ExtensionId::SUPPORTED_VERSIONS,
-            ClientHelloExtension::Opaque { id, .. } => ExtensionId::from(*id),
+            ClientHelloExtension::Opaque { id, .. } => *id,
         }
     }
 }

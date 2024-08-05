@@ -33,6 +33,7 @@ use crate::{
         Context, Layer, Service, ServiceBuilder,
     },
     tls::{
+        client::ClientHelloExtension,
         rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler},
         SecureTransport,
     },
@@ -276,15 +277,46 @@ impl Service<(), Request> for EchoService {
             .and_then(|st| st.client_hello())
             .map(|hello| {
                 json!({
-                    "server_name": hello.ext_server_name().clone(),
-                    "signature_schemes": hello
-                        .ext_signature_algorithms()
-                        .map(|slice| slice.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
-                    "alpn": hello
-                        .ext_alpn()
-                        .map(|slice| slice.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
                     "cipher_suites": hello
-                        .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    "extensions": hello.extensions().iter().map(|extension| match extension {
+                        ClientHelloExtension::ServerName(domain) => json!({
+                            "id": extension.id().to_string(),
+                            "name": "servername",
+                            "name_alt": "SNI",
+                            "data": domain,
+                        }),
+                        ClientHelloExtension::SignatureAlgorithms(v) => json!({
+                            "id": extension.id().to_string(),
+                            "name": "signature algorithms",
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::SupportedVersions(v) => json!({
+                            "id": extension.id().to_string(),
+                            "name": "supported versions",
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => json!({
+                            "id": extension.id().to_string(),
+                            "name": "application layer protocol negotation",
+                            "name_alt": "ALPN",
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::SupportedGroups(v) => json!({
+                            "id": extension.id().to_string(),
+                            "name": "supported groups",
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::ECPointFormats(v) => json!({
+                            "id": extension.id().to_string(),
+                            "name": "EC point formats",
+                            "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        }),
+                        ClientHelloExtension::Opaque { id, data } => json!({
+                            "id": id.to_string(),
+                            "data": format!("0x{}", hex::encode(data)),
+                        }),
+                    }).collect::<Vec<_>>(),
                 })
             });
 
