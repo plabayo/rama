@@ -201,7 +201,10 @@ impl<S: fmt::Debug, T> fmt::Debug for SetForwardedHeadersService<S, T> {
         f.debug_struct("SetForwardedHeadersService")
             .field("inner", &self.inner)
             .field("by_node", &self.by_node)
-            .field("_headers", &format_args!("{}", std::any::type_name::<T>()))
+            .field(
+                "_headers",
+                &format_args!("{}", std::any::type_name::<fn() -> T>()),
+            )
             .finish()
     }
 }

@@ -92,6 +92,9 @@ pub use limit::{Limit, LimitLayer};
 pub mod add_extension;
 pub use add_extension::{AddExtension, AddExtensionLayer};
 
+pub mod get_extension;
+pub use get_extension::{GetExtension, GetExtensionLayer};
+
 pub mod http;
 
 macro_rules! impl_layer_either {

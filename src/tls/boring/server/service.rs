@@ -81,6 +81,15 @@ where
             .context("build boring ssl acceptor: set default verify paths")
             .map_err(TlsAcceptorError::Accept)?;
 
+        acceptor_builder
+            .set_private_key(self.config.private_key.as_ref())
+            .context("build boring ssl acceptor: set private key")
+            .map_err(TlsAcceptorError::Accept)?;
+        acceptor_builder
+            .set_certificate(self.config.ca_cert.as_ref())
+            .context("build boring ssl acceptor: set CA certificate (x509)")
+            .map_err(TlsAcceptorError::Accept)?;
+
         if self.config.disable_verify {
             acceptor_builder.set_verify_callback(SslVerifyMode::NONE, |_valid, _store| true);
         }
