@@ -400,7 +400,6 @@ Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise �
 
 We would like to extend our thanks to the following sponsors for funding Rama (ラマ) development. If you are interested in becoming a sponsor, you can do so by becoming a [sponsor][ghs-url]. One time payments are accepted [at GitHub][ghs-url] as well as at ["Buy me a Coffee"][bmac-url]. One-time and monthly financial contributions are also possible via Paypal, should you feel more at ease with that at ["Paypal Donations"][paypal-url].
 
-
 If you wish to financially support us through other means you can best
 start a conversation with us by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
 
@@ -423,24 +422,6 @@ at the same time get serviced for your own needs and purposes.
 Rama is licensed as both [MIT][mit-license] and [Apache 2.0][apache-license], as such you are free to use
 and modify the source code for any purposes, including commercial goals. That said, we would appreciate it
 if you would consider becoming a sponsor of the project if you do end up using it for commcercial reasons.
-
-### Contribute to Open Source
-
-Part of the money we receive from sponsors is used to contribute to other projects
-that we depend upon. Plabayo sponsors the following organisations and individuals
-building and maintaining open source software that `rama` depends upon:
-
-| | name | projects |
-| - | - | - |
-| 💌 | [Tokio](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
-| 💌 | [Ratatui](https://github.com/ratatui-org/ratatui) | (TUI framework)
-
-#### Past Contributions
-
-| | name | projects |
-| - | - | - |
-| 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
-| 💌 | [Sean McArthur](https://github.com/seanmonstar) | (Hyper and Tokio)
 
 ## 🌱 | Alternatives
 
