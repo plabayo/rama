@@ -119,45 +119,6 @@ jobs:
       - name: Run tests
         run: cargo test --all-features --workspace
 
-  test-windows-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-latest
-    steps:
-      - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-      - name: Run tests
-        run: cargo test --features=full --workspace
-
-  test-windows-beta:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-latest
-    steps:
-      - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
-      - uses: Swatinem/rust-cache@v2
-      - name: Run tests
-        run: cargo test --features=full --workspace
-
-  test-windows:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-latest
-    steps:
-      - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-      - name: Run tests
-        run: cargo test --features=full --workspace
-
   test-macos-msrv:
     needs: [check, check-msrv, check-all-features]
     runs-on: macos-latest
@@ -306,45 +267,6 @@ jobs:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-      - uses: Swatinem/rust-cache@v2
-      - name: Run doc tests
-        run: cargo test --features=full --examples --workspace
-
-  test-examples-windows-beta:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-latest
-    steps:
-      - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
-      - uses: Swatinem/rust-cache@v2
-      - name: Run doc tests
-        run: cargo test --features=full --examples --workspace
-
-  test-examples-windows-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-latest
-    steps:
-      - uses: ilammy/setup-nasm@v1
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-      - name: Run doc tests
-        run: cargo test --features=full --examples --workspace
-
-  test-examples-windows:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: windows-latest
-    steps:
-      - uses: ilammy/setup-nasm@v1
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:

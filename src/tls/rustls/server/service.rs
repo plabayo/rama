@@ -4,13 +4,12 @@ use crate::{
     tls::{
         client::ClientHello,
         rustls::dep::{
-            rustls::server::Acceptor,
+            rustls::{server::Acceptor, ServerConfig},
             tokio_rustls::{server::TlsStream, LazyConfigAcceptor, TlsAcceptor},
         },
         SecureTransport,
     },
 };
-use rustls::ServerConfig;
 use std::{fmt, sync::Arc};
 
 use super::{ServerConfigProvider, TlsClientConfigHandler};
@@ -36,9 +35,13 @@ impl<S, H> TlsAcceptorService<S, H> {
     define_inner_service_accessors!();
 }
 
-impl<S, H> std::fmt::Debug for TlsAcceptorService<S, H> {
+impl<S: std::fmt::Debug, H: std::fmt::Debug> std::fmt::Debug for TlsAcceptorService<S, H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TlsAcceptorService").finish()
+        f.debug_struct("TlsAcceptorService")
+            .field("config", &self.config)
+            .field("client_config_handler", &self.client_config_handler)
+            .field("inner", &self.inner)
+            .finish()
     }
 }
 

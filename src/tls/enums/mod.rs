@@ -1,6 +1,8 @@
 #![allow(missing_docs)]
 #![allow(non_camel_case_types)]
 
+use crate::error::OpaqueError;
+
 mod rustls;
 
 // https://www.rfc-editor.org/rfc/rfc8701.html
@@ -39,7 +41,7 @@ macro_rules! enum_builder {
     ) => {
         $(#[$comment])*
         #[non_exhaustive]
-        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
         $enum_vis enum $enum_name {
             $( $enum_var),*
             ,Unknown(u8)
@@ -80,7 +82,7 @@ macro_rules! enum_builder {
     ) => {
         $(#[$comment])*
         #[non_exhaustive]
-        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
         $enum_vis enum $enum_name {
             $( $enum_var),*
             ,Unknown(u16)
@@ -679,7 +681,7 @@ enum_builder! {
         ECDSA_NISTP256_SHA256 => 0x0403,
         RSA_PKCS1_SHA256_LEGACY => 0x0420,
         RSA_PKCS1_SHA384 => 0x0501,
-        ECDSA_NISTP384_SHA384 => 0x0503,
+        ECDSA_NISTP384_SHA384 => 0x0503,  // also labeled as ecdsa_secp384r1_sha384
         RSA_PKCS1_SHA384_LEGACY => 0x0520,
         RSA_PKCS1_SHA512 => 0x0601,
         ECDSA_NISTP521_SHA512 => 0x0603,
@@ -697,8 +699,8 @@ enum_builder! {
         GOSTR34102012_512B => 0x070e,
         GOSTR34102012_512C => 0x070f,
         RSA_PSS_SHA256 => 0x0804,
-        RSA_PSS_SHA384 => 0x0805,
-        RSA_PSS_SHA512 => 0x0806,
+        RSA_PSS_SHA384 => 0x0805,  // also known as RSA_PSS_RSAE_SHA384
+        RSA_PSS_SHA512 => 0x0806,  // also known as RSA_PSS_RSAE_SHA512
         ED25519 => 0x0807,
         ED448 => 0x0808,
         RSA_PSS_PSS_SHA256 => 0x0809,
@@ -892,6 +894,22 @@ enum_builder! {
         TDS_80 => b"tds/8.0",
         DICOM => b"dicom",
         PostgreSQL => b"postgresql",
+    }
+}
+
+impl ApplicationProtocol {
+    pub fn encode_wire_format(&self, w: &mut impl std::io::Write) -> std::io::Result<usize> {
+        let b = self.as_bytes();
+        if b.len() > 255 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                OpaqueError::from_display("application protocol is too large"),
+            ));
+        }
+
+        w.write_all(&[b.len() as u8])?;
+        w.write_all(b)?;
+        Ok(b.len() + 1)
     }
 }
 

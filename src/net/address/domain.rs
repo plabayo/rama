@@ -138,6 +138,20 @@ impl TryFrom<String> for Domain {
     }
 }
 
+impl<'a> TryFrom<&'a [u8]> for Domain {
+    type Error = OpaqueError;
+
+    fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
+        if is_valid_name(name) {
+            Ok(Self(Cow::Owned(
+                String::from_utf8(name.to_vec()).context("convert domain bytes to utf-8 string")?,
+            )))
+        } else {
+            Err(OpaqueError::from_display("invalid domain"))
+        }
+    }
+}
+
 impl TryFrom<Vec<u8>> for Domain {
     type Error = OpaqueError;
 

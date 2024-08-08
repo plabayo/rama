@@ -10,6 +10,9 @@ pub use enums::{
 pub mod client;
 pub mod rustls;
 
+#[cfg(feature = "boring")]
+pub mod boring;
+
 #[derive(Debug, Clone)]
 /// Context information that can be provided `https` connectors`,
 /// to configure the connection in function on an https tunnel.

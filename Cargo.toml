@@ -33,6 +33,9 @@ http-range-header = "0.4.0"
 httpdate = "1.0"
 hyper = "1.4"
 hyper-util = "0.1.6"
+boring = "4.9.1"
+tokio-boring = "4.9.1"
+tls-parser = { git = "https://github.com/glendc/tls-parser.git", branch = "feat/more-public-parsers" }
 ipnet = "2.9.0"
 itertools = "0.13.0"
 mime = "0.3.17"
@@ -114,8 +117,8 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 
 [features]
-default = ["compression"]
-full = ["telemetry", "compression"]
+default = ["compression", "boring"]
+full = ["telemetry", "compression", "boring"]
 telemetry = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
@@ -123,6 +126,7 @@ telemetry = [
 ]
 compression = ["dep:async-compression"]
 rustls-ring = ["tokio-rustls/ring", "rustls/ring"]
+boring = ["dep:boring", "dep:tokio-boring", "dep:tls-parser"]
 
 [build-dependencies]
 rustversion = { workspace = true }
@@ -138,6 +142,7 @@ async-compression = { workspace = true, features = [
 ], optional = true }
 base64 = { workspace = true }
 bitflags = { workspace = true }
+boring = { workspace = true, optional = true }
 bytes = { workspace = true }
 const_format = { workspace = true }
 futures-core = { workspace = true }
@@ -176,7 +181,9 @@ serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
+tls-parser = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
+tokio-boring = { workspace = true, optional = true }
 tokio-graceful = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }

@@ -281,24 +281,16 @@ We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to [audi
 ## 🦀 | Compatibility
 
 Rama (ラマ) is developed mostly on MacOS M-Series machines and run in production
-on a variety of Linux systems. Windows support is not officially guaranteed,
-but is [tested using Github Actions](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) with success.
+on a variety of Linux systems. There is no windows support, and neither do we test on that platform.
 
 | platform | tested | test platform |
 |----------|--------|---------------|
 | MacOS    | ✅     | MacOS Apple Silicon (developer laptop) and macos-12 Intel ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
-| Windows <sup>⚠️</sup> | ✅     | Windows 2022 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 | Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 
 Please [open a ticket](https://github.com/plabayo/rama/issues) in case you have compatibility issues for your setup/platform.
 Our goal is not to support all possible platformns in the world, but we do want to
 support as many as we reasonably can.
-
-> <sup>⚠️</sup> example runner tests are not enabled on Windows as these failed in unpredictable ways.
-> It is unclear if this is due to code mistakes or because of the way we run these tests (e.g. hardcoded ports).
-> We also are not aware of any production usage of Rama on Windows. We welcome contributions
-> from Rama users on Windows with great enthusiasm. And while you are at it,
-> feel free to contribute to [Tokio](https://tokio.rs/) as well, given they also lack professional Windows users.
 
 ### Minimum supported Rust version
 
@@ -400,7 +392,6 @@ Finally, you can also support us by shopping Plabayo <3 `ラマ` merchandise �
 
 We would like to extend our thanks to the following sponsors for funding Rama (ラマ) development. If you are interested in becoming a sponsor, you can do so by becoming a [sponsor][ghs-url]. One time payments are accepted [at GitHub][ghs-url] as well as at ["Buy me a Coffee"][bmac-url]. One-time and monthly financial contributions are also possible via Paypal, should you feel more at ease with that at ["Paypal Donations"][paypal-url].
 
-
 If you wish to financially support us through other means you can best
 start a conversation with us by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
 
@@ -423,24 +414,6 @@ at the same time get serviced for your own needs and purposes.
 Rama is licensed as both [MIT][mit-license] and [Apache 2.0][apache-license], as such you are free to use
 and modify the source code for any purposes, including commercial goals. That said, we would appreciate it
 if you would consider becoming a sponsor of the project if you do end up using it for commcercial reasons.
-
-### Contribute to Open Source
-
-Part of the money we receive from sponsors is used to contribute to other projects
-that we depend upon. Plabayo sponsors the following organisations and individuals
-building and maintaining open source software that `rama` depends upon:
-
-| | name | projects |
-| - | - | - |
-| 💌 | [Tokio](https://github.com/tokio-rs) | (Tokio Project and Ecosystem)
-| 💌 | [Ratatui](https://github.com/ratatui-org/ratatui) | (TUI framework)
-
-#### Past Contributions
-
-| | name | projects |
-| - | - | - |
-| 💌 | [Ulixee](https://github.com/ulixee) | (Browser Profile Data)
-| 💌 | [Sean McArthur](https://github.com/seanmonstar) | (Hyper and Tokio)
 
 ## 🌱 | Alternatives
 
