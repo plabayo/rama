@@ -65,7 +65,7 @@ use rama::{
             },
             server::{ServerConfig, TlsAcceptorLayer},
         },
-        SecureTransport,
+        ApplicationProtocol, SecureTransport,
     },
     utils::graceful::Shutdown,
 };
@@ -102,6 +102,8 @@ async fn main() {
         //     )
         //     .expect("create tls server config");
         let mut tls_server_config = ServerConfig::new(key, cert);
+        tls_server_config.alpn_protocols =
+            vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
         if let Ok(keylog_file) = std::env::var("SSLKEYLOGFILE") {
             tls_server_config.keylog_filename = Some(keylog_file);
         }
@@ -185,14 +187,14 @@ where
 
 /// Make a CA certificate and private key
 fn mk_ca_cert() -> Result<(X509, PKey<Private>), BoxError> {
-    let rsa = Rsa::generate(2048)?;
+    let rsa = Rsa::generate(4096)?;
     let privkey = PKey::from_rsa(rsa)?;
 
     let mut x509_name = X509NameBuilder::new()?;
     x509_name.append_entry_by_text("C", "BE")?;
     x509_name.append_entry_by_text("ST", "OVL")?;
     x509_name.append_entry_by_text("O", "Plabayo")?;
-    x509_name.append_entry_by_text("CN", "Tls Boring Termination Example")?;
+    x509_name.append_entry_by_text("CN", "localhost")?;
     let x509_name = x509_name.build();
 
     let mut cert_builder = X509::builder()?;
@@ -208,7 +210,7 @@ fn mk_ca_cert() -> Result<(X509, PKey<Private>), BoxError> {
     cert_builder.set_pubkey(&privkey)?;
     let not_before = Asn1Time::days_from_now(0)?;
     cert_builder.set_not_before(&not_before)?;
-    let not_after = Asn1Time::days_from_now(365)?;
+    let not_after = Asn1Time::days_from_now(90)?;
     cert_builder.set_not_after(&not_after)?;
 
     cert_builder.append_extension(BasicConstraints::new().critical().ca().build()?)?;

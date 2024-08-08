@@ -35,7 +35,7 @@ hyper = "1.4"
 hyper-util = "0.1.6"
 boring = "4.9.1"
 tokio-boring = "4.9.1"
-tls-parser = "0.11.0"
+tls-parser = { git = "https://github.com/glendc/tls-parser.git", branch = "feat/more-public-parsers" }
 ipnet = "2.9.0"
 itertools = "0.13.0"
 mime = "0.3.17"
