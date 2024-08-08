@@ -8,4 +8,4 @@ pub mod boring;
 #[cfg(feature = "boring")]
 pub use boring::TlsServerCertKeyPair;
 #[cfg(not(feature = "boring"))]
-pub use tls::TlsServerCertKeyPair;
+pub use rustls::TlsServerCertKeyPair;
