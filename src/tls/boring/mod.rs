@@ -1,5 +1,6 @@
 //! boring based TLS support for rama.
 
+pub mod client;
 pub mod server;
 
 pub mod dep {
