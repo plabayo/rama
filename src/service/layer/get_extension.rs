@@ -1,4 +1,4 @@
-//! Middleware that gets called if a reference to given type is available in the current [`Context`].
+//! Middleware that gets called with a clone of the value of to given type if it is available in the current [`Context`].
 //!
 //! [Context]: https://docs.rs/rama/latest/rama/service/context/struct.Context.html
 
@@ -132,15 +132,16 @@ where
     type Response = S::Response;
     type Error = S::Error;
 
-    fn serve(
+    async fn serve(
         &self,
         ctx: Context<State>,
         req: Request,
-    ) -> impl std::future::Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> Result<Self::Response, Self::Error> {
         if let Some(value) = ctx.get::<T>() {
-            (self.callback.clone())(value.clone());
+            let value = value.clone();
+            (self.callback.clone())(value).await;
         }
-        self.inner.serve(ctx, req)
+        self.inner.serve(ctx, req).await
     }
 }
 
@@ -148,17 +149,19 @@ where
 mod tests {
     use super::*;
     use crate::service::{service_fn, Context, ServiceBuilder};
-    use std::convert::Infallible;
+    use std::{convert::Infallible, sync::Arc};
 
     #[derive(Debug, Clone)]
     struct State(i32);
 
     #[tokio::test]
-    async fn basic() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+    async fn get_extension_basic() {
+        let value = Arc::new(std::sync::atomic::AtomicI32::new(0));
+
+        let cloned_value = value.clone();
         let svc = ServiceBuilder::new()
             .layer(GetExtensionLayer::new(|state: State| async move {
-                tx.send(state.0).await.expect("value to be sent");
+                cloned_value.store(state.0, std::sync::atomic::Ordering::SeqCst);
             }))
             .service(service_fn(|ctx: Context<()>, _req: ()| async move {
                 let state = ctx.get::<State>().unwrap();
@@ -167,10 +170,11 @@ mod tests {
 
         let mut ctx = Context::default();
         ctx.insert(State(42));
-        let res = svc.serve(ctx, ()).await.unwrap();
 
-        let value = rx.recv().await.expect("value");
-        assert_eq!(42, value);
+        let res = svc.serve(ctx, ()).await.unwrap();
         assert_eq!(42, res);
+
+        let value = value.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(42, value);
     }
 }

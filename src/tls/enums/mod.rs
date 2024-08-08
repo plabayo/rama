@@ -681,7 +681,7 @@ enum_builder! {
         ECDSA_NISTP256_SHA256 => 0x0403,
         RSA_PKCS1_SHA256_LEGACY => 0x0420,
         RSA_PKCS1_SHA384 => 0x0501,
-        ECDSA_NISTP384_SHA384 => 0x0503,
+        ECDSA_NISTP384_SHA384 => 0x0503,  // also labeled as ecdsa_secp384r1_sha384
         RSA_PKCS1_SHA384_LEGACY => 0x0520,
         RSA_PKCS1_SHA512 => 0x0601,
         ECDSA_NISTP521_SHA512 => 0x0603,
@@ -699,8 +699,8 @@ enum_builder! {
         GOSTR34102012_512B => 0x070e,
         GOSTR34102012_512C => 0x070f,
         RSA_PSS_SHA256 => 0x0804,
-        RSA_PSS_SHA384 => 0x0805,
-        RSA_PSS_SHA512 => 0x0806,
+        RSA_PSS_SHA384 => 0x0805,  // also known as RSA_PSS_RSAE_SHA384
+        RSA_PSS_SHA512 => 0x0806,  // also known as RSA_PSS_RSAE_SHA512
         ED25519 => 0x0807,
         ED448 => 0x0808,
         RSA_PSS_PSS_SHA256 => 0x0809,
