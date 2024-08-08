@@ -289,7 +289,11 @@ pub(super) fn get_tls_display_info(ctx: &Context<State>) -> Option<TlsDisplayInf
                     id: id.to_string(),
                     name: None,
                     name_alt: None,
-                    data: TlsDisplayInfoExtensionData::Single(format!("0x{}", hex::encode(data))),
+                    data: TlsDisplayInfoExtensionData::Single(if data.is_empty() {
+                        "EMPTY".to_owned()
+                    } else {
+                        format!("0x{}", hex::encode(data))
+                    }),
                 },
             })
             .collect::<Vec<_>>(),
