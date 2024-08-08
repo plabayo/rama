@@ -1,10 +1,12 @@
-use crate::error::BoxError;
+//! CLI utilities for boring
+
+use crate::error::{BoxError, ErrorContext};
 use crate::http::Version;
-use crate::tls::rustls::dep::pemfile;
-use crate::tls::rustls::dep::rustls::{KeyLogFile, ServerConfig};
+use crate::tls::boring::server::ServerConfig;
+use crate::tls::ApplicationProtocol;
 use base64::Engine;
-use std::io::BufReader;
-use std::sync::Arc;
+use boring::pkey::PKey;
+use boring::x509::X509;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -45,34 +47,31 @@ impl TlsServerCertKeyPair {
     /// Consume this [`TlsServerCertKeyPair`] into a [`ServerConfig`].
     pub fn into_server_config(self) -> Result<ServerConfig, BoxError> {
         // server TLS Certs
-        let tls_cert_pem_raw = BASE64.decode(self.tls_cert_pem_raw.as_bytes())?;
-        let mut pem = BufReader::new(&tls_cert_pem_raw[..]);
-        let mut certs = Vec::new();
-        for cert in pemfile::certs(&mut pem) {
-            certs.push(cert.expect("parse tls server cert"));
-        }
+        let tls_cert_pem_raw = BASE64
+            .decode(self.tls_cert_pem_raw.as_bytes())
+            .context("base64 decode x509 ca cert PEM data")?;
+        let ca_cert =
+            X509::from_pem(&tls_cert_pem_raw[..]).context("parse x509 ca cert from PEM content")?;
 
-        // server TLS key
-        let tls_key_pem_raw = BASE64.decode(self.tls_key_pem_raw.as_bytes())?;
-        let mut key_reader = BufReader::new(&tls_key_pem_raw[..]);
-        let key = pemfile::private_key(&mut key_reader)
-            .expect("read private key")
-            .expect("private found");
+        let tls_key_pem_raw = BASE64
+            .decode(self.tls_key_pem_raw.as_bytes())
+            .context("base64 decode private key PEM data")?;
+        let key = PKey::private_key_from_pem(&tls_key_pem_raw[..])
+            .context("parse private key from PEM content")?;
 
-        let mut server_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(certs, key)?;
+        let mut server_config = ServerConfig::new(key, ca_cert);
+        server_config.disable_verify = true;
 
         // support key logging
-        if std::env::var("SSLKEYLOGFILE").is_ok() {
-            server_config.key_log = Arc::new(KeyLogFile::new());
+        if let Ok(keylog_file) = std::env::var("SSLKEYLOGFILE") {
+            server_config.keylog_filename = Some(keylog_file);
         }
 
         // set ALPN protocols
         server_config.alpn_protocols = match self.http_version {
-            None => vec![b"h2".to_vec(), b"http/1.1".to_vec()],
-            Some(Version::HTTP_2) => vec![b"h2".to_vec()],
-            _ => vec![b"http/1.1".to_vec()],
+            None => vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11],
+            Some(Version::HTTP_2) => vec![ApplicationProtocol::HTTP_2],
+            _ => vec![ApplicationProtocol::HTTP_11],
         };
 
         // return the server config

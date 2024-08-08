@@ -2,7 +2,7 @@
 
 use clap::Args;
 use rama::{
-    cli::{ForwardKind, TlsServerCertKeyPair},
+    cli::{tls::boring::TlsServerCertKeyPair, ForwardKind},
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
@@ -27,7 +27,7 @@ use rama::{
         service_fn, ServiceBuilder,
     },
     tcp::server::TcpListener,
-    tls::rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler},
+    tls::boring::server::TlsAcceptorLayer,
     ua::UserAgentClassifierLayer,
     utils::{backoff::ExponentialBackoff, combinators::Either7},
 };
@@ -261,10 +261,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             // Limit the body size to 1MB for both request and response
             .layer(BodyLimitLayer::symmetric(1024 * 1024))
             .layer(tls_server_cfg.map(|cfg| {
-                TlsAcceptorLayer::with_client_config_handler(
-                    cfg,
-                    TlsClientConfigHandler::default().store_client_hello(),
-                )
+                TlsAcceptorLayer::new(cfg).with_store_client_hello(true)
             }));
 
         let tcp_listener = TcpListener::build_with_state(State::new(acme_data))

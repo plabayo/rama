@@ -7,6 +7,4 @@ mod forward;
 #[doc(inline)]
 pub use forward::ForwardKind;
 
-mod tls;
-#[doc(inline)]
-pub use tls::TlsServerCertKeyPair;
+pub mod tls;

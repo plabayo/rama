@@ -6,7 +6,7 @@
 //! [`tls`]: crate::tls
 
 use crate::{
-    cli::{ForwardKind, TlsServerCertKeyPair},
+    cli::{tls::TlsServerCertKeyPair, ForwardKind},
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         dep::http_body_util::BodyExt,
@@ -32,17 +32,19 @@ use crate::{
         },
         Context, Layer, Service, ServiceBuilder,
     },
-    tls::{
-        client::ClientHelloExtension,
-        rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler},
-        SecureTransport,
-    },
+    tls::{client::ClientHelloExtension, SecureTransport},
     ua::{UserAgent, UserAgentClassifierLayer},
     utils::combinators::Either7,
 };
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
+
+#[cfg(feature = "boring")]
+use crate::tls::boring::server::TlsAcceptorLayer;
+
+#[cfg(not(feature = "boring"))]
+use crate::tls::rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler};
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own echo [`Service`],
@@ -203,10 +205,17 @@ where
             // Limit the body size to 1MB for requests
             .layer(BodyLimitLayer::request_only(1024 * 1024))
             .layer(tls_server_cfg.map(|cfg| {
-                TlsAcceptorLayer::with_client_config_handler(
-                    cfg,
-                    TlsClientConfigHandler::default().store_client_hello(),
-                )
+                #[cfg(feature = "boring")]
+                {
+                    TlsAcceptorLayer::new(cfg).with_store_client_hello(true)
+                }
+                #[cfg(not(feature = "boring"))]
+                {
+                    TlsAcceptorLayer::with_client_config_handler(
+                        cfg,
+                        TlsClientConfigHandler::default().store_client_hello(),
+                    )
+                }
             }));
 
         let http_service = ServiceBuilder::new()
