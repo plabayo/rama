@@ -1,6 +1,7 @@
 use super::utils;
 use rama::{http::BodyExtractExt, service::Context};
 
+#[cfg(feature = "boring")]
 #[tokio::test]
 #[ignore]
 async fn test_tls_boring_termination() {
