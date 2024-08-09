@@ -5,7 +5,7 @@ use crate::{
     service::{Context, Service},
     tls::{
         boring::dep::{
-            boring::ssl::{SslAcceptor, SslMethod, SslVerifyMode},
+            boring::ssl::{SslAcceptor, SslMethod},
             tokio_boring::SslStream,
         },
         client::ClientHello,
@@ -82,17 +82,17 @@ where
             .map_err(TlsAcceptorError::Accept)?;
 
         acceptor_builder
+            .set_certificate(self.config.ca_cert.as_ref())
+            .context("build boring ssl acceptor: set CA certificate (x509)")
+            .map_err(TlsAcceptorError::Accept)?;
+        acceptor_builder
             .set_private_key(self.config.private_key.as_ref())
             .context("build boring ssl acceptor: set private key")
             .map_err(TlsAcceptorError::Accept)?;
         acceptor_builder
-            .set_certificate(self.config.ca_cert.as_ref())
-            .context("build boring ssl acceptor: set CA certificate (x509)")
+            .check_private_key()
+            .context("build boring ssl acceptor: check private key")
             .map_err(TlsAcceptorError::Accept)?;
-
-        if self.config.disable_verify {
-            acceptor_builder.set_verify_callback(SslVerifyMode::NONE, |_valid, _store| true);
-        }
 
         let mut maybe_client_hello = if self.store_client_hello {
             let maybe_client_hello = Arc::new(Mutex::new(None));

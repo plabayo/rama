@@ -68,7 +68,6 @@ impl TlsServerCertKeyPair {
             .context("parse private key from PEM content")?;
 
         let mut server_config = ServerConfig::new(key, ca_cert);
-        server_config.disable_verify = true;
 
         // support key logging
         if let Ok(keylog_file) = std::env::var("SSLKEYLOGFILE") {
