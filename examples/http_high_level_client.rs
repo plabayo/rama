@@ -66,7 +66,7 @@ async fn main() {
         .layer(
             AddAuthorizationLayer::basic("john", "123")
                 .as_sensitive(true)
-                .if_not_present(),
+                .if_not_present(true),
         )
         .layer(RetryLayer::new(
             ManagedPolicy::default().with_backoff(

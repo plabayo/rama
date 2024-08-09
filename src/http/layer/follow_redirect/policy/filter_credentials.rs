@@ -42,16 +42,22 @@ impl FilterCredentials {
         self
     }
 
-    /// Configure `self` to mark every redirection as "blocked".
-    pub fn block_any(mut self) -> Self {
-        self.block_any = true;
+    /// Configure `self` to mark cross-origin redirections as "blocked".
+    pub fn set_block_cross_origin(&mut self, enable: bool) -> &mut Self {
+        self.block_cross_origin = enable;
         self
     }
 
-    /// Configure `self` to mark no redirections as "blocked".
-    pub fn block_none(mut self) -> Self {
-        self.block_any = false;
-        self.block_cross_origin(false)
+    /// Configure `self` to mark every redirection as "blocked".
+    pub fn block_any(mut self, enable: bool) -> Self {
+        self.block_any = enable;
+        self
+    }
+
+    /// Configure `self` to mark every redirection as "blocked".
+    pub fn set_block_any(&mut self, enable: bool) -> &mut Self {
+        self.block_any = enable;
+        self
     }
 
     /// Configure `self` to remove blocklisted headers in "blocked" redirections.
@@ -66,16 +72,28 @@ impl FilterCredentials {
         self
     }
 
-    /// Configure `self` to remove all headers in "blocked" redirections.
-    pub fn remove_all(mut self) -> Self {
-        self.remove_all = true;
+    /// Configure `self` to remove blocklisted headers in "blocked" redirections.
+    ///
+    /// The blocklist includes the following headers:
+    ///
+    /// - `Authorization`
+    /// - `Cookie`
+    /// - `Proxy-Authorization`
+    pub fn set_remove_blocklisted(&mut self, enable: bool) -> &mut Self {
+        self.remove_blocklisted = enable;
         self
     }
 
-    /// Configure `self` to remove no headers in "blocked" redirections.
-    pub fn remove_none(mut self) -> Self {
-        self.remove_all = false;
-        self.remove_blocklisted(false)
+    /// Configure `self` to remove all headers in "blocked" redirections.
+    pub fn remove_all(mut self, enable: bool) -> Self {
+        self.remove_all = enable;
+        self
+    }
+
+    /// Configure `self` to remove all headers in "blocked" redirections.
+    pub fn set_remove_all(&mut self, enable: bool) -> &mut Self {
+        self.remove_all = enable;
+        self
     }
 }
 

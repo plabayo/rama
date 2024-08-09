@@ -24,6 +24,12 @@ impl TlsAcceptorLayer {
         self.store_client_hello = store;
         self
     }
+
+    /// Set that the client hello should be stored
+    pub fn set_store_client_hello(&mut self, store: bool) -> &mut Self {
+        self.store_client_hello = store;
+        self
+    }
 }
 
 impl<S> Layer<S> for TlsAcceptorLayer {

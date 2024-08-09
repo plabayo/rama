@@ -76,6 +76,16 @@ impl<P> HaProxyLayer<P> {
         self.version.payload = Some(payload);
         self
     }
+
+    /// Attach a custom bytes payload to the PROXY header.
+    ///
+    /// NOTE this is only possible in Version two of the PROXY Protocol.
+    /// In case you downgrade this [`HaProxyLayer`] to version one later
+    /// using [`Self::v1`] this payload will be dropped.
+    pub fn set_payload(&mut self, payload: Vec<u8>) -> &mut Self {
+        self.version.payload = Some(payload);
+        self
+    }
 }
 
 impl<S, P, V: Clone> Layer<S> for HaProxyLayer<P, V> {
@@ -156,6 +166,16 @@ impl<S, P> HaProxyService<S, P> {
     /// In case you downgrade this [`HaProxyLayer`] to version one later
     /// using [`Self::v1`] this payload will be dropped.
     pub fn payload(mut self, payload: Vec<u8>) -> Self {
+        self.version.payload = Some(payload);
+        self
+    }
+
+    /// Attach a custom bytes payload to the PROXY header.
+    ///
+    /// NOTE this is only possible in Version two of the PROXY Protocol.
+    /// In case you downgrade this [`HaProxyLayer`] to version one later
+    /// using [`Self::v1`] this payload will be dropped.
+    pub fn set_payload(&mut self, payload: Vec<u8>) -> &mut Self {
         self.version.payload = Some(payload);
         self
     }

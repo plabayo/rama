@@ -44,6 +44,14 @@ impl TlsServerCertKeyPair {
         self
     }
 
+    /// Define a specific http [`Version`] instead of using the default `auto`.
+    ///
+    /// Used to defined the version in the ALPN.
+    pub fn set_http_version(&mut self, version: Version) -> &mut Self {
+        self.http_version = Some(version);
+        self
+    }
+
     /// Consume this [`TlsServerCertKeyPair`] into a [`ServerConfig`].
     pub fn into_server_config(self) -> Result<ServerConfig, BoxError> {
         // server TLS Certs

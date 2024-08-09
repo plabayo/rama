@@ -274,6 +274,18 @@ impl Builder {
         self
     }
 
+    /// Reserves the requested additional capacity in the underlying buffer.
+    /// Helps to prevent resizing the underlying buffer when called before `write_payload`, `write_payloads`.
+    /// When called after `write_payload`, `write_payloads`, useful as a hint on how to resize the buffer.
+    pub fn set_reserve_capacity(&mut self, capacity: usize) -> &mut Self {
+        match self.header {
+            None => self.additional_capacity += capacity,
+            Some(ref mut header) => header.reserve(capacity),
+        }
+
+        self
+    }
+
     /// Overrides the length in the header.
     /// When set to `Some` value, the length may be smaller or larger than the actual payload in the buffer.
     pub fn set_length<T: Into<Option<u16>>>(mut self, length: T) -> Self {

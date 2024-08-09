@@ -71,7 +71,7 @@ impl IpServiceBuilder<mode::Transport> {
 }
 
 impl<M> IpServiceBuilder<M> {
-    /// the number of concurrent connections to allow
+    /// set the number of concurrent connections to allow
     ///
     /// (0 = no limit)
     pub fn concurrent(mut self, limit: usize) -> Self {
@@ -79,10 +79,26 @@ impl<M> IpServiceBuilder<M> {
         self
     }
 
-    /// the timeout in seconds for each connection
+    /// set the number of concurrent connections to allow
+    ///
+    /// (0 = no limit)
+    pub fn set_concurrent(&mut self, limit: usize) -> &mut Self {
+        self.concurrent_limit = limit;
+        self
+    }
+
+    /// set the timeout in seconds for each connection
     ///
     /// (0 = no timeout)
     pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// set the timeout in seconds for each connection
+    ///
+    /// (0 = no timeout)
+    pub fn set_timeout(&mut self, timeout: Duration) -> &mut Self {
         self.timeout = timeout;
         self
     }
@@ -100,6 +116,14 @@ impl<M> IpServiceBuilder<M> {
     /// Or using HaProxy protocol.
     pub fn forward(self, kind: ForwardKind) -> Self {
         self.maybe_forward(Some(kind))
+    }
+
+    /// enable support for one of the following "forward" headers or protocols
+    ///
+    /// Same as [`Self::forward`] but without consuming `self`.
+    pub fn set_forward(&mut self, kind: ForwardKind) -> &mut Self {
+        self.forward = Some(kind);
+        self
     }
 
     /// maybe enable support for one of the following "forward" headers or protocols.

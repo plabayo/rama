@@ -35,6 +35,13 @@ impl Request {
         self
     }
 
+    /// Set an application protocol to this [`Request`]
+    /// on which the established connection will operate.
+    pub fn set_protocol(&mut self, protocol: Protocol) -> &mut Self {
+        self.protocol = Some(protocol);
+        self
+    }
+
     /// Return the application protocol on which the established
     /// connection will operate, if known.
     pub fn protocol(&self) -> Option<Protocol> {

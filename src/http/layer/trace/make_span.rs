@@ -57,12 +57,32 @@ impl DefaultMakeSpan {
         self
     }
 
+    /// Set the [`Level`] used for the [tracing span].
+    ///
+    /// Defaults to [`Level::DEBUG`].
+    ///
+    /// [tracing span]: https://docs.rs/tracing/latest/tracing/#spans
+    pub fn set_level(&mut self, level: Level) -> &mut Self {
+        self.level = level;
+        self
+    }
+
     /// Include request headers on the [`Span`].
     ///
     /// By default headers are not included.
     ///
     /// [`Span`]: tracing::Span
     pub fn include_headers(mut self, include_headers: bool) -> Self {
+        self.include_headers = include_headers;
+        self
+    }
+
+    /// Include request headers on the [`Span`].
+    ///
+    /// By default headers are not included.
+    ///
+    /// [`Span`]: tracing::Span
+    pub fn set_include_headers(&mut self, include_headers: bool) -> &mut Self {
         self.include_headers = include_headers;
         self
     }

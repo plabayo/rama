@@ -173,6 +173,14 @@ impl GrpcErrorsAsFailures {
         self
     }
 
+    /// Change which gRPC codes are considered success.
+    ///
+    /// Same as [`Self::with_success`] but without consuming `self`.
+    pub fn set_success(&mut self, code: GrpcCode) -> &mut Self {
+        self.success_codes |= code.into_bitmask();
+        self
+    }
+
     /// Returns a [`MakeClassifier`](super::MakeClassifier) that produces `GrpcErrorsAsFailures`.
     ///
     /// This is a convenience function that simply calls `SharedClassifier::new`.

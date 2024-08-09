@@ -113,8 +113,19 @@ impl AddAuthorizationLayer {
     /// This can for example be used to hide the header value from logs.
     ///
     /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    #[allow(clippy::wrong_self_convention)]
     pub fn as_sensitive(mut self, sensitive: bool) -> Self {
+        if let Some(value) = &mut self.value {
+            value.set_sensitive(sensitive);
+        }
+        self
+    }
+
+    /// Mark the header as [sensitive].
+    ///
+    /// This can for example be used to hide the header value from logs.
+    ///
+    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
+    pub fn set_as_sensitive(&mut self, sensitive: bool) -> &mut Self {
         if let Some(value) = &mut self.value {
             value.set_sensitive(sensitive);
         }
@@ -124,8 +135,16 @@ impl AddAuthorizationLayer {
     /// Preserve the existing `Authorization` header if it exists.
     ///
     /// This can be useful if you want to use different authorization headers for different requests.
-    pub fn if_not_present(mut self) -> Self {
-        self.if_not_present = true;
+    pub fn if_not_present(mut self, value: bool) -> Self {
+        self.if_not_present = value;
+        self
+    }
+
+    /// Preserve the existing `Authorization` header if it exists.
+    ///
+    /// This can be useful if you want to use different authorization headers for different requests.
+    pub fn set_if_not_present(&mut self, value: bool) -> &mut Self {
+        self.if_not_present = value;
         self
     }
 }
@@ -195,8 +214,19 @@ impl<S> AddAuthorization<S> {
     /// This can for example be used to hide the header value from logs.
     ///
     /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
-    #[allow(clippy::wrong_self_convention)]
     pub fn as_sensitive(mut self, sensitive: bool) -> Self {
+        if let Some(value) = &mut self.value {
+            value.set_sensitive(sensitive);
+        }
+        self
+    }
+
+    /// Mark the header as [sensitive].
+    ///
+    /// This can for example be used to hide the header value from logs.
+    ///
+    /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
+    pub fn set_as_sensitive(&mut self, sensitive: bool) -> &mut Self {
         if let Some(value) = &mut self.value {
             value.set_sensitive(sensitive);
         }
@@ -206,8 +236,16 @@ impl<S> AddAuthorization<S> {
     /// Preserve the existing `Authorization` header if it exists.
     ///
     /// This can be useful if you want to use different authorization headers for different requests.
-    pub fn if_not_present(mut self) -> Self {
-        self.if_not_present = true;
+    pub fn if_not_present(mut self, value: bool) -> Self {
+        self.if_not_present = value;
+        self
+    }
+
+    /// Preserve the existing `Authorization` header if it exists.
+    ///
+    /// This can be useful if you want to use different authorization headers for different requests.
+    pub fn set_if_not_present(&mut self, value: bool) -> &mut Self {
+        self.if_not_present = value;
         self
     }
 }

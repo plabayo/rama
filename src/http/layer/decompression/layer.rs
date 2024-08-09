@@ -36,8 +36,20 @@ impl DecompressionLayer {
         self
     }
 
+    /// Sets whether to request the gzip encoding.
+    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
+        self.accept.set_gzip(enable);
+        self
+    }
+
     /// Sets whether to request the Deflate encoding.
     pub fn deflate(mut self, enable: bool) -> Self {
+        self.accept.set_deflate(enable);
+        self
+    }
+
+    /// Sets whether to request the Deflate encoding.
+    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
         self.accept.set_deflate(enable);
         self
     }
@@ -48,33 +60,21 @@ impl DecompressionLayer {
         self
     }
 
+    /// Sets whether to request the Brotli encoding.
+    pub fn set_br(&mut self, enable: bool) -> &mut Self {
+        self.accept.set_br(enable);
+        self
+    }
+
     /// Sets whether to request the Zstd encoding.
     pub fn zstd(mut self, enable: bool) -> Self {
         self.accept.set_zstd(enable);
         self
     }
 
-    /// Disables the gzip encoding.
-    pub fn no_gzip(mut self) -> Self {
-        self.accept.set_gzip(false);
-        self
-    }
-
-    /// Disables the Deflate encoding.
-    pub fn no_deflate(mut self) -> Self {
-        self.accept.set_deflate(false);
-        self
-    }
-
-    /// Disables the Brotli encoding.
-    pub fn no_br(mut self) -> Self {
-        self.accept.set_br(false);
-        self
-    }
-
-    /// Disables the Zstd encoding.
-    pub fn no_zstd(mut self) -> Self {
-        self.accept.set_zstd(false);
+    /// Sets whether to request the Zstd encoding.
+    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
+        self.accept.set_zstd(enable);
         self
     }
 }

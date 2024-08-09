@@ -149,8 +149,22 @@ impl<S> RequestDecompression<S> {
         self
     }
 
+    /// Passes through the request even when the encoding is not supported.
+    ///
+    /// By default pass-through is disabled.
+    pub fn set_pass_through_unaccepted(&mut self, enabled: bool) -> &mut Self {
+        self.pass_through_unaccepted = enabled;
+        self
+    }
+
     /// Sets whether to support gzip encoding.
     pub fn gzip(mut self, enable: bool) -> Self {
+        self.accept.set_gzip(enable);
+        self
+    }
+
+    /// Sets whether to support gzip encoding.
+    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
         self.accept.set_gzip(enable);
         self
     }
@@ -161,8 +175,20 @@ impl<S> RequestDecompression<S> {
         self
     }
 
+    /// Sets whether to support Deflate encoding.
+    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
+        self.accept.set_deflate(enable);
+        self
+    }
+
     /// Sets whether to support Brotli encoding.
     pub fn br(mut self, enable: bool) -> Self {
+        self.accept.set_br(enable);
+        self
+    }
+
+    /// Sets whether to support Brotli encoding.
+    pub fn set_br(&mut self, enable: bool) -> &mut Self {
         self.accept.set_br(enable);
         self
     }
@@ -173,27 +199,9 @@ impl<S> RequestDecompression<S> {
         self
     }
 
-    /// Disables support for gzip encoding.
-    pub fn no_gzip(mut self) -> Self {
-        self.accept.set_gzip(false);
-        self
-    }
-
-    /// Disables support for Deflate encoding.
-    pub fn no_deflate(mut self) -> Self {
-        self.accept.set_deflate(false);
-        self
-    }
-
-    /// Disables support for Brotli encoding.
-    pub fn no_br(mut self) -> Self {
-        self.accept.set_br(false);
-        self
-    }
-
-    /// Disables support for Zstd encoding.
-    pub fn no_zstd(mut self) -> Self {
-        self.accept.set_zstd(false);
+    /// Sets whether to support Zstd encoding.
+    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
+        self.accept.set_zstd(enable);
         self
     }
 }

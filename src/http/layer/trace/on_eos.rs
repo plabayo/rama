@@ -75,10 +75,29 @@ impl DefaultOnEos {
         self
     }
 
+    /// Set the [`Level`] used for [tracing events].
+    ///
+    /// Defaults to [`Level::DEBUG`].
+    ///
+    /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
+    /// [`Level::DEBUG`]: https://docs.rs/tracing/latest/tracing/struct.Level.html#associatedconstant.DEBUG
+    pub fn set_level(&mut self, level: Level) -> &mut Self {
+        self.level = level;
+        self
+    }
+
     /// Set the [`LatencyUnit`] latencies will be reported in.
     ///
     /// Defaults to [`LatencyUnit::Millis`].
     pub fn latency_unit(mut self, latency_unit: LatencyUnit) -> Self {
+        self.latency_unit = latency_unit;
+        self
+    }
+
+    /// Set the [`LatencyUnit`] latencies will be reported in.
+    ///
+    /// Defaults to [`LatencyUnit::Millis`].
+    pub fn set_latency_unit(&mut self, latency_unit: LatencyUnit) -> &mut Self {
         self.latency_unit = latency_unit;
         self
     }

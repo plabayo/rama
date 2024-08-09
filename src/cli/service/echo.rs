@@ -77,7 +77,7 @@ impl EchoServiceBuilder<Identity> {
 }
 
 impl<H> EchoServiceBuilder<H> {
-    /// the number of concurrent connections to allow
+    /// set the number of concurrent connections to allow
     ///
     /// (0 = no limit)
     pub fn concurrent(mut self, limit: usize) -> Self {
@@ -85,10 +85,26 @@ impl<H> EchoServiceBuilder<H> {
         self
     }
 
-    /// the timeout in seconds for each connection
+    /// set the number of concurrent connections to allow
+    ///
+    /// (0 = no limit)
+    pub fn set_concurrent(&mut self, limit: usize) -> &mut Self {
+        self.concurrent_limit = limit;
+        self
+    }
+
+    /// set the timeout in seconds for each connection
     ///
     /// (0 = no timeout)
     pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// set the timeout in seconds for each connection
+    ///
+    /// (0 = no timeout)
+    pub fn set_timeout(&mut self, timeout: Duration) -> &mut Self {
         self.timeout = timeout;
         self
     }
@@ -108,6 +124,14 @@ impl<H> EchoServiceBuilder<H> {
         self.maybe_forward(Some(kind))
     }
 
+    /// enable support for one of the following "forward" headers or protocols
+    ///
+    /// Same as [`Self::forward`] but without consuming `self`.
+    pub fn set_forward(&mut self, kind: ForwardKind) -> &mut Self {
+        self.forward = Some(kind);
+        self
+    }
+
     /// maybe enable support for one of the following "forward" headers or protocols.
     ///
     /// See [`Self::forward`] for more information.
@@ -119,6 +143,13 @@ impl<H> EchoServiceBuilder<H> {
     /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
     pub fn tls_server_config(mut self, cfg: TlsServerCertKeyPair) -> Self {
+        self.tls_server_config = Some(cfg);
+        self
+    }
+
+    /// define a tls server cert config to be used for tls terminaton
+    /// by the echo service.
+    pub fn set_tls_server_config(&mut self, cfg: TlsServerCertKeyPair) -> &mut Self {
         self.tls_server_config = Some(cfg);
         self
     }

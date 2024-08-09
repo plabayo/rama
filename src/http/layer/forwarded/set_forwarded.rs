@@ -116,6 +116,14 @@ impl<T> SetForwardedHeadersLayer<T> {
         self.by_node = node_id.into();
         self
     }
+
+    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
+    ///
+    /// Default of `None` will be set to `rama` otherwise.
+    pub fn set_forward_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
+        self.by_node = node_id.into();
+        self
+    }
 }
 
 impl<T> SetForwardedHeadersLayer<T> {
@@ -224,6 +232,14 @@ impl<S, T> SetForwardedHeadersService<S, T> {
     ///
     /// Default of `None` will be set to `rama` otherwise.
     pub fn forward_by(mut self, node_id: impl Into<NodeId>) -> Self {
+        self.by_node = node_id.into();
+        self
+    }
+
+    /// Set the given [`NodeId`] as the "by" property, identifying this proxy.
+    ///
+    /// Default of `None` will be set to `rama` otherwise.
+    pub fn set_forward_by(&mut self, node_id: impl Into<NodeId>) -> &mut Self {
         self.by_node = node_id.into();
         self
     }

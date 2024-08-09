@@ -315,6 +315,14 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
         self
     }
 
+    /// Set a [`ProxyFilterMode`] to define the behaviour surrounding
+    /// [`ProxyFilter`] usage, e.g. if a proxy filter is required to be available or not,
+    /// or what to do if it is optional and not available.
+    pub fn set_filter_mode(&mut self, mode: ProxyFilterMode) -> &mut Self {
+        self.mode = mode;
+        self
+    }
+
     /// Define whether or not an existing [`ProxyAddress`] (in the [`Context`])
     /// should be overwritten or not. By default `preserve=false`,
     /// meaning we will overwrite the proxy address in case we selected one now.
@@ -322,6 +330,17 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     /// NOTE even when `preserve=false` it might still be that there's
     /// a [`ProxyAddress`] in case it was set by a previous layer.
     pub fn preserve_proxy(mut self, preserve: bool) -> Self {
+        self.preserve = preserve;
+        self
+    }
+
+    /// Define whether or not an existing [`ProxyAddress`] (in the [`Context`])
+    /// should be overwritten or not. By default `preserve=false`,
+    /// meaning we will overwrite the proxy address in case we selected one now.
+    ///
+    /// NOTE even when `preserve=false` it might still be that there's
+    /// a [`ProxyAddress`] in case it was set by a previous layer.
+    pub fn set_preserve_proxy(&mut self, preserve: bool) -> &mut Self {
         self.preserve = preserve;
         self
     }

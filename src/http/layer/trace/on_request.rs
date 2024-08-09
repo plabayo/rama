@@ -73,6 +73,22 @@ impl DefaultOnRequest {
         self.level = level;
         self
     }
+
+    /// Set the [`Level`] used for [tracing events].
+    ///
+    /// Please note that while this will set the level for the tracing events
+    /// themselves, it might cause them to lack expected information, like
+    /// request method or path. You can address this using
+    /// [`DefaultMakeSpan::level`].
+    ///
+    /// Defaults to [`Level::DEBUG`].
+    ///
+    /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
+    /// [`DefaultMakeSpan::level`]: crate::http::layer::trace::DefaultMakeSpan::level
+    pub fn set_level(&mut self, level: Level) -> &mut Self {
+        self.level = level;
+        self
+    }
 }
 
 impl<B> OnRequest<B> for DefaultOnRequest {

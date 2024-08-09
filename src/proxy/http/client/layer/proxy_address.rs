@@ -64,8 +64,14 @@ impl HttpProxyAddressLayer {
     }
 
     /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
-    pub fn preserve(mut self) -> Self {
-        self.preserve = true;
+    pub fn preserve(mut self, preserve: bool) -> Self {
+        self.preserve = preserve;
+        self
+    }
+
+    /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
+    pub fn set_preserve(&mut self, preserve: bool) -> &mut Self {
+        self.preserve = preserve;
         self
     }
 }
@@ -74,12 +80,7 @@ impl<S> Layer<S> for HttpProxyAddressLayer {
     type Service = HttpProxyAddressService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        let service = HttpProxyAddressService::maybe(inner, self.address.clone());
-        if self.preserve {
-            service.preserve()
-        } else {
-            service
-        }
+        HttpProxyAddressService::maybe(inner, self.address.clone()).preserve(self.preserve)
     }
 }
 
@@ -161,8 +162,14 @@ impl<S> HttpProxyAddressService<S> {
     }
 
     /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
-    pub fn preserve(mut self) -> Self {
-        self.preserve = true;
+    pub fn preserve(mut self, preserve: bool) -> Self {
+        self.preserve = preserve;
+        self
+    }
+
+    /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
+    pub fn set_preserve(&mut self, preserve: bool) -> &mut Self {
+        self.preserve = preserve;
         self
     }
 }

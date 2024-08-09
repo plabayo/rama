@@ -48,6 +48,12 @@ impl HttpClientError {
         self
     }
 
+    /// Set a [`Uri`] to be attached to the error.
+    pub fn set_uri(&mut self, uri: Uri) -> &mut Self {
+        self.uri = Some(uri);
+        self
+    }
+
     /// Return the [`Uri`] associated with the error, if any.
     pub fn uri(&self) -> Option<&Uri> {
         self.uri.as_ref()

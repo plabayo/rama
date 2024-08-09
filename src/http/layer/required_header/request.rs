@@ -39,6 +39,15 @@ impl AddRequiredRequestHeadersLayer {
         self.overwrite = overwrite;
         self
     }
+
+    /// Set whether to overwrite the existing headers.
+    /// If set to `true`, the headers will be overwritten.
+    ///
+    /// Default is `false`.
+    pub fn set_overwrite(&mut self, overwrite: bool) -> &mut Self {
+        self.overwrite = overwrite;
+        self
+    }
 }
 
 impl<S> Layer<S> for AddRequiredRequestHeadersLayer {
@@ -73,6 +82,15 @@ impl<S> AddRequiredRequestHeaders<S> {
     ///
     /// Default is `false`.
     pub fn overwrite(mut self, overwrite: bool) -> Self {
+        self.overwrite = overwrite;
+        self
+    }
+
+    /// Set whether to overwrite the existing headers.
+    /// If set to `true`, the headers will be overwritten.
+    ///
+    /// Default is `false`.
+    pub fn set_overwrite(&mut self, overwrite: bool) -> &mut Self {
         self.overwrite = overwrite;
         self
     }

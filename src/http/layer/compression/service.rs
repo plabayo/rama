@@ -72,8 +72,20 @@ impl<S, P> Compression<S, P> {
         self
     }
 
+    /// Sets whether to enable the gzip encoding.
+    pub fn set_gzip(&mut self, enable: bool) -> &mut Self {
+        self.accept.set_gzip(enable);
+        self
+    }
+
     /// Sets whether to enable the Deflate encoding.
     pub fn deflate(mut self, enable: bool) -> Self {
+        self.accept.set_deflate(enable);
+        self
+    }
+
+    /// Sets whether to enable the Deflate encoding.
+    pub fn set_deflate(&mut self, enable: bool) -> &mut Self {
         self.accept.set_deflate(enable);
         self
     }
@@ -84,8 +96,20 @@ impl<S, P> Compression<S, P> {
         self
     }
 
+    /// Sets whether to enable the Brotli encoding.
+    pub fn set_br(&mut self, enable: bool) -> &mut Self {
+        self.accept.set_br(enable);
+        self
+    }
+
     /// Sets whether to enable the Zstd encoding.
     pub fn zstd(mut self, enable: bool) -> Self {
+        self.accept.set_zstd(enable);
+        self
+    }
+
+    /// Sets whether to enable the Zstd encoding.
+    pub fn set_zstd(&mut self, enable: bool) -> &mut Self {
         self.accept.set_zstd(enable);
         self
     }
@@ -96,35 +120,9 @@ impl<S, P> Compression<S, P> {
         self
     }
 
-    /// Disables the gzip encoding.
-    ///
-    /// This method is available even if the `gzip` crate feature is disabled.
-    pub fn no_gzip(mut self) -> Self {
-        self.accept.set_gzip(false);
-        self
-    }
-
-    /// Disables the Deflate encoding.
-    ///
-    /// This method is available even if the `deflate` crate feature is disabled.
-    pub fn no_deflate(mut self) -> Self {
-        self.accept.set_deflate(false);
-        self
-    }
-
-    /// Disables the Brotli encoding.
-    ///
-    /// This method is available even if the `br` crate feature is disabled.
-    pub fn no_br(mut self) -> Self {
-        self.accept.set_br(false);
-        self
-    }
-
-    /// Disables the Zstd encoding.
-    ///
-    /// This method is available even if the `zstd` crate feature is disabled.
-    pub fn no_zstd(mut self) -> Self {
-        self.accept.set_zstd(false);
+    /// Sets the compression quality.
+    pub fn set_quality(&mut self, quality: CompressionLevel) -> &mut Self {
+        self.quality = quality;
         self
     }
 

@@ -164,6 +164,13 @@ impl UserAgentClassifierLayer {
         self.overwrite_header = Some(header);
         self
     }
+
+    /// Define a custom header to allow overwriting certain
+    /// [`UserAgent`] information.
+    pub fn set_overwrite_header(&mut self, header: HeaderName) -> &mut Self {
+        self.overwrite_header = Some(header);
+        self
+    }
 }
 
 impl<S> Layer<S> for UserAgentClassifierLayer {

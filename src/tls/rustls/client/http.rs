@@ -39,6 +39,20 @@ impl<K> HttpsConnectorLayer<K> {
         self.config = Some(config);
         self
     }
+
+    /// Maybe attach a client config to this [`HttpsConnectorLayer`],
+    /// to be used instead of a globally shared default client config.
+    pub fn maybe_with_config(mut self, config: Option<Arc<ClientConfig>>) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Attach a client config to this [`HttpsConnectorLayer`],
+    /// to be used instead of a globally shared default client config.
+    pub fn set_config(&mut self, config: Arc<ClientConfig>) -> &mut Self {
+        self.config = Some(config);
+        self
+    }
 }
 
 impl HttpsConnectorLayer<ConnectorKindAuto> {
@@ -137,6 +151,18 @@ impl<S, K> HttpsConnector<S, K> {
 
     /// Attach a client config to this [`HttpsConnector`],
     pub fn with_config(mut self, config: Arc<ClientConfig>) -> Self {
+        self.config = Some(config);
+        self
+    }
+
+    /// Maybe attach a client config to this [`HttpsConnector`],
+    pub fn maybe_with_config(mut self, config: Option<Arc<ClientConfig>>) -> Self {
+        self.config = config;
+        self
+    }
+
+    /// Set a client config to this [`HttpsConnector`],
+    pub fn set_config(&mut self, config: Arc<ClientConfig>) -> &mut Self {
         self.config = Some(config);
         self
     }
