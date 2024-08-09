@@ -37,7 +37,7 @@ use crate::{
     utils::combinators::Either7,
 };
 use serde_json::json;
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, time::Duration, sync::Arc};
 use tokio::net::TcpStream;
 
 #[cfg(feature = "boring")]
@@ -243,7 +243,7 @@ where
                 #[cfg(not(feature = "boring"))]
                 {
                     TlsAcceptorLayer::with_client_config_handler(
-                        cfg,
+                        Arc::new(cfg),
                         TlsClientConfigHandler::default().store_client_hello(),
                     )
                 }
