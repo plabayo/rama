@@ -37,7 +37,7 @@ use crate::{
     utils::combinators::Either7,
 };
 use serde_json::json;
-use std::{convert::Infallible, time::Duration, sync::Arc};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::net::TcpStream;
 
 #[cfg(feature = "boring")]
