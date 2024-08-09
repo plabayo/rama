@@ -58,8 +58,8 @@ impl TlsServerCertKeyPair {
         let tls_cert_pem_raw = BASE64
             .decode(self.tls_cert_pem_raw.as_bytes())
             .context("base64 decode x509 ca cert PEM data")?;
-        let ca_cert =
-            X509::from_pem(&tls_cert_pem_raw[..]).context("parse x509 ca cert from PEM content")?;
+        let ca_cert_chain = X509::stack_from_pem(&tls_cert_pem_raw[..])
+            .context("parse x509 ca cert from PEM content")?;
 
         let tls_key_pem_raw = BASE64
             .decode(self.tls_key_pem_raw.as_bytes())
@@ -67,7 +67,7 @@ impl TlsServerCertKeyPair {
         let key = PKey::private_key_from_pem(&tls_key_pem_raw[..])
             .context("parse private key from PEM content")?;
 
-        let mut server_config = ServerConfig::new(key, ca_cert);
+        let mut server_config = ServerConfig::new(key, ca_cert_chain);
 
         // support key logging
         if let Ok(keylog_file) = std::env::var("SSLKEYLOGFILE") {

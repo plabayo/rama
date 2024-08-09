@@ -9,8 +9,8 @@ use crate::tls::ApplicationProtocol;
 pub struct ServerConfig {
     /// Private Key of the server
     pub private_key: PKey<Private>,
-    /// CA Cert of the server
-    pub ca_cert: X509,
+    /// CA Cert Chain of the server
+    pub ca_cert_chain: Vec<X509>,
     /// Set the ALPN protocols supported by the service's inner application service.
     pub alpn_protocols: Vec<ApplicationProtocol>,
     /// Write logging information to facilitate tls interception.
@@ -19,10 +19,10 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     /// Create a new [`ServerConfig`].
-    pub fn new(private_key: PKey<Private>, ca_cert: X509) -> ServerConfig {
+    pub fn new(private_key: PKey<Private>, ca_cert_chain: Vec<X509>) -> ServerConfig {
         ServerConfig {
             private_key,
-            ca_cert,
+            ca_cert_chain,
             alpn_protocols: vec![],
             keylog_filename: None,
         }

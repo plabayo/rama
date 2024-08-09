@@ -81,10 +81,19 @@ where
             .context("build boring ssl acceptor: set default verify paths")
             .map_err(TlsAcceptorError::Accept)?;
 
-        acceptor_builder
-            .set_certificate(self.config.ca_cert.as_ref())
-            .context("build boring ssl acceptor: set CA certificate (x509)")
-            .map_err(TlsAcceptorError::Accept)?;
+        for (i, ca_cert) in self.config.ca_cert_chain.iter().enumerate() {
+            if i == 0 {
+                acceptor_builder
+                    .set_certificate(ca_cert.as_ref())
+                    .context("build boring ssl acceptor: set Leaf CA certificate (x509)")
+                    .map_err(TlsAcceptorError::Accept)?;
+            } else {
+                acceptor_builder
+                    .add_extra_chain_cert(ca_cert.clone())
+                    .context("build boring ssl acceptor: add extra chain certificate (x509)")
+                    .map_err(TlsAcceptorError::Accept)?;
+            }
+        }
         acceptor_builder
             .set_private_key(self.config.private_key.as_ref())
             .context("build boring ssl acceptor: set private key")

@@ -101,7 +101,7 @@ async fn main() {
         //         PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned()).into(),
         //     )
         //     .expect("create tls server config");
-        let mut tls_server_config = ServerConfig::new(key, cert);
+        let mut tls_server_config = ServerConfig::new(key, vec![cert]);
         tls_server_config.alpn_protocols =
             vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
         if let Ok(keylog_file) = std::env::var("SSLKEYLOGFILE") {
