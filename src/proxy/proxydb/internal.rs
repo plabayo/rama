@@ -731,6 +731,7 @@ mod tests {
         let ctx = TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -777,6 +778,7 @@ mod tests {
         let ctx = TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -823,6 +825,7 @@ mod tests {
         let ctx = TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -862,6 +865,7 @@ mod tests {
         let ctx = TransportContext {
             protocol: TransportProtocol::Udp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -901,6 +905,7 @@ mod tests {
         let ctx = TransportContext {
             protocol: TransportProtocol::Udp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -940,6 +945,7 @@ mod tests {
         let ctx = TransportContext {
             protocol: TransportProtocol::Udp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -979,6 +985,7 @@ mod tests {
         let ctx = TransportContext {
             protocol: TransportProtocol::Udp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -1131,6 +1138,7 @@ mod tests {
             let ctx = TransportContext {
                 protocol: TransportProtocol::Tcp,
                 app_protocol: Some(Protocol::HTTPS),
+                http_version: None,
                 authority: "localhost:8443".try_into().unwrap(),
             };
 
@@ -1245,6 +1253,7 @@ mod tests {
             let ctx = TransportContext {
                 protocol: TransportProtocol::Tcp,
                 app_protocol: Some(Protocol::HTTPS),
+                http_version: None,
                 authority: "localhost:8443".try_into().unwrap(),
             };
 
@@ -1263,6 +1272,7 @@ mod tests {
         let ctx = TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         };
 
@@ -1313,6 +1323,7 @@ mod tests {
         let ctx = TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         };
 

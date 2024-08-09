@@ -140,6 +140,7 @@ mod tests {
                 TransportContext {
                     protocol: TransportProtocol::Tcp,
                     app_protocol: None,
+                    http_version: None,
                     authority: "proxy.example.com:1080".parse().unwrap(),
                 },
                 ProxyFilter::default(),
@@ -157,6 +158,7 @@ mod tests {
                 TransportContext {
                     protocol: TransportProtocol::Tcp,
                     app_protocol: None,
+                    http_version: None,
                     authority: "proxy.example.com:1080".parse().unwrap(),
                 },
                 ProxyFilter::default(),
@@ -192,6 +194,7 @@ mod tests {
                     TransportContext {
                         protocol: TransportProtocol::Tcp,
                         app_protocol: None,
+                        http_version: None,
                         authority: "proxy.example.com:1080".parse().unwrap(),
                     },
                     ProxyFilter::default(),
@@ -206,6 +209,7 @@ mod tests {
                 TransportContext {
                     protocol: TransportProtocol::Udp,
                     app_protocol: None,
+                    http_version: None,
                     authority: "proxy.example.com:1080".parse().unwrap(),
                 },
                 ProxyFilter::default(),
@@ -220,6 +224,7 @@ mod tests {
                     TransportContext {
                         protocol: TransportProtocol::Tcp,
                         app_protocol: None,
+                        http_version: None,
                         authority: "proxy.example.com:1080".parse().unwrap(),
                     },
                     ProxyFilter::default(),

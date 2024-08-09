@@ -1,4 +1,5 @@
 use crate::error::{BoxError, ErrorExt, OpaqueError};
+use crate::http::Version;
 use crate::net::client::{ClientConnection, EstablishedClientConnection};
 use crate::net::stream::Stream;
 use crate::net::transport::TryRefIntoTransportContext;
@@ -247,9 +248,23 @@ where
             .map_err(|err| err.context("HttpsConnector(auto): invalid DNS Hostname (tls)"))?
             .to_owned();
 
-        let stream = self.handshake(domain, stream).await?;
+        tracing::trace!(
+            authority = %transport_ctx.authority,
+            app_protocol = ?transport_ctx.app_protocol,
+            http_version = ?transport_ctx.http_version,
+            "HttpsConnector(auto): attempt to secure inner connection",
+        );
 
-        tracing::trace!(authority = %transport_ctx.authority, "HttpsConnector(auto): protocol secure, established tls connection");
+        let stream = self
+            .handshake(domain, transport_ctx.http_version, stream)
+            .await?;
+
+        tracing::trace!(
+            authority = %transport_ctx.authority,
+            app_protocol = ?transport_ctx.app_protocol,
+            http_version = ?transport_ctx.http_version,
+            "HttpsConnector(auto): protocol secure, established tls connection",
+        );
         Ok(EstablishedClientConnection {
             ctx,
             req,
@@ -291,14 +306,21 @@ where
                 OpaqueError::from_boxed(err.into())
                     .context("HttpsConnector(auto): compute transport context")
             })?;
-        tracing::trace!(authority = %transport_ctx.authority, "HttpsConnector(secure): attempt to secure inner connection");
+        tracing::trace!(
+            authority = %transport_ctx.authority,
+            app_protocol = ?transport_ctx.app_protocol,
+            http_version = ?transport_ctx.http_version,
+            "HttpsConnector(secure): attempt to secure inner connection",
+        );
 
         let host = transport_ctx.authority.host().to_string();
         let domain = pki_types::ServerName::try_from(host)
             .map_err(|err| err.context("invalid DNS Hostname (tls)"))?
             .to_owned();
 
-        let stream = self.handshake(domain, stream).await?;
+        let stream = self
+            .handshake(domain, transport_ctx.http_version, stream)
+            .await?;
 
         Ok(EstablishedClientConnection {
             ctx,
@@ -350,7 +372,7 @@ where
             }
         };
 
-        let stream = self.handshake(domain, stream).await?;
+        let stream = self.handshake(domain, None, stream).await?;
 
         tracing::trace!("HttpsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection {
@@ -370,6 +392,7 @@ impl<S, K> HttpsConnector<S, K> {
     async fn handshake<T>(
         &self,
         server_name: ServerName<'static>,
+        http_version: Option<Version>,
         stream: T,
     ) -> Result<TlsStream<T>, BoxError>
     where
@@ -378,7 +401,7 @@ impl<S, K> HttpsConnector<S, K> {
         let config = self
             .config
             .clone()
-            .unwrap_or_else(default_tls_client_config);
+            .unwrap_or_else(|| new_tls_client_config(http_version));
         let connector = TlsConnector::from(config);
 
         connector
@@ -476,26 +499,30 @@ where
     }
 }
 
-// TODO: revisit this,
-// as this is not ideal, given we'll
-// want to be able to create config on the fly,
-// e.g. to set the ALPN etc correct...
-
-fn default_tls_client_config() -> Arc<ClientConfig> {
-    static CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
-    CONFIG
+fn new_tls_client_config(http_version: Option<Version>) -> Arc<ClientConfig> {
+    static ROOT_CERTS: OnceLock<Arc<RootCertStore>> = OnceLock::new();
+    let root_certs = ROOT_CERTS
         .get_or_init(|| {
             let mut root_storage = RootCertStore::empty();
             root_storage.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            let mut config = ClientConfig::builder()
-                .with_root_certificates(root_storage)
-                .with_no_client_auth();
-            config
-                .dangerous()
-                .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
-            Arc::new(config)
+            Arc::new(root_storage)
         })
-        .clone()
+        .clone();
+
+    let mut config = ClientConfig::builder()
+        .with_root_certificates(root_certs)
+        .with_no_client_auth();
+    config
+        .dangerous()
+        .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+    config.alpn_protocols = match http_version {
+        Some(Version::HTTP_11) => vec![b"http/1.1".to_vec()],
+        Some(Version::HTTP_2) => vec![b"h2".to_vec()],
+        Some(Version::HTTP_3) => vec![b"h3".to_vec()],
+        _ => vec![],
+    };
+
+    Arc::new(config)
 }
 
 mod private {

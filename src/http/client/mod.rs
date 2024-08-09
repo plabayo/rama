@@ -84,7 +84,7 @@ where
         Response = EstablishedClientConnection<S, State, Request<Body>>,
     >,
     C::Error: Into<BoxError>,
-    S: Stream + Unpin,
+    S: Stream + Sync + Unpin,
 {
     type Response = Response;
     type Error = HttpClientError;
@@ -180,13 +180,18 @@ fn sanitize_client_req_header<S, B>(
         }
         _ => {
             // GET | HEAD | POST | PUT | DELETE | OPTIONS | TRACE | PATCH
-            if !ctx.contains::<ProxyAddress>() && req.uri().host().is_some() {
+            if !ctx.contains::<ProxyAddress>()
+                && req.uri().host().is_some()
+                && req.version() <= Version::HTTP_11
+            {
                 // ensure request context is defined prior to doing this, as otherwise we can get issues
                 let _ = ctx
                     .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
                     .map_err(HttpClientError::from_std)?;
 
-                tracing::trace!("remove authority and scheme from non-connect direct http request");
+                tracing::trace!(
+                    "remove authority and scheme from non-connect direct http(~1) request"
+                );
                 let (mut parts, body) = req.into_parts();
                 let mut uri_parts = parts.uri.into_parts();
                 uri_parts.scheme = None;

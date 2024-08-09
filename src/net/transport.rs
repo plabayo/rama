@@ -21,6 +21,9 @@ pub struct TransportContext {
     /// The [`Protocol`] of the application layer, if known.
     pub app_protocol: Option<Protocol>,
 
+    /// The [`Version`] if the application layer is http.
+    pub http_version: Option<Version>,
+
     /// The authority of the target,
     /// from where this comes depends on the kind of
     /// request it originates from.
@@ -45,6 +48,7 @@ impl From<RequestContext> for TransportContext {
                 TransportProtocol::Tcp
             },
             app_protocol: Some(value.protocol),
+            http_version: Some(value.http_version),
             authority: value.authority,
         }
     }
@@ -59,6 +63,7 @@ impl From<&RequestContext> for TransportContext {
                 TransportProtocol::Tcp
             },
             app_protocol: Some(value.protocol.clone()),
+            http_version: Some(value.http_version),
             authority: value.authority.clone(),
         }
     }

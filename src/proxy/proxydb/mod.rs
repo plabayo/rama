@@ -510,6 +510,7 @@ mod tests {
         TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         }
     }
@@ -623,6 +624,7 @@ mod tests {
         TransportContext {
             protocol: TransportProtocol::Udp,
             app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
             authority: "localhost:8443".try_into().unwrap(),
         }
     }

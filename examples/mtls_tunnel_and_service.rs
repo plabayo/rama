@@ -108,7 +108,7 @@ async fn main() {
         let executor = Executor::graceful(guard.clone());
 
         let tcp_service = ServiceBuilder::new()
-            .layer(TlsAcceptorLayer::new(tls_server_config))
+            .layer(TlsAcceptorLayer::new(Arc::new(tls_server_config)))
             .service(
                 HttpServer::auto(executor).service(
                     ServiceBuilder::new()

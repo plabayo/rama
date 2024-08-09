@@ -1,6 +1,7 @@
 use std::convert::Infallible;
 
 use crate::{
+    http::Version,
     net::{
         address::Authority,
         transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext},
@@ -17,6 +18,7 @@ use crate::{
 pub struct Request {
     authority: Authority,
     protocol: Option<Protocol>,
+    http_version: Option<Version>,
 }
 
 impl Request {
@@ -25,6 +27,7 @@ impl Request {
         Self {
             authority,
             protocol: None,
+            http_version: None,
         }
     }
 
@@ -48,11 +51,29 @@ impl Request {
         self.protocol.clone()
     }
 
+    /// Attach an http version as a hint to the application layer.
+    pub fn with_http_version(mut self, version: Version) -> Self {
+        self.http_version = Some(version);
+        self
+    }
+
+    /// Set an http version as a hint to the application layer.
+    pub fn set_http_version(&mut self, version: Version) -> &mut Self {
+        self.http_version = Some(version);
+        self
+    }
+
+    /// Return the http version hint, if defined
+    pub fn http_version(&self) -> Option<Version> {
+        self.http_version
+    }
+
     /// (re)construct a Tcp [`Request`] from its [`Parts`].
     pub fn from_parts(parts: Parts) -> Self {
         Self {
             authority: parts.authority,
             protocol: parts.protocol,
+            http_version: parts.http_version,
         }
     }
 
@@ -67,6 +88,7 @@ impl Request {
         Parts {
             authority: self.authority,
             protocol: self.protocol,
+            http_version: self.http_version,
         }
     }
 }
@@ -76,6 +98,7 @@ impl From<&Request> for TransportContext {
         TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol.clone(),
+            http_version: value.http_version,
             authority: value.authority.clone(),
         }
     }
@@ -86,6 +109,7 @@ impl From<Request> for TransportContext {
         TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol,
+            http_version: value.http_version,
             authority: value.authority,
         }
     }
@@ -106,6 +130,9 @@ pub struct Parts {
 
     /// Application Protocol that will be operated on, if known.
     pub protocol: Option<Protocol>,
+
+    /// Http version hint that application layer can use if possible.
+    pub http_version: Option<Version>,
 }
 
 impl From<Request> for Parts {
@@ -120,6 +147,7 @@ impl From<&Parts> for TransportContext {
         TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol.clone(),
+            http_version: value.http_version,
             authority: value.authority.clone(),
         }
     }
@@ -130,6 +158,7 @@ impl From<Parts> for TransportContext {
         TransportContext {
             protocol: TransportProtocol::Tcp,
             app_protocol: value.protocol,
+            http_version: value.http_version,
             authority: value.authority,
         }
     }

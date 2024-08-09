@@ -53,8 +53,8 @@ use rama::{
     utils::graceful::Shutdown,
 };
 
-use std::convert::Infallible;
 use std::time::Duration;
+use std::{convert::Infallible, sync::Arc};
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -150,7 +150,7 @@ async fn main() {
                     // protect the http proxy from too large bodies, both from request and response end
                     .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024))
                     .layer(TlsAcceptorLayer::with_client_config_handler(
-                        tls_server_config,
+                        Arc::new(tls_server_config),
                         tls_client_config_handler,
                     ))
                     .service(http_service),

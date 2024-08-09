@@ -13,9 +13,9 @@ pub use read::{ChainReader, HeapReader};
 
 /// A stream is a type that implements `AsyncRead`, `AsyncWrite` and `Send`.
 /// This is specific to Rama and is directly linked to the supertraits of `Tokio`.
-pub trait Stream: AsyncRead + AsyncWrite + Send + Sync + 'static {}
+pub trait Stream: AsyncRead + AsyncWrite + Send + 'static {}
 
-impl<T> Stream for T where T: AsyncRead + AsyncWrite + Send + Sync + 'static {}
+impl<T> Stream for T where T: AsyncRead + AsyncWrite + Send + 'static {}
 
 mod socket;
 #[doc(inline)]

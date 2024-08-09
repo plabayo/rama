@@ -161,6 +161,14 @@ impl Extensions {
     pub fn get_or_insert_default<T: Default + Clone + Send + Sync + 'static>(&mut self) -> &mut T {
         self.get_or_insert_with(T::default)
     }
+
+    /// Remove a type from this `Extensions`.
+    pub fn remove<T: Clone + Send + Sync + 'static>(&mut self) -> Option<T> {
+        self.map
+            .as_mut()
+            .and_then(|map| map.remove(&TypeId::of::<T>()))
+            .and_then(|boxed| boxed.into_any().downcast().ok().map(|boxed| *boxed))
+    }
 }
 
 impl fmt::Debug for Extensions {

@@ -500,6 +500,11 @@ impl<S> Context<S> {
         self.extensions.clear();
     }
 
+    /// Remove an extension from this [`Context`]
+    pub fn remove<T: Clone + Send + Sync + 'static>(&mut self) -> Option<T> {
+        self.extensions.remove()
+    }
+
     /// Get a reference to the shutdown guard,
     /// if and only if the context was created within a graceful environment.
     pub fn guard(&self) -> Option<&ShutdownGuard> {
