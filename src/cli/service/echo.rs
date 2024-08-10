@@ -238,7 +238,7 @@ where
             .layer(tls_server_cfg.map(|cfg| {
                 #[cfg(feature = "boring")]
                 {
-                    TlsAcceptorLayer::new(cfg).with_store_client_hello(true)
+                    TlsAcceptorLayer::new(std::sync::Arc::new(cfg)).with_store_client_hello(true)
                 }
                 #[cfg(not(feature = "boring"))]
                 {

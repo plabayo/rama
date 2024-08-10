@@ -261,7 +261,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             // Limit the body size to 1MB for both request and response
             .layer(BodyLimitLayer::symmetric(1024 * 1024))
             .layer(tls_server_cfg.map(|cfg| {
-                TlsAcceptorLayer::new(cfg).with_store_client_hello(true)
+                TlsAcceptorLayer::new(Arc::new(cfg)).with_store_client_hello(true)
             }));
 
         let tcp_listener = TcpListener::build_with_state(State::new(acme_data))

@@ -12,9 +12,9 @@ pub struct TlsAcceptorLayer {
 impl TlsAcceptorLayer {
     /// Creates a new [`TlsAcceptorLayer`] using the given [`ServerConfig`],
     /// which is used to configure the inner TLS acceptor.
-    pub fn new(config: ServerConfig) -> Self {
+    pub fn new(config: Arc<ServerConfig>) -> Self {
         Self {
-            config: Arc::new(config),
+            config,
             store_client_hello: false,
         }
     }

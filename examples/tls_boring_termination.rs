@@ -71,7 +71,7 @@ use rama::{
 };
 
 // everything else is provided by the standard library, community crates or tokio
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -109,7 +109,7 @@ async fn main() {
         }
 
         let tcp_service = ServiceBuilder::new()
-            .layer(TlsAcceptorLayer::new(tls_server_config).with_store_client_hello(true))
+            .layer(TlsAcceptorLayer::new(Arc::new(tls_server_config)).with_store_client_hello(true))
             .layer(GetExtensionLayer::new(|st: SecureTransport| async move {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!(?client_hello, "secure connection established");
