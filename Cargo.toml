@@ -18,7 +18,7 @@ base64 = "0.22"
 bitflags = "2.4"
 brotli = "6"
 bytes = "1"
-clap = { version = "4.5.11", features = ["derive"] }
+clap = { version = "4.5.15", features = ["derive"] }
 crossterm = "0.27"
 flate2 = "1.0"
 futures-lite = "2.3.0"
