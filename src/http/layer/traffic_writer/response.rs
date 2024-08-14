@@ -35,7 +35,7 @@ impl<W: Clone> Clone for ResponseWriterLayer<W> {
 
 impl<W> ResponseWriterLayer<W> {
     /// Create a new [`ResponseWriterLayer`] with a custom [`ResponseWriter`].
-    pub fn new(writer: W) -> Self {
+    pub const fn new(writer: W) -> Self {
         Self { writer }
     }
 }
@@ -53,7 +53,7 @@ pub struct DoNotWriteResponse;
 
 impl DoNotWriteResponse {
     /// Create a new [`DoNotWriteResponse`] marker.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -162,7 +162,7 @@ pub struct ResponseWriterService<S, W> {
 
 impl<S, W> ResponseWriterService<S, W> {
     /// Create a new [`ResponseWriterService`] with a custom [`ResponseWriter`].
-    pub fn new(writer: W, inner: S) -> Self {
+    pub const fn new(writer: W, inner: S) -> Self {
         Self { inner, writer }
     }
 

@@ -35,7 +35,7 @@ impl<W: Clone> Clone for RequestWriterLayer<W> {
 
 impl<W> RequestWriterLayer<W> {
     /// Create a new [`RequestWriterLayer`] with a custom [`RequestWriter`].
-    pub fn new(writer: W) -> Self {
+    pub const fn new(writer: W) -> Self {
         Self { writer }
     }
 }
@@ -53,7 +53,7 @@ pub struct DoNotWriteRequest;
 
 impl DoNotWriteRequest {
     /// Create a new [`DoNotWriteRequest`] marker.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }
@@ -168,7 +168,7 @@ pub struct RequestWriterService<S, W> {
 
 impl<S, W> RequestWriterService<S, W> {
     /// Create a new [`RequestWriterService`] with a custom [`RequestWriter`].
-    pub fn new(writer: W, inner: S) -> Self {
+    pub const fn new(writer: W, inner: S) -> Self {
         Self { inner, writer }
     }
 

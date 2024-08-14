@@ -13,7 +13,7 @@ pub struct DnsMapLayer {
 
 impl DnsMapLayer {
     /// Creates a new [`DnsMapLayer`].
-    pub fn new(name: HeaderName) -> Self {
+    pub const fn new(name: HeaderName) -> Self {
         Self { header_name: name }
     }
 }

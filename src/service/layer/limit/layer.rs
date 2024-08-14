@@ -12,7 +12,7 @@ pub struct LimitLayer<P> {
 
 impl<P> LimitLayer<P> {
     /// Creates a new [`LimitLayer`] from a [`crate::service::layer::limit::Policy`].
-    pub fn new(policy: P) -> Self {
+    pub const fn new(policy: P) -> Self {
         LimitLayer { policy }
     }
 }

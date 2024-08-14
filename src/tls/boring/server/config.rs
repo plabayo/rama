@@ -19,7 +19,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     /// Create a new [`ServerConfig`].
-    pub fn new(private_key: PKey<Private>, ca_cert_chain: Vec<X509>) -> ServerConfig {
+    pub const fn new(private_key: PKey<Private>, ca_cert_chain: Vec<X509>) -> ServerConfig {
         ServerConfig {
             private_key,
             ca_cert_chain,

@@ -42,7 +42,7 @@ pub struct QualityValue<T> {
 
 impl<T> QualityValue<T> {
     /// Creates a new `QualityValue` from an item and a quality.
-    pub fn new(value: T, quality: Quality) -> QualityValue<T> {
+    pub const fn new(value: T, quality: Quality) -> QualityValue<T> {
         QualityValue { value, quality }
     }
 

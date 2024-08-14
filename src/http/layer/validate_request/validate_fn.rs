@@ -112,7 +112,7 @@ pub struct BoxValidateRequestFn<F, A> {
 
 impl<F, A> BoxValidateRequestFn<F, A> {
     /// Create a new [`BoxValidateRequestFn`].
-    pub fn new(f: F) -> Self {
+    pub const fn new(f: F) -> Self {
         Self {
             f,
             _marker: PhantomData,

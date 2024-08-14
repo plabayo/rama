@@ -25,7 +25,7 @@ pub struct TlsAcceptorService<S> {
 
 impl<S> TlsAcceptorService<S> {
     /// Creates a new [`TlsAcceptorService`].
-    pub fn new(config: Arc<ServerConfig>, inner: S, store_client_hello: bool) -> Self {
+    pub const fn new(config: Arc<ServerConfig>, inner: S, store_client_hello: bool) -> Self {
         Self {
             config,
             store_client_hello,

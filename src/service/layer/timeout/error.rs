@@ -8,7 +8,7 @@ pub struct Elapsed(Duration);
 
 impl Elapsed {
     /// Construct a new elapsed error
-    pub(crate) fn new(duration: Duration) -> Self {
+    pub(crate) const fn new(duration: Duration) -> Self {
         Self(duration)
     }
 }

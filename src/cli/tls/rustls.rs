@@ -20,7 +20,7 @@ pub struct TlsServerCertKeyPair {
 
 impl TlsServerCertKeyPair {
     /// Create a new [`TlsServerCertKeyPair`].
-    pub fn new(cert_pem_raw: String, key_pem_raw: String) -> Self {
+    pub const fn new(cert_pem_raw: String, key_pem_raw: String) -> Self {
         Self {
             tls_cert_pem_raw: cert_pem_raw,
             tls_key_pem_raw: key_pem_raw,
@@ -31,7 +31,7 @@ impl TlsServerCertKeyPair {
     /// Maybe define a specific http [`Version`].
     ///
     /// Used to defined the version in the ALPN.
-    pub fn maybe_http_version(mut self, version: Option<Version>) -> Self {
+    pub const fn maybe_http_version(mut self, version: Option<Version>) -> Self {
         self.http_version = version;
         self
     }
@@ -39,7 +39,7 @@ impl TlsServerCertKeyPair {
     /// Define a specific http [`Version`] instead of using the default `auto`.
     ///
     /// Used to defined the version in the ALPN.
-    pub fn http_version(mut self, version: Version) -> Self {
+    pub const fn http_version(mut self, version: Version) -> Self {
         self.http_version = Some(version);
         self
     }

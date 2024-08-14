@@ -48,7 +48,7 @@ pub struct UserAgentOverwrites {
 
 impl<S> UserAgentClassifier<S> {
     /// Create a new [`UserAgentClassifier`] [`Service`].
-    pub fn new(inner: S, overwrite_header: Option<HeaderName>) -> Self {
+    pub const fn new(inner: S, overwrite_header: Option<HeaderName>) -> Self {
         Self {
             inner,
             overwrite_header,
@@ -152,7 +152,7 @@ pub struct UserAgentClassifierLayer {
 
 impl UserAgentClassifierLayer {
     /// Create a new [`UserAgentClassifierLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             overwrite_header: None,
         }

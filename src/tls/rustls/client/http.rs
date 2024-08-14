@@ -142,7 +142,7 @@ impl<S: Clone, K> Clone for HttpsConnector<S, K> {
 
 impl<S, K> HttpsConnector<S, K> {
     /// Creates a new [`HttpsConnector`].
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self {
             inner,
             config: None,

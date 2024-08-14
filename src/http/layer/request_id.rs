@@ -81,7 +81,7 @@ pub struct RequestId(HeaderValue);
 
 impl RequestId {
     /// Create a new `RequestId` from a [`HeaderValue`].
-    pub fn new(header_value: HeaderValue) -> Self {
+    pub const fn new(header_value: HeaderValue) -> Self {
         Self(header_value)
     }
 
@@ -132,7 +132,7 @@ impl<M: Clone> Clone for SetRequestIdLayer<M> {
 
 impl<M> SetRequestIdLayer<M> {
     /// Create a new `SetRequestIdLayer`.
-    pub fn new(header_name: HeaderName, make_request_id: M) -> Self
+    pub const fn new(header_name: HeaderName, make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
@@ -143,7 +143,7 @@ impl<M> SetRequestIdLayer<M> {
     }
 
     /// Create a new `SetRequestIdLayer` that uses `x-request-id` as the header name.
-    pub fn x_request_id(make_request_id: M) -> Self
+    pub const fn x_request_id(make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
@@ -203,7 +203,7 @@ impl<S: Clone, M: Clone> Clone for SetRequestId<S, M> {
 
 impl<S, M> SetRequestId<S, M> {
     /// Create a new `SetRequestId`.
-    pub fn new(inner: S, header_name: HeaderName, make_request_id: M) -> Self
+    pub const fn new(inner: S, header_name: HeaderName, make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
@@ -215,7 +215,7 @@ impl<S, M> SetRequestId<S, M> {
     }
 
     /// Create a new `SetRequestId` that uses `x-request-id` as the header name.
-    pub fn x_request_id(inner: S, make_request_id: M) -> Self
+    pub const fn x_request_id(inner: S, make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
@@ -272,12 +272,12 @@ pub struct PropagateRequestIdLayer {
 
 impl PropagateRequestIdLayer {
     /// Create a new `PropagateRequestIdLayer`.
-    pub fn new(header_name: HeaderName) -> Self {
+    pub const fn new(header_name: HeaderName) -> Self {
         PropagateRequestIdLayer { header_name }
     }
 
     /// Create a new `PropagateRequestIdLayer` that uses `x-request-id` as the header name.
-    pub fn x_request_id() -> Self {
+    pub const fn x_request_id() -> Self {
         Self::new(HeaderName::from_static(X_REQUEST_ID))
     }
 }
@@ -303,12 +303,12 @@ pub struct PropagateRequestId<S> {
 
 impl<S> PropagateRequestId<S> {
     /// Create a new `PropagateRequestId`.
-    pub fn new(inner: S, header_name: HeaderName) -> Self {
+    pub const fn new(inner: S, header_name: HeaderName) -> Self {
         Self { inner, header_name }
     }
 
     /// Create a new `PropagateRequestId` that uses `x-request-id` as the header name.
-    pub fn x_request_id(inner: S) -> Self {
+    pub const fn x_request_id(inner: S) -> Self {
         Self::new(inner, HeaderName::from_static(X_REQUEST_ID))
     }
 

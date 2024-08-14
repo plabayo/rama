@@ -20,7 +20,7 @@ impl TlsAcceptorLayer<()> {
     /// which is used to configure the inner TLS acceptor.
     ///
     /// [`ServerConfig`]: https://docs.rs/rustls/latest/rustls/server/struct.ServerConfig.html
-    pub fn new(config: Arc<ServerConfig>) -> Self {
+    pub const fn new(config: Arc<ServerConfig>) -> Self {
         Self {
             config,
             client_config_handler: (),

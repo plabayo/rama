@@ -47,7 +47,7 @@ impl<A: Clone, C, L> Clone for ProxyAuthLayer<A, C, L> {
 
 impl<A, C> ProxyAuthLayer<A, C, ()> {
     /// Creates a new [`ProxyAuthLayer`].
-    pub fn new(proxy_auth: A) -> Self {
+    pub const fn new(proxy_auth: A) -> Self {
         ProxyAuthLayer {
             proxy_auth,
             _phantom: PhantomData,
@@ -99,7 +99,7 @@ pub struct ProxyAuthService<A, C, S, L = ()> {
 
 impl<A, C, S, L> ProxyAuthService<A, C, S, L> {
     /// Creates a new [`ProxyAuthService`].
-    pub fn new(proxy_auth: A, inner: S) -> Self {
+    pub const fn new(proxy_auth: A, inner: S) -> Self {
         Self {
             proxy_auth,
             inner,

@@ -19,7 +19,7 @@ pin_project! {
 
 impl HeapReader {
     /// Creates a new `HeapReader` with the specified bytes data.
-    pub fn new(data: Vec<u8>) -> Self {
+    pub const fn new(data: Vec<u8>) -> Self {
         Self {
             inner: Cursor::new(data),
         }
@@ -85,7 +85,7 @@ where
     U: AsyncRead,
 {
     /// Creates a new `ChainReader` with the specified readers.
-    pub fn new(first: T, second: U) -> Self {
+    pub const fn new(first: T, second: U) -> Self {
         Self {
             first,
             second,

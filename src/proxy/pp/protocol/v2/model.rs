@@ -414,7 +414,7 @@ impl Addresses {
 
 impl Unix {
     /// Creates a new instance of a source and destination address pair for Unix sockets.
-    pub fn new(source: [u8; 108], destination: [u8; 108]) -> Self {
+    pub const fn new(source: [u8; 108], destination: [u8; 108]) -> Self {
         Unix {
             source,
             destination,

@@ -132,7 +132,7 @@ pub struct AsyncRequireAuthorizationLayer<T> {
 
 impl<T> AsyncRequireAuthorizationLayer<T> {
     /// Authorize requests using a custom scheme.
-    pub fn new(auth: T) -> AsyncRequireAuthorizationLayer<T> {
+    pub const fn new(auth: T) -> AsyncRequireAuthorizationLayer<T> {
         Self { auth }
     }
 }
@@ -163,7 +163,7 @@ impl<S, T> AsyncRequireAuthorization<S, T> {
     /// Authorize requests using a custom scheme.
     ///
     /// The `Authorization` header is required to have the value provided.
-    pub fn new(inner: S, auth: T) -> AsyncRequireAuthorization<S, T> {
+    pub const fn new(inner: S, auth: T) -> AsyncRequireAuthorization<S, T> {
         Self { inner, auth }
     }
 

@@ -43,7 +43,7 @@ pub struct BodyLimitLayer {
 
 impl BodyLimitLayer {
     /// Create a new [`BodyLimitLayer`].
-    pub fn new(size: usize) -> Self {
+    pub const fn new(size: usize) -> Self {
         Self { size }
     }
 }
@@ -67,7 +67,7 @@ pub struct BodyLimitService<S> {
 
 impl<S> BodyLimitService<S> {
     /// Create a new [`BodyLimitService`].
-    pub fn new(service: S, size: usize) -> Self {
+    pub const fn new(service: S, size: usize) -> Self {
         Self {
             inner: service,
             size,

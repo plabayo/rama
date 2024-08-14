@@ -109,7 +109,7 @@ pub struct BoxMakeHeaderValueFn<F, A> {
 
 impl<F, A> BoxMakeHeaderValueFn<F, A> {
     /// Create a new [`BoxMakeHeaderValueFn`].
-    pub fn new(f: F) -> Self {
+    pub const fn new(f: F) -> Self {
         Self {
             f,
             _marker: PhantomData,

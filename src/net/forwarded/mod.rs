@@ -47,7 +47,7 @@ pub struct Forwarded {
 impl Forwarded {
     /// Create a new [`Forwarded`] extension for the given [`ForwardedElement`]
     /// as the client Element (the first element).
-    pub fn new(element: ForwardedElement) -> Self {
+    pub const fn new(element: ForwardedElement) -> Self {
         Self {
             first: element,
             others: Vec::new(),

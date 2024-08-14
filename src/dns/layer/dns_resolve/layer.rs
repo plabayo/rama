@@ -13,7 +13,7 @@ pub struct DnsResolveModeLayer {
 
 impl DnsResolveModeLayer {
     /// Creates a new [`DnsResolveModeLayer`].
-    pub fn new(name: HeaderName) -> Self {
+    pub const fn new(name: HeaderName) -> Self {
         Self { header_name: name }
     }
 }

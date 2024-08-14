@@ -48,14 +48,14 @@ impl SetStatusLayer {
     /// Create a new [`SetStatusLayer`].
     ///
     /// The response status code will be `status` regardless of what the inner service returns.
-    pub fn new(status: StatusCode) -> Self {
+    pub const fn new(status: StatusCode) -> Self {
         SetStatusLayer { status }
     }
 
     /// Create a new [`SetStatusLayer`] layer which will create
     /// a service that will always set the status code at [`StatusCode::OK`].
     #[inline]
-    pub fn ok() -> Self {
+    pub const fn ok() -> Self {
         Self::new(StatusCode::OK)
     }
 }
@@ -80,14 +80,14 @@ impl<S> SetStatus<S> {
     /// Create a new [`SetStatus`].
     ///
     /// The response status code will be `status` regardless of what the inner service returns.
-    pub fn new(inner: S, status: StatusCode) -> Self {
+    pub const fn new(inner: S, status: StatusCode) -> Self {
         Self { status, inner }
     }
 
     /// Create a new [`SetStatus`] service which will always set the
     /// status code at [`StatusCode::OK`].
     #[inline]
-    pub fn ok(inner: S) -> Self {
+    pub const fn ok(inner: S) -> Self {
         Self::new(inner, StatusCode::OK)
     }
 

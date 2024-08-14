@@ -16,7 +16,7 @@ pub struct Authority {
 
 impl Authority {
     /// Creates a new [`Authority`].
-    pub fn new(host: Host, port: u16) -> Self {
+    pub const fn new(host: Host, port: u16) -> Self {
         Authority { host, port }
     }
 

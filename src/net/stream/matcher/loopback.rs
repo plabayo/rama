@@ -23,7 +23,7 @@ impl LoopbackMatcher {
     /// use the [`LoopbackMatcher::optional`] constructor..
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { optional: false }
     }
 
@@ -35,7 +35,7 @@ impl LoopbackMatcher {
     /// to match in case socket address could not be found.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
-    pub fn optional() -> Self {
+    pub const fn optional() -> Self {
         Self { optional: true }
     }
 }

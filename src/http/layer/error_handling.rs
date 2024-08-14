@@ -78,7 +78,7 @@ impl<F: Clone> Clone for ErrorHandlerLayer<F> {
 
 impl ErrorHandlerLayer {
     /// Create a new [`ErrorHandlerLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { error_mapper: () }
     }
 
@@ -125,7 +125,7 @@ impl<S: Clone, F: Clone> Clone for ErrorHandler<S, F> {
 
 impl<S> ErrorHandler<S> {
     /// Create a new [`ErrorHandler`] wrapping the given service.
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self {
             inner,
             error_mapper: (),

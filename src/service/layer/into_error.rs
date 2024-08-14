@@ -30,7 +30,7 @@ where
     F: FnOnce() -> E + Clone + Send + Sync + 'static,
     E: Send + 'static,
 {
-    pub(crate) fn new(f: F) -> Self {
+    pub(crate) const fn new(f: F) -> Self {
         Self(f)
     }
 }
@@ -91,7 +91,7 @@ impl<E> LayerErrorStatic<E>
 where
     E: Clone + Send + Sync + 'static,
 {
-    pub(crate) fn new(e: E) -> Self {
+    pub(crate) const fn new(e: E) -> Self {
         Self(e)
     }
 }

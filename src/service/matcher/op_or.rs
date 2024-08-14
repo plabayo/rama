@@ -18,7 +18,7 @@ impl<T: Clone> Clone for Or<T> {
 
 impl<T> Or<T> {
     /// Create a new `Or` matcher.
-    pub fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         Self(inner)
     }
 }

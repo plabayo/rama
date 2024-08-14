@@ -22,7 +22,7 @@ impl PortMatcher {
     /// use the [`PortMatcher::optional`] constructor..
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
-    pub fn new(port: u16) -> Self {
+    pub const fn new(port: u16) -> Self {
         Self {
             port,
             optional: false,
@@ -36,7 +36,7 @@ impl PortMatcher {
     /// to match in case socket address could not be found.
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
-    pub fn optional(port: u16) -> Self {
+    pub const fn optional(port: u16) -> Self {
         Self {
             port,
             optional: true,

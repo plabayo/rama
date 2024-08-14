@@ -50,7 +50,7 @@ pub struct PropagateHeaderLayer {
 
 impl PropagateHeaderLayer {
     /// Create a new [`PropagateHeaderLayer`].
-    pub fn new(header: HeaderName) -> Self {
+    pub const fn new(header: HeaderName) -> Self {
         Self { header }
     }
 }
@@ -80,7 +80,7 @@ pub struct PropagateHeader<S> {
 
 impl<S> PropagateHeader<S> {
     /// Create a new [`PropagateHeader`] that propagates the given header.
-    pub fn new(inner: S, header: HeaderName) -> Self {
+    pub const fn new(inner: S, header: HeaderName) -> Self {
         Self { inner, header }
     }
 

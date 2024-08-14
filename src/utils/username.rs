@@ -259,7 +259,7 @@ pub struct UsernameLabelParserVoid;
 
 impl UsernameLabelParserVoid {
     /// Create a new [`UsernameLabelParserVoid`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }

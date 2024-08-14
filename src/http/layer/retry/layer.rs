@@ -25,7 +25,7 @@ impl<P: Clone> Clone for RetryLayer<P> {
 
 impl<P> RetryLayer<P> {
     /// Creates a new [`RetryLayer`] from a retry policy.
-    pub fn new(policy: P) -> Self {
+    pub const fn new(policy: P) -> Self {
         RetryLayer { policy }
     }
 }

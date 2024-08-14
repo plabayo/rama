@@ -23,7 +23,7 @@ pub struct AddRequiredResponseHeadersLayer {
 
 impl AddRequiredResponseHeadersLayer {
     /// Create a new [`AddRequiredResponseHeadersLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { overwrite: false }
     }
 
@@ -31,7 +31,7 @@ impl AddRequiredResponseHeadersLayer {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
-    pub fn overwrite(mut self, overwrite: bool) -> Self {
+    pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
     }
@@ -66,7 +66,7 @@ pub struct AddRequiredResponseHeaders<S> {
 
 impl<S> AddRequiredResponseHeaders<S> {
     /// Create a new [`AddRequiredResponseHeaders`].
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self {
             inner,
             overwrite: false,
@@ -77,7 +77,7 @@ impl<S> AddRequiredResponseHeaders<S> {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
-    pub fn overwrite(mut self, overwrite: bool) -> Self {
+    pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
     }

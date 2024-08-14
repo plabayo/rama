@@ -292,7 +292,7 @@ where
 
 impl<S, D> ProxyDBService<S, D, bool, ()> {
     /// Create a new [`ProxyDBService`] with the given inner [`Service`] and [`ProxyDB`].
-    pub fn new(inner: S, db: D) -> Self {
+    pub const fn new(inner: S, db: D) -> Self {
         Self {
             inner,
             db,
@@ -327,7 +327,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
     ///
     /// NOTE even when `preserve=false` it might still be that there's
     /// a [`ProxyAddress`] in case it was set by a previous layer.
-    pub fn preserve_proxy(mut self, preserve: bool) -> Self {
+    pub const fn preserve_proxy(mut self, preserve: bool) -> Self {
         self.preserve = preserve;
         self
     }
@@ -551,7 +551,7 @@ where
 
 impl<D> ProxyDBLayer<D, bool, ()> {
     /// Create a new [`ProxyDBLayer`] with the given [`ProxyDB`].
-    pub fn new(db: D) -> Self {
+    pub const fn new(db: D) -> Self {
         Self {
             db,
             mode: ProxyFilterMode::Optional,

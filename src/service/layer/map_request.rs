@@ -26,7 +26,7 @@ where
 
 impl<S, F> MapRequest<S, F> {
     /// Creates a new [`MapRequest`] service.
-    pub fn new(inner: S, f: F) -> Self {
+    pub const fn new(inner: S, f: F) -> Self {
         MapRequest { inner, f }
     }
 
@@ -69,7 +69,7 @@ impl<F> fmt::Debug for MapRequestLayer<F> {
 
 impl<F> MapRequestLayer<F> {
     /// Creates a new [`MapRequestLayer`].
-    pub fn new(f: F) -> Self {
+    pub const fn new(f: F) -> Self {
         MapRequestLayer { f }
     }
 }

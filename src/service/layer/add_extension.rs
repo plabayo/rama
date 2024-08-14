@@ -83,7 +83,7 @@ where
 
 impl<T> AddExtensionLayer<T> {
     /// Create a new [`AddExtensionLayer`].
-    pub fn new(value: T) -> Self {
+    pub const fn new(value: T) -> Self {
         AddExtensionLayer { value }
     }
 }
@@ -134,7 +134,7 @@ where
 
 impl<S, T> AddExtension<S, T> {
     /// Create a new [`AddExtension`].
-    pub fn new(inner: S, value: T) -> Self {
+    pub const fn new(inner: S, value: T) -> Self {
         Self { inner, value }
     }
 

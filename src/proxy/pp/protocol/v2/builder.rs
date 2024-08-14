@@ -231,7 +231,7 @@ impl Builder {
     /// Creates an instance of a `Builder` with the given header bytes.
     /// No guarantee is made that any address bytes written as a payload will match the header's address family.
     /// The length is determined on `build` unless `set_length` is called to set an explicit value.
-    pub fn new(version_command: u8, address_family_protocol: u8) -> Self {
+    pub const fn new(version_command: u8, address_family_protocol: u8) -> Self {
         Builder {
             header: None,
             version_command,

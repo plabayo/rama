@@ -60,7 +60,7 @@ where
 
 impl<P, S> Retry<P, S> {
     /// Retry the inner service depending on this [`Policy`].
-    pub fn new(policy: P, service: S) -> Self {
+    pub const fn new(policy: P, service: S) -> Self {
         Retry {
             policy,
             inner: service,

@@ -119,14 +119,14 @@ impl<S: Clone> Clone for HttpProxyAddressService<S> {
 impl<S> HttpProxyAddressService<S> {
     /// Create a new [`HttpProxyAddressService`] that will create
     /// a service to set the given [`ProxyAddress`].
-    pub fn new(inner: S, address: ProxyAddress) -> Self {
+    pub const fn new(inner: S, address: ProxyAddress) -> Self {
         Self::maybe(inner, Some(address))
     }
 
     /// Create a new [`HttpProxyAddressService`] which will create
     /// a service that will set the given [`ProxyAddress`] if it is not
     /// `None`.
-    pub fn maybe(inner: S, address: Option<ProxyAddress>) -> Self {
+    pub const fn maybe(inner: S, address: Option<ProxyAddress>) -> Self {
         Self {
             inner,
             address,
@@ -162,7 +162,7 @@ impl<S> HttpProxyAddressService<S> {
     }
 
     /// Preserve the existing [`ProxyAddress`] in the context if it already exists.
-    pub fn preserve(mut self, preserve: bool) -> Self {
+    pub const fn preserve(mut self, preserve: bool) -> Self {
         self.preserve = preserve;
         self
     }

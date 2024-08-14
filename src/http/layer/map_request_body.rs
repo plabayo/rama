@@ -71,7 +71,7 @@ impl<F> MapRequestBodyLayer<F> {
     /// Create a new [`MapRequestBodyLayer`].
     ///
     /// `F` is expected to be a function that takes a body and returns another body.
-    pub fn new(f: F) -> Self {
+    pub const fn new(f: F) -> Self {
         Self { f }
     }
 }
@@ -108,7 +108,7 @@ impl<S, F> MapRequestBody<S, F> {
     /// Create a new [`MapRequestBody`].
     ///
     /// `F` is expected to be a function that takes a body and returns another body.
-    pub fn new(service: S, f: F) -> Self {
+    pub const fn new(service: S, f: F) -> Self {
         Self { inner: service, f }
     }
 

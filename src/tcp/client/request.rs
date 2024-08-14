@@ -23,7 +23,7 @@ pub struct Request {
 
 impl Request {
     /// Create a new Tcp [`Request`].
-    pub fn new(authority: Authority) -> Self {
+    pub const fn new(authority: Authority) -> Self {
         Self {
             authority,
             protocol: None,
@@ -52,7 +52,7 @@ impl Request {
     }
 
     /// Attach an http version as a hint to the application layer.
-    pub fn with_http_version(mut self, version: Version) -> Self {
+    pub const fn with_http_version(mut self, version: Version) -> Self {
         self.http_version = Some(version);
         self
     }

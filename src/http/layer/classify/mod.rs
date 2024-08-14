@@ -104,7 +104,7 @@ pub struct SharedClassifier<C> {
 
 impl<C> SharedClassifier<C> {
     /// Create a new `SharedClassifier` from the given classifier.
-    pub fn new(classifier: C) -> Self
+    pub const fn new(classifier: C) -> Self
     where
         C: ClassifyResponse + Clone,
     {

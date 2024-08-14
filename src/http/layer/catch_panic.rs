@@ -123,7 +123,7 @@ impl Default for CatchPanicLayer<DefaultResponseForPanic> {
 
 impl CatchPanicLayer<DefaultResponseForPanic> {
     /// Create a new `CatchPanicLayer` with the [`Default`]] panic handler.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         CatchPanicLayer {
             panic_handler: DefaultResponseForPanic,
         }
@@ -164,7 +164,7 @@ pub struct CatchPanic<S, T> {
 
 impl<S> CatchPanic<S, DefaultResponseForPanic> {
     /// Create a new `CatchPanic` with the default panic handler.
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self {
             inner,
             panic_handler: DefaultResponseForPanic,
@@ -176,7 +176,7 @@ impl<S, T> CatchPanic<S, T> {
     define_inner_service_accessors!();
 
     /// Create a new `CatchPanic` with a custom panic handler.
-    pub fn custom(inner: S, panic_handler: T) -> Self
+    pub const fn custom(inner: S, panic_handler: T) -> Self
     where
         T: ResponseForPanic,
     {

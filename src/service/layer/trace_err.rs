@@ -42,12 +42,12 @@ pub struct TraceErrLayer {
 
 impl<S> TraceErr<S> {
     /// Creates a new [`TraceErr`] service.
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self::with_level(inner, tracing::Level::ERROR)
     }
 
     /// Crates a new [`TraceErr`] service with the given [`tracing::Level`].
-    pub fn with_level(inner: S, level: tracing::Level) -> Self {
+    pub const fn with_level(inner: S, level: tracing::Level) -> Self {
         TraceErr { inner, level }
     }
 
@@ -87,12 +87,12 @@ where
 
 impl TraceErrLayer {
     /// Creates a new [`TraceErrLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self::with_level(tracing::Level::ERROR)
     }
 
     /// Creates a new [`TraceErrLayer`] with the given [`tracing::Level`].
-    pub fn with_level(level: tracing::Level) -> Self {
+    pub const fn with_level(level: tracing::Level) -> Self {
         TraceErrLayer { level }
     }
 }

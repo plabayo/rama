@@ -70,7 +70,7 @@ pub struct SocketInfo {
 
 impl SocketInfo {
     /// Create a new `SocketInfo`.
-    pub fn new(local_addr: Option<SocketAddr>, peer_addr: SocketAddr) -> Self {
+    pub const fn new(local_addr: Option<SocketAddr>, peer_addr: SocketAddr) -> Self {
         Self {
             local_addr,
             peer_addr,

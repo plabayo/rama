@@ -19,7 +19,7 @@ pub struct HaProxyLayer;
 
 impl HaProxyLayer {
     /// Create a new [`HaProxyLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         HaProxyLayer
     }
 }
@@ -42,7 +42,7 @@ pub struct HaProxyService<S> {
 
 impl<S> HaProxyService<S> {
     /// Create a new [`HaProxyService`] with the given inner service.
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         HaProxyService { inner }
     }
 }
