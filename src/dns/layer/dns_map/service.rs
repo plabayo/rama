@@ -25,7 +25,7 @@ pub struct DnsMapService<S> {
 
 impl<S> DnsMapService<S> {
     /// Create a new instance of the [`DnsMapService`].
-    pub fn new(inner: S, header_name: HeaderName) -> Self {
+    pub const fn new(inner: S, header_name: HeaderName) -> Self {
         Self { inner, header_name }
     }
 

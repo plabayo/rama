@@ -43,7 +43,7 @@ impl<F> std::fmt::Debug for MapErrLayer<F> {
 
 impl<S, F> MapErr<S, F> {
     /// Creates a new [`MapErr`] service.
-    pub fn new(inner: S, f: F) -> Self {
+    pub const fn new(inner: S, f: F) -> Self {
         MapErr { f, inner }
     }
 
@@ -75,7 +75,7 @@ where
 
 impl<F> MapErrLayer<F> {
     /// Creates a new [`MapErrLayer`].
-    pub fn new(f: F) -> Self {
+    pub const fn new(f: F) -> Self {
         MapErrLayer { f }
     }
 }

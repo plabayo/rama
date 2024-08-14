@@ -19,7 +19,10 @@ use rama::{
     net::{address::ProxyAddress, user::ProxyCredential},
     proxy::http::client::layer::{HttpProxyAddressLayer, HttpProxyConnectorLayer},
     rt::Executor,
-    service::{layer::HijackLayer, service_fn, Context, Service, ServiceBuilder},
+    service::{
+        layer::{HijackLayer, MapResultLayer},
+        service_fn, Context, Layer, Service,
+    },
     tcp::client::service::HttpConnector,
     tls::rustls::client::HttpsConnectorLayer,
     utils::graceful::{self, Shutdown, ShutdownGuard},
@@ -335,44 +338,44 @@ where
     )
     .await?;
 
-    let client_builder = ServiceBuilder::new()
-        .map_result(map_internal_client_error)
-        .layer(TimeoutLayer::new(if cfg.timeout > 0 {
+    let client_builder = (
+        MapResultLayer::new(map_internal_client_error),
+        (TimeoutLayer::new(if cfg.timeout > 0 {
             Duration::from_secs(cfg.timeout)
         } else {
             Duration::from_secs(180)
-        }))
-        .layer(FollowRedirectLayer::with_policy(Limited::new(
-            if cfg.follow { cfg.max_redirects } else { 0 },
-        )))
-        .layer(response_writer)
-        .layer(DecompressionLayer::new())
-        .layer(
-            cfg.auth
-                .as_deref()
-                .map(|auth| {
-                    let auth = auth.trim().trim_end_matches(':');
-                    match cfg.auth_type.trim().to_lowercase().as_str() {
-                        "basic" => match auth.split_once(':') {
-                            Some((user, pass)) => AddAuthorizationLayer::basic(user, pass),
-                            None => {
-                                let mut terminal =
-                                    Terminal::open().expect("open terminal for password prompting");
-                                let password = terminal
-                                    .prompt_sensitive("password: ")
-                                    .expect("prompt password from terminal");
-                                AddAuthorizationLayer::basic(auth, password.as_str())
-                            }
-                        },
-                        "bearer" => AddAuthorizationLayer::bearer(auth),
-                        unknown => panic!("unknown auth type: {} (known: basic, bearer)", unknown),
-                    }
-                })
-                .unwrap_or_else(AddAuthorizationLayer::none),
-        )
-        .layer(AddRequiredRequestHeadersLayer::default())
-        .layer(request_writer)
-        .layer(match cfg.proxy {
+        })),
+        FollowRedirectLayer::with_policy(Limited::new(if cfg.follow {
+            cfg.max_redirects
+        } else {
+            0
+        })),
+        response_writer,
+        DecompressionLayer::new(),
+        cfg.auth
+            .as_deref()
+            .map(|auth| {
+                let auth = auth.trim().trim_end_matches(':');
+                match cfg.auth_type.trim().to_lowercase().as_str() {
+                    "basic" => match auth.split_once(':') {
+                        Some((user, pass)) => AddAuthorizationLayer::basic(user, pass),
+                        None => {
+                            let mut terminal =
+                                Terminal::open().expect("open terminal for password prompting");
+                            let password = terminal
+                                .prompt_sensitive("password: ")
+                                .expect("prompt password from terminal");
+                            AddAuthorizationLayer::basic(auth, password.as_str())
+                        }
+                    },
+                    "bearer" => AddAuthorizationLayer::bearer(auth),
+                    unknown => panic!("unknown auth type: {} (known: basic, bearer)", unknown),
+                }
+            })
+            .unwrap_or_else(AddAuthorizationLayer::none),
+        AddRequiredRequestHeadersLayer::default(),
+        request_writer,
+        match cfg.proxy {
             None => HttpProxyAddressLayer::try_from_env_default()?,
             Some(proxy) => {
                 let mut proxy_address: ProxyAddress =
@@ -384,18 +387,20 @@ where
                 }
                 HttpProxyAddressLayer::maybe(Some(proxy_address))
             }
-        })
-        .layer(HijackLayer::new(cfg.offline, service_fn(dummy_response)));
+        },
+        HijackLayer::new(cfg.offline, service_fn(dummy_response)),
+    );
 
     let tls_client_config =
         tls::create_tls_client_config(cfg.insecure, cfg.tls, cfg.cert, cfg.cert_key).await?;
 
-    Ok(client_builder.service(HttpClient::new(
-        ServiceBuilder::new()
-            .layer(HttpsConnectorLayer::auto().with_config(tls_client_config))
-            .layer(HttpProxyConnectorLayer::optional())
-            .layer(HttpsConnectorLayer::tunnel())
-            .service(HttpConnector::default()),
+    Ok(client_builder.layer(HttpClient::new(
+        (
+            HttpsConnectorLayer::auto().with_config(tls_client_config),
+            HttpProxyConnectorLayer::optional(),
+            HttpsConnectorLayer::tunnel(),
+        )
+            .layer(HttpConnector::default()),
     )))
 }
 

@@ -119,7 +119,7 @@ mod tests {
     };
     use crate::http::layer::cors::CorsLayer;
     use crate::http::Body;
-    use crate::service::{Context, Service, ServiceBuilder};
+    use crate::service::{service_fn, Context, Layer, Service};
 
     static REQUEST_PRIVATE_NETWORK: HeaderName =
         HeaderName::from_static("access-control-request-private-network");
@@ -131,9 +131,9 @@ mod tests {
 
     #[tokio::test]
     async fn cors_private_network_header_is_added_correctly() {
-        let service = ServiceBuilder::new()
-            .layer(CorsLayer::new().allow_private_network(true))
-            .service_fn(echo);
+        let service = CorsLayer::new()
+            .allow_private_network(true)
+            .layer(service_fn(echo));
 
         let req = Request::builder()
             .header(REQUEST_PRIVATE_NETWORK.clone(), TRUE.clone())
@@ -155,9 +155,9 @@ mod tests {
             AllowPrivateNetwork::predicate(|origin: &HeaderValue, parts: &Parts| {
                 parts.uri.path() == "/allow-private" && origin == "localhost"
             });
-        let service = ServiceBuilder::new()
-            .layer(CorsLayer::new().allow_private_network(allow_private_network))
-            .service_fn(echo);
+        let service = CorsLayer::new()
+            .allow_private_network(allow_private_network)
+            .layer(service_fn(echo));
 
         let req = Request::builder()
             .header(ORIGIN, "localhost")

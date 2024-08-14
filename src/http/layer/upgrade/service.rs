@@ -43,7 +43,7 @@ impl<S, O> UpgradeHandler<S, O> {
 
 impl<S, State, O> UpgradeService<S, State, O> {
     /// Create a new [`UpgradeService`].
-    pub fn new(handlers: Vec<Arc<UpgradeHandler<State, O>>>, inner: S) -> Self {
+    pub const fn new(handlers: Vec<Arc<UpgradeHandler<State, O>>>, inner: S) -> Self {
         Self { handlers, inner }
     }
 

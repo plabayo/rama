@@ -32,7 +32,7 @@ where
 
 impl<S, F> MapState<S, F> {
     /// Create a new `MapState` with the given constructor.
-    pub fn new(inner: S, f: F) -> Self {
+    pub const fn new(inner: S, f: F) -> Self {
         Self { inner, f }
     }
 
@@ -83,7 +83,7 @@ impl<F: Clone> Clone for MapStateLayer<F> {
 
 impl<F> MapStateLayer<F> {
     /// Create a new [`MapStateLayer`] with the given constructor.
-    pub fn new(f: F) -> Self {
+    pub const fn new(f: F) -> Self {
         Self { f }
     }
 }

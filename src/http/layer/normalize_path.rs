@@ -8,7 +8,7 @@
 //! ```
 //! use std::{iter::once, convert::Infallible};
 //! use rama::error::BoxError;
-//! use rama::service::{Context, ServiceBuilder, Service};
+//! use rama::service::{Context, Layer, Service, service_fn};
 //! use rama::http::{Body, Request, Response, StatusCode};
 //! use rama::http::layer::normalize_path::NormalizePathLayer;
 //!
@@ -19,10 +19,10 @@
 //!     # Ok(Response::new(Body::default()))
 //! }
 //!
-//! let mut service = ServiceBuilder::new()
+//! let mut service = (
 //!     // trim trailing slashes from paths
-//!     .layer(NormalizePathLayer::trim_trailing_slash())
-//!     .service_fn(handle);
+//!     NormalizePathLayer::trim_trailing_slash(),
+//! ).layer(service_fn(handle));
 //!
 //! // call the service
 //! let request = Request::builder()
@@ -168,7 +168,7 @@ fn normalize_trailing_slash(uri: &mut Uri) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::ServiceBuilder;
+    use crate::service::{service_fn, Layer};
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -177,9 +177,7 @@ mod tests {
             Ok(Response::new(request.uri().to_string()))
         }
 
-        let svc = ServiceBuilder::new()
-            .layer(NormalizePathLayer::trim_trailing_slash())
-            .service_fn(handle);
+        let svc = NormalizePathLayer::trim_trailing_slash().layer(service_fn(handle));
 
         let body = svc
             .serve(

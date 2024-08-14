@@ -54,7 +54,7 @@ use std::marker::PhantomData;
 /// # use rama::{http::Request, net::stream::SocketInfo};
 /// use rama::{
 ///     http::{headers::XRealIp, layer::forwarded::SetForwardedHeadersLayer},
-///     service::{Context, Service, ServiceBuilder},
+///     service::{Context, Service, Layer, service_fn},
 /// };
 /// use std::convert::Infallible;
 ///
@@ -72,9 +72,8 @@ use std::marker::PhantomData;
 ///     # Ok(())
 /// }
 ///
-/// let service = ServiceBuilder::new()
-///     .layer(SetForwardedHeadersLayer::<XRealIp>::new())
-///     .service_fn(svc);
+/// let service = SetForwardedHeadersLayer::<XRealIp>::new()
+///     .layer(service_fn(svc));
 ///
 /// # let req = Request::builder().uri("example.com").body(()).unwrap();
 /// # let mut ctx = Context::default();
@@ -414,7 +413,7 @@ mod tests {
             headers::{TrueClientIp, XClientIp, XRealIp},
             IntoResponse, Response, StatusCode,
         },
-        service::{service_fn, ServiceBuilder},
+        service::{service_fn, Layer},
     };
     use std::{convert::Infallible, net::IpAddr};
 
@@ -452,20 +451,13 @@ mod tests {
                 dummy_service_fn,
             )),
         );
+        assert_is_service(SetForwardedHeadersLayer::via().layer(service_fn(dummy_service_fn)));
         assert_is_service(
-            ServiceBuilder::new()
-                .layer(SetForwardedHeadersLayer::via())
-                .service_fn(dummy_service_fn),
+            SetForwardedHeadersLayer::<XRealIp>::new().layer(service_fn(dummy_service_fn)),
         );
         assert_is_service(
-            ServiceBuilder::new()
-                .layer(SetForwardedHeadersLayer::<XRealIp>::new())
-                .service_fn(dummy_service_fn),
-        );
-        assert_is_service(
-            ServiceBuilder::new()
-                .layer(SetForwardedHeadersLayer::<(XRealIp, XForwardedProto)>::new())
-                .service_fn(dummy_service_fn),
+            SetForwardedHeadersLayer::<(XRealIp, XForwardedProto)>::new()
+                .layer(service_fn(dummy_service_fn)),
         );
     }
 

@@ -52,7 +52,7 @@ use rama::{
     },
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,
-    service::ServiceBuilder,
+    service::Layer,
     tcp::server::TcpListener,
     telemetry::opentelemetry::{
         self,
@@ -138,16 +138,12 @@ async fn main() {
         // http service
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(RequestMetricsLayer::default())
-                .service(WebService::default().get(
-                    "/",
-                    |State(metrics): State<Metrics>| async move {
-                        metrics.counter.add(1, &[]);
-                        Html("<h1>Hello!</h1>")
-                    },
-                )),
+            (TraceLayer::new_for_http(), RequestMetricsLayer::default()).layer(
+                WebService::default().get("/", |State(metrics): State<Metrics>| async move {
+                    metrics.counter.add(1, &[]);
+                    Html("<h1>Hello!</h1>")
+                }),
+            ),
         );
 
         // service setup & go
@@ -155,12 +151,7 @@ async fn main() {
             .bind("127.0.0.1:62012")
             .await
             .unwrap()
-            .serve_graceful(
-                guard,
-                ServiceBuilder::new()
-                    .layer(NetworkMetricsLayer::default())
-                    .service(http_service),
-            )
+            .serve_graceful(guard, NetworkMetricsLayer::default().layer(http_service))
             .await;
     });
 

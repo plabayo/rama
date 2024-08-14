@@ -10,7 +10,7 @@
 //!         service::web::WebService,
 //!         Body, IntoResponse, Request, Response, StatusCode,
 //!     },
-//!     service::{Context, Service, ServiceBuilder},
+//!     service::{Context, Service, Layer, service_fn},
 //! };
 //! use std::time::Duration;
 //!
@@ -25,13 +25,13 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() {
-//!     let home_handler = ServiceBuilder::new()
-//!         .layer(ErrorHandlerLayer::new().error_mapper(|err| {
+//!     let home_handler = (
+//!         ErrorHandlerLayer::new().error_mapper(|err| {
 //!             tracing::error!("Error: {:?}", err);
 //!             StatusCode::INTERNAL_SERVER_ERROR.into_response()
-//!         }))
-//!         .layer(TimeoutLayer::new(Duration::from_secs(5)))
-//!         .service_fn(handler);
+//!         }),
+//!         TimeoutLayer::new(Duration::from_secs(5)),
+//!         ).layer(service_fn(handler));
 //!
 //!     let service = WebService::default().get("/", home_handler);
 //!
@@ -78,7 +78,7 @@ impl<F: Clone> Clone for ErrorHandlerLayer<F> {
 
 impl ErrorHandlerLayer {
     /// Create a new [`ErrorHandlerLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { error_mapper: () }
     }
 
@@ -125,7 +125,7 @@ impl<S: Clone, F: Clone> Clone for ErrorHandler<S, F> {
 
 impl<S> ErrorHandler<S> {
     /// Create a new [`ErrorHandler`] wrapping the given service.
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self {
             inner,
             error_mapper: (),

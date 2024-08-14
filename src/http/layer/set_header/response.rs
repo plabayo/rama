@@ -11,7 +11,7 @@
 //! ```
 //! use rama::http::layer::set_header::SetResponseHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -20,18 +20,16 @@
 //! #     Ok::<_, std::convert::Infallible>(Response::new(request.into_body()))
 //! # });
 //! #
-//! let mut svc = ServiceBuilder::new()
-//!     .layer(
-//!         // Layer that sets `Content-Type: text/html` on responses.
-//!         //
-//!         // `if_not_present` will only insert the header if it does not already
-//!         // have a value.
-//!         SetResponseHeaderLayer::if_not_present(
-//!             header::CONTENT_TYPE,
-//!             HeaderValue::from_static("text/html"),
-//!         )
-//!     )
-//!     .service(render_html);
+//! let mut svc = (
+//!     // Layer that sets `Content-Type: text/html` on responses.
+//!     //
+//!     // `if_not_present` will only insert the header if it does not already
+//!     // have a value.
+//!     SetResponseHeaderLayer::if_not_present(
+//!         header::CONTENT_TYPE,
+//!         HeaderValue::from_static("text/html"),
+//!     ),
+//! ).layer(render_html);
 //!
 //! let request = Request::new(Body::empty());
 //!
@@ -49,7 +47,7 @@
 //! use rama::http::layer::set_header::SetResponseHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use crate::rama::http::dep::http_body::Body as _;
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -58,30 +56,28 @@
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::from("1234567890")))
 //! # });
 //! #
-//! let mut svc = ServiceBuilder::new()
-//!     .layer(
-//!         // Layer that sets `Content-Length` if the body has a known size.
-//!         // Bodies with streaming responses wont have a known size.
-//!         //
-//!         // `overriding` will insert the header and override any previous values it
-//!         // may have.
-//!         SetResponseHeaderLayer::overriding_fn(
-//!             header::CONTENT_LENGTH,
-//!             |response: Response| async move {
-//!                 let value = if let Some(size) = response.body().size_hint().exact() {
-//!                     // If the response body has a known size, returning `Some` will
-//!                     // set the `Content-Length` header to that value.
-//!                     Some(HeaderValue::from_str(&size.to_string()).unwrap())
-//!                 } else {
-//!                     // If the response body doesn't have a known size, return `None`
-//!                     // to skip setting the header on this response.
-//!                     None
-//!                 };
-//!                 (response, value)
-//!             }
-//!         )
-//!     )
-//!     .service(render_html);
+//! let mut svc = (
+//!     // Layer that sets `Content-Length` if the body has a known size.
+//!     // Bodies with streaming responses wont have a known size.
+//!     //
+//!     // `overriding` will insert the header and override any previous values it
+//!     // may have.
+//!     SetResponseHeaderLayer::overriding_fn(
+//!         header::CONTENT_LENGTH,
+//!         |response: Response| async move {
+//!             let value = if let Some(size) = response.body().size_hint().exact() {
+//!                 // If the response body has a known size, returning `Some` will
+//!                 // set the `Content-Length` header to that value.
+//!                 Some(HeaderValue::from_str(&size.to_string()).unwrap())
+//!             } else {
+//!                 // If the response body doesn't have a known size, return `None`
+//!                 // to skip setting the header on this response.
+//!                 None
+//!             };
+//!             (response, value)
+//!         }
+//!     ),
+//! ).layer(render_html);
 //!
 //! let request = Request::new(Body::empty());
 //!

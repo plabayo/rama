@@ -33,14 +33,14 @@ your stack type.
 
 Let's say you have a service stack such as `A > B > C > D > E`.
 In case you want to make `B` optional, by wrapping it with `Option`,
-you would get now the type: `A > [ B > C > D > E] | [ Identity > C > D > E]`.
+you would get now the type: `A > [ B > C > D > E] | [ () > C > D > E]`.
 
 As you can see your type became twice as long. Depending on your work machine
 you only have to do this a couple of times and your rust analyzer, cargo check,
 cargo build or any other Rust tool will suddenly become very slow.. Be careful of it.
 
 So what is the solution? Make it possible to allow your middlewares to function
-as [identity] layers. E.g. [a Limit layer] could be configured to also limit nothing at all. This way your type remains the same while still
+as identity layers (`()`). E.g. [a Limit layer] could be configured to also limit nothing at all. This way your type remains the same while still
 allowing your layer to be optional depending on something like a `cli` flag.
 
 ### 🛞 Stacks of services, not a service of stacks.
@@ -75,7 +75,6 @@ Speaking about `Connectors`, those are a nice example of a type of [`Service`][s
 [service]: https://ramaproxy.org/docs/rama/service/trait.Service.html
 [`Either`]: https://ramaproxy.org/docs/rama/utils/combinators/index.html
 
-[identity]: https://ramaproxy.org/docs/rama/service/layer/struct.Identity.html
 [a Limit layer]: https://ramaproxy.org/docs/rama/service/layer/limit/struct.Limit.html
 
 [`Extension`]: https://ramaproxy.org/docs/rama/service/context/struct.Extensions.html

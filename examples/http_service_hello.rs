@@ -39,7 +39,10 @@ use rama::{
         SocketInfo,
     },
     rt::Executor,
-    service::{layer::TimeoutLayer, Context, ServiceBuilder},
+    service::{
+        layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
+        service_fn, Context, Layer,
+    },
     tcp::server::TcpListener,
     utils::latency::LatencyUnit,
 };
@@ -65,20 +68,18 @@ async fn main() {
     graceful.spawn_task_fn(|guard| async move {
         let exec = Executor::graceful(guard.clone());
 
-        let http_service = ServiceBuilder::new()
-            .layer(CompressionLayer::new())
-            .layer(SetSensitiveRequestHeadersLayer::from_shared(sensitive_headers.clone()))
-            .layer(
-                TraceLayer::new_for_http()
+        let http_service = (
+            CompressionLayer::new(),
+            SetSensitiveRequestHeadersLayer::from_shared(sensitive_headers.clone()),
+            TraceLayer::new_for_http()
                 .on_body_chunk(|chunk: &Bytes, latency: Duration, _: &tracing::Span| {
                     tracing::trace!(size_bytes = chunk.len(), latency = ?latency, "sending body chunk")
                 })
                 .make_span_with(DefaultMakeSpan::new().include_headers(true))
                 .on_response(DefaultOnResponse::new().include_headers(true).latency_unit(LatencyUnit::Micros)),
-            )
-            .layer(SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers))
-            .map_response(IntoResponse::into_response)
-            .service_fn(
+            SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
+            MapResponseLayer::new(IntoResponse::into_response),
+        ).layer(service_fn(
                 |ctx: Context<()>, req: Request| async move {
                     let socket_info = ctx.get::<SocketInfo>().unwrap();
                     let tracker = ctx.get::<BytesRWTrackerHandle>().unwrap();
@@ -105,7 +106,7 @@ async fn main() {
                         tracker.written(),
                     )))
                 },
-            );
+            ));
 
         let tcp_http_service = HttpServer::auto(exec).service(http_service);
 
@@ -114,11 +115,11 @@ async fn main() {
             .expect("bind TCP Listener")
             .serve_graceful(
                 guard,
-                ServiceBuilder::new()
-                    .trace_err()
-                    .layer(TimeoutLayer::new(Duration::from_secs(8)))
-                    .layer(BytesTrackerLayer::new())
-                    .service(tcp_http_service),
+                (
+                    TraceErrLayer::new(),
+                    TimeoutLayer::new(Duration::from_secs(8)),
+                    BytesTrackerLayer::new(),
+                ).layer(tcp_http_service),
             )
             .await;
     });

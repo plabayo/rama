@@ -18,7 +18,7 @@ impl<T: Clone> Clone for Not<T> {
 
 impl<T> Not<T> {
     /// Create a new `Not` matcher.
-    pub fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         Self(inner)
     }
 }

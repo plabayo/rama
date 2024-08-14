@@ -17,7 +17,7 @@ pub struct NoServerCertVerifier;
 
 impl NoServerCertVerifier {
     /// Create a new instance of the [`NoServerCertVerifier`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }

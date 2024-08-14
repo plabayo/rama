@@ -9,7 +9,7 @@
 //!
 //! use rama::http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
 //! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! #[derive(Clone, Copy)]
@@ -63,10 +63,10 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! let service = ServiceBuilder::new()
+//! let service = (
 //!     // Authorize requests using `MyAuth`
-//!     .layer(AsyncRequireAuthorizationLayer::new(MyAuth))
-//!     .service_fn(handle::<()>);
+//!     AsyncRequireAuthorizationLayer::new(MyAuth),
+//! ).layer(service_fn(handle::<()>));
 //! # Ok(())
 //! # }
 //! ```
@@ -78,7 +78,7 @@
 //!
 //! use rama::http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
 //! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::service::{Service, ServiceBuilder};
+//! use rama::service::{Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! async fn check_auth<B>(request: &Request<B>) -> Option<UserId> {
@@ -96,8 +96,8 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! let service = ServiceBuilder::new()
-//!     .layer(AsyncRequireAuthorizationLayer::new(|request: Request| async move {
+//! let service =
+//!     AsyncRequireAuthorizationLayer::new(|request: Request| async move {
 //!         if let Some(user_id) = check_auth(&request).await {
 //!             Ok(request)
 //!         } else {
@@ -108,8 +108,8 @@
 //!
 //!             Err(unauthorized_response)
 //!         }
-//!     }))
-//!     .service_fn(handle);
+//!     })
+//!     .layer(service_fn(handle));
 //! # Ok(())
 //! # }
 //! ```
@@ -132,7 +132,7 @@ pub struct AsyncRequireAuthorizationLayer<T> {
 
 impl<T> AsyncRequireAuthorizationLayer<T> {
     /// Authorize requests using a custom scheme.
-    pub fn new(auth: T) -> AsyncRequireAuthorizationLayer<T> {
+    pub const fn new(auth: T) -> AsyncRequireAuthorizationLayer<T> {
         Self { auth }
     }
 }
@@ -163,7 +163,7 @@ impl<S, T> AsyncRequireAuthorization<S, T> {
     /// Authorize requests using a custom scheme.
     ///
     /// The `Authorization` header is required to have the value provided.
-    pub fn new(inner: S, auth: T) -> AsyncRequireAuthorization<S, T> {
+    pub const fn new(inner: S, auth: T) -> AsyncRequireAuthorization<S, T> {
         Self { inner, auth }
     }
 
@@ -247,7 +247,7 @@ mod tests {
 
     use crate::error::BoxError;
     use crate::http::{header, Body, StatusCode};
-    use crate::service::ServiceBuilder;
+    use crate::service::service_fn;
 
     #[derive(Clone, Copy)]
     struct MyAuth;
@@ -293,9 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn require_async_auth_works() {
-        let service = ServiceBuilder::new()
-            .layer(AsyncRequireAuthorizationLayer::new(MyAuth))
-            .service_fn(echo);
+        let service = AsyncRequireAuthorizationLayer::new(MyAuth).layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer 69420")
@@ -309,9 +307,7 @@ mod tests {
 
     #[tokio::test]
     async fn require_async_auth_401() {
-        let service = ServiceBuilder::new()
-            .layer(AsyncRequireAuthorizationLayer::new(MyAuth))
-            .service_fn(echo);
+        let service = AsyncRequireAuthorizationLayer::new(MyAuth).layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer deez")

@@ -84,7 +84,7 @@ impl<T, S> HeaderConfigService<T, S> {
     ///
     /// Alias for [`HeaderConfigService::required`] if `!optional`
     /// and [`HeaderConfigService::optional`] if `optional`.
-    pub fn new(inner: S, key: String, optional: bool) -> Self {
+    pub const fn new(inner: S, key: String, optional: bool) -> Self {
         Self {
             inner,
             key,
@@ -98,14 +98,14 @@ impl<T, S> HeaderConfigService<T, S> {
     /// Create a new [`HeaderConfigService`] with the given inner service
     /// and header name, on which to extract the config,
     /// and which will fail if the header is missing.
-    pub fn required(inner: S, key: String) -> Self {
+    pub const fn required(inner: S, key: String) -> Self {
         Self::new(inner, key, false)
     }
 
     /// Create a new [`HeaderConfigService`] with the given inner service
     /// and header name, on which to extract the config,
     /// and which will gracefully accept if the header is missing.
-    pub fn optional(inner: S, key: String) -> Self {
+    pub const fn optional(inner: S, key: String) -> Self {
         Self::new(inner, key, true)
     }
 }

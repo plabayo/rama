@@ -101,7 +101,7 @@ impl<S: Clone, K> Clone for HttpsConnector<S, K> {
 
 impl<S, K> HttpsConnector<S, K> {
     /// Creates a new [`HttpsConnector`].
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self {
             inner,
             _kind: std::marker::PhantomData,
@@ -113,7 +113,7 @@ impl<S> HttpsConnector<S, ConnectorKindAuto> {
     /// Creates a new [`HttpsConnector`] which will establish
     /// a secure connection if the request demands it,
     /// otherwise it will forward the pre-established inner connection.
-    pub fn auto(inner: S) -> Self {
+    pub const fn auto(inner: S) -> Self {
         Self::new(inner)
     }
 }
@@ -121,7 +121,7 @@ impl<S> HttpsConnector<S, ConnectorKindAuto> {
 impl<S> HttpsConnector<S, ConnectorKindSecure> {
     /// Creates a new [`HttpsConnector`] which will always
     /// establish a secure connection regardless of the request it is for.
-    pub fn secure_only(inner: S) -> Self {
+    pub const fn secure_only(inner: S) -> Self {
         Self::new(inner)
     }
 }
@@ -129,7 +129,7 @@ impl<S> HttpsConnector<S, ConnectorKindSecure> {
 impl<S> HttpsConnector<S, ConnectorKindTunnel> {
     /// Creates a new [`HttpsConnector`] which will establish
     /// a secure connection if the request is to be tunneled.
-    pub fn tunnel(inner: S) -> Self {
+    pub const fn tunnel(inner: S) -> Self {
         Self::new(inner)
     }
 }

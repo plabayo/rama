@@ -26,7 +26,7 @@ pub struct Limit<S, P> {
 impl<S, P> Limit<S, P> {
     /// Creates a new [`Limit`] from a limit [`Policy`],
     /// wrapping the given [`Service`].
-    pub fn new(inner: S, policy: P) -> Self {
+    pub const fn new(inner: S, policy: P) -> Self {
         Limit { inner, policy }
     }
 
@@ -37,7 +37,7 @@ impl<T> Limit<T, UnlimitedPolicy> {
     /// Creates a new [`Limit`] with an unlimited policy.
     ///
     /// Meaning that all requests are allowed to proceed.
-    pub fn unlimited(inner: T) -> Self {
+    pub const fn unlimited(inner: T) -> Self {
         Limit {
             inner,
             policy: UnlimitedPolicy,

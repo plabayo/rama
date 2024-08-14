@@ -29,7 +29,7 @@ use rama::{
         Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
     },
     rt::Executor,
-    service::{Context, Service, ServiceBuilder},
+    service::{Context, Layer, Service},
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
 
@@ -55,20 +55,18 @@ async fn main() {
     // use the high level API for this service stack.
     //
     // E.g. `::post(<uri>).header(k, v).form(<data>).send().await?`
-    let client = ServiceBuilder::new()
-        .layer(TraceLayer::new_for_http())
-        .layer(DecompressionLayer::new())
+    let client = (
+        TraceLayer::new_for_http(),
+        DecompressionLayer::new(),
         // you can try to change these credentials or omit them completely,
         // to see the unauthorized responses, in other words: see the auth middleware in action
         //
         // NOTE: the high level http client has also a `::basic` method
         // that can be used to add basic auth headers only for that specific request
-        .layer(
-            AddAuthorizationLayer::basic("john", "123")
-                .as_sensitive(true)
-                .if_not_present(true),
-        )
-        .layer(RetryLayer::new(
+        AddAuthorizationLayer::basic("john", "123")
+            .as_sensitive(true)
+            .if_not_present(true),
+        RetryLayer::new(
             ManagedPolicy::default().with_backoff(
                 ExponentialBackoff::new(
                     Duration::from_millis(100),
@@ -78,8 +76,9 @@ async fn main() {
                 )
                 .unwrap(),
             ),
-        ))
-        .service(HttpClient::default());
+        ),
+    )
+        .layer(HttpClient::default());
 
     //--------------------------------------------------------------------------------
     // Low Level (Regular) http client (stack) service example.
@@ -177,11 +176,12 @@ async fn run_server(addr: &str) {
     HttpServer::auto(exec)
         .listen(
             addr,
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(CompressionLayer::new())
-                .layer(AsyncRequireAuthorizationLayer::new(auth_request))
-                .service(
+            (
+                TraceLayer::new_for_http(),
+                CompressionLayer::new(),
+                AsyncRequireAuthorizationLayer::new(auth_request),
+            )
+                .layer(
                     WebService::default()
                         .get("/", "Hello, World!")
                         .get(

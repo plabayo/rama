@@ -67,7 +67,7 @@ use rama::{
         IntoResponse, Method, StatusCode,
     },
     rt::Executor,
-    service::ServiceBuilder,
+    service::Layer,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -106,9 +106,8 @@ async fn main() {
         .listen_with_state(
             AppState::default(),
             addr,
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .service(
+            TraceLayer::new_for_http()
+                .layer(
                     WebService::default()
                         .get("/", Json(json!({
                                 "GET /": "show this API documentation in Json Format",
@@ -122,9 +121,8 @@ async fn main() {
                                 }
                             })))
                         .get("/keys", list_keys)
-                        .nest("/admin", ServiceBuilder::new()
-                            .layer(ValidateRequestHeaderLayer::bearer("secret-token"))
-                            .service(WebService::default()
+                        .nest("/admin", ValidateRequestHeaderLayer::bearer("secret-token")
+                            .layer(WebService::default()
                                 .delete("/keys", |State(state): State<AppState>| async move {
                                     state.db.write().await.clear();
                                 })
@@ -137,9 +135,8 @@ async fn main() {
                         .on(
                             HttpMatcher::method_get().or_method_head().and_path("/item/:key"),
                             // only compress the get Action, not the Post Action
-                            ServiceBuilder::new()
-                                .layer(CompressionLayer::new())
-                                .service((|State(state): State<AppState>, Path(params): Path<ItemParam>, method: Method| async move {
+                            CompressionLayer::new()
+                                .layer((|State(state): State<AppState>, Path(params): Path<ItemParam>, method: Method| async move {
                                     match method {
                                         Method::GET => {
                                             match state.db.read().await.get(&params.key) {

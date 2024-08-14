@@ -55,7 +55,7 @@ impl<C: Clone, S> Clone for HttpClient<C, S> {
 impl<C, S> HttpClient<C, S> {
     /// Create a new [`HttpClient`] using the specified connection [`Service`]
     /// to establish connections to the server in the form of an [`EstablishedClientConnection`] as output.
-    pub fn new(connector: C) -> Self {
+    pub const fn new(connector: C) -> Self {
         Self {
             connector,
             _phantom: std::marker::PhantomData,

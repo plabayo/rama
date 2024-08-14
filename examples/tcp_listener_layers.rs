@@ -21,8 +21,8 @@
 use rama::{
     net::stream::{matcher::SocketMatcher, service::EchoService},
     service::{
-        layer::{HijackLayer, TimeoutLayer},
-        service_fn, ServiceBuilder,
+        layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
+        service_fn, Layer,
     },
     tcp::server::TcpListener,
 };
@@ -50,8 +50,8 @@ async fn main() {
             .expect("bind TCP Listener")
             .serve_graceful(
                 guard,
-                ServiceBuilder::new()
-                    .layer(HijackLayer::new(
+                (
+                    HijackLayer::new(
                         SocketMatcher::loopback().negate(),
                         service_fn(|stream: TcpStream| async move {
                             match stream.peer_addr() {
@@ -63,10 +63,11 @@ async fn main() {
                             }
                             Ok::<u64, Infallible>(0)
                         }),
-                    ))
-                    .trace_err()
-                    .layer(TimeoutLayer::new(Duration::from_secs(8)))
-                    .service(EchoService::new()),
+                    ),
+                    TraceErrLayer::new(),
+                    TimeoutLayer::new(Duration::from_secs(8)),
+                )
+                    .layer(EchoService::new()),
             )
             .await;
     });

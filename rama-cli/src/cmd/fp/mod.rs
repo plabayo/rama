@@ -24,7 +24,7 @@ use rama::{
         layer::{
             limit::policy::ConcurrentPolicy, ConsumeErrLayer, HijackLayer, LimitLayer, TimeoutLayer,
         },
-        service_fn, ServiceBuilder,
+        service_fn, Layer,
     },
     tcp::server::TcpListener,
     tls::boring::server::TlsAcceptorLayer,
@@ -192,16 +192,15 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     .expect("parse header value");
 
     graceful.spawn_task_fn(move |guard| async move {
-        let inner_http_service = ServiceBuilder::new()
-            .layer(HijackLayer::new(
+        let inner_http_service = HijackLayer::new(
                 HttpMatcher::header_exists(HeaderName::from_static("referer"))
                     .and_header_exists(HeaderName::from_static("cookie"))
                     .negate(),
                 service_fn(|| async move {
                     Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
                 }),
-            ))
-            .service(match_service!{
+            )
+            .layer(match_service!{
                 HttpMatcher::get("/report") => endpoints::get_report,
                 HttpMatcher::get("/api/fetch/number") => endpoints::get_api_fetch_number,
                 HttpMatcher::post("/api/fetch/number/:number") => endpoints::post_api_fetch_number,
@@ -211,31 +210,31 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 _ => Redirect::temporary("/consent"),
             });
 
-        let http_service = ServiceBuilder::new()
-            .layer(TraceLayer::new_for_http())
-            .layer(CompressionLayer::new())
-            .layer(CatchPanicLayer::new())
-            .layer(AddRequiredResponseHeadersLayer::default())
-            .layer(SetResponseHeaderLayer::overriding(
+        let http_service = (
+            TraceLayer::new_for_http(),
+            CompressionLayer::new(),
+            CatchPanicLayer::new(),
+            AddRequiredResponseHeadersLayer::default(),
+            SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-sponsored-by"),
                 HeaderValue::from_static("fly.io"),
-            ))
-            .layer(SetResponseHeaderLayer::if_not_present(
+            ),
+            SetResponseHeaderLayer::if_not_present(
                 HeaderName::from_static("accept-ch"),
                 ch_headers.clone(),
-            ))
-            .layer(SetResponseHeaderLayer::if_not_present(
+            ),
+            SetResponseHeaderLayer::if_not_present(
                 HeaderName::from_static("critical-ch"),
                 ch_headers.clone(),
-            ))
-            .layer(SetResponseHeaderLayer::if_not_present(
+            ),
+            SetResponseHeaderLayer::if_not_present(
                 HeaderName::from_static("vary"),
                 ch_headers,
-            ))
-            .layer(UserAgentClassifierLayer::new())
-            .layer(ConsumeErrLayer::trace(tracing::Level::WARN))
-            .layer(http_forwarded_layer)
-            .service(
+            ),
+            UserAgentClassifierLayer::new(),
+            ConsumeErrLayer::trace(tracing::Level::WARN),
+            http_forwarded_layer,
+            ).layer(
                 Arc::new(match_service!{
                     // Navigate
                     HttpMatcher::get("/") => Redirect::temporary("/consent"),
@@ -250,19 +249,20 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 })
             );
 
-        let tcp_service_builder = ServiceBuilder::new()
-            .layer(ConsumeErrLayer::trace(tracing::Level::WARN))
-            .layer(tcp_forwarded_layer)
-            .layer(TimeoutLayer::new(Duration::from_secs(16)))
-            .layer(LimitLayer::new(ConcurrentPolicy::max_with_backoff(
+        let tcp_service_builder = (
+            ConsumeErrLayer::trace(tracing::Level::WARN),
+            tcp_forwarded_layer,
+            TimeoutLayer::new(Duration::from_secs(16)),
+            LimitLayer::new(ConcurrentPolicy::max_with_backoff(
                 2048,
                 ExponentialBackoff::default(),
-            )))
+            )),
             // Limit the body size to 1MB for both request and response
-            .layer(BodyLimitLayer::symmetric(1024 * 1024))
-            .layer(tls_server_cfg.map(|cfg| {
+            BodyLimitLayer::symmetric(1024 * 1024),
+            tls_server_cfg.map(|cfg| {
                 TlsAcceptorLayer::new(Arc::new(cfg)).with_store_client_hello(true)
-            }));
+            })
+        );
 
         let tcp_listener = TcpListener::build_with_state(State::new(acme_data))
             .bind(&address)
@@ -275,7 +275,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 tcp_listener
                     .serve_graceful(
                         guard.clone(),
-                        tcp_service_builder.service(
+                        tcp_service_builder.layer(
                             HttpServer::auto(Executor::graceful(guard)).service(http_service),
                         ),
                     )
@@ -286,7 +286,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 tcp_listener
                     .serve_graceful(
                         guard,
-                        tcp_service_builder.service(HttpServer::http1().service(http_service)),
+                        tcp_service_builder.layer(HttpServer::http1().service(http_service)),
                     )
                     .await;
             }
@@ -295,7 +295,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 tcp_listener
                     .serve_graceful(
                         guard.clone(),
-                        tcp_service_builder.service(
+                        tcp_service_builder.layer(
                             HttpServer::h2(Executor::graceful(guard)).service(http_service),
                         ),
                     )

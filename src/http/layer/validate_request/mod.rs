@@ -5,7 +5,7 @@
 //! ```
 //! use rama::http::layer::validate_request::ValidateRequestHeaderLayer;
 //! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! async fn handle(request: Request) -> Result<Response, BoxError> {
@@ -14,10 +14,10 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! let mut service = ServiceBuilder::new()
+//! let mut service = (
 //!     // Require the `Accept` header to be `application/json`, `*/*` or `application/*`
-//!     .layer(ValidateRequestHeaderLayer::accept("application/json"))
-//!     .service_fn(handle);
+//!     ValidateRequestHeaderLayer::accept("application/json"),
+//! ).layer(service_fn(handle));
 //!
 //! // Requests with the correct value are allowed through
 //! let request = Request::builder()
@@ -51,7 +51,7 @@
 //! ```
 //! use rama::http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
 //! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! #[derive(Clone, Copy)]
@@ -82,10 +82,10 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! let service = ServiceBuilder::new()
+//! let service = (
 //!     // Validate requests using `MyHeader`
-//!     .layer(ValidateRequestHeaderLayer::custom(MyHeader { /* ... */ }))
-//!     .service_fn(handle);
+//!     ValidateRequestHeaderLayer::custom(MyHeader { /* ... */ }),
+//! ).layer(service_fn(handle));
 //!
 //! # let request = Request::builder()
 //! #     .body(Body::empty())
@@ -105,7 +105,7 @@
 //! use bytes::Bytes;
 //! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
 //! use rama::http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! async fn handle(request: Request) -> Result<Response, BoxError> {
@@ -115,12 +115,12 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! let service = ServiceBuilder::new()
-//!     .layer(ValidateRequestHeaderLayer::custom_fn(|request: Request| async move {
+//! let service = (
+//!     ValidateRequestHeaderLayer::custom_fn(|request: Request| async move {
 //!         // Validate the request
 //!         # Ok::<_, Response>(request)
-//!     }))
-//!     .service_fn(handle);
+//!     }),
+//! ).layer(service_fn(handle));
 //!
 //! # let request = Request::builder()
 //! #     .body(Body::empty())

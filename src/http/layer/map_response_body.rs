@@ -8,7 +8,7 @@
 //! use rama::http::dep::http_body;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{Context, Poll}};
-//! use rama::service::{self, ServiceBuilder, service_fn, Service};
+//! use rama::service::{self, Layer, service_fn, Service};
 //! use rama::http::layer::map_response_body::MapResponseBodyLayer;
 //! use rama::error::BoxError;
 //! use futures_lite::ready;
@@ -66,10 +66,10 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut svc = ServiceBuilder::new()
+//! let mut svc = (
 //!     // Wrap response bodies in `PrintChunkSizesBody`
-//!     .layer(MapResponseBodyLayer::new(PrintChunkSizesBody::new))
-//!     .service_fn(handle);
+//!     MapResponseBodyLayer::new(PrintChunkSizesBody::new),
+//! ).layer(service_fn(handle));
 //!
 //! // Call the service
 //! let request = Request::new(Body::from("foobar"));
@@ -95,7 +95,7 @@ impl<F> MapResponseBodyLayer<F> {
     /// Create a new [`MapResponseBodyLayer`].
     ///
     /// `F` is expected to be a function that takes a body and returns another body.
-    pub fn new(f: F) -> Self {
+    pub const fn new(f: F) -> Self {
         Self { f }
     }
 }
@@ -132,7 +132,7 @@ impl<S, F> MapResponseBody<S, F> {
     /// Create a new [`MapResponseBody`].
     ///
     /// `F` is expected to be a function that takes a body and returns another body.
-    pub fn new(service: S, f: F) -> Self {
+    pub const fn new(service: S, f: F) -> Self {
         Self { inner: service, f }
     }
 

@@ -44,7 +44,7 @@ where
     Fut: Future<Output = ()> + Send + Sync + 'static,
 {
     /// Create a new [`GetExtensionLayer`].
-    pub fn new(callback: F) -> Self {
+    pub const fn new(callback: F) -> Self {
         GetExtensionLayer {
             callback,
             _phantom: PhantomData,
@@ -105,7 +105,7 @@ where
 
 impl<S, T, Fut, F> GetExtension<S, T, Fut, F> {
     /// Create a new [`GetExtension`].
-    pub fn new(inner: S, callback: F) -> Self
+    pub const fn new(inner: S, callback: F) -> Self
     where
         F: FnOnce(T) -> Fut + Clone + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + Sync + 'static,
@@ -148,7 +148,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::{service_fn, Context, ServiceBuilder};
+    use crate::service::{service_fn, Context};
     use std::{convert::Infallible, sync::Arc};
 
     #[derive(Debug, Clone)]
@@ -159,14 +159,13 @@ mod tests {
         let value = Arc::new(std::sync::atomic::AtomicI32::new(0));
 
         let cloned_value = value.clone();
-        let svc = ServiceBuilder::new()
-            .layer(GetExtensionLayer::new(|state: State| async move {
-                cloned_value.store(state.0, std::sync::atomic::Ordering::SeqCst);
-            }))
-            .service(service_fn(|ctx: Context<()>, _req: ()| async move {
-                let state = ctx.get::<State>().unwrap();
-                Ok::<_, Infallible>(state.0)
-            }));
+        let svc = GetExtensionLayer::new(|state: State| async move {
+            cloned_value.store(state.0, std::sync::atomic::Ordering::SeqCst);
+        })
+        .layer(service_fn(|ctx: Context<()>, _req: ()| async move {
+            let state = ctx.get::<State>().unwrap();
+            Ok::<_, Infallible>(state.0)
+        }));
 
         let mut ctx = Context::default();
         ctx.insert(State(42));

@@ -19,7 +19,7 @@
 use rama::{
     http::{server::HttpServer, service::fs::ServeDir},
     rt::Executor,
-    service::ServiceBuilder,
+    service::{layer::TraceErrLayer, Layer},
     tcp::server::TcpListener,
 };
 
@@ -40,6 +40,6 @@ async fn main() {
     // ...once running you can go in browser for example to:
     println!("open: http://127.0.0.1:62009/test-files/index.html");
     listener
-        .serve(ServiceBuilder::new().trace_err().service(http_fs_server))
+        .serve(TraceErrLayer::new().layer(http_fs_server))
         .await;
 }

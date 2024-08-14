@@ -30,7 +30,7 @@ use rama::{
         Request,
     },
     rt::Executor,
-    service::ServiceBuilder,
+    service::Layer,
 };
 
 use serde_json::json;
@@ -57,9 +57,8 @@ async fn main() {
     HttpServer::auto(exec)
         .listen(
             addr,
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-            .service(
+            TraceLayer::new_for_http()
+            .layer(
                     match_service!{
                         HttpMatcher::get("/") => Html(r##"<h1>Home</h1><a href="/echo">Echo Request</a>"##.to_string()),
                         PathMatcher::new("/echo") => |req: Request| async move {

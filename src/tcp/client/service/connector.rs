@@ -24,7 +24,7 @@ impl HttpConnector {
     ///
     /// You can use middleware around the [`HttpConnector`]
     /// or add connection pools, retry logic and more.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         HttpConnector
     }
 }

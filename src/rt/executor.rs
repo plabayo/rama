@@ -9,7 +9,7 @@ pub struct Executor {
 
 impl Executor {
     /// Create a new [`Executor`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { guard: None }
     }
 

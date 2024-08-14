@@ -11,7 +11,7 @@ pub struct Limited {
 
 impl Limited {
     /// Create a new [`Limited`] with a limit of `max` redirections.
-    pub fn new(max: usize) -> Self {
+    pub const fn new(max: usize) -> Self {
         Limited {
             remaining: max,
             max,

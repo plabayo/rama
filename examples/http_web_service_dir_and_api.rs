@@ -37,7 +37,7 @@ use rama::{
     },
     net::stream::{matcher::SocketMatcher, SocketInfo},
     rt::Executor,
-    service::ServiceBuilder,
+    service::Layer,
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
@@ -72,10 +72,10 @@ async fn main() {
         .listen_with_state(
             AppState::default(),
             addr,
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(CompressionLayer::new())
-                .service(
+            (
+                TraceLayer::new_for_http(),
+                CompressionLayer::new(),
+            ).layer(
                     WebService::default()
                         .not_found(Redirect::temporary("/error.html"))
                         .get(

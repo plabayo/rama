@@ -192,18 +192,16 @@
 //! # {
 //! use rama::http::client::HttpClientExt;
 //!
-//! let client = ServiceBuilder::new()
-//!     .layer(TraceLayer::new_for_http())
-//!     .layer(DecompressionLayer::new())
-//!     .layer(
-//!         AddAuthorizationLayer::basic("john", "123")
-//!             .as_sensitive(true)
-//!             .if_not_present(),
-//!     )
-//!     .layer(RetryLayer::new(
+//! let client = (
+//!     TraceLayer::new_for_http(),
+//!     DecompressionLayer::new(),
+//!     AddAuthorizationLayer::basic("john", "123")
+//!         .as_sensitive(true)
+//!         .if_not_present(),
+//!     RetryLayer::new(
 //!         ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
-//!     ))
-//!     .service(HttpClient::default());
+//!     ),
+//! ).layer(HttpClient::default());
 //!
 //! #[derive(Debug, Deserialize)]
 //! struct Info {

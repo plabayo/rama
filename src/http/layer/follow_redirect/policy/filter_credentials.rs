@@ -26,7 +26,7 @@ const BLOCKLIST: &[HeaderName] = &[
 impl FilterCredentials {
     /// Create a new [`FilterCredentials`] that removes blocklisted request headers in cross-origin
     /// redirections.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         FilterCredentials {
             block_cross_origin: true,
             block_any: false,

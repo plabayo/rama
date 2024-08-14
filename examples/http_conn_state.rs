@@ -28,7 +28,7 @@
 use rama::{
     http::{response::Html, server::HttpServer, Request},
     rt::Executor,
-    service::{context::AsRef, service_fn, Context, ServiceBuilder},
+    service::{context::AsRef, layer::MapStateLayer, service_fn, Context, Layer},
     tcp::server::TcpListener,
 };
 use std::{
@@ -130,23 +130,22 @@ async fn main() {
             .expect("bind TCP Listener")
             .serve_graceful(
                 guard,
-                ServiceBuilder::new()
-                    .map_state(move |app: Arc<AppState>| {
-                        let index = app
-                            .app_metrics
-                            .connections
-                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
-                            + 1;
-                        Arc::new(ConnState {
-                            app,
-                            alive,
-                            conn_metrics: ConnMetrics {
-                                index,
-                                requests: AtomicUsize::new(0),
-                            },
-                        })
+                MapStateLayer::new(move |app: Arc<AppState>| {
+                    let index = app
+                        .app_metrics
+                        .connections
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        + 1;
+                    Arc::new(ConnState {
+                        app,
+                        alive,
+                        conn_metrics: ConnMetrics {
+                            index,
+                            requests: AtomicUsize::new(0),
+                        },
                     })
-                    .service(tcp_http_service),
+                })
+                .layer(tcp_http_service),
             )
             .await;
     });

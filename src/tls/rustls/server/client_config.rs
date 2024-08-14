@@ -72,7 +72,7 @@ where
 
 impl TlsClientConfigHandler<()> {
     /// Creates a new [`TlsClientConfigHandler`] with the default configuration.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             store_client_hello: false,
             server_config_provider: (),

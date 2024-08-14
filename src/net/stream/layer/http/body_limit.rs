@@ -76,7 +76,7 @@ pub struct BodyLimitService<S> {
 
 impl<S> BodyLimitService<S> {
     /// Create a new [`BodyLimitService`].
-    pub fn new(service: S, limit: BodyLimit) -> Self {
+    pub const fn new(service: S, limit: BodyLimit) -> Self {
         Self {
             inner: service,
             limit,

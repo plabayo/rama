@@ -44,7 +44,7 @@ pub struct ForwardedAuthority {
 
 impl ForwardedAuthority {
     /// Create a new [`ForwardedAuthority`]
-    pub fn new(host: Host, port: Option<u16>) -> Self {
+    pub const fn new(host: Host, port: Option<u16>) -> Self {
         Self { host, port }
     }
 

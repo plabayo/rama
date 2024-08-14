@@ -67,7 +67,7 @@ impl<S: Clone> Clone for ClientConnection<S> {
 
 impl<S> ClientConnection<S> {
     /// Create a new [`ClientConnection`] for the given target [`SocketAddr`] and stream.
-    pub fn new(addr: SocketAddr, stream: S) -> Self {
+    pub const fn new(addr: SocketAddr, stream: S) -> Self {
         Self { addr, stream }
     }
 

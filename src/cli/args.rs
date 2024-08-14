@@ -24,14 +24,14 @@ impl Default for RequestArgsBuilder {
 
 impl RequestArgsBuilder {
     /// Create a new [`RequestArgsBuilder`], which auto-detects the content type.
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             state: BuilderState::MethodOrUrl { content_type: None },
         }
     }
 
     /// Create a new [`RequestArgsBuilder`], which expects JSON data.
-    pub fn new_json() -> RequestArgsBuilder {
+    pub const fn new_json() -> RequestArgsBuilder {
         RequestArgsBuilder {
             state: BuilderState::MethodOrUrl {
                 content_type: Some(ContentType::Json),
@@ -40,7 +40,7 @@ impl RequestArgsBuilder {
     }
 
     /// Create a new [`RequestArgsBuilder`], which expects Form data.
-    pub fn new_form() -> RequestArgsBuilder {
+    pub const fn new_form() -> RequestArgsBuilder {
         RequestArgsBuilder {
             state: BuilderState::MethodOrUrl {
                 content_type: Some(ContentType::Form),

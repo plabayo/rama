@@ -5,7 +5,7 @@
 //! ```
 //! use rama::http::{Body, Request, Response};
 //! use std::convert::Infallible;
-//! use rama::service::{self, ServiceBuilder, Service};
+//! use rama::service::{self, Layer, Service, service_fn};
 //! use rama::http::layer::body_limit::BodyLimitLayer;
 //!
 //! async fn handle<B>(_: Request<B>) -> Result<Response, Infallible> {
@@ -15,10 +15,10 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut svc = ServiceBuilder::new()
+//! let mut svc = (
 //!      // Limit the request body to 2MB
-//!     .layer(BodyLimitLayer::new(2*1024*1024))
-//!     .service_fn(handle);
+//!     BodyLimitLayer::new(2*1024*1024),
+//! ).layer(service_fn(handle));
 //!
 //! // Call the service
 //! let request = Request::new(Body::default());
@@ -43,7 +43,7 @@ pub struct BodyLimitLayer {
 
 impl BodyLimitLayer {
     /// Create a new [`BodyLimitLayer`].
-    pub fn new(size: usize) -> Self {
+    pub const fn new(size: usize) -> Self {
         Self { size }
     }
 }
@@ -67,7 +67,7 @@ pub struct BodyLimitService<S> {
 
 impl<S> BodyLimitService<S> {
     /// Create a new [`BodyLimitService`].
-    pub fn new(service: S, size: usize) -> Self {
+    pub const fn new(service: S, size: usize) -> Self {
         Self {
             inner: service,
             size,

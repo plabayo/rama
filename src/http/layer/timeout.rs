@@ -18,7 +18,7 @@
 //! ```
 //! use std::{convert::Infallible, time::Duration};
 //!
-//! use rama::service::ServiceBuilder;
+//! use rama::service::{Layer, service_fn};
 //! use rama::http::{Body, Request, Response};
 //! use rama::http::layer::timeout::TimeoutLayer;
 //! use rama::error::BoxError;
@@ -30,10 +30,10 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! let svc = ServiceBuilder::new()
+//! let svc = (
 //!     // Timeout requests after 30 seconds
-//!     .layer(TimeoutLayer::new(Duration::from_secs(30)))
-//!     .service_fn(handle);
+//!     TimeoutLayer::new(Duration::from_secs(30)),
+//! ).layer(service_fn(handle));
 //! # Ok(())
 //! # }
 //! ```
@@ -56,7 +56,7 @@ pub struct TimeoutLayer {
 
 impl TimeoutLayer {
     /// Creates a new [`TimeoutLayer`].
-    pub fn new(timeout: Duration) -> Self {
+    pub const fn new(timeout: Duration) -> Self {
         TimeoutLayer { timeout }
     }
 }
@@ -82,7 +82,7 @@ pub struct Timeout<S> {
 
 impl<S> Timeout<S> {
     /// Creates a new [`Timeout`].
-    pub fn new(inner: S, timeout: Duration) -> Self {
+    pub const fn new(inner: S, timeout: Duration) -> Self {
         Self { inner, timeout }
     }
 

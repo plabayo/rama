@@ -1,6 +1,6 @@
 use crate::{
     http::{matcher::HttpMatcher, Body, IntoResponse, Request, Response},
-    service::{BoxService, Context, Service, ServiceBuilder},
+    service::{layer::MapResponseLayer, BoxService, Context, Layer, Service},
 };
 use std::future::Future;
 use std::{convert::Infallible, fmt};
@@ -29,9 +29,7 @@ where
     fn into_endpoint_service(
         self,
     ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
-        ServiceBuilder::new()
-            .map_response(|resp: R| resp.into_response())
-            .service(self)
+        MapResponseLayer::new(R::into_response).layer(self)
     }
 }
 

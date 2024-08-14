@@ -363,16 +363,18 @@ jobs:
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
 
-  semver-checks:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - name: Check semver
-        uses: obi1kenobi/cargo-semver-checks-action@v2
-        with:
-          rust-toolchain: ${{env.RUST_TOOLCHAIN}}
+  # action is not being updated atm
+  # TODO: enable once it works again, for now not that useful anyway
+  # semver-checks:
+  #   needs: [check, check-msrv, check-all-features]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - name: Checkout
+  #       uses: actions/checkout@v4
+  #     - name: Check semver
+  #       uses: obi1kenobi/cargo-semver-checks-action@v2
+  #       with:
+  #         rust-toolchain: ${{env.RUST_TOOLCHAIN}}
 
   deploy-rama-cli-docker:
     runs-on: ubuntu-latest
@@ -392,7 +394,7 @@ jobs:
       - cargo-deny
       - cargo-fuzz
       - dependencies-are-sorted
-      - semver-checks
+      # - semver-checks
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Login to Docker Hub

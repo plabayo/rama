@@ -11,7 +11,7 @@
 //! ```
 //! use rama::http::layer::set_header::SetRequestHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -20,18 +20,16 @@
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! #
-//! let mut svc = ServiceBuilder::new()
-//!     .layer(
-//!         // Layer that sets `User-Agent: my very cool proxy` on requests.
-//!         //
-//!         // `if_not_present` will only insert the header if it does not already
-//!         // have a value.
-//!         SetRequestHeaderLayer::if_not_present(
-//!             header::USER_AGENT,
-//!             HeaderValue::from_static("my very cool proxy"),
-//!         )
-//!     )
-//!     .service(http_client);
+//! let mut svc = (
+//!     // Layer that sets `User-Agent: my very cool proxy` on requests.
+//!     //
+//!     // `if_not_present` will only insert the header if it does not already
+//!     // have a value.
+//!     SetRequestHeaderLayer::if_not_present(
+//!         header::USER_AGENT,
+//!         HeaderValue::from_static("my very cool proxy"),
+//!     ),
+//! ).layer(http_client);
 //!
 //! let request = Request::new(Body::empty());
 //!
@@ -46,7 +44,7 @@
 //! ```
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama::http::layer::set_header::SetRequestHeaderLayer;
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -59,20 +57,18 @@
 //!     # HeaderValue::from_static("now")
 //! }
 //!
-//! let mut svc = ServiceBuilder::new()
-//!     .layer(
-//!         // Layer that sets `Date` to the current date and time.
-//!         //
-//!         // `overriding` will insert the header and override any previous values it
-//!         // may have.
-//!         SetRequestHeaderLayer::overriding_fn(
-//!             header::DATE,
-//!             || async move {
-//!                 Some(date_header_value())
-//!             }
-//!         )
-//!     )
-//!     .service(http_client);
+//! let mut svc = (
+//!     // Layer that sets `Date` to the current date and time.
+//!     //
+//!     // `overriding` will insert the header and override any previous values it
+//!     // may have.
+//!     SetRequestHeaderLayer::overriding_fn(
+//!         header::DATE,
+//!         || async move {
+//!             Some(date_header_value())
+//!         }
+//!     ),
+//! ).layer(http_client);
 //!
 //! let request = Request::new(Body::default());
 //!

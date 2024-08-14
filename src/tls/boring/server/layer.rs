@@ -12,7 +12,7 @@ pub struct TlsAcceptorLayer {
 impl TlsAcceptorLayer {
     /// Creates a new [`TlsAcceptorLayer`] using the given [`ServerConfig`],
     /// which is used to configure the inner TLS acceptor.
-    pub fn new(config: Arc<ServerConfig>) -> Self {
+    pub const fn new(config: Arc<ServerConfig>) -> Self {
         Self {
             config,
             store_client_hello: false,
@@ -20,7 +20,7 @@ impl TlsAcceptorLayer {
     }
 
     /// Set that the client hello should be stored
-    pub fn with_store_client_hello(mut self, store: bool) -> Self {
+    pub const fn with_store_client_hello(mut self, store: bool) -> Self {
         self.store_client_hello = store;
         self
     }

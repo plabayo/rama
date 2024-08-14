@@ -18,7 +18,7 @@ impl<T: Clone> Clone for And<T> {
 
 impl<T> And<T> {
     /// Create a new `And` matcher.
-    pub fn new(inner: T) -> Self {
+    pub const fn new(inner: T) -> Self {
         Self(inner)
     }
 }

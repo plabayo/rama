@@ -41,7 +41,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// use rama::{
 ///     http::{server::HttpServer, service::fs::ServeDir},
 ///     rt::Executor,
-///     service::ServiceBuilder,
+///     service::{Layer, layer::TraceErrLayer},
 ///     tcp::server::TcpListener,
 /// };
 ///
@@ -59,7 +59,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 ///
 ///     // Serve the HTTP server over TCP
 ///     listener
-///         .serve(ServiceBuilder::new().trace_err().service(http_fs_server))
+///         .serve(TraceErrLayer::new().layer(http_fs_server))
 ///         .await;
 /// }
 /// ```
@@ -316,7 +316,7 @@ impl<F> ServeDir<F> {
     ///         service::fs::{ServeDir, ServeFile},
     ///     },
     ///     rt::Executor,
-    ///     service::ServiceBuilder,
+    ///     service::{Layer, layer::TraceErrLayer},
     ///     tcp::server::TcpListener,
     /// };
     ///
@@ -335,7 +335,7 @@ impl<F> ServeDir<F> {
     ///
     ///     // Serve the HTTP server over TCP
     ///     listener
-    ///         .serve(ServiceBuilder::new().trace_err().service(http_fs_server))
+    ///         .serve(TraceErrLayer::new().layer(http_fs_server))
     ///         .await;
     /// }
     /// ```
@@ -365,7 +365,7 @@ impl<F> ServeDir<F> {
     ///         service::fs::{ServeDir, ServeFile},
     ///     },
     ///     rt::Executor,
-    ///     service::ServiceBuilder,
+    ///     service::{Layer, layer::TraceErrLayer},
     ///     tcp::server::TcpListener,
     /// };
     ///
@@ -384,7 +384,7 @@ impl<F> ServeDir<F> {
     ///
     ///     // Serve the HTTP server over TCP
     ///     listener
-    ///         .serve(ServiceBuilder::new().trace_err().service(http_fs_server))
+    ///         .serve(TraceErrLayer::new().layer(http_fs_server))
     ///         .await;
     /// }
     /// ```
@@ -427,7 +427,7 @@ impl<F> ServeDir<F> {
     /// use rama::{
     ///     http::{server::HttpServer, service::fs::ServeDir, Body, Request, Response, StatusCode},
     ///     rt::Executor,
-    ///     service::{service_fn, Context, ServiceBuilder},
+    ///     service::{service_fn, Context, Layer, layer::TraceErrLayer},
     ///     tcp::server::TcpListener,
     /// };
     /// use std::convert::Infallible;
@@ -446,7 +446,7 @@ impl<F> ServeDir<F> {
     ///
     ///     // Serve the HTTP server over TCP
     ///     listener
-    ///         .serve(ServiceBuilder::new().trace_err().service(http_fs_server))
+    ///         .serve(TraceErrLayer::new().layer(http_fs_server))
     ///         .await;
     /// }
     ///

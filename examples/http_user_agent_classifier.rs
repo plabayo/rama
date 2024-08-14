@@ -19,7 +19,7 @@
 use rama::{
     http::{response::Json, server::HttpServer, HeaderName, IntoResponse, Request, Response},
     rt::Executor,
-    service::{Context, ServiceBuilder},
+    service::{service_fn, Context, Layer},
     ua::{UserAgent, UserAgentClassifierLayer},
 };
 use serde_json::json;
@@ -31,12 +31,9 @@ async fn main() {
     HttpServer::auto(exec)
         .listen(
             "127.0.0.1:62015",
-            ServiceBuilder::new()
-                .layer(
-                    UserAgentClassifierLayer::new()
-                        .overwrite_header(HeaderName::from_static("x-proxy-ua")),
-                )
-                .service_fn(handle),
+            UserAgentClassifierLayer::new()
+                .overwrite_header(HeaderName::from_static("x-proxy-ua"))
+                .layer(service_fn(handle)),
         )
         .await
         .unwrap();

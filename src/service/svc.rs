@@ -2,6 +2,7 @@
 
 use super::Context;
 use crate::error::BoxError;
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 
@@ -27,6 +28,19 @@ pub trait Service<S, Request>: Sized + Send + Sync + 'static {
         BoxService {
             inner: Box::new(self),
         }
+    }
+}
+
+impl<S, Request> Service<S, Request> for ()
+where
+    S: Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Response = Request;
+    type Error = Infallible;
+
+    async fn serve(&self, _ctx: Context<S>, req: Request) -> Result<Self::Response, Self::Error> {
+        Ok(req)
     }
 }
 

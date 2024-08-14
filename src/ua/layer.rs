@@ -48,7 +48,7 @@ pub struct UserAgentOverwrites {
 
 impl<S> UserAgentClassifier<S> {
     /// Create a new [`UserAgentClassifier`] [`Service`].
-    pub fn new(inner: S, overwrite_header: Option<HeaderName>) -> Self {
+    pub const fn new(inner: S, overwrite_header: Option<HeaderName>) -> Self {
         Self {
             inner,
             overwrite_header,
@@ -152,7 +152,7 @@ pub struct UserAgentClassifierLayer {
 
 impl UserAgentClassifierLayer {
     /// Create a new [`UserAgentClassifierLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             overwrite_header: None,
         }
@@ -188,11 +188,9 @@ mod tests {
     use crate::http::headers;
     use crate::http::layer::required_header::AddRequiredRequestHeadersLayer;
     use crate::http::{IntoResponse, StatusCode};
+    use crate::service::service_fn;
     use crate::ua::{PlatformKind, UserAgentKind};
-    use crate::{
-        http::Response,
-        service::{Context, ServiceBuilder},
-    };
+    use crate::{http::Response, service::Context};
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -215,10 +213,11 @@ mod tests {
             Ok(StatusCode::OK.into_response())
         }
 
-        let service = ServiceBuilder::new()
-            .layer(AddRequiredRequestHeadersLayer::default())
-            .layer(UserAgentClassifierLayer::new())
-            .service_fn(handle);
+        let service = (
+            AddRequiredRequestHeadersLayer::default(),
+            UserAgentClassifierLayer::new(),
+        )
+            .layer(service_fn(handle));
 
         let _ = service
             .get("http://www.example.com")
@@ -243,9 +242,7 @@ mod tests {
             Ok(StatusCode::OK.into_response())
         }
 
-        let service = ServiceBuilder::new()
-            .layer(UserAgentClassifierLayer::new())
-            .service_fn(handle);
+        let service = UserAgentClassifierLayer::new().layer(service_fn(handle));
 
         let _ = service
             .get("http://www.example.com")
@@ -271,12 +268,9 @@ mod tests {
             Ok(StatusCode::OK.into_response())
         }
 
-        let service = ServiceBuilder::new()
-            .layer(
-                UserAgentClassifierLayer::new()
-                    .overwrite_header(HeaderName::from_static("x-proxy-ua")),
-            )
-            .service_fn(handle);
+        let service = UserAgentClassifierLayer::new()
+            .overwrite_header(HeaderName::from_static("x-proxy-ua"))
+            .layer(service_fn(handle));
 
         let _ = service
             .get("http://www.example.com")
@@ -310,12 +304,9 @@ mod tests {
             Ok(StatusCode::OK.into_response())
         }
 
-        let service = ServiceBuilder::new()
-            .layer(
-                UserAgentClassifierLayer::new()
-                    .overwrite_header(HeaderName::from_static("x-proxy-ua")),
-            )
-            .service_fn(handle);
+        let service = UserAgentClassifierLayer::new()
+            .overwrite_header(HeaderName::from_static("x-proxy-ua"))
+            .layer(service_fn(handle));
 
         let _ = service
             .get("http://www.example.com")

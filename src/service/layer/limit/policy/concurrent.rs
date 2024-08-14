@@ -71,7 +71,7 @@ impl<B, C> ConcurrentPolicy<B, C> {
 
 impl<C> ConcurrentPolicy<(), C> {
     /// Create a new [`ConcurrentPolicy`], using the given [`ConcurrentTracker`].
-    pub fn new(tracker: C) -> Self {
+    pub const fn new(tracker: C) -> Self {
         ConcurrentPolicy {
             tracker,
             backoff: (),

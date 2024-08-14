@@ -7,7 +7,7 @@
 //!     SetRequestIdLayer, PropagateRequestIdLayer, MakeRequestId, RequestId,
 //! };
 //! use rama::http::{Body, Request, Response, header::HeaderName};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //! use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 //!
@@ -37,15 +37,15 @@
 //!
 //! let x_request_id = HeaderName::from_static("x-request-id");
 //!
-//! let mut svc = ServiceBuilder::new()
+//! let mut svc = (
 //!     // set `x-request-id` header on all requests
-//!     .layer(SetRequestIdLayer::new(
+//!     SetRequestIdLayer::new(
 //!         x_request_id.clone(),
 //!         MyMakeRequestId::default(),
-//!     ))
+//!     ),
 //!     // propagate `x-request-id` headers from request to response
-//!     .layer(PropagateRequestIdLayer::new(x_request_id))
-//!     .service(handler);
+//!     PropagateRequestIdLayer::new(x_request_id),
+//! ).layer(handler);
 //!
 //! let request = Request::new(Body::empty());
 //! let response = svc.serve(Context::default(), request).await?;
@@ -81,7 +81,7 @@ pub struct RequestId(HeaderValue);
 
 impl RequestId {
     /// Create a new `RequestId` from a [`HeaderValue`].
-    pub fn new(header_value: HeaderValue) -> Self {
+    pub const fn new(header_value: HeaderValue) -> Self {
         Self(header_value)
     }
 
@@ -132,7 +132,7 @@ impl<M: Clone> Clone for SetRequestIdLayer<M> {
 
 impl<M> SetRequestIdLayer<M> {
     /// Create a new `SetRequestIdLayer`.
-    pub fn new(header_name: HeaderName, make_request_id: M) -> Self
+    pub const fn new(header_name: HeaderName, make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
@@ -143,7 +143,7 @@ impl<M> SetRequestIdLayer<M> {
     }
 
     /// Create a new `SetRequestIdLayer` that uses `x-request-id` as the header name.
-    pub fn x_request_id(make_request_id: M) -> Self
+    pub const fn x_request_id(make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
@@ -203,7 +203,7 @@ impl<S: Clone, M: Clone> Clone for SetRequestId<S, M> {
 
 impl<S, M> SetRequestId<S, M> {
     /// Create a new `SetRequestId`.
-    pub fn new(inner: S, header_name: HeaderName, make_request_id: M) -> Self
+    pub const fn new(inner: S, header_name: HeaderName, make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
@@ -215,7 +215,7 @@ impl<S, M> SetRequestId<S, M> {
     }
 
     /// Create a new `SetRequestId` that uses `x-request-id` as the header name.
-    pub fn x_request_id(inner: S, make_request_id: M) -> Self
+    pub const fn x_request_id(inner: S, make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
@@ -272,12 +272,12 @@ pub struct PropagateRequestIdLayer {
 
 impl PropagateRequestIdLayer {
     /// Create a new `PropagateRequestIdLayer`.
-    pub fn new(header_name: HeaderName) -> Self {
+    pub const fn new(header_name: HeaderName) -> Self {
         PropagateRequestIdLayer { header_name }
     }
 
     /// Create a new `PropagateRequestIdLayer` that uses `x-request-id` as the header name.
-    pub fn x_request_id() -> Self {
+    pub const fn x_request_id() -> Self {
         Self::new(HeaderName::from_static(X_REQUEST_ID))
     }
 }
@@ -303,12 +303,12 @@ pub struct PropagateRequestId<S> {
 
 impl<S> PropagateRequestId<S> {
     /// Create a new `PropagateRequestId`.
-    pub fn new(inner: S, header_name: HeaderName) -> Self {
+    pub const fn new(inner: S, header_name: HeaderName) -> Self {
         Self { inner, header_name }
     }
 
     /// Create a new `PropagateRequestId` that uses `x-request-id` as the header name.
-    pub fn x_request_id(inner: S) -> Self {
+    pub const fn x_request_id(inner: S) -> Self {
         Self::new(inner, HeaderName::from_static(X_REQUEST_ID))
     }
 
@@ -387,7 +387,7 @@ impl MakeRequestId for MakeRequestUuid {
 mod tests {
     use crate::http::layer::set_header;
     use crate::http::{Body, Response};
-    use crate::service::ServiceBuilder;
+    use crate::service::{service_fn, Layer};
     use std::{
         convert::Infallible,
         sync::{
@@ -401,10 +401,11 @@ mod tests {
 
     #[tokio::test]
     async fn basic() {
-        let svc = ServiceBuilder::new()
-            .layer(SetRequestIdLayer::x_request_id(Counter::default()))
-            .layer(PropagateRequestIdLayer::x_request_id())
-            .service_fn(handler);
+        let svc = (
+            SetRequestIdLayer::x_request_id(Counter::default()),
+            PropagateRequestIdLayer::x_request_id(),
+        )
+            .layer(service_fn(handler));
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();
@@ -431,14 +432,15 @@ mod tests {
 
     #[tokio::test]
     async fn other_middleware_setting_request_id_on_response() {
-        let svc = ServiceBuilder::new()
-            .layer(SetRequestIdLayer::x_request_id(Counter::default()))
-            .layer(PropagateRequestIdLayer::x_request_id())
-            .layer(set_header::SetResponseHeaderLayer::overriding(
+        let svc = (
+            SetRequestIdLayer::x_request_id(Counter::default()),
+            PropagateRequestIdLayer::x_request_id(),
+            set_header::SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-request-id"),
                 HeaderValue::from_str("foo").unwrap(),
-            ))
-            .service_fn(handler);
+            ),
+        )
+            .layer(service_fn(handler));
 
         let req = Request::builder()
             .header("x-request-id", "foo")
@@ -466,10 +468,11 @@ mod tests {
 
     #[tokio::test]
     async fn uuid() {
-        let svc = ServiceBuilder::new()
-            .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-            .layer(PropagateRequestIdLayer::x_request_id())
-            .service_fn(handler);
+        let svc = (
+            SetRequestIdLayer::x_request_id(MakeRequestUuid),
+            PropagateRequestIdLayer::x_request_id(),
+        )
+            .layer(service_fn(handler));
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();

@@ -27,7 +27,7 @@ pub struct AddRequiredRequestHeadersLayer {
 
 impl AddRequiredRequestHeadersLayer {
     /// Create a new [`AddRequiredRequestHeadersLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { overwrite: false }
     }
 
@@ -35,7 +35,7 @@ impl AddRequiredRequestHeadersLayer {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
-    pub fn overwrite(mut self, overwrite: bool) -> Self {
+    pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
     }
@@ -70,7 +70,7 @@ pub struct AddRequiredRequestHeaders<S> {
 
 impl<S> AddRequiredRequestHeaders<S> {
     /// Create a new [`AddRequiredRequestHeaders`].
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self {
             inner,
             overwrite: false,
@@ -81,7 +81,7 @@ impl<S> AddRequiredRequestHeaders<S> {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
-    pub fn overwrite(mut self, overwrite: bool) -> Self {
+    pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
     }
@@ -154,18 +154,18 @@ where
 mod test {
     use super::*;
     use crate::http::{Body, Request};
-    use crate::service::{Context, Service, ServiceBuilder};
+    use crate::service::{service_fn, Context, Layer, Service};
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn add_required_request_headers() {
-        let svc = ServiceBuilder::new()
-            .layer(AddRequiredRequestHeadersLayer::default())
-            .service_fn(|_ctx: Context<()>, req: Request| async move {
+        let svc = AddRequiredRequestHeadersLayer::default().layer(service_fn(
+            |_ctx: Context<()>, req: Request| async move {
                 assert!(req.headers().contains_key(HOST));
                 assert!(req.headers().contains_key(USER_AGENT));
                 Ok::<_, Infallible>(http::Response::new(Body::empty()))
-            });
+            },
+        ));
 
         let req = Request::builder()
             .uri("http://www.example.com/")
@@ -179,16 +179,16 @@ mod test {
 
     #[tokio::test]
     async fn add_required_request_headers_overwrite() {
-        let svc = ServiceBuilder::new()
-            .layer(AddRequiredRequestHeadersLayer::new().overwrite(true))
-            .service_fn(|_ctx: Context<()>, req: Request| async move {
+        let svc = AddRequiredRequestHeadersLayer::new()
+            .overwrite(true)
+            .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
                 assert_eq!(req.headers().get(HOST).unwrap(), "example.com:80");
                 assert_eq!(
                     req.headers().get(USER_AGENT).unwrap(),
                     RAMA_ID_HEADER_VALUE.to_str().unwrap()
                 );
                 Ok::<_, Infallible>(http::Response::new(Body::empty()))
-            });
+            }));
 
         let req = Request::builder()
             .uri("http://127.0.0.1/")

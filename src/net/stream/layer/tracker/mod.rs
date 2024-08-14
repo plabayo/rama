@@ -29,7 +29,7 @@ impl<S> BytesTrackerService<S> {
     /// Create a new [`BytesTrackerService`].
     ///
     /// See [`BytesTrackerService`] for more information.
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self { inner }
     }
 
@@ -79,7 +79,7 @@ pub struct BytesTrackerLayer;
 
 impl BytesTrackerLayer {
     /// Create a new [`BytesTrackerLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self
     }
 }

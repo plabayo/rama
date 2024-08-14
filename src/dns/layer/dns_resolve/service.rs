@@ -25,7 +25,7 @@ pub struct DnsResolveModeService<S> {
 
 impl<S> DnsResolveModeService<S> {
     /// Create a new instance of the [`DnsResolveModeService`].
-    pub fn new(inner: S, header_name: HeaderName) -> Self {
+    pub const fn new(inner: S, header_name: HeaderName) -> Self {
         Self { inner, header_name }
     }
 

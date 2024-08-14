@@ -49,7 +49,7 @@ impl Default for ConsumeErrLayer<Trace> {
 
 impl<S, F> ConsumeErr<S, F> {
     /// Creates a new [`ConsumeErr`] service.
-    pub fn new(inner: S, f: F) -> Self {
+    pub const fn new(inner: S, f: F) -> Self {
         ConsumeErr { f, inner }
     }
 
@@ -58,7 +58,7 @@ impl<S, F> ConsumeErr<S, F> {
 
 impl<S> ConsumeErr<S, Trace> {
     /// Trace the error passed to this [`ConsumeErr`] service for the provided trace level.
-    pub fn trace(inner: S, level: tracing::Level) -> Self {
+    pub const fn trace(inner: S, level: tracing::Level) -> Self {
         Self::new(inner, Trace(level))
     }
 }
@@ -134,14 +134,14 @@ where
 
 impl<F> ConsumeErrLayer<F> {
     /// Creates a new [`ConsumeErrLayer`].
-    pub fn new(f: F) -> Self {
+    pub const fn new(f: F) -> Self {
         ConsumeErrLayer { f }
     }
 }
 
 impl ConsumeErrLayer<Trace> {
     /// Creates a new [`ConsumeErrLayer`] to trace the consumed error.
-    pub fn trace(level: tracing::Level) -> Self {
+    pub const fn trace(level: tracing::Level) -> Self {
         Self::new(Trace(level))
     }
 }

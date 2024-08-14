@@ -47,7 +47,7 @@ pub enum GrpcCode {
 }
 
 impl GrpcCode {
-    pub(crate) fn into_bitmask(self) -> GrpcCodeBitmask {
+    pub(crate) const fn into_bitmask(self) -> GrpcCodeBitmask {
         match self {
             Self::Ok => GrpcCodeBitmask::OK,
             Self::Cancelled => GrpcCodeBitmask::CANCELLED,
@@ -144,7 +144,7 @@ impl Default for GrpcErrorsAsFailures {
 
 impl GrpcErrorsAsFailures {
     /// Create a new [`GrpcErrorsAsFailures`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             success_codes: GrpcCodeBitmask::OK,
         }

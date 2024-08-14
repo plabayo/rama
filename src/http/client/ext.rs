@@ -683,7 +683,7 @@ mod test {
             },
             IntoResponse,
         },
-        service::{BoxService, ServiceBuilder},
+        service::{layer::MapResultLayer, service_fn, BoxService, Layer},
         utils::backoff::ExponentialBackoff,
     };
     use std::convert::Infallible;
@@ -732,19 +732,23 @@ mod test {
     type HttpClient<S> = BoxService<S, Request, Response, HttpClientError>;
 
     fn client<S: Send + Sync + 'static>() -> HttpClient<S> {
-        let builder = ServiceBuilder::new()
-            .map_result(map_internal_client_error)
-            .layer(TraceLayer::new_for_http());
+        let builder = (
+            MapResultLayer::new(map_internal_client_error),
+            TraceLayer::new_for_http(),
+        );
 
         #[cfg(feature = "compression")]
-        let builder = builder.layer(crate::http::layer::decompression::DecompressionLayer::new());
+        let builder = (
+            builder,
+            crate::http::layer::decompression::DecompressionLayer::new(),
+        );
 
-        builder
-            .layer(RetryLayer::new(
-                ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
-            ))
-            .layer(AddRequiredRequestHeadersLayer::default())
-            .service_fn(fake_client_fn)
+        (
+            builder,
+            RetryLayer::new(ManagedPolicy::default().with_backoff(ExponentialBackoff::default())),
+            AddRequiredRequestHeadersLayer::default(),
+        )
+            .layer(service_fn(fake_client_fn))
             .boxed()
     }
 

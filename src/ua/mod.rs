@@ -43,7 +43,7 @@
 //! ```
 //! use rama::{
 //!     http::{client::HttpClientExt, IntoResponse, Request, Response, StatusCode},
-//!     service::{Context, ServiceBuilder},
+//!     service::{Context, Layer, service_fn},
 //!     ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
 //! };
 //! use std::convert::Infallible;
@@ -62,9 +62,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() {
-//! let service = ServiceBuilder::new()
-//!     .layer(UserAgentClassifierLayer::new())
-//!     .service_fn(handle);
+//! let service = UserAgentClassifierLayer::new().layer(service_fn(handle));
 //!
 //! let _ = service
 //!     .get("http://www.example.com")

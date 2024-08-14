@@ -47,9 +47,9 @@ use rama::{
     service::{
         layer::{
             limit::policy::{ConcurrentPolicy, LimitReached},
-            LimitLayer,
+            LimitLayer, MapResultLayer, TraceErrLayer,
         },
-        ServiceBuilder,
+        service_fn, Layer,
     },
     utils::{backoff::ExponentialBackoff, combinators::Either},
 };
@@ -62,8 +62,8 @@ async fn main() {
     HttpServer::auto(exec)
         .listen(
             "0.0.0.0:62008",
-            ServiceBuilder::new()
-                .map_result(|result: Result<Response, BoxError>| match result {
+            (
+                MapResultLayer::new(|result: Result<Response, BoxError>| match result {
                     Ok(response) => Ok(response),
                     Err(box_error) => {
                         if box_error.downcast_ref::<LimitReached>().is_some() {
@@ -85,14 +85,14 @@ async fn main() {
                                 .into_response())
                         }
                     }
-                })
-                .trace_err()
+                }),
+                TraceErrLayer::new(),
                 // using the [`Either`] combinator you can make tree-like structures,
                 // to make as complex rate limiting logic as you wish.
                 //
                 // For more then 2 variants you can use [`Either3`], [`Either4`], and so on.
                 // Keep it as simple as possible for your own sanity however...
-                .layer(LimitLayer::new(Arc::new(vec![
+                LimitLayer::new(Arc::new(vec![
                     // external addresses are limited to 1 connection at a time,
                     // when choosing to use backoff, they have to be of same type (generic B),
                     // but you can make them also optional to not use backoff for some, while using it for others
@@ -134,8 +134,9 @@ async fn main() {
                             )),
                         ))),
                     ),
-                ])))
-                .service_fn(|req: Request| async move {
+                ])),
+            )
+                .layer(service_fn(|req: Request| async move {
                     if req.uri().path().ends_with("/slow") {
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }
@@ -146,7 +147,7 @@ async fn main() {
                         }))
                         .into_response(),
                     )
-                }),
+                })),
         )
         .await
         .unwrap();

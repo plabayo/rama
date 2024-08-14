@@ -40,7 +40,7 @@ use rama::http::matcher::HttpMatcher;
 use rama::http::response::Html;
 use rama::http::service::web::{extract::Form, WebService};
 use rama::http::{IntoResponse, Response};
-use rama::service::ServiceBuilder;
+use rama::service::Layer;
 use rama::{http::server::HttpServer, rt::Executor};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -73,9 +73,8 @@ async fn main() {
             .listen_graceful(
                 guard,
                 "127.0.0.1:62002",
-                ServiceBuilder::new()
-                    .layer(TraceLayer::new_for_http())
-                    .service(
+                TraceLayer::new_for_http().
+                    layer(
                         WebService::default()
                             .get(
                                 "/",
@@ -96,7 +95,7 @@ async fn main() {
                             )
                             .on(HttpMatcher::method_get().or_method_post().and_path("/form"), send_form_data),
                     ),
-            )
+                )
             .await
             .expect("failed to run service");
     });

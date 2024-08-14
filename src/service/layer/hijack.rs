@@ -46,7 +46,7 @@ where
 
 impl<S, H, M> HijackService<S, H, M> {
     /// Create a new `HijackService`.
-    pub fn new(inner: S, hijack: H, matcher: M) -> Self {
+    pub const fn new(inner: S, hijack: H, matcher: M) -> Self {
         Self {
             inner,
             hijack,
@@ -122,7 +122,7 @@ where
 
 impl<H, M> HijackLayer<H, M> {
     /// Create a new [`HijackLayer`].
-    pub fn new(matcher: M, hijack: H) -> Self {
+    pub const fn new(matcher: M, hijack: H) -> Self {
         Self { hijack, matcher }
     }
 }

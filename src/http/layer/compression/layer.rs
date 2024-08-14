@@ -119,7 +119,7 @@ mod tests {
 
     use crate::http::dep::http_body_util::BodyExt;
     use crate::http::{header::ACCEPT_ENCODING, Body, Request, Response};
-    use crate::service::{Context, Service, ServiceBuilder};
+    use crate::service::{service_fn, Context, Service};
 
     use std::convert::Infallible;
     use tokio::fs::File;
@@ -143,10 +143,8 @@ mod tests {
             .br(false)
             .gzip(false);
 
-        let service = ServiceBuilder::new()
-            // Compress responses based on the `Accept-Encoding` header.
-            .layer(deflate_only_layer)
-            .service_fn(handle);
+        // Compress responses based on the `Accept-Encoding` header.
+        let service = deflate_only_layer.layer(service_fn(handle));
 
         // Call the service with the deflate only layer
         let request = Request::builder()
@@ -168,10 +166,8 @@ mod tests {
             .gzip(false)
             .deflate(false);
 
-        let service = ServiceBuilder::new()
-            // Compress responses based on the `Accept-Encoding` header.
-            .layer(br_only_layer)
-            .service_fn(handle);
+        // Compress responses based on the `Accept-Encoding` header.
+        let service = br_only_layer.layer(service_fn(handle));
 
         // Call the service with the br only layer
         let request = Request::builder()

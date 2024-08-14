@@ -37,7 +37,7 @@ use rama::{
     },
     net::{stream::layer::http::BodyLimitLayer, user::Basic},
     rt::Executor,
-    service::{service_fn, Context, Service, ServiceBuilder},
+    service::{service_fn, Context, Layer, Service},
     tcp::{server::TcpListener, utils::is_connection_error},
     tls::{
         client::ClientHello,
@@ -130,30 +130,32 @@ async fn main() {
 
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec.clone()).service(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
+            (
+                TraceLayer::new_for_http(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filter
-                .layer(ProxyAuthLayer::new(Basic::new("john", "secret")))
-                .layer(UpgradeLayer::new(
+                ProxyAuthLayer::new(Basic::new("john", "secret")),
+                UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
-                ))
-                .service_fn(http_plain_proxy),
+                ),
+            )
+                .layer(service_fn(http_plain_proxy)),
         );
 
         tcp_service
             .serve_graceful(
                 guard,
-                ServiceBuilder::new()
+                (
                     // protect the http proxy from too large bodies, both from request and response end
-                    .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024))
-                    .layer(TlsAcceptorLayer::with_client_config_handler(
+                    BodyLimitLayer::symmetric(2 * 1024 * 1024),
+                    TlsAcceptorLayer::with_client_config_handler(
                         Arc::new(tls_server_config),
                         tls_client_config_handler,
-                    ))
-                    .service(http_service),
+                    ),
+                )
+                    .layer(http_service),
             )
             .await;
     });

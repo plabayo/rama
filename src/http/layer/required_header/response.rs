@@ -23,7 +23,7 @@ pub struct AddRequiredResponseHeadersLayer {
 
 impl AddRequiredResponseHeadersLayer {
     /// Create a new [`AddRequiredResponseHeadersLayer`].
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self { overwrite: false }
     }
 
@@ -31,7 +31,7 @@ impl AddRequiredResponseHeadersLayer {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
-    pub fn overwrite(mut self, overwrite: bool) -> Self {
+    pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
     }
@@ -66,7 +66,7 @@ pub struct AddRequiredResponseHeaders<S> {
 
 impl<S> AddRequiredResponseHeaders<S> {
     /// Create a new [`AddRequiredResponseHeaders`].
-    pub fn new(inner: S) -> Self {
+    pub const fn new(inner: S) -> Self {
         Self {
             inner,
             overwrite: false,
@@ -77,7 +77,7 @@ impl<S> AddRequiredResponseHeaders<S> {
     /// If set to `true`, the headers will be overwritten.
     ///
     /// Default is `false`.
-    pub fn overwrite(mut self, overwrite: bool) -> Self {
+    pub const fn overwrite(mut self, overwrite: bool) -> Self {
         self.overwrite = overwrite;
         self
     }
@@ -141,18 +141,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{http::Body, service::ServiceBuilder};
+    use crate::{
+        http::Body,
+        service::{service_fn, Layer},
+    };
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn add_required_response_headers() {
-        let svc = ServiceBuilder::new()
-            .layer(AddRequiredResponseHeadersLayer::default())
-            .service_fn(|_ctx: Context<()>, req: Request| async move {
+        let svc = AddRequiredResponseHeadersLayer::default().layer(service_fn(
+            |_ctx: Context<()>, req: Request| async move {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            });
+            },
+        ));
 
         let req = Request::new(Body::empty());
         let resp = svc.serve(Context::default(), req).await.unwrap();
@@ -166,9 +169,9 @@ mod tests {
 
     #[tokio::test]
     async fn add_required_response_headers_overwrite() {
-        let svc = ServiceBuilder::new()
-            .layer(AddRequiredResponseHeadersLayer::new().overwrite(true))
-            .service_fn(|_ctx: Context<()>, req: Request| async move {
+        let svc = AddRequiredResponseHeadersLayer::new()
+            .overwrite(true)
+            .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
                 assert!(!req.headers().contains_key(SERVER));
                 assert!(!req.headers().contains_key(DATE));
                 Ok::<_, Infallible>(
@@ -178,7 +181,7 @@ mod tests {
                         .body(Body::empty())
                         .unwrap(),
                 )
-            });
+            }));
 
         let req = Request::new(Body::empty());
         let resp = svc.serve(Context::default(), req).await.unwrap();

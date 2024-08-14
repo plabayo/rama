@@ -5,7 +5,7 @@
 //! ```rust
 //! use std::convert::Infallible;
 //! use rama::error::BoxError;
-//! use rama::service::{Context, Service, ServiceBuilder};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::http::{Body, Request, Response, header::HeaderName};
 //! use rama::http::layer::propagate_headers::PropagateHeaderLayer;
 //!
@@ -16,10 +16,10 @@
 //!     # Ok(Response::new(Body::default()))
 //! }
 //!
-//! let mut svc = ServiceBuilder::new()
+//! let mut svc = (
 //!     // This will copy `x-request-id` headers from requests onto responses.
-//!     .layer(PropagateHeaderLayer::new(HeaderName::from_static("x-request-id")))
-//!     .service_fn(handle);
+//!     PropagateHeaderLayer::new(HeaderName::from_static("x-request-id")),
+//! ).layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let request = Request::builder()
@@ -50,7 +50,7 @@ pub struct PropagateHeaderLayer {
 
 impl PropagateHeaderLayer {
     /// Create a new [`PropagateHeaderLayer`].
-    pub fn new(header: HeaderName) -> Self {
+    pub const fn new(header: HeaderName) -> Self {
         Self { header }
     }
 }
@@ -80,7 +80,7 @@ pub struct PropagateHeader<S> {
 
 impl<S> PropagateHeader<S> {
     /// Create a new [`PropagateHeader`] that propagates the given header.
-    pub fn new(inner: S, header: HeaderName) -> Self {
+    pub const fn new(inner: S, header: HeaderName) -> Self {
         Self { inner, header }
     }
 
