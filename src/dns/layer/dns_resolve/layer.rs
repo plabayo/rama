@@ -32,23 +32,21 @@ mod tests {
     use crate::{
         dns::layer::DnsResolveMode,
         http::Request,
-        service::{Context, Service, ServiceBuilder},
+        service::{service_fn, Context, Service},
     };
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn test_dns_resolve_mode_layer() {
-        let svc = ServiceBuilder::new()
-            .layer(DnsResolveModeLayer::new(HeaderName::from_static(
-                "x-dns-resolve",
-            )))
-            .service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+        let svc = DnsResolveModeLayer::new(HeaderName::from_static("x-dns-resolve")).layer(
+            service_fn(|ctx: Context<()>, _req: Request<()>| async move {
                 assert_eq!(
                     ctx.get::<DnsResolveMode>().unwrap(),
                     &DnsResolveMode::eager()
                 );
                 Ok::<_, Infallible>(())
-            });
+            }),
+        );
 
         let ctx = Context::default();
         let req = Request::builder()

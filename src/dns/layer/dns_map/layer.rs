@@ -32,15 +32,14 @@ mod tests {
     use crate::{
         http::{Request, RequestContext},
         net::address::Host,
-        service::{Context, Service, ServiceBuilder},
+        service::{service_fn, Context, Service},
     };
     use std::net::{IpAddr, Ipv4Addr};
 
     #[tokio::test]
     async fn test_dns_map_layer() {
-        let svc = ServiceBuilder::new()
-            .layer(DnsMapLayer::new(HeaderName::from_static("x-dns-map")))
-            .service_fn(|mut ctx: Context<()>, req: Request<()>| async move {
+        let svc = DnsMapLayer::new(HeaderName::from_static("x-dns-map")).layer(service_fn(
+            |mut ctx: Context<()>, req: Request<()>| async move {
                 match ctx
                     .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
                     .map(|req_ctx| req_ctx.authority.host().clone())
@@ -71,7 +70,8 @@ mod tests {
                     }
                     Err(err) => Err(err),
                 }
-            });
+            },
+        ));
 
         let ctx = Context::default();
         let req = Request::builder()

@@ -44,7 +44,7 @@ use rama::{
     },
     service::{
         layer::{ConsumeErrLayer, GetExtensionLayer},
-        Context, ServiceBuilder,
+        service_fn, Context, Layer,
     },
     tcp::{
         client::service::{Forwarder, HttpConnector},
@@ -108,20 +108,17 @@ async fn main() {
             tls_server_config.keylog_filename = Some(keylog_file);
         }
 
-        let tcp_service = ServiceBuilder::new()
-            .layer(TlsAcceptorLayer::new(Arc::new(tls_server_config)).with_store_client_hello(true))
-            .layer(GetExtensionLayer::new(|st: SecureTransport| async move {
+        let tcp_service = (
+            TlsAcceptorLayer::new(Arc::new(tls_server_config)).with_store_client_hello(true),
+            GetExtensionLayer::new(|st: SecureTransport| async move {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!(?client_hello, "secure connection established");
-            }))
-            .service(
-                Forwarder::new(([127, 0, 0, 1], 62801)).connector(
-                    ServiceBuilder::new()
-                        // ha proxy protocol used to forwarded the client original IP
-                        .layer(HaProxyClientLayer::tcp())
-                        .service(HttpConnector::new()),
-                ),
-            );
+            }),
+        )
+            .layer(Forwarder::new(([127, 0, 0, 1], 62801)).connector(
+                // ha proxy protocol used to forwarded the client original IP
+                HaProxyClientLayer::tcp().layer(HttpConnector::new()),
+            ));
 
         TcpListener::bind("127.0.0.1:63801")
             .await
@@ -132,10 +129,8 @@ async fn main() {
 
     // create http server
     shutdown.spawn_task_fn(|guard| async {
-        let tcp_service = ServiceBuilder::new()
-            .layer(ConsumeErrLayer::default())
-            .layer(HaProxyServerLayer::new())
-            .service_fn(internal_tcp_service_fn);
+        let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
+            .layer(service_fn(internal_tcp_service_fn));
 
         TcpListener::bind("127.0.0.1:62801")
             .await

@@ -672,7 +672,7 @@ mod tests {
             Protocol,
         },
         proxy::{MemoryProxyDB, Proxy, ProxyCsvRowReader, StringFilter},
-        service::ServiceBuilder,
+        service::service_fn,
         utils::str::NonEmptyString,
     };
     use std::{convert::Infallible, str::FromStr, sync::Arc};
@@ -723,11 +723,11 @@ mod tests {
         ])
         .unwrap();
 
-        let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default))
-            .service_fn(|ctx: Context<()>, _: Request| async move {
+        let service = ProxyDBLayer::new(Arc::new(db))
+            .filter_mode(ProxyFilterMode::Default)
+            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-            });
+            }));
 
         let mut ctx = Context::default();
         ctx.insert(ProxyFilter {
@@ -774,11 +774,11 @@ mod tests {
             asn: Some(Asn::unspecified()),
         };
 
-        let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(proxy)).filter_mode(ProxyFilterMode::Default))
-            .service_fn(|ctx: Context<()>, _: Request| async move {
+        let service = ProxyDBLayer::new(Arc::new(proxy))
+            .filter_mode(ProxyFilterMode::Default)
+            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-            });
+            }));
 
         let mut ctx = Context::default();
         ctx.insert(ProxyFilter {
@@ -825,39 +825,34 @@ mod tests {
             asn: Some(Asn::unspecified()),
         };
 
-        let service = ServiceBuilder::new()
-            .layer(
-                ProxyDBLayer::new(Arc::new(proxy))
-                    .filter_mode(ProxyFilterMode::Default)
-                    .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
-                        if proxy
-                            .pool_id
-                            .as_ref()
-                            .map(|id| id.as_ref() == "routers")
-                            .unwrap_or_default()
-                        {
-                            use std::fmt::Write;
+        let service = ProxyDBLayer::new(Arc::new(proxy))
+            .filter_mode(ProxyFilterMode::Default)
+            .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+                if proxy
+                    .pool_id
+                    .as_ref()
+                    .map(|id| id.as_ref() == "routers")
+                    .unwrap_or_default()
+                {
+                    use std::fmt::Write;
 
-                            let mut output = String::new();
+                    let mut output = String::new();
 
-                            if let Some(countries) =
-                                filter.country.as_ref().filter(|t| !t.is_empty())
-                            {
-                                let _ = write!(output, "country-{}", countries[0]);
-                            }
-                            if let Some(states) = filter.state.as_ref().filter(|t| !t.is_empty()) {
-                                let _ = write!(output, "state-{}", states[0]);
-                            }
+                    if let Some(countries) = filter.country.as_ref().filter(|t| !t.is_empty()) {
+                        let _ = write!(output, "country-{}", countries[0]);
+                    }
+                    if let Some(states) = filter.state.as_ref().filter(|t| !t.is_empty()) {
+                        let _ = write!(output, "state-{}", states[0]);
+                    }
 
-                            return (!output.is_empty()).then(|| format!("{username}-{output}"));
-                        }
+                    return (!output.is_empty()).then(|| format!("{username}-{output}"));
+                }
 
-                        None
-                    }),
-            )
-            .service_fn(|ctx: Context<()>, _: Request| async move {
+                None
+            })
+            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-            });
+            }));
 
         let mut ctx = Context::default();
         ctx.insert(ProxyFilter {
@@ -927,11 +922,11 @@ mod tests {
         ])
         .unwrap();
 
-        let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default))
-            .service_fn(|ctx: Context<()>, _| async move {
+        let service = ProxyDBLayer::new(Arc::new(db))
+            .filter_mode(ProxyFilterMode::Default)
+            .layer(service_fn(|ctx: Context<()>, _| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-            });
+            }));
 
         let mut ctx = Context::default();
         ctx.insert(ProxyFilter {
@@ -966,15 +961,12 @@ mod tests {
     async fn test_proxy_db_service_preserve_proxy_address() {
         let db = memproxydb().await;
 
-        let service = ServiceBuilder::new()
-            .layer(
-                ProxyDBLayer::new(Arc::new(db))
-                    .preserve_proxy(true)
-                    .filter_mode(ProxyFilterMode::Default),
-            )
-            .service_fn(|ctx: Context<()>, _: Request| async move {
+        let service = ProxyDBLayer::new(Arc::new(db))
+            .preserve_proxy(true)
+            .filter_mode(ProxyFilterMode::Default)
+            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-            });
+            }));
 
         let mut ctx = Context::default();
         ctx.insert(ProxyAddress::try_from("http://john:secret@1.2.3.4:1234").unwrap());
@@ -995,11 +987,11 @@ mod tests {
     async fn test_proxy_db_service_optional() {
         let db = memproxydb().await;
 
-        let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(db)))
-            .service_fn(|ctx: Context<()>, _: Request| async move {
+        let service = ProxyDBLayer::new(Arc::new(db)).layer(service_fn(
+            |ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().cloned())
-            });
+            },
+        ));
 
         for (filter, expected_authority, req) in [
             (
@@ -1059,11 +1051,11 @@ mod tests {
     async fn test_proxy_db_service_default() {
         let db = memproxydb().await;
 
-        let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default))
-            .service_fn(|ctx: Context<()>, _: Request| async move {
+        let service = ProxyDBLayer::new(Arc::new(db))
+            .filter_mode(ProxyFilterMode::Default)
+            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-            });
+            }));
 
         for (filter, expected_addresses, req_info) in [
             (None, "0.20.204.227:8373,104.207.92.167:9387,105.150.55.60:4898,106.213.197.28:9110,113.6.21.212:4525,115.29.251.35:5712,119.146.94.132:7851,129.204.152.130:6524,134.190.189.202:5772,136.186.95.10:7095,137.220.180.169:4929,140.249.154.18:5800,145.57.31.149:6304,151.254.135.9:6961,153.206.209.221:8696,162.97.174.152:1673,169.179.161.206:6843,171.174.56.89:5744,178.189.117.217:6496,182.34.76.182:2374,184.209.230.177:1358,193.188.239.29:3541,193.26.37.125:3780,204.168.216.113:1096,208.224.120.97:7118,209.176.177.182:4311,215.49.63.89:9458,223.234.242.63:7211,230.159.143.41:7296,233.22.59.115:1653,24.155.249.112:2645,247.118.71.100:1033,249.221.15.121:7434,252.69.242.136:4791,253.138.153.41:2640,28.139.151.127:2809,4.20.243.186:9155,42.54.35.118:6846,45.59.69.12:5934,46.247.45.238:3522,54.226.47.54:7442,61.112.212.160:3842,66.142.40.209:4251,66.171.139.181:4449,69.246.162.84:8964,75.43.123.181:7719,76.128.58.167:4797,85.14.163.105:8362,92.227.104.237:6161,97.192.206.72:6067", (Version::HTTP_11, "GET", "http://example.com")),
@@ -1107,20 +1099,16 @@ mod tests {
     async fn test_proxy_db_service_fallback() {
         let db = memproxydb().await;
 
-        let service = ServiceBuilder::new()
-            .layer(
-                ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Fallback(
-                    ProxyFilter {
-                        datacenter: Some(true),
-                        residential: Some(false),
-                        mobile: Some(false),
-                        ..Default::default()
-                    },
-                )),
-            )
-            .service_fn(|ctx: Context<()>, _: Request| async move {
+        let service = ProxyDBLayer::new(Arc::new(db))
+            .filter_mode(ProxyFilterMode::Fallback(ProxyFilter {
+                datacenter: Some(true),
+                residential: Some(false),
+                mobile: Some(false),
+                ..Default::default()
+            }))
+            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-            });
+            }));
 
         for (filter, expected_addresses, req_info) in [
             (
@@ -1168,11 +1156,11 @@ mod tests {
     async fn test_proxy_db_service_required() {
         let db = memproxydb().await;
 
-        let service = ServiceBuilder::new()
-            .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Required))
-            .service_fn(|ctx: Context<()>, _: Request| async move {
+        let service = ProxyDBLayer::new(Arc::new(db))
+            .filter_mode(ProxyFilterMode::Required)
+            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-            });
+            }));
 
         for (filter, expected_address, req) in [
             (
@@ -1254,15 +1242,12 @@ mod tests {
     async fn test_proxy_db_service_required_with_predicate() {
         let db = memproxydb().await;
 
-        let service = ServiceBuilder::new()
-            .layer(
-                ProxyDBLayer::new(Arc::new(db))
-                    .filter_mode(ProxyFilterMode::Required)
-                    .select_predicate(|proxy: &Proxy| proxy.mobile),
-            )
-            .service_fn(|ctx: Context<()>, _: Request| async move {
+        let service = ProxyDBLayer::new(Arc::new(db))
+            .filter_mode(ProxyFilterMode::Required)
+            .select_predicate(|proxy: &Proxy| proxy.mobile)
+            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-            });
+            }));
 
         for (filter, expected, req) in [
             (

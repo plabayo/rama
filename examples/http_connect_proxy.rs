@@ -73,9 +73,7 @@ use rama::{
     },
     net::{address::Domain, stream::layer::http::BodyLimitLayer, user::Basic},
     rt::Executor,
-    service::{
-        context::Extensions, layer::HijackLayer, service_fn, Context, Service, ServiceBuilder,
-    },
+    service::{context::Extensions, layer::HijackLayer, service_fn, Context, Layer, Service},
     tcp::{server::TcpListener, utils::is_connection_error},
     utils::username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
@@ -111,14 +109,13 @@ async fn main() {
 
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec)
-            .service(
-                ServiceBuilder::new()
-                    .layer(TraceLayer::new_for_http())
+            .service((
+                    TraceLayer::new_for_http(),
                     // See [`ProxyAuthLayer::with_labels`] for more information,
                     // e.g. can also be used to extract upstream proxy filters
-                    .layer(ProxyAuthLayer::new(Basic::new("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>())
+                    ProxyAuthLayer::new(Basic::new("john", "secret")).with_labels::<(PriorityUsernameLabelParser, UsernameOpaqueLabelParser)>(),
                     // example of how one might insert an API layer into their proxy
-                    .layer(HijackLayer::new(
+                    HijackLayer::new(
                         DomainMatcher::exact(Domain::from_static("echo.example.internal")),
                         Arc::new(match_service!{
                             HttpMatcher::post("/lucky/:number") => |path: Path<APILuckyParams>| async move {
@@ -140,21 +137,21 @@ async fn main() {
                             },
                             _ => StatusCode::NOT_FOUND,
                         })
-                    ))
-                    .layer(UpgradeLayer::new(
+                    ),
+                    UpgradeLayer::new(
                         MethodMatcher::CONNECT,
                         service_fn(http_connect_accept),
                         service_fn(http_connect_proxy),
-                    ))
-                    .service(ServiceBuilder::new()
-                        .layer(RemoveResponseHeaderLayer::hop_by_hop())
-                        .layer(RemoveRequestHeaderLayer::hop_by_hop())
-                        .service_fn(http_plain_proxy)));
+                    ),
+                    RemoveResponseHeaderLayer::hop_by_hop(),
+                    RemoveRequestHeaderLayer::hop_by_hop(),
+                )
+            .layer(service_fn(http_plain_proxy)));
 
-            tcp_service.serve_graceful(guard, ServiceBuilder::new()
+            tcp_service.serve_graceful(guard, (
                 // protect the http proxy from too large bodies, both from request and response end
-                .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024))
-                .service(http_service)).await;
+                BodyLimitLayer::symmetric(2 * 1024 * 1024),
+            ).layer(http_service)).await;
     });
 
     graceful

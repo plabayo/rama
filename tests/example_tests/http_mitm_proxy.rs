@@ -8,7 +8,7 @@ use rama::{
     http::{response::Json, server::HttpServer, BodyExtractExt, Request},
     net::address::ProxyAddress,
     rt::Executor,
-    service::{service_fn, Context, ServiceBuilder},
+    service::{service_fn, Context, Layer},
     tcp::server::TcpListener,
     tls::rustls::server::TlsAcceptorLayer,
 };
@@ -47,18 +47,14 @@ async fn test_http_mitm_proxy() {
 
     let executor = Executor::default();
 
-    let tcp_service = ServiceBuilder::new()
-        .layer(TlsAcceptorLayer::new(Arc::new(tls_server_config)))
-        .service(
-            HttpServer::auto(executor).service(ServiceBuilder::new().service_fn(
-                |req: Request| async move {
-                    Ok(Json(json!({
-                        "method": req.method().as_str(),
-                        "path": req.uri().path(),
-                    })))
-                },
-            )),
-        );
+    let tcp_service = TlsAcceptorLayer::new(Arc::new(tls_server_config)).layer(
+        HttpServer::auto(executor).service(service_fn(|req: Request| async move {
+            Ok(Json(json!({
+                "method": req.method().as_str(),
+                "path": req.uri().path(),
+            })))
+        })),
+    );
 
     tokio::spawn(async {
         TcpListener::bind("127.0.0.1:63004")

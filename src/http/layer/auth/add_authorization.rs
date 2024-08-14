@@ -305,14 +305,12 @@ mod tests {
     use crate::error::BoxError;
     use crate::http::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::http::{Body, Request, Response, StatusCode};
-    use crate::service::{Context, Service, ServiceBuilder};
+    use crate::service::{service_fn, Context, Service};
 
     #[tokio::test]
     async fn basic() {
         // service that requires auth for all requests
-        let svc = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::basic("foo", "bar"))
-            .service_fn(echo);
+        let svc = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
 
         // make a client that adds auth
         let client = AddAuthorization::basic(svc, "foo", "bar");
@@ -328,9 +326,7 @@ mod tests {
     #[tokio::test]
     async fn token() {
         // service that requires auth for all requests
-        let svc = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::bearer("foo"))
-            .service_fn(echo);
+        let svc = ValidateRequestHeaderLayer::bearer("foo").layer(service_fn(echo));
 
         // make a client that adds auth
         let client = AddAuthorization::bearer(svc, "foo");
@@ -345,14 +341,14 @@ mod tests {
 
     #[tokio::test]
     async fn making_header_sensitive() {
-        let svc = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::bearer("foo"))
-            .service_fn(|request: Request<Body>| async move {
+        let svc = ValidateRequestHeaderLayer::bearer("foo").layer(service_fn(
+            |request: Request<Body>| async move {
                 let auth = request.headers().get(http::header::AUTHORIZATION).unwrap();
                 assert!(auth.is_sensitive());
 
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            });
+            },
+        ));
 
         let client = AddAuthorization::bearer(svc, "foo").as_sensitive(true);
 

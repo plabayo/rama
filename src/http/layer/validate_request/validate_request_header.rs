@@ -189,13 +189,15 @@ mod tests {
     use super::*;
 
     use crate::http::{header, Body, StatusCode};
-    use crate::{error::BoxError, service::ServiceBuilder};
+    use crate::{
+        error::BoxError,
+        service::{service_fn, Layer},
+    };
 
     #[tokio::test]
     async fn valid_accept_header() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("application/json"))
-            .service_fn(echo);
+        let service =
+            ValidateRequestHeaderLayer::accept("application/json").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "application/json")
@@ -209,9 +211,8 @@ mod tests {
 
     #[tokio::test]
     async fn valid_accept_header_accept_all_json() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("application/json"))
-            .service_fn(echo);
+        let service =
+            ValidateRequestHeaderLayer::accept("application/json").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "application/*")
@@ -225,9 +226,8 @@ mod tests {
 
     #[tokio::test]
     async fn valid_accept_header_accept_all() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("application/json"))
-            .service_fn(echo);
+        let service =
+            ValidateRequestHeaderLayer::accept("application/json").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "*/*")
@@ -241,9 +241,8 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_accept_header() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("application/json"))
-            .service_fn(echo);
+        let service =
+            ValidateRequestHeaderLayer::accept("application/json").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "invalid")
@@ -256,9 +255,8 @@ mod tests {
     }
     #[tokio::test]
     async fn not_accepted_accept_header_subtype() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("application/json"))
-            .service_fn(echo);
+        let service =
+            ValidateRequestHeaderLayer::accept("application/json").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "application/strings")
@@ -272,9 +270,8 @@ mod tests {
 
     #[tokio::test]
     async fn not_accepted_accept_header() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("application/json"))
-            .service_fn(echo);
+        let service =
+            ValidateRequestHeaderLayer::accept("application/json").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "text/strings")
@@ -288,9 +285,8 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_multiple_header_value() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("application/json"))
-            .service_fn(echo);
+        let service =
+            ValidateRequestHeaderLayer::accept("application/json").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "text/strings")
@@ -305,9 +301,8 @@ mod tests {
 
     #[tokio::test]
     async fn accepted_inner_header_value() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("application/json"))
-            .service_fn(echo);
+        let service =
+            ValidateRequestHeaderLayer::accept("application/json").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, "text/strings, invalid, application/json")
@@ -322,9 +317,7 @@ mod tests {
     #[tokio::test]
     async fn accepted_header_with_quotes_valid() {
         let value = "foo/bar; parisien=\"baguette, text/html, jambon, fromage\", application/*";
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("application/xml"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::accept("application/xml").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, value)
@@ -339,9 +332,7 @@ mod tests {
     #[tokio::test]
     async fn accepted_header_with_quotes_invalid() {
         let value = "foo/bar; parisien=\"baguette, text/html, jambon, fromage\"";
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::accept("text/html"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::accept("text/html").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::ACCEPT, value)

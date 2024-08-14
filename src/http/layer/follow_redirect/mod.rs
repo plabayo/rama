@@ -373,14 +373,12 @@ fn resolve_uri(relative: &str, base: &Uri) -> Option<Uri> {
 mod tests {
     use super::{policy::*, *};
     use crate::http::{header::LOCATION, Body};
-    use crate::service::ServiceBuilder;
+    use crate::service::{service_fn, Layer};
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn follows() {
-        let svc = ServiceBuilder::new()
-            .layer(FollowRedirectLayer::with_policy(Action::Follow))
-            .service_fn(handle);
+        let svc = FollowRedirectLayer::with_policy(Action::Follow).layer(service_fn(handle));
         let req = Request::builder()
             .uri("http://example.com/42")
             .body(Body::empty())
@@ -395,9 +393,7 @@ mod tests {
 
     #[tokio::test]
     async fn stops() {
-        let svc = ServiceBuilder::new()
-            .layer(FollowRedirectLayer::with_policy(Action::Stop))
-            .service_fn(handle);
+        let svc = FollowRedirectLayer::with_policy(Action::Stop).layer(service_fn(handle));
         let req = Request::builder()
             .uri("http://example.com/42")
             .body(Body::empty())
@@ -412,9 +408,7 @@ mod tests {
 
     #[tokio::test]
     async fn limited() {
-        let svc = ServiceBuilder::new()
-            .layer(FollowRedirectLayer::with_policy(Limited::new(10)))
-            .service_fn(handle);
+        let svc = FollowRedirectLayer::with_policy(Limited::new(10)).layer(service_fn(handle));
         let req = Request::builder()
             .uri("http://example.com/42")
             .body(Body::empty())

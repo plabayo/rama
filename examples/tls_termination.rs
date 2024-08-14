@@ -50,7 +50,7 @@ use rama::{
     proxy::pp::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
-    service::{layer::ConsumeErrLayer, Context, ServiceBuilder},
+    service::{layer::ConsumeErrLayer, service_fn, Context, Layer},
     tcp::{
         client::service::{Forwarder, HttpConnector},
         server::TcpListener,
@@ -140,19 +140,14 @@ async fn main() {
             )
             .expect("create tls server config");
 
-        let tcp_service = ServiceBuilder::new()
-            .layer(TlsAcceptorLayer::with_client_config_handler(
-                Arc::new(tls_server_config),
-                tls_client_config_handler,
-            ))
-            .service(
-                Forwarder::new(([127, 0, 0, 1], 62800)).connector(
-                    ServiceBuilder::new()
-                        // ha proxy protocol used to forwarded the client original IP
-                        .layer(HaProxyClientLayer::tcp())
-                        .service(HttpConnector::new()),
-                ),
-            );
+        let tcp_service = TlsAcceptorLayer::with_client_config_handler(
+            Arc::new(tls_server_config),
+            tls_client_config_handler,
+        )
+        .layer(Forwarder::new(([127, 0, 0, 1], 62800)).connector(
+            // ha proxy protocol used to forwarded the client original IP
+            HaProxyClientLayer::tcp().layer(HttpConnector::new()),
+        ));
 
         TcpListener::bind("127.0.0.1:63800")
             .await
@@ -163,10 +158,8 @@ async fn main() {
 
     // create http server
     shutdown.spawn_task_fn(|guard| async {
-        let tcp_service = ServiceBuilder::new()
-            .layer(ConsumeErrLayer::default())
-            .layer(HaProxyServerLayer::new())
-            .service_fn(internal_tcp_service_fn);
+        let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
+            .layer(service_fn(internal_tcp_service_fn));
 
         TcpListener::bind("127.0.0.1:62800")
             .await

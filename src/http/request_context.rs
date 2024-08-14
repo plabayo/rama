@@ -194,9 +194,9 @@ fn protocol_from_uri_or_context<State>(ctx: &Context<State>, uri: &Uri) -> Proto
 mod tests {
     use super::*;
     use crate::http::header::FORWARDED;
+    use crate::http::layer::forwarded::GetForwardedHeadersLayer;
     use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
-    use crate::service::Service;
-    use crate::{http::layer::forwarded::GetForwardedHeadersLayer, service::ServiceBuilder};
+    use crate::service::{service_fn, Layer, Service};
 
     #[test]
     fn test_request_context_from_request() {
@@ -287,14 +287,14 @@ mod tests {
                 },
             ),
         ] {
-            let svc = ServiceBuilder::new()
-                .layer(GetForwardedHeadersLayer::forwarded())
-                .service_fn(|mut ctx: Context<()>, req: Request<()>| async move {
+            let svc = GetForwardedHeadersLayer::forwarded().layer(service_fn(
+                |mut ctx: Context<()>, req: Request<()>| async move {
                     ctx.get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| {
                         (ctx, &req).try_into()
                     })
                     .cloned()
-                });
+                },
+            ));
 
             let mut req_builder = Request::builder();
             for header in forwarded_str_vec.clone() {

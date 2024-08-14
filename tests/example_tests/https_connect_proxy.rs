@@ -6,7 +6,7 @@ use rama::{
     },
     net::address::ProxyAddress,
     rt::Executor,
-    service::{Context, ServiceBuilder},
+    service::{service_fn, Context, Layer},
 };
 use serde_json::{json, Value};
 
@@ -19,16 +19,14 @@ async fn test_https_connect_proxy() {
         HttpServer::auto(Executor::default())
             .listen(
                 "127.0.0.1:63002",
-                ServiceBuilder::new()
-                    .layer(CompressionLayer::new())
-                    .service_fn(|req: Request| async move {
-                        tracing::debug!(uri = %req.uri(), "serve request");
-                        Ok(Json(json!({
-                            "method": req.method().as_str(),
-                            "path": req.uri().path(),
-                        }))
-                        .into_response())
-                    }),
+                CompressionLayer::new().layer(service_fn(|req: Request| async move {
+                    tracing::debug!(uri = %req.uri(), "serve request");
+                    Ok(Json(json!({
+                        "method": req.method().as_str(),
+                        "path": req.uri().path(),
+                    }))
+                    .into_response())
+                })),
             )
             .await
             .unwrap();

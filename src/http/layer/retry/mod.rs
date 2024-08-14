@@ -176,7 +176,7 @@ mod test {
         http::{
             layer::retry::managed::DoNotRetry, BodyExtractExt, IntoResponse, Response, StatusCode,
         },
-        service::{Context, ServiceBuilder},
+        service::{service_fn, Context, Layer},
         utils::{backoff::ExponentialBackoff, rng::HasherRng},
     };
     use std::{
@@ -229,16 +229,16 @@ mod test {
 
         let retry_policy = ManagedPolicy::new(retry).with_backoff(backoff);
 
-        let service = ServiceBuilder::new()
-            .layer(RetryLayer::new(retry_policy))
-            .service_fn(|_ctx, req: Request<RetryBody>| async {
+        let service = RetryLayer::new(retry_policy).layer(service_fn(
+            |_ctx, req: Request<RetryBody>| async {
                 let txt = req.try_into_string().await.unwrap();
                 match txt.as_str() {
                     "internal" => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
                     "error" => Err(crate::error::BoxError::from("custom error")),
                     _ => Ok(txt.into_response()),
                 }
-            });
+            },
+        ));
 
         fn request(s: &'static str) -> Request {
             Request::builder().body(s.into()).unwrap()

@@ -24,10 +24,6 @@ pub(crate) use svc_hyper::HyperService;
 pub mod layer;
 pub use layer::Layer;
 
-mod builder;
-#[doc(inline)]
-pub use builder::ServiceBuilder;
-
 mod identity;
 #[doc(inline)]
 pub use identity::IdentityService;

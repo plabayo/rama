@@ -18,7 +18,7 @@ use rama::{
     rt::Executor,
     service::{
         layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
-        service_fn, Context, Service, ServiceBuilder,
+        service_fn, Context, Layer, Service,
     },
     tcp::{server::TcpListener, utils::is_connection_error},
 };
@@ -70,32 +70,28 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
 
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
-                .layer(UpgradeLayer::new(
+            (
+                TraceLayer::new_for_http(),
+                UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
-                ))
-                .service(
-                    ServiceBuilder::new()
-                        .layer(RemoveResponseHeaderLayer::hop_by_hop())
-                        .layer(RemoveRequestHeaderLayer::hop_by_hop())
-                        .service_fn(http_plain_proxy),
                 ),
+                RemoveResponseHeaderLayer::hop_by_hop(),
+                RemoveRequestHeaderLayer::hop_by_hop(),
+            )
+                .layer(service_fn(http_plain_proxy)),
         );
 
-        let tcp_service_builder = ServiceBuilder::new()
+        let tcp_service_builder = (
             // protect the http proxy from too large bodies, both from request and response end
-            .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024))
-            .layer(
-                (cfg.concurrent > 0)
-                    .then(|| LimitLayer::new(ConcurrentPolicy::max(cfg.concurrent))),
-            )
-            .layer((cfg.timeout > 0).then(|| TimeoutLayer::new(Duration::from_secs(cfg.timeout))));
+            BodyLimitLayer::symmetric(2 * 1024 * 1024),
+            (cfg.concurrent > 0).then(|| LimitLayer::new(ConcurrentPolicy::max(cfg.concurrent))),
+            (cfg.timeout > 0).then(|| TimeoutLayer::new(Duration::from_secs(cfg.timeout))),
+        );
 
         tcp_service
-            .serve_graceful(guard, tcp_service_builder.service(http_service))
+            .serve_graceful(guard, tcp_service_builder.layer(http_service))
             .await;
     });
 

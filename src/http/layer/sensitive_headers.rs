@@ -284,8 +284,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::header;
-    use crate::service::ServiceBuilder;
+    use crate::{http::header, service::service_fn};
 
     #[tokio::test]
     async fn multiple_value_header() {
@@ -318,12 +317,11 @@ mod tests {
             Ok(resp)
         }
 
-        let service = ServiceBuilder::new()
-            .layer(SetSensitiveRequestHeadersLayer::new(vec![header::COOKIE]))
-            .layer(SetSensitiveResponseHeadersLayer::new(vec![
-                header::SET_COOKIE,
-            ]))
-            .service_fn(response_set_cookie);
+        let service = (
+            SetSensitiveRequestHeadersLayer::new(vec![header::COOKIE]),
+            SetSensitiveResponseHeadersLayer::new(vec![header::SET_COOKIE]),
+        )
+            .layer(service_fn(response_set_cookie));
 
         let mut req = http::Request::new(());
         req.headers_mut()

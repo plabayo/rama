@@ -177,22 +177,22 @@ mod test {
     use super::*;
     use crate::{
         http::Body,
-        service::{service_fn, Service, ServiceBuilder},
+        service::{service_fn, Layer, Service},
     };
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn remove_request_header_prefix() {
-        let svc = ServiceBuilder::new()
-            .layer(RemoveRequestHeaderLayer::prefix("x-foo"))
-            .service(service_fn(|_ctx: Context<()>, req: Request| async move {
+        let svc = RemoveRequestHeaderLayer::prefix("x-foo").layer(service_fn(
+            |_ctx: Context<()>, req: Request| async move {
                 assert!(req.headers().get("x-foo-bar").is_none());
                 assert_eq!(
                     req.headers().get("foo").map(|v| v.to_str().unwrap()),
                     Some("bar")
                 );
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            }));
+            },
+        ));
         let req = Request::builder()
             .header("x-foo-bar", "baz")
             .header("foo", "bar")
@@ -203,16 +203,16 @@ mod test {
 
     #[tokio::test]
     async fn remove_request_header_exact() {
-        let svc = ServiceBuilder::new()
-            .layer(RemoveRequestHeaderLayer::exact("x-foo"))
-            .service(service_fn(|_ctx: Context<()>, req: Request| async move {
+        let svc = RemoveRequestHeaderLayer::exact("x-foo").layer(service_fn(
+            |_ctx: Context<()>, req: Request| async move {
                 assert!(req.headers().get("x-foo").is_none());
                 assert_eq!(
                     req.headers().get("x-foo-bar").map(|v| v.to_str().unwrap()),
                     Some("baz")
                 );
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            }));
+            },
+        ));
         let req = Request::builder()
             .header("x-foo", "baz")
             .header("x-foo-bar", "baz")
@@ -223,16 +223,16 @@ mod test {
 
     #[tokio::test]
     async fn remove_request_header_hop_by_hop() {
-        let svc = ServiceBuilder::new()
-            .layer(RemoveRequestHeaderLayer::hop_by_hop())
-            .service(service_fn(|_ctx: Context<()>, req: Request| async move {
+        let svc = RemoveRequestHeaderLayer::hop_by_hop().layer(service_fn(
+            |_ctx: Context<()>, req: Request| async move {
                 assert!(req.headers().get("connection").is_none());
                 assert_eq!(
                     req.headers().get("foo").map(|v| v.to_str().unwrap()),
                     Some("bar")
                 );
                 Ok::<_, Infallible>(Response::new(Body::empty()))
-            }));
+            },
+        ));
         let req = Request::builder()
             .header("connection", "close")
             .header("foo", "bar")

@@ -2,7 +2,7 @@ use super::*;
 use crate::error::{error, OpaqueError};
 use crate::http::{response::IntoResponse, BodyExtractExt};
 use crate::http::{Request, Response};
-use crate::service::{Service, ServiceBuilder};
+use crate::service::{Layer, Service};
 use parking_lot::Mutex;
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -40,13 +40,11 @@ async fn retry_errors() {
     let response_counter = Arc::new(AtomicUsize::new(0));
     let error_counter = Arc::new(AtomicUsize::new(0));
 
-    let svc = ServiceBuilder::new()
-        .layer(RetryLayer::new(RetryErrors))
-        .service(Svc {
-            errored: AtomicBool::new(false),
-            response_counter: response_counter.clone(),
-            error_counter: error_counter.clone(),
-        });
+    let svc = RetryLayer::new(RetryErrors).layer(Svc {
+        errored: AtomicBool::new(false),
+        response_counter: response_counter.clone(),
+        error_counter: error_counter.clone(),
+    });
 
     let resp = svc
         .serve(Context::default(), request("hello"))
@@ -80,11 +78,9 @@ async fn retry_limit() {
 
     let error_counter = Arc::new(AtomicUsize::new(0));
 
-    let svc = ServiceBuilder::new()
-        .layer(RetryLayer::new(Limit(Arc::new(Mutex::new(2)))))
-        .service(Svc {
-            error_counter: error_counter.clone(),
-        });
+    let svc = RetryLayer::new(Limit(Arc::new(Mutex::new(2)))).layer(Svc {
+        error_counter: error_counter.clone(),
+    });
 
     let err = svc
         .serve(Context::default(), request("hello"))
@@ -118,11 +114,9 @@ async fn retry_error_inspection() {
         }
     }
 
-    let svc = ServiceBuilder::new()
-        .layer(RetryLayer::new(UnlessErr("reject")))
-        .service(Svc {
-            errored: AtomicBool::new(false),
-        });
+    let svc = RetryLayer::new(UnlessErr("reject")).layer(Svc {
+        errored: AtomicBool::new(false),
+    });
 
     let err = svc
         .serve(Context::default(), request("hello"))
@@ -149,9 +143,7 @@ async fn retry_cannot_clone_request() {
         }
     }
 
-    let svc = ServiceBuilder::new()
-        .layer(RetryLayer::new(CannotClone))
-        .service(Svc);
+    let svc = RetryLayer::new(CannotClone).layer(Svc);
 
     let err = svc
         .serve(Context::default(), request("hello"))
@@ -178,9 +170,7 @@ async fn success_with_cannot_clone() {
         }
     }
 
-    let svc = ServiceBuilder::new()
-        .layer(RetryLayer::new(CannotClone))
-        .service(Svc);
+    let svc = RetryLayer::new(CannotClone).layer(Svc);
 
     let resp = svc
         .serve(Context::default(), request("hello"))
@@ -217,14 +207,13 @@ async fn retry_mutating_policy() {
 
     let response_counter = Arc::new(AtomicUsize::new(0));
 
-    let svc = ServiceBuilder::new()
-        .layer(RetryLayer::new(MutatingPolicy {
-            remaining: Arc::new(Mutex::new(2)),
-        }))
-        .service(Svc {
-            responded: AtomicBool::new(false),
-            response_counter: response_counter.clone(),
-        });
+    let svc = RetryLayer::new(MutatingPolicy {
+        remaining: Arc::new(Mutex::new(2)),
+    })
+    .layer(Svc {
+        responded: AtomicBool::new(false),
+        response_counter: response_counter.clone(),
+    });
 
     let err = svc
         .serve(Context::default(), request("hello"))

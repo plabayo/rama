@@ -265,13 +265,11 @@ mod tests {
     use crate::error::BoxError;
     use crate::http::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::http::{header, Body};
-    use crate::service::{Context, Service, ServiceBuilder};
+    use crate::service::{service_fn, Context, Layer, Service};
 
     #[tokio::test]
     async fn valid_basic_token() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::basic("foo", "bar"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(
@@ -288,9 +286,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_basic_token() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::basic("foo", "bar"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(
@@ -310,9 +306,7 @@ mod tests {
 
     #[tokio::test]
     async fn valid_bearer_token() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::bearer("foobar"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::bearer("foobar").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer foobar")
@@ -326,9 +320,7 @@ mod tests {
 
     #[tokio::test]
     async fn basic_auth_is_case_sensitive_in_prefix() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::basic("foo", "bar"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(
@@ -345,9 +337,7 @@ mod tests {
 
     #[tokio::test]
     async fn basic_auth_is_case_sensitive_in_value() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::basic("foo", "bar"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(
@@ -364,9 +354,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_bearer_token() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::bearer("foobar"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::bearer("foobar").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer wat")
@@ -380,9 +368,7 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_token_is_case_sensitive_in_prefix() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::bearer("foobar"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::bearer("foobar").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "bearer foobar")
@@ -396,9 +382,7 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_token_is_case_sensitive_in_token() {
-        let service = ServiceBuilder::new()
-            .layer(ValidateRequestHeaderLayer::bearer("foobar"))
-            .service_fn(echo);
+        let service = ValidateRequestHeaderLayer::bearer("foobar").layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer Foobar")

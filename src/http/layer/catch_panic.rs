@@ -290,20 +290,16 @@ mod tests {
 
     use super::*;
 
+    use crate::{http::dep::http_body_util::BodyExt, service::service_fn};
     use hyper::Response;
     use std::convert::Infallible;
 
-    use crate::http::dep::http_body_util::BodyExt;
-    use crate::service::ServiceBuilder;
-
     #[tokio::test]
     async fn panic_before_returning_future() {
-        let svc = ServiceBuilder::new()
-            .layer(CatchPanicLayer::new())
-            .service_fn(|_: Request| {
-                panic!("service panic");
-                async { Ok::<_, Infallible>(Response::new(Body::empty())) }
-            });
+        let svc = CatchPanicLayer::new().layer(service_fn(|_: Request| {
+            panic!("service panic");
+            async { Ok::<_, Infallible>(Response::new(Body::empty())) }
+        }));
 
         let req = Request::new(Body::empty());
 
@@ -316,12 +312,10 @@ mod tests {
 
     #[tokio::test]
     async fn panic_in_future() {
-        let svc = ServiceBuilder::new()
-            .layer(CatchPanicLayer::new())
-            .service_fn(|_: Request<Body>| async {
-                panic!("future panic");
-                Ok::<_, Infallible>(Response::new(Body::empty()))
-            });
+        let svc = CatchPanicLayer::new().layer(service_fn(|_: Request<Body>| async {
+            panic!("future panic");
+            Ok::<_, Infallible>(Response::new(Body::empty()))
+        }));
 
         let req = Request::new(Body::empty());
 

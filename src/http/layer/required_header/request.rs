@@ -154,18 +154,18 @@ where
 mod test {
     use super::*;
     use crate::http::{Body, Request};
-    use crate::service::{Context, Service, ServiceBuilder};
+    use crate::service::{service_fn, Context, Layer, Service};
     use std::convert::Infallible;
 
     #[tokio::test]
     async fn add_required_request_headers() {
-        let svc = ServiceBuilder::new()
-            .layer(AddRequiredRequestHeadersLayer::default())
-            .service_fn(|_ctx: Context<()>, req: Request| async move {
+        let svc = AddRequiredRequestHeadersLayer::default().layer(service_fn(
+            |_ctx: Context<()>, req: Request| async move {
                 assert!(req.headers().contains_key(HOST));
                 assert!(req.headers().contains_key(USER_AGENT));
                 Ok::<_, Infallible>(http::Response::new(Body::empty()))
-            });
+            },
+        ));
 
         let req = Request::builder()
             .uri("http://www.example.com/")
@@ -179,16 +179,16 @@ mod test {
 
     #[tokio::test]
     async fn add_required_request_headers_overwrite() {
-        let svc = ServiceBuilder::new()
-            .layer(AddRequiredRequestHeadersLayer::new().overwrite(true))
-            .service_fn(|_ctx: Context<()>, req: Request| async move {
+        let svc = AddRequiredRequestHeadersLayer::new()
+            .overwrite(true)
+            .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
                 assert_eq!(req.headers().get(HOST).unwrap(), "example.com:80");
                 assert_eq!(
                     req.headers().get(USER_AGENT).unwrap(),
                     RAMA_ID_HEADER_VALUE.to_str().unwrap()
                 );
                 Ok::<_, Infallible>(http::Response::new(Body::empty()))
-            });
+            }));
 
         let req = Request::builder()
             .uri("http://127.0.0.1/")

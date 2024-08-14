@@ -414,7 +414,7 @@ mod tests {
             headers::{TrueClientIp, XClientIp, XRealIp},
             IntoResponse, Response, StatusCode,
         },
-        service::{service_fn, ServiceBuilder},
+        service::{service_fn, Layer},
     };
     use std::{convert::Infallible, net::IpAddr};
 
@@ -452,20 +452,13 @@ mod tests {
                 dummy_service_fn,
             )),
         );
+        assert_is_service(SetForwardedHeadersLayer::via().layer(service_fn(dummy_service_fn)));
         assert_is_service(
-            ServiceBuilder::new()
-                .layer(SetForwardedHeadersLayer::via())
-                .service_fn(dummy_service_fn),
+            SetForwardedHeadersLayer::<XRealIp>::new().layer(service_fn(dummy_service_fn)),
         );
         assert_is_service(
-            ServiceBuilder::new()
-                .layer(SetForwardedHeadersLayer::<XRealIp>::new())
-                .service_fn(dummy_service_fn),
-        );
-        assert_is_service(
-            ServiceBuilder::new()
-                .layer(SetForwardedHeadersLayer::<(XRealIp, XForwardedProto)>::new())
-                .service_fn(dummy_service_fn),
+            SetForwardedHeadersLayer::<(XRealIp, XForwardedProto)>::new()
+                .layer(service_fn(dummy_service_fn)),
         );
     }
 

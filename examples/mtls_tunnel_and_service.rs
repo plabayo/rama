@@ -28,10 +28,15 @@
 // these dependencies are re-exported by rama for your convenience,
 // as to make it easy to use them and ensure that the versions remain compatible
 // (given most do not have a stable release yet)
-use rama::tls::rustls::dep::{
-    pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
-    rustls::{server::WebPkiClientVerifier, ClientConfig, KeyLogFile, RootCertStore, ServerConfig},
-    tokio_rustls::TlsConnector,
+use rama::{
+    service::{layer::TraceErrLayer, service_fn, Layer},
+    tls::rustls::dep::{
+        pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
+        rustls::{
+            server::WebPkiClientVerifier, ClientConfig, KeyLogFile, RootCertStore, ServerConfig,
+        },
+        tokio_rustls::TlsConnector,
+    },
 };
 
 // rama provides everything out of the box to build mtls web services and proxies
@@ -44,7 +49,7 @@ use rama::{
         service::web::WebService,
     },
     rt::Executor,
-    service::{Context, ServiceBuilder},
+    service::Context,
     tcp::server::TcpListener,
     tls::rustls::server::TlsAcceptorLayer,
     utils::graceful::Shutdown,
@@ -107,19 +112,15 @@ async fn main() {
 
         let executor = Executor::graceful(guard.clone());
 
-        let tcp_service = ServiceBuilder::new()
-            .layer(TlsAcceptorLayer::new(Arc::new(tls_server_config)))
-            .service(
-                HttpServer::auto(executor).service(
-                    ServiceBuilder::new()
-                        .layer(TraceLayer::new_for_http())
-                        .service(
-                            WebService::default()
-                                .get("/", Redirect::temporary("/hello"))
-                                .get("/hello", Html("<h1>Hello, authorized client!</h1>")),
-                        ),
+        let tcp_service = TlsAcceptorLayer::new(Arc::new(tls_server_config)).layer(
+            HttpServer::auto(executor).service(
+                TraceLayer::new_for_http().layer(
+                    WebService::default()
+                        .get("/", Redirect::temporary("/hello"))
+                        .get("/hello", Html("<h1>Hello, authorized client!</h1>")),
                 ),
-            );
+            ),
+        );
 
         tracing::info!("start mtls (https) web service: {}", SERVER_ADDR);
         TcpListener::bind(SERVER_ADDR)
@@ -158,10 +159,7 @@ async fn main() {
             .bind(TUNNEL_ADDR)
             .await
             .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
-            .serve_graceful(
-                guard,
-                ServiceBuilder::new().trace_err().service_fn(serve_conn),
-            )
+            .serve_graceful(guard, TraceErrLayer::new().layer(service_fn(serve_conn)))
             .await;
     });
 

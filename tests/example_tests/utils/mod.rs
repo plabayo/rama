@@ -15,7 +15,7 @@ use rama::{
     },
     net::stream::Stream,
     proxy::http::client::layer::HttpProxyConnectorLayer,
-    service::{BoxService, Service, ServiceBuilder},
+    service::{layer::MapResultLayer, BoxService, Layer, Service},
     tcp::client::service::HttpConnector,
     tls::rustls::client::HttpsConnectorLayer,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
@@ -78,12 +78,12 @@ where
             .spawn()
             .unwrap();
 
-        let client = ServiceBuilder::new()
-            .map_result(map_internal_client_error)
-            .layer(TraceLayer::new_for_http())
-            .layer(DecompressionLayer::new())
-            .layer(FollowRedirectLayer::default())
-            .layer(RetryLayer::new(
+        let client = (
+            MapResultLayer::new(map_internal_client_error),
+            TraceLayer::new_for_http(),
+            DecompressionLayer::new(),
+            FollowRedirectLayer::default(),
+            RetryLayer::new(
                 ManagedPolicy::default().with_backoff(
                     ExponentialBackoff::new(
                         Duration::from_millis(100),
@@ -93,14 +93,16 @@ where
                     )
                     .unwrap(),
                 ),
-            ))
-            .layer(AddRequiredRequestHeadersLayer::default())
-            .service(HttpClient::new(
-                ServiceBuilder::new()
-                    .layer(HttpsConnectorLayer::auto())
-                    .layer(HttpProxyConnectorLayer::optional())
-                    .layer(HttpsConnectorLayer::tunnel())
-                    .service(HttpConnector::default()),
+            ),
+            AddRequiredRequestHeadersLayer::default(),
+        )
+            .layer(HttpClient::new(
+                (
+                    HttpsConnectorLayer::auto(),
+                    HttpProxyConnectorLayer::optional(),
+                    HttpsConnectorLayer::tunnel(),
+                )
+                    .layer(HttpConnector::default()),
             ))
             .boxed();
 

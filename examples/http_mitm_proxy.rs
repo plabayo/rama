@@ -51,7 +51,7 @@ use rama::{
     },
     net::{stream::layer::http::BodyLimitLayer, user::Basic},
     rt::Executor,
-    service::{layer::ConsumeErrLayer, service_fn, Service, ServiceBuilder},
+    service::{layer::ConsumeErrLayer, service_fn, Layer, Service},
     tcp::server::TcpListener,
     tls::{
         dep::rcgen::KeyPair,
@@ -104,26 +104,28 @@ async fn main() -> Result<(), BoxError> {
         let exec = Executor::graceful(guard.clone());
         let http_mitm_service = new_http_mitm_proxy(&exec);
         let http_service = HttpServer::auto(exec).service(
-            ServiceBuilder::new()
-                .layer(TraceLayer::new_for_http())
+            (
+                TraceLayer::new_for_http(),
                 // See [`ProxyAuthLayer::with_labels`] for more information,
                 // e.g. can also be used to extract upstream proxy filters
-                .layer(ProxyAuthLayer::new(Basic::new("john", "secret")))
-                .layer(UpgradeLayer::new(
+                ProxyAuthLayer::new(Basic::new("john", "secret")),
+                UpgradeLayer::new(
                     MethodMatcher::CONNECT,
                     service_fn(http_connect_accept),
                     service_fn(http_connect_proxy),
-                ))
-                .service(http_mitm_service),
+                ),
+            )
+                .layer(http_mitm_service),
         );
 
         tcp_service
             .serve_graceful(
                 guard,
-                ServiceBuilder::new()
+                (
                     // protect the http proxy from too large bodies, both from request and response end
-                    .layer(BodyLimitLayer::symmetric(2 * 1024 * 1024))
-                    .service(http_service),
+                    BodyLimitLayer::symmetric(2 * 1024 * 1024),
+                )
+                    .layer(http_service),
             )
             .await;
     });
@@ -161,9 +163,8 @@ async fn http_connect_proxy(mut ctx: Context, upgraded: Upgraded) -> Result<(), 
 
     let http_transport_service = HttpServer::auto(ctx.executor().clone()).service(http_service);
 
-    let https_service = ServiceBuilder::new()
-        .layer(TlsAcceptorLayer::new(ctx.state().mitm_tls_config.clone()))
-        .service(http_transport_service);
+    let https_service =
+        TlsAcceptorLayer::new(ctx.state().mitm_tls_config.clone()).layer(http_transport_service);
 
     https_service
         .serve(ctx, upgraded)
@@ -176,20 +177,18 @@ async fn http_connect_proxy(mut ctx: Context, upgraded: Upgraded) -> Result<(), 
 fn new_http_mitm_proxy(
     exec: &Executor,
 ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
-    ServiceBuilder::new()
-        .layer(MapResponseBodyLayer::new(Body::new))
-        .layer(TraceLayer::new_for_http())
-        .layer(RemoveResponseHeaderLayer::hop_by_hop())
-        .layer(RemoveRequestHeaderLayer::hop_by_hop())
-        .layer(ConsumeErrLayer::default())
-        .layer(AddRequiredRequestHeadersLayer::new())
+    (
+        MapResponseBodyLayer::new(Body::new),
+        TraceLayer::new_for_http(),
+        RemoveResponseHeaderLayer::hop_by_hop(),
+        RemoveRequestHeaderLayer::hop_by_hop(),
+        ConsumeErrLayer::default(),
+        AddRequiredRequestHeadersLayer::new(),
         // these layers are for example purposes only,
         // best not to print requests like this in production...
-        .layer(RequestWriterLayer::stdout_unbounded(
-            exec,
-            Some(traffic_writer::WriterMode::Headers),
-        ))
-        .service_fn(http_mitm_proxy)
+        RequestWriterLayer::stdout_unbounded(exec, Some(traffic_writer::WriterMode::Headers)),
+    )
+        .layer(service_fn(http_mitm_proxy))
 }
 
 async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {

@@ -472,7 +472,7 @@ mod tests {
     use crate::http::dep::http_body_util::BodyExt as _;
     use crate::http::layer::classify::ServerErrorsFailureClass;
     use crate::http::{Body, HeaderMap, Request, Response};
-    use crate::service::{Context, Service, ServiceBuilder};
+    use crate::service::{service_fn, Context, Layer, Service};
     use bytes::Bytes;
     use std::sync::OnceLock;
     use std::{
@@ -528,7 +528,7 @@ mod tests {
                 },
             );
 
-        let svc = ServiceBuilder::new().layer(trace_layer).service_fn(echo);
+        let svc = trace_layer.layer(service_fn(echo));
 
         let res = svc
             .serve(Context::default(), Request::new(Body::from("foobar")))
@@ -586,9 +586,7 @@ mod tests {
                 },
             );
 
-        let svc = ServiceBuilder::new()
-            .layer(trace_layer)
-            .service_fn(streaming_body);
+        let svc = trace_layer.layer(service_fn(streaming_body));
 
         let res = svc
             .serve(Context::default(), Request::new(Body::empty()))

@@ -22,7 +22,7 @@ use crate::{
     rt::Executor,
     service::{
         layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
-        Context, Service, ServiceBuilder,
+        Context, Layer, Service,
     },
     ua::UserAgentClassifierLayer,
     utils::combinators::Either7,
@@ -174,28 +174,28 @@ impl IpServiceBuilder<mode::Http> {
             Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
         };
 
-        let tcp_service_builder = ServiceBuilder::new()
-            .layer(ConsumeErrLayer::trace(tracing::Level::DEBUG))
-            .layer(
-                (self.concurrent_limit > 0)
-                    .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
-            )
-            .layer((!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)))
-            .layer(tcp_forwarded_layer)
+        let tcp_service_builder = (
+            ConsumeErrLayer::trace(tracing::Level::DEBUG),
+            (self.concurrent_limit > 0)
+                .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
+            (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
+            tcp_forwarded_layer,
             // Limit the body size to 1MB for requests
-            .layer(BodyLimitLayer::request_only(1024 * 1024));
+            BodyLimitLayer::request_only(1024 * 1024),
+        );
 
         // TODO: support opt-in TLS)
 
-        let http_service = ServiceBuilder::new()
-            .layer(TraceLayer::new_for_http())
-            .layer(AddRequiredResponseHeadersLayer::default())
-            .layer(UserAgentClassifierLayer::new())
-            .layer(ConsumeErrLayer::default())
-            .layer(http_forwarded_layer)
-            .service(HttpEchoService);
+        let http_service = (
+            TraceLayer::new_for_http(),
+            AddRequiredResponseHeadersLayer::default(),
+            UserAgentClassifierLayer::new(),
+            ConsumeErrLayer::default(),
+            http_forwarded_layer,
+        )
+            .layer(HttpEchoService);
 
-        Ok(tcp_service_builder.service(HttpServer::auto(executor).service(http_service)))
+        Ok(tcp_service_builder.layer(HttpServer::auto(executor).service(http_service)))
     }
 }
 
@@ -281,16 +281,15 @@ impl IpServiceBuilder<mode::Transport> {
             }
         };
 
-        let tcp_service_builder = ServiceBuilder::new()
-            .layer(ConsumeErrLayer::trace(tracing::Level::DEBUG))
-            .layer(
-                (self.concurrent_limit > 0)
-                    .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
-            )
-            .layer((!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)))
-            .layer(tcp_forwarded_layer);
+        let tcp_service_builder = (
+            ConsumeErrLayer::trace(tracing::Level::DEBUG),
+            (self.concurrent_limit > 0)
+                .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
+            (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
+            tcp_forwarded_layer,
+        );
 
-        Ok(tcp_service_builder.service(TcpEchoService))
+        Ok(tcp_service_builder.layer(TcpEchoService))
     }
 }
 

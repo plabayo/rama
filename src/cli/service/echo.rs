@@ -26,11 +26,8 @@ use crate::{
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     service::{
-        layer::{
-            limit::policy::ConcurrentPolicy, ConsumeErrLayer, Identity, LimitLayer, Stack,
-            TimeoutLayer,
-        },
-        Context, Layer, Service, ServiceBuilder,
+        layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
+        Context, Layer, Service,
     },
     tls::{client::ClientHelloExtension, SecureTransport},
     ua::{UserAgent, UserAgentClassifierLayer},
@@ -54,22 +51,22 @@ pub struct EchoServiceBuilder<H> {
     timeout: Duration,
     forward: Option<ForwardKind>,
     tls_server_config: Option<TlsServerCertKeyPair>,
-    http_service_builder: ServiceBuilder<H>,
+    http_service_builder: H,
 }
 
-impl Default for EchoServiceBuilder<Identity> {
+impl Default for EchoServiceBuilder<()> {
     fn default() -> Self {
         Self {
             concurrent_limit: 0,
             timeout: Duration::ZERO,
             forward: None,
             tls_server_config: None,
-            http_service_builder: ServiceBuilder::new(),
+            http_service_builder: (),
         }
     }
 }
 
-impl EchoServiceBuilder<Identity> {
+impl EchoServiceBuilder<()> {
     /// Create a new [`EchoServiceBuilder`].
     pub fn new() -> Self {
         Self::default()
@@ -162,13 +159,13 @@ impl<H> EchoServiceBuilder<H> {
     }
 
     /// add a custom http layer which will be applied to the existing http layers
-    pub fn http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<Stack<H2, H>> {
+    pub fn http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<(H, H2)> {
         EchoServiceBuilder {
             concurrent_limit: self.concurrent_limit,
             timeout: self.timeout,
             forward: self.forward,
             tls_server_config: self.tls_server_config,
-            http_service_builder: self.http_service_builder.layer(layer),
+            http_service_builder: (self.http_service_builder, layer),
         }
     }
 }
@@ -225,17 +222,15 @@ where
             ),
         };
 
-        let tcp_service_builder = ServiceBuilder::new()
-            .layer(ConsumeErrLayer::trace(tracing::Level::DEBUG))
-            .layer(
-                (self.concurrent_limit > 0)
-                    .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
-            )
-            .layer((!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)))
-            .layer(tcp_forwarded_layer)
+        let tcp_service_builder = (
+            ConsumeErrLayer::trace(tracing::Level::DEBUG),
+            (self.concurrent_limit > 0)
+                .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
+            (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
+            tcp_forwarded_layer,
             // Limit the body size to 1MB for requests
-            .layer(BodyLimitLayer::request_only(1024 * 1024))
-            .layer(tls_server_cfg.map(|cfg| {
+            BodyLimitLayer::request_only(1024 * 1024),
+            tls_server_cfg.map(|cfg| {
                 #[cfg(feature = "boring")]
                 {
                     TlsAcceptorLayer::new(std::sync::Arc::new(cfg)).with_store_client_hello(true)
@@ -247,17 +242,21 @@ where
                         TlsClientConfigHandler::default().store_client_hello(),
                     )
                 }
-            }));
+            }),
+        );
 
-        let http_service = ServiceBuilder::new()
-            .layer(TraceLayer::new_for_http())
-            .layer(AddRequiredResponseHeadersLayer::default())
-            .layer(UserAgentClassifierLayer::new())
-            .layer(ConsumeErrLayer::default())
-            .layer(http_forwarded_layer)
-            .service(self.http_service_builder.service(EchoService));
+        let http_service = (
+            TraceLayer::new_for_http(),
+            AddRequiredResponseHeadersLayer::default(),
+            UserAgentClassifierLayer::new(),
+            ConsumeErrLayer::default(),
+            http_forwarded_layer,
+        )
+            .layer(self.http_service_builder.layer(EchoService));
 
-        Ok(tcp_service_builder.service(HttpServer::auto(executor).service(http_service)))
+        let http_transport_service = HttpServer::auto(executor).service(http_service);
+
+        Ok(tcp_service_builder.layer(http_transport_service))
     }
 }
 

@@ -358,7 +358,7 @@ mod tests {
             IntoResponse, Response, StatusCode,
         },
         net::forwarded::{ForwardedProtocol, ForwardedVersion},
-        service::{service_fn, ServiceBuilder},
+        service::{service_fn, Layer},
     };
 
     fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}
@@ -396,37 +396,28 @@ mod tests {
             )),
         );
         assert_is_service(
-            ServiceBuilder::new()
-                .layer(GetForwardedHeadersLayer::forwarded())
-                .service_fn(dummy_service_fn),
+            GetForwardedHeadersLayer::forwarded().layer(service_fn(dummy_service_fn)),
+        );
+        assert_is_service(GetForwardedHeadersLayer::via().layer(service_fn(dummy_service_fn)));
+        assert_is_service(
+            GetForwardedHeadersLayer::<XRealIp>::new().layer(service_fn(dummy_service_fn)),
         );
         assert_is_service(
-            ServiceBuilder::new()
-                .layer(GetForwardedHeadersLayer::via())
-                .service_fn(dummy_service_fn),
-        );
-        assert_is_service(
-            ServiceBuilder::new()
-                .layer(GetForwardedHeadersLayer::<XRealIp>::new())
-                .service_fn(dummy_service_fn),
-        );
-        assert_is_service(
-            ServiceBuilder::new()
-                .layer(GetForwardedHeadersLayer::<(ClientIp, TrueClientIp)>::new())
-                .service_fn(dummy_service_fn),
+            GetForwardedHeadersLayer::<(ClientIp, TrueClientIp)>::new()
+                .layer(service_fn(dummy_service_fn)),
         );
     }
 
     #[tokio::test]
     async fn test_get_forwarded_header_forwarded() {
-        let service = ServiceBuilder::new()
-            .layer(GetForwardedHeadersLayer::forwarded())
-            .service_fn(|ctx: Context<()>, _| async move {
+        let service = GetForwardedHeadersLayer::forwarded().layer(service_fn(
+            |ctx: Context<()>, _| async move {
                 let forwarded = ctx.get::<Forwarded>().unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert_eq!(forwarded.client_proto(), Some(ForwardedProtocol::HTTP));
                 Ok::<_, Infallible>(())
-            });
+            },
+        ));
 
         let req = Request::builder()
             .header("Forwarded", "for=\"12.23.34.45:5000\";proto=http")
@@ -438,9 +429,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_forwarded_header_via() {
-        let service = ServiceBuilder::new()
-            .layer(GetForwardedHeadersLayer::via())
-            .service_fn(|ctx: Context<()>, _| async move {
+        let service =
+            GetForwardedHeadersLayer::via().layer(service_fn(|ctx: Context<()>, _| async move {
                 let forwarded = ctx.get::<Forwarded>().unwrap();
                 assert!(forwarded.client_ip().is_none());
                 assert_eq!(
@@ -450,7 +440,7 @@ mod tests {
                 assert!(forwarded.client_proto().is_none());
                 assert_eq!(forwarded.client_version(), Some(ForwardedVersion::HTTP_11));
                 Ok::<_, Infallible>(())
-            });
+            }));
 
         let req = Request::builder()
             .header("Via", "1.1 12.23.34.45:5000")
@@ -462,14 +452,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_forwarded_header_x_forwarded_for() {
-        let service = ServiceBuilder::new()
-            .layer(GetForwardedHeadersLayer::x_forwarded_for())
-            .service_fn(|ctx: Context<()>, _| async move {
+        let service = GetForwardedHeadersLayer::x_forwarded_for().layer(service_fn(
+            |ctx: Context<()>, _| async move {
                 let forwarded = ctx.get::<Forwarded>().unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert!(forwarded.client_proto().is_none());
                 Ok::<_, Infallible>(())
-            });
+            },
+        ));
 
         let req = Request::builder()
             .header("X-Forwarded-For", "12.23.34.45, 127.0.0.1")

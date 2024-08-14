@@ -387,7 +387,7 @@ impl MakeRequestId for MakeRequestUuid {
 mod tests {
     use crate::http::layer::set_header;
     use crate::http::{Body, Response};
-    use crate::service::ServiceBuilder;
+    use crate::service::{service_fn, Layer};
     use std::{
         convert::Infallible,
         sync::{
@@ -401,10 +401,11 @@ mod tests {
 
     #[tokio::test]
     async fn basic() {
-        let svc = ServiceBuilder::new()
-            .layer(SetRequestIdLayer::x_request_id(Counter::default()))
-            .layer(PropagateRequestIdLayer::x_request_id())
-            .service_fn(handler);
+        let svc = (
+            SetRequestIdLayer::x_request_id(Counter::default()),
+            PropagateRequestIdLayer::x_request_id(),
+        )
+            .layer(service_fn(handler));
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();
@@ -431,14 +432,15 @@ mod tests {
 
     #[tokio::test]
     async fn other_middleware_setting_request_id_on_response() {
-        let svc = ServiceBuilder::new()
-            .layer(SetRequestIdLayer::x_request_id(Counter::default()))
-            .layer(PropagateRequestIdLayer::x_request_id())
-            .layer(set_header::SetResponseHeaderLayer::overriding(
+        let svc = (
+            SetRequestIdLayer::x_request_id(Counter::default()),
+            PropagateRequestIdLayer::x_request_id(),
+            set_header::SetResponseHeaderLayer::overriding(
                 HeaderName::from_static("x-request-id"),
                 HeaderValue::from_str("foo").unwrap(),
-            ))
-            .service_fn(handler);
+            ),
+        )
+            .layer(service_fn(handler));
 
         let req = Request::builder()
             .header("x-request-id", "foo")
@@ -466,10 +468,11 @@ mod tests {
 
     #[tokio::test]
     async fn uuid() {
-        let svc = ServiceBuilder::new()
-            .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
-            .layer(PropagateRequestIdLayer::x_request_id())
-            .service_fn(handler);
+        let svc = (
+            SetRequestIdLayer::x_request_id(MakeRequestUuid),
+            PropagateRequestIdLayer::x_request_id(),
+        )
+            .layer(service_fn(handler));
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();

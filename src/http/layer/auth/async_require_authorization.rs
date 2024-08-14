@@ -247,7 +247,7 @@ mod tests {
 
     use crate::error::BoxError;
     use crate::http::{header, Body, StatusCode};
-    use crate::service::ServiceBuilder;
+    use crate::service::service_fn;
 
     #[derive(Clone, Copy)]
     struct MyAuth;
@@ -293,9 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn require_async_auth_works() {
-        let service = ServiceBuilder::new()
-            .layer(AsyncRequireAuthorizationLayer::new(MyAuth))
-            .service_fn(echo);
+        let service = AsyncRequireAuthorizationLayer::new(MyAuth).layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer 69420")
@@ -309,9 +307,7 @@ mod tests {
 
     #[tokio::test]
     async fn require_async_auth_401() {
-        let service = ServiceBuilder::new()
-            .layer(AsyncRequireAuthorizationLayer::new(MyAuth))
-            .service_fn(echo);
+        let service = AsyncRequireAuthorizationLayer::new(MyAuth).layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer deez")
