@@ -56,15 +56,14 @@ use std::marker::PhantomData;
 /// ```rust
 /// use rama::{
 ///     http::{headers::Forwarded, layer::forwarded::GetForwardedHeadersLayer, Request},
-///     service::{Context, Service, ServiceBuilder},
+///     service::{Context, Service, Layer, service_fn},
 /// };
 /// use std::{convert::Infallible, net::IpAddr};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///     let service = ServiceBuilder::new()
-///         .layer(GetForwardedHeadersLayer::x_forwarded_for())
-///         .service_fn(|ctx: Context<()>, _| async move {
+///     let service = GetForwardedHeadersLayer::x_forwarded_for()
+///         .layer(service_fn(|ctx: Context<()>, _| async move {
 ///             let forwarded = ctx.get::<Forwarded>().unwrap();
 ///             assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
 ///             assert!(forwarded.client_proto().is_none());
@@ -72,7 +71,7 @@ use std::marker::PhantomData;
 ///             // ...
 ///
 ///             Ok::<_, Infallible>(())
-///         });
+///         }));
 ///
 ///     let req = Request::builder()
 ///         .header("X-Forwarded-For", "12.23.34.45")

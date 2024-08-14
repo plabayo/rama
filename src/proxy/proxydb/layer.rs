@@ -27,7 +27,7 @@
 //!         layer::{ProxyDBLayer, ProxyFilterMode},
 //!         ProxyFilter,
 //!    },
-//!    service::{Context, ServiceBuilder, Service, Layer},
+//!    service::{Context, Service, Layer, service_fn},
 //!    net::address::ProxyAddress,
 //!    utils::str::NonEmptyString,
 //! };
@@ -80,11 +80,11 @@
 //!     ])
 //!     .unwrap();
 //!
-//!     let service = ServiceBuilder::new()
-//!         .layer(ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default))
-//!         .service_fn(|ctx: Context<()>, _: Request| async move {
+//!     let service =
+//!         ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default)
+//!         .layer(service_fn(|ctx: Context<()>, _: Request| async move {
 //!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-//!         });
+//!         }));
 //!
 //!     let mut ctx = Context::default();
 //!     ctx.insert(ProxyFilter {
@@ -123,7 +123,7 @@
 //!         layer::{ProxyDBLayer, ProxyFilterMode},
 //!         ProxyFilter,
 //!    },
-//!    service::{Context, ServiceBuilder, Service, Layer},
+//!    service::{Context, Service, Layer, service_fn},
 //!    net::address::ProxyAddress,
 //!    utils::str::NonEmptyString,
 //! };
@@ -153,31 +153,29 @@
 //!         asn: None,
 //!     };
 //!
-//!     let service = ServiceBuilder::new()
-//!         .layer(ProxyDBLayer::new(Arc::new(proxy))
-//!              .filter_mode(ProxyFilterMode::Default)
-//!              .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
-//!                  use std::fmt::Write;
+//!     let service = ProxyDBLayer::new(Arc::new(proxy))
+//!         .filter_mode(ProxyFilterMode::Default)
+//!         .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+//!             use std::fmt::Write;
 //!
-//!                  let mut output = String::new();
+//!             let mut output = String::new();
 //!
-//!                  if let Some(countries) =
-//!                      filter.country.as_ref().filter(|t| !t.is_empty())
-//!                  {
-//!                      let _ = write!(output, "country-{}", countries[0]);
-//!                  }
-//!                  if let Some(states) =
-//!                      filter.state.as_ref().filter(|t| !t.is_empty())
-//!                  {
-//!                      let _ = write!(output, "state-{}", states[0]);
-//!                  }
+//!             if let Some(countries) =
+//!                 filter.country.as_ref().filter(|t| !t.is_empty())
+//!             {
+//!                 let _ = write!(output, "country-{}", countries[0]);
+//!             }
+//!             if let Some(states) =
+//!                 filter.state.as_ref().filter(|t| !t.is_empty())
+//!             {
+//!                 let _ = write!(output, "state-{}", states[0]);
+//!             }
 //!
-//!                  (!output.is_empty()).then(|| format!("{username}-{output}"))
-//!              }),
-//!         )
-//!         .service_fn(|ctx: Context<()>, _: Request| async move {
+//!             (!output.is_empty()).then(|| format!("{username}-{output}"))
+//!         })
+//!         .layer(service_fn(|ctx: Context<()>, _: Request| async move {
 //!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-//!         });
+//!         }));
 //!
 //!     let mut ctx = Context::default();
 //!     ctx.insert(ProxyFilter {

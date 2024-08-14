@@ -7,7 +7,7 @@
 //!     SetRequestIdLayer, PropagateRequestIdLayer, MakeRequestId, RequestId,
 //! };
 //! use rama::http::{Body, Request, Response, header::HeaderName};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //! use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 //!
@@ -37,15 +37,15 @@
 //!
 //! let x_request_id = HeaderName::from_static("x-request-id");
 //!
-//! let mut svc = ServiceBuilder::new()
+//! let mut svc = (
 //!     // set `x-request-id` header on all requests
-//!     .layer(SetRequestIdLayer::new(
+//!     SetRequestIdLayer::new(
 //!         x_request_id.clone(),
 //!         MyMakeRequestId::default(),
-//!     ))
+//!     ),
 //!     // propagate `x-request-id` headers from request to response
-//!     .layer(PropagateRequestIdLayer::new(x_request_id))
-//!     .service(handler);
+//!     PropagateRequestIdLayer::new(x_request_id),
+//! ).layer(handler);
 //!
 //! let request = Request::new(Body::empty());
 //! let response = svc.serve(Context::default(), request).await?;

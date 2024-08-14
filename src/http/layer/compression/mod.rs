@@ -13,7 +13,7 @@
 //! use rama::http::dep::http_body_util::combinators::BoxBody as InnerBoxBody;
 //! use rama::http::layer::compression::CompressionLayer;
 //! use rama::http::{Body, Request, Response, header::ACCEPT_ENCODING};
-//! use rama::service::{Context, Service, ServiceBuilder};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use std::convert::Infallible;
 //! use tokio::fs::{self, File};
 //! use tokio_util::io::ReaderStream;
@@ -40,10 +40,10 @@
 //!     Ok(Response::new(body))
 //! }
 //!
-//! let mut service = ServiceBuilder::new()
+//! let mut service = (
 //!     // Compress responses based on the `Accept-Encoding` header.
-//!     .layer(CompressionLayer::new())
-//!     .service_fn(handle);
+//!     CompressionLayer::new(),
+//! ).layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let request = Request::builder()

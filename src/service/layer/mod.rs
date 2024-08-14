@@ -501,14 +501,6 @@ mod hijack;
 #[doc(inline)]
 pub use hijack::{HijackLayer, HijackService};
 
-mod identity;
-#[doc(inline)]
-pub use identity::Identity;
-
-mod stack;
-#[doc(inline)]
-pub use stack::Stack;
-
 mod map_state;
 #[doc(inline)]
 pub use map_state::{MapState, MapStateLayer};

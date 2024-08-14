@@ -7,7 +7,7 @@
 //! ```
 //! use std::{sync::Arc, convert::Infallible};
 //!
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::service::layer::add_extension::AddExtensionLayer;
 //! use rama::error::BoxError;
 //!
@@ -38,10 +38,10 @@
 //!     pool: DatabaseConnectionPool::new(),
 //! };
 //!
-//! let mut service = ServiceBuilder::new()
+//! let mut service = (
 //!     // Share an `Arc<State>` with all requests.
-//!     .layer(AddExtensionLayer::new(Arc::new(state)))
-//!     .service_fn(handle);
+//!     AddExtensionLayer::new(Arc::new(state)),
+//! ).layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let response = service

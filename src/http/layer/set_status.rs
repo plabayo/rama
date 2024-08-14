@@ -7,7 +7,7 @@
 //! use bytes::Bytes;
 //! use rama::http::layer::set_status::SetStatusLayer;
 //! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::service::{Context, ServiceBuilder, Service};
+//! use rama::service::{Context, Layer, Service, service_fn};
 //! use rama::error::BoxError;
 //!
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
@@ -17,10 +17,10 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! let mut service = ServiceBuilder::new()
+//! let mut service = (
 //!     // change the status to `404 Not Found` regardless what the inner service returns
-//!     .layer(SetStatusLayer::new(StatusCode::NOT_FOUND))
-//!     .service_fn(handle);
+//!     SetStatusLayer::new(StatusCode::NOT_FOUND),
+//! ).layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let request = Request::builder().body(Body::empty())?;

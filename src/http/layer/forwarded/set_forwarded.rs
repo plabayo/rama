@@ -54,7 +54,7 @@ use std::marker::PhantomData;
 /// # use rama::{http::Request, net::stream::SocketInfo};
 /// use rama::{
 ///     http::{headers::XRealIp, layer::forwarded::SetForwardedHeadersLayer},
-///     service::{Context, Service, ServiceBuilder},
+///     service::{Context, Service, Layer, service_fn},
 /// };
 /// use std::convert::Infallible;
 ///
@@ -72,9 +72,8 @@ use std::marker::PhantomData;
 ///     # Ok(())
 /// }
 ///
-/// let service = ServiceBuilder::new()
-///     .layer(SetForwardedHeadersLayer::<XRealIp>::new())
-///     .service_fn(svc);
+/// let service = SetForwardedHeadersLayer::<XRealIp>::new()
+///     .layer(service_fn(svc));
 ///
 /// # let req = Request::builder().uri("example.com").body(()).unwrap();
 /// # let mut ctx = Context::default();

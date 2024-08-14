@@ -6,7 +6,7 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response};
-//! use rama::service::{Context, ServiceBuilder, Service};
+//! use rama::service::{Context, Layer, Service, service_fn};
 //! use rama::http::layer::trace::TraceLayer;
 //! use std::convert::Infallible;
 //!
@@ -19,9 +19,7 @@
 //! // Setup tracing
 //! tracing_subscriber::fmt::init();
 //!
-//! let mut service = ServiceBuilder::new()
-//!     .layer(TraceLayer::new_for_http())
-//!     .service_fn(handle);
+//! let mut service = TraceLayer::new_for_http().layer(service_fn(handle));
 //!
 //! let request = Request::new(Body::from("foo"));
 //!
@@ -47,7 +45,7 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response, HeaderMap, StatusCode};
-//! use rama::service::{Context, Service, ServiceBuilder};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use tracing::Level;
 //! use rama::http::layer::trace::{
 //!     TraceLayer, DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse,
@@ -63,23 +61,21 @@
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! # tracing_subscriber::fmt::init();
 //! #
-//! let service = ServiceBuilder::new()
-//!     .layer(
-//!         TraceLayer::new_for_http()
-//!             .make_span_with(
-//!                 DefaultMakeSpan::new().include_headers(true)
-//!             )
-//!             .on_request(
-//!                 DefaultOnRequest::new().level(Level::INFO)
-//!             )
-//!             .on_response(
-//!                 DefaultOnResponse::new()
-//!                     .level(Level::INFO)
-//!                     .latency_unit(LatencyUnit::Micros)
-//!             )
-//!             // on so on for `on_eos`, `on_body_chunk`, and `on_failure`
-//!     )
-//!     .service_fn(handle);
+//! let service = (
+//!     TraceLayer::new_for_http()
+//!         .make_span_with(
+//!             DefaultMakeSpan::new().include_headers(true)
+//!         )
+//!         .on_request(
+//!             DefaultOnRequest::new().level(Level::INFO)
+//!         )
+//!         .on_response(
+//!             DefaultOnResponse::new()
+//!                 .level(Level::INFO)
+//!                 .latency_unit(LatencyUnit::Micros)
+//!         ),
+//!         // on so on for `on_eos`, `on_body_chunk`, and `on_failure`
+//! ).layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
 //! #     .serve(Context::default(), Request::new(Body::from("foo")))
@@ -92,7 +88,7 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response, HeaderMap, StatusCode};
-//! use rama::service::{Context, Service, ServiceBuilder};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
 //! use tracing::Span;
@@ -106,29 +102,27 @@
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! # tracing_subscriber::fmt::init();
 //! #
-//! let service = ServiceBuilder::new()
-//!     .layer(
-//!         TraceLayer::new_for_http()
-//!             .make_span_with(|request: &Request| {
-//!                 tracing::debug_span!("http-request")
-//!             })
-//!             .on_request(|request: &Request, _span: &Span| {
-//!                 tracing::debug!("started {} {}", request.method(), request.uri().path())
-//!             })
-//!             .on_response(|response: &Response, latency: Duration, _span: &Span| {
-//!                 tracing::debug!("response generated in {:?}", latency)
-//!             })
-//!             .on_body_chunk(|chunk: &Bytes, latency: Duration, _span: &Span| {
-//!                 tracing::debug!("sending {} bytes", chunk.len())
-//!             })
-//!             .on_eos(|trailers: Option<&HeaderMap>, stream_duration: Duration, _span: &Span| {
-//!                 tracing::debug!("stream closed after {:?}", stream_duration)
-//!             })
-//!             .on_failure(|error: ServerErrorsFailureClass, latency: Duration, _span: &Span| {
-//!                 tracing::debug!("something went wrong")
-//!             })
-//!     )
-//!     .service_fn(handle);
+//! let service = (
+//!     TraceLayer::new_for_http()
+//!         .make_span_with(|request: &Request| {
+//!             tracing::debug_span!("http-request")
+//!         })
+//!         .on_request(|request: &Request, _span: &Span| {
+//!             tracing::debug!("started {} {}", request.method(), request.uri().path())
+//!         })
+//!         .on_response(|response: &Response, latency: Duration, _span: &Span| {
+//!             tracing::debug!("response generated in {:?}", latency)
+//!         })
+//!         .on_body_chunk(|chunk: &Bytes, latency: Duration, _span: &Span| {
+//!             tracing::debug!("sending {} bytes", chunk.len())
+//!         })
+//!         .on_eos(|trailers: Option<&HeaderMap>, stream_duration: Duration, _span: &Span| {
+//!             tracing::debug!("stream closed after {:?}", stream_duration)
+//!         })
+//!         .on_failure(|error: ServerErrorsFailureClass, latency: Duration, _span: &Span| {
+//!             tracing::debug!("something went wrong")
+//!         })
+//! ).layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
 //! #     .serve(Context::default(), Request::new(Body::from("foo")))
@@ -143,7 +137,7 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::service::{Context, Service, ServiceBuilder};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
 //! use tracing::Span;
@@ -156,19 +150,17 @@
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! # tracing_subscriber::fmt::init();
 //! #
-//! let service = ServiceBuilder::new()
-//!     .layer(
-//!         // This configuration will only emit events on failures
-//!         TraceLayer::new_for_http()
-//!             .on_request(())
-//!             .on_response(())
-//!             .on_body_chunk(())
-//!             .on_eos(())
-//!             .on_failure(|error: ServerErrorsFailureClass, latency: Duration, _span: &Span| {
-//!                 tracing::debug!("something went wrong")
-//!             })
-//!     )
-//!     .service_fn(handle);
+//! let service = (
+//!     // This configuration will only emit events on failures
+//!     TraceLayer::new_for_http()
+//!         .on_request(())
+//!         .on_response(())
+//!         .on_body_chunk(())
+//!         .on_eos(())
+//!         .on_failure(|error: ServerErrorsFailureClass, latency: Duration, _span: &Span| {
+//!             tracing::debug!("something went wrong")
+//!         })
+//! ).layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
 //! #     .serve(Context::default(), Request::new(Body::from("foo")))
@@ -227,7 +219,7 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response, HeaderMap, StatusCode};
-//! use rama::service::ServiceBuilder;
+//! use rama::service::{Layer, service_fn};
 //! use rama::http::layer::trace::TraceLayer;
 //! use tracing::Span;
 //! use std::time::Duration;
@@ -240,22 +232,20 @@
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! # tracing_subscriber::fmt::init();
 //! #
-//! let service = ServiceBuilder::new()
-//!     .layer(
-//!         TraceLayer::new_for_http()
-//!             .make_span_with(|request: &Request| {
-//!                 tracing::debug_span!(
-//!                     "http-request",
-//!                     status_code = tracing::field::Empty,
-//!                 )
-//!             })
-//!             .on_response(|response: &Response, _latency: Duration, span: &Span| {
-//!                 span.record("status_code", &tracing::field::display(response.status()));
+//! let service = (
+//!     TraceLayer::new_for_http()
+//!         .make_span_with(|request: &Request| {
+//!             tracing::debug_span!(
+//!                 "http-request",
+//!                 status_code = tracing::field::Empty,
+//!             )
+//!         })
+//!         .on_response(|response: &Response, _latency: Duration, span: &Span| {
+//!             span.record("status_code", &tracing::field::display(response.status()));
 //!
-//!                 tracing::debug!("response generated")
-//!             })
-//!     )
-//!     .service_fn(handle);
+//!             tracing::debug!("response generated")
+//!         }),
+//! ).layer(service_fn(handle));
 //! # Ok(())
 //! # }
 //! ```
@@ -270,7 +260,7 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response};
-//! use rama::service::ServiceBuilder;
+//! use rama::service::{Layer, service_fn};
 //! use rama::http::layer::{
 //!     trace::TraceLayer,
 //!     classify::{
@@ -329,16 +319,14 @@
 //!     }
 //! }
 //!
-//! let service = ServiceBuilder::new()
+//! let service = (
 //!     // Create a trace layer that uses our classifier.
-//!     .layer(TraceLayer::new(MyMakeClassify))
-//!     .service_fn(handle);
+//!     TraceLayer::new(MyMakeClassify),
+//! ).layer(service_fn(handle));
 //!
 //! // Since `MyClassifier` is `Clone` we can also use `SharedClassifier`
 //! // to avoid having to define a separate `MakeClassifier`.
-//! let service = ServiceBuilder::new()
-//!     .layer(TraceLayer::new(SharedClassifier::new(MyClassifier)))
-//!     .service_fn(handle);
+//! let service = TraceLayer::new(SharedClassifier::new(MyClassifier)).layer(service_fn(handle));
 //! # Ok(())
 //! # }
 //! ```

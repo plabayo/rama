@@ -17,7 +17,7 @@
 //! ## Basic usage
 //!
 //! ```
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::http::{Body, Request, Response, StatusCode, header};
 //! use rama::http::layer::follow_redirect::{FollowRedirectLayer, RequestUri};
 //!
@@ -33,9 +33,7 @@
 //! #     }
 //! #     Ok::<_, std::convert::Infallible>(res.body(Body::empty()).unwrap())
 //! # });
-//! let mut client = ServiceBuilder::new()
-//!     .layer(FollowRedirectLayer::new())
-//!     .service(http_client);
+//! let mut client = FollowRedirectLayer::new().layer(http_client);
 //!
 //! let request = Request::builder()
 //!     .uri("https://rust-lang.org/")
@@ -57,7 +55,7 @@
 //! # #![allow(unused)]
 //!
 //! # use std::convert::Infallible;
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn, layer::MapErrLayer};
 //! use rama::http::{Body, Request, Response};
 //! use rama::http::layer::follow_redirect::{
 //!     policy::{self, PolicyExt},
@@ -87,10 +85,10 @@
 //!     // Do not follow cross-origin redirections, and return the redirection responses as-is.
 //!     .and::<(), _, (), _>(policy::SameOrigin::new());
 //!
-//! let client = ServiceBuilder::new()
-//!     .layer(FollowRedirectLayer::with_policy(policy))
-//!     .map_err(MyError::from_std)
-//!     .service(http_client);
+//! let client = (
+//!     FollowRedirectLayer::with_policy(policy),
+//!     MapErrLayer::new(MyError::from_std),
+//! ).layer(http_client);
 //!
 //! // ...
 //! let _ = client.serve(Context::default(), Request::default()).await?;

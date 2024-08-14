@@ -10,7 +10,7 @@
 //! use flate2::{write::GzEncoder, Compression};
 //!
 //! use rama::http::{Body, header, HeaderValue, Request, Response};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::http::layer::decompression::{DecompressionBody, RequestDecompressionLayer};
 //! use rama::http::dep::http_body_util::BodyExt;
 //! use rama::error::BoxError;
@@ -25,10 +25,10 @@
 //!     .body(Body::from(encoder.finish()?))?;
 //!
 //! // Our HTTP server
-//! let mut server = ServiceBuilder::new()
+//! let mut server = (
 //!     // Automatically decompress request bodies.
-//!     .layer(RequestDecompressionLayer::new())
-//!     .service(service_fn(handler));
+//!     RequestDecompressionLayer::new(),
+//! ).layer(service_fn(handler));
 //!
 //! // Send the request, with the gzip encoded body, to our server.
 //! let _response = server.serve(Context::default(), request).await?;
@@ -51,7 +51,7 @@
 //! use bytes::{Bytes, BytesMut};
 //!
 //! use rama::http::{Body, Request, Response};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::http::layer::{compression::Compression, decompression::DecompressionLayer};
 //! use rama::http::dep::http_body_util::BodyExt;
 //! use rama::error::BoxError;
@@ -68,10 +68,10 @@
 //! let service = Compression::new(service_fn(handle));
 //!
 //! // Our HTTP client.
-//! let mut client = ServiceBuilder::new()
+//! let mut client = (
 //!     // Automatically decompress response bodies.
-//!     .layer(DecompressionLayer::new())
-//!     .service(service);
+//!     DecompressionLayer::new(),
+//! ).layer(service);
 //!
 //! // Call the service.
 //! //

@@ -7,7 +7,7 @@
 //! ```
 //! use rama::http::layer::sensitive_headers::SetSensitiveHeadersLayer;
 //! use rama::http::{Body, Request, Response, header::AUTHORIZATION};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //! use std::{iter::once, convert::Infallible};
 //!
@@ -18,7 +18,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! let mut service = ServiceBuilder::new()
+//! let mut service = (
 //!     // Mark the `Authorization` header as sensitive so it doesn't show in logs
 //!     //
 //!     // `SetSensitiveHeadersLayer` will mark the header as sensitive on both the
@@ -26,8 +26,8 @@
 //!     //
 //!     // The middleware is constructed from an iterator of headers to easily mark
 //!     // multiple headers at once.
-//!     .layer(SetSensitiveHeadersLayer::new(once(AUTHORIZATION)))
-//!     .service(service_fn(handle));
+//!     SetSensitiveHeadersLayer::new(once(AUTHORIZATION)),
+//! ).layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let response = service

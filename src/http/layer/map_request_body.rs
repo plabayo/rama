@@ -8,7 +8,7 @@
 //! use bytes::Bytes;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{ready, Context, Poll}};
-//! use rama::service::{self, ServiceBuilder, service_fn, Service};
+//! use rama::service::{self, Layer, service_fn, Service};
 //! use rama::http::layer::map_request_body::MapRequestBodyLayer;
 //! use rama::error::BoxError;
 //!
@@ -42,10 +42,10 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let mut svc = ServiceBuilder::new()
+//! let mut svc = (
 //!     // Wrap response bodies in `BodyWrapper`
-//!     .layer(MapRequestBodyLayer::new(BodyWrapper::new))
-//!     .service_fn(handle);
+//!     MapRequestBodyLayer::new(BodyWrapper::new),
+//! ).layer(service_fn(handle));
 //!
 //! // Call the service
 //! let request = Request::new(Body::default());

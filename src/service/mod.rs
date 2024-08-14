@@ -24,9 +24,5 @@ pub(crate) use svc_hyper::HyperService;
 pub mod layer;
 pub use layer::Layer;
 
-mod identity;
-#[doc(inline)]
-pub use identity::IdentityService;
-
 pub mod matcher;
 pub use matcher::Matcher;

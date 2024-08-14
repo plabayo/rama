@@ -9,7 +9,7 @@
 //!
 //! use rama::http::layer::validate_request::{ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer};
 //! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! async fn handle(request: Request) -> Result<Response, BoxError> {
@@ -18,10 +18,10 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! let mut service = ServiceBuilder::new()
+//! let mut service = (
 //!     // Require the `Authorization` header to be `Bearer passwordlol`
-//!     .layer(ValidateRequestHeaderLayer::bearer("passwordlol"))
-//!     .service_fn(handle);
+//!     ValidateRequestHeaderLayer::bearer("passwordlol"),
+//! ).layer(service_fn(handle));
 //!
 //! // Requests with the correct token are allowed through
 //! let request = Request::builder()

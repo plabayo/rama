@@ -5,7 +5,7 @@
 //! ```
 //! use rama::http::layer::remove_header::RemoveRequestHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::{Context, Service, ServiceBuilder, service_fn};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -14,12 +14,10 @@
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! #
-//! let mut svc = ServiceBuilder::new()
-//!     .layer(
-//!         // Layer that removes all request headers with the prefix `x-foo`.
-//!         RemoveRequestHeaderLayer::prefix("x-foo")
-//!     )
-//!     .service(http_client);
+//! let mut svc = (
+//!     // Layer that removes all request headers with the prefix `x-foo`.
+//!     RemoveRequestHeaderLayer::prefix("x-foo"),
+//! ).layer(http_client);
 //!
 //! let request = Request::new(Body::empty());
 //!

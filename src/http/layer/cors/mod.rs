@@ -8,7 +8,7 @@
 //!
 //! use rama::http::{Body, Request, Response, Method, header};
 //! use rama::http::layer::cors::{Any, CorsLayer};
-//! use rama::service::{Context, ServiceBuilder, Service};
+//! use rama::service::{Context, Service, Layer, service_fn};
 //!
 //! async fn handle(request: Request) -> Result<Response, Infallible> {
 //!     Ok(Response::new(Body::default()))
@@ -22,9 +22,7 @@
 //!     // allow requests from any origin
 //!     .allow_origin(Any);
 //!
-//! let mut service = ServiceBuilder::new()
-//!     .layer(cors)
-//!     .service_fn(handle);
+//! let mut service = cors.layer(service_fn(handle));
 //!
 //! let request = Request::builder()
 //!     .header(header::ORIGIN, "https://example.com")
