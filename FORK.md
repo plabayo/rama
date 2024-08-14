@@ -7,7 +7,7 @@ as a distant relative.
 
 ## Sync Forks
 
-- <https://github.com/tower-rs/tower/tree/39adf5c509a1b2141f679654d8317524ca96b58b>
+- <https://github.com/tower-rs/tower/tree/fec9e559e276ba9609f939d3b0d2e4fa0504de6f>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
 - <https://github.com/tower-rs/tower-http/tree/bb0d1b2b2a8f75d283d9c94f327d8e4aa214381e>
