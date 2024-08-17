@@ -7,7 +7,7 @@
 [![Build Status][actions-badge]][actions-url]
 
 [crates-badge]: https://img.shields.io/crates/v/rama.svg
-[crates-url]: https://crates.io/crates/rama
+[crates-url]: https://crates.io/crates/rama/0.2.0-alpha.0
 [docs-badge]: https://img.shields.io/docsrs/rama/latest
 [docs-url]: https://docs.rs/rama/latest/rama/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg

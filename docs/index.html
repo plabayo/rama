@@ -1,155 +1,208 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>ラマ</title>
 
-    <title>ラマ</title>
+        <link
+            rel="icon"
+            href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%2210 0 100 100%22><text y=%22.90em%22 font-size=%2290%22>🦙</text></svg>"
+        />
 
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%2210 0 100 100%22><text y=%22.90em%22 font-size=%2290%22>🦙</text></svg>">
+        <meta
+            name="description"
+            content="modular service framework to move and transform network packets"
+        />
+        <meta name="robots" content="index,follow" />
+        <link rel="canonical" href="https://ramaproxy.org/" />
 
-    <meta name="description" content="modular service framework to move and transform network packets">
-    <meta name="robots" content="index,follow">
-    <link rel="canonical" href="https://ramaproxy.org/">
+        <meta property="og:title" content="ramaproxy.org" />
+        <meta property="og:locale" content="en_US" />
+        <meta property="og:type" content="website" />
+        <meta
+            property="og:description"
+            content="modular service framework to move and transform network packets"
+        />
+        <meta property="og:url" content="https://ramaproxy.org/" />
+        <meta property="og:site_name" content="ramaproxy.org" />
+        <meta
+            property="og:image"
+            content="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg"
+        />
 
-    <meta property="og:title" content="ramaproxy.org" />
-    <meta property="og:locale" content="en_US" />
-    <meta property="og:type" content="website">
-    <meta property="og:description" content="modular service framework to move and transform network packets" />
-    <meta property="og:url" content="https://ramaproxy.org/" />
-    <meta property="og:site_name" content="ramaproxy.org" />
-    <meta property="og:image" content="https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg">
+        <style>
+            :root {
+                --width-target: calc(100vw / 6);
+                --height-target: calc(100vh / 3);
+                --size: min(var(--width-target), var(--height-target));
+                --margin-vertical: calc((100vh - var(--size) * 2) / 2);
+                --margin-horizontal: calc((100vw - var(--size) * 5) / 2);
+            }
 
-    <style>
-        :root {
-            --width-target: calc(100vw / 6);
-            --height-target: calc(100vh / 3);
-            --size: min(var(--width-target), var(--height-target));
-            --margin-vertical: calc((100vh - var(--size) * 2) / 2);
-            --margin-horizontal: calc((100vw - var(--size) * 5) / 2);
-        }
+            * {
+                margin: 0;
+                padding: 0;
+            }
 
-        * {
-            margin: 0;
-            padding: 0;
-        }
+            html {
+                background-color: #000000;
+                color: #ffffff;
+                overflow: hidden;
+                text-align: center;
+                font-family: monospace;
+                font-size: var(--size);
+                line-height: var(--size);
+            }
 
-        html {
-            background-color: #000000;
-            color: #FFFFFF;
-            overflow: hidden;
-            text-align: center;
-            font-family: monospace;
-            font-size: var(--size);
-            line-height: var(--size);
-        }
+            a {
+                color: white;
+                text-decoration: none;
+            }
 
-        a {
-            color: white;
-            text-decoration: none;
-        }
+            a:hover {
+                text-shadow: 0 0 5px rgb(0, 200, 0);
+                color: rgb(0, 200, 0);
+            }
 
-        a:hover {
-            text-shadow: 0 0 5px rgb(0, 200, 0);
-            color: rgb(0, 200, 0);
-        }
+            body {
+                display: grid;
+                grid-template-columns: repeat(4, 1fr);
+                margin: var(--margin-vertical) var(--margin-horizontal);
+            }
 
-        body {
-            display: grid;
-            grid-template-columns: repeat(4, 1fr);
-            margin: var(--margin-vertical) var(--margin-horizontal);
-        }
+            body > * {
+                width: var(--size);
+            }
 
-        body>* {
-            width: var(--size);
-        }
+            body > div {
+                height: var(--size);
+                text-shadow: 0 0 5px #fff;
+            }
 
-        body>div {
-            height: var(--size);
-            text-shadow: 0 0 5px #fff;
-        }
+            body > a:nth-child(n + 5) {
+                align-items: center;
+                display: flex;
+                font-size: calc(var(--size) / 9);
+                height: calc(var(--size) / 2);
+                justify-content: center;
+                line-height: calc(var(--size) / 9);
+            }
 
-        body>a:nth-child(n+5) {
-            align-items: center;
-            display: flex;
-            font-size: calc(var(--size) / 9);
-            height: calc(var(--size) / 2);
-            justify-content: center;
-            line-height: calc(var(--size) / 9);
-        }
+            /* just is an isogram */
+            #r:after {
+                content: "r";
+            }
 
-        /* just is an isogram */
-        #r:after {
-            content: 'r';
-        }
+            #r:hover:after {
+                content: "⛰️";
+            }
 
-        #r:hover:after {
-            content: '⛰️';
-        }
+            #a:after {
+                content: "a";
+            }
 
-        #a:after {
-            content: 'a';
-        }
+            #a:hover:after {
+                content: "📖";
+            }
 
-        #a:hover:after {
-            content: '📖';
-        }
+            #m:after {
+                content: "m";
+            }
 
-        #m:after {
-            content: 'm';
-        }
+            #m:hover:after {
+                content: "💬";
+            }
 
-        #m:hover:after {
-            content: '💬';
-        }
+            #a2:after {
+                content: "a";
+            }
 
-        #a2:after {
-            content: 'a';
-        }
+            #a2:hover:after {
+                content: "📦";
+            }
 
-        #a2:hover:after {
-            content: '📦';
-        }
+            #sponsor:after {
+                content: "🤍 ラマ";
+            }
 
-        #sponsor:after {
-            content: '🤍 ラマ';
-        }
+            #sponsor:hover:after {
+                content: "💚 ラマ";
+            }
 
-        #sponsor:hover:after {
-            content: '💚 ラマ';
-        }
-        
-        #shop:after {
-            content: '格納';
-        }
+            #shop:after {
+                content: "格納";
+            }
 
-        #shop:hover:after {
-            content: '🛍️ shop';
-        }
-    </style>
-</head>
+            #shop:hover:after {
+                content: "🛍️ shop";
+            }
+        </style>
+    </head>
 
-<body>
-    <a href="https://github.com/plabayo/rama" title="the official github repository of rama" id="r">
-    </a>
-    <a href="https://ramaproxy.org/book" title="learn more about rama and how to use it" id="a">
-    </a>
-    <a href="https://discord.gg/29EetaSYCD" title="join the plabayo discord server to reach out to us about rama" id=m>
-    </a>
-    <a href="https://crates.io/crates/rama" title="official rama rust crate info page" id=a2>
-    </a>
+    <body>
+        <a
+            href="https://github.com/plabayo/rama"
+            title="the official github repository of rama"
+            id="r"
+        >
+        </a>
+        <a
+            href="https://ramaproxy.org/book"
+            title="learn more about rama and how to use it"
+            id="a"
+        >
+        </a>
+        <a
+            href="https://discord.gg/29EetaSYCD"
+            title="join the plabayo discord server to reach out to us about rama"
+            id="m"
+        >
+        </a>
+        <a
+            href="https://crates.io/crates/rama/0.2.0-alpha.0"
+            title="official rama rust crate info page"
+            id="a2"
+        >
+        </a>
 
-    <a href="https://github.com/plabayo/rama" title="the official github repository of rama">github</a>
-    <a href="https://ramaproxy.org/book" title="learn more about rama and how to use it">manual</a>
-    <a href="https://discord.gg/29EetaSYCD" title="join the plabayo discord server to reach out to us about rama">discord</a>
-    <a href="https://crates.io/crates/rama" title="official rama rust crate info page">crates.io</a>
+        <a
+            href="https://github.com/plabayo/rama"
+            title="the official github repository of rama"
+            >github</a
+        >
+        <a
+            href="https://ramaproxy.org/book"
+            title="learn more about rama and how to use it"
+            >manual</a
+        >
+        <a
+            href="https://discord.gg/29EetaSYCD"
+            title="join the plabayo discord server to reach out to us about rama"
+            >discord</a
+        >
+        <a
+            href="https://crates.io/crates/rama/0.2.0-alpha.0"
+            title="official rama rust crate info page"
+            >crates.io</a
+        >
 
-    <a href="https://plabayo.threadless.com/ " title="purchase plabayo rama merchandise to support us" id=shop></a>
-    <a href="https://github.com/sponsors/plabayo" title="sponsor plabayo to support rama" id=sponsor></a>
-    <a href="https://fp.ramaproxy.org" title="ramaproxy.org fingerprinting service">»FP</a>
-    <div></div>
-</body>
-
+        <a
+            href="https://plabayo.threadless.com/ "
+            title="purchase plabayo rama merchandise to support us"
+            id="shop"
+        ></a>
+        <a
+            href="https://ramaproxy.org/book/sponsor.html"
+            title="sponsor plabayo to support rama"
+            id="sponsor"
+        ></a>
+        <a
+            href="https://fp.ramaproxy.org"
+            title="ramaproxy.org fingerprinting service"
+            >»FP</a
+        >
+        <div></div>
+    </body>
 </html>
