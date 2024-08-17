@@ -3,10 +3,7 @@
 //! If the request is not authorized a `407 Proxy Authentication Required` response will be sent.
 
 use crate::http::header::PROXY_AUTHENTICATE;
-use crate::http::headers::{
-    authorization::{Basic, Credentials},
-    HeaderMapExt, ProxyAuthorization,
-};
+use crate::http::headers::{authorization::Credentials, HeaderMapExt, ProxyAuthorization};
 use crate::http::{Request, Response, StatusCode};
 use crate::service::{Context, Layer, Service};
 use std::fmt;
@@ -19,7 +16,7 @@ pub use auth::{ProxyAuthority, ProxyAuthoritySync};
 /// Layer that applies the [`ProxyAuthService`] middleware which apply a timeout to requests.
 ///
 /// See the [module docs](super) for an example.
-pub struct ProxyAuthLayer<A, C = Basic, L = ()> {
+pub struct ProxyAuthLayer<A, C, L = ()> {
     proxy_auth: A,
     _phantom: PhantomData<fn(C, L) -> ()>,
 }
