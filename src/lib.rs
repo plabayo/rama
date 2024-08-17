@@ -5,6 +5,12 @@
 //! Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 //! to get inspired on how you can use it for your purposes.
 //!
+//! > 💡 If your organization relies on Rama (ラマ) for its operations,
+//! > we invite you to consider becoming a sponsor 💖. By supporting our project,
+//! > you'll help ensure its continued development and success.
+//! > To learn more about sponsorship opportunities, please refer to [the "Sponsors" chapter in rama's online book](https://ramaproxy.org/book/sponsor.html)
+//! > or contact us directly at [sponsor@ramaproxy.org](mailto:sponsor@ramaproxy.org).
+//!
 //! This framework comes with 🔋 batteries included, giving you the full freedome to build the middleware and services you want, without _having_ to repeat the "common":
 //!
 //! | category | support list |
@@ -31,7 +37,7 @@
 //! >
 //! > * <sup>(1)</sup> Part of [`v0.2.0` milestone (ETA: 2024 mid Q3)](https://github.com/plabayo/rama/milestone/1)
 //! > * <sup>(2)</sup> Part of [`v0.3.0` milestone (ETA: 2024 end Q3)](https://github.com/plabayo/rama/milestone/2)
-//! > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](#--sponsors) to help accelerate its priority.
+//! > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](https://ramaproxy.org/book/sponsor.html) to help accelerate its priority.
 //!
 //! The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
 //!

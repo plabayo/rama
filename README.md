@@ -47,6 +47,12 @@ to get inspired on how you can use it for your purposes.
 [![Paypal Donation][paypal-badge]][paypal-url]
 [![Discord][discord-badge]][discord-url]
 
+> 💡 If your organization relies on Rama (ラマ) for its operations,
+> we invite you to consider becoming a sponsor 💖. By supporting our project,
+> you'll help ensure its continued development and success.
+> To learn more about sponsorship opportunities, please refer to [the "Sponsors" section below](#--sponsors)
+> or contact us directly at [sponsor@ramaproxy.org](mailto:sponsor@ramaproxy.org).
+
 This framework comes with 🔋 batteries included, giving you the full freedome to build the middleware and services you want, without _having_ to repeat the "common":
 
 | category | support list |
