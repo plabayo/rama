@@ -3,8 +3,8 @@
 mod enums;
 use client::ClientHello;
 pub use enums::{
-    ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme,
-    SupportedGroup,
+    ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
+    ProtocolVersion, SignatureScheme, SupportedGroup,
 };
 
 pub mod client;
