@@ -205,14 +205,13 @@ pub(super) fn get_http_info(req: &Request) -> HttpInfo {
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TlsDisplayInfo {
     pub(super) cipher_suites: Vec<String>,
+    pub(super) compression_algorithms: Vec<String>,
     pub(super) extensions: Vec<TlsDisplayInfoExtension>,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TlsDisplayInfoExtension {
     pub(super) id: String,
-    pub(super) name: Option<&'static str>,
-    pub(super) name_alt: Option<&'static str>,
     pub(super) data: TlsDisplayInfoExtensionData,
 }
 
@@ -233,28 +232,30 @@ pub(super) fn get_tls_display_info(ctx: &Context<State>) -> Option<TlsDisplayInf
             .iter()
             .map(|s| s.to_string())
             .collect::<Vec<_>>(),
+        compression_algorithms: hello
+            .compression_algorithms()
+            .iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>(),
         extensions: hello
             .extensions()
             .iter()
             .map(|extension| match extension {
                 ClientHelloExtension::ServerName(domain) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    name: Some("servername"),
-                    name_alt: Some("SNI"),
-                    data: TlsDisplayInfoExtensionData::Single(domain.to_string()),
+                    data: TlsDisplayInfoExtensionData::Single(match domain {
+                        Some(domain) => domain.to_string(),
+                        None => "".to_owned(),
+                    }),
                 },
                 ClientHelloExtension::SignatureAlgorithms(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    name: Some("signature algorithms"),
-                    name_alt: None,
                     data: TlsDisplayInfoExtensionData::Multi(
                         v.iter().map(|s| s.to_string()).collect(),
                     ),
                 },
                 ClientHelloExtension::SupportedVersions(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    name: Some("supported versions"),
-                    name_alt: None,
                     data: TlsDisplayInfoExtensionData::Multi(
                         v.iter().map(|s| s.to_string()).collect(),
                     ),
@@ -262,8 +263,6 @@ pub(super) fn get_tls_display_info(ctx: &Context<State>) -> Option<TlsDisplayInf
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => {
                     TlsDisplayInfoExtension {
                         id: extension.id().to_string(),
-                        name: Some("application layer protocol negotation"),
-                        name_alt: Some("ALPN"),
                         data: TlsDisplayInfoExtensionData::Multi(
                             v.iter().map(|s| s.to_string()).collect(),
                         ),
@@ -271,24 +270,18 @@ pub(super) fn get_tls_display_info(ctx: &Context<State>) -> Option<TlsDisplayInf
                 }
                 ClientHelloExtension::SupportedGroups(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    name: Some("supported groups"),
-                    name_alt: None,
                     data: TlsDisplayInfoExtensionData::Multi(
                         v.iter().map(|s| s.to_string()).collect(),
                     ),
                 },
                 ClientHelloExtension::ECPointFormats(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    name: Some("EC point formats"),
-                    name_alt: None,
                     data: TlsDisplayInfoExtensionData::Multi(
                         v.iter().map(|s| s.to_string()).collect(),
                     ),
                 },
                 ClientHelloExtension::Opaque { id, data } => TlsDisplayInfoExtension {
                     id: id.to_string(),
-                    name: None,
-                    name_alt: None,
                     data: TlsDisplayInfoExtensionData::Single(if data.is_empty() {
                         "EMPTY".to_owned()
                     } else {

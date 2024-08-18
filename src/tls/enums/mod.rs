@@ -5,32 +5,6 @@ use crate::error::OpaqueError;
 
 mod rustls;
 
-// https://www.rfc-editor.org/rfc/rfc8701.html
-const GREASE_VALUES: [u16; 16] = [
-    0x0a0a, 0x1a1a, 0x2a2a, 0x3a3a, 0x4a4a, 0x5a5a, 0x6a6a, 0x7a7a, 0x8a8a, 0x9a9a, 0xaaaa, 0xbaba,
-    0xcaca, 0xdada, 0xeaea, 0xfafa,
-];
-
-// https://www.rfc-editor.org/rfc/rfc8701.html
-const GREASE_BYTES_VALUES: [[u8; 2]; 16] = [
-    [0x0a, 0x0a],
-    [0x1a, 0x1a],
-    [0x2a, 0x2a],
-    [0x3a, 0x3a],
-    [0x4a, 0x4a],
-    [0x5a, 0x5a],
-    [0x6a, 0x6a],
-    [0x7a, 0x7a],
-    [0x8a, 0x8a],
-    [0x9a, 0x9a],
-    [0xaa, 0xaa],
-    [0xba, 0xba],
-    [0xca, 0xca],
-    [0xda, 0xda],
-    [0xea, 0xea],
-    [0xfa, 0xfa],
-];
-
 /// A macro which defines an enum type.
 macro_rules! enum_builder {
     (
@@ -110,7 +84,7 @@ macro_rules! enum_builder {
             fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 match self {
                     $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $enum_val)),*
-                    ,$enum_name::Unknown(x) => if GREASE_VALUES.iter().any(|v| v == x) {
+                    ,$enum_name::Unknown(x) => if x & 0x0f0f == 0x0a0a {
                         write!(f, "GREASE ({x:#06x})")
                         } else {
                         write!(f, "Unknown ({x:#06x})")
@@ -230,7 +204,7 @@ macro_rules! enum_builder {
                         Err(_) => write!(f, concat!(stringify!($enum_var), " (0x{:x?})"), $enum_val),
                     }),*
                     ,$enum_name::Unknown(x) =>
-                        if GREASE_BYTES_VALUES.iter().any(|v| &v[..] == &x[..]) {
+                        if x.len() == 2 && x[0] & 0x0f == 0x0a && x[1] & 0x0f == 0x0a {
                             write!(f, "GREASE (0x{})", hex::encode(x))
                         } else {
                             match ::std::str::from_utf8(x) {
@@ -780,6 +754,17 @@ enum_builder! {
         ECH_OUTER_EXTENSIONS => 64768,
         ENCRYPTED_CLIENT_HELLO => 65037,
         RENEGOTIATION_INFO => 65281,
+    }
+}
+
+enum_builder! {
+    /// The `CompressionAlgorithm` TLS protocol enum.  Values in this enum are taken
+    /// from the various RFCs covering TLS, and are listed by IANA.
+    /// The `Unknown` item is used when processing unrecognised ordinals.
+    @U8
+    pub enum CompressionAlgorithm {
+        Null => 0x00,
+        Deflate => 0x01,
     }
 }
 

@@ -1,8 +1,8 @@
 use crate::{
     net::address::Domain,
     tls::{
-        ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion,
-        SignatureScheme, SupportedGroup,
+        enums::CompressionAlgorithm, ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId,
+        ProtocolVersion, SignatureScheme, SupportedGroup,
     },
 };
 
@@ -21,14 +21,20 @@ mod boring;
 /// For Rama however we only focus on the parts which
 /// a user might want to inspect and/or set.
 pub struct ClientHello {
-    cipher_suites: Vec<CipherSuite>,
-    extensions: Vec<ClientHelloExtension>,
+    pub(super) cipher_suites: Vec<CipherSuite>,
+    pub(super) compression_algorithms: Vec<CompressionAlgorithm>,
+    pub(super) extensions: Vec<ClientHelloExtension>,
 }
 
 impl ClientHello {
     /// Return all [`CipherSuite`]s defined in this [`ClientHello`].
     pub fn cipher_suites(&self) -> &[CipherSuite] {
         &self.cipher_suites[..]
+    }
+
+    /// Return all [`CompressionAlgorithm`]s defined in this [`ClientHello`].
+    pub fn compression_algorithms(&self) -> &[CompressionAlgorithm] {
+        &self.compression_algorithms[..]
     }
 
     /// Return all [`ClientHelloExtension`]s defined in this [`ClientHello`].
@@ -42,7 +48,7 @@ impl ClientHello {
     pub fn ext_server_name(&self) -> Option<&Domain> {
         for ext in &self.extensions {
             if let ClientHelloExtension::ServerName(ref domain) = ext {
-                return Some(domain);
+                return domain.as_ref();
             }
         }
         None
@@ -142,7 +148,7 @@ pub enum ClientHelloExtension {
     ///
     /// - <https://www.iana.org/go/rfc6066>
     /// - <https://www.iana.org/go/rfc9261>
-    ServerName(Domain),
+    ServerName(Option<Domain>),
     /// indicates which elliptic curves the client supports
     ///
     /// This extension is required... despite being an extension.

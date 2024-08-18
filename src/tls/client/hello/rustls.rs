@@ -21,7 +21,7 @@ impl<'a> From<rustls::server::ClientHello<'a>> for super::ClientHello {
         ));
 
         if let Some(domain) = value.server_name().and_then(|d| d.parse().ok()) {
-            extensions.push(ClientHelloExtension::ServerName(domain));
+            extensions.push(ClientHelloExtension::ServerName(Some(domain)));
         }
 
         if let Some(alpn) = value.alpn() {
@@ -32,6 +32,7 @@ impl<'a> From<rustls::server::ClientHello<'a>> for super::ClientHello {
 
         Self {
             cipher_suites,
+            compression_algorithms: vec![],
             extensions,
         }
     }

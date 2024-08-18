@@ -473,27 +473,27 @@ impl From<TlsDisplayInfo> for Vec<Table> {
         let mut vec = Vec::with_capacity(info.extensions.len() + 1);
         vec.push(Table {
             title: "🔒 TLS Client Hello — Header".to_owned(),
-            rows: vec![("Cipher Suites".to_owned(), info.cipher_suites.join(", "))],
+            rows: vec![
+                ("Cipher Suites".to_owned(), info.cipher_suites.join(", ")),
+                (
+                    "Compression Algorithms".to_owned(),
+                    info.compression_algorithms.join(", "),
+                ),
+            ],
         });
         for extension in info.extensions {
-            let mut rows = Vec::with_capacity(4);
-            rows.push(("ID".to_owned(), extension.id));
-            if let Some(name) = extension.name {
-                rows.push(("Name".to_owned(), name.to_owned()));
-            }
-            if let Some(name_alt) = extension.name_alt {
-                rows.push(("Name (Alt)".to_owned(), name_alt.to_owned()));
-            }
-            rows.push((
-                "Data".to_owned(),
-                match extension.data {
-                    TlsDisplayInfoExtensionData::Single(s) => s,
-                    TlsDisplayInfoExtensionData::Multi(v) => v.join(", "),
-                },
-            ));
             vec.push(Table {
                 title: "🔒 TLS Client Hello — Extension".to_owned(),
-                rows,
+                rows: vec![
+                    ("ID".to_owned(), extension.id),
+                    (
+                        "Data".to_owned(),
+                        match extension.data {
+                            TlsDisplayInfoExtensionData::Single(s) => s,
+                            TlsDisplayInfoExtensionData::Multi(v) => v.join(", "),
+                        },
+                    ),
+                ],
             });
         }
         vec
