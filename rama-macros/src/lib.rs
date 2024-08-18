@@ -1,6 +1,6 @@
 //! Macros for [`rama`].
 //!
-//! [`rama`]: https://crates.io/crates/rama/0.2.0-alpha.0
+//! [`rama`]: https://crates.io/crates/rama/0.2.0-alpha.1
 
 #![warn(
     clippy::all,

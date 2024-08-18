@@ -1717,7 +1717,7 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
 name = "rama"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "arc-swap",
  "async-compression",
@@ -1788,7 +1788,7 @@ dependencies = [
 
 [[package]]
 name = "rama-cli"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "bytes",
  "clap",
@@ -1812,7 +1812,7 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 dependencies = [
  "proc-macro2",
  "quote",

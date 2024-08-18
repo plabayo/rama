@@ -2,7 +2,7 @@
 members = [".", "fuzz", "rama-cli", "rama-macros"]
 
 [workspace.package]
-version = "0.2.0-alpha.1"
+version = "0.2.0-alpha.2"
 license = "MIT OR Apache-2.0"
 edition = "2021"
 repository = "https://github.com/plabayo/rama"
@@ -172,7 +172,7 @@ percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 pki-types = { workspace = true }
 quickcheck = { workspace = true }
-rama-macros = { version = "0.2.0-alpha.1", path = "rama-macros" }
+rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
 rcgen = { workspace = true }
 regex = { workspace = true }
 rustls = { workspace = true }
