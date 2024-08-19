@@ -4,23 +4,26 @@ use crate::{
 };
 use std::{convert::Infallible, fmt};
 
-use sealed::Trace;
+use sealed::{DefaulResponse, StaticResponse, Trace};
 
 /// Consumes this service's error value and returns [`Infallible`].
 #[derive(Clone)]
-pub struct ConsumeErr<S, F> {
+pub struct ConsumeErr<S, F, R = DefaulResponse> {
     inner: S,
     f: F,
+    response: R,
 }
 
-impl<S, F> fmt::Debug for ConsumeErr<S, F>
+impl<S, F, R> fmt::Debug for ConsumeErr<S, F, R>
 where
     S: fmt::Debug,
+    R: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConsumeErr")
             .field("inner", &self.inner)
             .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("response", &self.response)
             .finish()
     }
 }
@@ -29,14 +32,16 @@ where
 ///
 /// [`Layer`]: crate::service::Layer
 #[derive(Clone)]
-pub struct ConsumeErrLayer<F> {
+pub struct ConsumeErrLayer<F, R = DefaulResponse> {
     f: F,
+    response: R,
 }
 
-impl<F> fmt::Debug for ConsumeErrLayer<F> {
+impl<F, R: fmt::Debug> fmt::Debug for ConsumeErrLayer<F, R> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ConsumeErrLayer")
             .field("f", &format_args!("{}", std::any::type_name::<F>()))
+            .field("response", &self.response)
             .finish()
     }
 }
@@ -47,23 +52,40 @@ impl Default for ConsumeErrLayer<Trace> {
     }
 }
 
-impl<S, F> ConsumeErr<S, F> {
+impl<S, F> ConsumeErr<S, F, DefaulResponse> {
     /// Creates a new [`ConsumeErr`] service.
     pub const fn new(inner: S, f: F) -> Self {
-        ConsumeErr { f, inner }
+        ConsumeErr {
+            f,
+            inner,
+            response: DefaulResponse,
+        }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S> ConsumeErr<S, Trace> {
+impl<S, F> ConsumeErr<S, F, DefaulResponse> {
+    /// Set a response to be used in case of errors,
+    /// instead of requiring and using the [`Default::default`] implementation
+    /// of the inner service's response type.
+    pub fn with_response<R>(self, response: R) -> ConsumeErr<S, F, StaticResponse<R>> {
+        ConsumeErr {
+            f: self.f,
+            inner: self.inner,
+            response: StaticResponse(response),
+        }
+    }
+}
+
+impl<S> ConsumeErr<S, Trace, DefaulResponse> {
     /// Trace the error passed to this [`ConsumeErr`] service for the provided trace level.
     pub const fn trace(inner: S, level: tracing::Level) -> Self {
         Self::new(inner, Trace(level))
     }
 }
 
-impl<S, F, State, Request> Service<State, Request> for ConsumeErr<S, F>
+impl<S, F, State, Request> Service<State, Request> for ConsumeErr<S, F, DefaulResponse>
 where
     S: Service<State, Request>,
     S::Response: Default,
@@ -89,7 +111,33 @@ where
     }
 }
 
-impl<S, State, Request> Service<State, Request> for ConsumeErr<S, Trace>
+impl<S, F, State, Request, R> Service<State, Request> for ConsumeErr<S, F, StaticResponse<R>>
+where
+    S: Service<State, Request>,
+    F: FnOnce(S::Error) + Clone + Send + Sync + 'static,
+    R: Into<S::Response> + Clone + Send + Sync + 'static,
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = Infallible;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request,
+    ) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(ctx, req).await {
+            Ok(resp) => Ok(resp),
+            Err(err) => {
+                (self.f.clone())(err);
+                Ok(self.response.0.clone().into())
+            }
+        }
+    }
+}
+
+impl<S, State, Request> Service<State, Request> for ConsumeErr<S, Trace, DefaulResponse>
 where
     S: Service<State, Request>,
     S::Response: Default,
@@ -132,10 +180,56 @@ where
     }
 }
 
+impl<S, State, Request, R> Service<State, Request> for ConsumeErr<S, Trace, StaticResponse<R>>
+where
+    S: Service<State, Request>,
+    S::Error: Into<BoxError>,
+    R: Into<S::Response> + Clone + Send + Sync + 'static,
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Response = S::Response;
+    type Error = Infallible;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request,
+    ) -> Result<Self::Response, Self::Error> {
+        match self.inner.serve(ctx, req).await {
+            Ok(resp) => Ok(resp),
+            Err(err) => {
+                const MESSAGE: &str = "unhandled service error consumed";
+                match self.f.0 {
+                    tracing::Level::TRACE => {
+                        tracing::trace!(error = err.into(), MESSAGE);
+                    }
+                    tracing::Level::DEBUG => {
+                        tracing::debug!(error = err.into(), MESSAGE);
+                    }
+                    tracing::Level::INFO => {
+                        tracing::info!(error = err.into(), MESSAGE);
+                    }
+                    tracing::Level::WARN => {
+                        tracing::warn!(error = err.into(), MESSAGE);
+                    }
+                    tracing::Level::ERROR => {
+                        tracing::error!(error = err.into(), MESSAGE);
+                    }
+                }
+                Ok(self.response.0.clone().into())
+            }
+        }
+    }
+}
+
 impl<F> ConsumeErrLayer<F> {
     /// Creates a new [`ConsumeErrLayer`].
     pub const fn new(f: F) -> Self {
-        ConsumeErrLayer { f }
+        ConsumeErrLayer {
+            f,
+            response: DefaulResponse,
+        }
     }
 }
 
@@ -146,16 +240,30 @@ impl ConsumeErrLayer<Trace> {
     }
 }
 
-impl<S, F> Layer<S> for ConsumeErrLayer<F>
+impl<F> ConsumeErrLayer<F, DefaulResponse> {
+    /// Set a response to be used in case of errors,
+    /// instead of requiring and using the [`Default::default`] implementation
+    /// of the inner service's response type.
+    pub fn with_response<R>(self, response: R) -> ConsumeErrLayer<F, StaticResponse<R>> {
+        ConsumeErrLayer {
+            f: self.f,
+            response: StaticResponse(response),
+        }
+    }
+}
+
+impl<S, F, R> Layer<S> for ConsumeErrLayer<F, R>
 where
     F: Clone,
+    R: Clone,
 {
-    type Service = ConsumeErr<S, F>;
+    type Service = ConsumeErr<S, F, R>;
 
     fn layer(&self, inner: S) -> Self::Service {
         ConsumeErr {
             f: self.f.clone(),
             inner,
+            response: self.response.clone(),
         }
     }
 }
@@ -167,4 +275,14 @@ mod sealed {
     ///
     /// [`ConsumeErr::new`]: crate::service::layer::ConsumeErr::new
     pub struct Trace(pub tracing::Level);
+
+    #[derive(Debug, Clone)]
+    #[non_exhaustive]
+    /// A sealed type to indicate default response is to be used.
+    pub struct DefaulResponse;
+
+    #[derive(Debug, Clone)]
+    #[non_exhaustive]
+    /// A sealed type to indicate static response is to be used.
+    pub struct StaticResponse<R>(pub(super) R);
 }
