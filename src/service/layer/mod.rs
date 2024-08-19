@@ -505,14 +505,6 @@ mod map_state;
 #[doc(inline)]
 pub use map_state::{MapState, MapStateLayer};
 
-mod then;
-#[doc(inline)]
-pub use then::{Then, ThenLayer};
-
-mod and_then;
-#[doc(inline)]
-pub use and_then::{AndThen, AndThenLayer};
-
 mod layer_fn;
 #[doc(inline)]
 pub use layer_fn::{layer_fn, LayerFn};
