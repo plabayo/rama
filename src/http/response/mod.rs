@@ -11,7 +11,7 @@ mod into_response_parts;
 #[doc(inline)]
 pub use self::{
     append_headers::AppendHeaders,
-    into_response::IntoResponse,
+    into_response::{IntoResponse, StaticResponseFactory},
     into_response_parts::{IntoResponseParts, ResponseParts, TryIntoHeaderError},
 };
 
