@@ -323,34 +323,26 @@ impl Service<(), Request> for EchoService {
                     "extensions": hello.extensions().iter().map(|extension| match extension {
                         ClientHelloExtension::ServerName(domain) => json!({
                             "id": extension.id().to_string(),
-                            "name": "servername",
-                            "name_alt": "SNI",
                             "data": domain,
                         }),
                         ClientHelloExtension::SignatureAlgorithms(v) => json!({
                             "id": extension.id().to_string(),
-                            "name": "signature algorithms",
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
                         ClientHelloExtension::SupportedVersions(v) => json!({
                             "id": extension.id().to_string(),
-                            "name": "supported versions",
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
                         ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => json!({
                             "id": extension.id().to_string(),
-                            "name": "application layer protocol negotation",
-                            "name_alt": "ALPN",
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
                         ClientHelloExtension::SupportedGroups(v) => json!({
                             "id": extension.id().to_string(),
-                            "name": "supported groups",
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
                         ClientHelloExtension::ECPointFormats(v) => json!({
                             "id": extension.id().to_string(),
-                            "name": "EC point formats",
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
                         ClientHelloExtension::Opaque { id, data } => json!({
