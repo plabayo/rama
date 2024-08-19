@@ -2,7 +2,7 @@
 //!
 //! See [request] and [response] for more details.
 
-use crate::http::{header, HeaderMap};
+use crate::http::{header, HeaderMap, HeaderName};
 
 pub mod request;
 pub mod response;
@@ -17,7 +17,10 @@ fn remove_headers_by_prefix(headers: &mut HeaderMap, prefix: &str) {
     let keys: Vec<_> = headers
         .keys()
         // this assumes that `HeaderName::as_str` returns as lowercase
-        .filter(|key| key.as_str().starts_with(prefix))
+        .filter(|key| {
+            let s = key.as_str();
+            s.len() >= prefix.len() && s[..prefix.len()].eq_ignore_ascii_case(prefix)
+        })
         .cloned()
         .collect();
 
@@ -26,7 +29,7 @@ fn remove_headers_by_prefix(headers: &mut HeaderMap, prefix: &str) {
     }
 }
 
-fn remove_headers_by_exact_name(headers: &mut HeaderMap, name: &str) {
+fn remove_headers_by_exact_name(headers: &mut HeaderMap, name: &HeaderName) {
     headers.remove(name);
 }
 

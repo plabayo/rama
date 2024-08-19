@@ -8,7 +8,7 @@
 //! ```rust
 //! use rama::http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
 //! use rama::http::service::web::{WebService, extract::Extension};
-//! use rama::http::{Body, Request, StatusCode};
+//! use rama::http::{Body, Request, StatusCode, HeaderName};
 //! use rama::service::{Context, Service, Layer};
 //! use serde::Deserialize;
 //!
@@ -22,7 +22,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() {
-//!     let service = HeaderConfigLayer::<Config>::required("x-proxy-config".to_owned())
+//!     let service = HeaderConfigLayer::<Config>::required(HeaderName::from_static("x-proxy-config"))
 //!         .layer(WebService::default()
 //!             .get("/", |Extension(cfg): Extension<Config>| async move {
 //!                 assert_eq!(cfg.s, "E&G");
@@ -42,7 +42,7 @@
 //! }
 //! ```
 
-use crate::http::header::AsHeaderName;
+use crate::http::{header::AsHeaderName, HeaderName};
 use serde::de::DeserializeOwned;
 use std::{fmt, marker::PhantomData};
 
@@ -74,7 +74,7 @@ where
 /// [`Extensions`]: crate::service::context::Extensions
 pub struct HeaderConfigService<T, S> {
     inner: S,
-    key: String,
+    header_name: HeaderName,
     optional: bool,
     _marker: PhantomData<fn() -> T>,
 }
@@ -84,10 +84,10 @@ impl<T, S> HeaderConfigService<T, S> {
     ///
     /// Alias for [`HeaderConfigService::required`] if `!optional`
     /// and [`HeaderConfigService::optional`] if `optional`.
-    pub const fn new(inner: S, key: String, optional: bool) -> Self {
+    pub const fn new(inner: S, header_name: HeaderName, optional: bool) -> Self {
         Self {
             inner,
-            key,
+            header_name,
             optional,
             _marker: PhantomData,
         }
@@ -98,15 +98,15 @@ impl<T, S> HeaderConfigService<T, S> {
     /// Create a new [`HeaderConfigService`] with the given inner service
     /// and header name, on which to extract the config,
     /// and which will fail if the header is missing.
-    pub const fn required(inner: S, key: String) -> Self {
-        Self::new(inner, key, false)
+    pub const fn required(inner: S, header_name: HeaderName) -> Self {
+        Self::new(inner, header_name, false)
     }
 
     /// Create a new [`HeaderConfigService`] with the given inner service
     /// and header name, on which to extract the config,
     /// and which will gracefully accept if the header is missing.
-    pub const fn optional(inner: S, key: String) -> Self {
-        Self::new(inner, key, true)
+    pub const fn optional(inner: S, header_name: HeaderName) -> Self {
+        Self::new(inner, header_name, true)
     }
 }
 
@@ -114,7 +114,7 @@ impl<T, S: fmt::Debug> fmt::Debug for HeaderConfigService<T, S> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("HeaderConfigService")
             .field("inner", &self.inner)
-            .field("key", &self.key)
+            .field("header_name", &self.header_name)
             .field("optional", &self.optional)
             .field(
                 "_marker",
@@ -131,7 +131,7 @@ where
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            key: self.key.clone(),
+            header_name: self.header_name.clone(),
             optional: self.optional,
             _marker: PhantomData,
         }
@@ -154,7 +154,7 @@ where
         mut ctx: Context<State>,
         request: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        let config = match extract_header_config::<_, T, _>(&request, &self.key) {
+        let config = match extract_header_config::<_, T, _>(&request, &self.header_name) {
             Ok(config) => config,
             Err(err) => {
                 if self.optional
@@ -177,7 +177,7 @@ where
 ///
 /// [`Extensions`]: crate::service::context::Extensions
 pub struct HeaderConfigLayer<T> {
-    key: String,
+    header_name: HeaderName,
     optional: bool,
     _marker: PhantomData<fn() -> T>,
 }
@@ -185,7 +185,7 @@ pub struct HeaderConfigLayer<T> {
 impl<T> fmt::Debug for HeaderConfigLayer<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("HeaderConfigLayer")
-            .field("key", &self.key)
+            .field("header_name", &self.header_name)
             .field("optional", &self.optional)
             .field(
                 "_marker",
@@ -198,7 +198,7 @@ impl<T> fmt::Debug for HeaderConfigLayer<T> {
 impl<T> Clone for HeaderConfigLayer<T> {
     fn clone(&self) -> Self {
         Self {
-            key: self.key.clone(),
+            header_name: self.header_name.clone(),
             optional: self.optional,
             _marker: PhantomData,
         }
@@ -209,9 +209,9 @@ impl<T> HeaderConfigLayer<T> {
     /// Create a new [`HeaderConfigLayer`] with the given header name,
     /// on which to extract the config,
     /// and which will fail if the header is missing.
-    pub fn required(key: String) -> Self {
+    pub fn required(header_name: HeaderName) -> Self {
         Self {
-            key,
+            header_name,
             optional: false,
             _marker: PhantomData,
         }
@@ -220,9 +220,9 @@ impl<T> HeaderConfigLayer<T> {
     /// Create a new [`HeaderConfigLayer`] with the given header name,
     /// on which to extract the config,
     /// and which will gracefully accept if the header is missing.
-    pub fn optional(key: String) -> Self {
+    pub fn optional(header_name: HeaderName) -> Self {
         Self {
-            key,
+            header_name,
             optional: true,
             _marker: PhantomData,
         }
@@ -233,7 +233,7 @@ impl<T, S> Layer<S> for HeaderConfigLayer<T> {
     type Service = HeaderConfigService<T, S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        HeaderConfigService::new(inner, self.key.clone(), self.optional)
+        HeaderConfigService::new(inner, self.header_name.clone(), self.optional)
     }
 }
 
@@ -265,8 +265,10 @@ mod test {
                 Ok::<_, std::convert::Infallible>(())
             });
 
-        let service =
-            HeaderConfigService::<Config, _>::required(inner_service, "x-proxy-config".to_owned());
+        let service = HeaderConfigService::<Config, _>::required(
+            inner_service,
+            HeaderName::from_static("x-proxy-config"),
+        );
 
         service.serve(Context::default(), request).await.unwrap();
     }
@@ -291,8 +293,10 @@ mod test {
                 Ok::<_, std::convert::Infallible>(())
             });
 
-        let service =
-            HeaderConfigService::<Config, _>::optional(inner_service, "x-proxy-config".to_owned());
+        let service = HeaderConfigService::<Config, _>::optional(
+            inner_service,
+            HeaderName::from_static("x-proxy-config"),
+        );
 
         service.serve(Context::default(), request).await.unwrap();
     }
@@ -312,8 +316,10 @@ mod test {
                 Ok::<_, std::convert::Infallible>(())
             });
 
-        let service =
-            HeaderConfigService::<Config, _>::optional(inner_service, "x-proxy-config".to_owned());
+        let service = HeaderConfigService::<Config, _>::optional(
+            inner_service,
+            HeaderName::from_static("x-proxy-config"),
+        );
 
         service.serve(Context::default(), request).await.unwrap();
     }
@@ -330,8 +336,10 @@ mod test {
             Ok::<_, std::convert::Infallible>(())
         });
 
-        let service =
-            HeaderConfigService::<Config, _>::required(inner_service, "x-proxy-config".to_owned());
+        let service = HeaderConfigService::<Config, _>::required(
+            inner_service,
+            HeaderName::from_static("x-proxy-config"),
+        );
 
         let result = service.serve(Context::default(), request).await;
         assert!(result.is_err());
@@ -350,8 +358,10 @@ mod test {
             Ok::<_, std::convert::Infallible>(())
         });
 
-        let service =
-            HeaderConfigService::<Config, _>::required(inner_service, "x-proxy-config".to_owned());
+        let service = HeaderConfigService::<Config, _>::required(
+            inner_service,
+            HeaderName::from_static("x-proxy-config"),
+        );
 
         let result = service.serve(Context::default(), request).await;
         assert!(result.is_err());
@@ -370,8 +380,10 @@ mod test {
             Ok::<_, std::convert::Infallible>(())
         });
 
-        let service =
-            HeaderConfigService::<Config, _>::optional(inner_service, "x-proxy-config".to_owned());
+        let service = HeaderConfigService::<Config, _>::optional(
+            inner_service,
+            HeaderName::from_static("x-proxy-config"),
+        );
 
         let result = service.serve(Context::default(), request).await;
         assert!(result.is_err());

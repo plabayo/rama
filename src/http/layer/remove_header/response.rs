@@ -27,10 +27,9 @@
 //! # }
 //! ```
 
-use std::fmt;
-
-use crate::http::{Request, Response};
+use crate::http::{HeaderName, Request, Response};
 use crate::service::{Context, Layer, Service};
+use std::{borrow::Cow, fmt};
 
 #[derive(Debug, Clone)]
 /// Layer that applies [`RemoveResponseHeader`] which removes response headers.
@@ -42,8 +41,8 @@ pub struct RemoveResponseHeaderLayer {
 
 #[derive(Debug, Clone)]
 enum RemoveResponseHeaderMode {
-    Prefix(String),
-    Exact(String),
+    Prefix(Cow<'static, str>),
+    Exact(HeaderName),
     Hop,
 }
 
@@ -51,18 +50,18 @@ impl RemoveResponseHeaderLayer {
     /// Create a new [`RemoveResponseHeaderLayer`].
     ///
     /// Removes response headers by prefix.
-    pub fn prefix(prefix: impl AsRef<str>) -> Self {
+    pub fn prefix(prefix: impl Into<Cow<'static, str>>) -> Self {
         Self {
-            mode: RemoveResponseHeaderMode::Prefix(prefix.as_ref().to_lowercase()),
+            mode: RemoveResponseHeaderMode::Prefix(prefix.into()),
         }
     }
 
     /// Create a new [`RemoveResponseHeaderLayer`].
     ///
     /// Removes the response header with the exact name.
-    pub fn exact(header: impl AsRef<str>) -> Self {
+    pub fn exact(header: HeaderName) -> Self {
         Self {
-            mode: RemoveResponseHeaderMode::Exact(header.as_ref().to_lowercase()),
+            mode: RemoveResponseHeaderMode::Exact(header),
         }
     }
 
@@ -98,14 +97,14 @@ impl<S> RemoveResponseHeader<S> {
     /// Create a new [`RemoveResponseHeader`].
     ///
     /// Removes response headers by prefix.
-    pub fn prefix(prefix: impl AsRef<str>, inner: S) -> Self {
-        RemoveResponseHeaderLayer::prefix(prefix).layer(inner)
+    pub fn prefix(prefix: impl Into<Cow<'static, str>>, inner: S) -> Self {
+        RemoveResponseHeaderLayer::prefix(prefix.into()).layer(inner)
     }
 
     /// Create a new [`RemoveResponseHeader`].
     ///
     /// Removes the response header with the exact name.
-    pub fn exact(header: impl AsRef<str>, inner: S) -> Self {
+    pub fn exact(header: HeaderName, inner: S) -> Self {
         RemoveResponseHeaderLayer::exact(header).layer(inner)
     }
 
@@ -204,8 +203,8 @@ mod test {
 
     #[tokio::test]
     async fn remove_response_header_exact() {
-        let svc = RemoveResponseHeaderLayer::exact("foo").layer(service_fn(
-            |_ctx: Context<()>, _req: Request| async move {
+        let svc = RemoveResponseHeaderLayer::exact(HeaderName::from_static("foo")).layer(
+            service_fn(|_ctx: Context<()>, _req: Request| async move {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("x-foo", "baz")
@@ -213,8 +212,8 @@ mod test {
                         .body(Body::empty())
                         .unwrap(),
                 )
-            },
-        ));
+            }),
+        );
         let req = Request::builder().body(Body::empty()).unwrap();
         let res = svc.serve(Context::default(), req).await.unwrap();
         assert!(res.headers().get("foo").is_none());
