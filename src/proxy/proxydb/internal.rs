@@ -8,6 +8,7 @@ use crate::{
     },
     utils::str::NonEmptyString,
 };
+use serde::Deserialize;
 use std::path::Path;
 use tokio::{
     fs::File,
@@ -15,7 +16,7 @@ use tokio::{
 };
 use venndb::VennDB;
 
-#[derive(Debug, Clone, VennDB)]
+#[derive(Debug, Clone, Deserialize, VennDB)]
 #[venndb(validator = proxydb_insert_validator)]
 /// The selected proxy to use to connect to the proxy.
 pub struct Proxy {

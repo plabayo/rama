@@ -29,7 +29,7 @@ pub trait IntoResponse {
 }
 
 /// Wrapper that can be used to turn an `IntoResponse` type into
-/// something that implements Into<Response>.
+/// something that implements `Into<Response>`.
 pub struct StaticResponseFactory<T>(pub T);
 
 impl<T: IntoResponse> From<StaticResponseFactory<T>> for Response {
