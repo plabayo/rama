@@ -14,7 +14,7 @@ use rama::{
         Request, Response,
     },
     net::stream::Stream,
-    proxy::http::client::layer::HttpProxyConnectorLayer,
+    proxy::http::client::layer::{HttpProxyConnectorLayer, SetProxyAuthHttpHeaderLayer},
     service::{layer::MapResultLayer, BoxService, Layer, Service},
     tcp::client::service::TcpConnector,
     tls::rustls::client::HttpsConnectorLayer,
@@ -95,6 +95,7 @@ where
                 ),
             ),
             AddRequiredRequestHeadersLayer::default(),
+            SetProxyAuthHttpHeaderLayer::default(),
         )
             .layer(HttpClient::new(
                 (

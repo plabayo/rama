@@ -17,7 +17,9 @@ use rama::{
         IntoResponse, Request, Response, StatusCode,
     },
     net::{address::ProxyAddress, user::ProxyCredential},
-    proxy::http::client::layer::{HttpProxyAddressLayer, HttpProxyConnectorLayer},
+    proxy::http::client::layer::{
+        HttpProxyAddressLayer, HttpProxyConnectorLayer, SetProxyAuthHttpHeaderLayer,
+    },
     rt::Executor,
     service::{
         layer::{HijackLayer, MapResultLayer},
@@ -388,6 +390,7 @@ where
                 HttpProxyAddressLayer::maybe(Some(proxy_address))
             }
         },
+        SetProxyAuthHttpHeaderLayer::default(),
         HijackLayer::new(cfg.offline, service_fn(dummy_response)),
     );
 

@@ -1,16 +1,13 @@
 use super::HttpProxyConnector;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
-    http::{
-        headers::{HeaderMapExt, ProxyAuthorization},
-        Request,
-    },
+    http::headers::ProxyAuthorization,
     net::{
-        address::{Authority, Host, ProxyAddress},
+        address::ProxyAddress,
         client::{ClientConnection, EstablishedClientConnection},
         stream::Stream,
+        transport::TryRefIntoTransportContext,
         user::ProxyCredential,
-        Protocol,
     },
     service::{Context, Service},
     tls::HttpsTunnel,
@@ -67,27 +64,32 @@ impl<S> HttpProxyConnectorService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, Body, T> Service<State, Request<Body>> for HttpProxyConnectorService<S>
+impl<S, State, Request, T> Service<State, Request> for HttpProxyConnectorService<S>
 where
-    S: Service<
-        State,
-        Request<Body>,
-        Response = EstablishedClientConnection<T, State, Request<Body>>,
-    >,
+    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
     T: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
-    Body: Send + 'static,
+    Request: TryRefIntoTransportContext<State> + Send + 'static,
+    Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<T, State, Request<Body>>;
+    type Response = EstablishedClientConnection<T, State, Request>;
     type Error = BoxError;
 
     async fn serve(
         &self,
         mut ctx: Context<State>,
-        req: Request<Body>,
+        req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let address = ctx.get::<ProxyAddress>().cloned();
+
+        let transport_ctx = ctx
+            .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
+            .map_err(|err| {
+                OpaqueError::from_boxed(err.into())
+                    .context("http proxy connector: get transport context")
+            })?
+            .clone();
 
         // in case the provider gave us a proxy info, we insert it into the context
         if let Some(address) = &address {
@@ -98,7 +100,10 @@ where
                 .map(|p| p.is_secure())
                 .unwrap_or_default()
             {
-                tracing::trace!(uri = %req.uri(), "http proxy connector: preparing proxy connection for tls tunnel");
+                tracing::trace!(
+                    authority = %transport_ctx.authority,
+                    "http proxy connector: preparing proxy connection for tls tunnel"
+                );
                 ctx.insert(HttpsTunnel {
                     server_name: address.authority.host().to_string(),
                 });
@@ -131,41 +136,25 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { ctx, mut req, conn } = established_conn;
+        let EstablishedClientConnection { ctx, req, conn } = established_conn;
 
         let (addr, stream) = conn.into_parts();
 
-        tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: connected to proxy");
+        tracing::trace!(
+            authority = %transport_ctx.authority,
+            proxy_addr = %addr,
+            "http proxy connector: connected to proxy",
+        );
 
-        let uri = req.uri();
-        let protocol: Protocol = uri.scheme().map(Into::into).ok_or_else(|| {
-            OpaqueError::from_display("http proxy connect failed: request uri contains no scheme")
-        })?;
-        let host = uri
-            .host()
-            .and_then(|h| Host::try_from(h).ok())
-            .ok_or_else(|| {
-                OpaqueError::from_display("http proxy connect failed: request uri contains no host")
-            })?;
-        let port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
-        let authority: Authority = (host, port).into();
-
-        if !protocol.is_secure() {
+        if !transport_ctx
+            .app_protocol
+            .map(|p| p.is_secure())
+            // TODO: re-evaluate this fallback at some point... seems pretty flawed to me
+            .unwrap_or_else(|| transport_ctx.authority.port() == 443)
+        {
             // unless the scheme is not secure, in such a case no handshake is required...
             // we do however need to add authorization headers if credentials are present
-            if let Some(credential) = address.credential.clone() {
-                match credential {
-                    ProxyCredential::Basic(basic) => {
-                        tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: inserted proxy Basic credentials into plain-text (http) request");
-                        req.headers_mut().typed_insert(ProxyAuthorization(basic))
-                    }
-                    ProxyCredential::Bearer(bearer) => {
-                        tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: inserted proxy Bearer credentials into plain-text (http) request");
-                        req.headers_mut().typed_insert(ProxyAuthorization(bearer))
-                    }
-                }
-            }
-            tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: connected to proxy: ready for plain text request");
+            // => for this the user has to use another middleware as we do not have access to that here
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
@@ -173,7 +162,7 @@ where
             });
         }
 
-        let mut connector = HttpProxyConnector::new(authority);
+        let mut connector = HttpProxyConnector::new(transport_ctx.authority.clone());
         if let Some(credential) = address.credential.clone() {
             match credential {
                 ProxyCredential::Basic(basic) => {
@@ -190,7 +179,11 @@ where
             .await
             .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
 
-        tracing::trace!(uri = %req.uri(), proxy_addr = %addr, "http proxy connector: connected to proxy: ready secure request");
+        tracing::trace!(
+            authority = %transport_ctx.authority,
+            proxy_addr = %addr,
+            "http proxy connector: connected to proxy: ready secure request",
+        );
         Ok(EstablishedClientConnection {
             ctx,
             req,
