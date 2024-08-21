@@ -16,7 +16,7 @@ use rama::{
     net::stream::Stream,
     proxy::http::client::layer::HttpProxyConnectorLayer,
     service::{layer::MapResultLayer, BoxService, Layer, Service},
-    tcp::client::service::HttpConnector,
+    tcp::client::service::TcpConnector,
     tls::rustls::client::HttpsConnectorLayer,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
@@ -102,7 +102,7 @@ where
                     HttpProxyConnectorLayer::optional(),
                     HttpsConnectorLayer::tunnel(),
                 )
-                    .layer(HttpConnector::default()),
+                    .layer(TcpConnector::default()),
             ))
             .boxed();
 

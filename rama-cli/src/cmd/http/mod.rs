@@ -23,7 +23,7 @@ use rama::{
         layer::{HijackLayer, MapResultLayer},
         service_fn, Context, Layer, Service,
     },
-    tcp::client::service::HttpConnector,
+    tcp::client::service::TcpConnector,
     tls::rustls::client::HttpsConnectorLayer,
     utils::graceful::{self, Shutdown, ShutdownGuard},
 };
@@ -400,7 +400,7 @@ where
             HttpProxyConnectorLayer::optional(),
             HttpsConnectorLayer::tunnel(),
         )
-            .layer(HttpConnector::default()),
+            .layer(TcpConnector::default()),
     )))
 }
 

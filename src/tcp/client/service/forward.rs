@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::HttpConnector;
+use super::TcpConnector;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     net::{address::Authority, client::EstablishedClientConnection, stream::Stream},
@@ -74,12 +74,12 @@ where
     }
 }
 
-impl Forwarder<super::HttpConnector> {
+impl Forwarder<super::TcpConnector> {
     /// Create a new static forwarder for the given target [`Authority`]
     pub fn new(target: impl Into<Authority>) -> Self {
         Self {
             kind: ForwarderKind::Static(target.into()),
-            connector: HttpConnector::new(),
+            connector: TcpConnector::new(),
         }
     }
 
@@ -87,7 +87,7 @@ impl Forwarder<super::HttpConnector> {
     pub fn ctx() -> Self {
         Self {
             kind: ForwarderKind::Dynamic,
-            connector: HttpConnector::new(),
+            connector: TcpConnector::new(),
         }
     }
 }

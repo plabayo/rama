@@ -47,7 +47,7 @@ use rama::{
         service_fn, Context, Layer,
     },
     tcp::{
-        client::service::{Forwarder, HttpConnector},
+        client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
     tls::{
@@ -117,7 +117,7 @@ async fn main() {
         )
             .layer(Forwarder::new(([127, 0, 0, 1], 62801)).connector(
                 // ha proxy protocol used to forwarded the client original IP
-                HaProxyClientLayer::tcp().layer(HttpConnector::new()),
+                HaProxyClientLayer::tcp().layer(TcpConnector::new()),
             ));
 
         TcpListener::bind("127.0.0.1:63801")

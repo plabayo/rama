@@ -11,7 +11,7 @@ use crate::{
     },
     net::{address::ProxyAddress, client::EstablishedClientConnection, stream::Stream},
     service::{Context, Service},
-    tcp::client::service::HttpConnector,
+    tcp::client::service::TcpConnector,
     tls::rustls::client::{AutoTlsStream, HttpsConnector},
 };
 use hyper_util::rt::TokioIo;
@@ -63,10 +63,10 @@ impl<C, S> HttpClient<C, S> {
     }
 }
 
-impl Default for HttpClient<HttpsConnector<HttpConnector>, AutoTlsStream<TcpStream>> {
+impl Default for HttpClient<HttpsConnector<TcpConnector>, AutoTlsStream<TcpStream>> {
     fn default() -> Self {
         Self {
-            connector: HttpsConnector::auto(HttpConnector::default()),
+            connector: HttpsConnector::auto(TcpConnector::default()),
             _phantom: std::marker::PhantomData,
         }
     }
