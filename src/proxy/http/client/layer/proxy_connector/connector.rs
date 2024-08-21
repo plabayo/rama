@@ -77,7 +77,7 @@ impl HttpProxyConnector {
              Host: {authority}\r\n\
              User-Agent: {ua_name}/{ua_version}\r\n\
              ",
-            authority = self.authority.host(),
+            authority = self.authority,
             ua_name = crate::utils::info::NAME,
             ua_version = crate::utils::info::VERSION,
         )
