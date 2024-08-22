@@ -257,10 +257,8 @@ impl UsernameLabelParser for PriorityUsernameLabelParser {
         UsernameLabelState::Used
     }
 
-    fn build(mut self, ext: &mut Extensions) -> Result<(), Self::Error> {
-        if let Some(priority) = self.priority.take() {
-            ext.insert(priority);
-        }
+    fn build(self, ext: &mut Extensions) -> Result<(), Self::Error> {
+        ext.maybe_insert(self.priority);
         Ok(())
     }
 }

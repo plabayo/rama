@@ -56,6 +56,16 @@ impl Extensions {
             .and_then(|boxed| boxed.into_any().downcast().ok().map(|boxed| *boxed))
     }
 
+    /// Insert a type only into this `Extensions`, if the value is `Some(T)`.
+    ///
+    /// See [`Self::insert`] for more information.
+    pub fn maybe_insert<T: Clone + Send + Sync + 'static>(
+        &mut self,
+        mut val: Option<T>,
+    ) -> Option<T> {
+        val.take().and_then(|val| self.insert(val))
+    }
+
     /// Extend these extensions with another Extensions.
     pub fn extend(&mut self, other: Extensions) {
         if let Some(other_map) = other.map {

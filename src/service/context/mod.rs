@@ -437,6 +437,16 @@ impl<S> Context<S> {
         self.extensions.insert(extension)
     }
 
+    /// Insert a type only into this [`Context`], if the extension is `Some(T)`.
+    ///
+    /// See [`Self::insert`] for more information.
+    pub fn maybe_insert<T: Clone + Send + Sync + 'static>(
+        &mut self,
+        extension: Option<T>,
+    ) -> Option<T> {
+        self.extensions.maybe_insert(extension)
+    }
+
     /// Return the entire dynamic state of the [`Context`] by reference.
     ///
     /// Useful only in case you have a function which works with [`Extensions`] rather

@@ -1046,9 +1046,7 @@ mod tests {
             ),
         ] {
             let mut ctx = Context::default();
-            if let Some(filter) = filter {
-                ctx.insert(filter);
-            }
+            ctx.maybe_insert(filter);
 
             let maybe_proxy_address = service.serve(ctx, req).await.unwrap();
 
@@ -1085,9 +1083,7 @@ mod tests {
             let mut seen_addresses = Vec::new();
             for _ in 0..5000 {
                 let mut ctx = Context::default();
-                if let Some(filter) = filter.clone() {
-                    ctx.insert(filter);
-                }
+                ctx.maybe_insert(filter.clone());
 
                 let req = Request::builder()
                     .version(req_info.0)
@@ -1142,9 +1138,7 @@ mod tests {
             let mut seen_addresses = Vec::new();
             for _ in 0..5000 {
                 let mut ctx = Context::default();
-                if let Some(filter) = filter.clone() {
-                    ctx.insert(filter);
-                }
+                ctx.maybe_insert(filter.clone());
 
                 let req = Request::builder()
                     .version(req_info.0)
@@ -1231,9 +1225,7 @@ mod tests {
             ),
         ] {
             let mut ctx = Context::default();
-            if let Some(filter) = filter {
-                ctx.insert(filter);
-            }
+            ctx.maybe_insert(filter.clone());
 
             let proxy_address_result = service.serve(ctx, req).await;
             match expected_address {
@@ -1332,9 +1324,7 @@ mod tests {
             ),
         ] {
             let mut ctx = Context::default();
-            if let Some(filter) = filter {
-                ctx.insert(filter);
-            }
+            ctx.maybe_insert(filter);
 
             let proxy_result = service.serve(ctx, req).await;
             match expected {
