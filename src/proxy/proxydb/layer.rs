@@ -155,7 +155,7 @@
 //!
 //!     let service = ProxyDBLayer::new(Arc::new(proxy))
 //!         .filter_mode(ProxyFilterMode::Default)
-//!         .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+//!         .username_formatter(|_ctx: &Context<()>, proxy: &Proxy, filter: &ProxyFilter, username: &str| {
 //!             use std::fmt::Write;
 //!
 //!             let mut output = String::new();
