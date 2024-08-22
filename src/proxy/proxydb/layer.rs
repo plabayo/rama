@@ -382,7 +382,7 @@ where
     D: ProxyDB,
     D::Error: Into<BoxError> + Send + Sync + 'static,
     P: ProxyQueryPredicate,
-    F: UsernameFormatter,
+    F: UsernameFormatter<State>,
     State: Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
@@ -420,15 +420,13 @@ where
                 .map_err(|err| {
                     OpaqueError::from_boxed(err.into())
                         .context("proxydb: select proxy: get transport context")
-                })?;
+                })?
+                .clone();
+            let transport_protocol = transport_ctx.protocol.clone();
 
             let proxy = self
                 .db
-                .get_proxy_if(
-                    transport_ctx.clone(),
-                    filter.clone(),
-                    self.predicate.clone(),
-                )
+                .get_proxy_if(transport_ctx, filter.clone(), self.predicate.clone())
                 .await
                 .map_err(|err| OpaqueError::from_boxed(err.into()).context("select proxy in DB"))?;
 
@@ -439,6 +437,7 @@ where
                 match credential {
                     ProxyCredential::Basic(ref basic) => {
                         match self.username_formatter.fmt_username(
+                            &ctx,
                             &proxy,
                             &filter,
                             basic.username(),
@@ -456,7 +455,7 @@ where
 
             // overwrite the proxy protocol if not set yet
             if proxy_address.protocol.is_none() {
-                proxy_address.protocol = match transport_ctx.protocol {
+                proxy_address.protocol = match transport_protocol {
                     TransportProtocol::Udp => {
                         if proxy.socks5 {
                             Some(Protocol::SOCKS5)
@@ -632,14 +631,21 @@ where
 
 /// Trait that is used to allow the formatting of a username,
 /// e.g. to allow proxy routers to have proxy config labels in the username.
-pub trait UsernameFormatter: Send + Sync + 'static {
+pub trait UsernameFormatter<S>: Send + Sync + 'static {
     /// format the username based on the root properties of the given proxy.
-    fn fmt_username(&self, proxy: &Proxy, filter: &ProxyFilter, username: &str) -> Option<String>;
-}
-
-impl UsernameFormatter for () {
     fn fmt_username(
         &self,
+        ctx: &Context<S>,
+        proxy: &Proxy,
+        filter: &ProxyFilter,
+        username: &str,
+    ) -> Option<String>;
+}
+
+impl<S> UsernameFormatter<S> for () {
+    fn fmt_username(
+        &self,
+        _ctx: &Context<S>,
         _proxy: &Proxy,
         _filter: &ProxyFilter,
         _username: &str,
@@ -648,12 +654,18 @@ impl UsernameFormatter for () {
     }
 }
 
-impl<F> UsernameFormatter for F
+impl<F, S> UsernameFormatter<S> for F
 where
-    F: Fn(&Proxy, &ProxyFilter, &str) -> Option<String> + Send + Sync + 'static,
+    F: Fn(&Context<S>, &Proxy, &ProxyFilter, &str) -> Option<String> + Send + Sync + 'static,
 {
-    fn fmt_username(&self, proxy: &Proxy, filter: &ProxyFilter, username: &str) -> Option<String> {
-        (self)(proxy, filter, username)
+    fn fmt_username(
+        &self,
+        ctx: &Context<S>,
+        proxy: &Proxy,
+        filter: &ProxyFilter,
+        username: &str,
+    ) -> Option<String> {
+        (self)(ctx, proxy, filter, username)
     }
 }
 
@@ -825,29 +837,31 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .filter_mode(ProxyFilterMode::Default)
-            .username_formatter(|proxy: &Proxy, filter: &ProxyFilter, username: &str| {
-                if proxy
-                    .pool_id
-                    .as_ref()
-                    .map(|id| id.as_ref() == "routers")
-                    .unwrap_or_default()
-                {
-                    use std::fmt::Write;
+            .username_formatter(
+                |_ctx: &Context<()>, proxy: &Proxy, filter: &ProxyFilter, username: &str| {
+                    if proxy
+                        .pool_id
+                        .as_ref()
+                        .map(|id| id.as_ref() == "routers")
+                        .unwrap_or_default()
+                    {
+                        use std::fmt::Write;
 
-                    let mut output = String::new();
+                        let mut output = String::new();
 
-                    if let Some(countries) = filter.country.as_ref().filter(|t| !t.is_empty()) {
-                        let _ = write!(output, "country-{}", countries[0]);
+                        if let Some(countries) = filter.country.as_ref().filter(|t| !t.is_empty()) {
+                            let _ = write!(output, "country-{}", countries[0]);
+                        }
+                        if let Some(states) = filter.state.as_ref().filter(|t| !t.is_empty()) {
+                            let _ = write!(output, "state-{}", states[0]);
+                        }
+
+                        return (!output.is_empty()).then(|| format!("{username}-{output}"));
                     }
-                    if let Some(states) = filter.state.as_ref().filter(|t| !t.is_empty()) {
-                        let _ = write!(output, "state-{}", states[0]);
-                    }
 
-                    return (!output.is_empty()).then(|| format!("{username}-{output}"));
-                }
-
-                None
-            })
+                    None
+                },
+            )
             .layer(service_fn(|ctx: Context<()>, _: Request| async move {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
