@@ -7,6 +7,7 @@
 
 use crate::error::{ErrorExt, OpaqueError};
 use crate::http::HeaderValue;
+use crate::utils::username::{ComposeError, Composer, UsernameLabelWriter};
 use std::fmt;
 
 mod service;
@@ -102,4 +103,39 @@ enum ResolveMode {
     Eager,
     #[default]
     Lazy,
+}
+
+impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for DnsResolveMode {
+    fn write_labels(&self, composer: &mut Composer<SEPARATOR>) -> Result<(), ComposeError> {
+        composer.write_label("dns")?;
+        match self.0 {
+            ResolveMode::Eager => composer.write_label("eager"),
+            ResolveMode::Lazy => composer.write_label("lazy"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::context::Extensions;
+    use crate::utils::username::{compose_username, parse_username};
+
+    #[test]
+    fn parse_username_label_compose_parse_dns_resolve_mode() {
+        let test_cases = [DnsResolveMode::eager(), DnsResolveMode::lazy()];
+        for test_case in test_cases {
+            let fmt_username = compose_username("john".to_owned(), test_case).unwrap();
+            let mut ext = Extensions::new();
+            let username = parse_username(
+                &mut ext,
+                DnsResolveModeUsernameParser::default(),
+                fmt_username,
+            )
+            .unwrap();
+            assert_eq!("john", username);
+            let result = ext.get::<DnsResolveMode>().unwrap();
+            assert_eq!(test_case, *result);
+        }
+    }
 }

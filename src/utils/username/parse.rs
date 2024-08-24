@@ -1,66 +1,26 @@
-//! Utilities to work with usernames and pull information out of it.
-//!
-//! # Username Parsing
-//!
-//! The [`parse_username`] function is used to parse a username and extract information from
-//! its labels. The function takes a parser, which is used to parse the labels from the username.
-//!
-//! The parser is expected to implement the [`UsernameLabelParser`] trait, which has two methods:
-//!
-//! - `parse_label`: This method is called for each label in the username, and is expected to return
-//!   whether the label was used or ignored.
-//! - `build`: This method is called after all labels have been parsed, and is expected to consume
-//!   the parser and store any relevant information.
-//!
-//! The parser can be a single parser or a tuple of parsers. Tuple parsers all receive all labels,
-//! unless wrapped by a [`ExclusiveUsernameParsers`], in which case the first parser that consumes
-//! a label will stop the iteration over the parsers.
-//!
-//! Parsers are to return [`UsernameLabelState::Used`] in case they consumed the label, and
-//! [`UsernameLabelState::Ignored`] in case they did not. This way the parser-caller (e.g. [`parse_username`])
-//! can decide whether to fail on ignored labels.
-//!
-//! ## Example
-//!
-//! [`ProxyFilterUsernameParser`] is a real-world example of a parser that uses the username labels.
-//! It support proxy filter definitions directly within the username.
-//!
-//! [`ProxyFilterUsernameParser`]: crate::proxy::ProxyFilterUsernameParser
-//!
-//! ```rust
-//! use rama::proxy::{ProxyFilter, ProxyFilterUsernameParser};
-//! use rama::utils::username::{DEFAULT_USERNAME_LABEL_SEPARATOR, parse_username};
-//! use rama::service::context::Extensions;
-//!
-//! let mut ext = Extensions::default();
-//!
-//! let parser = ProxyFilterUsernameParser::default();
-//!
-//! let username = parse_username(
-//!     &mut ext, parser,
-//!     "john-residential-country-us",
-//!     DEFAULT_USERNAME_LABEL_SEPARATOR,
-//! ).unwrap();
-//!
-//! assert_eq!(username, "john");
-//!
-//! let filter = ext.get::<ProxyFilter>().unwrap();
-//! assert_eq!(filter.residential, Some(true));
-//! assert_eq!(filter.country, Some(vec!["us".into()]));
-//! assert!(filter.datacenter.is_none());
-//! assert!(filter.mobile.is_none());
-//! ```
-
 use crate::error::{BoxError, OpaqueError};
 use crate::service::context::Extensions;
+use crate::utils::username::DEFAULT_USERNAME_LABEL_SEPARATOR;
 use std::{convert::Infallible, fmt};
-
-/// The default username label separator used by most built-in rama support.
-pub const DEFAULT_USERNAME_LABEL_SEPARATOR: char = '-';
 
 /// Parse a username, extracting the username (first part)
 /// and passing everything else to the [`UsernameLabelParser`].
+#[inline]
 pub fn parse_username<P>(
+    ext: &mut Extensions,
+    parser: P,
+    username_ref: impl AsRef<str>,
+) -> Result<String, OpaqueError>
+where
+    P: UsernameLabelParser,
+    P::Error: Into<BoxError>,
+{
+    parse_username_with_separator(ext, parser, username_ref, DEFAULT_USERNAME_LABEL_SEPARATOR)
+}
+
+/// Parse a username, extracting the username (first part)
+/// and passing everything else to the [`UsernameLabelParser`].
+pub fn parse_username_with_separator<P>(
     ext: &mut Extensions,
     mut parser: P,
     username_ref: impl AsRef<str>,
@@ -283,6 +243,15 @@ impl UsernameLabelParser for UsernameLabelParserVoid {
 /// without any specific parsing logic.
 pub struct UsernameLabels(pub Vec<String>);
 
+impl<const SEPARATOR: char> super::UsernameLabelWriter<SEPARATOR> for UsernameLabels {
+    fn write_labels(
+        &self,
+        composer: &mut super::Composer<SEPARATOR>,
+    ) -> Result<(), super::ComposeError> {
+        self.0.write_labels(composer)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 /// A [`UsernameLabelParser`] which collects all labels from the username,
 /// without any specific parsing logic.
@@ -394,20 +363,8 @@ mod test {
     fn test_parse_username_empty() {
         let mut ext = Extensions::default();
 
-        assert!(parse_username(
-            &mut ext,
-            UsernameLabelParserVoid::new(),
-            "",
-            DEFAULT_USERNAME_LABEL_SEPARATOR
-        )
-        .is_err());
-        assert!(parse_username(
-            &mut ext,
-            UsernameLabelParserVoid::new(),
-            "-",
-            DEFAULT_USERNAME_LABEL_SEPARATOR
-        )
-        .is_err());
+        assert!(parse_username(&mut ext, UsernameLabelParserVoid::new(), "",).is_err());
+        assert!(parse_username(&mut ext, UsernameLabelParserVoid::new(), "-",).is_err());
     }
 
     #[test]
@@ -415,13 +372,7 @@ mod test {
         let mut ext = Extensions::default();
 
         assert_eq!(
-            parse_username(
-                &mut ext,
-                UsernameNoLabelParser,
-                "username",
-                DEFAULT_USERNAME_LABEL_SEPARATOR
-            )
-            .unwrap(),
+            parse_username(&mut ext, UsernameNoLabelParser, "username",).unwrap(),
             "username"
         );
     }
@@ -434,7 +385,6 @@ mod test {
                 &mut ext,
                 UsernameOpaqueLabelParser::new(),
                 "username-label1-label2",
-                DEFAULT_USERNAME_LABEL_SEPARATOR
             )
             .unwrap(),
             "username"
@@ -454,13 +404,7 @@ mod test {
         );
 
         assert_eq!(
-            parse_username(
-                &mut ext,
-                parser,
-                "username-label1-label2",
-                DEFAULT_USERNAME_LABEL_SEPARATOR
-            )
-            .unwrap(),
+            parse_username(&mut ext, parser, "username-label1-label2",).unwrap(),
             "username"
         );
 
@@ -479,13 +423,7 @@ mod test {
         );
 
         assert_eq!(
-            parse_username(
-                &mut ext,
-                parser,
-                "username-label1-label2",
-                DEFAULT_USERNAME_LABEL_SEPARATOR
-            )
-            .unwrap(),
+            parse_username(&mut ext, parser, "username-label1-label2",).unwrap(),
             "username"
         );
 
@@ -507,13 +445,7 @@ mod test {
         ));
 
         assert_eq!(
-            parse_username(
-                &mut ext,
-                parser,
-                "username-label1-label2",
-                DEFAULT_USERNAME_LABEL_SEPARATOR
-            )
-            .unwrap(),
+            parse_username(&mut ext, parser, "username-label1-label2",).unwrap(),
             "username"
         );
 
@@ -530,13 +462,7 @@ mod test {
         let parser = UsernameOpaqueLabelParser::new();
 
         assert_eq!(
-            parse_username(
-                &mut ext,
-                parser,
-                "username",
-                DEFAULT_USERNAME_LABEL_SEPARATOR
-            )
-            .unwrap(),
+            parse_username(&mut ext, parser, "username",).unwrap(),
             "username"
         );
 
@@ -551,25 +477,13 @@ mod test {
             UsernameLabelAbortParser::default(),
             UsernameOpaqueLabelParser::default(),
         );
-        assert!(parse_username(
-            &mut ext,
-            parser,
-            "username-foo",
-            DEFAULT_USERNAME_LABEL_SEPARATOR
-        )
-        .is_err());
+        assert!(parse_username(&mut ext, parser, "username-foo",).is_err());
 
         let parser = (
             UsernameOpaqueLabelParser::default(),
             UsernameLabelAbortParser::default(),
         );
-        assert!(parse_username(
-            &mut ext,
-            parser,
-            "username-foo",
-            DEFAULT_USERNAME_LABEL_SEPARATOR
-        )
-        .is_err());
+        assert!(parse_username(&mut ext, parser, "username-foo",).is_err());
     }
 
     #[test]
@@ -580,24 +494,12 @@ mod test {
             UsernameLabelAbortParser::default(),
             UsernameOpaqueLabelParser::default(),
         ));
-        assert!(parse_username(
-            &mut ext,
-            parser,
-            "username-foo",
-            DEFAULT_USERNAME_LABEL_SEPARATOR
-        )
-        .is_err());
+        assert!(parse_username(&mut ext, parser, "username-foo",).is_err());
 
         let parser = (
             UsernameOpaqueLabelParser::default(),
             UsernameLabelAbortParser::default(),
         );
-        assert!(parse_username(
-            &mut ext,
-            parser,
-            "username-foo",
-            DEFAULT_USERNAME_LABEL_SEPARATOR
-        )
-        .is_err());
+        assert!(parse_username(&mut ext, parser, "username-foo",).is_err());
     }
 }

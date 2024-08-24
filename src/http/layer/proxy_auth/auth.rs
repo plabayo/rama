@@ -2,7 +2,7 @@ use crate::{
     http::headers::authorization::Credentials,
     net::user::{Basic, UserId},
     service::context::Extensions,
-    utils::username::{parse_username, UsernameLabelParser, DEFAULT_USERNAME_LABEL_SEPARATOR},
+    utils::username::{parse_username, UsernameLabelParser},
 };
 use std::future::Future;
 
@@ -63,12 +63,7 @@ impl<T: UsernameLabelParser> ProxyAuthoritySync<Basic, T> for Basic {
         }
 
         let mut parser_ext = Extensions::new();
-        let username = match parse_username(
-            &mut parser_ext,
-            T::default(),
-            username,
-            DEFAULT_USERNAME_LABEL_SEPARATOR,
-        ) {
+        let username = match parse_username(&mut parser_ext, T::default(), username) {
             Ok(t) => t,
             Err(err) => {
                 tracing::trace!("failed to parse username: {:?}", err);

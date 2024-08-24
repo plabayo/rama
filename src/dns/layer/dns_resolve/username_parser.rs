@@ -63,7 +63,7 @@ impl UsernameLabelParser for DnsResolveModeUsernameParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utils::username::{parse_username, DEFAULT_USERNAME_LABEL_SEPARATOR};
+    use crate::utils::username::parse_username;
 
     #[test]
     fn test_username_dns_resolve_mod_config() {
@@ -96,9 +96,7 @@ mod tests {
 
             let parser = DnsResolveModeUsernameParser::default();
 
-            let username =
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPARATOR)
-                    .unwrap();
+            let username = parse_username(&mut ext, parser, username).unwrap();
             let mode = *ext.get::<DnsResolveMode>().unwrap();
             assert_eq!(
                 username, expected_username,
@@ -127,8 +125,7 @@ mod tests {
             let parser = DnsResolveModeUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPARATOR)
-                    .is_err(),
+                parse_username(&mut ext, parser, username).is_err(),
                 "username = {}",
                 username
             );

@@ -2,7 +2,7 @@ use super::ProxyFilter;
 use crate::{
     error::{error, OpaqueError},
     service::context::Extensions,
-    utils::username::{UsernameLabelParser, UsernameLabelState},
+    utils::username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
 };
 
 #[derive(Debug, Clone, Default)]
@@ -168,6 +168,93 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
     }
 }
 
+impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for ProxyFilter {
+    fn write_labels(
+        &self,
+        composer: &mut crate::utils::username::Composer<SEPARATOR>,
+    ) -> Result<(), crate::utils::username::ComposeError> {
+        if let Some(id) = &self.id {
+            composer.write_label("id")?;
+            composer.write_label(id.as_str())?;
+        }
+
+        if let Some(pool_id_vec) = &self.pool_id {
+            for pool_id in pool_id_vec {
+                composer.write_label("pool")?;
+                composer.write_label(pool_id.as_ref())?;
+            }
+        }
+
+        if let Some(continent_vec) = &self.continent {
+            for continent in continent_vec {
+                composer.write_label("continent")?;
+                composer.write_label(continent.as_ref())?;
+            }
+        }
+
+        if let Some(country_vec) = &self.country {
+            for country in country_vec {
+                composer.write_label("country")?;
+                composer.write_label(country.as_ref())?;
+            }
+        }
+
+        if let Some(state_vec) = &self.state {
+            for state in state_vec {
+                composer.write_label("state")?;
+                composer.write_label(state.as_ref())?;
+            }
+        }
+
+        if let Some(city_vec) = &self.city {
+            for city in city_vec {
+                composer.write_label("city")?;
+                composer.write_label(city.as_ref())?;
+            }
+        }
+
+        if let Some(datacenter) = &self.datacenter {
+            if *datacenter {
+                composer.write_label("datacenter")?;
+            } else {
+                composer.write_label("!datacenter")?;
+            }
+        }
+
+        if let Some(residential) = &self.residential {
+            if *residential {
+                composer.write_label("residential")?;
+            } else {
+                composer.write_label("!residential")?;
+            }
+        }
+
+        if let Some(mobile) = &self.mobile {
+            if *mobile {
+                composer.write_label("mobile")?;
+            } else {
+                composer.write_label("!mobile")?;
+            }
+        }
+
+        if let Some(carrier_vec) = &self.carrier {
+            for carrier in carrier_vec {
+                composer.write_label("carrier")?;
+                composer.write_label(carrier.as_ref())?;
+            }
+        }
+
+        if let Some(asn_vec) = &self.asn {
+            for asn in asn_vec {
+                composer.write_label("asn")?;
+                composer.write_label(asn.as_u32().to_string())?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,7 +263,7 @@ mod tests {
         proxy::StringFilter,
         utils::{
             str::NonEmptyString,
-            username::{parse_username, DEFAULT_USERNAME_LABEL_SEPARATOR},
+            username::{compose_username, parse_username},
         },
     };
 
@@ -438,9 +525,7 @@ mod tests {
 
             let parser = ProxyFilterUsernameParser::default();
 
-            let username =
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPARATOR)
-                    .unwrap();
+            let username = parse_username(&mut ext, parser, username).unwrap();
             let filter = ext.get::<ProxyFilter>().cloned();
             assert_eq!(
                 username, expected_username,
@@ -472,8 +557,7 @@ mod tests {
             let parser = ProxyFilterUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPARATOR)
-                    .is_err(),
+                parse_username(&mut ext, parser, username).is_err(),
                 "username = {}",
                 username
             );
@@ -494,11 +578,81 @@ mod tests {
             let parser = ProxyFilterUsernameParser::default();
 
             assert!(
-                parse_username(&mut ext, parser, username, DEFAULT_USERNAME_LABEL_SEPARATOR)
-                    .is_err(),
+                parse_username(&mut ext, parser, username).is_err(),
                 "username = {}",
                 username
             );
+        }
+    }
+
+    #[test]
+    fn test_username_compose_parser_proxy_filter() {
+        let test_cases = [
+            ProxyFilter::default(),
+            ProxyFilter {
+                id: Some(NonEmptyString::from_static("p42")),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some(NonEmptyString::from_static("1")),
+                pool_id: Some(vec![StringFilter::from("1")]),
+                country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
+                datacenter: Some(false),
+                residential: Some(true),
+                mobile: Some(true),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some(NonEmptyString::from_static("1")),
+                pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
+                country: Some(vec![StringFilter::from("us"), StringFilter::from("uk")]),
+                datacenter: Some(false),
+                residential: Some(false),
+                mobile: Some(false),
+                ..Default::default()
+            },
+            ProxyFilter {
+                id: Some(NonEmptyString::from_static("a")),
+                pool_id: Some(vec![StringFilter::from("1"), StringFilter::from("2")]),
+                continent: Some(vec![StringFilter::from("na"), StringFilter::from("eu")]),
+                country: Some(vec![StringFilter::from("us"), StringFilter::from("be")]),
+                state: Some(vec![
+                    StringFilter::from("ca"),
+                    StringFilter::from("ny"),
+                    StringFilter::from("ovl"),
+                ]),
+                city: Some(vec![
+                    StringFilter::from("berkeley"),
+                    StringFilter::from("bruxelles"),
+                    StringFilter::from("gent"),
+                ]),
+                datacenter: Some(false),
+                residential: Some(true),
+                mobile: Some(true),
+                carrier: Some(vec![
+                    StringFilter::from("at&t"),
+                    StringFilter::from("orange"),
+                ]),
+                asn: Some(vec![Asn::from_static(7018), Asn::from_static(1)]),
+            },
+        ];
+
+        for test_case in test_cases {
+            let fmt_username = compose_username("john".to_owned(), &test_case).unwrap();
+            let mut ext = Extensions::new();
+            let username = parse_username(
+                &mut ext,
+                ProxyFilterUsernameParser::default(),
+                &fmt_username,
+            )
+            .unwrap_or_else(|_| panic!("to be ok: {fmt_username}"));
+            assert_eq!("john", username);
+            if test_case == Default::default() {
+                assert!(!ext.contains::<ProxyFilter>());
+            } else {
+                let result = ext.get::<ProxyFilter>().unwrap();
+                assert_eq!(test_case, *result);
+            }
         }
     }
 }

@@ -38,6 +38,14 @@ impl Asn {
     pub fn unspecified() -> Self {
         Self(AsnData::Unspecified)
     }
+
+    /// Return [`Asn`] as u32
+    pub fn as_u32(&self) -> u32 {
+        match self.0 {
+            AsnData::Specified(n) => n,
+            AsnData::Unspecified => 0,
+        }
+    }
 }
 
 const fn is_valid_asn_range(value: u32) -> bool {
