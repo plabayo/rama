@@ -118,6 +118,18 @@ where
     }
 }
 
+impl<const SEPARATOR: char, W> UsernameLabelWriter<SEPARATOR> for Option<W>
+where
+    W: UsernameLabelWriter<SEPARATOR>,
+{
+    fn write_labels(&self, composer: &mut Composer<SEPARATOR>) -> Result<(), ComposeError> {
+        match self {
+            Some(writer) => writer.write_labels(composer),
+            None => Ok(()),
+        }
+    }
+}
+
 impl<const SEPARATOR: char, W> UsernameLabelWriter<SEPARATOR> for &W
 where
     W: UsernameLabelWriter<SEPARATOR>,
