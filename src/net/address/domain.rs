@@ -330,7 +330,7 @@ const fn is_valid_label(name: &[u8], start: usize, stop: usize) -> bool {
         let mut i = start;
         while i < stop {
             let c = name[i];
-            if !c.is_ascii_alphanumeric() && (c != b'-' || i == start || name[i - 1] == b'-') {
+            if !c.is_ascii_alphanumeric() && (c != b'-' || i == start) {
                 return false;
             }
             i += 1;
@@ -402,6 +402,7 @@ mod tests {
             ".example.com",
             "example.com.",
             ".example.com.",
+            "rr5---sn-q4fl6n6s.video.com", // multiple dashes
         ] {
             let msg = format!("to parse: {}", str);
             assert_eq!(Domain::try_from(str.to_owned()).expect(msg.as_str()), str);
