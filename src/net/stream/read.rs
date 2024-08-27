@@ -19,7 +19,7 @@ pin_project! {
 
 impl HeapReader {
     /// Creates a new `HeapReader` with the specified bytes data.
-    pub const fn new(data: Vec<u8>) -> Self {
+    pub fn new(data: Vec<u8>) -> Self {
         Self {
             inner: Cursor::new(data),
         }
