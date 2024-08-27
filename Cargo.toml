@@ -10,7 +10,7 @@ homepage = "https://ramaproxy.org"
 keywords = ["io", "async", "non-blocking", "futures"]
 categories = ["asynchronous", "network-programming"]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.75.0"
+rust-version = "1.80.0"
 
 [workspace.dependencies]
 async-compression = "0.4"

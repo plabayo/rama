@@ -25,7 +25,7 @@ In case you also want to help resolve it by contributing to the code base you wo
 
    Prefer adding additional commits over amending and force-pushing
    since it can be difficult to follow code reviews when the commit history changes.
-   
+
    Commits will be squashed when they're merged.
 
 ## Testing
@@ -48,10 +48,10 @@ just qa
 
 Before you can do this you do require the following to be installed:
 
-* `Rust`, version 1.75 or beyond: <https://www.rust-lang.org/tools/install>
+* `Rust`, version 1.80 or beyond: <https://www.rust-lang.org/tools/install>
 * `just` (to run _just_ (config) files): <https://just.systems/man/en/chapter_4.html>
 * `cargo hack`: <https://github.com/taiki-e/cargo-hack?tab=readme-ov-file#installation>
 
 Once this is all done you should be able to run `just qa`.
 When all these pasts you can be pretty certain that all tests in the GitHub CI step
-will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV (`1.75`) and three platforms in total: MacOS, Linux and Windows.
+will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV (`1.80`) and three platforms in total: MacOS, Linux and Windows.

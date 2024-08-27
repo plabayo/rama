@@ -39,9 +39,9 @@ pub trait Service<S, Request>: Send + Sync + 'static {
 ```
 
 This trait is an [async trait](https://blog.rust-lang.org/2023/12/21/async-fn-rpit-in-traits.html) only supported
-[in Stable Rust since version 1.75](https://blog.rust-lang.org/2023/12/28/Rust-1.75.0.html) of the Rust Language.
+[in Stable Rust since version 1.80](https://blog.rust-lang.org/2023/12/28/Rust-1.80.0.html) of the Rust Language.
 Due to the unfinished async story in Rust and the fact that we want to support and mainly
-target the multithreaded async setting supported by [Tokio](https://tokio.rs/), 
+target the multithreaded async setting supported by [Tokio](https://tokio.rs/),
 
 The design is all about allowing one to use a `Service` that can take a `Request`,
 process it and return a `Result` which contains a `Response` at success and an `Error` when it failed for some reason.
