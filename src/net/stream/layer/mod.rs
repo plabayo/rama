@@ -4,7 +4,10 @@
 
 mod tracker;
 #[doc(inline)]
-pub use tracker::{BytesRWTrackerHandle, BytesTrackerLayer, BytesTrackerService};
+pub use tracker::{
+    BytesRWTrackerHandle, IncomingBytesTrackerLayer, IncomingBytesTrackerService,
+    OutgoingBytesTrackerLayer, OutgoingBytesTrackerService,
+};
 
 pub mod http;
 

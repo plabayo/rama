@@ -35,7 +35,7 @@ use rama::{
         IntoResponse, Request,
     },
     net::stream::{
-        layer::{BytesRWTrackerHandle, BytesTrackerLayer},
+        layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
         SocketInfo,
     },
     rt::Executor,
@@ -118,7 +118,7 @@ async fn main() {
                 (
                     TraceErrLayer::new(),
                     TimeoutLayer::new(Duration::from_secs(8)),
-                    BytesTrackerLayer::new(),
+                    IncomingBytesTrackerLayer::new(),
                 ).layer(tcp_http_service),
             )
             .await;
