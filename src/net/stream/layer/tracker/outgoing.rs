@@ -3,7 +3,6 @@ use crate::{
     net::{
         client::{ClientConnection, EstablishedClientConnection},
         stream::Stream,
-        transport::TryRefIntoTransportContext,
     },
     service::{Context, Layer, Service},
 };
@@ -52,7 +51,7 @@ where
     S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
     T: Stream + Unpin,
     State: Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
+    Request: Send + 'static,
 {
     type Response = EstablishedClientConnection<BytesRWTracker<T>, State, Request>;
     type Error = S::Error;
