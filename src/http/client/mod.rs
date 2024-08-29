@@ -10,13 +10,13 @@ use crate::{
         Request, RequestContext, Response, Version,
     },
     net::{address::ProxyAddress, client::EstablishedClientConnection, stream::Stream},
-    service::{Context, Service},
+    service::{Context, Layer, Service},
     tcp::client::service::TcpConnector,
     tls::rustls::client::{AutoTlsStream, HttpsConnector},
 };
 use hyper_util::rt::TokioIo;
 use std::fmt;
-use tokio::net::TcpStream;
+use tokio::{net::TcpStream, sync::Mutex};
 
 mod error;
 #[doc(inline)]
@@ -30,49 +30,61 @@ pub use ext::{HttpClientExt, IntoUrl, RequestBuilder};
 ///
 /// The underlying connections are established using the provided connection [`Service`],
 /// which is a [`Service`] that is expected to return as output an [`EstablishedClientConnection`].
-pub struct HttpClient<C, S> {
+pub struct HttpClient<C, S, L> {
     connector: C,
+    sender_layer_stack: L,
     _phantom: std::marker::PhantomData<S>,
 }
 
-impl<C: fmt::Debug, S> fmt::Debug for HttpClient<C, S> {
+impl<C: fmt::Debug, L: fmt::Debug, S> fmt::Debug for HttpClient<C, S, L> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpClient")
             .field("connector", &self.connector)
+            .field("sender_layer_stack", &self.sender_layer_stack)
             .finish()
     }
 }
 
-impl<C: Clone, S> Clone for HttpClient<C, S> {
+impl<C: Clone, L: Clone, S> Clone for HttpClient<C, S, L> {
     fn clone(&self) -> Self {
         Self {
             connector: self.connector.clone(),
+            sender_layer_stack: self.sender_layer_stack.clone(),
             _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl<C, S> HttpClient<C, S> {
+impl<C, S> HttpClient<C, S, ()> {
     /// Create a new [`HttpClient`] using the specified connection [`Service`]
     /// to establish connections to the server in the form of an [`EstablishedClientConnection`] as output.
     pub const fn new(connector: C) -> Self {
         Self {
             connector,
+            sender_layer_stack: (),
+            _phantom: std::marker::PhantomData,
+        }
+    }
+
+    /// Define an [`Layer`] (stack) to create a [`Service`] stack
+    /// through which the http [`Request`] will have to pass
+    /// before actually being send of the the "target".
+    pub fn layer<L>(self, layer_stack: L) -> HttpClient<C, S, L> {
+        HttpClient {
+            connector: self.connector,
+            sender_layer_stack: layer_stack,
             _phantom: std::marker::PhantomData,
         }
     }
 }
 
-impl Default for HttpClient<HttpsConnector<TcpConnector>, AutoTlsStream<TcpStream>> {
+impl Default for HttpClient<HttpsConnector<TcpConnector>, AutoTlsStream<TcpStream>, ()> {
     fn default() -> Self {
-        Self {
-            connector: HttpsConnector::auto(TcpConnector::default()),
-            _phantom: std::marker::PhantomData,
-        }
+        Self::new(HttpsConnector::auto(TcpConnector::default()))
     }
 }
 
-impl<State, Body, C, S> Service<State, Request<Body>> for HttpClient<C, S>
+impl<State, Body, C, S, L> Service<State, Request<Body>> for HttpClient<C, S, L>
 where
     State: Send + Sync + 'static,
     Body: http_body::Body + Unpin + Send + 'static,
@@ -85,6 +97,8 @@ where
     >,
     C::Error: Into<BoxError>,
     S: Stream + Sync + Unpin,
+    L: Layer<HttpRequestSender<Body>> + Send + Sync + 'static,
+    L::Service: Service<State, Request<Body>, Response = Response, Error = BoxError>,
 {
     type Response = Response;
     type Error = HttpClientError;
@@ -115,10 +129,10 @@ where
 
         let io = TokioIo::new(Box::pin(conn));
 
-        let resp = match req.version() {
+        match req.version() {
             Version::HTTP_2 => {
                 let executor = ctx.executor().clone();
-                let (mut sender, conn) = hyper::client::conn::http2::handshake(executor, io)
+                let (sender, conn) = hyper::client::conn::http2::handshake(executor, io)
                     .await
                     .map_err(|err| HttpClientError::from_std(err).with_uri(uri.clone()))?;
 
@@ -128,13 +142,19 @@ where
                     }
                 });
 
+                let sender =
+                    self.sender_layer_stack
+                        .layer(HttpRequestSender(SendRequestService::Http2(Mutex::new(
+                            sender,
+                        ))));
+
                 sender
-                    .send_request(req)
+                    .serve(ctx, req)
                     .await
-                    .map_err(|err: hyper::Error| HttpClientError::from_std(err).with_uri(uri))?
+                    .map_err(|err: BoxError| HttpClientError::from_boxed(err).with_uri(uri))
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-                let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
+                let (sender, conn) = hyper::client::conn::http1::handshake(io)
                     .await
                     .map_err(|err| HttpClientError::from_std(err).with_uri(uri.clone()))?;
 
@@ -144,10 +164,16 @@ where
                     }
                 });
 
+                let sender =
+                    self.sender_layer_stack
+                        .layer(HttpRequestSender(SendRequestService::Http1(Mutex::new(
+                            sender,
+                        ))));
+
                 sender
-                    .send_request(req)
+                    .serve(ctx, req)
                     .await
-                    .map_err(|err| HttpClientError::from_std(err).with_uri(uri))?
+                    .map_err(|err| HttpClientError::from_boxed(err).with_uri(uri))
             }
             version => {
                 return Err(HttpClientError::from_display(format!(
@@ -156,10 +182,7 @@ where
                 ))
                 .with_uri(uri));
             }
-        };
-
-        let resp = resp.map(crate::http::Body::new);
-        Ok(resp)
+        }
     }
 }
 
@@ -215,4 +238,39 @@ fn sanitize_client_req_header<S, B>(
             }
         }
     })
+}
+
+#[derive(Debug)]
+// TODO: once we have hyper as `rama::http::core` we can
+// drop this mutex as there is no inherint reason for `sender` to be mutable...
+enum SendRequestService<B> {
+    Http1(Mutex<hyper::client::conn::http1::SendRequest<B>>),
+    Http2(Mutex<hyper::client::conn::http2::SendRequest<B>>),
+}
+
+#[derive(Debug)]
+/// Internal http sender used to send the actual requests.
+pub struct HttpRequestSender<B>(SendRequestService<B>);
+
+impl<State, Body> Service<State, Request<Body>> for HttpRequestSender<Body>
+where
+    State: Send + Sync + 'static,
+    Body: http_body::Body + Unpin + Send + 'static,
+    Body::Data: Send + 'static,
+    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+{
+    type Response = Response;
+    type Error = BoxError;
+
+    async fn serve(
+        &self,
+        _ctx: Context<State>,
+        req: Request<Body>,
+    ) -> Result<Self::Response, Self::Error> {
+        let resp = match &self.0 {
+            SendRequestService::Http1(sender) => sender.lock().await.send_request(req).await,
+            SendRequestService::Http2(sender) => sender.lock().await.send_request(req).await,
+        }?;
+        Ok(resp.map(crate::http::Body::new))
+    }
 }
