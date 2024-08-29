@@ -2,7 +2,7 @@ use crate::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     net::{
         address::ProxyAddress,
-        client::{ClientConnection, EstablishedClientConnection},
+        client::EstablishedClientConnection,
         transport::{TransportProtocol, TryRefIntoTransportContext},
     },
     service::{Context, Service},
@@ -50,13 +50,14 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(proxy) = ctx.get::<ProxyAddress>() {
-            let (stream, addr) = tcp::client::connect_trusted(&ctx, proxy.authority.clone())
+            let (conn, addr) = tcp::client::connect_trusted(&ctx, proxy.authority.clone())
                 .await
                 .context("tcp connector: conncept to proxy")?;
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: ClientConnection::new(addr, stream),
+                conn,
+                addr,
             });
         }
 
@@ -79,14 +80,15 @@ where
         }
 
         let authority = transport_ctx.authority.clone();
-        let (stream, addr) = tcp::client::connect(&ctx, authority)
+        let (conn, addr) = tcp::client::connect(&ctx, authority)
             .await
             .context("tcp connector: connect to server")?;
 
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: ClientConnection::new(addr, stream),
+            conn,
+            addr,
         })
     }
 }

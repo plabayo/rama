@@ -1,9 +1,6 @@
 use super::bytes::BytesRWTracker;
 use crate::{
-    net::{
-        client::{ClientConnection, EstablishedClientConnection},
-        stream::Stream,
-    },
+    net::{client::EstablishedClientConnection, stream::Stream},
     service::{Context, Layer, Service},
 };
 use std::fmt;
@@ -61,13 +58,21 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } = self.inner.serve(ctx, req).await?;
-        let (addr, stream) = conn.into_parts();
-        let stream = BytesRWTracker::new(stream);
-        let handle = stream.handle();
+        let EstablishedClientConnection {
+            mut ctx,
+            req,
+            conn,
+            addr,
+        } = self.inner.serve(ctx, req).await?;
+        let conn = BytesRWTracker::new(conn);
+        let handle = conn.handle();
         ctx.insert(handle);
-        let conn = ClientConnection::new(addr, stream);
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection {
+            ctx,
+            req,
+            conn,
+            addr,
+        })
     }
 }
 

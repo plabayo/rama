@@ -3,11 +3,8 @@ use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     http::headers::ProxyAuthorization,
     net::{
-        address::ProxyAddress,
-        client::{ClientConnection, EstablishedClientConnection},
-        stream::Stream,
-        transport::TryRefIntoTransportContext,
-        user::ProxyCredential,
+        address::ProxyAddress, client::EstablishedClientConnection, stream::Stream,
+        transport::TryRefIntoTransportContext, user::ProxyCredential,
     },
     service::{Context, Service},
     tls::HttpsTunnel,
@@ -136,9 +133,12 @@ where
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection { ctx, req, conn } = established_conn;
-
-        let (addr, stream) = conn.into_parts();
+        let EstablishedClientConnection {
+            ctx,
+            req,
+            conn,
+            addr,
+        } = established_conn;
 
         tracing::trace!(
             authority = %transport_ctx.authority,
@@ -158,7 +158,8 @@ where
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: ClientConnection::new(addr, stream),
+                conn,
+                addr,
             });
         }
 
@@ -174,8 +175,8 @@ where
             }
         }
 
-        let stream = connector
-            .handshake(stream)
+        let conn = connector
+            .handshake(conn)
             .await
             .map_err(|err| OpaqueError::from_std(err).context("http proxy handshake"))?;
 
@@ -187,7 +188,8 @@ where
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: ClientConnection::new(addr, stream),
+            conn,
+            addr,
         })
     }
 }

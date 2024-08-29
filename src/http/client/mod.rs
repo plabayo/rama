@@ -121,11 +121,11 @@ where
         // clone the request uri for error reporting
         let uri = req.uri().clone();
 
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.connector
-                .serve(ctx, req)
-                .await
-                .map_err(|err| HttpClientError::from_boxed(err.into()).with_uri(uri.clone()))?;
+        let EstablishedClientConnection { ctx, req, conn, .. } = self
+            .connector
+            .serve(ctx, req)
+            .await
+            .map_err(|err| HttpClientError::from_boxed(err.into()).with_uri(uri.clone()))?;
 
         let io = TokioIo::new(Box::pin(conn));
 
@@ -175,13 +175,11 @@ where
                     .await
                     .map_err(|err| HttpClientError::from_boxed(err).with_uri(uri))
             }
-            version => {
-                return Err(HttpClientError::from_display(format!(
-                    "unsupported Http version: {:?}",
-                    version
-                ))
-                .with_uri(uri));
-            }
+            version => Err(HttpClientError::from_display(format!(
+                "unsupported Http version: {:?}",
+                version
+            ))
+            .with_uri(uri)),
         }
     }
 }

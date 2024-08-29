@@ -1,6 +1,6 @@
 use crate::error::{BoxError, ErrorExt, OpaqueError};
 use crate::http::Version;
-use crate::net::client::{ClientConnection, EstablishedClientConnection};
+use crate::net::client::EstablishedClientConnection;
 use crate::net::stream::Stream;
 use crate::net::transport::TryRefIntoTransportContext;
 use crate::service::{Context, Service};
@@ -213,10 +213,12 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
-
-        let (addr, stream) = conn.into_parts();
+        let EstablishedClientConnection {
+            mut ctx,
+            req,
+            conn,
+            addr,
+        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -231,16 +233,17 @@ where
             .map(|p| p.is_secure())
             .unwrap_or_default()
         {
-            tracing::trace!(authority = %transport_ctx.authority, "HttpsConnector(auto): protocol not secure, return inner connection");
+            tracing::trace!(
+                authority = %transport_ctx.authority,
+                "HttpsConnector(auto): protocol not secure, return inner connection",
+            );
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: ClientConnection::new(
-                    addr,
-                    AutoTlsStream {
-                        inner: AutoTlsStreamData::Plain { inner: stream },
-                    },
-                ),
+                conn: AutoTlsStream {
+                    inner: AutoTlsStreamData::Plain { inner: conn },
+                },
+                addr,
             });
         }
 
@@ -256,7 +259,7 @@ where
         );
 
         let stream = self
-            .handshake(domain, transport_ctx.http_version, stream)
+            .handshake(domain, transport_ctx.http_version, conn)
             .await?;
 
         tracing::trace!(
@@ -268,12 +271,10 @@ where
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: ClientConnection::new(
-                addr,
-                AutoTlsStream {
-                    inner: AutoTlsStreamData::Secure { inner: stream },
-                },
-            ),
+            conn: AutoTlsStream {
+                inner: AutoTlsStreamData::Secure { inner: stream },
+            },
+            addr,
         })
     }
 }
@@ -295,10 +296,12 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
-
-        let (addr, stream) = conn.into_parts();
+        let EstablishedClientConnection {
+            mut ctx,
+            req,
+            conn,
+            addr,
+        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -318,14 +321,15 @@ where
             .map_err(|err| err.context("invalid DNS Hostname (tls)"))?
             .to_owned();
 
-        let stream = self
-            .handshake(domain, transport_ctx.http_version, stream)
+        let conn = self
+            .handshake(domain, transport_ctx.http_version, conn)
             .await?;
 
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: ClientConnection::new(addr, stream),
+            conn,
+            addr,
         })
     }
 }
@@ -346,10 +350,12 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
-
-        let (addr, stream) = conn.into_parts();
+        let EstablishedClientConnection {
+            ctx,
+            req,
+            conn,
+            addr,
+        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
         let domain = match ctx.get::<HttpsTunnel>() {
             Some(tunnel) => pki_types::ServerName::try_from(tunnel.server_name.as_str())
@@ -362,28 +368,24 @@ where
                 return Ok(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: ClientConnection::new(
-                        addr,
-                        AutoTlsStream {
-                            inner: AutoTlsStreamData::Plain { inner: stream },
-                        },
-                    ),
+                    conn: AutoTlsStream {
+                        inner: AutoTlsStreamData::Plain { inner: conn },
+                    },
+                    addr,
                 });
             }
         };
 
-        let stream = self.handshake(domain, None, stream).await?;
+        let conn = self.handshake(domain, None, conn).await?;
 
         tracing::trace!("HttpsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: ClientConnection::new(
-                addr,
-                AutoTlsStream {
-                    inner: AutoTlsStreamData::Secure { inner: stream },
-                },
-            ),
+            conn: AutoTlsStream {
+                inner: AutoTlsStreamData::Secure { inner: conn },
+            },
+            addr,
         })
     }
 }

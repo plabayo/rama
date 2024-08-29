@@ -2,4 +2,4 @@
 
 mod conn;
 #[doc(inline)]
-pub use conn::{ClientConnection, EstablishedClientConnection};
+pub use conn::EstablishedClientConnection;
