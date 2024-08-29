@@ -496,6 +496,9 @@ where
 
             // insert proxy address in context so it will be used
             ctx.insert(proxy_address);
+
+            // insert the id of the selected proxy
+            ctx.insert(super::ProxyID::from(proxy.id));
         }
 
         self.inner.serve(ctx, req).await.map_err(Into::into)

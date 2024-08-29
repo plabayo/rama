@@ -42,5 +42,5 @@ pub use proxydb::{
     layer, proxy_db_updater, LiveUpdateProxyDB, LiveUpdateProxyDBSetter, MemoryProxyDB,
     MemoryProxyDBInsertError, MemoryProxyDBInsertErrorKind, MemoryProxyDBQueryError,
     MemoryProxyDBQueryErrorKind, Proxy, ProxyCsvRowReader, ProxyCsvRowReaderError,
-    ProxyCsvRowReaderErrorKind, ProxyDB, ProxyFilter, ProxyQueryPredicate, StringFilter,
+    ProxyCsvRowReaderErrorKind, ProxyDB, ProxyFilter, ProxyID, ProxyQueryPredicate, StringFilter,
 };

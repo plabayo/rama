@@ -7,7 +7,7 @@ use crate::{
     utils::str::NonEmptyString,
 };
 use serde::Deserialize;
-use std::future::Future;
+use std::{fmt, future::Future};
 
 mod update;
 #[doc(inline)]
@@ -21,6 +21,36 @@ pub mod layer;
 mod str;
 #[doc(inline)]
 pub use str::StringFilter;
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// `ID` of the selected proxy. Inserted by the [`layer::ProxyDBService`],
+/// if and only if a proxy is selected.
+pub struct ProxyID(NonEmptyString);
+
+impl ProxyID {
+    /// View  this [`ProxyID`] as a `str`.
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl AsRef<str> for ProxyID {
+    fn as_ref(&self) -> &str {
+        self.0.as_ref()
+    }
+}
+
+impl fmt::Display for ProxyID {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
+impl From<NonEmptyString> for ProxyID {
+    fn from(value: NonEmptyString) -> Self {
+        Self(value)
+    }
+}
 
 #[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Hash)]
 /// Filter to select a specific kind of proxy.
