@@ -3,7 +3,7 @@
 use rama::{
     error::{BoxError, OpaqueError},
     http::{
-        client::{HttpClient, HttpClientExt, IntoUrl, RequestBuilder},
+        client::{HttpClient, HttpClientExt, HttpConnectorLayer, IntoUrl, RequestBuilder},
         layer::{
             decompression::DecompressionLayer,
             follow_redirect::FollowRedirectLayer,
@@ -99,6 +99,7 @@ where
         )
             .layer(HttpClient::new(
                 (
+                    HttpConnectorLayer::new(),
                     HttpsConnectorLayer::auto(),
                     HttpProxyConnectorLayer::optional(),
                     HttpsConnectorLayer::tunnel(),

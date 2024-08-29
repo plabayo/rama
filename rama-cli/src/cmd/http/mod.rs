@@ -5,7 +5,7 @@ use rama::{
     cli::args::RequestArgsBuilder,
     error::{error, BoxError, ErrorContext, OpaqueError},
     http::{
-        client::HttpClient,
+        client::{HttpClient, HttpConnectorLayer},
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -399,6 +399,7 @@ where
 
     Ok(client_builder.layer(HttpClient::new(
         (
+            HttpConnectorLayer::new(),
             HttpsConnectorLayer::auto().with_config(tls_client_config),
             HttpProxyConnectorLayer::optional(),
             HttpsConnectorLayer::tunnel(),

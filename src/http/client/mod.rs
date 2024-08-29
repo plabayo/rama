@@ -3,20 +3,14 @@
 
 use crate::{
     error::BoxError,
-    http::{
-        dep::http::uri::PathAndQuery,
-        header::HOST,
-        headers::{self, HeaderMapExt},
-        Request, RequestContext, Response, Version,
-    },
-    net::{address::ProxyAddress, client::EstablishedClientConnection, stream::Stream},
+    http::{dep::http_body, Request, Response},
+    net::client::EstablishedClientConnection,
     service::{Context, Layer, Service},
     tcp::client::service::TcpConnector,
-    tls::rustls::client::{AutoTlsStream, HttpsConnector},
+    tls::rustls::client::{HttpsConnector, HttpsConnectorLayer},
 };
-use hyper_util::rt::TokioIo;
+use bytes::Bytes;
 use std::fmt;
-use tokio::{net::TcpStream, sync::Mutex};
 
 mod error;
 #[doc(inline)]
@@ -25,6 +19,14 @@ pub use error::HttpClientError;
 mod ext;
 #[doc(inline)]
 pub use ext::{HttpClientExt, IntoUrl, RequestBuilder};
+
+mod svc;
+#[doc(inline)]
+pub use svc::HttpClientService;
+
+mod conn;
+#[doc(inline)]
+pub use conn::{HttpConnector, HttpConnectorLayer};
 
 /// An http client that can be used to serve HTTP requests.
 ///
@@ -78,197 +80,57 @@ impl<C, S> HttpClient<C, S, ()> {
     }
 }
 
-impl Default for HttpClient<HttpsConnector<TcpConnector>, AutoTlsStream<TcpStream>, ()> {
+impl Default for HttpClient<HttpConnector<HttpsConnector<TcpConnector>>, HttpClientService, ()> {
     fn default() -> Self {
-        Self::new(HttpsConnector::auto(TcpConnector::default()))
+        let connector =
+            (HttpConnectorLayer::new(), HttpsConnectorLayer::auto()).layer(TcpConnector::default());
+        Self::new(connector)
     }
 }
 
 impl<State, Body, C, S, L> Service<State, Request<Body>> for HttpClient<C, S, L>
 where
     State: Send + Sync + 'static,
-    Body: http_body::Body + Unpin + Send + 'static,
-    Body::Data: Send + 'static,
-    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    Body: http_body::Body<Data = Bytes> + Send + Sync + 'static,
+    Body::Error: Into<BoxError>,
     C: Service<
         State,
         Request<Body>,
         Response = EstablishedClientConnection<S, State, Request<Body>>,
     >,
     C::Error: Into<BoxError>,
-    S: Stream + Sync + Unpin,
-    L: Layer<HttpRequestSender<Body>> + Send + Sync + 'static,
-    L::Service: Service<State, Request<Body>, Response = Response, Error = BoxError>,
+    S: Service<State, Request<Body>, Response = Response>,
+    S::Error: Into<BoxError>,
+    L: Layer<S> + Send + Sync + 'static,
+    L::Service: Service<State, Request<Body>, Response = Response>,
+    <L::Service as Service<State, Request<Body>>>::Error: Into<BoxError>,
 {
     type Response = Response;
     type Error = HttpClientError;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        // sanitize subject line request uri
-        // because Hyper (http) writes the URI as-is
-        //
-        // Originally reported in and fixed for:
-        // <https://github.com/plabayo/rama/issues/250>
-        //
-        // TODO: fix this in hyper fork (embedded in rama http core)
-        // directly instead of here...
-        let req = sanitize_client_req_header(&mut ctx, req)?;
-
-        // clone the request uri for error reporting
         let uri = req.uri().clone();
 
-        let EstablishedClientConnection { ctx, req, conn, .. } = self
+        let EstablishedClientConnection {
+            ctx,
+            req,
+            conn: svc,
+            ..
+        } = self
             .connector
             .serve(ctx, req)
             .await
             .map_err(|err| HttpClientError::from_boxed(err.into()).with_uri(uri.clone()))?;
 
-        let io = TokioIo::new(Box::pin(conn));
+        let sender = self.sender_layer_stack.layer(svc);
 
-        match req.version() {
-            Version::HTTP_2 => {
-                let executor = ctx.executor().clone();
-                let (sender, conn) = hyper::client::conn::http2::handshake(executor, io)
-                    .await
-                    .map_err(|err| HttpClientError::from_std(err).with_uri(uri.clone()))?;
-
-                ctx.spawn(async move {
-                    if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {:?}", err);
-                    }
-                });
-
-                let sender =
-                    self.sender_layer_stack
-                        .layer(HttpRequestSender(SendRequestService::Http2(Mutex::new(
-                            sender,
-                        ))));
-
-                sender
-                    .serve(ctx, req)
-                    .await
-                    .map_err(|err: BoxError| HttpClientError::from_boxed(err).with_uri(uri))
-            }
-            Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-                let (sender, conn) = hyper::client::conn::http1::handshake(io)
-                    .await
-                    .map_err(|err| HttpClientError::from_std(err).with_uri(uri.clone()))?;
-
-                ctx.spawn(async move {
-                    if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {:?}", err);
-                    }
-                });
-
-                let sender =
-                    self.sender_layer_stack
-                        .layer(HttpRequestSender(SendRequestService::Http1(Mutex::new(
-                            sender,
-                        ))));
-
-                sender
-                    .serve(ctx, req)
-                    .await
-                    .map_err(|err| HttpClientError::from_boxed(err).with_uri(uri))
-            }
-            version => Err(HttpClientError::from_display(format!(
-                "unsupported Http version: {:?}",
-                version
-            ))
-            .with_uri(uri)),
-        }
-    }
-}
-
-fn sanitize_client_req_header<S, B>(
-    ctx: &mut Context<S>,
-    req: Request<B>,
-) -> Result<Request<B>, HttpClientError> {
-    Ok(match req.method() {
-        &http::Method::CONNECT => {
-            // CONNECT
-            if req.uri().host().is_none() {
-                return Err(
-                    HttpClientError::from_display("missing host in CONNECT request")
-                        .with_uri(req.uri().clone()),
-                );
-            }
-            req
-        }
-        _ => {
-            // GET | HEAD | POST | PUT | DELETE | OPTIONS | TRACE | PATCH
-            if !ctx.contains::<ProxyAddress>()
-                && req.uri().host().is_some()
-                && req.version() <= Version::HTTP_11
-            {
-                // ensure request context is defined prior to doing this, as otherwise we can get issues
-                let _ = ctx
-                    .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-                    .map_err(HttpClientError::from_std)?;
-
-                tracing::trace!(
-                    "remove authority and scheme from non-connect direct http(~1) request"
-                );
-                let (mut parts, body) = req.into_parts();
-                let mut uri_parts = parts.uri.into_parts();
-                uri_parts.scheme = None;
-                let authority = uri_parts
-                    .authority
-                    .take()
-                    .expect("to exist due to our host existence test");
-                if uri_parts.path_and_query.as_ref().map(|pq| pq.as_str()) == Some("/") {
-                    uri_parts.path_and_query = Some(PathAndQuery::from_static("/"));
-                }
-
-                if !parts.headers.contains_key(HOST) {
-                    parts.headers.typed_insert(headers::Host::from(authority));
-                }
-
-                parts.uri =
-                    crate::http::Uri::from_parts(uri_parts).map_err(HttpClientError::from_std)?;
-                Request::from_parts(parts, body)
-            } else {
-                req
-            }
-        }
-    })
-}
-
-#[derive(Debug)]
-// TODO: once we have hyper as `rama::http::core` we can
-// drop this mutex as there is no inherint reason for `sender` to be mutable...
-enum SendRequestService<B> {
-    Http1(Mutex<hyper::client::conn::http1::SendRequest<B>>),
-    Http2(Mutex<hyper::client::conn::http2::SendRequest<B>>),
-}
-
-#[derive(Debug)]
-/// Internal http sender used to send the actual requests.
-pub struct HttpRequestSender<B>(SendRequestService<B>);
-
-impl<State, Body> Service<State, Request<Body>> for HttpRequestSender<Body>
-where
-    State: Send + Sync + 'static,
-    Body: http_body::Body + Unpin + Send + 'static,
-    Body::Data: Send + 'static,
-    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-{
-    type Response = Response;
-    type Error = BoxError;
-
-    async fn serve(
-        &self,
-        _ctx: Context<State>,
-        req: Request<Body>,
-    ) -> Result<Self::Response, Self::Error> {
-        let resp = match &self.0 {
-            SendRequestService::Http1(sender) => sender.lock().await.send_request(req).await,
-            SendRequestService::Http2(sender) => sender.lock().await.send_request(req).await,
-        }?;
-        Ok(resp.map(crate::http::Body::new))
+        sender
+            .serve(ctx, req)
+            .await
+            .map_err(|err| HttpClientError::from_boxed(err.into()).with_uri(uri))
     }
 }

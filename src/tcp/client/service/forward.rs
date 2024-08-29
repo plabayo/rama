@@ -1,12 +1,13 @@
-use std::fmt;
+use std::{fmt, ops::DerefMut};
+
+use tokio::sync::Mutex;
 
 use super::TcpConnector;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     net::{address::Authority, client::EstablishedClientConnection, stream::Stream},
-    service::{Context, Service},
-    tcp::client::Request as TcpRequest,
-    tcp::utils::is_connection_error,
+    service::{Context, Layer, Service},
+    tcp::{client::Request as TcpRequest, utils::is_connection_error},
 };
 
 /// [`Forwarder`] using [`Forwarder::ctx`] requires this struct
@@ -45,41 +46,47 @@ enum ForwarderKind {
 }
 
 /// A TCP forwarder.
-pub struct Forwarder<C> {
+pub struct Forwarder<C, L> {
     kind: ForwarderKind,
     connector: C,
+    layer_stack: L,
 }
 
-impl<C> fmt::Debug for Forwarder<C>
+impl<C, L> fmt::Debug for Forwarder<C, L>
 where
     C: fmt::Debug,
+    L: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Forwarder")
             .field("kind", &self.kind)
             .field("connector", &self.connector)
+            .field("layer_stack", &self.layer_stack)
             .finish()
     }
 }
 
-impl<C> Clone for Forwarder<C>
+impl<C, L> Clone for Forwarder<C, L>
 where
     C: Clone,
+    L: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             kind: self.kind.clone(),
             connector: self.connector.clone(),
+            layer_stack: self.layer_stack.clone(),
         }
     }
 }
 
-impl Forwarder<super::TcpConnector> {
+impl Forwarder<super::TcpConnector, ()> {
     /// Create a new static forwarder for the given target [`Authority`]
     pub fn new(target: impl Into<Authority>) -> Self {
         Self {
             kind: ForwarderKind::Static(target.into()),
             connector: TcpConnector::new(),
+            layer_stack: (),
         }
     }
 
@@ -88,26 +95,41 @@ impl Forwarder<super::TcpConnector> {
         Self {
             kind: ForwarderKind::Dynamic,
             connector: TcpConnector::new(),
+            layer_stack: (),
         }
     }
 }
 
-impl<C> Forwarder<C> {
+impl<L> Forwarder<super::TcpConnector, L> {
     /// Set a custom "connector" for this forwarder, overwriting
     /// the default tcp forwarder which simply establishes a TCP connection.
     ///
     /// This can be useful for any custom middleware, but also to enrich with
     /// rama-provided services for tls connections, HAproxy client endoding
     /// or even an entirely custom tcp connector service.
-    pub fn connector<T>(self, connector: T) -> Forwarder<T> {
+    pub fn connector<T>(self, connector: T) -> Forwarder<T, L> {
         Forwarder {
             kind: self.kind,
             connector,
+            layer_stack: self.layer_stack,
         }
     }
 }
 
-impl<S, T, C, I> Service<S, T> for Forwarder<C>
+impl<C> Forwarder<C, ()> {
+    /// Define an [`Layer`] (stack) to create a [`Service`] stack
+    /// through which the established connection will have to pass
+    /// before actually forwarding.
+    pub fn layer<L>(self, layer_stack: L) -> Forwarder<C, L> {
+        Forwarder {
+            kind: self.kind,
+            connector: self.connector,
+            layer_stack,
+        }
+    }
+}
+
+impl<S, T, C, L, I> Service<S, T> for Forwarder<C, L>
 where
     S: Send + Sync + 'static,
     T: Stream + Unpin,
@@ -117,12 +139,15 @@ where
         Response = EstablishedClientConnection<I, S, TcpRequest>,
     >,
     C::Error: Into<BoxError>,
+    L: Layer<ForwarderService<I>> + Send + Sync + 'static,
+    L::Service: Service<S, T, Response = ()>,
+    <L::Service as Service<S, T>>::Error: Into<BoxError>,
     I: Stream + Unpin,
 {
     type Response = ();
     type Error = BoxError;
 
-    async fn serve(&self, ctx: Context<S>, mut source: T) -> Result<Self::Response, Self::Error> {
+    async fn serve(&self, ctx: Context<S>, source: T) -> Result<Self::Response, Self::Error> {
         let authority = match &self.kind {
             ForwarderKind::Static(target) => target.clone(),
             ForwarderKind::Dynamic => ctx
@@ -136,19 +161,44 @@ where
         let req = TcpRequest::new(authority.clone());
 
         let EstablishedClientConnection {
-            conn: mut target, ..
+            ctx, conn: target, ..
         } = self.connector.serve(ctx, req).await.map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .with_context(|| format!("establish tcp connection to {authority}"))
         })?;
 
-        match tokio::io::copy_bidirectional(&mut source, &mut target).await {
+        let svc = ForwarderService(Mutex::new(target));
+        let svc = self.layer_stack.layer(svc);
+
+        svc.serve(ctx, source).await.map_err(Into::into)
+    }
+}
+
+#[derive(Debug)]
+pub struct ForwarderService<S>(Mutex<S>);
+
+impl<State, I, S> Service<State, I> for ForwarderService<S>
+where
+    State: Send + Sync + 'static,
+    I: Stream + Unpin,
+    S: Stream + Unpin,
+{
+    type Response = ();
+    type Error = OpaqueError;
+
+    async fn serve(
+        &self,
+        _ctx: Context<State>,
+        mut source: I,
+    ) -> Result<Self::Response, Self::Error> {
+        let mut target = self.0.lock().await;
+        match tokio::io::copy_bidirectional(&mut source, target.deref_mut()).await {
             Ok(_) => Ok(()),
             Err(err) => {
                 if is_connection_error(&err) {
                     Ok(())
                 } else {
-                    Err(err.context("tcp forwarder").into())
+                    Err(err.context("tcp forwarder"))
                 }
             }
         }
