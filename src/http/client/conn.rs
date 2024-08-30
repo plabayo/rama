@@ -52,7 +52,7 @@ where
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Body: http_body::Body + Unpin + Send + 'static,
-    Body::Data: Send,
+    Body::Data: Send + 'static,
     Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     type Response = EstablishedClientConnection<HttpClientService<Body>, State, Request<Body>>;

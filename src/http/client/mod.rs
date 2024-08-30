@@ -87,11 +87,9 @@ impl<State, Body, C, L> Service<State, Request<Body>> for HttpClient<C, L>
 where
     State: Send + Sync + 'static,
     Body: http_body::Body + Unpin + Send + 'static,
-    Body::Data: Send,
+    Body::Data: Send + 'static,
     Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
     C: ConnectorService<State, Request<Body>>,
-    C::Connection: Service<State, Request<Body>, Response = Response>,
-    <C::Connection as Service<State, Request<Body>>>::Error: Into<BoxError>,
     L: Layer<C::Connection> + Send + Sync + 'static,
     L::Service: Service<State, Request<Body>, Response = Response>,
     <L::Service as Service<State, Request<Body>>>::Error: Into<BoxError>,

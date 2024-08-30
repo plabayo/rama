@@ -25,7 +25,7 @@ impl<State, Body> Service<State, Request<Body>> for HttpClientService<Body>
 where
     State: Send + Sync + 'static,
     Body: http_body::Body + Unpin + Send + 'static,
-    Body::Data: Send,
+    Body::Data: Send + 'static,
     Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     type Response = Response;
