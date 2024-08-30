@@ -117,7 +117,7 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 
 [features]
-default = ["compression", "boring"]
+default = ["compression"]
 full = ["telemetry", "compression", "boring"]
 telemetry = [
     "dep:opentelemetry",
@@ -208,6 +208,14 @@ tokio-test = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 zstd = { workspace = true }
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev]
+debug = false
+opt-level = 1
+incremental = false
 
 [package.metadata.docs.rs]
 all-features = true
