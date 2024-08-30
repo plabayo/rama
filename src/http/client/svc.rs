@@ -46,7 +46,7 @@ where
         // directly instead of here...
         let req = sanitize_client_req_header(&mut ctx, req)?;
 
-        let req = req.map(self::Body::new);
+        let req = req.map(crate::http::Body::new);
 
         let resp = match &self.0 {
             SendRequest::Http1(sender) => sender.lock().await.send_request(req).await,
