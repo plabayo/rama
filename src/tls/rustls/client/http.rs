@@ -1,6 +1,6 @@
 use crate::error::{BoxError, ErrorExt, OpaqueError};
 use crate::http::Version;
-use crate::net::client::EstablishedClientConnection;
+use crate::net::client::{ConnectorService, EstablishedClientConnection};
 use crate::net::stream::Stream;
 use crate::net::transport::TryRefIntoTransportContext;
 use crate::service::{Context, Service};
@@ -196,16 +196,16 @@ impl<S> HttpsConnector<S, ConnectorKindTunnel> {
 
 /// this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
 
-impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindAuto>
+impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindAuto>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
+    S: ConnectorService<State, Request>,
+    S::Connection: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<T>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -218,7 +218,7 @@ where
             req,
             conn,
             addr,
-        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -247,9 +247,10 @@ where
             });
         }
 
-        let domain = pki_types::ServerName::try_from(transport_ctx.authority.host().to_string())
-            .map_err(|err| err.context("HttpsConnector(auto): invalid DNS Hostname (tls)"))?
-            .to_owned();
+        let domain =
+            rustls_pki_types::ServerName::try_from(transport_ctx.authority.host().to_string())
+                .map_err(|err| err.context("HttpsConnector(auto): invalid DNS Hostname (tls)"))?
+                .to_owned();
 
         tracing::trace!(
             authority = %transport_ctx.authority,
@@ -279,16 +280,16 @@ where
     }
 }
 
-impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindSecure>
+impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindSecure>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
+    S: ConnectorService<State, Request>,
+    S::Connection: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<TlsStream<T>, State, Request>;
+    type Response = EstablishedClientConnection<TlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -301,7 +302,7 @@ where
             req,
             conn,
             addr,
-        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -317,7 +318,7 @@ where
         );
 
         let host = transport_ctx.authority.host().to_string();
-        let domain = pki_types::ServerName::try_from(host)
+        let domain = rustls_pki_types::ServerName::try_from(host)
             .map_err(|err| err.context("invalid DNS Hostname (tls)"))?
             .to_owned();
 
@@ -334,15 +335,15 @@ where
     }
 }
 
-impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindTunnel>
+impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindTunnel>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
+    S: ConnectorService<State, Request>,
+    S::Connection: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Request: Send + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<T>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -355,10 +356,10 @@ where
             req,
             conn,
             addr,
-        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let domain = match ctx.get::<HttpsTunnel>() {
-            Some(tunnel) => pki_types::ServerName::try_from(tunnel.server_name.as_str())
+            Some(tunnel) => rustls_pki_types::ServerName::try_from(tunnel.server_name.as_str())
                 .map_err(|err| err.context("invalid DNS Hostname (tls) for https tunnel"))?
                 .to_owned(),
             None => {

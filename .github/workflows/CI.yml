@@ -25,13 +25,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: check
         run: |
-          cargo check --all --all-targets --features=full
+          cargo check --workspace --all-targets --features=full
       - name: clippy
         run: |
-          cargo clippy --all --all-targets --features=full
+          cargo clippy --workspace --all-targets --features=full
       - name: rustfmt
         run: |
-          cargo fmt --all -- --check
+          cargo fmt --workspace -- --check
 
   check:
     runs-on: ubuntu-latest
@@ -44,13 +44,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: check
         run: |
-          cargo check --all --all-targets --features=full
+          cargo check --workspace --all-targets --features=full
       - name: clippy
         run: |
-          cargo clippy --all --all-targets --features=full
+          cargo clippy --workspace --all-targets --features=full
       - name: rustfmt
         run: |
-          cargo fmt --all -- --check
+          cargo fmt --workspace -- --check
 
   check-all-features:
     runs-on: ubuntu-latest
@@ -63,13 +63,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: check
         run: |
-          cargo check --all --all-targets --all-features
+          cargo check --workspace --all-targets --all-features
       - name: clippy
         run: |
-          cargo clippy --all --all-targets --all-features
+          cargo clippy --workspace --all-targets --all-features
       - name: rustfmt
         run: |
-          cargo fmt --all -- --check
+          cargo fmt --workspace -- --check
 
   test-msrv:
     needs: [check, check-msrv, check-all-features]

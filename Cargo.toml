@@ -42,7 +42,7 @@ mime_guess = { version = "2", default-features = false }
 paste = "1.0"
 percent-encoding = "2.1"
 pin-project-lite = "0.2.13"
-pki-types = { package = "rustls-pki-types", version = "^1" }
+rustls-pki-types = "^1"
 proc-macro2 = "1.0"
 opentelemetry = { version = "0.24", default-features = false, features = [
     "trace",
@@ -170,7 +170,6 @@ parking_lot = { workspace = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
-pki-types = { workspace = true }
 quickcheck = { workspace = true }
 rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
 rcgen = { workspace = true }
@@ -178,6 +177,7 @@ regex = { workspace = true }
 rustls = { workspace = true }
 rustls-native-certs = { workspace = true }
 rustls-pemfile = { workspace = true }
+rustls-pki-types = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }

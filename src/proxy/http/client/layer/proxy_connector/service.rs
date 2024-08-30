@@ -3,8 +3,11 @@ use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     http::headers::ProxyAuthorization,
     net::{
-        address::ProxyAddress, client::EstablishedClientConnection, stream::Stream,
-        transport::TryRefIntoTransportContext, user::ProxyCredential,
+        address::ProxyAddress,
+        client::{ConnectorService, EstablishedClientConnection},
+        stream::Stream,
+        transport::TryRefIntoTransportContext,
+        user::ProxyCredential,
     },
     service::{Context, Service},
     tls::HttpsTunnel,
@@ -61,16 +64,16 @@ impl<S> HttpProxyConnectorService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, Request, T> Service<State, Request> for HttpProxyConnectorService<S>
+impl<S, State, Request> Service<State, Request> for HttpProxyConnectorService<S>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
+    S: ConnectorService<State, Request>,
+    S::Connection: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<T, State, Request>;
+    type Response = EstablishedClientConnection<S::Connection, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -109,7 +112,7 @@ where
 
         let established_conn =
             self.inner
-                .serve(ctx, req)
+                .connect(ctx, req)
                 .await
                 .map_err(|err| match address.as_ref() {
                     Some(address) => OpaqueError::from_boxed(err.into())

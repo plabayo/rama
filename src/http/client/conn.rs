@@ -2,10 +2,12 @@ use super::{svc::SendRequest, HttpClientService};
 use crate::{
     error::{BoxError, OpaqueError},
     http::{dep::http_body, Request, Version},
-    net::{client::EstablishedClientConnection, stream::Stream},
+    net::{
+        client::{ConnectorService, EstablishedClientConnection},
+        stream::Stream,
+    },
     service::{Context, Layer, Service},
 };
-use bytes::Bytes;
 use hyper_util::rt::TokioIo;
 use std::fmt;
 use tokio::sync::Mutex;
@@ -43,29 +45,30 @@ where
     }
 }
 
-impl<S, State, B, T> Service<State, Request<B>> for HttpConnector<S>
+impl<S, State, Body> Service<State, Request<Body>> for HttpConnector<S>
 where
-    S: Service<State, Request<B>, Response = EstablishedClientConnection<T, State, Request<B>>>,
+    S: ConnectorService<State, Request<Body>>,
+    S::Connection: Stream + Unpin,
     S::Error: Into<BoxError>,
-    T: Stream + Unpin,
     State: Send + Sync + 'static,
-    B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    B::Error: Into<BoxError>,
+    Body: http_body::Body + Unpin + Send + 'static,
+    Body::Data: Send,
+    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
-    type Response = EstablishedClientConnection<HttpClientService, State, Request<B>>;
+    type Response = EstablishedClientConnection<HttpClientService<Body>, State, Request<Body>>;
     type Error = BoxError;
 
     async fn serve(
         &self,
         ctx: Context<State>,
-        req: Request<B>,
+        req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection {
             ctx,
             req,
             conn,
             addr,
-        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let io = TokioIo::new(Box::pin(conn));
 

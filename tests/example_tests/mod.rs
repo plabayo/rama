@@ -13,7 +13,6 @@ mod http_rate_limit;
 mod http_service_fs;
 mod http_service_hello;
 mod http_service_match;
-mod http_telemetry;
 mod http_user_agent_classifier;
 mod http_web_service_dir_and_api;
 mod https_connect_proxy;
@@ -22,3 +21,6 @@ mod tcp_listener_hello;
 mod tcp_listener_layers;
 mod tls_boring_termination;
 mod tls_termination;
+
+#[cfg(feature = "telemetry")]
+mod http_telemetry;

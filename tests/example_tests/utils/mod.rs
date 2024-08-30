@@ -78,6 +78,14 @@ where
             .spawn()
             .unwrap();
 
+        let http_connector = (
+            HttpConnectorLayer::new(),
+            HttpsConnectorLayer::auto(),
+            HttpProxyConnectorLayer::optional(),
+            HttpsConnectorLayer::tunnel(),
+        )
+            .layer(TcpConnector::default());
+
         let client = (
             MapResultLayer::new(map_internal_client_error),
             TraceLayer::new_for_http(),
@@ -97,15 +105,7 @@ where
             AddRequiredRequestHeadersLayer::default(),
             SetProxyAuthHttpHeaderLayer::default(),
         )
-            .layer(HttpClient::new(
-                (
-                    HttpConnectorLayer::new(),
-                    HttpsConnectorLayer::auto(),
-                    HttpProxyConnectorLayer::optional(),
-                    HttpsConnectorLayer::tunnel(),
-                )
-                    .layer(TcpConnector::default()),
-            ))
+            .layer(HttpClient::new(http_connector))
             .boxed();
 
         Self {

@@ -5,7 +5,11 @@ use tokio::sync::Mutex;
 use super::TcpConnector;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
-    net::{address::Authority, client::EstablishedClientConnection, stream::Stream},
+    net::{
+        address::Authority,
+        client::{ConnectorService, EstablishedClientConnection},
+        stream::Stream,
+    },
     service::{Context, Layer, Service},
     tcp::{client::Request as TcpRequest, utils::is_connection_error},
 };
@@ -129,20 +133,16 @@ impl<C> Forwarder<C, ()> {
     }
 }
 
-impl<S, T, C, L, I> Service<S, T> for Forwarder<C, L>
+impl<S, T, C, L> Service<S, T> for Forwarder<C, L>
 where
     S: Send + Sync + 'static,
     T: Stream + Unpin,
-    C: Service<
-        S,
-        crate::tcp::client::Request,
-        Response = EstablishedClientConnection<I, S, TcpRequest>,
-    >,
+    C: ConnectorService<S, crate::tcp::client::Request>,
+    C::Connection: Stream + Unpin,
     C::Error: Into<BoxError>,
-    L: Layer<ForwarderService<I>> + Send + Sync + 'static,
+    L: Layer<ForwarderService<C::Connection>> + Send + Sync + 'static,
     L::Service: Service<S, T, Response = ()>,
     <L::Service as Service<S, T>>::Error: Into<BoxError>,
-    I: Stream + Unpin,
 {
     type Response = ();
     type Error = BoxError;
@@ -162,7 +162,7 @@ where
 
         let EstablishedClientConnection {
             ctx, conn: target, ..
-        } = self.connector.serve(ctx, req).await.map_err(|err| {
+        } = self.connector.connect(ctx, req).await.map_err(|err| {
             OpaqueError::from_boxed(err.into())
                 .with_context(|| format!("establish tcp connection to {authority}"))
         })?;

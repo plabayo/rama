@@ -2,31 +2,31 @@ use crate::{
     error::{BoxError, OpaqueError},
     http::{
         self, dep::http::uri::PathAndQuery, dep::http_body, header::HOST, headers::HeaderMapExt,
-        Body, Request, RequestContext, Response, Version,
+        Request, RequestContext, Response, Version,
     },
     net::address::ProxyAddress,
     service::{Context, Service},
 };
-use bytes::Bytes;
 use tokio::sync::Mutex;
 
 #[derive(Debug)]
 // TODO: once we have hyper as `rama::http::core` we can
 // drop this mutex as there is no inherint reason for `sender` to be mutable...
-pub(super) enum SendRequest {
+pub(super) enum SendRequest<Body> {
     Http1(Mutex<hyper::client::conn::http1::SendRequest<Body>>),
     Http2(Mutex<hyper::client::conn::http2::SendRequest<Body>>),
 }
 
 #[derive(Debug)]
 /// Internal http sender used to send the actual requests.
-pub struct HttpClientService(pub(super) SendRequest);
+pub struct HttpClientService<Body>(pub(super) SendRequest<Body>);
 
-impl<State, Body> Service<State, Request<Body>> for HttpClientService
+impl<State, Body> Service<State, Request<Body>> for HttpClientService<Body>
 where
     State: Send + Sync + 'static,
-    Body: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    Body::Error: Into<BoxError>,
+    Body: http_body::Body + Unpin + Send + 'static,
+    Body::Data: Send,
+    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
 {
     type Response = Response;
     type Error = BoxError;
@@ -45,8 +45,6 @@ where
         // TODO: fix this in hyper fork (embedded in rama http core)
         // directly instead of here...
         let req = sanitize_client_req_header(&mut ctx, req)?;
-
-        let req = req.map(crate::http::Body::new);
 
         let resp = match &self.0 {
             SendRequest::Http1(sender) => sender.lock().await.send_request(req).await,

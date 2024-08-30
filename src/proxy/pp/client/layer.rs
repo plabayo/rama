@@ -2,9 +2,11 @@ use std::{fmt, marker::PhantomData, net::IpAddr};
 
 use crate::{
     error::{BoxError, ErrorContext, OpaqueError},
-    net::client::EstablishedClientConnection,
-    net::forwarded::Forwarded,
-    net::stream::{SocketInfo, Stream},
+    net::{
+        client::{ConnectorService, EstablishedClientConnection},
+        forwarded::Forwarded,
+        stream::{SocketInfo, Stream},
+    },
     proxy::pp::protocol::{v1, v2},
     service::{Context, Layer, Service},
 };
@@ -204,16 +206,16 @@ impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
     }
 }
 
-impl<S, P, State, Request, T> Service<State, Request> for HaProxyService<S, P, version::One>
+impl<S, P, State, Request> Service<State, Request> for HaProxyService<S, P, version::One>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
+    S: ConnectorService<State, Request>,
+    S::Connection: Stream + Unpin,
     S::Error: Into<BoxError>,
     P: Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
-    T: Stream + Unpin,
 {
-    type Response = EstablishedClientConnection<T, State, Request>;
+    type Response = EstablishedClientConnection<S::Connection, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -226,7 +228,7 @@ where
             req,
             mut conn,
             addr,
-        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let src = ctx
             .get::<Forwarded>()

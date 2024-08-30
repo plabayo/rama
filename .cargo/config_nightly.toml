@@ -1,0 +1,5 @@
+[build]
+rustflags = ["-Z", "threads=8"]
+
+[check]
+rustflags = ["-Z", "threads=8"]

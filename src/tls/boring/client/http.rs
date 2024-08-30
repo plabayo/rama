@@ -1,5 +1,5 @@
 use crate::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
-use crate::net::client::EstablishedClientConnection;
+use crate::net::client::{ConnectorService, EstablishedClientConnection};
 use crate::net::stream::Stream;
 use crate::net::transport::TryRefIntoTransportContext;
 use crate::service::Layer;
@@ -136,16 +136,16 @@ impl<S> HttpsConnector<S, ConnectorKindTunnel> {
 
 /// this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
 
-impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindAuto>
+impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindAuto>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
+    S: ConnectorService<State, Request>,
+    S::Connection: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<T>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -158,7 +158,7 @@ where
             req,
             conn,
             addr,
-        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -206,16 +206,16 @@ where
     }
 }
 
-impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindSecure>
+impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindSecure>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
+    S: ConnectorService<State, Request>,
+    S::Connection: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
 {
-    type Response = EstablishedClientConnection<SslStream<T>, State, Request>;
+    type Response = EstablishedClientConnection<SslStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -228,7 +228,7 @@ where
             req,
             conn,
             addr,
-        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -254,15 +254,15 @@ where
     }
 }
 
-impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindTunnel>
+impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindTunnel>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
+    S: ConnectorService<State, Request>,
+    S::Connection: Stream + Unpin,
     S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Request: Send + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<T>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -275,7 +275,7 @@ where
             req,
             conn,
             addr,
-        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let host = match ctx.get::<HttpsTunnel>() {
             Some(tunnel) => tunnel.server_name.clone(),

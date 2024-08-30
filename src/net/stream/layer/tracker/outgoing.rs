@@ -1,6 +1,9 @@
 use super::bytes::BytesRWTracker;
 use crate::{
-    net::{client::EstablishedClientConnection, stream::Stream},
+    net::{
+        client::{ConnectorService, EstablishedClientConnection},
+        stream::Stream,
+    },
     service::{Context, Layer, Service},
 };
 use std::fmt;
@@ -43,14 +46,15 @@ where
     }
 }
 
-impl<S, State, Request, T> Service<State, Request> for OutgoingBytesTrackerService<S>
+impl<S, State, Request> Service<State, Request> for OutgoingBytesTrackerService<S>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
+    S: ConnectorService<State, Request>,
+    S::Connection: Stream + Unpin,
+    S::Error: Send + Sync + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
 {
-    type Response = EstablishedClientConnection<BytesRWTracker<T>, State, Request>;
+    type Response = EstablishedClientConnection<BytesRWTracker<S::Connection>, State, Request>;
     type Error = S::Error;
 
     async fn serve(
@@ -63,7 +67,7 @@ where
             req,
             conn,
             addr,
-        } = self.inner.serve(ctx, req).await?;
+        } = self.inner.connect(ctx, req).await?;
         let conn = BytesRWTracker::new(conn);
         let handle = conn.handle();
         ctx.insert(handle);
