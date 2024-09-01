@@ -19,8 +19,9 @@
 use rama::{
     http::{response::Json, server::HttpServer, HeaderName, IntoResponse, Request, Response},
     rt::Executor,
-    service::{service_fn, Context, Layer},
+    service::service_fn,
     ua::{UserAgent, UserAgentClassifierLayer},
+    Context, Layer,
 };
 use serde_json::json;
 use std::convert::Infallible;

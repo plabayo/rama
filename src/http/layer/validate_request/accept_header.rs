@@ -2,7 +2,7 @@ use super::ValidateRequest;
 use crate::{
     http::dep::mime::{Mime, MimeIter},
     http::{header, Request, Response, StatusCode},
-    service::Context,
+    Context,
 };
 use std::{fmt, marker::PhantomData, sync::Arc};
 

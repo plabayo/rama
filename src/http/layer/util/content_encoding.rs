@@ -1,5 +1,7 @@
 //! Types and functions for handling content encoding.
 
+use crate::utils::macros::match_ignore_ascii_case_str;
+
 pub(crate) trait SupportedEncodings: Copy {
     fn gzip(&self) -> bool;
     fn deflate(&self) -> bool;

@@ -1,6 +1,7 @@
 use crate::{
+    context::Extensions,
     http::{IntoResponse, Request, StatusCode},
-    service::{context::Extensions, Context},
+    Context,
 };
 use std::collections::HashMap;
 
@@ -113,7 +114,7 @@ impl std::error::Error for UriParamsDeserializeError {}
 
 impl IntoResponse for UriParamsDeserializeError {
     fn into_response(self) -> crate::http::Response {
-        crate::__log_http_rejection!(
+        crate::utils::macros::log_http_rejection!(
             rejection_type = UriParamsDeserializeError,
             body_text = self.body_text(),
             status = self.status(),
@@ -244,7 +245,7 @@ impl PathMatcher {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for PathMatcher {
+impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for PathMatcher {
     fn matches(
         &self,
         ext: Option<&mut Extensions>,

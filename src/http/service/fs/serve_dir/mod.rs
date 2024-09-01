@@ -1,10 +1,11 @@
+use crate::error::BoxError;
 use crate::http::dep::http_body::Body as HttpBody;
 use crate::http::layer::{
     set_status::SetStatus,
     util::content_encoding::{encodings, SupportedEncodings},
 };
 use crate::http::{header, Body, HeaderValue, Method, Request, Response, StatusCode};
-use crate::service::{Context, Service};
+use crate::{Context, Service};
 use bytes::Bytes;
 use percent_encoding::percent_decode;
 use std::{
@@ -41,8 +42,8 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// use rama::{
 ///     http::{server::HttpServer, service::fs::ServeDir},
 ///     rt::Executor,
-///     service::{Layer, layer::TraceErrLayer},
 ///     tcp::server::TcpListener,
+///     Layer, layer::TraceErrLayer,
 /// };
 ///
 /// #[tokio::main]
@@ -316,7 +317,7 @@ impl<F> ServeDir<F> {
     ///         service::fs::{ServeDir, ServeFile},
     ///     },
     ///     rt::Executor,
-    ///     service::{Layer, layer::TraceErrLayer},
+    ///     Layer, layer::TraceErrLayer,
     ///     tcp::server::TcpListener,
     /// };
     ///
@@ -365,8 +366,9 @@ impl<F> ServeDir<F> {
     ///         service::fs::{ServeDir, ServeFile},
     ///     },
     ///     rt::Executor,
-    ///     service::{Layer, layer::TraceErrLayer},
+    ///     layer::TraceErrLayer,
     ///     tcp::server::TcpListener,
+    ///     Layer,
     /// };
     ///
     /// #[tokio::main]
@@ -427,8 +429,10 @@ impl<F> ServeDir<F> {
     /// use rama::{
     ///     http::{server::HttpServer, service::fs::ServeDir, Body, Request, Response, StatusCode},
     ///     rt::Executor,
-    ///     service::{service_fn, Context, Layer, layer::TraceErrLayer},
+    ///     service::service_fn,
+    ///     layer::TraceErrLayer,
     ///     tcp::server::TcpListener,
+    ///     Context, Layer,
     /// };
     /// use std::convert::Infallible;
     ///
@@ -481,8 +485,7 @@ impl<F> ServeDir<F> {
         State: Send + Sync + 'static,
         F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible>
             + Clone,
-        FResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-        FResBody::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         if req.method() != Method::GET && req.method() != Method::HEAD {
             if self.call_fallback_on_method_not_allowed {
@@ -561,8 +564,7 @@ where
     State: Send + Sync + 'static,
     ReqBody: Send + 'static,
     F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
-    FResBody: HttpBody<Data = Bytes> + Send + Sync + 'static,
-    FResBody::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    FResBody: HttpBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = Infallible;

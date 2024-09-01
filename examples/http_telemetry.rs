@@ -36,8 +36,6 @@
 //!
 //! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4317 over GRPC.
 
-use std::time::Duration;
-
 use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig};
 use opentelemetry_sdk::{
     metrics::reader::{DefaultAggregationSelector, DefaultTemporalitySelector},
@@ -50,9 +48,8 @@ use rama::{
         server::HttpServer,
         service::web::{extract::State, WebService},
     },
-    net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,
-    service::Layer,
+    stream::layer::opentelemetry::NetworkMetricsLayer,
     tcp::server::TcpListener,
     telemetry::opentelemetry::{
         self,
@@ -63,7 +60,9 @@ use rama::{
         },
         KeyValue,
     },
+    Layer,
 };
+use std::time::Duration;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -131,7 +130,7 @@ async fn main() {
     // state for our custom app metrics
     let state = Metrics::new();
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     // http web service
     graceful.spawn_task_fn(|guard| async move {

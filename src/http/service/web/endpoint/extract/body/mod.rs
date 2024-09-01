@@ -1,6 +1,7 @@
 use super::FromRequest;
 use crate::http;
-use crate::service::Context;
+use crate::utils::macros::impl_deref;
+use crate::Context;
 use std::convert::Infallible;
 
 mod bytes;

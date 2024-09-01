@@ -3,17 +3,17 @@
 //! the header with the given [`HeaderName`] is present
 //! and has a bool-like value.
 
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{
+    error::BoxError,
+    http::{utils::HeaderValueGetter, Request},
+    Context, Layer, Service,
+};
 use crate::{
     error::{ErrorExt, OpaqueError},
     http::HeaderName,
 };
 use std::{fmt, marker::PhantomData};
-
-use crate::{
-    error::BoxError,
-    http::{utils::HeaderValueGetter, Request},
-    service::{Context, Layer, Service},
-};
 
 /// A [`Service`] which stores the [`Default`] value of type `T` in case
 /// the header with the given [`HeaderName`] is present

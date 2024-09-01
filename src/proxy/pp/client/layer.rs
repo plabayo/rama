@@ -2,11 +2,13 @@ use std::{fmt, marker::PhantomData, net::IpAddr};
 
 use crate::{
     error::{BoxError, ErrorContext, OpaqueError},
-    net::client::EstablishedClientConnection,
-    net::forwarded::Forwarded,
-    net::stream::{SocketInfo, Stream},
+    net::{
+        client::{ConnectorService, EstablishedClientConnection},
+        forwarded::Forwarded,
+    },
     proxy::pp::protocol::{v1, v2},
-    service::{Context, Layer, Service},
+    stream::{SocketInfo, Stream},
+    Context, Layer, Service,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -204,16 +206,14 @@ impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
     }
 }
 
-impl<S, P, State, Request, T> Service<State, Request> for HaProxyService<S, P, version::One>
+impl<S, P, State, Request> Service<State, Request> for HaProxyService<S, P, version::One>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     P: Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
-    T: Stream + Unpin,
 {
-    type Response = EstablishedClientConnection<T, State, Request>;
+    type Response = EstablishedClientConnection<S::Connection, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -221,10 +221,13 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, mut conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection {
+            ctx,
+            req,
+            mut conn,
+            addr,
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let dst = conn.addr();
         let src = ctx
             .get::<Forwarded>()
             .and_then(|f| f.client_socket_addr())
@@ -233,12 +236,12 @@ where
                 OpaqueError::from_display("PROXY client (v1): missing src socket address")
             })?;
 
-        let addresses = match (src.ip(), dst.ip()) {
+        let addresses = match (src.ip(), addr.ip()) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => {
-                v1::Addresses::new_tcp4(src_ip, dst_ip, src.port(), dst.port())
+                v1::Addresses::new_tcp4(src_ip, dst_ip, src.port(), addr.port())
             }
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => {
-                v1::Addresses::new_tcp6(src_ip, dst_ip, src.port(), dst.port())
+                v1::Addresses::new_tcp6(src_ip, dst_ip, src.port(), addr.port())
             }
             (_, _) => {
                 return Err(OpaqueError::from_display(
@@ -252,14 +255,23 @@ where
             .await
             .context("PROXY client (v1): write addresses")?;
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection {
+            ctx,
+            req,
+            conn,
+            addr,
+        })
     }
 }
 
 impl<S, P, State, Request, T> Service<State, Request> for HaProxyService<S, P, version::Two>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    S::Error: Into<BoxError>,
+    S: Service<
+        State,
+        Request,
+        Response = EstablishedClientConnection<T, State, Request>,
+        Error: Into<BoxError>,
+    >,
     P: protocol::Protocol + Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
@@ -273,10 +285,13 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, mut conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection {
+            ctx,
+            req,
+            mut conn,
+            addr,
+        } = self.inner.serve(ctx, req).await.map_err(Into::into)?;
 
-        let dst = conn.addr();
         let src = ctx
             .get::<Forwarded>()
             .and_then(|f| f.client_socket_addr())
@@ -285,16 +300,16 @@ where
                 OpaqueError::from_display("PROXY client (v2): missing src socket address")
             })?;
 
-        let builder = match (src.ip(), dst.ip()) {
+        let builder = match (src.ip(), addr.ip()) {
             (IpAddr::V4(src_ip), IpAddr::V4(dst_ip)) => v2::Builder::with_addresses(
                 v2::Version::Two | v2::Command::Proxy,
                 P::v2_protocol(),
-                v2::IPv4::new(src_ip, dst_ip, src.port(), dst.port()),
+                v2::IPv4::new(src_ip, dst_ip, src.port(), addr.port()),
             ),
             (IpAddr::V6(src_ip), IpAddr::V6(dst_ip)) => v2::Builder::with_addresses(
                 v2::Version::Two | v2::Command::Proxy,
                 P::v2_protocol(),
-                v2::IPv6::new(src_ip, dst_ip, src.port(), dst.port()),
+                v2::IPv6::new(src_ip, dst_ip, src.port(), addr.port()),
             ),
             (_, _) => {
                 return Err(OpaqueError::from_display(
@@ -319,7 +334,12 @@ where
             .await
             .context("PROXY client (v2): write header")?;
 
-        Ok(EstablishedClientConnection { ctx, req, conn })
+        Ok(EstablishedClientConnection {
+            ctx,
+            req,
+            conn,
+            addr,
+        })
     }
 }
 
@@ -379,16 +399,13 @@ pub mod protocol {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
-
     use super::*;
     use crate::{
-        net::{
-            client::ClientConnection,
-            forwarded::{ForwardedElement, NodeId},
-        },
-        service::{service_fn, Layer},
+        net::forwarded::{ForwardedElement, NodeId},
+        service::service_fn,
+        Layer,
     };
+    use std::convert::Infallible;
     use tokio_test::io::Builder;
 
     #[tokio::test]
@@ -438,10 +455,8 @@ mod tests {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
-                        conn: ClientConnection::new(
-                            target_addr.parse().unwrap(),
-                            Builder::new().write(expected_line.as_bytes()).build(),
-                        ),
+                        conn: Builder::new().write(expected_line.as_bytes()).build(),
+                        addr: target_addr.parse().unwrap(),
                     })
                 }));
             svc.serve(input_ctx, ()).await.unwrap();
@@ -506,10 +521,8 @@ mod tests {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
-                        conn: ClientConnection::new(
-                            target_addr.parse().unwrap(),
-                            Builder::new().build(),
-                        ),
+                        conn: Builder::new().build(),
+                        addr: target_addr.parse().unwrap(),
                     })
                 }));
             assert!(svc.serve(input_ctx, ()).await.is_err());
@@ -531,10 +544,8 @@ mod tests {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
-                        conn: ClientConnection::new(
-                            target_addr.parse().unwrap(),
-                            Builder::new().build(),
-                        ),
+                        conn: Builder::new().build(),
+                        addr: target_addr.parse().unwrap(),
                     })
                 }));
             assert!(svc.serve(input_ctx, ()).await.is_err());
@@ -568,16 +579,14 @@ mod tests {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
-                        conn: ClientConnection::new(
-                            "192.168.1.1:443".parse().unwrap(),
-                            Builder::new()
-                                .write(&[
-                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
-                                    b'I', b'T', b'\n', 0x21, 0x11, 0, 13, 127, 0, 0, 1, 192, 168,
-                                    1, 1, 0, 80, 1, 187, 42,
-                                ])
-                                .build(),
-                        ),
+                        conn: Builder::new()
+                            .write(&[
+                                b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U', b'I',
+                                b'T', b'\n', 0x21, 0x11, 0, 13, 127, 0, 0, 1, 192, 168, 1, 1, 0,
+                                80, 1, 187, 42,
+                            ])
+                            .build(),
+                        addr: "192.168.1.1:443".parse().unwrap(),
                     })
                 },
             ));
@@ -612,16 +621,14 @@ mod tests {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
-                        conn: ClientConnection::new(
-                            "192.168.1.1:443".parse().unwrap(),
-                            Builder::new()
-                                .write(&[
-                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
-                                    b'I', b'T', b'\n', 0x21, 0x12, 0, 13, 127, 0, 0, 1, 192, 168,
-                                    1, 1, 0, 80, 1, 187, 42,
-                                ])
-                                .build(),
-                        ),
+                        conn: Builder::new()
+                            .write(&[
+                                b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U', b'I',
+                                b'T', b'\n', 0x21, 0x12, 0, 13, 127, 0, 0, 1, 192, 168, 1, 1, 0,
+                                80, 1, 187, 42,
+                            ])
+                            .build(),
+                        addr: "192.168.1.1:443".parse().unwrap(),
                     })
                 },
             ));
@@ -656,21 +663,18 @@ mod tests {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
-                        conn: ClientConnection::new(
-                            "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
-                                .parse()
-                                .unwrap(),
-                            Builder::new()
-                                .write(&[
-                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
-                                    b'I', b'T', b'\n', 0x21, 0x21, 0, 37, 0x12, 0x34, 0x56, 0x78,
-                                    0x90, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09, 0x87, 0x65,
-                                    0x43, 0x21, 0x43, 0x21, 0x87, 0x65, 0xba, 0x09, 0xfe, 0xdc,
-                                    0xcd, 0xef, 0x90, 0xab, 0x56, 0x78, 0x12, 0x34, 0, 80, 1, 187,
-                                    42,
-                                ])
-                                .build(),
-                        ),
+                        conn: Builder::new()
+                            .write(&[
+                                b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U', b'I',
+                                b'T', b'\n', 0x21, 0x21, 0, 37, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab,
+                                0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09, 0x87, 0x65, 0x43, 0x21, 0x43,
+                                0x21, 0x87, 0x65, 0xba, 0x09, 0xfe, 0xdc, 0xcd, 0xef, 0x90, 0xab,
+                                0x56, 0x78, 0x12, 0x34, 0, 80, 1, 187, 42,
+                            ])
+                            .build(),
+                        addr: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
+                            .parse()
+                            .unwrap(),
                     })
                 },
             ));
@@ -705,21 +709,18 @@ mod tests {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,
                         req,
-                        conn: ClientConnection::new(
-                            "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
-                                .parse()
-                                .unwrap(),
-                            Builder::new()
-                                .write(&[
-                                    b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U',
-                                    b'I', b'T', b'\n', 0x21, 0x22, 0, 37, 0x12, 0x34, 0x56, 0x78,
-                                    0x90, 0xab, 0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09, 0x87, 0x65,
-                                    0x43, 0x21, 0x43, 0x21, 0x87, 0x65, 0xba, 0x09, 0xfe, 0xdc,
-                                    0xcd, 0xef, 0x90, 0xab, 0x56, 0x78, 0x12, 0x34, 0, 80, 1, 187,
-                                    42,
-                                ])
-                                .build(),
-                        ),
+                        conn: Builder::new()
+                            .write(&[
+                                b'\r', b'\n', b'\r', b'\n', b'\0', b'\r', b'\n', b'Q', b'U', b'I',
+                                b'T', b'\n', 0x21, 0x22, 0, 37, 0x12, 0x34, 0x56, 0x78, 0x90, 0xab,
+                                0xcd, 0xef, 0xfe, 0xdc, 0xba, 0x09, 0x87, 0x65, 0x43, 0x21, 0x43,
+                                0x21, 0x87, 0x65, 0xba, 0x09, 0xfe, 0xdc, 0xcd, 0xef, 0x90, 0xab,
+                                0x56, 0x78, 0x12, 0x34, 0, 80, 1, 187, 42,
+                            ])
+                            .build(),
+                        addr: "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:443"
+                            .parse()
+                            .unwrap(),
                     })
                 },
             ));
@@ -785,10 +786,8 @@ mod tests {
                 Ok::<_, Infallible>(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: ClientConnection::new(
-                        target_addr.parse().unwrap(),
-                        Builder::new().build(),
-                    ),
+                    conn: Builder::new().build(),
+                    addr: target_addr.parse().unwrap(),
                 })
             }));
             assert!(svc.serve(input_ctx.clone(), ()).await.is_err());
@@ -799,10 +798,8 @@ mod tests {
                 Ok::<_, Infallible>(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: ClientConnection::new(
-                        target_addr.parse().unwrap(),
-                        Builder::new().build(),
-                    ),
+                    conn: Builder::new().build(),
+                    addr: target_addr.parse().unwrap(),
                 })
             }));
             assert!(svc.serve(input_ctx, ()).await.is_err());
@@ -824,10 +821,8 @@ mod tests {
                 Ok::<_, Infallible>(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: ClientConnection::new(
-                        target_addr.parse().unwrap(),
-                        Builder::new().build(),
-                    ),
+                    conn: Builder::new().build(),
+                    addr: target_addr.parse().unwrap(),
                 })
             }));
             assert!(svc.serve(input_ctx.clone(), ()).await.is_err());
@@ -838,10 +833,8 @@ mod tests {
                 Ok::<_, Infallible>(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: ClientConnection::new(
-                        target_addr.parse().unwrap(),
-                        Builder::new().build(),
-                    ),
+                    conn: Builder::new().build(),
+                    addr: target_addr.parse().unwrap(),
                 })
             }));
             assert!(svc.serve(input_ctx.clone(), ()).await.is_err());

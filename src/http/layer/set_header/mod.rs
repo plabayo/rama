@@ -2,10 +2,8 @@
 //!
 //! See [request] and [response] for more details.
 
-use crate::{
-    http::{HeaderMap, HeaderName, HeaderValue, Request, Response},
-    service::Context,
-};
+use crate::http::{HeaderMap, HeaderName, HeaderValue, Request, Response};
+use crate::Context;
 use std::{
     future::{ready, Future},
     marker::PhantomData,

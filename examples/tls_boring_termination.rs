@@ -35,17 +35,14 @@
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     error::BoxError,
-    net::{
-        forwarded::Forwarded,
-        stream::{SocketInfo, Stream},
-    },
+    graceful::Shutdown,
+    layer::{ConsumeErrLayer, GetExtensionLayer},
+    net::forwarded::Forwarded,
     proxy::pp::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
-    service::{
-        layer::{ConsumeErrLayer, GetExtensionLayer},
-        service_fn, Context, Layer,
-    },
+    service::service_fn,
+    stream::{SocketInfo, Stream},
     tcp::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
@@ -67,7 +64,7 @@ use rama::{
         },
         ApplicationProtocol, SecureTransport,
     },
-    utils::graceful::Shutdown,
+    Context, Layer,
 };
 
 // everything else is provided by the standard library, community crates or tokio

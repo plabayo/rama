@@ -2,7 +2,7 @@ use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
 use crate::http::headers::{self, Header};
 use crate::http::{HeaderName, IntoResponse, Response};
-use crate::service::Context;
+use crate::Context;
 use std::ops::Deref;
 
 /// Extractor to get a TypedHeader from the request.
@@ -131,12 +131,12 @@ impl std::error::Error for TypedHeaderRejection {
 mod tests {
     use crate::{
         http::{
+            headers::ContentType,
             service::web::extract::{FromRequestParts, TypedHeader},
             Body, Request,
         },
-        service::Context,
+        Context,
     };
-    use headers::ContentType;
 
     #[tokio::test]
     async fn test_get_typed_header() {

@@ -8,7 +8,8 @@
 //! use bytes::Bytes;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{ready, Context, Poll}};
-//! use rama::service::{self, Layer, service_fn, Service};
+//! use rama::{Layer, Service, context};
+//! use rama::service::service_fn;
 //! use rama::http::layer::map_request_body::MapRequestBodyLayer;
 //! use rama::error::BoxError;
 //!
@@ -50,13 +51,14 @@
 //! // Call the service
 //! let request = Request::new(Body::default());
 //!
-//! svc.serve(service::Context::default(), request).await?;
+//! svc.serve(context::Context::default(), request).await?;
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::http::{Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::fmt;
 
 /// Apply a transformation to the request body.

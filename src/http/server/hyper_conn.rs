@@ -1,11 +1,11 @@
-use super::HttpServeResult;
+use super::{svc_hyper::HyperService, HttpServeResult};
+use crate::http::executor::HyperExecutor;
 use crate::http::{IntoResponse, Request};
-use crate::net::stream::Stream;
-use crate::rt::Executor;
-use crate::service::Service;
-use crate::service::{Context, HyperService};
+use crate::stream::Stream;
 use crate::tcp::utils::is_connection_error;
 use crate::utils::future::Fuse;
+use crate::Context;
+use crate::Service;
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::{rt::TokioIo, server::conn::auto::Builder as AutoBuilder};
@@ -71,7 +71,7 @@ impl HyperConnServer for Http1Builder {
     }
 }
 
-impl HyperConnServer for Http2Builder<Executor> {
+impl HyperConnServer for Http2Builder<HyperExecutor> {
     #[inline]
     async fn hyper_serve_connection<IO, State, S, Response>(
         &self,
@@ -112,7 +112,7 @@ impl HyperConnServer for Http2Builder<Executor> {
     }
 }
 
-impl HyperConnServer for AutoBuilder<Executor> {
+impl HyperConnServer for AutoBuilder<HyperExecutor> {
     #[inline]
     async fn hyper_serve_connection<IO, State, S, Response>(
         &self,
@@ -205,9 +205,11 @@ fn map_hyper_err_to_result(err: hyper::Error) -> HttpServeResult {
 }
 
 mod private {
+    use crate::http::executor::HyperExecutor;
+
     pub trait Sealed {}
 
     impl Sealed for super::Http1Builder {}
-    impl Sealed for super::Http2Builder<super::Executor> {}
-    impl Sealed for super::AutoBuilder<super::Executor> {}
+    impl Sealed for super::Http2Builder<HyperExecutor> {}
+    impl Sealed for super::AutoBuilder<HyperExecutor> {}
 }

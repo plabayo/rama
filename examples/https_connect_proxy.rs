@@ -24,6 +24,7 @@
 //! you'll need to first import and trust the generated certificate.
 
 use rama::{
+    graceful::Shutdown,
     http::{
         client::HttpClient,
         layer::{
@@ -35,9 +36,10 @@ use rama::{
         server::HttpServer,
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
-    net::{stream::layer::http::BodyLimitLayer, user::Basic},
+    net::user::Basic,
     rt::Executor,
-    service::{service_fn, Context, Layer, Service},
+    service::service_fn,
+    stream::layer::http::BodyLimitLayer,
     tcp::{server::TcpListener, utils::is_connection_error},
     tls::{
         client::ClientHello,
@@ -50,7 +52,7 @@ use rama::{
             server::{TlsAcceptorLayer, TlsClientConfigHandler},
         },
     },
-    utils::graceful::Shutdown,
+    Context, Layer, Service,
 };
 
 use std::time::Duration;

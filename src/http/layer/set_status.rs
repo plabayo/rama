@@ -7,7 +7,8 @@
 //! use bytes::Bytes;
 //! use rama::http::layer::set_status::SetStatusLayer;
 //! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::service::{Context, Layer, Service, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Layer, Service};
 //! use rama::error::BoxError;
 //!
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
@@ -36,7 +37,8 @@
 use std::fmt;
 
 use crate::http::{Request, Response, StatusCode};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 
 /// Layer that applies [`SetStatus`] which overrides the status codes.
 #[derive(Debug, Clone)]

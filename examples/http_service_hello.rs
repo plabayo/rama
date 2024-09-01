@@ -34,17 +34,16 @@ use rama::{
         server::HttpServer,
         IntoResponse, Request,
     },
-    net::stream::{
+    layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
+    rt::Executor,
+    service::service_fn,
+    stream::{
         layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
         SocketInfo,
     },
-    rt::Executor,
-    service::{
-        layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
-        service_fn, Context, Layer,
-    },
     tcp::server::TcpListener,
     utils::latency::LatencyUnit,
+    Context, Layer,
 };
 use std::{sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
@@ -61,7 +60,7 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     let sensitive_headers: Arc<[_]> = vec![header::AUTHORIZATION, header::COOKIE].into();
 

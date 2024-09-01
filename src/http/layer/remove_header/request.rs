@@ -5,7 +5,8 @@
 //! ```
 //! use rama::http::layer::remove_header::RemoveRequestHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -15,7 +16,7 @@
 //! # });
 //! #
 //! let mut svc = (
-//!     // Layer that removes all request headers with the prefix `x-foo`.
+//!     // Layer that removes all request headers with the prefix `x-foo`.`ac
 //!     RemoveRequestHeaderLayer::prefix("x-foo"),
 //! ).layer(http_client);
 //!
@@ -28,7 +29,8 @@
 //! ```
 
 use crate::http::{HeaderName, Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::{borrow::Cow, fmt, future::Future};
 
 #[derive(Debug, Clone)]
@@ -169,12 +171,11 @@ where
 
 #[cfg(test)]
 mod test {
-    use http::Response;
-
     use super::*;
     use crate::{
-        http::Body,
-        service::{service_fn, Layer, Service},
+        http::{Body, Response},
+        service::service_fn,
+        Layer, Service,
     };
     use std::convert::Infallible;
 

@@ -7,8 +7,8 @@
 use super::{Policy, PolicyResult, RetryBody};
 use crate::{
     http::{Request, Response},
-    service::Context,
     utils::backoff::Backoff,
+    Context,
 };
 use std::future::Future;
 
@@ -18,7 +18,7 @@ use std::future::Future;
 ///
 /// This requires the [`ManagedPolicy`] to be used.
 ///
-/// [`Extensions`]: crate::service::context::Extensions
+/// [`Extensions`]: crate::context::Extensions
 #[non_exhaustive]
 pub struct DoNotRetry;
 

@@ -5,7 +5,8 @@
 //! ```rust
 //! use std::convert::Infallible;
 //! use rama::error::BoxError;
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::{Body, Request, Response, header::HeaderName};
 //! use rama::http::layer::propagate_headers::PropagateHeaderLayer;
 //!
@@ -35,7 +36,8 @@
 //! ```
 
 use crate::http::{header::HeaderName, Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 
 /// Layer that applies [`PropagateHeader`] which propagates headers from requests to responses.
 ///

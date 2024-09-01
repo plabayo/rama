@@ -2,7 +2,7 @@
 
 use crate::http::Request;
 use crate::http::{header, HeaderValue, Response, StatusCode, Uri};
-use crate::service::{Context, Service};
+use crate::{Context, Service};
 use std::{
     convert::{Infallible, TryFrom},
     fmt,

@@ -1,12 +1,13 @@
 use std::future::Future;
 
 use super::extract::{FromRequest, FromRequestParts};
+use crate::utils::macros::all_the_tuples_no_last_special_case;
 use crate::{
     http::{IntoResponse, Request, Response},
-    service::Context,
+    Context,
 };
 
-/// [`crate::service::Service`] implemented for functions taking extractors.
+/// [`crate::Service`] implemented for functions taking extractors.
 pub trait EndpointServiceFn<S, T>: private::Sealed<S, T> + Clone + Send + Sync + 'static {
     /// Serve a response for the given request.
     ///

@@ -69,11 +69,11 @@ pub use headers::{
     AccessControlAllowMethods, AccessControlAllowOrigin, AccessControlExposeHeaders,
     AccessControlMaxAge, AccessControlRequestHeaders, AccessControlRequestMethod, Age, Allow,
     Authorization, CacheControl, Connection, ContentDisposition, ContentEncoding, ContentLength,
-    ContentLocation, ContentRange, Cookie, Date, ETag, Error, Expect, Expires, Host, IfMatch,
-    IfModifiedSince, IfNoneMatch, IfRange, IfUnmodifiedSince, LastModified, Location, Origin,
-    Pragma, ProxyAuthorization, Range, Referer, ReferrerPolicy, RetryAfter, SecWebsocketAccept,
-    SecWebsocketKey, SecWebsocketVersion, Server, SetCookie, StrictTransportSecurity, Te,
-    TransferEncoding, Upgrade, UserAgent, Vary,
+    ContentLocation, ContentRange, ContentType, Cookie, Date, ETag, Error, Expect, Expires, Host,
+    IfMatch, IfModifiedSince, IfNoneMatch, IfRange, IfUnmodifiedSince, LastModified, Location,
+    Origin, Pragma, ProxyAuthorization, Range, Referer, ReferrerPolicy, RetryAfter,
+    SecWebsocketAccept, SecWebsocketKey, SecWebsocketVersion, Server, SetCookie,
+    StrictTransportSecurity, Te, TransferEncoding, Upgrade, UserAgent, Vary,
 };
 
 mod common;

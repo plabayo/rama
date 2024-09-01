@@ -13,7 +13,8 @@
 //! use rama::http::dep::http_body_util::combinators::BoxBody as InnerBoxBody;
 //! use rama::http::layer::compression::CompressionLayer;
 //! use rama::http::{Body, Request, Response, header::ACCEPT_ENCODING};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use std::convert::Infallible;
 //! use tokio::fs::{self, File};
 //! use tokio_util::io::ReaderStream;
@@ -100,7 +101,8 @@ mod tests {
         ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_RANGE, CONTENT_TYPE, RANGE,
     };
     use crate::http::{Body, HeaderValue, Request, Response};
-    use crate::service::{service_fn, Context, Service};
+    use crate::service::service_fn;
+    use crate::{Context, Service};
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
     use std::convert::Infallible;

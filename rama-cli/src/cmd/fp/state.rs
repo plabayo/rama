@@ -1,6 +1,6 @@
 use std::{collections::HashMap, sync::atomic::AtomicUsize};
 
-use rama::service::context::AsRef;
+use rama::context::AsRef;
 
 use super::data::DataSource;
 

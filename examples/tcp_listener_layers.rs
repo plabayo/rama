@@ -19,12 +19,11 @@
 //! This is because of the `TimeoutLayer` that was added to the server.
 
 use rama::{
-    net::stream::{matcher::SocketMatcher, service::EchoService},
-    service::{
-        layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
-        service_fn, Layer,
-    },
+    layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
+    service::service_fn,
+    stream::{matcher::SocketMatcher, service::EchoService},
     tcp::server::TcpListener,
+    Layer,
 };
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
@@ -42,7 +41,7 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(|guard| async {
         TcpListener::bind("0.0.0.0:62501")

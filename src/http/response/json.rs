@@ -1,6 +1,5 @@
-use std::fmt;
-
 use crate::http::response::{IntoResponse, Response};
+use crate::utils::macros::impl_deref;
 use crate::{
     error::OpaqueError,
     http::{
@@ -13,6 +12,7 @@ use crate::{
 };
 use bytes::{BufMut, BytesMut};
 use serde::Serialize;
+use std::fmt;
 
 /// Wrapper used to create Json Http [`Response`]s,
 /// as well as to extract Json from Http [`Request`] bodies.

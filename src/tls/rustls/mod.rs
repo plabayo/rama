@@ -14,7 +14,7 @@ pub mod dep {
         //!
         //! [`pki-types`]: https://docs.rs/rustls-pki-types
 
-        pub use pki_types::*;
+        pub use rustls_pki_types::*;
     }
 
     pub mod pemfile {

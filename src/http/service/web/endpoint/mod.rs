@@ -1,6 +1,8 @@
 use crate::{
     http::{matcher::HttpMatcher, Body, IntoResponse, Request, Response},
-    service::{layer::MapResponseLayer, BoxService, Context, Layer, Service},
+    layer::MapResponseLayer,
+    service::BoxService,
+    Context, Layer, Service,
 };
 use std::future::Future;
 use std::{convert::Infallible, fmt};
@@ -14,7 +16,7 @@ pub(crate) struct Endpoint<State> {
 
 /// utility trait to accept multiple types as an endpoint service for [`super::WebService`]
 pub trait IntoEndpointService<State, T>: private::Sealed<T> {
-    /// convert the type into a [`crate::service::Service`].
+    /// convert the type into a [`crate::Service`].
     fn into_endpoint_service(
         self,
     ) -> impl Service<State, Request, Response = Response, Error = Infallible>;
@@ -268,8 +270,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{self, dep::http_body_util::BodyExt, Body, Request, StatusCode};
-    use ::http::Method;
+    use crate::http::{self, dep::http_body_util::BodyExt, Body, Method, Request, StatusCode};
     use extract::*;
 
     fn assert_into_endpoint_service<T, I>(_: I)

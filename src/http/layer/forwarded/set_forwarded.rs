@@ -5,8 +5,9 @@ use crate::http::headers::{
 use crate::http::{Request, RequestContext};
 use crate::net::address::Domain;
 use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
-use crate::net::stream::SocketInfo;
-use crate::service::{Context, Layer, Service};
+use crate::stream::SocketInfo;
+use crate::utils::macros::all_the_tuples_no_last_special_case;
+use crate::{Context, Layer, Service};
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -51,10 +52,11 @@ use std::marker::PhantomData;
 /// This example shows how you could expose the real Client IP using the [`X-Real-IP`][`crate::http::headers::XRealIp`] header.
 ///
 /// ```rust
-/// # use rama::{http::Request, net::stream::SocketInfo};
+/// # use rama::{http::Request, stream::SocketInfo};
 /// use rama::{
 ///     http::{headers::XRealIp, layer::forwarded::SetForwardedHeadersLayer},
-///     service::{Context, Service, Layer, service_fn},
+///     service::service_fn,
+///     Context, Service, Layer,
 /// };
 /// use std::convert::Infallible;
 ///
@@ -297,8 +299,7 @@ impl<S> SetForwardedHeadersService<S, XForwardedProto> {
 
 impl<S, H, State, Body> Service<State, Request<Body>> for SetForwardedHeadersService<S, H>
 where
-    S: Service<State, Request<Body>>,
-    S::Error: Into<BoxError>,
+    S: Service<State, Request<Body>, Error: Into<BoxError>>,
     H: ForwardHeader + Send + Sync + 'static,
     Body: Send + 'static,
     State: Send + Sync + 'static,
@@ -351,8 +352,7 @@ macro_rules! set_forwarded_service_for_tuple {
         impl<S, $($ty),* , State, Body> Service<State, Request<Body>> for SetForwardedHeadersService<S, ($($ty,)*)>
         where
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
-            S: Service<State, Request<Body>>,
-            S::Error: Into<BoxError>,
+            S: Service<State, Request<Body>, Error: Into<BoxError>>,
             Body: Send + 'static,
             State: Send + Sync + 'static,
         {
@@ -413,7 +413,8 @@ mod tests {
             headers::{TrueClientIp, XClientIp, XRealIp},
             IntoResponse, Response, StatusCode,
         },
-        service::{service_fn, Layer},
+        service::service_fn,
+        Layer,
     };
     use std::{convert::Infallible, net::IpAddr};
 

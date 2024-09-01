@@ -5,9 +5,10 @@ use rama::{
     cli::{service::echo::EchoServiceBuilder, tls::TlsServerCertKeyPair, ForwardKind},
     error::BoxError,
     http::{matcher::HttpMatcher, IntoResponse, Request, Response},
+    layer::HijackLayer,
     rt::Executor,
-    service::{layer::HijackLayer, Service},
     tcp::server::TcpListener,
+    Service,
 };
 
 use std::{convert::Infallible, time::Duration};
@@ -86,7 +87,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         })
         .ok();
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     let tcp_service = EchoServiceBuilder::new()
         .concurrent(cfg.concurrent)
@@ -126,7 +127,7 @@ impl Service<(), Request> for AcmeService {
 
     async fn serve(
         &self,
-        _ctx: rama::service::Context<()>,
+        _ctx: rama::Context<()>,
         _req: Request,
     ) -> Result<Self::Response, Self::Error> {
         Ok(self.0.clone().into_response())

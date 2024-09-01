@@ -1,7 +1,8 @@
 use crate::http::dep::http_body_util::BodyExt;
 use crate::http::service::web::extract::FromRequest;
 use crate::http::Request;
-use crate::service::Context;
+use crate::utils::macros::{define_http_rejection, impl_deref};
+use crate::Context;
 
 /// Extractor to get the response body, collected as [`Bytes`].
 ///
@@ -11,7 +12,7 @@ pub struct Bytes(pub bytes::Bytes);
 
 impl_deref!(Bytes: bytes::Bytes);
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = BAD_REQUEST]
     #[body = "Request Body failed to be collected as Bytes"]
     /// Rejection type used when the [`Bytes`] extractor fails to collect the request body.

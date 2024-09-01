@@ -7,7 +7,8 @@ use crate::{
         headers::{Header, HeaderMapExt},
         HeaderMap, HeaderName, HeaderValue,
     },
-    net::{address::Authority, stream::Stream},
+    net::address::Authority,
+    stream::Stream,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -15,17 +16,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 /// Connector for HTTP proxies.
 ///
 /// Used to connect as a client to a HTTP proxy server.
-pub(super) struct HttpProxyConnector {
+pub(super) struct InnerHttpProxyConnector {
     authority: Authority,
     headers: Option<HeaderMap>,
 }
 
-// TODO: investigate if we want to have layer support?
-// Just for response or both? Or just a response headerMap callback?
-// Or nothing?
-
-impl HttpProxyConnector {
-    /// Create a new [`HttpProxyConnector`] with the given authority.
+impl InnerHttpProxyConnector {
+    /// Create a new [`InnerHttpProxyConnector`] with the given authority.
     pub(super) fn new(authority: Authority) -> Self {
         Self {
             authority,

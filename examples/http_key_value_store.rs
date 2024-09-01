@@ -67,7 +67,7 @@ use rama::{
         IntoResponse, Method, StatusCode,
     },
     rt::Executor,
-    service::Layer,
+    Layer,
 };
 use serde::Deserialize;
 use serde_json::json;

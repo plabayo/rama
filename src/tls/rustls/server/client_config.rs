@@ -84,8 +84,8 @@ impl<F> TlsClientConfigHandler<F> {
     /// Consumes the handler and returns a new [`TlsClientConfigHandler`] which stores
     /// the client (TLS) config in the [`Context`]'s [`Extensions`].
     ///
-    /// [`Context`]: crate::service::Context
-    /// [`Extensions`]: crate::service::context::Extensions
+    /// [`Context`]: crate::Context
+    /// [`Extensions`]: crate::context::Extensions
     pub fn store_client_hello(self) -> Self {
         Self {
             store_client_hello: true,

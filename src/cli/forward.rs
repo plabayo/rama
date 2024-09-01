@@ -1,6 +1,6 @@
-use std::str::FromStr;
-
 use crate::error::OpaqueError;
+use crate::utils::macros::match_ignore_ascii_case_str;
+use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Kind of fowarder to use, to help you forward the client Ip information.

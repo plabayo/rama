@@ -7,10 +7,10 @@ sort:
 lint: fmt sort
 
 check:
-	cargo check --all --all-targets --features=full
+	cargo check --workspace --all-targets --features=full
 
 clippy:
-	cargo clippy --all --all-targets --features=full
+	cargo clippy --workspace --all-targets --features=full
 
 clippy-fix:
 	cargo clippy --fix

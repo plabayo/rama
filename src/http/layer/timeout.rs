@@ -5,7 +5,7 @@
 //!
 //! # Differences from `rama::service::layer::Timeout`
 //!
-//! The generic [`Timeout`](crate::service::layer::timeout::Timeout) middleware uses an error to signal timeout, i.e.
+//! The generic [`Timeout`](crate::layer::timeout::Timeout) middleware uses an error to signal timeout, i.e.
 //! it changes the error type to [`BoxError`](crate::error::BoxError). For HTTP services that is rarely
 //! what you want as returning errors will terminate the connection without sending a response.
 //!
@@ -18,7 +18,8 @@
 //! ```
 //! use std::{convert::Infallible, time::Duration};
 //!
-//! use rama::service::{Layer, service_fn};
+//! use rama::Layer;
+//! use rama::service::service_fn;
 //! use rama::http::{Body, Request, Response};
 //! use rama::http::layer::timeout::TimeoutLayer;
 //! use rama::error::BoxError;
@@ -44,7 +45,8 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::http::{Request, Response, StatusCode};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 
 /// Layer that applies the [`Timeout`] middleware which apply a timeout to requests.
 ///

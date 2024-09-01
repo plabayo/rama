@@ -40,7 +40,7 @@ use rama::http::matcher::HttpMatcher;
 use rama::http::response::Html;
 use rama::http::service::web::{extract::Form, WebService};
 use rama::http::{IntoResponse, Response};
-use rama::service::Layer;
+use rama::Layer;
 use rama::{http::server::HttpServer, rt::Executor};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
@@ -65,7 +65,7 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(|guard| async move {
         let exec = Executor::graceful(guard.clone());

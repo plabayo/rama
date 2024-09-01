@@ -1,9 +1,10 @@
 //! IP '[`Service`] that echos the client IP either over http or directly over tcp.
 //!
-//! [`Service`]: crate::service::Service
+//! [`Service`]: crate::Service
 
 use crate::{
     cli::ForwardKind,
+    combinators::Either7,
     error::{BoxError, OpaqueError},
     http::{
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
@@ -14,18 +15,13 @@ use crate::{
         server::HttpServer,
         IntoResponse, Request, Response, StatusCode,
     },
-    net::{
-        forwarded::Forwarded,
-        stream::{layer::http::BodyLimitLayer, SocketInfo, Stream},
-    },
+    layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
+    net::forwarded::Forwarded,
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
-    service::{
-        layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
-        Context, Layer, Service,
-    },
+    stream::{layer::http::BodyLimitLayer, SocketInfo, Stream},
     ua::UserAgentClassifierLayer,
-    utils::combinators::Either7,
+    Context, Layer, Service,
 };
 use std::{convert::Infallible, marker::PhantomData, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpStream};

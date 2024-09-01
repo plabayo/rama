@@ -1,4 +1,4 @@
-use rama_macros::AsRef;
+use rama::context::AsRef;
 
 #[derive(AsRef)]
 struct AppState {

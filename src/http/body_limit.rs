@@ -3,8 +3,8 @@
 /// It is for example used by the [`BodyLimitLayer`] to add this to the request [`Context`],
 /// such that http services used can apply the limit when found in that [`Context`].
 ///
-/// [`Context`]: crate::service::Context`
-/// [`BodyLimitLayer`]: crate::service::layer::http::BodyLimitLayer
+/// [`Context`]: crate::Context`
+/// [`BodyLimitLayer`]: crate::http::layer::body_limit::BodyLimitLayer
 #[derive(Debug, Clone, Copy)]
 pub struct BodyLimit {
     kind: Option<BodyLimitKind>,

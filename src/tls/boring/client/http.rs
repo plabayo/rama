@@ -1,10 +1,10 @@
 use crate::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
-use crate::net::client::{ClientConnection, EstablishedClientConnection};
-use crate::net::stream::Stream;
-use crate::net::transport::TryRefIntoTransportContext;
-use crate::service::Layer;
-use crate::service::{Context, Service};
+use crate::net::client::{ConnectorService, EstablishedClientConnection};
+use crate::stream::transport::TryRefIntoTransportContext;
+use crate::stream::Stream;
 use crate::tls::HttpsTunnel;
+use crate::Layer;
+use crate::{Context, Service};
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use std::fmt;
@@ -136,16 +136,15 @@ impl<S> HttpsConnector<S, ConnectorKindTunnel> {
 
 /// this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
 
-impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindAuto>
+impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindAuto>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<T>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -153,10 +152,12 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
-
-        let (addr, stream) = conn.into_parts();
+        let EstablishedClientConnection {
+            mut ctx,
+            req,
+            conn,
+            addr,
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -171,47 +172,48 @@ where
             .map(|p| p.is_secure())
             .unwrap_or_default()
         {
-            tracing::trace!(authority = %transport_ctx.authority, "HttpsConnector(auto): protocol not secure, return inner connection");
+            tracing::trace!(
+                authority = %transport_ctx.authority,
+                "HttpsConnector(auto): protocol not secure, return inner connection",
+            );
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: ClientConnection::new(
-                    addr,
-                    AutoTlsStream {
-                        inner: AutoTlsStreamData::Plain { inner: stream },
-                    },
-                ),
+                conn: AutoTlsStream {
+                    inner: AutoTlsStreamData::Plain { inner: conn },
+                },
+                addr,
             });
         }
 
         let host = transport_ctx.authority.host().to_string();
 
-        let stream = self.handshake(host, stream).await?;
+        let stream = self.handshake(host, conn).await?;
 
-        tracing::trace!(authority = %transport_ctx.authority, "HttpsConnector(auto): protocol secure, established tls connection");
+        tracing::trace!(
+            authority = %transport_ctx.authority,
+            "HttpsConnector(auto): protocol secure, established tls connection",
+        );
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: ClientConnection::new(
-                addr,
-                AutoTlsStream {
-                    inner: AutoTlsStreamData::Secure { inner: stream },
-                },
-            ),
+            conn: AutoTlsStream {
+                inner: AutoTlsStreamData::Secure { inner: stream },
+            },
+            addr,
         })
     }
 }
 
-impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindSecure>
+impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindSecure>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + 'static,
 {
-    type Response = EstablishedClientConnection<SslStream<T>, State, Request>;
+    type Response = EstablishedClientConnection<SslStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -219,10 +221,12 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { mut ctx, req, conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
-
-        let (addr, stream) = conn.into_parts();
+        let EstablishedClientConnection {
+            mut ctx,
+            req,
+            conn,
+            addr,
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -230,29 +234,31 @@ where
                 OpaqueError::from_boxed(err.into())
                     .context("HttpsConnector(auto): compute transport context")
             })?;
-        tracing::trace!(authority = %transport_ctx.authority, "HttpsConnector(secure): attempt to secure inner connection");
+        tracing::trace!(
+            authority = %transport_ctx.authority,
+            "HttpsConnector(secure): attempt to secure inner connection",
+        );
 
         let host = transport_ctx.authority.host().to_string();
 
-        let stream = self.handshake(host, stream).await?;
+        let conn = self.handshake(host, conn).await?;
 
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: ClientConnection::new(addr, stream),
+            conn,
+            addr,
         })
     }
 }
 
-impl<S, State, Request, T> Service<State, Request> for HttpsConnector<S, ConnectorKindTunnel>
+impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindTunnel>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    T: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Send + Sync + 'static,
     Request: Send + 'static,
 {
-    type Response = EstablishedClientConnection<AutoTlsStream<T>, State, Request>;
+    type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -260,10 +266,12 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.inner.serve(ctx, req).await.map_err(Into::into)?;
-
-        let (addr, stream) = conn.into_parts();
+        let EstablishedClientConnection {
+            ctx,
+            req,
+            conn,
+            addr,
+        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let host = match ctx.get::<HttpsTunnel>() {
             Some(tunnel) => tunnel.server_name.clone(),
@@ -274,28 +282,24 @@ where
                 return Ok(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: ClientConnection::new(
-                        addr,
-                        AutoTlsStream {
-                            inner: AutoTlsStreamData::Plain { inner: stream },
-                        },
-                    ),
+                    conn: AutoTlsStream {
+                        inner: AutoTlsStreamData::Plain { inner: conn },
+                    },
+                    addr,
                 });
             }
         };
 
-        let stream = self.handshake(host, stream).await?;
+        let stream = self.handshake(host, conn).await?;
 
         tracing::trace!("HttpsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: ClientConnection::new(
-                addr,
-                AutoTlsStream {
-                    inner: AutoTlsStreamData::Secure { inner: stream },
-                },
-            ),
+            conn: AutoTlsStream {
+                inner: AutoTlsStreamData::Secure { inner: stream },
+            },
+            addr,
         })
     }
 }

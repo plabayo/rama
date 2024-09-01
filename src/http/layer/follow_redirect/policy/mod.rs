@@ -19,7 +19,7 @@ pub use self::{
 };
 use crate::{
     http::{Request, Scheme, StatusCode, Uri},
-    service::Context,
+    Context,
 };
 
 /// Trait for the policy on handling redirection responses.
@@ -34,7 +34,7 @@ use crate::{
 ///
 /// ```
 /// use std::collections::HashSet;
-/// use rama::service::Context;
+/// use rama::Context;
 /// use rama::http::{Request, Uri};
 /// use rama::http::layer::follow_redirect::policy::{Action, Attempt, Policy};
 ///

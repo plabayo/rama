@@ -1,5 +1,6 @@
 use super::{IntoResponseParts, Response, ResponseParts};
 use crate::http::dep::mime;
+use crate::utils::macros::all_the_tuples_no_last_special_case;
 use crate::{error::BoxError, http::Body};
 use bytes::{buf::Chain, Buf, Bytes, BytesMut};
 use http::{
@@ -87,8 +88,7 @@ where
 
 impl<B> IntoResponse for Response<B>
 where
-    B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    B::Error: Into<BoxError>,
+    B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     fn into_response(self) -> Response {
         self.map(Body::new)
@@ -289,10 +289,8 @@ impl IntoResponse for Extensions {
 
 impl<K, V, const N: usize> IntoResponse for [(K, V); N]
 where
-    K: TryInto<HeaderName>,
-    K::Error: fmt::Display,
-    V: TryInto<HeaderValue>,
-    V::Error: fmt::Display,
+    K: TryInto<HeaderName, Error: fmt::Display>,
+    V: TryInto<HeaderValue, Error: fmt::Display>,
 {
     fn into_response(self) -> Response {
         (self, ()).into_response()

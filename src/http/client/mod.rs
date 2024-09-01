@@ -3,20 +3,15 @@
 
 use crate::{
     error::BoxError,
-    http::{
-        dep::http::uri::PathAndQuery,
-        header::HOST,
-        headers::{self, HeaderMapExt},
-        Request, RequestContext, Response, Version,
-    },
-    net::{address::ProxyAddress, client::EstablishedClientConnection, stream::Stream},
-    service::{Context, Service},
+    http::{dep::http_body, Request, Response},
+    net::client::{ConnectorService, EstablishedClientConnection},
+    proxy::http::client::layer::HttpProxyConnector,
     tcp::client::service::TcpConnector,
-    tls::rustls::client::{AutoTlsStream, HttpsConnector},
+    tls::rustls::{client::HttpsConnector, dep::rustls::ClientConfig}, // TODO: use default backend
+    Context,
+    Service,
 };
-use hyper_util::rt::TokioIo;
-use std::fmt;
-use tokio::net::TcpStream;
+use std::sync::Arc;
 
 mod error;
 #[doc(inline)]
@@ -26,193 +21,80 @@ mod ext;
 #[doc(inline)]
 pub use ext::{HttpClientExt, IntoUrl, RequestBuilder};
 
-/// An http client that can be used to serve HTTP requests.
+mod svc;
+#[doc(inline)]
+pub use svc::HttpClientService;
+
+mod conn;
+#[doc(inline)]
+pub use conn::{HttpConnector, HttpConnectorLayer};
+
+#[derive(Debug, Clone, Default)]
+/// An opiniated http client that can be used to serve HTTP requests.
 ///
-/// The underlying connections are established using the provided connection [`Service`],
-/// which is a [`Service`] that is expected to return as output an [`EstablishedClientConnection`].
-pub struct HttpClient<C, S> {
-    connector: C,
-    _phantom: std::marker::PhantomData<S>,
+/// You can fork this http client in case you have use cases not possible with this service example.
+/// E.g. perhaps you wish to have middleware in into outbound requests, after they
+/// passed through your "connector" setup. All this and more is possible by defining your own
+/// http client. Rama is here to empower you, the building blocks are there, go crazy
+/// with your own service fork and use the full power of Rust at your fingertips ;)
+pub struct HttpClient {
+    tls_config: Option<Arc<ClientConfig>>,
 }
 
-impl<C: fmt::Debug, S> fmt::Debug for HttpClient<C, S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpClient")
-            .field("connector", &self.connector)
-            .finish()
+impl HttpClient {
+    /// Create a new [`HttpClient`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the [`ClientConfig`] of this [`HttpClient`].
+    pub fn set_tls_config(&mut self, cfg: Arc<ClientConfig>) -> &mut Self {
+        self.tls_config = Some(cfg);
+        self
+    }
+
+    /// Replace this [`HttpClient`] with the [`ClientConfig`] set.
+    pub fn with_tls_config(mut self, cfg: Arc<ClientConfig>) -> Self {
+        self.tls_config = Some(cfg);
+        self
+    }
+
+    /// Replace this [`HttpClient`] with an option of [`ClientConfig`] set.
+    pub fn maybe_with_tls_config(mut self, cfg: Option<Arc<ClientConfig>>) -> Self {
+        self.tls_config = cfg;
+        self
     }
 }
 
-impl<C: Clone, S> Clone for HttpClient<C, S> {
-    fn clone(&self) -> Self {
-        Self {
-            connector: self.connector.clone(),
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<C, S> HttpClient<C, S> {
-    /// Create a new [`HttpClient`] using the specified connection [`Service`]
-    /// to establish connections to the server in the form of an [`EstablishedClientConnection`] as output.
-    pub const fn new(connector: C) -> Self {
-        Self {
-            connector,
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-impl Default for HttpClient<HttpsConnector<TcpConnector>, AutoTlsStream<TcpStream>> {
-    fn default() -> Self {
-        Self {
-            connector: HttpsConnector::auto(TcpConnector::default()),
-            _phantom: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<State, Body, C, S> Service<State, Request<Body>> for HttpClient<C, S>
+impl<State, Body> Service<State, Request<Body>> for HttpClient
 where
     State: Send + Sync + 'static,
-    Body: http_body::Body + Unpin + Send + 'static,
-    Body::Data: Send + 'static,
-    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    C: Service<
-        State,
-        Request<Body>,
-        Response = EstablishedClientConnection<S, State, Request<Body>>,
-    >,
-    C::Error: Into<BoxError>,
-    S: Stream + Sync + Unpin,
+    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Response = Response;
     type Error = HttpClientError;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
-        // sanitize subject line request uri
-        // because Hyper (http) writes the URI as-is
-        //
-        // Originally reported in and fixed for:
-        // <https://github.com/plabayo/rama/issues/250>
-        //
-        // TODO: fix this in hyper fork (embedded in rama http core)
-        // directly instead of here...
-        let req = sanitize_client_req_header(&mut ctx, req)?;
-
-        // clone the request uri for error reporting
         let uri = req.uri().clone();
 
-        let EstablishedClientConnection { ctx, req, conn } =
-            self.connector
-                .serve(ctx, req)
-                .await
-                .map_err(|err| HttpClientError::from_boxed(err.into()).with_uri(uri.clone()))?;
+        let connector = HttpConnector::new(
+            HttpsConnector::auto(HttpProxyConnector::optional(HttpsConnector::tunnel(
+                TcpConnector::new(),
+            )))
+            .maybe_with_config(self.tls_config.clone()),
+        );
 
-        let io = TokioIo::new(Box::pin(conn));
+        let EstablishedClientConnection { ctx, req, conn, .. } = connector
+            .connect(ctx, req)
+            .await
+            .map_err(|err| HttpClientError::from_boxed(err).with_uri(uri.clone()))?;
 
-        let resp = match req.version() {
-            Version::HTTP_2 => {
-                let executor = ctx.executor().clone();
-                let (mut sender, conn) = hyper::client::conn::http2::handshake(executor, io)
-                    .await
-                    .map_err(|err| HttpClientError::from_std(err).with_uri(uri.clone()))?;
-
-                ctx.spawn(async move {
-                    if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {:?}", err);
-                    }
-                });
-
-                sender
-                    .send_request(req)
-                    .await
-                    .map_err(|err: hyper::Error| HttpClientError::from_std(err).with_uri(uri))?
-            }
-            Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
-                let (mut sender, conn) = hyper::client::conn::http1::handshake(io)
-                    .await
-                    .map_err(|err| HttpClientError::from_std(err).with_uri(uri.clone()))?;
-
-                ctx.spawn(async move {
-                    if let Err(err) = conn.await {
-                        tracing::debug!("connection failed: {:?}", err);
-                    }
-                });
-
-                sender
-                    .send_request(req)
-                    .await
-                    .map_err(|err| HttpClientError::from_std(err).with_uri(uri))?
-            }
-            version => {
-                return Err(HttpClientError::from_display(format!(
-                    "unsupported Http version: {:?}",
-                    version
-                ))
-                .with_uri(uri));
-            }
-        };
-
-        let resp = resp.map(crate::http::Body::new);
-        Ok(resp)
+        conn.serve(ctx, req)
+            .await
+            .map_err(|err| HttpClientError::from_boxed(err).with_uri(uri))
     }
-}
-
-fn sanitize_client_req_header<S, B>(
-    ctx: &mut Context<S>,
-    req: Request<B>,
-) -> Result<Request<B>, HttpClientError> {
-    Ok(match req.method() {
-        &http::Method::CONNECT => {
-            // CONNECT
-            if req.uri().host().is_none() {
-                return Err(
-                    HttpClientError::from_display("missing host in CONNECT request")
-                        .with_uri(req.uri().clone()),
-                );
-            }
-            req
-        }
-        _ => {
-            // GET | HEAD | POST | PUT | DELETE | OPTIONS | TRACE | PATCH
-            if !ctx.contains::<ProxyAddress>()
-                && req.uri().host().is_some()
-                && req.version() <= Version::HTTP_11
-            {
-                // ensure request context is defined prior to doing this, as otherwise we can get issues
-                let _ = ctx
-                    .get_or_try_insert_with_ctx::<RequestContext, _>(|ctx| (ctx, &req).try_into())
-                    .map_err(HttpClientError::from_std)?;
-
-                tracing::trace!(
-                    "remove authority and scheme from non-connect direct http(~1) request"
-                );
-                let (mut parts, body) = req.into_parts();
-                let mut uri_parts = parts.uri.into_parts();
-                uri_parts.scheme = None;
-                let authority = uri_parts
-                    .authority
-                    .take()
-                    .expect("to exist due to our host existence test");
-                if uri_parts.path_and_query.as_ref().map(|pq| pq.as_str()) == Some("/") {
-                    uri_parts.path_and_query = Some(PathAndQuery::from_static("/"));
-                }
-
-                if !parts.headers.contains_key(HOST) {
-                    parts.headers.typed_insert(headers::Host::from(authority));
-                }
-
-                parts.uri =
-                    crate::http::Uri::from_parts(uri_parts).map_err(HttpClientError::from_std)?;
-                Request::from_parts(parts, body)
-            } else {
-                req
-            }
-        }
-    })
 }

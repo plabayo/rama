@@ -2,11 +2,13 @@
 
 use super::hyper_conn::HyperConnServer;
 use super::HttpServeResult;
+use crate::graceful::ShutdownGuard;
+use crate::http::executor::HyperExecutor;
 use crate::http::{IntoResponse, Request};
-use crate::net::stream::Stream;
 use crate::rt::Executor;
-use crate::service::{Context, Service};
+use crate::stream::Stream;
 use crate::tcp::server::TcpListener;
+use crate::{Context, Service};
 use hyper::server::conn::http2::Builder as H2ConnBuilder;
 use hyper::{rt::Timer, server::conn::http1::Builder as Http1ConnBuilder};
 use hyper_util::server::conn::auto::Builder as AutoConnBuilder;
@@ -18,13 +20,12 @@ use std::future::Future;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::net::ToSocketAddrs;
-use tokio_graceful::ShutdownGuard;
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
 ///
 /// Supported Protocols: HTTP/1, H2, Auto (HTTP/1 + H2)
 ///
-/// [`Service`]: crate::service::Service
+/// [`Service`]: crate::Service
 pub struct HttpServer<B> {
     builder: B,
 }
@@ -184,11 +185,11 @@ impl<'a> Http1Config<'a> {
     }
 }
 
-impl HttpServer<H2ConnBuilder<Executor>> {
+impl HttpServer<H2ConnBuilder<HyperExecutor>> {
     /// Create a new h2 `Builder` with default settings.
     pub fn h2(exec: Executor) -> Self {
         Self {
-            builder: H2ConnBuilder::new(exec),
+            builder: H2ConnBuilder::new(HyperExecutor(exec)),
         }
     }
 }
@@ -329,11 +330,11 @@ impl<'a, E> H2Config<'a, E> {
     }
 }
 
-impl HttpServer<AutoConnBuilder<Executor>> {
+impl HttpServer<AutoConnBuilder<HyperExecutor>> {
     /// Create a new dual http/1.1 + h2 `Builder` with default settings.
     pub fn auto(exec: Executor) -> Self {
         Self {
-            builder: AutoConnBuilder::new(exec),
+            builder: AutoConnBuilder::new(HyperExecutor(exec)),
         }
     }
 }
@@ -659,7 +660,7 @@ where
     /// Same as [`Self::listen`], but it will respect the given [`ShutdownGuard`],
     /// and also pass it to the service.
     ///
-    /// [`ShutdownGuard`]: crate::utils::graceful::ShutdownGuard
+    /// [`ShutdownGuard`]: crate::graceful::ShutdownGuard
     pub async fn listen_graceful<S, Response, A>(
         self,
         guard: ShutdownGuard,
@@ -682,8 +683,8 @@ where
     ///
     /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
     ///
-    /// [`Service`]: crate::service::Service
-    /// [`Context`]: crate::service::Context
+    /// [`Service`]: crate::Service
+    /// [`Context`]: crate::Context
     pub async fn listen_with_state<State, S, Response, A>(
         self,
         state: State,
@@ -708,8 +709,8 @@ where
     ///
     /// Same as [`Self::listen_graceful`], but including the given state in the [`Service`]'s [`Context`].
     ///
-    /// [`Service`]: crate::service::Service
-    /// [`Context`]: crate::service::Context
+    /// [`Service`]: crate::Service
+    /// [`Context`]: crate::Context
     pub async fn listen_graceful_with_state<State, S, Response, A>(
         self,
         guard: ShutdownGuard,

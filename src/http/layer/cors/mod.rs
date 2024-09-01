@@ -8,7 +8,8 @@
 //!
 //! use rama::http::{Body, Request, Response, Method, header};
 //! use rama::http::layer::cors::{Any, CorsLayer};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //!
 //! async fn handle(request: Request) -> Result<Response, Infallible> {
 //!     Ok(Response::new(Body::default()))
@@ -49,7 +50,8 @@ use crate::http::dep::http::{
     header::{self, HeaderName},
     HeaderMap, HeaderValue, Method, Request, Response,
 };
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use bytes::{BufMut, BytesMut};
 use std::{array, fmt, mem};
 

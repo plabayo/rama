@@ -10,7 +10,8 @@ use crate::http::{
     header::{self, ACCEPT_ENCODING},
     Request, Response,
 };
-use crate::service::{Context, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Service};
 
 /// Decompresses response bodies of the underlying service.
 ///
@@ -106,9 +107,7 @@ where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     State: Send + Sync + 'static,
     ReqBody: Send + 'static,
-    ResBody: Body + Send + 'static,
-    ResBody::Data: Send + 'static,
-    ResBody::Error: Send + 'static,
+    ResBody: Body<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
 {
     type Response = Response<DecompressionBody<ResBody>>;
     type Error = S::Error;

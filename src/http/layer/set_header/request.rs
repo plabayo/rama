@@ -11,7 +11,8 @@
 //! ```
 //! use rama::http::layer::set_header::SetRequestHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -44,7 +45,8 @@
 //! ```
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use rama::http::layer::set_header::SetRequestHeaderLayer;
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -86,7 +88,8 @@ use crate::http::{
     headers::{Header, HeaderExt},
     Request, Response,
 };
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::fmt;
 
 /// Layer that applies [`SetRequestHeader`] which adds a request header.

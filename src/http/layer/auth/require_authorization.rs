@@ -9,7 +9,8 @@
 //!
 //! use rama::http::layer::validate_request::{ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer};
 //! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! async fn handle(request: Request) -> Result<Response, BoxError> {
@@ -61,7 +62,7 @@ use crate::http::{
     header::{self, HeaderValue},
     Request, Response, StatusCode,
 };
-use crate::service::Context;
+use crate::Context;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -265,7 +266,8 @@ mod tests {
     use crate::error::BoxError;
     use crate::http::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::http::{header, Body};
-    use crate::service::{service_fn, Context, Layer, Service};
+    use crate::service::service_fn;
+    use crate::{Context, Layer, Service};
 
     #[tokio::test]
     async fn valid_basic_token() {
