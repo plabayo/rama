@@ -172,8 +172,7 @@ macro_rules! impl_proxydb_either {
         impl<$($param),+> ProxyDB for crate::combinators::$id<$($param),+>
         where
             $(
-                $param: ProxyDB,
-                $param::Error: Into<BoxError>,
+                $param: ProxyDB<Error: Into<BoxError>>,
             )+
     {
         type Error = BoxError;

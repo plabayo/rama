@@ -298,8 +298,7 @@ impl<S> SetForwardedHeadersService<S, XForwardedProto> {
 
 impl<S, H, State, Body> Service<State, Request<Body>> for SetForwardedHeadersService<S, H>
 where
-    S: Service<State, Request<Body>>,
-    S::Error: Into<BoxError>,
+    S: Service<State, Request<Body>, Error: Into<BoxError>>,
     H: ForwardHeader + Send + Sync + 'static,
     Body: Send + 'static,
     State: Send + Sync + 'static,
@@ -352,8 +351,7 @@ macro_rules! set_forwarded_service_for_tuple {
         impl<S, $($ty),* , State, Body> Service<State, Request<Body>> for SetForwardedHeadersService<S, ($($ty,)*)>
         where
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
-            S: Service<State, Request<Body>>,
-            S::Error: Into<BoxError>,
+            S: Service<State, Request<Body>, Error: Into<BoxError>>,
             Body: Send + 'static,
             State: Send + Sync + 'static,
         {

@@ -184,8 +184,10 @@ fn map_internal_client_error<E, Body>(
 ) -> Result<Response, rama::error::BoxError>
 where
     E: Into<rama::error::BoxError>,
-    Body: rama::http::dep::http_body::Body<Data = bytes::Bytes> + Send + Sync + 'static,
-    Body::Error: Into<BoxError>,
+    Body: rama::http::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
+        + Send
+        + Sync
+        + 'static,
 {
     match result {
         Ok(response) => Ok(response.map(rama::http::Body::new)),

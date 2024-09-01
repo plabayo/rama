@@ -376,15 +376,14 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
 
 impl<S, D, P, F, State, Request> Service<State, Request> for ProxyDBService<S, D, P, F>
 where
-    S: Service<State, Request>,
-    S::Error: Into<BoxError> + Send + Sync + 'static,
-    D: ProxyDB,
-    D::Error: Into<BoxError> + Send + Sync + 'static,
+    S: Service<State, Request, Error: Into<BoxError> + Send + Sync + 'static>,
+    D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
     F: UsernameFormatter<State>,
     State: Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + 'static,
 {
     type Response = S::Response;
     type Error = BoxError;

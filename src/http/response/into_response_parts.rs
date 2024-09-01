@@ -137,10 +137,8 @@ impl IntoResponseParts for HeaderMap {
 
 impl<K, V, const N: usize> IntoResponseParts for [(K, V); N]
 where
-    K: TryInto<HeaderName>,
-    K::Error: fmt::Display,
-    V: TryInto<HeaderValue>,
-    V::Error: fmt::Display,
+    K: TryInto<HeaderName, Error: fmt::Display>,
+    V: TryInto<HeaderValue, Error: fmt::Display>,
 {
     type Error = TryIntoHeaderError<K::Error, V::Error>;
 

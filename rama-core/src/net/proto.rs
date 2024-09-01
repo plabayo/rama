@@ -2,8 +2,8 @@ use std::borrow::Cow;
 use std::cmp::min;
 use std::str::FromStr;
 
-use crate::__eq_ignore_ascii_case as eq_ignore_ascii_case;
 use crate::error::{ErrorContext, OpaqueError};
+use crate::utils::macros::str::eq_ignore_ascii_case;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Web protocols that are relevant to Rama.

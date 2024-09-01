@@ -47,9 +47,7 @@ where
 
 impl<S, State, Request> Service<State, Request> for OutgoingBytesTrackerService<S>
 where
-    S: ConnectorService<State, Request>,
-    S::Connection: Stream + Unpin,
-    S::Error: Send + Sync + 'static,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Send + Sync + 'static>,
     State: Send + Sync + 'static,
     Request: Send + 'static,
 {

@@ -88,13 +88,17 @@ impl Default for HttpClient<HttpConnector<HttpsConnector<TcpConnector>>, ()> {
 impl<State, Body, C, L> Service<State, Request<Body>> for HttpClient<C, L>
 where
     State: Send + Sync + 'static,
-    Body: http_body::Body + Unpin + Send + 'static,
-    Body::Data: Send + 'static,
-    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    Body: http_body::Body<Data: Send + 'static, Error: Into<Box<dyn std::error::Error + Send + Sync>>>
+        + Unpin
+        + Send
+        + 'static,
     C: ConnectorService<State, Request<Body>>,
-    L: Layer<C::Connection> + Send + Sync + 'static,
-    L::Service: Service<State, Request<Body>, Response = Response>,
-    <L::Service as Service<State, Request<Body>>>::Error: Into<BoxError>,
+    L: Layer<
+            C::Connection,
+            Service: Service<State, Request<Body>, Response = Response, Error: Into<BoxError>>,
+        > + Send
+        + Sync
+        + 'static,
 {
     type Response = Response;
     type Error = HttpClientError;

@@ -149,9 +149,7 @@ impl<S> ErrorHandler<S> {
 
 impl<S, State, Body> Service<State, Request<Body>> for ErrorHandler<S, ()>
 where
-    S: Service<State, Request<Body>>,
-    S::Response: IntoResponse,
-    S::Error: IntoResponse,
+    S: Service<State, Request<Body>, Response: IntoResponse, Error: IntoResponse>,
     State: Send + Sync + 'static,
     Body: Send + 'static,
 {
@@ -172,8 +170,7 @@ where
 
 impl<S, F, R, State, Body> Service<State, Request<Body>> for ErrorHandler<S, F>
 where
-    S: Service<State, Request<Body>>,
-    S::Response: IntoResponse,
+    S: Service<State, Request<Body>, Response: IntoResponse>,
     F: Fn(S::Error) -> R + Clone + Send + Sync + 'static,
     R: IntoResponse + 'static,
     State: Send + Sync + 'static,

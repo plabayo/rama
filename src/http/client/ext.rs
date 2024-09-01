@@ -101,8 +101,7 @@ pub trait HttpClientExt<State>:
 
 impl<State, S, Body> HttpClientExt<State> for S
 where
-    S: Service<State, Request, Response = Response<Body>>,
-    S::Error: Into<BoxError>,
+    S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
 {
     type ExecuteResponse = Response<Body>;
     type ExecuteError = S::Error;
@@ -348,10 +347,8 @@ mod private {
 
     pub trait HttpClientExtSealed<State> {}
 
-    impl<State, S, Body> HttpClientExtSealed<State> for S
-    where
-        S: Service<State, Request, Response = Response<Body>>,
-        S::Error: Into<BoxError>,
+    impl<State, S, Body> HttpClientExtSealed<State> for S where
+        S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>
     {
     }
 }
@@ -386,8 +383,7 @@ enum RequestBuilderState {
 
 impl<'a, S, State, Body> RequestBuilder<'a, S, State, Response<Body>>
 where
-    S: Service<State, Request, Response = Response<Body>>,
-    S::Error: Into<BoxError>,
+    S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
 {
     /// Add a `Header` to this [`Request`].
     pub fn header<K, V>(mut self, key: K, value: V) -> Self
@@ -497,8 +493,7 @@ where
     /// [`Body`]: crate::http::Body
     pub fn body<T>(mut self, body: T) -> Self
     where
-        T: TryInto<crate::http::Body>,
-        T::Error: Into<BoxError>,
+        T: TryInto<crate::http::Body, Error: Into<BoxError>>,
     {
         self.state = match self.state {
             RequestBuilderState::PreBody(builder) => match body.try_into() {
@@ -695,9 +690,9 @@ mod test {
     ) -> Result<Response, Infallible>
     where
         S: Send + Sync + 'static,
-        Body: crate::http::dep::http_body::Body + Send + 'static,
-        Body::Data: Send + 'static,
-        Body::Error: Send + 'static,
+        Body: crate::http::dep::http_body::Body<Data: Send + 'static, Error: Send + 'static>
+            + Send
+            + 'static,
     {
         let ua = request
             .headers()
@@ -720,8 +715,10 @@ mod test {
     ) -> Result<Response, crate::error::BoxError>
     where
         E: Into<crate::error::BoxError>,
-        Body: crate::http::dep::http_body::Body<Data = bytes::Bytes> + Send + Sync + 'static,
-        Body::Error: Into<BoxError>,
+        Body: crate::http::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
+            + Send
+            + Sync
+            + 'static,
     {
         match result {
             Ok(response) => Ok(response.map(crate::http::Body::new)),

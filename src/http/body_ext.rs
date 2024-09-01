@@ -17,9 +17,9 @@ pub trait BodyExtractExt: private::Sealed {
 
 impl<Body> BodyExtractExt for crate::http::Response<Body>
 where
-    Body: crate::http::dep::http_body::Body + Send + 'static,
-    Body::Data: Send + 'static,
-    Body::Error: Into<BoxError>,
+    Body: crate::http::dep::http_body::Body<Data: Send + 'static, Error: Into<BoxError>>
+        + Send
+        + 'static,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,
@@ -46,9 +46,9 @@ where
 
 impl<Body> BodyExtractExt for crate::http::Request<Body>
 where
-    Body: crate::http::dep::http_body::Body + Send + 'static,
-    Body::Data: Send + 'static,
-    Body::Error: Into<BoxError>,
+    Body: crate::http::dep::http_body::Body<Data: Send + 'static, Error: Into<BoxError>>
+        + Send
+        + 'static,
 {
     async fn try_into_json<T: serde::de::DeserializeOwned + Send + 'static>(
         self,

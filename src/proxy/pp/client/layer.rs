@@ -208,9 +208,7 @@ impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
 
 impl<S, P, State, Request> Service<State, Request> for HaProxyService<S, P, version::One>
 where
-    S: ConnectorService<State, Request>,
-    S::Connection: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     P: Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
@@ -268,8 +266,12 @@ where
 
 impl<S, P, State, Request, T> Service<State, Request> for HaProxyService<S, P, version::Two>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    S::Error: Into<BoxError>,
+    S: Service<
+        State,
+        Request,
+        Response = EstablishedClientConnection<T, State, Request>,
+        Error: Into<BoxError>,
+    >,
     P: protocol::Protocol + Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,

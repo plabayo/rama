@@ -49,10 +49,8 @@ impl_deref!(AppendHeaders);
 impl<I, K, V> IntoResponse for AppendHeaders<I>
 where
     I: IntoIterator<Item = (K, V)>,
-    K: TryInto<HeaderName>,
-    K::Error: fmt::Display,
-    V: TryInto<HeaderValue>,
-    V::Error: fmt::Display,
+    K: TryInto<HeaderName, Error: fmt::Display>,
+    V: TryInto<HeaderValue, Error: fmt::Display>,
 {
     fn into_response(self) -> Response {
         (self, ()).into_response()
@@ -62,10 +60,8 @@ where
 impl<I, K, V> IntoResponseParts for AppendHeaders<I>
 where
     I: IntoIterator<Item = (K, V)>,
-    K: TryInto<HeaderName>,
-    K::Error: fmt::Display,
-    V: TryInto<HeaderValue>,
-    V::Error: fmt::Display,
+    K: TryInto<HeaderName, Error: fmt::Display>,
+    V: TryInto<HeaderValue, Error: fmt::Display>,
 {
     type Error = TryIntoHeaderError<K::Error, V::Error>;
 

@@ -61,9 +61,7 @@ impl<S, H, M> HijackService<S, H, M> {
 impl<S, H, M, State, Request> Service<State, Request> for HijackService<S, H, M>
 where
     S: Service<State, Request>,
-    H: Service<State, Request>,
-    <H as Service<State, Request>>::Response: Into<S::Response>,
-    <H as Service<State, Request>>::Error: Into<S::Error>,
+    H: Service<State, Request, Response: Into<S::Response>, Error: Into<S::Error>>,
     M: Matcher<State, Request>,
     State: Send + Sync + 'static,
     Request: Send + 'static,

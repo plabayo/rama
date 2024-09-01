@@ -222,8 +222,7 @@ impl<S> Context<S> {
     /// this is spawned gracefully in case a shutdown guard has been registered.
     pub fn spawn<F>(&self, future: F) -> JoinHandle<F::Output>
     where
-        F: Future + Send + 'static,
-        F::Output: Send + 'static,
+        F: Future<Output: Send + 'static> + Send + 'static,
     {
         self.executor.spawn_task(future)
     }

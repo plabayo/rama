@@ -111,12 +111,9 @@ impl std::error::Error for RetryError {
 impl<P, S, State, Body> Service<State, Request<Body>> for Retry<P, S>
 where
     P: Policy<State, S::Response, S::Error>,
-    S: Service<State, Request<RetryBody>>,
-    S::Error: Into<BoxError>,
+    S: Service<State, Request<RetryBody>, Error: Into<BoxError>>,
     State: Send + Sync + 'static,
-    Body: HttpBody + Send + 'static,
-    Body::Data: Send + 'static,
-    Body::Error: Into<BoxError>,
+    Body: HttpBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
     type Response = S::Response;
     type Error = RetryError;

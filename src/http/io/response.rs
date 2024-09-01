@@ -17,8 +17,7 @@ pub async fn write_http_response<W, B>(
 ) -> Result<Response, BoxError>
 where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
-    B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    B::Error: Into<BoxError>,
+    B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     let (parts, body) = res.into_parts();
 

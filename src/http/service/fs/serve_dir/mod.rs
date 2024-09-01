@@ -1,3 +1,4 @@
+use crate::error::BoxError;
 use crate::http::dep::http_body::Body as HttpBody;
 use crate::http::layer::{
     set_status::SetStatus,
@@ -481,8 +482,7 @@ impl<F> ServeDir<F> {
         State: Send + Sync + 'static,
         F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible>
             + Clone,
-        FResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-        FResBody::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+        FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         if req.method() != Method::GET && req.method() != Method::HEAD {
             if self.call_fallback_on_method_not_allowed {
@@ -561,8 +561,7 @@ where
     State: Send + Sync + 'static,
     ReqBody: Send + 'static,
     F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
-    FResBody: HttpBody<Data = Bytes> + Send + Sync + 'static,
-    FResBody::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    FResBody: HttpBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = Infallible;

@@ -158,8 +158,7 @@ macro_rules! impl_service_either {
         impl<$($param),+, State, Request, Response> Service<State, Request> for crate::combinators::$id<$($param),+>
         where
             $(
-                $param: Service<State, Request, Response = Response>,
-                $param::Error: Into<BoxError>,
+                $param: Service<State, Request, Response = Response, Error: Into<BoxError>>,
             )+
             Request: Send + 'static,
             State: Send + Sync + 'static,

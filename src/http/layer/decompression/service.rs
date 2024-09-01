@@ -107,9 +107,7 @@ where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     State: Send + Sync + 'static,
     ReqBody: Send + 'static,
-    ResBody: Body + Send + 'static,
-    ResBody::Data: Send + 'static,
-    ResBody::Error: Send + 'static,
+    ResBody: Body<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
 {
     type Response = Response<DecompressionBody<ResBody>>;
     type Error = S::Error;

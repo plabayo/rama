@@ -67,8 +67,8 @@ where
     S: Service<
         State,
         tokio::io::Join<ChainReader<HeapReader, tokio::io::ReadHalf<IO>>, tokio::io::WriteHalf<IO>>,
+        Error: Into<BoxError>,
     >,
-    S::Error: Into<BoxError>,
     IO: Stream + Unpin,
 {
     type Response = S::Response;

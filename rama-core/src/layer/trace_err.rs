@@ -58,8 +58,7 @@ impl<S> TraceErr<S> {
 impl<S, State, Request> Service<State, Request> for TraceErr<S>
 where
     Request: Send + 'static,
-    S: Service<State, Request>,
-    S::Error: std::fmt::Display + Send + Sync + 'static,
+    S: Service<State, Request, Error: std::fmt::Display + Send + Sync + 'static>,
     State: Send + Sync + 'static,
 {
     type Response = S::Response;

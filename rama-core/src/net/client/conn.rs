@@ -62,8 +62,12 @@ pub trait ConnectorService<State, Request>: Send + Sync + 'static {
 
 impl<S, State, Request, Connection> ConnectorService<State, Request> for S
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<Connection, State, Request>>,
-    S::Error: Into<BoxError>,
+    S: Service<
+        State,
+        Request,
+        Response = EstablishedClientConnection<Connection, State, Request>,
+        Error: Into<BoxError>,
+    >,
 {
     type Connection = Connection;
     type Error = S::Error;

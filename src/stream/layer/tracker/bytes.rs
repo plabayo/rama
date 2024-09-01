@@ -19,9 +19,8 @@ use std::{
     task::{Context, Poll},
 };
 
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-
 use pin_project_lite::pin_project;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
 pin_project! {
     /// A wrapper around a [`AsyncRead`] and/or [`AsyncWrite`] that tracks the number

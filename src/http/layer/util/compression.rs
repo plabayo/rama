@@ -157,8 +157,7 @@ impl<M: DecorateAsyncRead> WrapBody<M> {
 
 impl<B, M> Body for WrapBody<M>
 where
-    B: Body,
-    B::Error: Into<BoxError>,
+    B: Body<Error: Into<BoxError>>,
     M: DecorateAsyncRead<Input = AsyncReadBody<B>>,
 {
     type Data = Bytes;

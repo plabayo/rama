@@ -172,8 +172,7 @@ impl<S: Clone> Clone for RequestMetricsService<S> {
 
 impl<S, State, Body> Service<State, Request<Body>> for RequestMetricsService<S>
 where
-    S: Service<State, Request<Body>>,
-    S::Response: IntoResponse,
+    S: Service<State, Request<Body>, Response: IntoResponse>,
     State: Send + Sync + 'static,
     Body: Send + 'static,
 {

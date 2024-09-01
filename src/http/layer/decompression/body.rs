@@ -112,8 +112,7 @@ impl<B: Body> BodyInner<B> {
 
 impl<B> Body for DecompressionBody<B>
 where
-    B: Body,
-    B::Error: Into<BoxError>,
+    B: Body<Error: Into<BoxError>>,
 {
     type Data = Bytes;
     type Error = BoxError;

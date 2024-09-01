@@ -138,12 +138,18 @@ impl<S, T, C, L> Service<S, T> for Forwarder<C, L>
 where
     S: Send + Sync + 'static,
     T: Stream + Unpin,
-    C: ConnectorService<S, crate::tcp::client::Request>,
-    C::Connection: Stream + Unpin,
-    C::Error: Into<BoxError>,
-    L: Layer<ForwarderService<C::Connection>> + Send + Sync + 'static,
-    L::Service: Service<S, T, Response = ()>,
-    <L::Service as Service<S, T>>::Error: Into<BoxError>,
+    C: ConnectorService<
+        S,
+        crate::tcp::client::Request,
+        Connection: Stream + Unpin,
+        Error: Into<BoxError>,
+    >,
+    L: Layer<
+            ForwarderService<C::Connection>,
+            Service: Service<S, T, Response = (), Error: Into<BoxError>>,
+        > + Send
+        + Sync
+        + 'static,
 {
     type Response = ();
     type Error = BoxError;

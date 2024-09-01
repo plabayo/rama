@@ -173,8 +173,10 @@ mod tests {
 
     fn assert_try_into_ok<S>(src: S)
     where
-        S: TryInto<NonEmptyString> + fmt::Debug + Clone + PartialEq<NonEmptyString>,
-        <S as TryInto<NonEmptyString>>::Error: std::error::Error,
+        S: TryInto<NonEmptyString, Error: std::error::Error>
+            + fmt::Debug
+            + Clone
+            + PartialEq<NonEmptyString>,
     {
         let expected = src.clone();
         let value: NonEmptyString = src.try_into().unwrap();

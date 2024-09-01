@@ -262,12 +262,10 @@ impl<S, W> ResponseWriterService<S, W> {}
 impl<State, S, W, ReqBody, ResBody> Service<State, Request<ReqBody>> for ResponseWriterService<S, W>
 where
     State: Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    S::Error: Into<BoxError>,
+    S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
     W: ResponseWriter,
     ReqBody: Send + 'static,
-    ResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    ResBody::Error: Into<BoxError>,
+    ResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = BoxError;

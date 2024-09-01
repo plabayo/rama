@@ -168,8 +168,7 @@ impl<H> EchoServiceBuilder<H> {
 
 impl<H> EchoServiceBuilder<H>
 where
-    H: Layer<EchoService>,
-    H::Service: Service<(), Request, Response = Response, Error = BoxError>,
+    H: Layer<EchoService, Service: Service<(), Request, Response = Response, Error = BoxError>>,
 {
     /// build a tcp service ready to echo http traffic back
     pub fn build(

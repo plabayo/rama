@@ -11,8 +11,7 @@ pub struct HyperExecutor(pub(crate) Executor);
 
 impl<F> hyper::rt::Executor<F> for HyperExecutor
 where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
+    F: std::future::Future<Output: Send + 'static> + Send + 'static,
 {
     fn execute(&self, future: F) {
         // Hyper... \_(ツ)_/

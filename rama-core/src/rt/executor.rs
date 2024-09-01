@@ -24,8 +24,7 @@ impl Executor {
     /// this is spawned gracefully in case a shutdown guard has been registered.
     pub fn spawn_task<F>(&self, future: F) -> tokio::task::JoinHandle<F::Output>
     where
-        F: std::future::Future + Send + 'static,
-        F::Output: Send + 'static,
+        F: std::future::Future<Output: Send + 'static> + Send + 'static,
     {
         match &self.guard {
             Some(guard) => guard.spawn_task(future),

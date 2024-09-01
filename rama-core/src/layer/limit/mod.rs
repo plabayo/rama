@@ -70,10 +70,8 @@ where
 
 impl<T, P, State, Request> Service<State, Request> for Limit<T, P>
 where
-    T: Service<State, Request>,
-    T::Error: Into<BoxError>,
-    P: policy::Policy<State, Request>,
-    P::Error: Into<BoxError>,
+    T: Service<State, Request, Error: Into<BoxError>>,
+    P: policy::Policy<State, Request, Error: Into<BoxError>>,
     Request: Send + Sync + 'static,
     State: Send + Sync + 'static,
 {

@@ -13,8 +13,7 @@ pub fn parse_username<P>(
     username_ref: impl AsRef<str>,
 ) -> Result<String, OpaqueError>
 where
-    P: UsernameLabelParser,
-    P::Error: Into<BoxError>,
+    P: UsernameLabelParser<Error: Into<BoxError>>,
 {
     parse_username_with_separator(ext, parser, username_ref, DEFAULT_USERNAME_LABEL_SEPARATOR)
 }
@@ -28,8 +27,7 @@ pub fn parse_username_with_separator<P>(
     separator: char,
 ) -> Result<String, OpaqueError>
 where
-    P: UsernameLabelParser,
-    P::Error: Into<BoxError>,
+    P: UsernameLabelParser<Error: Into<BoxError>>,
 {
     let username_ref = username_ref.as_ref();
     let mut label_it = username_ref.split(separator);
@@ -141,8 +139,7 @@ macro_rules! username_label_parser_tuple_impl {
         impl<$($T,)+> UsernameLabelParser for ($($T,)+)
         where
             $(
-                $T: UsernameLabelParser,
-                $T::Error: Into<BoxError>,
+                $T: UsernameLabelParser<Error: Into<BoxError>>,
             )+
         {
             type Error = OpaqueError;
@@ -179,8 +176,7 @@ macro_rules! username_label_parser_tuple_exclusive_labels_impl {
         impl<$($T,)+> UsernameLabelParser for ExclusiveUsernameParsers<($($T,)+)>
         where
             $(
-                $T: UsernameLabelParser,
-                $T::Error: Into<BoxError>,
+                $T: UsernameLabelParser<Error: Into<BoxError>>,
             )+
         {
             type Error = OpaqueError;

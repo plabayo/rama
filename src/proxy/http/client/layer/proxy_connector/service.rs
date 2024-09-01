@@ -66,12 +66,11 @@ impl<S> HttpProxyConnectorService<S> {
 
 impl<S, State, Request> Service<State, Request> for HttpProxyConnectorService<S>
 where
-    S: ConnectorService<State, Request>,
-    S::Connection: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + 'static,
 {
     type Response = EstablishedClientConnection<S::Connection, State, Request>;
     type Error = BoxError;

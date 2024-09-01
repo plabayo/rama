@@ -28,8 +28,7 @@ use std::{fmt, ops::Deref, sync::Arc};
 /// by the Writer, and can be as simple as just logging it and move on without an update.
 pub fn proxy_db_updater<T>() -> (LiveUpdateProxyDB<T>, LiveUpdateProxyDBSetter<T>)
 where
-    T: ProxyDB,
-    T::Error: Into<BoxError>,
+    T: ProxyDB<Error: Into<BoxError>>,
 {
     let data = Arc::new(ArcSwap::from_pointee(None));
     let reader = LiveUpdateProxyDB(data.clone());
@@ -57,8 +56,7 @@ impl<T> Clone for LiveUpdateProxyDB<T> {
 
 impl<T> ProxyDB for LiveUpdateProxyDB<T>
 where
-    T: ProxyDB,
-    T::Error: Into<BoxError>,
+    T: ProxyDB<Error: Into<BoxError>>,
 {
     type Error = BoxError;
 

@@ -432,8 +432,7 @@ async fn empty_directory_without_index_no_information_leak() {
 
 async fn body_into_text<B>(body: B) -> String
 where
-    B: HttpBody<Data = bytes::Bytes> + Unpin,
-    B::Error: std::fmt::Debug,
+    B: HttpBody<Data = bytes::Bytes, Error: std::fmt::Debug> + Unpin,
 {
     let bytes = body.collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()

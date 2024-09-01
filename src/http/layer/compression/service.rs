@@ -178,12 +178,9 @@ impl<S, P> Compression<S, P> {
 impl<ReqBody, ResBody, S, P, State> Service<State, Request<ReqBody>> for Compression<S, P>
 where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    ResBody: Body,
+    ResBody: Body<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
     P: Predicate + Send + Sync + 'static,
     ReqBody: Send + 'static,
-    ResBody: Send + 'static,
-    ResBody::Data: Send + 'static,
-    ResBody::Error: Send + 'static,
     State: Send + Sync + 'static,
 {
     type Response = Response<CompressionBody<ResBody>>;

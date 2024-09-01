@@ -50,12 +50,11 @@ impl<S: Clone> Clone for DnsResolveModeService<S> {
     }
 }
 
-impl<State, Body, E, S> Service<State, Request<Body>> for DnsResolveModeService<S>
+impl<State, Body, S> Service<State, Request<Body>> for DnsResolveModeService<S>
 where
     State: Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    E: Into<crate::error::BoxError> + Send + Sync + 'static,
-    S: Service<State, Request<Body>, Error = E>,
+    S: Service<State, Request<Body>, Error: Into<crate::error::BoxError> + Send + Sync + 'static>,
 {
     type Response = S::Response;
     type Error = OpaqueError;

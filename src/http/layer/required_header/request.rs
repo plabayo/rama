@@ -115,8 +115,7 @@ where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
     State: Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    S::Error: Into<BoxError>,
+    S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
 {
     type Response = S::Response;
     type Error = BoxError;
