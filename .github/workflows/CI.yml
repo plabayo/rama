@@ -31,7 +31,7 @@ jobs:
           cargo clippy --workspace --all-targets --features=full
       - name: rustfmt
         run: |
-          cargo fmt --workspace -- --check
+          cargo fmt --all --check
 
   check:
     runs-on: ubuntu-latest
@@ -50,7 +50,7 @@ jobs:
           cargo clippy --workspace --all-targets --features=full
       - name: rustfmt
         run: |
-          cargo fmt --workspace -- --check
+          cargo fmt --all --check
 
   check-all-features:
     runs-on: ubuntu-latest
@@ -69,7 +69,7 @@ jobs:
           cargo clippy --workspace --all-targets --all-features
       - name: rustfmt
         run: |
-          cargo fmt --workspace -- --check
+          cargo fmt --all --check
 
   test-msrv:
     needs: [check, check-msrv, check-all-features]
