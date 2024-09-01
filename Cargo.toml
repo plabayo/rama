@@ -118,7 +118,7 @@ rust-version = { workspace = true }
 
 [features]
 default = ["compression"]
-full = ["telemetry", "compression", "boring"]
+full = ["telemetry", "compression", "boring", "cli"]
 telemetry = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
@@ -127,6 +127,7 @@ telemetry = [
 compression = ["dep:async-compression"]
 rustls-ring = ["tokio-rustls/ring", "rustls/ring"]
 boring = ["dep:boring", "dep:tokio-boring"]
+cli = []
 
 [build-dependencies]
 rustversion = { workspace = true }

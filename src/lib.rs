@@ -293,6 +293,7 @@ pub mod http;
 pub mod proxy;
 pub mod ua;
 
+#[cfg(feature = "cli")]
 pub mod cli;
 
 #[macro_use]
