@@ -1,6 +1,6 @@
 use super::Decompression;
 use crate::http::layer::util::compression::AcceptEncoding;
-use crate::service::Layer;
+use crate::Layer;
 
 /// Decompresses response bodies of the underlying service.
 ///

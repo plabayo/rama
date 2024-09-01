@@ -3,9 +3,9 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
-    http::Request,
-    service::{context::Extensions, BoxService, Context, Matcher, Service},
+    context::Extensions, http::Request, matcher::Matcher, service::BoxService, Context, Service,
 };
 use std::{convert::Infallible, fmt, sync::Arc};
 

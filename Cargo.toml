@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "fuzz", "rama-cli", "rama-macros"]
+members = [".", "fuzz", "rama-cli", "rama-core", "rama-macros"]
 
 [workspace.package]
 version = "0.2.0-alpha.2"
@@ -118,7 +118,7 @@ rust-version = { workspace = true }
 
 [features]
 default = ["compression"]
-full = ["telemetry", "compression", "boring"]
+full = ["telemetry", "compression", "boring", "cli"]
 telemetry = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
@@ -127,6 +127,7 @@ telemetry = [
 compression = ["dep:async-compression"]
 rustls-ring = ["tokio-rustls/ring", "rustls/ring"]
 boring = ["dep:boring", "dep:tokio-boring"]
+cli = []
 
 [build-dependencies]
 rustversion = { workspace = true }
@@ -150,7 +151,6 @@ futures-lite = { workspace = true }
 h2 = { workspace = true }
 headers = { workspace = true }
 hex = { workspace = true }
-hickory-resolver = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
@@ -170,8 +170,7 @@ parking_lot = { workspace = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
-quickcheck = { workspace = true }
-rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
+rama-core = { version = "0.2.0-alpha.2", path = "rama-core" }
 rcgen = { workspace = true }
 regex = { workspace = true }
 rustls = { workspace = true }
@@ -184,7 +183,6 @@ serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-boring = { workspace = true, optional = true }
-tokio-graceful = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
@@ -215,7 +213,6 @@ opt-level = 3
 [profile.dev]
 debug = false
 opt-level = 1
-incremental = false
 
 [package.metadata.docs.rs]
 all-features = true
@@ -224,3 +221,15 @@ rustdoc-args = ["--cfg", "docsrs"]
 [[bench]]
 name = "ua_parse"
 harness = false
+
+[[example]]
+name = "tls_boring_termination"
+required-features = ["boring"]
+
+[[example]]
+name = "http_telemetry"
+required-features = ["telemetry"]
+
+[[example]]
+name = "http_high_level_client"
+required-features = ["compression"]

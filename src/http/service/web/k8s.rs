@@ -5,7 +5,8 @@ use std::{convert::Infallible, fmt, marker::PhantomData, sync::Arc};
 
 use crate::{
     http::{matcher::HttpMatcher, IntoResponse, Request, Response},
-    service::{service_fn, BoxService, Context, Service},
+    service::{service_fn, BoxService},
+    Context, Service,
 };
 
 use super::match_service;

@@ -14,7 +14,7 @@
 //!
 //! [`ProxyAddress`]: crate::net::address::ProxyAddress
 //! [`ProxyDB`]: crate::proxy::ProxyDB
-//! [`Context`]: crate::service::Context
+//! [`Context`]: crate::Context
 //! [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
 //!
 //! # Example
@@ -27,7 +27,8 @@
 //!         layer::{ProxyDBLayer, ProxyFilterMode},
 //!         ProxyFilter,
 //!    },
-//!    service::{Context, Service, Layer, service_fn},
+//!    service::service_fn,
+//!    Context, Service, Layer,
 //!    net::address::ProxyAddress,
 //!    utils::str::NonEmptyString,
 //! };
@@ -123,7 +124,8 @@
 //!         layer::{ProxyDBLayer, ProxyFilterMode},
 //!         ProxyFilter,
 //!    },
-//!    service::{Context, Service, Layer, service_fn},
+//!    service::service_fn,
+//!    Context, Service, Layer,
 //!    net::address::ProxyAddress,
 //!    utils::str::NonEmptyString,
 //! };
@@ -199,20 +201,19 @@
 //! }
 //! ```
 
-use std::fmt;
-
+use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     net::{
         address::ProxyAddress,
-        transport::{TransportProtocol, TryRefIntoTransportContext},
         user::{Basic, ProxyCredential},
         Protocol,
     },
-    service::{Context, Layer, Service},
+    stream::transport::{TransportProtocol, TryRefIntoTransportContext},
+    Context, Layer, Service,
 };
-
-use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
+use std::fmt;
 
 /// A [`Service`] which selects a [`Proxy`] based on the given [`Context`].
 ///
@@ -377,15 +378,14 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
 
 impl<S, D, P, F, State, Request> Service<State, Request> for ProxyDBService<S, D, P, F>
 where
-    S: Service<State, Request>,
-    S::Error: Into<BoxError> + Send + Sync + 'static,
-    D: ProxyDB,
-    D::Error: Into<BoxError> + Send + Sync + 'static,
+    S: Service<State, Request, Error: Into<BoxError> + Send + Sync + 'static>,
+    D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
     F: UsernameFormatter<State>,
     State: Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + 'static,
 {
     type Response = S::Response;
     type Error = BoxError;

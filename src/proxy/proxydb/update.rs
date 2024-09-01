@@ -28,8 +28,7 @@ use std::{fmt, ops::Deref, sync::Arc};
 /// by the Writer, and can be as simple as just logging it and move on without an update.
 pub fn proxy_db_updater<T>() -> (LiveUpdateProxyDB<T>, LiveUpdateProxyDBSetter<T>)
 where
-    T: ProxyDB,
-    T::Error: Into<BoxError>,
+    T: ProxyDB<Error: Into<BoxError>>,
 {
     let data = Arc::new(ArcSwap::from_pointee(None));
     let reader = LiveUpdateProxyDB(data.clone());
@@ -57,14 +56,13 @@ impl<T> Clone for LiveUpdateProxyDB<T> {
 
 impl<T> ProxyDB for LiveUpdateProxyDB<T>
 where
-    T: ProxyDB,
-    T::Error: Into<BoxError>,
+    T: ProxyDB<Error: Into<BoxError>>,
 {
     type Error = BoxError;
 
     async fn get_proxy_if(
         &self,
-        ctx: crate::net::transport::TransportContext,
+        ctx: crate::stream::transport::TransportContext,
         filter: super::ProxyFilter,
         predicate: impl super::ProxyQueryPredicate,
     ) -> Result<super::Proxy, Self::Error> {
@@ -82,7 +80,7 @@ where
 
     async fn get_proxy(
         &self,
-        ctx: crate::net::transport::TransportContext,
+        ctx: crate::stream::transport::TransportContext,
         filter: super::ProxyFilter,
     ) -> Result<super::Proxy, Self::Error> {
         match self.0.load().deref().deref() {
@@ -122,11 +120,9 @@ impl<T: fmt::Debug> fmt::Debug for LiveUpdateProxyDBSetter<T> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        net::{
-            asn::Asn,
-            transport::{TransportContext, TransportProtocol},
-        },
+        net::asn::Asn,
         proxy::{Proxy, ProxyFilter},
+        stream::transport::{TransportContext, TransportProtocol},
         utils::str::NonEmptyString,
     };
 

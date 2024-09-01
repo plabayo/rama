@@ -1,7 +1,7 @@
 use crate::{
     error::{ErrorContext, OpaqueError},
     net::address::ProxyAddress,
-    service::{Context, Layer, Service},
+    Context, Layer, Service,
 };
 use std::{fmt, future::Future};
 
@@ -12,7 +12,7 @@ use std::{fmt, future::Future};
 ///
 /// See [`HttpProxyAddressService`] for more information.
 ///
-/// [`Context`]: crate::service::Context
+/// [`Context`]: crate::Context
 /// [`HttpProxyConnectorLayer`]: crate::proxy::http::client::layer::HttpProxyConnectorLayer
 pub struct HttpProxyAddressLayer {
     address: Option<ProxyAddress>,
@@ -88,7 +88,7 @@ impl<S> Layer<S> for HttpProxyAddressLayer {
 /// to the [`Context`] in order to have your client connector
 /// make a connection via this proxy (e.g. by using [`HttpProxyConnectorLayer`]).
 ///
-/// [`Context`]: crate::service::Context
+/// [`Context`]: crate::Context
 /// [`HttpProxyConnectorLayer`]: crate::proxy::http::client::layer::HttpProxyConnectorLayer
 pub struct HttpProxyAddressService<S> {
     inner: S,

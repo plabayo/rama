@@ -5,7 +5,8 @@ use crate::http::service::fs::{ServeDir, ServeFile};
 use crate::http::Body;
 use crate::http::{header, Method, Response};
 use crate::http::{Request, StatusCode};
-use crate::service::{service_fn, Context, Service};
+use crate::service::service_fn;
+use crate::{Context, Service};
 use brotli::BrotliDecompress;
 use bytes::Bytes;
 use flate2::bufread::{DeflateDecoder, GzDecoder};
@@ -431,8 +432,7 @@ async fn empty_directory_without_index_no_information_leak() {
 
 async fn body_into_text<B>(body: B) -> String
 where
-    B: HttpBody<Data = bytes::Bytes> + Unpin,
-    B::Error: std::fmt::Debug,
+    B: HttpBody<Data = bytes::Bytes, Error: std::fmt::Debug> + Unpin,
 {
     let bytes = body.collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()

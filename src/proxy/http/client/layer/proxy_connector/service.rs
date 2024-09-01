@@ -1,16 +1,16 @@
-use super::HttpProxyConnector;
+use super::InnerHttpProxyConnector;
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     http::headers::ProxyAuthorization,
     net::{
         address::ProxyAddress,
         client::{ConnectorService, EstablishedClientConnection},
-        stream::Stream,
-        transport::TryRefIntoTransportContext,
         user::ProxyCredential,
     },
-    service::{Context, Service},
+    stream::{transport::TryRefIntoTransportContext, Stream},
     tls::HttpsTunnel,
+    Context, Service,
 };
 use std::fmt;
 
@@ -18,21 +18,21 @@ use std::fmt;
 ///
 /// This behaviour is optional and only triggered in case there
 /// is a [`ProxyAddress`] found in the [`Context`].
-pub struct HttpProxyConnectorService<S> {
+pub struct HttpProxyConnector<S> {
     inner: S,
     required: bool,
 }
 
-impl<S: fmt::Debug> fmt::Debug for HttpProxyConnectorService<S> {
+impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpProxyConnectorService")
+        f.debug_struct("HttpProxyConnector")
             .field("inner", &self.inner)
             .field("required", &self.required)
             .finish()
     }
 }
 
-impl<S: Clone> Clone for HttpProxyConnectorService<S> {
+impl<S: Clone> Clone for HttpProxyConnector<S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
@@ -41,20 +41,20 @@ impl<S: Clone> Clone for HttpProxyConnectorService<S> {
     }
 }
 
-impl<S> HttpProxyConnectorService<S> {
-    /// Creates a new [`HttpProxyConnectorService`].
+impl<S> HttpProxyConnector<S> {
+    /// Creates a new [`HttpProxyConnector`].
     pub(super) fn new(inner: S, required: bool) -> Self {
         Self { inner, required }
     }
 
-    /// Create a new [`HttpProxyConnectorService`]
+    /// Create a new [`HttpProxyConnector`]
     /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
     /// in the [`Context`].
     pub fn optional(inner: S) -> Self {
         Self::new(inner, false)
     }
 
-    /// Create a new [`HttpProxyConnectorService`]
+    /// Create a new [`HttpProxyConnector`]
     /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
     /// not available in the [`Context`].
     pub fn required(inner: S) -> Self {
@@ -64,14 +64,13 @@ impl<S> HttpProxyConnectorService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S, State, Request> Service<State, Request> for HttpProxyConnectorService<S>
+impl<S, State, Request> Service<State, Request> for HttpProxyConnector<S>
 where
-    S: ConnectorService<State, Request>,
-    S::Connection: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + 'static,
 {
     type Response = EstablishedClientConnection<S::Connection, State, Request>;
     type Error = BoxError;
@@ -166,7 +165,7 @@ where
             });
         }
 
-        let mut connector = HttpProxyConnector::new(transport_ctx.authority.clone());
+        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone());
         if let Some(credential) = address.credential.clone() {
             match credential {
                 ProxyCredential::Basic(basic) => {

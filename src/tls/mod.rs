@@ -39,8 +39,8 @@ pub mod dep {
 /// An [`Extensions`] value that can be added to the [`Context`]
 /// of a transport layer to signal that the transport is secure.
 ///
-/// [`Extensions`]: crate::service::context::Extensions
-/// [`Context`]: crate::service::Context
+/// [`Extensions`]: crate::context::Extensions
+/// [`Context`]: crate::Context
 pub struct SecureTransport {
     client_hello: Option<ClientHello>,
 }

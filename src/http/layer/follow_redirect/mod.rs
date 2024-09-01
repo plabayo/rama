@@ -17,7 +17,8 @@
 //! ## Basic usage
 //!
 //! ```
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::{Body, Request, Response, StatusCode, header};
 //! use rama::http::layer::follow_redirect::{FollowRedirectLayer, RequestUri};
 //!
@@ -55,7 +56,9 @@
 //! # #![allow(unused)]
 //!
 //! # use std::convert::Infallible;
-//! use rama::service::{Context, Service, Layer, service_fn, layer::MapErrLayer};
+//! use rama::service::service_fn;
+//! use rama::layer::MapErrLayer;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::{Body, Request, Response};
 //! use rama::http::layer::follow_redirect::{
 //!     policy::{self, PolicyExt},
@@ -98,9 +101,10 @@
 
 pub mod policy;
 
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     http::{dep::http_body::Body, header::LOCATION, Method, Request, Response, StatusCode, Uri},
-    service::{Context, Layer, Service},
+    Context, Layer, Service,
 };
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
 use std::{fmt, future::Future};
@@ -371,7 +375,8 @@ fn resolve_uri(relative: &str, base: &Uri) -> Option<Uri> {
 mod tests {
     use super::{policy::*, *};
     use crate::http::{header::LOCATION, Body};
-    use crate::service::{service_fn, Layer};
+    use crate::service::service_fn;
+    use crate::Layer;
     use std::convert::Infallible;
 
     #[tokio::test]

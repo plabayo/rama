@@ -1,9 +1,11 @@
+use super::{HttpAgent, TlsAgent, UserAgent};
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     http::{
         headers::{self, HeaderMapExt},
         HeaderName, Request,
     },
-    service::{Layer, Service},
+    Layer, Service,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -11,15 +13,13 @@ use std::{
     future::Future,
 };
 
-use super::{HttpAgent, TlsAgent, UserAgent};
-
 /// A [`Service`] that classifies the [`UserAgent`] of incoming [`Request`]s.
 ///
 /// The [`Extensions`] of the [`Context`] is updated with the [`UserAgent`]
 /// if the [`Request`] contains a valid [`UserAgent`] header.
 ///
-/// [`Extensions`]: crate::service::context::Extensions
-/// [`Context`]: crate::service::Context
+/// [`Extensions`]: crate::context::Extensions
+/// [`Context`]: crate::Context
 pub struct UserAgentClassifier<S> {
     inner: S,
     overwrite_header: Option<HeaderName>,
@@ -103,7 +103,7 @@ where
 
     fn serve(
         &self,
-        mut ctx: crate::service::Context<State>,
+        mut ctx: crate::Context<State>,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let mut user_agent = req
@@ -190,7 +190,7 @@ mod tests {
     use crate::http::{IntoResponse, StatusCode};
     use crate::service::service_fn;
     use crate::ua::{PlatformKind, UserAgentKind};
-    use crate::{http::Response, service::Context};
+    use crate::{http::Response, Context};
     use std::convert::Infallible;
 
     #[tokio::test]

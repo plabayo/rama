@@ -1,11 +1,10 @@
-use std::fmt;
-
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
-use crate::service::{Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     http::{Request, Response},
-    service::Context,
+    Context, Layer, Service,
 };
+use std::fmt;
 
 /// Layer that applies [`ValidateRequestHeader`] which validates all requests.
 ///
@@ -189,10 +188,7 @@ mod tests {
     use super::*;
 
     use crate::http::{header, Body, StatusCode};
-    use crate::{
-        error::BoxError,
-        service::{service_fn, Layer},
-    };
+    use crate::{error::BoxError, service::service_fn, Layer};
 
     #[tokio::test]
     async fn valid_accept_header() {

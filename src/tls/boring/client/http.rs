@@ -1,10 +1,10 @@
 use crate::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
 use crate::net::client::{ConnectorService, EstablishedClientConnection};
-use crate::net::stream::Stream;
-use crate::net::transport::TryRefIntoTransportContext;
-use crate::service::Layer;
-use crate::service::{Context, Service};
+use crate::stream::transport::TryRefIntoTransportContext;
+use crate::stream::Stream;
 use crate::tls::HttpsTunnel;
+use crate::Layer;
+use crate::{Context, Service};
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use std::fmt;
@@ -138,12 +138,11 @@ impl<S> HttpsConnector<S, ConnectorKindTunnel> {
 
 impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindAuto>
 where
-    S: ConnectorService<State, Request>,
-    S::Connection: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
@@ -208,12 +207,11 @@ where
 
 impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindSecure>
 where
-    S: ConnectorService<State, Request>,
-    S::Connection: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Send + Sync + 'static,
-    Request: TryRefIntoTransportContext<State> + Send + 'static,
-    Request::Error: Into<BoxError> + Send + Sync + 'static,
+    Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
+        + 'static,
 {
     type Response = EstablishedClientConnection<SslStream<S::Connection>, State, Request>;
     type Error = BoxError;
@@ -256,9 +254,7 @@ where
 
 impl<S, State, Request> Service<State, Request> for HttpsConnector<S, ConnectorKindTunnel>
 where
-    S: ConnectorService<State, Request>,
-    S::Connection: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Send + Sync + 'static,
     Request: Send + 'static,
 {

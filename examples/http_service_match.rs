@@ -30,7 +30,7 @@ use rama::{
         Request,
     },
     rt::Executor,
-    service::Layer,
+    Layer,
 };
 
 use serde_json::json;

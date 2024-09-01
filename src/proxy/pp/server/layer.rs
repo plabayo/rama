@@ -3,12 +3,10 @@ use std::{fmt, net::SocketAddr};
 use crate::{
     error::BoxError,
     http::headers::Forwarded,
-    net::{
-        forwarded::ForwardedElement,
-        stream::{ChainReader, HeapReader, Stream},
-    },
+    net::forwarded::ForwardedElement,
     proxy::pp::protocol::{v1, v2, HeaderResult, PartialResult},
-    service::{Context, Layer, Service},
+    stream::{ChainReader, HeapReader, Stream},
+    Context, Layer, Service,
 };
 use tokio::io::AsyncReadExt;
 
@@ -69,8 +67,8 @@ where
     S: Service<
         State,
         tokio::io::Join<ChainReader<HeapReader, tokio::io::ReadHalf<IO>>, tokio::io::WriteHalf<IO>>,
+        Error: Into<BoxError>,
     >,
-    S::Error: Into<BoxError>,
     IO: Stream + Unpin,
 {
     type Response = S::Response;

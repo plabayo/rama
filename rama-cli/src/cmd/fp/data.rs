@@ -2,13 +2,13 @@ use super::State;
 use rama::{
     error::{BoxError, ErrorContext},
     http::{dep::http::request::Parts, headers::Forwarded, Request, RequestContext},
-    net::stream::SocketInfo,
-    service::Context,
+    stream::SocketInfo,
     tls::{
         client::{ClientHello, ClientHelloExtension},
         SecureTransport,
     },
     ua::UserAgent,
+    Context,
 };
 use serde::Serialize;
 use std::str::FromStr;

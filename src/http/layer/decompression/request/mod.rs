@@ -8,7 +8,8 @@ mod tests {
     use crate::http::dep::http_body_util::BodyExt;
     use crate::http::layer::decompression::DecompressionBody;
     use crate::http::{header, Body, Request, Response, StatusCode};
-    use crate::service::{service_fn, Context, Service};
+    use crate::service::service_fn;
+    use crate::{Context, Service};
 
     use flate2::{write::GzEncoder, Compression};
     use std::{convert::Infallible, io::Write};

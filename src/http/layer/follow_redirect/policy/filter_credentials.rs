@@ -4,7 +4,7 @@ use crate::{
         header::{self, HeaderName},
         Request,
     },
-    service::Context,
+    Context,
 };
 
 /// A redirection [`Policy`] that removes credentials from requests in redirections.

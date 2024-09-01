@@ -10,7 +10,8 @@ use crate::http::{
     header::{DATE, SERVER},
     headers::{Date, HeaderMapExt},
 };
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::{fmt, time::SystemTime};
 
 /// Layer that applies [`AddRequiredResponseHeaders`] which adds a request header.
@@ -141,10 +142,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        http::Body,
-        service::{service_fn, Layer},
-    };
+    use crate::{http::Body, service::service_fn, Layer};
     use std::convert::Infallible;
 
     #[tokio::test]

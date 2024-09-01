@@ -5,10 +5,10 @@ use crate::{
     net::{
         client::{ConnectorService, EstablishedClientConnection},
         forwarded::Forwarded,
-        stream::{SocketInfo, Stream},
     },
     proxy::pp::protocol::{v1, v2},
-    service::{Context, Layer, Service},
+    stream::{SocketInfo, Stream},
+    Context, Layer, Service,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -208,9 +208,7 @@ impl<S: Clone, P, V: Clone> Clone for HaProxyService<S, P, V> {
 
 impl<S, P, State, Request> Service<State, Request> for HaProxyService<S, P, version::One>
 where
-    S: ConnectorService<State, Request>,
-    S::Connection: Stream + Unpin,
-    S::Error: Into<BoxError>,
+    S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     P: Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
@@ -268,8 +266,12 @@ where
 
 impl<S, P, State, Request, T> Service<State, Request> for HaProxyService<S, P, version::Two>
 where
-    S: Service<State, Request, Response = EstablishedClientConnection<T, State, Request>>,
-    S::Error: Into<BoxError>,
+    S: Service<
+        State,
+        Request,
+        Response = EstablishedClientConnection<T, State, Request>,
+        Error: Into<BoxError>,
+    >,
     P: protocol::Protocol + Send + 'static,
     State: Send + Sync + 'static,
     Request: Send + 'static,
@@ -397,13 +399,13 @@ pub mod protocol {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
-
     use super::*;
     use crate::{
         net::forwarded::{ForwardedElement, NodeId},
-        service::{service_fn, Layer},
+        service::service_fn,
+        Layer,
     };
+    use std::convert::Infallible;
     use tokio_test::io::Builder;
 
     #[tokio::test]

@@ -1,6 +1,7 @@
 use crate::{
+    context::Extensions,
     http::{Request, Version},
-    service::{context::Extensions, Context},
+    Context,
 };
 use std::fmt::{self, Debug, Formatter};
 
@@ -43,7 +44,7 @@ impl VersionMatcher {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for VersionMatcher {
+impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for VersionMatcher {
     /// returns true on a match, false otherwise
     fn matches(
         &self,
@@ -97,7 +98,7 @@ impl TryFrom<Version> for VersionMatcher {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::service::Matcher;
+    use crate::matcher::Matcher;
 
     #[test]
     fn test_version_matcher() {

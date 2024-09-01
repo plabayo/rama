@@ -10,7 +10,8 @@ use crate::http::layer::{
     util::content_encoding::SupportedEncodings,
 };
 use crate::http::{header, HeaderValue, Request, Response, StatusCode};
-use crate::service::{Context, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Service};
 use bytes::Buf;
 
 /// Decompresses request bodies and calls its underlying service.
@@ -52,12 +53,15 @@ impl<S: Clone> Clone for RequestDecompression<S> {
 
 impl<S, State, ReqBody, ResBody, D> Service<State, Request<ReqBody>> for RequestDecompression<S>
 where
-    S: Service<State, Request<DecompressionBody<ReqBody>>, Response = Response<ResBody>>,
+    S: Service<
+        State,
+        Request<DecompressionBody<ReqBody>>,
+        Response = Response<ResBody>,
+        Error: Into<BoxError>,
+    >,
     State: Send + Sync + 'static,
     ReqBody: Body + Send + 'static,
-    ResBody: Body<Data = D> + Send + 'static,
-    S::Error: Into<BoxError>,
-    <ResBody as Body>::Error: Into<BoxError>,
+    ResBody: Body<Data = D, Error: Into<BoxError>> + Send + 'static,
     D: Buf + 'static,
 {
     type Response = Response<UnsyncBoxBody<D, BoxError>>;

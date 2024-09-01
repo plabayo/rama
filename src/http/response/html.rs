@@ -1,4 +1,5 @@
 use crate::http::{header, Body, HeaderValue, IntoResponse, Response};
+use crate::utils::macros::impl_deref;
 use std::fmt;
 
 /// An HTML response.

@@ -1,11 +1,11 @@
 use rama::{
+    combinators::Either,
     error::BoxError,
     http::layer::traffic_writer::{
         BidirectionalMessage, BidirectionalWriter, RequestWriterLayer, ResponseWriterLayer,
         WriterMode,
     },
     rt::Executor,
-    utils::combinators::Either,
 };
 use std::path::PathBuf;
 use tokio::{fs::OpenOptions, io::stdout, sync::mpsc::Sender};

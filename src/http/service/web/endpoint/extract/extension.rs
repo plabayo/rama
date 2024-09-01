@@ -1,12 +1,13 @@
 use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
-use crate::service::Context;
+use crate::utils::macros::define_http_rejection;
+use crate::Context;
 use std::ops::{Deref, DerefMut};
 
 /// Extractor to get an Extension from the context (e.g. a shared Database).
 pub struct Extension<T>(pub T);
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = INTERNAL_SERVER_ERROR]
     #[body = "Missing request extension"]
     /// Rejection type for [`Extension`] if an expected

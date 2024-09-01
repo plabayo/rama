@@ -3,15 +3,16 @@ use std::{fmt, ops::DerefMut};
 use tokio::sync::Mutex;
 
 use super::TcpConnector;
+use crate::utils::macros::impl_deref;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
-        stream::Stream,
     },
-    service::{Context, Layer, Service},
+    stream::Stream,
     tcp::{client::Request as TcpRequest, utils::is_connection_error},
+    Context, Layer, Service,
 };
 
 /// [`Forwarder`] using [`Forwarder::ctx`] requires this struct
@@ -137,12 +138,18 @@ impl<S, T, C, L> Service<S, T> for Forwarder<C, L>
 where
     S: Send + Sync + 'static,
     T: Stream + Unpin,
-    C: ConnectorService<S, crate::tcp::client::Request>,
-    C::Connection: Stream + Unpin,
-    C::Error: Into<BoxError>,
-    L: Layer<ForwarderService<C::Connection>> + Send + Sync + 'static,
-    L::Service: Service<S, T, Response = ()>,
-    <L::Service as Service<S, T>>::Error: Into<BoxError>,
+    C: ConnectorService<
+        S,
+        crate::tcp::client::Request,
+        Connection: Stream + Unpin,
+        Error: Into<BoxError>,
+    >,
+    L: Layer<
+            ForwarderService<C::Connection>,
+            Service: Service<S, T, Response = (), Error: Into<BoxError>>,
+        > + Send
+        + Sync
+        + 'static,
 {
     type Response = ();
     type Error = BoxError;

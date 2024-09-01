@@ -5,7 +5,8 @@ use crate::http::dep::http_body_util::BodyExt;
 use crate::http::io::write_http_request;
 use crate::http::{Body, Request, Response};
 use crate::rt::Executor;
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use bytes::Bytes;
 use std::fmt::Debug;
 use std::future::Future;
@@ -267,11 +268,9 @@ impl<S, W> RequestWriterService<S, W> {}
 impl<State, S, W, ReqBody, ResBody> Service<State, Request<ReqBody>> for RequestWriterService<S, W>
 where
     State: Send + Sync + 'static,
-    S: Service<State, Request, Response = Response<ResBody>>,
-    S::Error: Into<BoxError>,
+    S: Service<State, Request, Response = Response<ResBody>, Error: Into<BoxError>>,
     W: RequestWriter,
-    ReqBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    ReqBody::Error: Into<BoxError>,
+    ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     ResBody: Send + 'static,
 {
     type Response = Response<ResBody>;

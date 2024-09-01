@@ -18,9 +18,10 @@
 
 use rama::{
     http::{server::HttpServer, service::fs::ServeDir},
+    layer::TraceErrLayer,
     rt::Executor,
-    service::{layer::TraceErrLayer, Layer},
     tcp::server::TcpListener,
+    Layer,
 };
 
 #[tokio::main]

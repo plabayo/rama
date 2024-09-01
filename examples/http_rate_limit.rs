@@ -37,21 +37,20 @@
 use std::{convert::Infallible, sync::Arc, time::Duration};
 
 use rama::{
+    combinators::Either,
     error::BoxError,
     http::{
         matcher::HttpMatcher, response::Json, server::HttpServer, HeaderName, HeaderValue,
         IntoResponse, Request, Response, StatusCode,
     },
-    net::stream::matcher::SocketMatcher,
-    rt::Executor,
-    service::{
-        layer::{
-            limit::policy::{ConcurrentPolicy, LimitReached},
-            LimitLayer, MapResultLayer, TraceErrLayer,
-        },
-        service_fn, Layer,
+    layer::{
+        limit::policy::{ConcurrentPolicy, LimitReached},
+        Layer, LimitLayer, MapResultLayer, TraceErrLayer,
     },
-    utils::{backoff::ExponentialBackoff, combinators::Either},
+    rt::Executor,
+    service::service_fn,
+    stream::matcher::SocketMatcher,
+    utils::backoff::ExponentialBackoff,
 };
 use serde_json::json;
 

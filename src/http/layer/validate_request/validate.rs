@@ -1,6 +1,6 @@
 use crate::{
     http::{Request, Response},
-    service::Context,
+    Context,
 };
 use std::future::Future;
 

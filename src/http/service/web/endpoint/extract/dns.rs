@@ -1,6 +1,6 @@
 use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
-use crate::service::Context;
+use crate::Context;
 use std::convert::Infallible;
 use std::ops::Deref;
 
@@ -8,7 +8,7 @@ use std::ops::Deref;
 /// Extractor to get a clone of the [`Dns`] from the [`Context`].
 ///
 /// [`Dns`]: crate::dns::Dns
-/// [`Context`]: crate::service::Context
+/// [`Context`]: crate::Context
 pub struct Dns(pub crate::dns::Dns);
 
 impl<T> FromRequestParts<T> for Dns

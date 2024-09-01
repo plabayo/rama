@@ -5,7 +5,7 @@ use crate::{
         Request, RequestContext, Response, Version,
     },
     net::address::ProxyAddress,
-    service::{Context, Service},
+    Context, Service,
 };
 use tokio::sync::Mutex;
 
@@ -24,9 +24,7 @@ pub struct HttpClientService<Body>(pub(super) SendRequest<Body>);
 impl<State, Body> Service<State, Request<Body>> for HttpClientService<Body>
 where
     State: Send + Sync + 'static,
-    Body: http_body::Body + Unpin + Send + 'static,
-    Body::Data: Send + 'static,
-    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Response = Response;
     type Error = BoxError;

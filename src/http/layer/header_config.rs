@@ -1,7 +1,7 @@
 //! Extract a header config from a request or response and insert it into the [`Extensions`] of its [`Context`].
 //!
-//! [`Extensions`]: crate::service::context::Extensions
-//! [`Context`]: crate::service::Context
+//! [`Extensions`]: crate::context::Extensions
+//! [`Context`]: crate::Context
 //!
 //! # Example
 //!
@@ -9,7 +9,7 @@
 //! use rama::http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
 //! use rama::http::service::web::{WebService, extract::Extension};
 //! use rama::http::{Body, Request, StatusCode, HeaderName};
-//! use rama::service::{Context, Service, Layer};
+//! use rama::{Context, Service, Layer};
 //! use serde::Deserialize;
 //!
 //! #[derive(Debug, Deserialize, Clone)]
@@ -43,6 +43,7 @@
 //! ```
 
 use crate::http::{header::AsHeaderName, HeaderName};
+use crate::utils::macros::define_inner_service_accessors;
 use serde::de::DeserializeOwned;
 use std::{fmt, marker::PhantomData};
 
@@ -52,7 +53,7 @@ use crate::{
         utils::{HeaderValueErr, HeaderValueGetter},
         Request,
     },
-    service::{Context, Layer, Service},
+    Context, Layer, Service,
 };
 
 /// Extract a header config from a request or response without consuming it.
@@ -71,7 +72,7 @@ where
 /// A [`Service`] which extracts a header config from a request or response
 /// and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: crate::service::context::Extensions
+/// [`Extensions`]: crate::context::Extensions
 pub struct HeaderConfigService<T, S> {
     inner: S,
     header_name: HeaderName,
@@ -175,7 +176,7 @@ where
 /// Layer which extracts a header config for the given HeaderName
 /// from a request or response and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: crate::service::context::Extensions
+/// [`Extensions`]: crate::context::Extensions
 pub struct HeaderConfigLayer<T> {
     header_name: HeaderName,
     optional: bool,

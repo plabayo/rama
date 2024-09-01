@@ -13,7 +13,7 @@ use rama::{
         service::web::extract::{self, FromRequestParts, Path},
         Body, IntoResponse, Request, Response, StatusCode,
     },
-    service::Context,
+    Context,
 };
 use serde::Deserialize;
 use serde_json::json;

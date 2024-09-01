@@ -1,11 +1,12 @@
 use super::{ProxyFilter, StringFilter};
+use crate::utils::macros::match_ignore_ascii_case_str;
 use crate::{
     net::{
         address::ProxyAddress,
         asn::{Asn, InvalidAsn},
-        transport::{TransportContext, TransportProtocol},
         user::ProxyCredential,
     },
+    stream::transport::{TransportContext, TransportProtocol},
     utils::str::NonEmptyString,
 };
 use serde::Deserialize;

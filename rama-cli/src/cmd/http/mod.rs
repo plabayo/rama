@@ -4,8 +4,9 @@ use clap::Args;
 use rama::{
     cli::args::RequestArgsBuilder,
     error::{error, BoxError, ErrorContext, OpaqueError},
+    graceful::{self, Shutdown, ShutdownGuard},
     http::{
-        client::{HttpClient, HttpConnectorLayer},
+        client::HttpClient,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -16,18 +17,12 @@ use rama::{
         },
         IntoResponse, Request, Response, StatusCode,
     },
+    layer::{HijackLayer, MapResultLayer},
     net::{address::ProxyAddress, user::ProxyCredential},
-    proxy::http::client::layer::{
-        HttpProxyAddressLayer, HttpProxyConnectorLayer, SetProxyAuthHttpHeaderLayer,
-    },
+    proxy::http::client::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
     rt::Executor,
-    service::{
-        layer::{HijackLayer, MapResultLayer},
-        service_fn, Context, Layer, Service,
-    },
-    tcp::client::service::TcpConnector,
-    tls::rustls::client::HttpsConnectorLayer,
-    utils::graceful::{self, Shutdown, ShutdownGuard},
+    service::service_fn,
+    Context, Layer, Service,
 };
 use std::{io::IsTerminal, time::Duration};
 use terminal_prompt::Terminal;
@@ -397,15 +392,7 @@ where
     let tls_client_config =
         tls::create_tls_client_config(cfg.insecure, cfg.tls, cfg.cert, cfg.cert_key).await?;
 
-    Ok(client_builder.layer(HttpClient::new(
-        (
-            HttpConnectorLayer::new(),
-            HttpsConnectorLayer::auto().with_config(tls_client_config),
-            HttpProxyConnectorLayer::optional(),
-            HttpsConnectorLayer::tunnel(),
-        )
-            .layer(TcpConnector::default()),
-    )))
+    Ok(client_builder.layer(HttpClient::default().with_tls_config(tls_client_config)))
 }
 
 fn parse_print_mode(mode: &str) -> Result<(Option<WriterMode>, Option<WriterMode>), BoxError> {
@@ -466,8 +453,10 @@ fn map_internal_client_error<E, Body>(
 ) -> Result<Response, BoxError>
 where
     E: Into<BoxError>,
-    Body: rama::http::dep::http_body::Body<Data = bytes::Bytes> + Send + Sync + 'static,
-    Body::Error: Into<BoxError>,
+    Body: rama::http::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
+        + Send
+        + Sync
+        + 'static,
 {
     match result {
         Ok(response) => Ok(response.map(rama::http::Body::new)),

@@ -7,7 +7,8 @@
 //! ```
 //! use rama::http::layer::sensitive_headers::SetSensitiveHeadersLayer;
 //! use rama::http::{Body, Request, Response, header::AUTHORIZATION};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //! use std::{iter::once, convert::Infallible};
 //!
@@ -38,7 +39,8 @@
 //! ```
 
 use crate::http::{HeaderName, Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::sync::Arc;
 
 /// Mark headers as [sensitive] on both requests and responses.

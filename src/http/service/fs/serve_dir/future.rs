@@ -4,10 +4,9 @@ use crate::http::{
     header::{self, ALLOW},
     Body, HeaderValue, Request, Response, StatusCode,
 };
-use crate::service::{Context, Service};
 use crate::{
     error::BoxError, http::layer::util::content_encoding::Encoding,
-    http::service::fs::AsyncReadBody,
+    http::service::fs::AsyncReadBody, Context, Service,
 };
 use bytes::Bytes;
 use std::{convert::Infallible, io};
@@ -97,8 +96,7 @@ pub(super) async fn serve_fallback<F, State, B, FResBody>(
 ) -> Result<Response, std::io::Error>
 where
     F: Service<State, Request<B>, Response = Response<FResBody>, Error = Infallible>,
-    FResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    FResBody::Error: Into<BoxError>,
+    FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     let response = fallback.serve(ctx, req).await.unwrap();
     Ok(response

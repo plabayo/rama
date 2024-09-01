@@ -1,18 +1,9 @@
-//! Utilities in service of the Rama project.
-
-pub(crate) mod future;
+//! Utilities in service of the `rama-core` project.
 
 #[macro_use]
 pub(crate) mod macros;
 
-pub mod backoff;
-pub mod combinators;
-pub mod graceful;
-pub mod info;
-pub mod latency;
-pub mod rng;
-pub mod str;
-pub mod username;
+pub use ::rama_core::utils::{backoff, future, info, latency, rng, str, username};
 
-#[cfg(test)]
-pub(crate) mod test_helpers;
+#[allow(unused_imports)]
+pub(crate) use ::rama_core::utils::test_helpers;

@@ -7,15 +7,15 @@ use super::{
 use crate::http::layer::classify::{
     GrpcErrorsAsFailures, MakeClassifier, ServerErrorsAsFailures, SharedClassifier,
 };
-use crate::service::Layer;
+use crate::Layer;
 
 /// [`Layer`] that adds high level [tracing] to a [`Service`].
 ///
 /// See the [module docs](crate::http::layer::trace) for more details.
 ///
-/// [`Layer`]: crate::service::Layer
+/// [`Layer`]: crate::Layer
 /// [tracing]: https://crates.io/crates/tracing
-/// [`Service`]: crate::service::Service
+/// [`Service`]: crate::Service
 pub struct TraceLayer<
     M,
     MakeSpan = DefaultMakeSpan,

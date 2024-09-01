@@ -13,14 +13,15 @@
 //! This is done to allow the layer to be used as a service, and to allow it to be
 //! composed with other layers.
 //!
-//! [`Layer`]: crate::service::Layer
-//! [`Service`]: crate::service::Service
+//! [`Layer`]: crate::Layer
+//! [`Service`]: crate::Service
 
 pub mod auth;
 pub mod body_limit;
 pub mod catch_panic;
 pub mod classify;
 pub mod cors;
+pub mod dns;
 pub mod error_handling;
 pub mod follow_redirect;
 pub mod forwarded;

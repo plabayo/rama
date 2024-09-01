@@ -1,12 +1,13 @@
 //! Echo '[`Service`] that echos the [`http`] [`Request`] and [`tls`] client config.
 //!
-//! [`Service`]: crate::service::Service
+//! [`Service`]: crate::Service
 //! [`http`]: crate::http
 //! [`Request`]: crate::http::Request
 //! [`tls`]: crate::tls
 
 use crate::{
     cli::{tls::TlsServerCertKeyPair, ForwardKind},
+    combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         dep::http_body_util::BodyExt,
@@ -19,19 +20,14 @@ use crate::{
         server::HttpServer,
         IntoResponse, Request, RequestContext, Response,
     },
-    net::{
-        forwarded::Forwarded,
-        stream::{layer::http::BodyLimitLayer, SocketInfo},
-    },
+    layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
+    net::forwarded::Forwarded,
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
-    service::{
-        layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
-        Context, Layer, Service,
-    },
+    stream::{layer::http::BodyLimitLayer, SocketInfo},
     tls::{client::ClientHelloExtension, SecureTransport},
     ua::{UserAgent, UserAgentClassifierLayer},
-    utils::combinators::Either7,
+    Context, Layer, Service,
 };
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
@@ -172,8 +168,7 @@ impl<H> EchoServiceBuilder<H> {
 
 impl<H> EchoServiceBuilder<H>
 where
-    H: Layer<EchoService>,
-    H::Service: Service<(), Request, Response = Response, Error = BoxError>,
+    H: Layer<EchoService, Service: Service<(), Request, Response = Response, Error = BoxError>>,
 {
     /// build a tcp service ready to echo http traffic back
     pub fn build(

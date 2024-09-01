@@ -8,7 +8,8 @@
 //! use rama::http::dep::http_body;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{Context, Poll}};
-//! use rama::service::{self, Layer, service_fn, Service};
+//! use rama::{Layer, Service, context};
+//! use rama::service::service_fn;
 //! use rama::http::layer::map_response_body::MapResponseBodyLayer;
 //! use rama::error::BoxError;
 //! use futures_lite::ready;
@@ -74,13 +75,14 @@
 //! // Call the service
 //! let request = Request::new(Body::from("foobar"));
 //!
-//! svc.serve(service::Context::default(), request).await?;
+//! svc.serve(context::Context::default(), request).await?;
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::http::{Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::fmt;
 
 /// Apply a transformation to the response body.

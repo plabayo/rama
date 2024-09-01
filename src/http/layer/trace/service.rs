@@ -9,7 +9,8 @@ use crate::http::layer::classify::{
     ServerErrorsAsFailures, SharedClassifier,
 };
 use crate::http::{Request, Response};
-use crate::service::{Context, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Service};
 use std::{fmt, time::Instant};
 
 /// Middleware that adds high level [tracing] to a [`Service`].
@@ -17,7 +18,7 @@ use std::{fmt, time::Instant};
 /// See the [module docs](crate::http::layer::trace) for an example.
 ///
 /// [tracing]: https://crates.io/crates/tracing
-/// [`Service`]: crate::service::Service
+/// [`Service`]: crate::Service
 pub struct Trace<
     S,
     M,
@@ -311,14 +312,11 @@ impl<
     > Service<State, Request<ReqBody>>
     for Trace<S, M, MakeSpanT, OnRequestT, OnResponseT, OnBodyChunkT, OnEosT, OnFailureT>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: fmt::Display>,
     State: Send + Sync + 'static,
     ReqBody: HttpBody + Send + 'static,
-    ResBody: HttpBody + Send + Sync + 'static,
-    ResBody::Error: fmt::Display,
-    S::Error: fmt::Display,
-    M: MakeClassifier,
-    M::Classifier: Clone,
+    ResBody: HttpBody<Error: fmt::Display> + Send + Sync + 'static,
+    M: MakeClassifier<Classifier: Clone>,
     MakeSpanT: MakeSpan<ReqBody>,
     OnRequestT: OnRequest<ReqBody>,
     OnResponseT: OnResponse<ResBody> + Clone,

@@ -1,7 +1,8 @@
 use super::ProxyFilter;
+use crate::utils::macros::match_ignore_ascii_case_str;
 use crate::{
+    context::Extensions,
     error::{error, OpaqueError},
-    service::context::Extensions,
     utils::username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
 };
 
@@ -10,8 +11,8 @@ use crate::{
 /// A parser which parses [`ProxyFilter`]s from username labels
 /// and adds it to the [`Context`]'s [`Extensions`].
 ///
-/// [`Context`]: crate::service::Context
-/// [`Extensions`]: crate::service::context::Extensions
+/// [`Context`]: crate::Context
+/// [`Extensions`]: crate::context::Extensions
 pub struct ProxyFilterUsernameParser {
     key: Option<ProxyFilterKey>,
     proxy_filter: ProxyFilter,

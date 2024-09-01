@@ -14,13 +14,12 @@ use rama::{
         server::HttpServer,
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
-    net::stream::layer::http::BodyLimitLayer,
+    layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
     rt::Executor,
-    service::{
-        layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
-        service_fn, Context, Layer, Service,
-    },
+    service::service_fn,
+    stream::layer::http::BodyLimitLayer,
     tcp::{server::TcpListener, utils::is_connection_error},
+    Context, Layer, Service,
 };
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
@@ -57,7 +56,7 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
         )
         .init();
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     let address = format!("{}:{}", cfg.interface, cfg.port);
     tracing::info!("starting proxy on: {}", address);

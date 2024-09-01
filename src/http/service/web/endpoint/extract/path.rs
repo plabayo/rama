@@ -1,21 +1,22 @@
 use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
 use crate::http::matcher::{UriParams, UriParamsDeserializeError};
-use crate::service::Context;
+use crate::utils::macros::{composite_http_rejection, define_http_rejection};
+use crate::Context;
 use serde::de::DeserializeOwned;
 use std::ops::{Deref, DerefMut};
 
 /// Extractor to get path parameters from the context in deserialized form.
 pub struct Path<T>(pub T);
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = INTERNAL_SERVER_ERROR]
     #[body = "No paths parameters found for matched route"]
     /// Rejection type used if rama's internal representation of path parameters is missing.
     pub struct MissingPathParams;
 }
 
-crate::__composite_http_rejection! {
+composite_http_rejection! {
     /// Rejection used for [`Path`].
     ///
     /// Contains one variant for each way the [`Path`](super::Path) extractor
@@ -76,7 +77,7 @@ mod tests {
 
     use crate::http::service::web::WebService;
     use crate::http::{Body, Request, StatusCode};
-    use crate::service::Service;
+    use crate::Service;
 
     #[tokio::test]
     async fn test_host_from_request() {

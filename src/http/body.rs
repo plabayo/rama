@@ -21,8 +21,7 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, BoxError>;
 
 fn boxed<B>(body: B) -> BoxBody
 where
-    B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    B::Error: Into<BoxError>,
+    B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     try_downcast(body).unwrap_or_else(|body| body.map_err(Into::into).boxed())
 }
@@ -48,8 +47,7 @@ impl Body {
     /// Create a new `Body` that wraps another [`http_body::Body`].
     pub fn new<B>(body: B) -> Self
     where
-        B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-        B::Error: Into<BoxError>,
+        B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         try_downcast(body).unwrap_or_else(|body| Self(boxed(body)))
     }
@@ -57,8 +55,7 @@ impl Body {
     /// Create a new `Body` with a maximum size limit.
     pub fn with_limit<B>(body: B, limit: usize) -> Self
     where
-        B: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-        B::Error: Into<BoxError>,
+        B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
     {
         Self::new(crate::http::dep::http_body_util::Limited::new(body, limit))
     }
@@ -73,9 +70,7 @@ impl Body {
     /// [`Stream`]: https://docs.rs/futures-core/latest/futures_core/stream/trait.Stream.html
     pub fn from_stream<S>(stream: S) -> Self
     where
-        S: TryStream + Send + 'static,
-        S::Ok: Into<Bytes>,
-        S::Error: Into<BoxError>,
+        S: TryStream<Ok: Into<Bytes>, Error: Into<BoxError>> + Send + 'static,
     {
         Self::new(StreamBody {
             stream: SyncWrapper::new(stream),
@@ -214,9 +209,7 @@ pin_project! {
 
 impl<S> http_body::Body for StreamBody<S>
 where
-    S: TryStream,
-    S::Ok: Into<Bytes>,
-    S::Error: Into<BoxError>,
+    S: TryStream<Ok: Into<Bytes>, Error: Into<BoxError>>,
 {
     type Data = Bytes;
     type Error = BoxError;

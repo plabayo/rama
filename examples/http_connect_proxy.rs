@@ -57,6 +57,7 @@
 //! ```
 
 use rama::{
+    context::Extensions,
     http::{
         client::HttpClient,
         layer::{
@@ -71,13 +72,16 @@ use rama::{
         service::web::{extract::Path, match_service},
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
-    net::{address::Domain, stream::layer::http::BodyLimitLayer, user::Basic},
+    layer::HijackLayer,
+    net::{address::Domain, user::Basic},
     rt::Executor,
-    service::{context::Extensions, layer::HijackLayer, service_fn, Context, Layer, Service},
+    service::service_fn,
+    stream::layer::http::BodyLimitLayer,
     tcp::{server::TcpListener, utils::is_connection_error},
     utils::username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },
+    Context, Layer, Service,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -96,7 +100,7 @@ async fn main() {
         )
         .init();
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     #[derive(Deserialize)]
     /// API parameters for the lucky number endpoint

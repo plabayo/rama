@@ -2,11 +2,12 @@ use super::BytesRejection;
 use crate::http::dep::http_body_util::BodyExt;
 use crate::http::service::web::extract::FromRequest;
 use crate::http::{Method, Request};
-use crate::service::Context;
+use crate::utils::macros::{composite_http_rejection, define_http_rejection};
+use crate::Context;
 
 pub use crate::http::response::Form;
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
     #[body = "Form requests must have `Content-Type: application/x-www-form-urlencoded`"]
     /// Rejection type for [`Form`]
@@ -15,7 +16,7 @@ crate::__define_http_rejection! {
     pub struct InvalidFormContentType;
 }
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = BAD_REQUEST]
     #[body = "Failed to deserialize form"]
     /// Rejection type used if the [`Form`]
@@ -23,7 +24,7 @@ crate::__define_http_rejection! {
     pub struct FailedToDeserializeForm(Error);
 }
 
-crate::__composite_http_rejection! {
+composite_http_rejection! {
     /// Rejection used for [`Form`]
     ///
     /// Contains one variant for each way the [`Form`] extractor

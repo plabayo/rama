@@ -1,4 +1,5 @@
 use super::{IntoResponse, Response};
+use crate::utils::macros::all_the_tuples_no_last_special_case;
 use http::{
     header::{HeaderMap, HeaderName, HeaderValue},
     Extensions, StatusCode,
@@ -136,10 +137,8 @@ impl IntoResponseParts for HeaderMap {
 
 impl<K, V, const N: usize> IntoResponseParts for [(K, V); N]
 where
-    K: TryInto<HeaderName>,
-    K::Error: fmt::Display,
-    V: TryInto<HeaderValue>,
-    V::Error: fmt::Display,
+    K: TryInto<HeaderName, Error: fmt::Display>,
+    V: TryInto<HeaderValue, Error: fmt::Display>,
 {
     type Error = TryIntoHeaderError<K::Error, V::Error>;
 

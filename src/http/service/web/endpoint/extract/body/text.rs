@@ -2,7 +2,8 @@ use super::BytesRejection;
 use crate::http::dep::http_body_util::BodyExt;
 use crate::http::service::web::extract::FromRequest;
 use crate::http::Request;
-use crate::service::Context;
+use crate::utils::macros::{composite_http_rejection, define_http_rejection, impl_deref};
+use crate::Context;
 
 /// Extractor to get the response body, collected as [`String`].
 #[derive(Debug, Clone)]
@@ -10,7 +11,7 @@ pub struct Text(pub String);
 
 impl_deref!(Text: String);
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
     #[body = "Text requests must have `Content-Type: text/plain`"]
     /// Rejection type for [`Text`]
@@ -19,7 +20,7 @@ crate::__define_http_rejection! {
     pub struct InvalidTextContentType;
 }
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = BAD_REQUEST]
     #[body = "Failed to decode text payload"]
     /// Rejection type used if the [`Text`]
@@ -27,7 +28,7 @@ crate::__define_http_rejection! {
     pub struct InvalidUtf8Text(Error);
 }
 
-crate::__composite_http_rejection! {
+composite_http_rejection! {
     /// Rejection used for [`Text`]
     ///
     /// Contains one variant for each way the [`Text`] extractor

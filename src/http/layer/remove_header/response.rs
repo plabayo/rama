@@ -5,7 +5,8 @@
 //! ```
 //! use rama::http::layer::remove_header::RemoveResponseHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -28,7 +29,8 @@
 //! ```
 
 use crate::http::{HeaderName, Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::{borrow::Cow, fmt};
 
 #[derive(Debug, Clone)]
@@ -173,10 +175,7 @@ mod test {
     use http::Response;
 
     use super::*;
-    use crate::{
-        http::Body,
-        service::{service_fn, Layer, Service},
-    };
+    use crate::{http::Body, service::service_fn, Layer, Service};
     use std::convert::Infallible;
 
     #[tokio::test]

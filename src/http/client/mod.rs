@@ -5,11 +5,13 @@ use crate::{
     error::BoxError,
     http::{dep::http_body, Request, Response},
     net::client::{ConnectorService, EstablishedClientConnection},
-    service::{Context, Layer, Service},
+    proxy::http::client::layer::HttpProxyConnector,
     tcp::client::service::TcpConnector,
-    tls::rustls::client::{HttpsConnector, HttpsConnectorLayer},
+    tls::rustls::{client::HttpsConnector, dep::rustls::ClientConfig}, // TODO: use default backend
+    Context,
+    Service,
 };
-use std::fmt;
+use std::sync::Arc;
 
 mod error;
 #[doc(inline)]
@@ -27,72 +29,47 @@ mod conn;
 #[doc(inline)]
 pub use conn::{HttpConnector, HttpConnectorLayer};
 
-/// An http client that can be used to serve HTTP requests.
+#[derive(Debug, Clone, Default)]
+/// An opiniated http client that can be used to serve HTTP requests.
 ///
-/// The underlying connections are established using the provided connection [`Service`],
-/// which is a [`Service`] that is expected to return as output an [`EstablishedClientConnection`].
-pub struct HttpClient<C, L> {
-    connector: C,
-    sender_layer_stack: L,
+/// You can fork this http client in case you have use cases not possible with this service example.
+/// E.g. perhaps you wish to have middleware in into outbound requests, after they
+/// passed through your "connector" setup. All this and more is possible by defining your own
+/// http client. Rama is here to empower you, the building blocks are there, go crazy
+/// with your own service fork and use the full power of Rust at your fingertips ;)
+pub struct HttpClient {
+    tls_config: Option<Arc<ClientConfig>>,
 }
 
-impl<C: fmt::Debug, L: fmt::Debug> fmt::Debug for HttpClient<C, L> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("HttpClient")
-            .field("connector", &self.connector)
-            .field("sender_layer_stack", &self.sender_layer_stack)
-            .finish()
+impl HttpClient {
+    /// Create a new [`HttpClient`].
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the [`ClientConfig`] of this [`HttpClient`].
+    pub fn set_tls_config(&mut self, cfg: Arc<ClientConfig>) -> &mut Self {
+        self.tls_config = Some(cfg);
+        self
+    }
+
+    /// Replace this [`HttpClient`] with the [`ClientConfig`] set.
+    pub fn with_tls_config(mut self, cfg: Arc<ClientConfig>) -> Self {
+        self.tls_config = Some(cfg);
+        self
+    }
+
+    /// Replace this [`HttpClient`] with an option of [`ClientConfig`] set.
+    pub fn maybe_with_tls_config(mut self, cfg: Option<Arc<ClientConfig>>) -> Self {
+        self.tls_config = cfg;
+        self
     }
 }
 
-impl<C: Clone, L: Clone> Clone for HttpClient<C, L> {
-    fn clone(&self) -> Self {
-        Self {
-            connector: self.connector.clone(),
-            sender_layer_stack: self.sender_layer_stack.clone(),
-        }
-    }
-}
-
-impl<C> HttpClient<C, ()> {
-    /// Create a new [`HttpClient`] using the specified connection [`Service`]
-    /// to establish connections to the server in the form of an [`EstablishedClientConnection`] as output.
-    pub const fn new(connector: C) -> Self {
-        Self {
-            connector,
-            sender_layer_stack: (),
-        }
-    }
-
-    /// Define an [`Layer`] (stack) to create a [`Service`] stack
-    /// through which the http [`Request`] will have to pass
-    /// before actually being send of the the "target".
-    pub fn layer<L>(self, layer_stack: L) -> HttpClient<C, L> {
-        HttpClient {
-            connector: self.connector,
-            sender_layer_stack: layer_stack,
-        }
-    }
-}
-
-impl Default for HttpClient<HttpConnector<HttpsConnector<TcpConnector>>, ()> {
-    fn default() -> Self {
-        let connector =
-            (HttpConnectorLayer::new(), HttpsConnectorLayer::auto()).layer(TcpConnector::default());
-        Self::new(connector)
-    }
-}
-
-impl<State, Body, C, L> Service<State, Request<Body>> for HttpClient<C, L>
+impl<State, Body> Service<State, Request<Body>> for HttpClient
 where
     State: Send + Sync + 'static,
-    Body: http_body::Body + Unpin + Send + 'static,
-    Body::Data: Send + 'static,
-    Body::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
-    C: ConnectorService<State, Request<Body>>,
-    L: Layer<C::Connection> + Send + Sync + 'static,
-    L::Service: Service<State, Request<Body>, Response = Response>,
-    <L::Service as Service<State, Request<Body>>>::Error: Into<BoxError>,
+    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Response = Response;
     type Error = HttpClientError;
@@ -104,22 +81,20 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
 
-        let EstablishedClientConnection {
-            ctx,
-            req,
-            conn: svc,
-            ..
-        } = self
-            .connector
+        let connector = HttpConnector::new(
+            HttpsConnector::auto(HttpProxyConnector::optional(HttpsConnector::tunnel(
+                TcpConnector::new(),
+            )))
+            .maybe_with_config(self.tls_config.clone()),
+        );
+
+        let EstablishedClientConnection { ctx, req, conn, .. } = connector
             .connect(ctx, req)
             .await
-            .map_err(|err| HttpClientError::from_boxed(err.into()).with_uri(uri.clone()))?;
+            .map_err(|err| HttpClientError::from_boxed(err).with_uri(uri.clone()))?;
 
-        let sender = self.sender_layer_stack.layer(svc);
-
-        sender
-            .serve(ctx, req)
+        conn.serve(ctx, req)
             .await
-            .map_err(|err| HttpClientError::from_boxed(err.into()).with_uri(uri))
+            .map_err(|err| HttpClientError::from_boxed(err).with_uri(uri))
     }
 }
