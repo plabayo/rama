@@ -37,7 +37,8 @@
 //! ```
 
 use crate::http::{Request, Response, Uri};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
@@ -168,7 +169,8 @@ fn normalize_trailing_slash(uri: &mut Uri) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::{service_fn, Layer};
+    use crate::service::service_fn;
+    use crate::Layer;
     use std::convert::Infallible;
 
     #[tokio::test]

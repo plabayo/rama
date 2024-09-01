@@ -10,7 +10,8 @@ use crate::http::layer::{
     util::content_encoding::SupportedEncodings,
 };
 use crate::http::{header, HeaderValue, Request, Response, StatusCode};
-use crate::service::{Context, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Service};
 use bytes::Buf;
 
 /// Decompresses request bodies and calls its underlying service.

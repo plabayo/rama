@@ -1,8 +1,9 @@
 //! provides a [`UriMatcher`] matcher for matching requests based on their URI.
 
 use crate::{
+    context::Extensions,
     http::{Request, Uri},
-    service::{context::Extensions, Context},
+    Context,
 };
 
 pub mod dep {
@@ -44,7 +45,7 @@ impl From<Regex> for UriMatcher {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for UriMatcher {
+impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for UriMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,

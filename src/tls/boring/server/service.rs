@@ -1,8 +1,8 @@
 use super::ServerConfig;
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     error::{ErrorContext, ErrorExt, OpaqueError},
-    net::stream::Stream,
-    service::{Context, Service},
+    stream::Stream,
     tls::{
         boring::dep::{
             boring::ssl::{SslAcceptor, SslMethod},
@@ -11,6 +11,7 @@ use crate::{
         client::ClientHello,
         SecureTransport,
     },
+    Context, Service,
 };
 use parking_lot::Mutex;
 use std::{fmt, sync::Arc};

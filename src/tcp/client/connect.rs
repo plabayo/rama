@@ -1,9 +1,9 @@
 use crate::{
+    combinators::Either4,
     dns::Dns,
     error::{ErrorContext, OpaqueError},
     net::address::{Authority, Domain, Host},
-    service::Context,
-    utils::combinators::Either4,
+    Context,
 };
 use std::{
     net::{IpAddr, SocketAddr},

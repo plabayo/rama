@@ -1,10 +1,10 @@
 use crate::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
 use crate::net::client::{ConnectorService, EstablishedClientConnection};
-use crate::net::stream::Stream;
-use crate::net::transport::TryRefIntoTransportContext;
-use crate::service::Layer;
-use crate::service::{Context, Service};
+use crate::stream::transport::TryRefIntoTransportContext;
+use crate::stream::Stream;
 use crate::tls::HttpsTunnel;
+use crate::Layer;
+use crate::{Context, Service};
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use std::fmt;

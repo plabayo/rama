@@ -2,11 +2,8 @@ use crate::http::headers::{
     ForwardHeader, HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
 use crate::net::forwarded::ForwardedElement;
-use crate::{
-    http::Request,
-    net::forwarded::Forwarded,
-    service::{Context, Layer, Service},
-};
+use crate::utils::macros::all_the_tuples_no_last_special_case;
+use crate::{http::Request, net::forwarded::Forwarded, Context, Layer, Service};
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
@@ -347,8 +344,6 @@ all_the_tuples_no_last_special_case!(get_forwarded_service_for_tuple);
 
 #[cfg(test)]
 mod tests {
-    use std::{convert::Infallible, net::IpAddr};
-
     use super::*;
     use crate::{
         error::OpaqueError,
@@ -357,8 +352,10 @@ mod tests {
             IntoResponse, Response, StatusCode,
         },
         net::forwarded::{ForwardedProtocol, ForwardedVersion},
-        service::{service_fn, Layer},
+        service::service_fn,
+        Layer,
     };
+    use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}
 

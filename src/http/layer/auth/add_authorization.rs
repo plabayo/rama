@@ -39,12 +39,12 @@
 //! # }
 //! ```
 
+use crate::http::{HeaderValue, Request, Response};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use base64::Engine as _;
 use std::convert::TryFrom;
 use std::fmt;
-
-use crate::http::{HeaderValue, Request, Response};
-use crate::service::{Context, Layer, Service};
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -297,15 +297,15 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
-
     #[allow(unused_imports)]
     use super::*;
 
     use crate::error::BoxError;
     use crate::http::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::http::{Body, Request, Response, StatusCode};
-    use crate::service::{service_fn, Context, Service};
+    use crate::service::service_fn;
+    use crate::{Context, Service};
+    use std::convert::Infallible;
 
     #[tokio::test]
     async fn basic() {

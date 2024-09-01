@@ -61,7 +61,7 @@ use crate::http::{
     header::{self, HeaderValue},
     Request, Response, StatusCode,
 };
-use crate::service::Context;
+use crate::Context;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -265,7 +265,8 @@ mod tests {
     use crate::error::BoxError;
     use crate::http::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::http::{header, Body};
-    use crate::service::{service_fn, Context, Layer, Service};
+    use crate::service::service_fn;
+    use crate::{Context, Layer, Service};
 
     #[tokio::test]
     async fn valid_basic_token() {

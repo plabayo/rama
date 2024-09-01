@@ -3,6 +3,7 @@
 use clap::Args;
 use rama::{
     cli::{tls::boring::TlsServerCertKeyPair, ForwardKind},
+    combinators::Either7,
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
@@ -17,19 +18,18 @@ use rama::{
         service::web::match_service,
         HeaderName, HeaderValue, IntoResponse, Version,
     },
-    net::stream::layer::http::BodyLimitLayer,
+    layer::{
+        limit::policy::ConcurrentPolicy, ConsumeErrLayer, HijackLayer, Layer, LimitLayer,
+        TimeoutLayer,
+    },
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
-    service::{
-        layer::{
-            limit::policy::ConcurrentPolicy, ConsumeErrLayer, HijackLayer, LimitLayer, TimeoutLayer,
-        },
-        service_fn, Layer,
-    },
+    service::service_fn,
+    stream::layer::http::BodyLimitLayer,
     tcp::server::TcpListener,
     tls::boring::server::TlsAcceptorLayer,
     ua::UserAgentClassifierLayer,
-    utils::{backoff::ExponentialBackoff, combinators::Either7},
+    utils::backoff::ExponentialBackoff,
 };
 use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
@@ -101,7 +101,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         )
         .init();
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     let (tcp_forwarded_layer, http_forwarded_layer) = match &cfg.forward {
         None => (None, None),

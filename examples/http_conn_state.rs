@@ -26,10 +26,13 @@
 //! connection index and count of requests within that connection.
 
 use rama::{
+    context::AsRef,
     http::{response::Html, server::HttpServer, Request},
+    layer::MapStateLayer,
     rt::Executor,
-    service::{context::AsRef, layer::MapStateLayer, service_fn, Context, Layer},
+    service::service_fn,
     tcp::server::TcpListener,
+    Context, Layer,
 };
 use std::{
     convert::Infallible,
@@ -114,7 +117,7 @@ where
 
 #[tokio::main]
 async fn main() {
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(|guard| async move {
         let exec = Executor::graceful(guard.clone());

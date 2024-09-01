@@ -339,8 +339,8 @@
 //!   responses.
 //!
 //! [tracing]: https://crates.io/crates/tracing
-//! [`Service`]: crate::service::Service
-//! [`Service::serve`]: crate::service::Service::serve
+//! [`Service`]: crate::Service
+//! [`Service::serve`]: crate::Service::serve
 //! [`MakeClassifier`]: crate::http::layer::classify::MakeClassifier
 //! [`ClassifyResponse`]: crate::http::layer::classify::ClassifyResponse
 //! [record]: https://docs.rs/tracing/latest/tracing/span/struct.Span.html#method.record
@@ -460,7 +460,8 @@ mod tests {
     use crate::http::dep::http_body_util::BodyExt as _;
     use crate::http::layer::classify::ServerErrorsFailureClass;
     use crate::http::{Body, HeaderMap, Request, Response};
-    use crate::service::{service_fn, Context, Layer, Service};
+    use crate::service::service_fn;
+    use crate::{Context, Layer, Service};
     use bytes::Bytes;
     use std::sync::OnceLock;
     use std::{

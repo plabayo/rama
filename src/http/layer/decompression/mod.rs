@@ -117,7 +117,8 @@ mod tests {
     use crate::http::dep::http_body_util::BodyExt;
     use crate::http::layer::compression::Compression;
     use crate::http::{Body, HeaderMap, HeaderName, Request, Response};
-    use crate::service::{service_fn, Context, Service};
+    use crate::service::service_fn;
+    use crate::{Context, Service};
 
     use flate2::write::GzEncoder;
 

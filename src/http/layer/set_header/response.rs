@@ -95,7 +95,8 @@ use crate::http::{
     headers::{Header, HeaderExt},
     HeaderValue, Request, Response,
 };
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::fmt;
 
 /// Layer that applies [`SetResponseHeader`] which adds a response header.

@@ -5,7 +5,7 @@ use crate::{
         Request, RequestContext, Response, Version,
     },
     net::address::ProxyAddress,
-    service::{Context, Service},
+    Context, Service,
 };
 use tokio::sync::Mutex;
 

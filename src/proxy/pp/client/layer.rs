@@ -5,10 +5,10 @@ use crate::{
     net::{
         client::{ConnectorService, EstablishedClientConnection},
         forwarded::Forwarded,
-        stream::{SocketInfo, Stream},
     },
     proxy::pp::protocol::{v1, v2},
-    service::{Context, Layer, Service},
+    stream::{SocketInfo, Stream},
+    Context, Layer, Service,
 };
 use tokio::io::AsyncWriteExt;
 
@@ -397,13 +397,13 @@ pub mod protocol {
 
 #[cfg(test)]
 mod tests {
-    use std::convert::Infallible;
-
     use super::*;
     use crate::{
         net::forwarded::{ForwardedElement, NodeId},
-        service::{service_fn, Layer},
+        service::service_fn,
+        Layer,
     };
+    use std::convert::Infallible;
     use tokio_test::io::Builder;
 
     #[tokio::test]

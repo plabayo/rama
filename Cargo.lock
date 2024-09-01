@@ -1750,7 +1750,6 @@ dependencies = [
  "h2",
  "headers",
  "hex",
- "hickory-resolver",
  "http",
  "http-body",
  "http-body-util",
@@ -1772,8 +1771,7 @@ dependencies = [
  "paste",
  "percent-encoding",
  "pin-project-lite",
- "quickcheck",
- "rama-macros",
+ "rama-core",
  "rcgen",
  "regex",
  "rustls",
@@ -1788,7 +1786,6 @@ dependencies = [
  "tempfile",
  "tokio",
  "tokio-boring",
- "tokio-graceful",
  "tokio-rustls",
  "tokio-test",
  "tokio-util",
@@ -1815,6 +1812,28 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "rama-core"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "base64 0.22.1",
+ "futures-lite",
+ "headers",
+ "hickory-resolver",
+ "http",
+ "parking_lot",
+ "paste",
+ "pin-project-lite",
+ "quickcheck",
+ "rama-macros",
+ "serde",
+ "tokio",
+ "tokio-graceful",
+ "tokio-test",
+ "tracing",
+ "venndb",
 ]
 
 [[package]]

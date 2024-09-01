@@ -117,7 +117,9 @@
 use std::future::Future;
 
 use crate::http::{Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::Context;
+use crate::{Layer, Service};
 
 /// Layer that applies [`AsyncRequireAuthorization`] which authorizes all requests using the
 /// [`Authorization`] header.

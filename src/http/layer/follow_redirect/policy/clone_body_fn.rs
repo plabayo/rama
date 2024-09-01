@@ -1,4 +1,4 @@
-use crate::service::Context;
+use crate::Context;
 
 use super::{Action, Attempt, Policy};
 use std::fmt;

@@ -9,7 +9,8 @@ use crate::http::layer::classify::{
     ServerErrorsAsFailures, SharedClassifier,
 };
 use crate::http::{Request, Response};
-use crate::service::{Context, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Service};
 use std::{fmt, time::Instant};
 
 /// Middleware that adds high level [tracing] to a [`Service`].
@@ -17,7 +18,7 @@ use std::{fmt, time::Instant};
 /// See the [module docs](crate::http::layer::trace) for an example.
 ///
 /// [tracing]: https://crates.io/crates/tracing
-/// [`Service`]: crate::service::Service
+/// [`Service`]: crate::Service
 pub struct Trace<
     S,
     M,

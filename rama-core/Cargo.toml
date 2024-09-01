@@ -1,0 +1,39 @@
+[package]
+name = "rama-core"
+description = "rama service core code, used by rama and service authors"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+base64 = { workspace = true }
+futures-lite = { workspace = true }
+headers = { workspace = true }
+hickory-resolver = { workspace = true }
+http = { workspace = true }
+parking_lot = { workspace = true }
+paste = { workspace = true }
+pin-project-lite = { workspace = true }
+rama-macros = { version = "0.2.0-alpha.2", path = "../rama-macros" }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
+tokio-graceful = { workspace = true }
+tracing = { workspace = true }
+venndb = { workspace = true }
+
+[dev-dependencies]
+quickcheck = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-test = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

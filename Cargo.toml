@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "fuzz", "rama-cli", "rama-macros"]
+members = [".", "fuzz", "rama-cli", "rama-core", "rama-macros"]
 
 [workspace.package]
 version = "0.2.0-alpha.2"
@@ -150,7 +150,6 @@ futures-lite = { workspace = true }
 h2 = { workspace = true }
 headers = { workspace = true }
 hex = { workspace = true }
-hickory-resolver = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
@@ -170,8 +169,7 @@ parking_lot = { workspace = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
-quickcheck = { workspace = true }
-rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
+rama-core = { version = "0.2.0-alpha.2", path = "rama-core" }
 rcgen = { workspace = true }
 regex = { workspace = true }
 rustls = { workspace = true }
@@ -184,7 +182,6 @@ serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-boring = { workspace = true, optional = true }
-tokio-graceful = { workspace = true }
 tokio-rustls = { workspace = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
@@ -224,3 +221,15 @@ rustdoc-args = ["--cfg", "docsrs"]
 [[bench]]
 name = "ua_parse"
 harness = false
+
+[[example]]
+name = "tls_boring_termination"
+required-features = ["boring"]
+
+[[example]]
+name = "http_telemetry"
+required-features = ["telemetry"]
+
+[[example]]
+name = "http_high_level_client"
+required-features = ["compression"]

@@ -5,9 +5,9 @@ use crate::{
     error::BoxError,
     http::{dep::http_body, Request, Response},
     net::client::{ConnectorService, EstablishedClientConnection},
-    service::{Context, Layer, Service},
     tcp::client::service::TcpConnector,
-    tls::rustls::client::{HttpsConnector, HttpsConnectorLayer},
+    tls::rustls::client::HttpsConnector,
+    Context, Layer, Service,
 };
 use std::fmt;
 
@@ -77,9 +77,11 @@ impl<C> HttpClient<C, ()> {
 
 impl Default for HttpClient<HttpConnector<HttpsConnector<TcpConnector>>, ()> {
     fn default() -> Self {
-        let connector =
-            (HttpConnectorLayer::new(), HttpsConnectorLayer::auto()).layer(TcpConnector::default());
-        Self::new(connector)
+        let connector = HttpConnector::new(HttpsConnector::auto(TcpConnector::default()));
+        Self {
+            connector,
+            sender_layer_stack: (),
+        }
     }
 }
 

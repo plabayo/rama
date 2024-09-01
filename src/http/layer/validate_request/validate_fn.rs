@@ -1,7 +1,7 @@
 use super::ValidateRequest;
 use crate::{
     http::{Request, Response},
-    service::Context,
+    Context,
 };
 use std::future::Future;
 use std::marker::PhantomData;

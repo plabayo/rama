@@ -1,5 +1,5 @@
 use super::{Action, Attempt, Policy};
-use crate::{http::Request, service::Context};
+use crate::{http::Request, Context};
 
 /// A redirection [`Policy`] that combines the results of two `Policy`s.
 ///
@@ -73,7 +73,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{http::Uri, service::Context};
+    use crate::{http::Uri, Context};
 
     struct Taint<P> {
         policy: P,

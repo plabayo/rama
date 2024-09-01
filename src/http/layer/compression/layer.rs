@@ -1,7 +1,7 @@
 use super::predicate::DefaultPredicate;
 use super::{Compression, Predicate};
 use crate::http::layer::util::compression::{AcceptEncoding, CompressionLevel};
-use crate::service::Layer;
+use crate::Layer;
 
 /// Compress response bodies of the underlying service.
 ///
@@ -119,8 +119,8 @@ mod tests {
 
     use crate::http::dep::http_body_util::BodyExt;
     use crate::http::{header::ACCEPT_ENCODING, Body, Request, Response};
-    use crate::service::{service_fn, Context, Service};
-
+    use crate::service::service_fn;
+    use crate::{Context, Service};
     use std::convert::Infallible;
     use tokio::fs::File;
     use tokio_util::io::ReaderStream;

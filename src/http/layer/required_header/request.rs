@@ -5,7 +5,7 @@
 
 use crate::error::ErrorContext;
 use crate::http::RequestContext;
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     error::BoxError,
     http::{
@@ -13,6 +13,7 @@ use crate::{
         Request, Response,
     },
 };
+use crate::{Context, Layer, Service};
 use headers::HeaderMapExt;
 use http::header::{HOST, USER_AGENT};
 use std::fmt;
@@ -154,7 +155,8 @@ where
 mod test {
     use super::*;
     use crate::http::{Body, Request};
-    use crate::service::{service_fn, Context, Layer, Service};
+    use crate::service::service_fn;
+    use crate::{Context, Layer, Service};
     use std::convert::Infallible;
 
     #[tokio::test]

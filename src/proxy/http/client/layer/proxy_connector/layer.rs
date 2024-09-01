@@ -1,5 +1,5 @@
 use super::HttpProxyConnectorService;
-use crate::service::Layer;
+use crate::Layer;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which wraps the given service with a [`HttpProxyConnectorService`].
@@ -14,7 +14,7 @@ impl HttpProxyConnectorLayer {
     /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
     /// in the [`Context`].
     ///
-    /// [`Context`]: crate::service::Context
+    /// [`Context`]: crate::Context
     /// [`ProxyAddress`]: crate::net::address::ProxyAddress
     pub fn optional() -> Self {
         Self { required: false }
@@ -24,7 +24,7 @@ impl HttpProxyConnectorLayer {
     /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
     /// not available in the [`Context`].
     ///
-    /// [`Context`]: crate::service::Context
+    /// [`Context`]: crate::Context
     /// [`ProxyAddress`]: crate::net::address::ProxyAddress
     pub fn required() -> Self {
         Self { required: true }

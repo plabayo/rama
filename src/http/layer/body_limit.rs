@@ -23,14 +23,15 @@
 //! // Call the service
 //! let request = Request::new(Body::default());
 //!
-//! svc.serve(service::Context::default(), request).await?;
+//! svc.serve(Context::default(), request).await?;
 //! # Ok(())
 //! # }
 //! ```
 
 use crate::http::dep::http_body_util::Limited;
 use crate::http::Request;
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::fmt;
 
 /// Apply a limit to the request body's size.

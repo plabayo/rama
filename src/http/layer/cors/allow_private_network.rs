@@ -119,7 +119,8 @@ mod tests {
     };
     use crate::http::layer::cors::CorsLayer;
     use crate::http::Body;
-    use crate::service::{service_fn, Context, Layer, Service};
+    use crate::service::service_fn;
+    use crate::{Context, Layer, Service};
 
     static REQUEST_PRIVATE_NETWORK: HeaderName =
         HeaderName::from_static("access-control-request-private-network");

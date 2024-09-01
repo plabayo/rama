@@ -1,16 +1,16 @@
 use super::HttpProxyConnector;
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     http::headers::ProxyAuthorization,
     net::{
         address::ProxyAddress,
         client::{ConnectorService, EstablishedClientConnection},
-        stream::Stream,
-        transport::TryRefIntoTransportContext,
         user::ProxyCredential,
     },
-    service::{Context, Service},
+    stream::{transport::TryRefIntoTransportContext, Stream},
     tls::HttpsTunnel,
+    Context, Service,
 };
 use std::fmt;
 

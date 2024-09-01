@@ -1,4 +1,4 @@
-use rama::service::context::AsRef;
+use rama::Context::AsRef;
 
 #[derive(Clone, AsRef)]
 struct AppState<T> {

@@ -1,5 +1,5 @@
 use super::RetryBody;
-use crate::{http::Request, service::Context};
+use crate::{http::Request, Context};
 use std::future::Future;
 
 /// A "retry policy" to classify if a request should be retried.
@@ -7,7 +7,7 @@ use std::future::Future;
 /// # Example
 ///
 /// ```
-/// use rama::service::Context;
+/// use rama::Context;
 /// use rama::http::Request;
 /// use rama::http::layer::retry::{Policy, PolicyResult, RetryBody};
 /// use std::sync::Arc;
@@ -81,8 +81,8 @@ pub trait Policy<S, R, E>: Send + Sync + 'static {
     /// information about the number of retries required or to record that a
     /// failure failed after exhausting all retries.
     ///
-    /// [`Service::Response`]: crate::service::Service::Response
-    /// [`Service::Error`]: crate::service::Service::Error
+    /// [`Service::Response`]: crate::Service::Response
+    /// [`Service::Error`]: crate::Service::Error
     fn retry(
         &self,
         ctx: Context<S>,
@@ -158,7 +158,7 @@ where
 
 macro_rules! impl_retry_policy_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, State, Response, Error> Policy<State, Response, Error> for crate::utils::combinators::$id<$($param),+>
+        impl<$($param),+, State, Response, Error> Policy<State, Response, Error> for crate::combinators::$id<$($param),+>
         where
             $($param: Policy<State, Response, Error>),+,
             State: Send + Sync + 'static,
@@ -173,7 +173,7 @@ macro_rules! impl_retry_policy_either {
             ) -> PolicyResult<State, Response, Error> {
                 match self {
                     $(
-                        crate::utils::combinators::$id::$param(policy) => policy.retry(ctx, req, result).await,
+                        crate::combinators::$id::$param(policy) => policy.retry(ctx, req, result).await,
                     )+
                 }
             }
@@ -185,7 +185,7 @@ macro_rules! impl_retry_policy_either {
             ) -> Option<(Context<State>, http::Request<RetryBody>)> {
                 match self {
                     $(
-                        crate::utils::combinators::$id::$param(policy) => policy.clone_input(ctx, req),
+                        crate::combinators::$id::$param(policy) => policy.clone_input(ctx, req),
                     )+
                 }
             }
@@ -193,4 +193,4 @@ macro_rules! impl_retry_policy_either {
     };
 }
 
-crate::utils::combinators::impl_either!(impl_retry_policy_either);
+crate::combinators::impl_either!(impl_retry_policy_either);

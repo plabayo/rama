@@ -1,14 +1,10 @@
-use std::convert::Infallible;
-
 use crate::{
     http::Version,
-    net::{
-        address::Authority,
-        transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext},
-        Protocol,
-    },
-    service::Context,
+    net::{address::Authority, Protocol},
+    stream::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext},
+    Context,
 };
+use std::convert::Infallible;
 
 #[derive(Debug, Clone)]
 /// A request to establish a Tcp Connection.

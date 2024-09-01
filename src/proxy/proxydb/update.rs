@@ -64,7 +64,7 @@ where
 
     async fn get_proxy_if(
         &self,
-        ctx: crate::net::transport::TransportContext,
+        ctx: crate::stream::transport::TransportContext,
         filter: super::ProxyFilter,
         predicate: impl super::ProxyQueryPredicate,
     ) -> Result<super::Proxy, Self::Error> {
@@ -82,7 +82,7 @@ where
 
     async fn get_proxy(
         &self,
-        ctx: crate::net::transport::TransportContext,
+        ctx: crate::stream::transport::TransportContext,
         filter: super::ProxyFilter,
     ) -> Result<super::Proxy, Self::Error> {
         match self.0.load().deref().deref() {
@@ -122,11 +122,9 @@ impl<T: fmt::Debug> fmt::Debug for LiveUpdateProxyDBSetter<T> {
 #[cfg(test)]
 mod tests {
     use crate::{
-        net::{
-            asn::Asn,
-            transport::{TransportContext, TransportProtocol},
-        },
+        net::asn::Asn,
         proxy::{Proxy, ProxyFilter},
+        stream::transport::{TransportContext, TransportProtocol},
         utils::str::NonEmptyString,
     };
 

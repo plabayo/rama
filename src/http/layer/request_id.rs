@@ -62,7 +62,8 @@ use crate::http::{
     header::{HeaderName, HeaderValue},
     Request, Response,
 };
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use uuid::Uuid;
 
 pub(crate) const X_REQUEST_ID: &str = "x-request-id";
@@ -387,7 +388,8 @@ impl MakeRequestId for MakeRequestUuid {
 mod tests {
     use crate::http::layer::set_header;
     use crate::http::{Body, Response};
-    use crate::service::{service_fn, Layer};
+    use crate::service::service_fn;
+    use crate::Layer;
     use std::{
         convert::Infallible,
         sync::{

@@ -3,15 +3,16 @@ use std::{fmt, ops::DerefMut};
 use tokio::sync::Mutex;
 
 use super::TcpConnector;
+use crate::utils::macros::impl_deref;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
-        stream::Stream,
     },
-    service::{Context, Layer, Service},
+    stream::Stream,
     tcp::{client::Request as TcpRequest, utils::is_connection_error},
+    Context, Layer, Service,
 };
 
 /// [`Forwarder`] using [`Forwarder::ctx`] requires this struct

@@ -29,7 +29,8 @@
 // as to make it easy to use them and ensure that the versions remain compatible
 // (given most do not have a stable release yet)
 use rama::{
-    service::{layer::TraceErrLayer, service_fn, Layer},
+    layer::TraceErrLayer,
+    service::service_fn,
     tls::rustls::dep::{
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
         rustls::{
@@ -37,11 +38,13 @@ use rama::{
         },
         tokio_rustls::TlsConnector,
     },
+    Layer,
 };
 
 // rama provides everything out of the box to build mtls web services and proxies
 use rama::{
     error::BoxError,
+    graceful::Shutdown,
     http::{
         layer::trace::TraceLayer,
         response::{Html, Redirect},
@@ -49,10 +52,9 @@ use rama::{
         service::web::WebService,
     },
     rt::Executor,
-    service::Context,
     tcp::server::TcpListener,
     tls::rustls::server::TlsAcceptorLayer,
-    utils::graceful::Shutdown,
+    Context,
 };
 use rcgen::KeyPair;
 

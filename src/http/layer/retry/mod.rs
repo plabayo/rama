@@ -4,7 +4,8 @@ use crate::error::BoxError;
 use crate::http::dep::http_body::Body as HttpBody;
 use crate::http::dep::http_body_util::BodyExt;
 use crate::http::Request;
-use crate::service::{Context, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Service};
 
 mod layer;
 mod policy;
@@ -111,7 +112,7 @@ impl<P, S, State, Body> Service<State, Request<Body>> for Retry<P, S>
 where
     P: Policy<State, S::Response, S::Error>,
     S: Service<State, Request<RetryBody>>,
-    S::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    S::Error: Into<BoxError>,
     State: Send + Sync + 'static,
     Body: HttpBody + Send + 'static,
     Body::Data: Send + 'static,
@@ -176,8 +177,9 @@ mod test {
         http::{
             layer::retry::managed::DoNotRetry, BodyExtractExt, IntoResponse, Response, StatusCode,
         },
-        service::{service_fn, Context, Layer},
+        service::service_fn,
         utils::{backoff::ExponentialBackoff, rng::HasherRng},
+        Context, Layer,
     };
     use std::{
         sync::{atomic::AtomicUsize, Arc},

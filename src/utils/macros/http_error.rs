@@ -1,4 +1,3 @@
-/// Private API.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __log_http_rejection {
@@ -17,8 +16,8 @@ macro_rules! __log_http_rejection {
         );
     };
 }
+pub(crate) use crate::__log_http_rejection as log_http_rejection;
 
-/// Private API.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __define_http_rejection {
@@ -135,8 +134,8 @@ macro_rules! __define_http_rejection {
         }
     };
 }
+pub(crate) use crate::__define_http_rejection as define_http_rejection;
 
-/// Private API.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __composite_http_rejection {
@@ -216,3 +215,4 @@ macro_rules! __composite_http_rejection {
         }
     };
 }
+pub(crate) use crate::__composite_http_rejection as composite_http_rejection;

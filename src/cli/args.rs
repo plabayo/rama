@@ -1,5 +1,6 @@
 //! build requests from command line arguments
 
+use crate::utils::macros::match_ignore_ascii_case_str;
 use crate::{
     error::{ErrorContext, OpaqueError},
     http::{

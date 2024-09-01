@@ -4,7 +4,7 @@ use crate::http::layer::{
     util::content_encoding::{encodings, SupportedEncodings},
 };
 use crate::http::{header, Body, HeaderValue, Method, Request, Response, StatusCode};
-use crate::service::{Context, Service};
+use crate::{Context, Service};
 use bytes::Bytes;
 use percent_encoding::percent_decode;
 use std::{
@@ -40,7 +40,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// ```rust,no_run
 /// use rama::{
 ///     http::{server::HttpServer, service::fs::ServeDir},
-///     rt::Executor,
+///     service::rt::Executor,
 ///     service::{Layer, layer::TraceErrLayer},
 ///     tcp::server::TcpListener,
 /// };
@@ -315,7 +315,7 @@ impl<F> ServeDir<F> {
     ///         server::HttpServer,
     ///         service::fs::{ServeDir, ServeFile},
     ///     },
-    ///     rt::Executor,
+    ///     service::rt::Executor,
     ///     service::{Layer, layer::TraceErrLayer},
     ///     tcp::server::TcpListener,
     /// };
@@ -364,7 +364,7 @@ impl<F> ServeDir<F> {
     ///         server::HttpServer,
     ///         service::fs::{ServeDir, ServeFile},
     ///     },
-    ///     rt::Executor,
+    ///     service::rt::Executor,
     ///     service::{Layer, layer::TraceErrLayer},
     ///     tcp::server::TcpListener,
     /// };
@@ -426,7 +426,7 @@ impl<F> ServeDir<F> {
     /// ```rust,no_run
     /// use rama::{
     ///     http::{server::HttpServer, service::fs::ServeDir, Body, Request, Response, StatusCode},
-    ///     rt::Executor,
+    ///     service::rt::Executor,
     ///     service::{service_fn, Context, Layer, layer::TraceErrLayer},
     ///     tcp::server::TcpListener,
     /// };

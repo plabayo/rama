@@ -4,6 +4,7 @@ use clap::Args;
 use rama::{
     cli::args::RequestArgsBuilder,
     error::{error, BoxError, ErrorContext, OpaqueError},
+    graceful::{self, Shutdown, ShutdownGuard},
     http::{
         client::{HttpClient, HttpConnectorLayer},
         layer::{
@@ -16,18 +17,16 @@ use rama::{
         },
         IntoResponse, Request, Response, StatusCode,
     },
+    layer::{HijackLayer, MapResultLayer},
     net::{address::ProxyAddress, user::ProxyCredential},
     proxy::http::client::layer::{
         HttpProxyAddressLayer, HttpProxyConnectorLayer, SetProxyAuthHttpHeaderLayer,
     },
     rt::Executor,
-    service::{
-        layer::{HijackLayer, MapResultLayer},
-        service_fn, Context, Layer, Service,
-    },
+    service::service_fn,
     tcp::client::service::TcpConnector,
     tls::rustls::client::HttpsConnectorLayer,
-    utils::graceful::{self, Shutdown, ShutdownGuard},
+    Context, Layer, Service,
 };
 use std::{io::IsTerminal, time::Duration};
 use terminal_prompt::Terminal;

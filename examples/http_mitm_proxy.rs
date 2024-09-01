@@ -49,9 +49,11 @@ use rama::{
         server::HttpServer,
         Body, IntoResponse, Request, RequestContext, Response, StatusCode,
     },
-    net::{stream::layer::http::BodyLimitLayer, user::Basic},
+    layer::ConsumeErrLayer,
+    net::user::Basic,
     rt::Executor,
-    service::{layer::ConsumeErrLayer, service_fn, Layer, Service},
+    service::service_fn,
+    stream::layer::http::BodyLimitLayer,
     tcp::server::TcpListener,
     tls::{
         dep::rcgen::KeyPair,
@@ -63,6 +65,7 @@ use rama::{
             server::TlsAcceptorLayer,
         },
     },
+    Layer, Service,
 };
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
@@ -73,7 +76,7 @@ struct State {
     mitm_tls_config: Arc<ServerConfig>,
 }
 
-type Context = rama::service::Context<State>;
+type Context = rama::Context<State>;
 
 #[tokio::main]
 async fn main() -> Result<(), BoxError> {
@@ -93,7 +96,7 @@ async fn main() -> Result<(), BoxError> {
     );
     let state = State { mitm_tls_config };
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(|guard| async move {
         let tcp_service = TcpListener::build_with_state(state)

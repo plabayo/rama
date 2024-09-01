@@ -6,6 +6,7 @@ use crate::http::dep::http::StatusCode;
 use crate::http::dep::mime;
 use crate::http::response::{IntoResponse, Response};
 use crate::http::Body;
+use crate::utils::macros::impl_deref;
 use serde::Serialize;
 
 /// Wrapper used to create Form Http [`Response`]s,

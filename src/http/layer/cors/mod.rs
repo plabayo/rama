@@ -49,7 +49,8 @@ use crate::http::dep::http::{
     header::{self, HeaderName},
     HeaderMap, HeaderValue, Method, Request, Response,
 };
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use bytes::{BufMut, BytesMut};
 use std::{array, fmt, mem};
 

@@ -1,7 +1,8 @@
 use crate::{
+    context::Extensions,
     http::{Request, RequestContext},
     net::address::{Domain, Host},
-    service::{context::Extensions, Context},
+    Context,
 };
 
 #[derive(Debug, Clone)]
@@ -27,7 +28,7 @@ impl DomainMatcher {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for DomainMatcher {
+impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for DomainMatcher {
     fn matches(
         &self,
         ext: Option<&mut Extensions>,

@@ -1,12 +1,12 @@
 use super::{svc::SendRequest, HttpClientService};
+use crate::http::executor::HyperExecutor;
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     error::{BoxError, OpaqueError},
     http::{dep::http_body, Request, Version},
-    net::{
-        client::{ConnectorService, EstablishedClientConnection},
-        stream::Stream,
-    },
-    service::{Context, Layer, Service},
+    net::client::{ConnectorService, EstablishedClientConnection},
+    stream::Stream,
+    Context, Layer, Service,
 };
 use hyper_util::rt::TokioIo;
 use std::fmt;
@@ -74,7 +74,7 @@ where
 
         match req.version() {
             Version::HTTP_2 => {
-                let executor = ctx.executor().clone();
+                let executor = HyperExecutor(ctx.executor().clone());
                 let (sender, conn) = hyper::client::conn::http2::handshake(executor, io).await?;
 
                 ctx.spawn(async move {

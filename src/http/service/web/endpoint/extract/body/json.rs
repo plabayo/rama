@@ -2,11 +2,12 @@ use super::BytesRejection;
 use crate::http::dep::http_body_util::BodyExt;
 use crate::http::service::web::extract::FromRequest;
 use crate::http::Request;
-use crate::service::Context;
+use crate::utils::macros::{composite_http_rejection, define_http_rejection};
+use crate::Context;
 
 pub use crate::http::response::Json;
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
     #[body = "Json requests must have `Content-Type: application/json`"]
     /// Rejection type for [`Json`]
@@ -15,7 +16,7 @@ crate::__define_http_rejection! {
     pub struct InvalidJsonContentType;
 }
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = BAD_REQUEST]
     #[body = "Failed to deserialize json payload"]
     /// Rejection type used if the [`Json`]
@@ -23,7 +24,7 @@ crate::__define_http_rejection! {
     pub struct FailedToDeserializeJson(Error);
 }
 
-crate::__composite_http_rejection! {
+composite_http_rejection! {
     /// Rejection used for [`Json`]
     ///
     /// Contains one variant for each way the [`Json`] extractor

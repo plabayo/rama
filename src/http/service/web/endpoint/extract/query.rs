@@ -1,6 +1,7 @@
 use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
-use crate::service::Context;
+use crate::utils::macros::define_http_rejection;
+use crate::Context;
 use serde::de::DeserializeOwned;
 
 /// Extractor that deserializes query strings into some type.
@@ -8,7 +9,7 @@ use serde::de::DeserializeOwned;
 /// `T` is expected to implement [`serde::Deserialize`].
 pub struct Query<T>(pub T);
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = BAD_REQUEST]
     #[body = "Failed to deserialize query string"]
     /// Rejection type used if the [`Query`] extractor is unable to

@@ -43,9 +43,10 @@
 //! # }
 //! ```
 
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     http::{IntoResponse, Request, Response},
-    service::{Context, Layer, Service},
+    Context, Layer, Service,
 };
 use std::{convert::Infallible, fmt};
 

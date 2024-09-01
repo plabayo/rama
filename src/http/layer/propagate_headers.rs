@@ -35,7 +35,8 @@
 //! ```
 
 use crate::http::{header::HeaderName, Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 
 /// Layer that applies [`PropagateHeader`] which propagates headers from requests to responses.
 ///

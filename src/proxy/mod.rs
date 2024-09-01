@@ -26,8 +26,8 @@
 //! task and wrap the reader in a [`ProxyDB`] implementation. This way you can live reload based upon
 //! a signal, or more realistically, every x minutes.
 //!
-//! [`Context`]: crate::service::Context
-//! [`Extensions`]: crate::service::context::Extensions
+//! [`Context`]: crate::Context
+//! [`Extensions`]: crate::context::Extensions
 
 mod username;
 

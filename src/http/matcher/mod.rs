@@ -2,13 +2,12 @@
 //!
 //! See [`service::matcher` module] for more information.
 //!
-//! [`service::Matcher`]: crate::service::Matcher
+//! [`service::Matcher`]: crate::matcher::Matcher
 //! [`http::Request`]: crate::http::Request
-//! [`service::matcher` module]: crate::service::matcher
+//! [`service::matcher` module]: crate::matcher
 use crate::{
-    http::Request,
-    net::{address::Domain, stream::matcher::SocketMatcher},
-    service::{context::Extensions, matcher::IteratorMatcherExt, Context},
+    context::Extensions, http::Request, matcher::IteratorMatcherExt, net::address::Domain,
+    stream::matcher::SocketMatcher, Context,
 };
 use std::fmt;
 use std::sync::Arc;
@@ -82,8 +81,8 @@ pub enum HttpMatcherKind<State, Body> {
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     Socket(SocketMatcher<State, Request<Body>>),
-    /// A custom matcher that implements [`crate::service::Matcher`].
-    Custom(Arc<dyn crate::service::Matcher<State, Request<Body>>>),
+    /// A custom matcher that implements [`crate::matcher::Matcher`].
+    Custom(Arc<dyn crate::matcher::Matcher<State, Request<Body>>>),
 }
 
 impl<State, Body> Clone for HttpMatcherKind<State, Body> {
@@ -575,10 +574,10 @@ impl<State, Body> HttpMatcher<State, Body> {
 
     /// Create a matcher that matches according to a custom predicate.
     ///
-    /// See [`crate::service::Matcher`] for more information.
+    /// See [`crate::matcher::Matcher`] for more information.
     pub fn custom<M>(matcher: M) -> Self
     where
-        M: crate::service::Matcher<State, Request<Body>>,
+        M: crate::matcher::Matcher<State, Request<Body>>,
     {
         Self {
             kind: HttpMatcherKind::Custom(Arc::new(matcher)),
@@ -588,20 +587,20 @@ impl<State, Body> HttpMatcher<State, Body> {
 
     /// Add a custom matcher to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
-    /// See [`crate::service::Matcher`] for more information.
+    /// See [`crate::matcher::Matcher`] for more information.
     pub fn and_custom<M>(self, matcher: M) -> Self
     where
-        M: crate::service::Matcher<State, Request<Body>>,
+        M: crate::matcher::Matcher<State, Request<Body>>,
     {
         self.and(Self::custom(matcher))
     }
 
     /// Create a custom matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
-    /// See [`crate::service::Matcher`] for more information.
+    /// See [`crate::matcher::Matcher`] for more information.
     pub fn or_custom<M>(self, matcher: M) -> Self
     where
-        M: crate::service::Matcher<State, Request<Body>>,
+        M: crate::matcher::Matcher<State, Request<Body>>,
     {
         self.or(Self::custom(matcher))
     }
@@ -678,7 +677,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcher<State, Body>
+impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for HttpMatcher<State, Body>
 where
     State: Send + Sync + 'static,
     Body: Send + 'static,
@@ -698,7 +697,7 @@ where
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for HttpMatcherKind<State, Body>
+impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for HttpMatcherKind<State, Body>
 where
     State: Send + Sync + 'static,
     Body: Send + 'static,
@@ -728,7 +727,7 @@ where
 mod test {
     use itertools::Itertools;
 
-    use crate::service::Matcher;
+    use crate::matcher::Matcher;
 
     use super::*;
 

@@ -5,8 +5,9 @@ use crate::http::headers::{
 use crate::http::{Request, RequestContext};
 use crate::net::address::Domain;
 use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
-use crate::net::stream::SocketInfo;
-use crate::service::{Context, Layer, Service};
+use crate::stream::SocketInfo;
+use crate::utils::macros::all_the_tuples_no_last_special_case;
+use crate::{Context, Layer, Service};
 use std::fmt;
 use std::marker::PhantomData;
 
@@ -51,7 +52,7 @@ use std::marker::PhantomData;
 /// This example shows how you could expose the real Client IP using the [`X-Real-IP`][`crate::http::headers::XRealIp`] header.
 ///
 /// ```rust
-/// # use rama::{http::Request, net::stream::SocketInfo};
+/// # use rama::{http::Request, stream::SocketInfo};
 /// use rama::{
 ///     http::{headers::XRealIp, layer::forwarded::SetForwardedHeadersLayer},
 ///     service::{Context, Service, Layer, service_fn},
@@ -413,7 +414,8 @@ mod tests {
             headers::{TrueClientIp, XClientIp, XRealIp},
             IntoResponse, Response, StatusCode,
         },
-        service::{service_fn, Layer},
+        service::service_fn,
+        Layer,
     };
     use std::{convert::Infallible, net::IpAddr};
 

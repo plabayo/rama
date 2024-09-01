@@ -1,5 +1,5 @@
 use super::{Action, Attempt, Policy};
-use crate::{http::Request, service::Context};
+use crate::{http::Request, Context};
 use std::fmt::Debug;
 
 /// A redirection [`Policy`] that combines the results of two `Policy`s.

@@ -28,7 +28,8 @@
 //! ```
 
 use crate::http::{HeaderName, Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::{borrow::Cow, fmt, future::Future};
 
 #[derive(Debug, Clone)]
@@ -169,12 +170,11 @@ where
 
 #[cfg(test)]
 mod test {
-    use http::Response;
-
     use super::*;
     use crate::{
-        http::Body,
-        service::{service_fn, Layer, Service},
+        http::{Body, Response},
+        service::service_fn,
+        Layer, Service,
     };
     use std::convert::Infallible;
 

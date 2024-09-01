@@ -2,7 +2,8 @@ use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
 use crate::http::RequestContext;
 use crate::net::address;
-use crate::service::Context;
+use crate::utils::macros::{define_http_rejection, impl_deref};
+use crate::Context;
 
 /// Extractor that resolves the authority of the request.
 ///
@@ -21,7 +22,7 @@ pub struct Authority(pub address::Authority);
 
 impl_deref!(Authority: address::Authority);
 
-crate::__define_http_rejection! {
+define_http_rejection! {
     #[status = BAD_REQUEST]
     #[body = "Failed to detect the Http Authority"]
     /// Rejection type used if the [`Authority`] extractor is unable to
@@ -56,7 +57,7 @@ mod tests {
     use crate::http::service::web::WebService;
     use crate::http::StatusCode;
     use crate::http::{Body, HeaderName, Request};
-    use crate::service::Service;
+    use crate::Service;
 
     async fn test_authority_from_request(authority: &str, headers: Vec<(&HeaderName, &str)>) {
         let svc = GetForwardedHeadersService::x_forwarded_host(

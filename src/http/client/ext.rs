@@ -2,7 +2,7 @@ use super::HttpClientError;
 use crate::{
     error::BoxError,
     http::{headers::HeaderExt, Method, Request, Response, Uri},
-    service::{Context, Service},
+    Context, Service,
 };
 use std::future::Future;
 
@@ -683,7 +683,8 @@ mod test {
             },
             IntoResponse,
         },
-        service::{layer::MapResultLayer, service_fn, BoxService, Layer},
+        layer::{Layer, MapResultLayer},
+        service::{service_fn, BoxService},
         utils::backoff::ExponentialBackoff,
     };
     use std::convert::Infallible;

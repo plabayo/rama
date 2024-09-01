@@ -1,8 +1,5 @@
 use super::{service::UpgradeHandler, UpgradeService, Upgraded};
-use crate::{
-    http::Request,
-    service::{Context, Layer, Matcher, Service},
-};
+use crate::{http::Request, matcher::Matcher, Context, Layer, Service};
 use std::{convert::Infallible, fmt, sync::Arc};
 
 /// UpgradeLayer is a middleware that can be used to upgrade a request.

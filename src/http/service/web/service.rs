@@ -1,13 +1,15 @@
 use super::{endpoint::Endpoint, IntoEndpointService};
 use crate::{
+    context::Extensions,
     http::{
         matcher::{HttpMatcher, UriParams},
         service::fs::ServeDir,
         Body, IntoResponse, Request, Response, StatusCode, Uri,
     },
-    service::{context::Extensions, service_fn, BoxService, Context, Matcher, Service},
+    matcher::Matcher,
+    service::{service_fn, BoxService, Service},
+    Context,
 };
-use paste::paste;
 use std::{convert::Infallible, fmt, future::Future, marker::PhantomData, sync::Arc};
 
 /// A basic web service that can be used to serve HTTP requests.
@@ -250,47 +252,6 @@ where
         self.not_found.serve(ctx, req).await
     }
 }
-
-macro_rules! impl_matcher_service_tuple {
-    ($($T:ident),+ $(,)?) => {
-        paste!{
-            #[allow(non_camel_case_types)]
-            #[allow(non_snake_case)]
-            impl<State, $([<M_ $T>], $T),+, S, Error> Service<State, Request> for ($(([<M_ $T>], $T)),+, S)
-            where
-                State: Send + Sync + 'static,
-                $(
-                    [<M_ $T>]: Matcher<State, Request>,
-                    $T: Service<State, Request, Response = Response, Error = Error>,
-                )+
-                S: Service<State, Request, Response = Response, Error = Error>,
-                Error: Send + Sync + 'static,
-            {
-                type Response = Response;
-                type Error = Error;
-
-                async fn serve(
-                    &self,
-                    mut ctx: Context<State>,
-                    req: Request,
-                ) -> Result<Self::Response, Self::Error> {
-                    let ($(([<M_ $T>], $T)),+, S) = self;
-                    let mut ext = Extensions::new();
-                    $(
-                        if [<M_ $T>].matches(Some(&mut ext), &ctx, &req) {
-                            ctx.extend(ext);
-                            return $T.serve(ctx, req).await;
-                        }
-                        ext.clear();
-                    )+
-                    S.serve(ctx, req).await
-                }
-            }
-        }
-    };
-}
-
-all_the_tuples_no_last_special_case!(impl_matcher_service_tuple);
 
 #[doc(hidden)]
 #[macro_export]

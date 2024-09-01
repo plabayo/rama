@@ -14,7 +14,7 @@
 //!
 //! [`ProxyAddress`]: crate::net::address::ProxyAddress
 //! [`ProxyDB`]: crate::proxy::ProxyDB
-//! [`Context`]: crate::service::Context
+//! [`Context`]: crate::Context
 //! [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
 //!
 //! # Example
@@ -199,20 +199,19 @@
 //! }
 //! ```
 
-use std::fmt;
-
+use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     net::{
         address::ProxyAddress,
-        transport::{TransportProtocol, TryRefIntoTransportContext},
         user::{Basic, ProxyCredential},
         Protocol,
     },
-    service::{Context, Layer, Service},
+    stream::transport::{TransportProtocol, TryRefIntoTransportContext},
+    Context, Layer, Service,
 };
-
-use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
+use std::fmt;
 
 /// A [`Service`] which selects a [`Proxy`] based on the given [`Context`].
 ///

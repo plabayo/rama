@@ -1,5 +1,6 @@
 use super::{IntoResponseParts, Response, ResponseParts};
 use crate::http::dep::mime;
+use crate::utils::macros::all_the_tuples_no_last_special_case;
 use crate::{error::BoxError, http::Body};
 use bytes::{buf::Chain, Buf, Bytes, BytesMut};
 use http::{

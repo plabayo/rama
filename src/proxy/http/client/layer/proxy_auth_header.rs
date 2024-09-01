@@ -2,7 +2,7 @@ use crate::{
     http::headers::{HeaderMapExt, ProxyAuthorization},
     http::{Request, RequestContext},
     net::{address::ProxyAddress, user::ProxyCredential},
-    service::{Context, Layer, Service},
+    Context, Layer, Service,
 };
 use std::{fmt, future::Future};
 

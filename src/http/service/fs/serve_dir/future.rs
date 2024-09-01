@@ -4,10 +4,9 @@ use crate::http::{
     header::{self, ALLOW},
     Body, HeaderValue, Request, Response, StatusCode,
 };
-use crate::service::{Context, Service};
 use crate::{
     error::BoxError, http::layer::util::content_encoding::Encoding,
-    http::service::fs::AsyncReadBody,
+    http::service::fs::AsyncReadBody, Context, Service,
 };
 use bytes::Bytes;
 use std::{convert::Infallible, io};

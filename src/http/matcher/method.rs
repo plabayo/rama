@@ -1,6 +1,7 @@
 use crate::{
+    context::Extensions,
     http::{Method, Request},
-    service::{context::Extensions, Context},
+    Context,
 };
 use std::{
     fmt,
@@ -50,7 +51,7 @@ impl MethodMatcher {
     }
 }
 
-impl<State, Body> crate::service::Matcher<State, Request<Body>> for MethodMatcher {
+impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for MethodMatcher {
     /// returns true on a match, false otherwise
     fn matches(
         &self,

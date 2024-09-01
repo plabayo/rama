@@ -3,7 +3,7 @@
 use super::ServeDir;
 use crate::http::dep::{mime::Mime, mime_guess};
 use crate::http::{HeaderValue, Request, Response};
-use crate::service::{Context, Service};
+use crate::{Context, Service};
 use std::path::Path;
 
 /// Service that serves a file.
@@ -178,7 +178,7 @@ mod tests {
     use crate::http::Body;
     use crate::http::Method;
     use crate::http::{Request, StatusCode};
-    use crate::service::{Context, Service};
+    use crate::{Context, Service};
     use brotli::BrotliDecompress;
     use flate2::bufread::DeflateDecoder;
     use flate2::bufread::GzDecoder;

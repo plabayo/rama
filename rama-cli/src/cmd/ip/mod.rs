@@ -3,10 +3,10 @@
 use clap::Args;
 use rama::{
     cli::{service::ip::IpServiceBuilder, ForwardKind},
+    combinators::Either,
     error::BoxError,
     rt::Executor,
     tcp::server::TcpListener,
-    utils::combinators::Either,
 };
 use std::time::Duration;
 use tracing::level_filters::LevelFilter;
@@ -69,7 +69,7 @@ pub async fn run(cfg: CliCommandIp) -> Result<(), BoxError> {
         )
         .init();
 
-    let graceful = rama::utils::graceful::Shutdown::default();
+    let graceful = rama::graceful::Shutdown::default();
 
     let tcp_service = if cfg.transport {
         Either::A(

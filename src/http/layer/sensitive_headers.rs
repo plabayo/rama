@@ -38,7 +38,8 @@
 //! ```
 
 use crate::http::{HeaderName, Request, Response};
-use crate::service::{Context, Layer, Service};
+use crate::utils::macros::define_inner_service_accessors;
+use crate::{Context, Layer, Service};
 use std::sync::Arc;
 
 /// Mark headers as [sensitive] on both requests and responses.

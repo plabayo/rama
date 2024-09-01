@@ -1,9 +1,7 @@
 use crate::{
     error::BoxError,
-    net::{
-        asn::Asn,
-        transport::{TransportContext, TransportProtocol},
-    },
+    net::asn::Asn,
+    stream::transport::{TransportContext, TransportProtocol},
     utils::str::NonEmptyString,
 };
 use serde::Deserialize;
@@ -75,8 +73,8 @@ impl From<NonEmptyString> for ProxyID {
 /// [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
 /// [`Request`]: crate::http::Request
 /// [`ProxyAuthLayer`]: crate::http::layer::proxy_auth::ProxyAuthLayer
-/// [`Context`]: crate::service::Context
-/// [`Extensions`]: crate::service::context::Extensions
+/// [`Context`]: crate::Context
+/// [`Extensions`]: crate::context::Extensions
 pub struct ProxyFilter {
     /// The ID of the proxy to select.
     pub id: Option<NonEmptyString>,
@@ -171,7 +169,7 @@ where
 
 macro_rules! impl_proxydb_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+> ProxyDB for crate::utils::combinators::$id<$($param),+>
+        impl<$($param),+> ProxyDB for crate::combinators::$id<$($param),+>
         where
             $(
                 $param: ProxyDB,
@@ -189,7 +187,7 @@ macro_rules! impl_proxydb_either {
         ) -> Result<Proxy, Self::Error> {
             match self {
                 $(
-                    crate::utils::combinators::$id::$param(s) => s.get_proxy_if(ctx, filter, predicate).await.map_err(Into::into),
+                    crate::combinators::$id::$param(s) => s.get_proxy_if(ctx, filter, predicate).await.map_err(Into::into),
                 )+
             }
         }
@@ -202,7 +200,7 @@ macro_rules! impl_proxydb_either {
         ) -> Result<Proxy, Self::Error> {
             match self {
                 $(
-                    crate::utils::combinators::$id::$param(s) => s.get_proxy(ctx, filter).await.map_err(Into::into),
+                    crate::combinators::$id::$param(s) => s.get_proxy(ctx, filter).await.map_err(Into::into),
                 )+
             }
         }
@@ -210,7 +208,7 @@ macro_rules! impl_proxydb_either {
     };
 }
 
-crate::utils::combinators::impl_either!(impl_proxydb_either);
+crate::combinators::impl_either!(impl_proxydb_either);
 
 /// Trait that is used by the [`ProxyDB`] for providing an optional
 /// filter predicate to rule out returned results.

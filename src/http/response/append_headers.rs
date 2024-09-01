@@ -1,4 +1,5 @@
 use super::{IntoResponse, IntoResponseParts, Response, ResponseParts, TryIntoHeaderError};
+use crate::utils::macros::impl_deref;
 use http::header::{HeaderName, HeaderValue};
 use std::fmt;
 

@@ -1,6 +1,8 @@
 use crate::{
+    context::Extensions,
     http::{HeaderName, HeaderValue, Request},
-    service::{context::Extensions, Context, Matcher},
+    matcher::Matcher,
+    Context,
 };
 
 #[derive(Debug, Clone)]

@@ -1,6 +1,6 @@
+use crate::utils::macros::define_inner_service_accessors;
 use crate::{
-    net::stream::Stream,
-    service::{Context, Service},
+    stream::Stream,
     tls::{
         client::ClientHello,
         rustls::dep::{
@@ -9,6 +9,7 @@ use crate::{
         },
         SecureTransport,
     },
+    Context, Service,
 };
 use std::{fmt, sync::Arc};
 
