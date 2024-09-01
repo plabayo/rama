@@ -9,7 +9,7 @@
 //! use rama::http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
 //! use rama::http::service::web::{WebService, extract::Extension};
 //! use rama::http::{Body, Request, StatusCode, HeaderName};
-//! use rama::service::{Context, Service, Layer};
+//! use rama::{Context, Service, Layer};
 //! use serde::Deserialize;
 //!
 //! #[derive(Debug, Deserialize, Clone)]

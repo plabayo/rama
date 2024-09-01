@@ -41,9 +41,9 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// ```rust,no_run
 /// use rama::{
 ///     http::{server::HttpServer, service::fs::ServeDir},
-///     service::rt::Executor,
-///     service::{Layer, layer::TraceErrLayer},
+///     rt::Executor,
 ///     tcp::server::TcpListener,
+///     Layer, layer::TraceErrLayer,
 /// };
 ///
 /// #[tokio::main]
@@ -316,8 +316,8 @@ impl<F> ServeDir<F> {
     ///         server::HttpServer,
     ///         service::fs::{ServeDir, ServeFile},
     ///     },
-    ///     service::rt::Executor,
-    ///     service::{Layer, layer::TraceErrLayer},
+    ///     rt::Executor,
+    ///     Layer, layer::TraceErrLayer,
     ///     tcp::server::TcpListener,
     /// };
     ///
@@ -365,9 +365,10 @@ impl<F> ServeDir<F> {
     ///         server::HttpServer,
     ///         service::fs::{ServeDir, ServeFile},
     ///     },
-    ///     service::rt::Executor,
-    ///     service::{Layer, layer::TraceErrLayer},
+    ///     rt::Executor,
+    ///     layer::TraceErrLayer,
     ///     tcp::server::TcpListener,
+    ///     Layer,
     /// };
     ///
     /// #[tokio::main]
@@ -427,9 +428,11 @@ impl<F> ServeDir<F> {
     /// ```rust,no_run
     /// use rama::{
     ///     http::{server::HttpServer, service::fs::ServeDir, Body, Request, Response, StatusCode},
-    ///     service::rt::Executor,
-    ///     service::{service_fn, Context, Layer, layer::TraceErrLayer},
+    ///     rt::Executor,
+    ///     service::service_fn,
+    ///     layer::TraceErrLayer,
     ///     tcp::server::TcpListener,
+    ///     Context, Layer,
     /// };
     /// use std::convert::Infallible;
     ///

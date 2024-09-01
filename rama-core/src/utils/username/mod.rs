@@ -20,36 +20,6 @@
 //! [`UsernameLabelState::Ignored`] in case they did not. This way the parser-caller (e.g. [`parse_username`])
 //! can decide whether to fail on ignored labels.
 //!
-//! ## Example
-//!
-//! [`ProxyFilterUsernameParser`] is a real-world example of a parser that uses the username labels.
-//! It support proxy filter definitions directly within the username.
-//!
-//! [`ProxyFilterUsernameParser`]: crate::proxy::ProxyFilterUsernameParser
-//!
-//! ```rust
-//! use rama::proxy::{ProxyFilter, ProxyFilterUsernameParser};
-//! use rama::utils::username::parse_username;
-//! use rama::Context::Extensions;
-//!
-//! let mut ext = Extensions::default();
-//!
-//! let parser = ProxyFilterUsernameParser::default();
-//!
-//! let username = parse_username(
-//!     &mut ext, parser,
-//!     "john-residential-country-us",
-//! ).unwrap();
-//!
-//! assert_eq!(username, "john");
-//!
-//! let filter = ext.get::<ProxyFilter>().unwrap();
-//! assert_eq!(filter.residential, Some(true));
-//! assert_eq!(filter.country, Some(vec!["us".into()]));
-//! assert!(filter.datacenter.is_none());
-//! assert!(filter.mobile.is_none());
-//! ```
-//!
 //! # Username Composing
 //!
 //! Composing a username is the opposite of "Username Parsing",

@@ -13,7 +13,8 @@
 //! use rama::http::dep::http_body_util::combinators::BoxBody as InnerBoxBody;
 //! use rama::http::layer::compression::CompressionLayer;
 //! use rama::http::{Body, Request, Response, header::ACCEPT_ENCODING};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use std::convert::Infallible;
 //! use tokio::fs::{self, File};
 //! use tokio_util::io::ReaderStream;

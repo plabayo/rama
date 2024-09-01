@@ -6,7 +6,8 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response};
-//! use rama::service::{Context, Layer, Service, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Layer, Service};
 //! use rama::http::layer::trace::TraceLayer;
 //! use std::convert::Infallible;
 //!
@@ -45,7 +46,8 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response, HeaderMap, StatusCode};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use tracing::Level;
 //! use rama::http::layer::trace::{
 //!     TraceLayer, DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse,
@@ -88,7 +90,8 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response, HeaderMap, StatusCode};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
 //! use tracing::Span;
@@ -137,7 +140,8 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
 //! use tracing::Span;
@@ -219,7 +223,8 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response, HeaderMap, StatusCode};
-//! use rama::service::{Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::Layer;
 //! use rama::http::layer::trace::TraceLayer;
 //! use tracing::Span;
 //! use std::time::Duration;
@@ -260,7 +265,8 @@
 //!
 //! ```rust
 //! use rama::http::{Body, Request, Response};
-//! use rama::service::{Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::Layer;
 //! use rama::http::layer::{
 //!     trace::TraceLayer,
 //!     classify::{

@@ -53,7 +53,8 @@ use std::marker::PhantomData;
 /// ```rust
 /// use rama::{
 ///     http::{headers::Forwarded, layer::forwarded::GetForwardedHeadersLayer, Request},
-///     service::{Context, Service, Layer, service_fn},
+///     service::service_fn,
+///     Context, Service, Layer,
 /// };
 /// use std::{convert::Infallible, net::IpAddr};
 ///

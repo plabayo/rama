@@ -62,7 +62,7 @@
 //! ### `error` macro Example
 //!
 //! ```rust
-//! use rama::error::{error, ErrorExt, OpaqueError};
+//! use rama_core::error::{error, ErrorExt, OpaqueError};
 //!
 //! let error = error!("error").context("foo");
 //! assert_eq!(error.to_string(), "foo\r\n ↪ error");
@@ -110,7 +110,7 @@
 //! Option Example:
 //!
 //! ```rust
-//! use rama::error::{ErrorContext, ErrorExt};
+//! use rama_core::error::{ErrorContext, ErrorExt};
 //!
 //! let value = Some(42);
 //! let value = match value.context("value is None") {
@@ -126,7 +126,7 @@
 //! Result Example:
 //!
 //! ```rust
-//! use rama::error::{ErrorContext, ErrorExt, OpaqueError};
+//! use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
 //!
 //! let value: Result<_, OpaqueError> = Ok(42);
 //! let value = match value.context("get the answer") {

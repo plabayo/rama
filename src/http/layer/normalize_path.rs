@@ -8,7 +8,8 @@
 //! ```
 //! use std::{iter::once, convert::Infallible};
 //! use rama::error::BoxError;
-//! use rama::service::{Context, Layer, Service, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Layer, Service};
 //! use rama::http::{Body, Request, Response, StatusCode};
 //! use rama::http::layer::normalize_path::NormalizePathLayer;
 //!

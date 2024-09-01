@@ -8,7 +8,8 @@
 //! use rama::http::dep::http_body;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{Context, Poll}};
-//! use rama::service::{self, Layer, service_fn, Service};
+//! use rama::{Layer, Service, context};
+//! use rama::service::service_fn;
 //! use rama::http::layer::map_response_body::MapResponseBodyLayer;
 //! use rama::error::BoxError;
 //! use futures_lite::ready;
@@ -74,7 +75,7 @@
 //! // Call the service
 //! let request = Request::new(Body::from("foobar"));
 //!
-//! svc.serve(Context::default(), request).await?;
+//! svc.serve(context::Context::default(), request).await?;
 //! # Ok(())
 //! # }
 //! ```

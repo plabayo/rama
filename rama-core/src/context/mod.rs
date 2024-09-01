@@ -63,7 +63,7 @@
 //! # Example
 //!
 //! ```
-//! use rama::Context;
+//! use rama_core::Context;
 //! use std::sync::Arc;
 //!
 //! #[derive(Debug)]
@@ -83,7 +83,7 @@
 //! [`Extensions`]: crate::context::Extensions
 //!
 //! ```
-//! use rama::Context;
+//! use rama_core::Context;
 //!
 //! let mut ctx = Context::default();
 //! ctx.insert(5i32);
@@ -95,7 +95,7 @@
 //! The state can be accessed as a reference using the [`AsRef`] trait.
 //!
 //! ```
-//! use rama::service::{Context, context};
+//! use rama_core::{Context, context};
 //! use std::sync::Arc;
 //! use std::convert::AsRef;
 //!
@@ -250,7 +250,7 @@ impl<S> Context<S> {
     /// # Example
     ///
     /// ```
-    /// # use rama::Context;
+    /// # use rama_core::Context;
     /// # let mut ctx = Context::default();
     /// # ctx.insert(5i32);
     /// assert_eq!(ctx.get::<i32>(), Some(&5i32));
@@ -274,7 +274,7 @@ impl<S> Context<S> {
     /// # Example
     ///
     /// ```
-    /// # use rama::Context;
+    /// # use rama_core::Context;
     /// # let mut ctx = Context::default();
     /// # ctx.insert(5i32);
     /// let x = ctx.get_mut::<i32>().unwrap();
@@ -293,7 +293,7 @@ impl<S> Context<S> {
     /// # Example
     ///
     /// ```
-    /// # use rama::Context;
+    /// # use rama_core::Context;
     /// let mut ctx = Context::default();
     /// let value: &i32 = ctx.get_or_insert_with(|| 42);
     /// assert_eq!(*value, 42);
@@ -317,7 +317,7 @@ impl<S> Context<S> {
     /// # Example
     ///
     /// ```
-    /// # use rama::Context;
+    /// # use rama_core::Context;
     /// # use std::sync::Arc;
     /// # #[derive(Debug, Clone)]
     /// struct State {
@@ -384,7 +384,7 @@ impl<S> Context<S> {
     /// # Example
     ///
     /// ```
-    /// # use rama::Context;
+    /// # use rama_core::Context;
     /// let mut ctx = Context::default();
     /// ctx.insert(5i32);
     ///
@@ -402,7 +402,7 @@ impl<S> Context<S> {
     /// # Example
     ///
     /// ```
-    /// # use rama::Context;
+    /// # use rama_core::Context;
     /// # let mut ctx = Context::default();
     /// # ctx.insert(5i32);
     ///
@@ -423,7 +423,7 @@ impl<S> Context<S> {
     /// # Example
     ///
     /// ```
-    /// # use rama::Context;
+    /// # use rama_core::Context;
     /// let mut ctx = Context::default();
     ///
     /// assert_eq!(ctx.insert(5i32), None);
@@ -476,7 +476,7 @@ impl<S> Context<S> {
     /// # Example
     ///
     /// ```
-    /// # use rama::service::{context::Extensions, Context};
+    /// # use rama_core::{context::Extensions, Context};
     /// let mut ctx = Context::default();
     /// let mut ext = Extensions::default();
     ///
@@ -496,7 +496,7 @@ impl<S> Context<S> {
     /// # Example
     ///
     /// ```
-    /// # use rama::Context;
+    /// # use rama_core::Context;
     /// let mut ctx = Context::default();
     ///
     /// ctx.insert(5i32);

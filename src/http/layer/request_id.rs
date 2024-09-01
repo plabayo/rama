@@ -7,7 +7,8 @@
 //!     SetRequestIdLayer, PropagateRequestIdLayer, MakeRequestId, RequestId,
 //! };
 //! use rama::http::{Body, Request, Response, header::HeaderName};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //! use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 //!

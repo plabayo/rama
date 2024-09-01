@@ -5,7 +5,8 @@
 //! ```
 //! use rama::http::layer::remove_header::RemoveResponseHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]

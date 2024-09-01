@@ -1,7 +1,7 @@
+use rama::context::{AsRef, Context};
 use rama::http::service::web::WebService;
 use rama::http::{Body, Request, StatusCode};
-use rama::service::{service_fn, Context, Service};
-use rama::Context::AsRef;
+use rama::service::{service_fn, Service};
 use std::sync::Arc;
 
 // This will implement `AsRef` for each field in the struct.

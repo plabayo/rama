@@ -5,7 +5,8 @@
 //! ```
 //! use rama::http::layer::remove_header::RemoveRequestHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -15,7 +16,7 @@
 //! # });
 //! #
 //! let mut svc = (
-//!     // Layer that removes all request headers with the prefix `x-foo`.
+//!     // Layer that removes all request headers with the prefix `x-foo`.`ac
 //!     RemoveRequestHeaderLayer::prefix("x-foo"),
 //! ).layer(http_client);
 //!

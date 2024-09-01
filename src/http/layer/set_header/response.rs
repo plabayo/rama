@@ -11,7 +11,8 @@
 //! ```
 //! use rama::http::layer::set_header::SetResponseHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -47,7 +48,8 @@
 //! use rama::http::layer::set_header::SetResponseHeaderLayer;
 //! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
 //! use crate::rama::http::dep::http_body::Body as _;
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]

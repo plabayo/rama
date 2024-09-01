@@ -10,7 +10,8 @@
 //!
 //! use rama::http::{Request, Response, Body, header::HeaderName};
 //! use rama::http::layer::catch_panic::CatchPanicLayer;
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]
@@ -42,7 +43,8 @@
 //!
 //! use rama::http::{Body, Request, StatusCode, Response, header::{self, HeaderName}};
 //! use rama::http::layer::catch_panic::CatchPanicLayer;
-//! use rama::service::{Service, Layer, service_fn};
+//! use rama::service::{Service, service_fn};
+//! use rama::Layer;
 //! use rama::error::BoxError;
 //!
 //! # #[tokio::main]

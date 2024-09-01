@@ -55,7 +55,8 @@ use std::marker::PhantomData;
 /// # use rama::{http::Request, stream::SocketInfo};
 /// use rama::{
 ///     http::{headers::XRealIp, layer::forwarded::SetForwardedHeadersLayer},
-///     service::{Context, Service, Layer, service_fn},
+///     service::service_fn,
+///     Context, Service, Layer,
 /// };
 /// use std::convert::Infallible;
 ///

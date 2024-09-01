@@ -1,4 +1,4 @@
-use rama_macros::AsRef;
+use rama::context::AsRef;
 use std::sync::Arc;
 
 #[derive(AsRef)]

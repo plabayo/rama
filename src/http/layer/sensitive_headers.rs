@@ -7,7 +7,8 @@
 //! ```
 //! use rama::http::layer::sensitive_headers::SetSensitiveHeadersLayer;
 //! use rama::http::{Body, Request, Response, header::AUTHORIZATION};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //! use std::{iter::once, convert::Infallible};
 //!

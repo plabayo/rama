@@ -27,7 +27,8 @@
 //!         layer::{ProxyDBLayer, ProxyFilterMode},
 //!         ProxyFilter,
 //!    },
-//!    service::{Context, Service, Layer, service_fn},
+//!    service::service_fn,
+//!    Context, Service, Layer,
 //!    net::address::ProxyAddress,
 //!    utils::str::NonEmptyString,
 //! };
@@ -123,7 +124,8 @@
 //!         layer::{ProxyDBLayer, ProxyFilterMode},
 //!         ProxyFilter,
 //!    },
-//!    service::{Context, Service, Layer, service_fn},
+//!    service::service_fn,
+//!    Context, Service, Layer,
 //!    net::address::ProxyAddress,
 //!    utils::str::NonEmptyString,
 //! };

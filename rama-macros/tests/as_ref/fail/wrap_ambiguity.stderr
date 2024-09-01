@@ -1,4 +1,4 @@
-error[E0119]: conflicting implementations of trait `AsRef<String>` for type `ConnState`
+error[E0119]: conflicting implementations of trait `AsRef<std::string::String>` for type `ConnState`
   --> tests/as_ref/fail/wrap_ambiguity.rs:15:17
    |
 14 |     app: Arc<AppState>,

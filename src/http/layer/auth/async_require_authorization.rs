@@ -9,7 +9,8 @@
 //!
 //! use rama::http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
 //! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! #[derive(Clone, Copy)]
@@ -78,7 +79,8 @@
 //!
 //! use rama::http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
 //! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::service::{Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! async fn check_auth<B>(request: &Request<B>) -> Option<UserId> {

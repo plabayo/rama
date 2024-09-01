@@ -1,6 +1,6 @@
 #![deny(noop_method_call)]
 
-use rama_macros::AsRef;
+use rama::context::AsRef;
 
 #[derive(AsRef)]
 struct State {

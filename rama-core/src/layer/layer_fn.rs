@@ -132,7 +132,7 @@ mod tests {
         let _svc = layer.layer("foo");
 
         assert_eq!(
-            "LayerFn { f: <rama::service::layer::layer_fn::tests::layer_fn_has_useful_debug_impl::{{closure}}> }".to_owned(),
+            "LayerFn { f: <rama_core::layer::layer_fn::tests::layer_fn_has_useful_debug_impl::{{closure}}> }".to_owned(),
             format!("{:?}", layer),
         );
     }

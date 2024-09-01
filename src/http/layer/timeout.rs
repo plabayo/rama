@@ -18,7 +18,8 @@
 //! ```
 //! use std::{convert::Infallible, time::Duration};
 //!
-//! use rama::service::{Layer, service_fn};
+//! use rama::Layer;
+//! use rama::service::service_fn;
 //! use rama::http::{Body, Request, Response};
 //! use rama::http::layer::timeout::TimeoutLayer;
 //! use rama::error::BoxError;

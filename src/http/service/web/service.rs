@@ -268,7 +268,7 @@ where
 /// use rama::http::matcher::{HttpMatcher, MethodMatcher};
 /// use rama::http::{Body, Request, Response, StatusCode};
 /// use rama::http::dep::http_body_util::BodyExt;
-/// use rama::service::{Context, Service};
+/// use rama::{Context, Service};
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -296,7 +296,7 @@ where
 /// use rama::http::{Body, Request, Response, StatusCode};
 /// use rama::http::dep::http_body_util::BodyExt;
 /// use rama::http::service::web::IntoEndpointService;
-/// use rama::service::{Context, Service};
+/// use rama::{Context, Service};
 ///
 /// #[tokio::main]
 /// async fn main() {

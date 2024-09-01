@@ -10,7 +10,8 @@
 //! use flate2::{write::GzEncoder, Compression};
 //!
 //! use rama::http::{Body, header, HeaderValue, Request, Response};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::layer::decompression::{DecompressionBody, RequestDecompressionLayer};
 //! use rama::http::dep::http_body_util::BodyExt;
 //! use rama::error::BoxError;
@@ -51,7 +52,8 @@
 //! use bytes::{Bytes, BytesMut};
 //!
 //! use rama::http::{Body, Request, Response};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::layer::{compression::Compression, decompression::DecompressionLayer};
 //! use rama::http::dep::http_body_util::BodyExt;
 //! use rama::error::BoxError;

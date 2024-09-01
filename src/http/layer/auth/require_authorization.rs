@@ -9,7 +9,8 @@
 //!
 //! use rama::http::layer::validate_request::{ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer};
 //! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! async fn handle(request: Request) -> Result<Response, BoxError> {

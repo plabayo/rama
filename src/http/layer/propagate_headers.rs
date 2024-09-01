@@ -5,7 +5,8 @@
 //! ```rust
 //! use std::convert::Infallible;
 //! use rama::error::BoxError;
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::{Body, Request, Response, header::HeaderName};
 //! use rama::http::layer::propagate_headers::PropagateHeaderLayer;
 //!

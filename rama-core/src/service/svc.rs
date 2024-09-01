@@ -86,6 +86,7 @@ trait DynService<S, Request> {
     type Response;
     type Error;
 
+    #[allow(clippy::type_complexity)]
     fn serve_box(
         &self,
         ctx: Context<S>,

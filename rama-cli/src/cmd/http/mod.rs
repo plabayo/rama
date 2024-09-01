@@ -6,7 +6,7 @@ use rama::{
     error::{error, BoxError, ErrorContext, OpaqueError},
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
-        client::{HttpClient, HttpConnectorLayer},
+        client::HttpClient,
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
@@ -19,13 +19,9 @@ use rama::{
     },
     layer::{HijackLayer, MapResultLayer},
     net::{address::ProxyAddress, user::ProxyCredential},
-    proxy::http::client::layer::{
-        HttpProxyAddressLayer, HttpProxyConnectorLayer, SetProxyAuthHttpHeaderLayer,
-    },
+    proxy::http::client::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
     rt::Executor,
     service::service_fn,
-    tcp::client::service::TcpConnector,
-    tls::rustls::client::HttpsConnectorLayer,
     Context, Layer, Service,
 };
 use std::{io::IsTerminal, time::Duration};
@@ -396,15 +392,7 @@ where
     let tls_client_config =
         tls::create_tls_client_config(cfg.insecure, cfg.tls, cfg.cert, cfg.cert_key).await?;
 
-    Ok(client_builder.layer(HttpClient::new(
-        (
-            HttpConnectorLayer::new(),
-            HttpsConnectorLayer::auto().with_config(tls_client_config),
-            HttpProxyConnectorLayer::optional(),
-            HttpsConnectorLayer::tunnel(),
-        )
-            .layer(TcpConnector::default()),
-    )))
+    Ok(client_builder.layer(HttpClient::default().with_tls_config(tls_client_config)))
 }
 
 fn parse_print_mode(mode: &str) -> Result<(Option<WriterMode>, Option<WriterMode>), BoxError> {

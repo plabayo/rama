@@ -18,7 +18,7 @@ use crate::{
 /// See [`Dns`] and [`DnsMapLayer`] for more information.
 ///
 /// [`Dns`]: crate::dns::Dns
-/// [`DnsMapLayer`]: crate::dns::layer::DnsMapLayer
+/// [`DnsMapLayer`]: crate::http::layer::dns::DnsMapLayer
 pub struct DnsMapService<S> {
     inner: S,
     header_name: HeaderName,

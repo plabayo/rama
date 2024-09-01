@@ -7,9 +7,9 @@
 //! ```
 //! use std::{sync::Arc, convert::Infallible};
 //!
-//! use rama::service::{Context, Service, Layer, service_fn};
-//! use rama::service::layer::add_extension::AddExtensionLayer;
-//! use rama::error::BoxError;
+//! use rama_core::{Context, Service, Layer, service::service_fn};
+//! use rama_core::layer::add_extension::AddExtensionLayer;
+//! use rama_core::error::BoxError;
 //!
 //! # struct DatabaseConnectionPool;
 //! # impl DatabaseConnectionPool {

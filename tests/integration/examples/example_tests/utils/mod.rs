@@ -3,7 +3,7 @@
 use rama::{
     error::{BoxError, OpaqueError},
     http::{
-        client::{HttpClient, HttpClientExt, HttpConnectorLayer, IntoUrl, RequestBuilder},
+        client::{HttpClient, HttpClientExt, IntoUrl, RequestBuilder},
         layer::{
             decompression::DecompressionLayer,
             follow_redirect::FollowRedirectLayer,
@@ -14,11 +14,9 @@ use rama::{
         Request, Response,
     },
     layer::MapResultLayer,
-    proxy::http::client::layer::{HttpProxyConnectorLayer, SetProxyAuthHttpHeaderLayer},
+    proxy::http::client::layer::SetProxyAuthHttpHeaderLayer,
     service::BoxService,
     stream::Stream,
-    tcp::client::service::TcpConnector,
-    tls::rustls::client::HttpsConnectorLayer,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
     Layer, Service,
 };
@@ -80,14 +78,6 @@ where
             .spawn()
             .unwrap();
 
-        let http_connector = (
-            HttpConnectorLayer::new(),
-            HttpsConnectorLayer::auto(),
-            HttpProxyConnectorLayer::optional(),
-            HttpsConnectorLayer::tunnel(),
-        )
-            .layer(TcpConnector::default());
-
         let client = (
             MapResultLayer::new(map_internal_client_error),
             TraceLayer::new_for_http(),
@@ -107,7 +97,7 @@ where
             AddRequiredRequestHeadersLayer::default(),
             SetProxyAuthHttpHeaderLayer::default(),
         )
-            .layer(HttpClient::new(http_connector))
+            .layer(HttpClient::default())
             .boxed();
 
         Self {

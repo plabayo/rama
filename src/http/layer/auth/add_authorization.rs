@@ -10,7 +10,8 @@
 //! use rama::http::layer::validate_request::{ValidateRequestHeader, ValidateRequestHeaderLayer};
 //! use rama::http::layer::auth::AddAuthorizationLayer;
 //! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::error::BoxError;
 //!
 //! # async fn handle(request: Request) -> Result<Response, BoxError> {

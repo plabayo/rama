@@ -17,7 +17,8 @@
 //! ## Basic usage
 //!
 //! ```
-//! use rama::service::{Context, Service, Layer, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::{Body, Request, Response, StatusCode, header};
 //! use rama::http::layer::follow_redirect::{FollowRedirectLayer, RequestUri};
 //!
@@ -55,7 +56,9 @@
 //! # #![allow(unused)]
 //!
 //! # use std::convert::Infallible;
-//! use rama::service::{Context, Service, Layer, service_fn, layer::MapErrLayer};
+//! use rama::service::service_fn;
+//! use rama::layer::MapErrLayer;
+//! use rama::{Context, Service, Layer};
 //! use rama::http::{Body, Request, Response};
 //! use rama::http::layer::follow_redirect::{
 //!     policy::{self, PolicyExt},

@@ -43,8 +43,9 @@
 //! ```
 //! use rama::{
 //!     http::{client::HttpClientExt, IntoResponse, Request, Response, StatusCode},
-//!     service::{Context, Layer, service_fn},
+//!     service::service_fn,
 //!     ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
+//!     Context, Layer,
 //! };
 //! use std::convert::Infallible;
 //!

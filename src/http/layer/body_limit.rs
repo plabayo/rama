@@ -5,7 +5,8 @@
 //! ```
 //! use rama::http::{Body, Request, Response};
 //! use std::convert::Infallible;
-//! use rama::service::{self, Layer, Service, service_fn};
+//! use rama::service::service_fn;
+//! use rama::{Context, Layer, Service};
 //! use rama::http::layer::body_limit::BodyLimitLayer;
 //!
 //! async fn handle<B>(_: Request<B>) -> Result<Response, Infallible> {

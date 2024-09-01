@@ -7,7 +7,7 @@ use crate::{error::BoxError, stream::Stream, Context, Service};
 /// # Example
 ///
 /// ```rust
-/// use rama::{error::BoxError, service::{Context, Service}, stream::service::EchoService};
+/// use rama::{error::BoxError, Context, Service, stream::service::EchoService};
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), BoxError> {

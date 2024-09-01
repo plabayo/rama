@@ -1,16 +1,16 @@
-use super::HttpProxyConnectorService;
+use super::HttpProxyConnector;
 use crate::Layer;
 
 #[derive(Debug, Clone, Default)]
-/// A [`Layer`] which wraps the given service with a [`HttpProxyConnectorService`].
+/// A [`Layer`] which wraps the given service with a [`HttpProxyConnector`].
 ///
-/// See [`HttpProxyConnectorService`] for more information.
+/// See [`HttpProxyConnector`] for more information.
 pub struct HttpProxyConnectorLayer {
     required: bool,
 }
 
 impl HttpProxyConnectorLayer {
-    /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnectorService`]
+    /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnector`]
     /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
     /// in the [`Context`].
     ///
@@ -20,7 +20,7 @@ impl HttpProxyConnectorLayer {
         Self { required: false }
     }
 
-    /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnectorService`]
+    /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnector`]
     /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
     /// not available in the [`Context`].
     ///
@@ -32,9 +32,9 @@ impl HttpProxyConnectorLayer {
 }
 
 impl<S> Layer<S> for HttpProxyConnectorLayer {
-    type Service = HttpProxyConnectorService<S>;
+    type Service = HttpProxyConnector<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        HttpProxyConnectorService::new(inner, self.required)
+        HttpProxyConnector::new(inner, self.required)
     }
 }

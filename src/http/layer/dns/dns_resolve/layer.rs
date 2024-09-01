@@ -3,7 +3,7 @@ use crate::{http::HeaderName, Layer};
 
 /// Layer which can extend [`Dns`] overwrites with mappings.
 ///
-/// See [the module level documentation](crate::dns::layer) for more information.
+/// See [the module level documentation](crate::http::layer::dns) for more information.
 ///
 /// [`Dns`]: crate::dns::Dns
 #[derive(Debug, Clone)]

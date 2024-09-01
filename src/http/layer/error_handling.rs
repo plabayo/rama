@@ -10,7 +10,8 @@
 //!         service::web::WebService,
 //!         Body, IntoResponse, Request, Response, StatusCode,
 //!     },
-//!     service::{Context, Service, Layer, service_fn},
+//!     service::service_fn,
+//!     Context, Service, Layer,
 //! };
 //! use std::time::Duration;
 //!

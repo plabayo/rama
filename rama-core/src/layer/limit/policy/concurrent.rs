@@ -5,10 +5,9 @@
 //! # Examples
 //!
 //! ```
-//! use rama::service::{
-//!     layer::limit::{Limit, policy::ConcurrentPolicy},
-//!     Context, Service, service_fn,
-//! };
+//! use rama_core::layer::limit::{Limit, policy::ConcurrentPolicy};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service};
 //! # use std::convert::Infallible;
 //!
 //! # #[tokio::main]

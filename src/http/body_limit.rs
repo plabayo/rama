@@ -4,7 +4,7 @@
 /// such that http services used can apply the limit when found in that [`Context`].
 ///
 /// [`Context`]: crate::Context`
-/// [`BodyLimitLayer`]: crate::layer::http::BodyLimitLayer
+/// [`BodyLimitLayer`]: crate::http::layer::body_limit::BodyLimitLayer
 #[derive(Debug, Clone, Copy)]
 pub struct BodyLimit {
     kind: Option<BodyLimitKind>,

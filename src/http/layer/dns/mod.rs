@@ -9,10 +9,11 @@
 //!
 //! ```rust
 //! use rama::{
-//!     dns::layer::DnsMapLayer,
+//!     http::layer::dns::DnsMapLayer,
 //!     http::{HeaderName, Request, RequestContext},
 //!     net::address::Host,
-//!     service::{service_fn, Context, Service, Layer},
+//!     service::service_fn,
+//!     Context, Service, Layer,
 //! };
 //! use std::{
 //!     convert::Infallible,

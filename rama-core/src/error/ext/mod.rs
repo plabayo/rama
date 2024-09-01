@@ -13,7 +13,7 @@ pub use wrapper::OpaqueError;
 /// # Examples
 ///
 /// ```
-/// use rama::error::ErrorContext;
+/// use rama_core::error::ErrorContext;
 ///
 /// let result = "hello".parse::<i32>().context("parse integer");
 /// assert_eq!("parse integer\r\n ↪ invalid digit found in string", result.unwrap_err().to_string());
@@ -88,7 +88,7 @@ impl<T> ErrorContext for Option<T> {
 /// # Examples
 ///
 /// ```
-/// use rama::error::{BoxError, ErrorExt, ErrorContext};
+/// use rama_core::error::{BoxError, ErrorExt, ErrorContext};
 ///
 /// #[derive(Debug)]
 /// struct CustomError;
@@ -110,7 +110,7 @@ pub trait ErrorExt: private::SealedErrorExt {
     /// # Examples
     ///
     /// ```
-    /// use rama::error::ErrorExt;
+    /// use rama_core::error::ErrorExt;
     ///
     /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").context("do I/O");
     /// assert_eq!(error.to_string(), "do I/O\r\n ↪ oh no!");
@@ -124,7 +124,7 @@ pub trait ErrorExt: private::SealedErrorExt {
     /// # Examples
     ///
     /// ```
-    /// use rama::error::ErrorExt;
+    /// use rama_core::error::ErrorExt;
     ///
     /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").with_context(|| format!(
     ///    "do I/O ({})", 42,
@@ -141,7 +141,7 @@ pub trait ErrorExt: private::SealedErrorExt {
     /// # Examples
     ///
     /// ```
-    /// use rama::error::ErrorExt;
+    /// use rama_core::error::ErrorExt;
     ///
     /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").backtrace();
     /// println!("{}", error);
@@ -153,7 +153,7 @@ pub trait ErrorExt: private::SealedErrorExt {
     /// # Examples
     ///
     /// ```
-    /// use rama::error::ErrorExt;
+    /// use rama_core::error::ErrorExt;
     ///
     /// let error = std::io::Error::new(std::io::ErrorKind::Other, "oh no!").into_opaque();
     /// assert_eq!(error.to_string(), "oh no!");
