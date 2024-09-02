@@ -3,11 +3,11 @@
 Types implementing the `Service` trait may be the one actually providing the `Result` directly or indirectly.
 They might also contain as one of its properties another `Service` that somehow produces a `Result` instead. The exact mode of operation is freely defined by the `Service` implementation.
 
-An easy example of this is [a `Timeout` service](https://github.com/plabayo/rama/blob/main/src/service/layer/timeout/mod.rs)
+An easy example of this is [a `Timeout` service](https://github.com/plabayo/rama/blob/main/rama-core/src/layer/timeout/mod.rs)
 which contains any other `Service` but will return a timeout 'error' in case that service took more
 then the defined deadline to produce a result. A service such as `Timeout` is referred to as a `Layer` and
 is usually created using an implementation of the `Layer` trait, as defined in
-<https://github.com/plabayo/rama/blob/main/src/service/layer/mod.rs>.
+<https://github.com/plabayo/rama/blob/main/rama-core/src/layer/mod.rs>.
 
 You can nest `Service`s as deep as you want and some can even contain multiple ones that are either
 all helping in producing a response for the given request or where it branches of and calls on of the wrapped services

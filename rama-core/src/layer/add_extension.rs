@@ -1,6 +1,6 @@
 //! Middleware that clones a value into the incoming [Context].
 //!
-//! [Context]: https://docs.rs/rama/latest/rama/service/context/struct.Context.html
+//! [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 //!
 //! # Example
 //!
@@ -57,7 +57,7 @@ use std::fmt;
 
 /// [`Layer`] for adding some shareable value to incoming [Context].
 ///
-/// [Context]: https://docs.rs/rama/latest/rama/service/context/struct.Context.html
+/// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 pub struct AddExtensionLayer<T> {
     value: T,
 }
@@ -104,7 +104,7 @@ where
 
 /// Middleware for adding some shareable value to incoming [Context].
 ///
-/// [Context]: https://docs.rs/rama/latest/rama/service/context/struct.Context.html
+/// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 pub struct AddExtension<S, T> {
     inner: S,
     value: T,

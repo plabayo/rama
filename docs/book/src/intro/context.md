@@ -14,7 +14,7 @@ fn serve(
 - `Request` is the input used to produce a `Result`.
 
 `Context<State>` is what this chapter is about,
-and its documemtation can be consumed at <https://ramaproxy.org/docs/rama/service/context/struct.Context.html>.
+and its documemtation can be consumed at <https://ramaproxy.org/docs/rama/context/struct.Context.html>.
 
 `Context<State>` is used to:
 
@@ -58,13 +58,13 @@ gracefully with its absence. Good examples of this are header-related inputs. He
 and so absence of [`Extensions`]s that might be created as a result of these might reasonably not exist.
 It might of course still mean the app returns an error response when it is absent, but it should not unwrap/panic.
 
-[`Context`]: https://ramaproxy.org/docs/rama/service/context/struct.Context.html
-[`Context::insert`]: https://ramaproxy.org/docs/rama/service/context/struct.Context.html#method.insert
-[`Extensions`]: https://ramaproxy.org/docs/rama/service/context/struct.Extensions.html
+[`Context`]: https://ramaproxy.org/docs/rama/context/struct.Context.html
+[`Context::insert`]: https://ramaproxy.org/docs/rama/context/struct.Context.html#method.insert
+[`Extensions`]: https://ramaproxy.org/docs/rama/context/struct.Extensions.html
 
 ## State Wraps
 
-> 📖 [rustdoc link](https://ramaproxy.org/docs/rama/service/context/struct.Context.html#method.map_state)
+> 📖 [rustdoc link](https://ramaproxy.org/docs/rama/context/struct.Context.html#method.map_state)
 
 `rama` was built from the ground up to operate on and between different layers of the network stack.
 This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?

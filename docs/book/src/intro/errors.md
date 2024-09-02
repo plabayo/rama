@@ -58,38 +58,6 @@ The other advantage of [`OpaqueError`] over [`BoxError`]
 is that it is Sized and can be used in places where a `Sized`` type is required,
 while [`BoxError`] is `?Sized` and can give you a hard time in certain scenarios.
 
-## `error` macro
-
-The [`error`] macro is a convenient way to create an [`OpaqueError`]
-from an error, format string or displayable type.
-
-### `error` macro Example
-
-```rust
-use rama::error::{error, ErrorExt, OpaqueError};
-
-let error = error!("error").context("foo");
-assert_eq!(error.to_string(), "foo: error");
-
-let error = error!("error {}", 404).context("foo");
-assert_eq!(error.to_string(), "foo: error 404");
-
-#[derive(Debug)]
-struct CustomError;
-
-impl std::fmt::Display for CustomError {
-  fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-     write!(f, "entity not found")
-  }
-}
-
-impl std::error::Error for CustomError {}
-
-let error = error!(CustomError).context("foo");
-
-assert_eq!(error.to_string(), "foo: entity not found");
-```
-
 ## Error Context
 
 The [`ErrorContext`] allows you to add a context to [`Result`]
@@ -180,6 +148,5 @@ or even [the `anyhow` crate](https://docs.rs/anyhow). All is possible.
 [`ErrorContext`]: https://ramaproxy.org/docs/rama/error/trait.ErrorContext.html
 [`Result`]: https://doc.rust-lang.org/stable/std/result/enum.Result.html
 [`Option`]: https://doc.rust-lang.org/stable/std/option/enum.Option.html
-[`error`]: https://ramaproxy.org/docs/rama/error/macro.error.html
 [`std::error::Error`]: https://doc.rust-lang.org/stable/std/error/trait.Error.html
 [`std::error::Error::source`]: https://doc.rust-lang.org/stable/std/error/trait.Error.html#method.source

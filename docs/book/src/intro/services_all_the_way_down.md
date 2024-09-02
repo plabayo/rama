@@ -2,7 +2,7 @@
 
 To understand Rama you need to understand the abstraction it uses, which is all about services.
 It all boils down to the `Service` trait that can be found at
-<https://github.com/plabayo/rama/blob/main/src/service/svc.rs>.
+<https://github.com/plabayo/rama/blob/main/rama-core/src/service/svc.rs>.
 
 > 💡 Rama's `Service` trait and design is directly influenced by
 > [tower-rs/tower](https://github.com/tower-rs/tower). The initial goal was to actually use
@@ -15,7 +15,7 @@ It all boils down to the `Service` trait that can be found at
 > and why it is such an excellent solution to this design space. You can find it
 > at <https://github.com/tower-rs/tower/blob/master/guides/README.md> 📚. A must read if you haven't already.
 
-[The trait](https://github.com/plabayo/rama/blob/main/src/service/svc.rs)
+[The trait](https://github.com/plabayo/rama/blob/main/rama-core/src/service/svc.rs)
 can be represented in reduced form as follows:
 
 ```rust,noplayground

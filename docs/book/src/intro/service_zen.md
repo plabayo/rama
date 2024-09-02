@@ -73,12 +73,12 @@ Speaking about `Connectors`, those are a nice example of a type of [`Service`][s
 [Services][service], it's all [services][service].
 
 [service]: https://ramaproxy.org/docs/rama/service/trait.Service.html
-[`Either`]: https://ramaproxy.org/docs/rama/utils/combinators/index.html
+[`Either`]: https://ramaproxy.org/docs/rama/combinators/index.html
 
-[a Limit layer]: https://ramaproxy.org/docs/rama/service/layer/limit/struct.Limit.html
+[a Limit layer]: https://ramaproxy.org/docs/rama/layer/limit/struct.Limit.html
 
-[`Extension`]: https://ramaproxy.org/docs/rama/service/context/struct.Extensions.html
-[`Context`]: https://ramaproxy.org/docs/rama/service/context/struct.Context.html
+[`Extension`]: https://ramaproxy.org/docs/rama/context/struct.Extensions.html
+[`Context`]: https://ramaproxy.org/docs/rama/context/struct.Context.html
 
 [`ProxyAddress`]: https://ramaproxy.org/docs/rama/net/address/struct.ProxyAddress.html
 

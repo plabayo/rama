@@ -31,12 +31,12 @@ Let's dive into a real example where we struggled ourselves in finding
 this balance between giving enough flexibility and at the same time
 keeping it simple enough.
 
-[`rama::service::layer::limit`](https://ramaproxy.org/docs/rama/service/layer/limit/struct.Limit.html) is a generic middleware that allows you to limit what
+[`rama::service::layer::limit`](https://ramaproxy.org/docs/rama/layer/limit/struct.Limit.html) is a generic middleware that allows you to limit what
 requests can go through and which not. What this means depends a lot on
-the [`Policy`](https://ramaproxy.org/docs/rama/service/layer/limit/policy/trait.Policy.html) used.
+the [`Policy`](https://ramaproxy.org/docs/rama/layer/limit/policy/trait.Policy.html) used.
 You could go as far as adding firewal capabilities to it, even
 though we also have the
-[`HijackService`](https://ramaproxy.org/docs/rama/service/layer/struct.HijackService.html) for that.
+[`HijackService`](https://ramaproxy.org/docs/rama/layer/struct.HijackService.html) for that.
 
 From a consumer of a _service_ wrapped in the `limit` layer there are only two
 outcomes:

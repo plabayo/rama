@@ -1,6 +1,6 @@
 //! Middleware that gets called with a clone of the value of to given type if it is available in the current [`Context`].
 //!
-//! [Context]: https://docs.rs/rama/latest/rama/service/context/struct.Context.html
+//! [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 
 use crate::utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
@@ -8,7 +8,7 @@ use std::{fmt, future::Future, marker::PhantomData};
 
 /// [`Layer`] for adding some shareable value to incoming [Context].
 ///
-/// [Context]: https://docs.rs/rama/latest/rama/service/context/struct.Context.html
+/// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 pub struct GetExtensionLayer<T, Fut, F> {
     callback: F,
     _phantom: PhantomData<fn(T) -> Fut>,
@@ -69,7 +69,7 @@ where
 
 /// Middleware for adding some shareable value to incoming [Context].
 ///
-/// [Context]: https://docs.rs/rama/latest/rama/service/context/struct.Context.html
+/// [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 pub struct GetExtension<S, T, Fut, F> {
     inner: S,
     callback: F,
