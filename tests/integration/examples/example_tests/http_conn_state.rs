@@ -9,7 +9,7 @@ use rama::{
 async fn test_http_conn_state() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_conn_state");
+    let runner = utils::ExampleRunner::interactive("http_conn_state", None);
 
     let response = runner
         .get("http://127.0.0.1:62000")

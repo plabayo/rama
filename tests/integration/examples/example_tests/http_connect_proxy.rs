@@ -28,7 +28,7 @@ async fn test_http_connect_proxy() {
             .unwrap();
     });
 
-    let runner = utils::ExampleRunner::interactive("http_connect_proxy");
+    let runner = utils::ExampleRunner::interactive("http_connect_proxy", None);
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress::try_from("http://john:secret@127.0.0.1:62001").unwrap());

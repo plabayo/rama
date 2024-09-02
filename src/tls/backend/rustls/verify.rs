@@ -2,7 +2,7 @@
 //!
 //! ... or rather the lack of verification where it is not needed.
 
-use crate::tls::rustls::dep::{
+use crate::tls::backend::rustls::dep::{
     pki_types::{CertificateDer, ServerName, UnixTime},
     rustls::{
         client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},

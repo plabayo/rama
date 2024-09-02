@@ -19,7 +19,7 @@ quote = { workspace = true }
 syn = { workspace = true, features = ["full", "parsing"] }
 
 [dev-dependencies]
-rama = { path = "..", features = ["full"] }
+rama = { path = ".." }
 syn = { workspace = true, features = ["full", "extra-traits"] }
 trybuild = { workspace = true }
 

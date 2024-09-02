@@ -43,7 +43,7 @@ pub mod dep {
         //!
         //! [`rustls`]: https://docs.rs/rustls
         //! [`tokio-rustls`]: https://docs.rs/tokio-rustls
-        //! [`TlsAcceptorLayer`]: crate::tls::rustls::server::TlsAcceptorLayer
+        //! [`TlsAcceptorLayer`]: crate::tls::backend::rustls::server::TlsAcceptorLayer
 
         pub use rustls::*;
 

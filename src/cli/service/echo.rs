@@ -6,9 +6,9 @@
 //! [`tls`]: crate::tls
 
 use crate::{
-    cli::{tls::TlsServerCertKeyPair, ForwardKind},
+    cli::ForwardKind,
     combinators::Either7,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::BoxError,
     http::{
         dep::http_body_util::BodyExt,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
@@ -25,7 +25,6 @@ use crate::{
     proxy::pp::server::HaProxyLayer,
     rt::Executor,
     stream::{layer::http::BodyLimitLayer, SocketInfo},
-    tls::{client::ClientHelloExtension, SecureTransport},
     ua::{UserAgent, UserAgentClassifierLayer},
     Context, Layer, Service,
 };
@@ -33,11 +32,18 @@ use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
 
-#[cfg(feature = "boring")]
-use crate::tls::boring::server::TlsAcceptorLayer;
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use crate::{
+    cli::tls::TlsServerCertKeyPair,
+    error::{ErrorContext, OpaqueError},
+    tls::{client::ClientHelloExtension, SecureTransport},
+};
 
-#[cfg(not(feature = "boring"))]
-use crate::tls::rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler};
+#[cfg(feature = "boring")]
+use crate::tls::backend::boring::server::TlsAcceptorLayer;
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use crate::tls::backend::rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler};
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own echo [`Service`],
@@ -46,7 +52,10 @@ pub struct EchoServiceBuilder<H> {
     concurrent_limit: usize,
     timeout: Duration,
     forward: Option<ForwardKind>,
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_server_config: Option<TlsServerCertKeyPair>,
+
     http_service_builder: H,
 }
 
@@ -56,7 +65,10 @@ impl Default for EchoServiceBuilder<()> {
             concurrent_limit: 0,
             timeout: Duration::ZERO,
             forward: None,
+
+            #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_server_config: None,
+
             http_service_builder: (),
         }
     }
@@ -133,6 +145,7 @@ impl<H> EchoServiceBuilder<H> {
         self
     }
 
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
     pub fn tls_server_config(mut self, cfg: TlsServerCertKeyPair) -> Self {
@@ -140,6 +153,7 @@ impl<H> EchoServiceBuilder<H> {
         self
     }
 
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
     pub fn set_tls_server_config(&mut self, cfg: TlsServerCertKeyPair) -> &mut Self {
@@ -147,6 +161,7 @@ impl<H> EchoServiceBuilder<H> {
         self
     }
 
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     /// maybe define a tls server cert config to be used for tls terminaton
     /// by the echo service.
     pub fn maybe_tls_server_config(mut self, cfg: Option<TlsServerCertKeyPair>) -> Self {
@@ -160,7 +175,10 @@ impl<H> EchoServiceBuilder<H> {
             concurrent_limit: self.concurrent_limit,
             timeout: self.timeout,
             forward: self.forward,
+
+            #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_server_config: self.tls_server_config,
+
             http_service_builder: (self.http_service_builder, layer),
         }
     }
@@ -170,6 +188,7 @@ impl<H> EchoServiceBuilder<H>
 where
     H: Layer<EchoService, Service: Service<(), Request, Response = Response, Error = BoxError>>,
 {
+    #[allow(unused_mut)]
     /// build a tcp service ready to echo http traffic back
     pub fn build(
         mut self,
@@ -208,6 +227,7 @@ where
             Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
         };
 
+        #[cfg(any(feature = "rustls", feature = "boring"))]
         let tls_server_cfg = match self.tls_server_config.take() {
             None => None,
             Some(cfg) => Some(
@@ -225,6 +245,7 @@ where
             tcp_forwarded_layer,
             // Limit the body size to 1MB for requests
             BodyLimitLayer::request_only(1024 * 1024),
+            #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_server_cfg.map(|cfg| {
                 #[cfg(feature = "boring")]
                 {
@@ -306,6 +327,7 @@ impl Service<(), Request> for EchoService {
         let body = body.collect().await.unwrap().to_bytes();
         let body = hex::encode(body.as_ref());
 
+        #[cfg(any(feature = "rustls", feature = "boring"))]
         let tls_client_hello = ctx
             .get::<SecureTransport>()
             .and_then(|st| st.client_hello())
@@ -347,6 +369,9 @@ impl Service<(), Request> for EchoService {
                     }).collect::<Vec<_>>(),
                 })
             });
+
+        #[cfg(not(any(feature = "rustls", feature = "boring")))]
+        let tls_client_hello: Option<()> = None;
 
         Ok(Json(json!({
             "ua": user_agent_info,

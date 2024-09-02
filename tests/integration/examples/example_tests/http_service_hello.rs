@@ -7,7 +7,7 @@ use regex::Regex;
 async fn test_http_service_fs() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_service_hello");
+    let runner = utils::ExampleRunner::interactive("http_service_hello", None);
 
     let res_str = runner
         .get("http://127.0.0.1:62010")

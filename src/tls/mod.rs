@@ -7,11 +7,9 @@ pub use enums::{
     ProtocolVersion, SignatureScheme, SupportedGroup,
 };
 
-pub mod client;
-pub mod rustls;
+pub mod backend;
 
-#[cfg(feature = "boring")]
-pub mod boring;
+pub mod client;
 
 #[derive(Debug, Clone)]
 /// Context information that can be provided `https` connectors`,

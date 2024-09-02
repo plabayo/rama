@@ -5,6 +5,7 @@ use crate::stream::Stream;
 use crate::tls::HttpsTunnel;
 use crate::Layer;
 use crate::{Context, Service};
+use boring::ssl::SslVerifyMode;
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use std::fmt;
@@ -313,8 +314,14 @@ impl<S, K> HttpsConnector<S, K> {
         // - for emulation
         // - for obvious stuff like ALPN
         // - for client preferences/options
-        let cfg = boring::ssl::SslConnector::builder(boring::ssl::SslMethod::tls_client())
-            .context("create ssl connector builder")?
+        // TODO: make configurable via ClientConfig
+        let mut cfg_builder =
+            boring::ssl::SslConnector::builder(boring::ssl::SslMethod::tls_client())
+                .context("create ssl connector builder")?;
+        cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
+        cfg_builder.set_verify(SslVerifyMode::NONE);
+
+        let cfg = cfg_builder
             .build()
             .configure()
             .context("create ssl connector configuration")?

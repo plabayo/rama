@@ -6,7 +6,7 @@ use rama::{http::StatusCode, Context};
 async fn test_http_conn_state() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_k8s_health");
+    let runner = utils::ExampleRunner::interactive("http_k8s_health", None);
 
     let response = runner
         .get("http://127.0.0.1:62005/k8s/ready")

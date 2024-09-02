@@ -1,4 +1,4 @@
-use crate::tls::{client::ClientHello, rustls::dep::rustls::ServerConfig};
+use crate::tls::{backend::rustls::dep::rustls::ServerConfig, client::ClientHello};
 use std::{fmt, future::Future, sync::Arc};
 
 /// A handler that allows you to define what to do with the client config,

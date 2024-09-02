@@ -27,7 +27,7 @@ use rama::{
     service::service_fn,
     stream::layer::http::BodyLimitLayer,
     tcp::server::TcpListener,
-    tls::boring::server::TlsAcceptorLayer,
+    tls::backend::boring::server::TlsAcceptorLayer,
     ua::UserAgentClassifierLayer,
     utils::backoff::ExponentialBackoff,
 };

@@ -7,11 +7,17 @@ use crate::{
     net::client::{ConnectorService, EstablishedClientConnection},
     proxy::http::client::layer::HttpProxyConnector,
     tcp::client::service::TcpConnector,
-    tls::rustls::{client::HttpsConnector, dep::rustls::ClientConfig}, // TODO: use default backend
-    Context,
-    Service,
+    Context, Service,
 };
+
+// TODO: also support client config in boring...
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use crate::tls::backend::rustls::dep::rustls::ClientConfig;
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
 use std::sync::Arc;
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use crate::tls::backend::std::client::HttpsConnector;
 
 mod error;
 #[doc(inline)]
@@ -30,6 +36,7 @@ mod conn;
 pub use conn::{HttpConnector, HttpConnectorLayer};
 
 #[derive(Debug, Clone, Default)]
+#[non_exhaustive]
 /// An opiniated http client that can be used to serve HTTP requests.
 ///
 /// You can fork this http client in case you have use cases not possible with this service example.
@@ -38,6 +45,7 @@ pub use conn::{HttpConnector, HttpConnectorLayer};
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
 pub struct HttpClient {
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
     tls_config: Option<Arc<ClientConfig>>,
 }
 
@@ -47,18 +55,21 @@ impl HttpClient {
         Self::default()
     }
 
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
     /// Set the [`ClientConfig`] of this [`HttpClient`].
     pub fn set_tls_config(&mut self, cfg: Arc<ClientConfig>) -> &mut Self {
         self.tls_config = Some(cfg);
         self
     }
 
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
     /// Replace this [`HttpClient`] with the [`ClientConfig`] set.
     pub fn with_tls_config(mut self, cfg: Arc<ClientConfig>) -> Self {
         self.tls_config = Some(cfg);
         self
     }
 
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
     /// Replace this [`HttpClient`] with an option of [`ClientConfig`] set.
     pub fn maybe_with_tls_config(mut self, cfg: Option<Arc<ClientConfig>>) -> Self {
         self.tls_config = cfg;
@@ -81,12 +92,19 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
 
+        #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let connector = HttpConnector::new(
             HttpsConnector::auto(HttpProxyConnector::optional(HttpsConnector::tunnel(
                 TcpConnector::new(),
             )))
             .maybe_with_config(self.tls_config.clone()),
         );
+        #[cfg(feature = "boring")]
+        let connector = HttpConnector::new(HttpsConnector::auto(HttpProxyConnector::optional(
+            HttpsConnector::tunnel(TcpConnector::new()),
+        )));
+        #[cfg(not(any(feature = "rustls", feature = "boring")))]
+        let connector = HttpConnector::new(HttpProxyConnector::optional(TcpConnector::new()));
 
         let EstablishedClientConnection { ctx, req, conn, .. } = connector
             .connect(ctx, req)

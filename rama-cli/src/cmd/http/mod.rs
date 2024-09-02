@@ -32,7 +32,6 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 use crate::error::ErrorWithExitCode;
 
-mod tls;
 mod writer;
 
 #[derive(Args, Debug, Clone)]
@@ -84,10 +83,6 @@ pub struct CliCommandHttp {
     #[arg(long)]
     /// the desired tls version to use (automatically defined by default, choices are: 1.2, 1.3)
     tls: Option<String>,
-
-    #[arg(long)]
-    /// the client tls certificate file path to use
-    cert: Option<String>,
 
     #[arg(long)]
     /// the client tls key file path to use
@@ -389,10 +384,7 @@ where
         HijackLayer::new(cfg.offline, service_fn(dummy_response)),
     );
 
-    let tls_client_config =
-        tls::create_tls_client_config(cfg.insecure, cfg.tls, cfg.cert, cfg.cert_key).await?;
-
-    Ok(client_builder.layer(HttpClient::default().with_tls_config(tls_client_config)))
+    Ok(client_builder.layer(HttpClient::default()))
 }
 
 fn parse_print_mode(mode: &str) -> Result<(Option<WriterMode>, Option<WriterMode>), BoxError> {

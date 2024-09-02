@@ -9,7 +9,7 @@ use rama::{
 async fn test_http_web_service_dir_and_api() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_web_service_dir_and_api");
+    let runner = utils::ExampleRunner::interactive("http_web_service_dir_and_api", None);
 
     // test index.html via directory service
     let response = runner

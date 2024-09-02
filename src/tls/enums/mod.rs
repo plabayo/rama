@@ -3,6 +3,7 @@
 
 use crate::error::OpaqueError;
 
+#[cfg(feature = "rustls")]
 mod rustls;
 
 /// A macro which defines an enum type.

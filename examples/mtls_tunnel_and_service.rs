@@ -6,7 +6,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example mtls_tunnel_and_service
+//! cargo run --example mtls_tunnel_and_service --features=rustls
 //! ```
 //!
 //! # Expected output
@@ -31,7 +31,7 @@
 use rama::{
     layer::TraceErrLayer,
     service::service_fn,
-    tls::rustls::dep::{
+    tls::backend::rustls::dep::{
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
         rustls::{
             server::WebPkiClientVerifier, ClientConfig, KeyLogFile, RootCertStore, ServerConfig,
@@ -53,7 +53,7 @@ use rama::{
     },
     rt::Executor,
     tcp::server::TcpListener,
-    tls::rustls::server::TlsAcceptorLayer,
+    tls::backend::rustls::server::TlsAcceptorLayer,
     Context,
 };
 use rcgen::KeyPair;

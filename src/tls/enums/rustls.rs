@@ -2,7 +2,7 @@ macro_rules! enum_from_rustls {
     ($t:ty => $($name:ident),+$(,)?) => {
         $(
             impl From<rustls::$name> for super::$name {
-                fn from(value: rustls::$name) -> Self {
+                fn from(value: ::rustls::$name) -> Self {
                     let n: $t = value.into();
                     n.into()
                 }

@@ -11,7 +11,7 @@ use serde_json::json;
 async fn test_example_http_form() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_key_value_store");
+    let runner = utils::ExampleRunner::interactive("http_key_value_store", None);
 
     // store multiple key value pairs
     let response = runner

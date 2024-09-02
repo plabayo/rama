@@ -9,10 +9,12 @@ use crate::{
         user::ProxyCredential,
     },
     stream::{transport::TryRefIntoTransportContext, Stream},
-    tls::HttpsTunnel,
     Context, Service,
 };
 use std::fmt;
+
+#[cfg(feature = "tls")]
+use crate::tls::HttpsTunnel;
 
 /// A connector which can be used to establish a connection over an HTTP Proxy.
 ///
@@ -93,6 +95,8 @@ where
         // in case the provider gave us a proxy info, we insert it into the context
         if let Some(address) = &address {
             ctx.insert(address.clone());
+
+            #[cfg(feature = "tls")]
             if address
                 .protocol
                 .as_ref()

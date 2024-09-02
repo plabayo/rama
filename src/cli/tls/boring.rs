@@ -2,7 +2,7 @@
 
 use crate::error::{BoxError, ErrorContext};
 use crate::http::Version;
-use crate::tls::boring::server::ServerConfig;
+use crate::tls::backend::boring::server::ServerConfig;
 use crate::tls::ApplicationProtocol;
 use base64::Engine;
 use boring::pkey::PKey;

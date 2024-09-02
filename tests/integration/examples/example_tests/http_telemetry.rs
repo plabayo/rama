@@ -6,7 +6,7 @@ use rama::{http::BodyExtractExt, Context};
 async fn test_http_telemetry() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_telemetry");
+    let runner = utils::ExampleRunner::interactive("http_telemetry", Some("telemetry"));
 
     let homepage = runner
         .get("http://127.0.0.1:62012")

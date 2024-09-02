@@ -36,6 +36,7 @@ async fn test_http_echo_acme_data() {
     assert!(lines.contains("world"), "lines: {:?}", lines);
 }
 
+#[cfg(feature = "boring")]
 #[tokio::test]
 #[ignore]
 async fn test_http_echo_secure() {

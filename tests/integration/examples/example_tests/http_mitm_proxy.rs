@@ -1,16 +1,16 @@
 use super::utils;
-use rama::tls::dep::rcgen::KeyPair;
-use rama::tls::rustls::dep::{
+use rama::tls::backend::rustls::dep::{
     pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     rustls::ServerConfig,
 };
+use rama::tls::dep::rcgen::KeyPair;
 use rama::{
     http::{response::Json, server::HttpServer, BodyExtractExt, Request},
     net::address::ProxyAddress,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::rustls::server::TlsAcceptorLayer,
+    tls::backend::rustls::server::TlsAcceptorLayer,
     Context, Layer,
 };
 use serde_json::{json, Value};
@@ -65,7 +65,7 @@ async fn test_http_mitm_proxy() {
             .await;
     });
 
-    let runner = utils::ExampleRunner::interactive("http_mitm_proxy");
+    let runner = utils::ExampleRunner::interactive("http_mitm_proxy", Some("rustls"));
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress::try_from("http://john:secret@127.0.0.1:62017").unwrap());

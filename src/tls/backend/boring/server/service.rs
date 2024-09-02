@@ -4,7 +4,7 @@ use crate::{
     error::{ErrorContext, ErrorExt, OpaqueError},
     stream::Stream,
     tls::{
-        boring::dep::{
+        backend::boring::dep::{
             boring::ssl::{SslAcceptor, SslMethod},
             tokio_boring::SslStream,
         },

@@ -20,7 +20,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_mitm_proxy
+//! cargo run --example http_mitm_proxy --features=rustls
 //! ```
 //!
 //! # Expected output
@@ -56,14 +56,14 @@ use rama::{
     stream::layer::http::BodyLimitLayer,
     tcp::server::TcpListener,
     tls::{
-        dep::rcgen::KeyPair,
-        rustls::{
+        backend::rustls::{
             dep::{
                 pki_types::{CertificateDer, PrivatePkcs8KeyDer},
                 rustls::ServerConfig,
             },
             server::TlsAcceptorLayer,
         },
+        dep::rcgen::KeyPair,
     },
     Layer, Service,
 };

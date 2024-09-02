@@ -7,8 +7,10 @@ use crate::net::{
     Protocol,
 };
 use crate::stream::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
-use crate::tls::SecureTransport;
 use crate::Context;
+
+#[cfg(feature = "tls")]
+use crate::tls::SecureTransport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context of the [`Request`] being served by the [`HttpServer`]
@@ -163,6 +165,7 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
     }
 }
 
+#[allow(clippy::unnecessary_lazy_evaluations)]
 fn protocol_from_uri_or_context<State>(ctx: &Context<State>, uri: &Uri) -> Protocol {
     ctx.get::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
@@ -174,16 +177,23 @@ fn protocol_from_uri_or_context<State>(ctx: &Context<State>, uri: &Uri) -> Proto
             s.into()
         }))
         .or_else(|| {
-            // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
-            // both the scheme and authority for the request, making us not detect
-            // it correctly as https protocol (port 443 by default). The presence of the client hello
-            // config does reveal this information to us which assumes that our tls terminators
-            // do set this information, otherwise we would never the less be in the blind.
-            // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
-            ctx.contains::<SecureTransport>().then(|| {
-                tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTPS (secure transport)");
-                Protocol::HTTPS
-            })
+            #[cfg(feature = "tls")]
+            {
+                // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
+                // both the scheme and authority for the request, making us not detect
+                // it correctly as https protocol (port 443 by default). The presence of the client hello
+                // config does reveal this information to us which assumes that our tls terminators
+                // do set this information, otherwise we would never the less be in the blind.
+                // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
+                ctx.contains::<SecureTransport>().then(|| {
+                    tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTPS (secure transport)");
+                    Protocol::HTTPS
+                })
+            }
+            #[cfg(not(feature = "tls"))]
+            {
+                None
+            }
         })
         .unwrap_or_else(|| {
             tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTP");

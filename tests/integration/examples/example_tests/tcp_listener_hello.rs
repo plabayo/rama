@@ -8,7 +8,7 @@ const EXPECTED_FILE_CONTENT: &str = include_str!("../../../../examples/tcp_liste
 async fn test_tcp_listener_hello() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("tcp_listener_hello");
+    let runner = utils::ExampleRunner::interactive("tcp_listener_hello", None);
 
     let file_content = runner
         .get("http://127.0.0.1:62500")

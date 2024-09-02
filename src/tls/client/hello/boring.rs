@@ -1,5 +1,5 @@
 use crate::error::{ErrorContext, OpaqueError};
-use crate::tls::boring::dep::boring;
+use crate::tls::backend::boring::dep::boring;
 use crate::tls::client::parser::parse_client_hello;
 
 impl<'ssl> TryFrom<boring::ssl::ClientHello<'ssl>> for super::ClientHello {

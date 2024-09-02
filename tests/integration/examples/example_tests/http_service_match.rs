@@ -8,7 +8,7 @@ const ADDRESS: &str = "127.0.0.1:62011";
 async fn test_http_service_match() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("http_service_match");
+    let runner = utils::ExampleRunner::interactive("http_service_match", None);
 
     let homepage = runner
         .get(format!("http://{ADDRESS}"))

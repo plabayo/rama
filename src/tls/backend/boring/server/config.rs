@@ -1,4 +1,4 @@
-use crate::tls::boring::dep::boring::{
+use crate::tls::backend::boring::dep::boring::{
     pkey::{PKey, Private},
     x509::X509,
 };

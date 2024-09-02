@@ -7,10 +7,10 @@ sort:
 lint: fmt sort
 
 check:
-	cargo check --workspace --all-targets --features=full
+	cargo check --workspace --all-targets --all-features
 
 clippy:
-	cargo clippy --workspace --all-targets --features=full
+	cargo clippy --workspace --all-targets --all-features
 
 clippy-fix:
 	cargo clippy --fix
@@ -19,19 +19,19 @@ typos:
 	typos -w
 
 doc:
-	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --features=full --no-deps
+	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps
 
 doc-open:
-	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --features=full --no-deps --open
+	RUSTDOCFLAGS="-D rustdoc::broken-intra-doc-links" cargo doc --all-features --no-deps --open
 
 hack:
 	cargo hack check --each-feature --no-dev-deps --workspace
 
 test:
-	cargo test --features=full --workspace
+	cargo test --all-features --workspace
 
 test-ignored:
-	cargo test --features=full --workspace -- --ignored
+	cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
 
 qa: lint check clippy doc test
 

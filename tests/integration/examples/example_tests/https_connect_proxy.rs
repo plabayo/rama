@@ -33,7 +33,7 @@ async fn test_https_connect_proxy() {
             .unwrap();
     });
 
-    let runner = utils::ExampleRunner::interactive("https_connect_proxy");
+    let runner = utils::ExampleRunner::interactive("https_connect_proxy", Some("rustls"));
 
     let mut ctx = Context::default();
     ctx.insert(ProxyAddress::try_from("https://john:secret@127.0.0.1:62016").unwrap());

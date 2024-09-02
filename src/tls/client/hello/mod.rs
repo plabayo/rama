@@ -6,6 +6,7 @@ use crate::{
     },
 };
 
+#[cfg(feature = "rustls")]
 mod rustls;
 
 #[cfg(feature = "boring")]

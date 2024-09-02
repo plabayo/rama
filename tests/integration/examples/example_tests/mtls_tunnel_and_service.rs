@@ -8,7 +8,7 @@ use rama::Context;
 async fn test_mtls_tunnel_and_service() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("mtls_tunnel_and_service");
+    let runner = utils::ExampleRunner::interactive("mtls_tunnel_and_service", Some("rustls"));
 
     let res_str = runner
         .get("http://127.0.0.1:62014/hello")

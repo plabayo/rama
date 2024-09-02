@@ -117,8 +117,7 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 
 [features]
-default = ["compression"]
-full = ["telemetry", "compression", "boring", "cli"]
+default = []
 telemetry = [
     "dep:opentelemetry",
     "dep:opentelemetry_sdk",
@@ -126,7 +125,9 @@ telemetry = [
 ]
 compression = ["dep:async-compression"]
 rustls-ring = ["tokio-rustls/ring", "rustls/ring"]
-boring = ["dep:boring", "dep:tokio-boring"]
+tls = ["dep:rcgen"]
+rustls = ["tls", "dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
+boring = ["tls", "dep:boring", "dep:tokio-boring", "nom"]
 cli = []
 
 [build-dependencies]
@@ -162,7 +163,7 @@ ipnet = { workspace = true }
 iri-string = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
-nom = { workspace = true }
+nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
@@ -171,25 +172,25 @@ paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.2", path = "rama-core" }
-rcgen = { workspace = true }
+rcgen = { workspace = true, optional = true }
 regex = { workspace = true }
-rustls = { workspace = true }
-rustls-native-certs = { workspace = true }
-rustls-pemfile = { workspace = true }
-rustls-pki-types = { workspace = true }
+rustls = { workspace = true, optional = true }
+rustls-native-certs = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-boring = { workspace = true, optional = true }
-tokio-rustls = { workspace = true }
+tokio-rustls = { workspace = true, optional = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 unicode-normalization = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
 venndb = { workspace = true }
-webpki-roots = { workspace = true }
+webpki-roots = { workspace = true, optional = true }
 
 [dev-dependencies]
 brotli = { workspace = true }
@@ -223,13 +224,29 @@ name = "ua_parse"
 harness = false
 
 [[example]]
-name = "tls_boring_termination"
-required-features = ["boring"]
+name = "http_high_level_client"
+required-features = ["compression"]
+
+[[example]]
+name = "http_mitm_proxy"
+required-features = ["rustls"]
 
 [[example]]
 name = "http_telemetry"
 required-features = ["telemetry"]
 
 [[example]]
-name = "http_high_level_client"
-required-features = ["compression"]
+name = "https_connect_proxy"
+required-features = ["rustls"]
+
+[[example]]
+name = "mtls_tunnel_and_service"
+required-features = ["rustls"]
+
+[[example]]
+name = "tls_boring_termination"
+required-features = ["boring"]
+
+[[example]]
+name = "tls_termination"
+required-features = ["rustls"]

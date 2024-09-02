@@ -1,6 +1,5 @@
-use crate::tls::{ApplicationProtocol, CipherSuite, SignatureScheme};
-
 use super::ClientHelloExtension;
+use crate::tls::{ApplicationProtocol, CipherSuite, SignatureScheme};
 
 impl<'a> From<rustls::server::ClientHello<'a>> for super::ClientHello {
     fn from(value: rustls::server::ClientHello<'a>) -> Self {

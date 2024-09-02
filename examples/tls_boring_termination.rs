@@ -7,7 +7,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_boring_termination
+//! cargo run --example tls_boring_termination --features=boring
 //! ```
 //!
 //! # Expected output
@@ -48,7 +48,7 @@ use rama::{
         server::TcpListener,
     },
     tls::{
-        boring::{
+        backend::boring::{
             dep::boring::{
                 asn1::Asn1Time,
                 bn::{BigNum, MsbOption},

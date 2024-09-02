@@ -16,7 +16,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_termination
+//! cargo run --example tls_termination --features=rustls
 //! ```
 //!
 //! # Expected output
@@ -56,15 +56,15 @@ use rama::{
         server::TcpListener,
     },
     tls::{
-        client::ClientHello,
-        dep::rcgen::KeyPair,
-        rustls::{
+        backend::rustls::{
             dep::{
                 pki_types::{CertificateDer, PrivatePkcs8KeyDer},
                 rustls::ServerConfig,
             },
             server::{TlsAcceptorLayer, TlsClientConfigHandler},
         },
+        client::ClientHello,
+        dep::rcgen::KeyPair,
     },
     Context, Layer,
 };

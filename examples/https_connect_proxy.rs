@@ -6,7 +6,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example https_connect_proxy
+//! cargo run --example https_connect_proxy --features=rustls
 //! ```
 //!
 //! # Expected output
@@ -42,15 +42,15 @@ use rama::{
     stream::layer::http::BodyLimitLayer,
     tcp::{server::TcpListener, utils::is_connection_error},
     tls::{
-        client::ClientHello,
-        dep::rcgen::KeyPair,
-        rustls::{
+        backend::rustls::{
             dep::{
                 pki_types::{CertificateDer, PrivatePkcs8KeyDer},
                 rustls::ServerConfig,
             },
             server::{TlsAcceptorLayer, TlsClientConfigHandler},
         },
+        client::ClientHello,
+        dep::rcgen::KeyPair,
     },
     Context, Layer, Service,
 };
