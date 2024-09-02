@@ -1,8 +1,7 @@
 //! Utilities in service of the `rama-core` project.
 
-#[macro_use]
 #[doc(hidden)]
-pub mod macros;
+pub use ::rama_macros as macros;
 
 pub mod backoff;
 pub mod future;

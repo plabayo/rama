@@ -1,0 +1,43 @@
+[package]
+name = "rama-http-types"
+description = "rama http type defintions and high level utilities"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+bytes = { workspace = true }
+const_format = { workspace = true }
+futures-core = { workspace = true }
+futures-lite = { workspace = true }
+headers = { workspace = true }
+http = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
+mime = { workspace = true }
+mime_guess = { workspace = true }
+paste = { workspace = true }
+pin-project-lite = { workspace = true }
+rama-error = { version = "0.2.0-alpha.2", path = "../rama-error" }
+rama-macros = { version = "0.2.0-alpha.2", path = "../rama-macros" }
+serde = { workspace = true, features = ["derive"] }
+serde_html_form = { workspace = true }
+serde_json = { workspace = true }
+sync_wrapper = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tokio-test = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

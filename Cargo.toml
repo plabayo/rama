@@ -1,5 +1,20 @@
 [workspace]
-members = [".", "fuzz", "rama-cli", "rama-core", "rama-macros"]
+members = [
+    ".",
+    "fuzz",
+    "rama-cli",
+    "rama-core",
+    "rama-error",
+    "rama-http",
+    "rama-http-backend",
+    "rama-http-types",
+    "rama-macros",
+    "rama-macros-proc",
+    "rama-net",
+    "rama-proxy",
+    "rama-tls",
+    "rama-ua",
+]
 
 [workspace.package]
 version = "0.2.0-alpha.2"
@@ -118,33 +133,23 @@ rust-version = { workspace = true }
 
 [features]
 default = []
-telemetry = [
-    "dep:opentelemetry",
-    "dep:opentelemetry_sdk",
-    "dep:opentelemetry-semantic-conventions",
-]
-compression = ["dep:async-compression"]
-rustls-ring = ["tokio-rustls/ring", "rustls/ring"]
-tls = ["dep:rcgen"]
-rustls = ["tls", "dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
-boring = ["tls", "dep:boring", "dep:tokio-boring", "nom"]
+telemetry = ["rama-core/telemetry"]
+compression = ["http", "rama-http/compression"]
+tls = []
+rustls = ["tls", "rama-tls/rustls"]
+rustls-ring = ["tls", "rama-tls/rustls-ring"]
+boring = ["tls", "rama-tls/boring"]
 cli = []
+http = ["dep:rama-http"]
+proxy = ["dep:rama-proxy"]
+ua = ["dep:rama-ua"]
 
 [build-dependencies]
 rustversion = { workspace = true }
 
 [dependencies]
-arc-swap = { workspace = true }
-async-compression = { workspace = true, features = [
-    "tokio",
-    "brotli",
-    "zlib",
-    "gzip",
-    "zstd",
-], optional = true }
 base64 = { workspace = true }
 bitflags = { workspace = true }
-boring = { workspace = true, optional = true }
 bytes = { workspace = true }
 const_format = { workspace = true }
 futures-core = { workspace = true }
@@ -163,7 +168,6 @@ ipnet = { workspace = true }
 iri-string = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
-nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
@@ -172,25 +176,20 @@ paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.2", path = "rama-core" }
-rcgen = { workspace = true, optional = true }
+rama-http = { version = "0.2.0-alpha.2", path = "rama-http", optional = true }
+rama-proxy = { version = "0.2.0-alpha.2", path = "rama-proxy", optional = true }
+rama-tls = { version = "0.2.0-alpha.2", path = "rama-tls", optional = true }
+rama-ua = { version = "0.2.0-alpha.2", path = "rama-ua", optional = true }
 regex = { workspace = true }
-rustls = { workspace = true, optional = true }
-rustls-native-certs = { workspace = true, optional = true }
-rustls-pemfile = { workspace = true, optional = true }
-rustls-pki-types = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
-tokio-boring = { workspace = true, optional = true }
-tokio-rustls = { workspace = true, optional = true }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 unicode-normalization = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-venndb = { workspace = true }
-webpki-roots = { workspace = true, optional = true }
 
 [dev-dependencies]
 brotli = { workspace = true }

@@ -1,0 +1,39 @@
+[package]
+name = "rama-tls"
+description = "user-agent (UA) support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+rustls = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
+boring = ["dep:boring", "dep:tokio-boring", "nom"]
+rustls-ring = ["rustls", "tokio-rustls/ring", "rustls/ring"]
+
+[dependencies]
+boring = { workspace = true, optional = true }
+nom = { workspace = true, optional = true }
+rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rcgen = { workspace = true }
+rustls = { workspace = true, optional = true }
+rustls-native-certs = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
+tokio-boring = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+webpki-roots = { workspace = true, optional = true }
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

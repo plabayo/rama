@@ -1,0 +1,24 @@
+[package]
+name = "rama-ua"
+description = "user-agent (UA) support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

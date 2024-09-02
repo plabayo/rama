@@ -274,28 +274,29 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-#[cfg(feature = "telemetry")]
-pub mod telemetry;
-
 pub use ::rama_core::{
-    combinators, context, dns, error, graceful, layer, matcher, net, rt, service, Context, Layer,
-    Service,
+    combinators, context, dns, error, graceful, layer, matcher, net, rt, service, stream, Context,
+    Layer, Service,
 };
-
-pub mod stream;
 
 pub mod tcp;
 
+#[cfg(feature = "telemetry")]
+pub use ::rama_core::telemetry;
+
 #[cfg(feature = "tls")]
-pub mod tls;
+pub use ::rama_tls as tls;
 
-pub mod http;
+#[cfg(feature = "http")]
+pub use ::rama_http as http;
 
-pub mod proxy;
-pub mod ua;
+// TODO: integrate http-backend in here somehow...
+
+#[cfg(feature = "proxy")]
+pub use ::rama_proxy as proxy;
+
+#[cfg(feature = "ua")]
+pub use ::rama_ua as ua;
 
 #[cfg(feature = "cli")]
 pub mod cli;
-
-#[macro_use]
-pub mod utils;

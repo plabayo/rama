@@ -1,0 +1,54 @@
+[package]
+name = "rama-http"
+description = "rama http layers, services and other utilities"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+compression = ["dep:async-compression"]
+
+[dependencies]
+async-compression = { workspace = true, features = [
+    "tokio",
+    "brotli",
+    "zlib",
+    "gzip",
+    "zstd",
+], optional = true }
+bytes = { workspace = true }
+const_format = { workspace = true }
+futures-core = { workspace = true }
+futures-lite = { workspace = true }
+headers = { workspace = true }
+http = { workspace = true }
+http-body = { workspace = true }
+http-body-util = { workspace = true }
+mime = { workspace = true }
+mime_guess = { workspace = true }
+paste = { workspace = true }
+pin-project-lite = { workspace = true }
+rama-core = { version = "0.2.0-alpha.2", path = "../rama-core", features = ["http"] }
+rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types" }
+serde = { workspace = true, features = ["derive"] }
+serde_html_form = { workspace = true }
+serde_json = { workspace = true }
+sync_wrapper = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["full"] }
+tokio-test = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

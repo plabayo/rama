@@ -1734,11 +1734,8 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 name = "rama"
 version = "0.2.0-alpha.2"
 dependencies = [
- "arc-swap",
- "async-compression",
  "base64 0.22.1",
  "bitflags",
- "boring",
  "brotli",
  "bytes",
  "const_format",
@@ -1762,7 +1759,6 @@ dependencies = [
  "itertools 0.13.0",
  "mime",
  "mime_guess",
- "nom",
  "opentelemetry",
  "opentelemetry-otlp",
  "opentelemetry-semantic-conventions",
@@ -1772,12 +1768,11 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "rama-core",
- "rcgen",
+ "rama-http",
+ "rama-proxy",
+ "rama-tls",
+ "rama-ua",
  "regex",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "rustls-pki-types",
  "rustversion",
  "serde",
  "serde_html_form",
@@ -1785,16 +1780,12 @@ dependencies = [
  "sync_wrapper 1.0.1",
  "tempfile",
  "tokio",
- "tokio-boring",
- "tokio-rustls",
  "tokio-test",
  "tokio-util",
  "tracing",
  "tracing-subscriber",
  "unicode-normalization",
  "uuid",
- "venndb",
- "webpki-roots",
  "zstd",
 ]
 
@@ -1822,11 +1813,15 @@ dependencies = [
  "futures-lite",
  "headers",
  "hickory-resolver",
- "http",
+ "opentelemetry",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
  "parking_lot",
  "paste",
  "pin-project-lite",
  "quickcheck",
+ "rama-error",
+ "rama-http-types",
  "rama-macros",
  "serde",
  "tokio",
@@ -1837,6 +1832,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-error"
+version = "0.2.0-alpha.2"
+
+[[package]]
 name = "rama-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -1845,7 +1844,76 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-http"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "async-compression",
+ "bytes",
+ "const_format",
+ "futures-core",
+ "futures-lite",
+ "headers",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "mime_guess",
+ "paste",
+ "pin-project-lite",
+ "rama-core",
+ "rama-http-types",
+ "serde",
+ "serde_html_form",
+ "serde_json",
+ "sync_wrapper 1.0.1",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "rama-http-backend"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "rama-core",
+]
+
+[[package]]
+name = "rama-http-types"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "bytes",
+ "const_format",
+ "futures-core",
+ "futures-lite",
+ "headers",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "mime_guess",
+ "paste",
+ "pin-project-lite",
+ "rama-error",
+ "rama-macros",
+ "serde",
+ "serde_html_form",
+ "serde_json",
+ "sync_wrapper 1.0.1",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "rama-macros"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "rama-macros-proc",
+]
+
+[[package]]
+name = "rama-macros-proc"
 version = "0.2.0-alpha.2"
 dependencies = [
  "proc-macro2",
@@ -1853,6 +1921,67 @@ dependencies = [
  "rama",
  "syn",
  "trybuild",
+]
+
+[[package]]
+name = "rama-net"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures-lite",
+ "headers",
+ "hickory-resolver",
+ "ipnet",
+ "opentelemetry",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
+ "parking_lot",
+ "paste",
+ "pin-project-lite",
+ "quickcheck",
+ "rama-core",
+ "rama-http-types",
+ "serde",
+ "tokio",
+ "tokio-graceful",
+ "tokio-test",
+ "tracing",
+ "venndb",
+]
+
+[[package]]
+name = "rama-proxy"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "arc-swap",
+ "rama-core",
+ "venndb",
+]
+
+[[package]]
+name = "rama-tls"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "boring",
+ "nom",
+ "rama-core",
+ "rcgen",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio-boring",
+ "tokio-rustls",
+ "webpki-roots",
+]
+
+[[package]]
+name = "rama-ua"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "rama-core",
+ "serde",
 ]
 
 [[package]]
