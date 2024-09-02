@@ -157,6 +157,22 @@ if you use Rama do let us know feedback over [Discord][discord-url], [email](mai
 
 👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commcercial purposes. Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo/subscriptions). It helps make the development cycle to remain sustainable, and is beneficial to you as well. As part of your benefits we are also available to assist you with migrations between breaking releases. For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf. A win for everybody. 💪
 
+## 📣 | Rama Ecosystem
+
+For now there are only the rama crates found in this repository, also referred to as "official" rama crates.
+
+We welcome however community contributions not only in the form of contributions to this repository,
+but also have people write their own crates as extensions to the rama ecosystem.
+E.g. perhaps you wish to support an alternative http/tls backend.
+
+In case you have ideas for new features or stacks please let us know first.
+Perhaps there is room for these within an official rama crate.
+In case it is considered out of scope you are free to make your own community rama crate.
+Please prefix all rama community crates with "rama-x", this way the crates are easy to find,
+and are sufficiently different from "official" rama crates".
+
+Once you have such a crate published do let us know it, such that we can list them here.
+
 ## 🏢 | Proxy Examples
 
 - [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
