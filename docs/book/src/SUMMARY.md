@@ -38,5 +38,6 @@
 
 # Appendices
 
+- [📣 Ecosystem](./ecosystem.md)
 - [❓ FAQ](./faq.md)
 - [💖 Sponsor](./sponsor.md)
