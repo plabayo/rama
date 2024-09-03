@@ -206,22 +206,7 @@ macro_rules! username_label_parser_tuple_exclusive_labels_impl {
 
 all_the_tuples_no_last_special_case!(username_label_parser_tuple_exclusive_labels_impl);
 
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
-/// A [`UsernameLabelParser`] which does nothing and returns [`UsernameLabelState::Used`] for all labels.
-///
-/// This is useful in case you want to allow labels to be ignored,
-/// for locations where the parser-user fails on ignored labels.
-pub struct UsernameLabelParserVoid;
-
-impl UsernameLabelParserVoid {
-    /// Create a new [`UsernameLabelParserVoid`].
-    pub const fn new() -> Self {
-        Self
-    }
-}
-
-impl UsernameLabelParser for UsernameLabelParserVoid {
+impl UsernameLabelParser for () {
     type Error = Infallible;
 
     fn parse_label(&mut self, _label: &str) -> UsernameLabelState {
@@ -360,8 +345,8 @@ mod test {
     fn test_parse_username_empty() {
         let mut ext = Extensions::default();
 
-        assert!(parse_username(&mut ext, UsernameLabelParserVoid::new(), "",).is_err());
-        assert!(parse_username(&mut ext, UsernameLabelParserVoid::new(), "-",).is_err());
+        assert!(parse_username(&mut ext, (), "",).is_err());
+        assert!(parse_username(&mut ext, (), "-",).is_err());
     }
 
     #[test]

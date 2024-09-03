@@ -2,7 +2,7 @@
 
 use crate::user::{Basic, UserId};
 use rama_core::context::Extensions;
-use rama_core::utils::username::{parse_username, UsernameLabelParser};
+use rama_core::username::{parse_username, UsernameLabelParser};
 use std::future::Future;
 
 // TODO: decouple this from http
@@ -40,17 +40,6 @@ where
             Some(ext)
         } else {
             None
-        }
-    }
-}
-
-impl AuthoritySync<Basic, ()> for Basic {
-    fn authorized(&self, ext: &mut Extensions, credentials: &Basic) -> bool {
-        if self == credentials {
-            ext.insert(UserId::Username(self.username().to_owned()));
-            true
-        } else {
-            false
         }
     }
 }
@@ -111,10 +100,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        net::user::Basic,
-        utils::username::{UsernameLabels, UsernameOpaqueLabelParser},
-    };
+    use crate::user::Basic;
+    use rama_core::username::{UsernameLabels, UsernameOpaqueLabelParser};
 
     #[tokio::test]
     async fn basic_authorization() {

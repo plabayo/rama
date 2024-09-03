@@ -1,8 +1,11 @@
-use rama_core::error::{ErrorContext, OpaqueError};
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use base64::Engine;
 use headers::authorization;
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
+
+#[cfg(feature = "http")]
+use rama_http_types::HeaderValue;
 
 #[derive(Debug, Clone)]
 /// Basic credentials.
@@ -105,11 +108,11 @@ impl Basic {
         encoded
     }
 
-    /// View this [`Basic`] as a [`HeaderValue`][http::HeaderValue].
-    pub fn as_header_value(&self) -> http::HeaderValue {
+    /// View this [`Basic`] as a [`HeaderValue`]
+    pub fn as_header_value(&self) -> HeaderValue {
         let encoded = self.as_header_string();
         // we validate the inner value upon creation
-        http::HeaderValue::from_str(&encoded).expect("inner value should always be valid")
+        HeaderValue::from_str(&encoded).expect("inner value should always be valid")
     }
 
     /// Serialize this [`Basic`] credential as a clear (not encoded) string.
@@ -163,12 +166,12 @@ const BASIC_SCHEME: &str = "Basic";
 impl authorization::Credentials for Basic {
     const SCHEME: &'static str = BASIC_SCHEME;
 
-    fn decode(value: &http::HeaderValue) -> Option<Self> {
+    fn decode(value: &HeaderValue) -> Option<Self> {
         let value = value.to_str().ok()?;
         Self::try_from_header_str(value).ok()
     }
 
-    fn encode(&self) -> http::HeaderValue {
+    fn encode(&self) -> HeaderValue {
         self.as_header_value()
     }
 }
@@ -214,7 +217,7 @@ mod tests {
 
     #[test]
     fn basic_decode() {
-        let auth = Basic::decode(&http::HeaderValue::from_static(
+        let auth = Basic::decode(&HeaderValue::from_static(
             "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         ))
         .unwrap();
@@ -224,7 +227,7 @@ mod tests {
 
     #[test]
     fn basic_decode_case_insensitive() {
-        let auth = Basic::decode(&http::HeaderValue::from_static(
+        let auth = Basic::decode(&HeaderValue::from_static(
             "basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         ))
         .unwrap();
@@ -234,7 +237,7 @@ mod tests {
 
     #[test]
     fn basic_decode_extra_whitespaces() {
-        let auth = Basic::decode(&http::HeaderValue::from_static(
+        let auth = Basic::decode(&HeaderValue::from_static(
             "Basic  QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         ))
         .unwrap();
@@ -244,7 +247,7 @@ mod tests {
 
     #[test]
     fn basic_decode_no_password() {
-        let auth = Basic::decode(&http::HeaderValue::from_static("Basic QWxhZGRpbjo=")).unwrap();
+        let auth = Basic::decode(&HeaderValue::from_static("Basic QWxhZGRpbjo=")).unwrap();
         assert_eq!(auth.username(), "Aladdin");
         assert_eq!(auth.password(), "");
     }

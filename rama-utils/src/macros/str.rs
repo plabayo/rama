@@ -39,7 +39,7 @@ impl<const N1: usize, const N2: usize> EqIgnoreAsciiCase<&[u8; N1], &[u8; N2]> {
 #[macro_export]
 macro_rules! __eq_ignore_ascii_case {
     ($lhs:expr, $rhs:expr) => {
-        $crate::str::EqIgnoreAsciiCase($lhs, $rhs).const_eval()
+        $crate::macros::str::EqIgnoreAsciiCase($lhs, $rhs).const_eval()
     };
 }
 pub use crate::__eq_ignore_ascii_case as eq_ignore_ascii_case;

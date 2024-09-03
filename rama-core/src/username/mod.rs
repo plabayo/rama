@@ -32,7 +32,7 @@ mod parse;
 #[doc(inline)]
 pub use parse::{
     parse_username, parse_username_with_separator, ExclusiveUsernameParsers, UsernameLabelParser,
-    UsernameLabelParserVoid, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
+    UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
 };
 
 mod compose;

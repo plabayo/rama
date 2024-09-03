@@ -7,7 +7,11 @@ use std::net::IpAddr;
 use std::{fmt, net::SocketAddr};
 
 #[cfg(feature = "http")]
-use rama_http_types::{HeaderValue, headers::{self, Header}, HeaderName, header::FORWARDED};
+use rama_http_types::{
+    header::FORWARDED,
+    headers::{self, Header},
+    HeaderName, HeaderValue,
+};
 
 mod obfuscated;
 #[doc(inline)]
@@ -267,7 +271,7 @@ impl Header for Forwarded {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::address::Host;
+    use crate::address::Host;
 
     #[test]
     fn test_forwarded_parse_invalid() {

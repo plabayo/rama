@@ -1,6 +1,6 @@
 use super::{Authority, Host};
-use rama_core::error::{ErrorContext, OpaqueError};
 use crate::{proto::try_to_extract_protocol_from_uri_scheme, user::ProxyCredential, Protocol};
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::{fmt::Display, str::FromStr};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -127,7 +127,7 @@ impl<'de> serde::Deserialize<'de> for ProxyAddress {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::{
+    use crate::{
         address::Host,
         user::{Basic, Bearer},
     };

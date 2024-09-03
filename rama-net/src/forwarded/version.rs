@@ -45,7 +45,7 @@ impl ForwardedVersion {
     }
 }
 
-rama_core::utils::macros::error::static_str_error! {
+rama_utils::macros::error::static_str_error! {
     #[doc = "invalid forwarded version"]
     pub struct InvalidForwardedVersion;
 }

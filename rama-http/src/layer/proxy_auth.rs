@@ -58,9 +58,9 @@ impl<A, C, L> ProxyAuthLayer<A, C, L> {
     ///
     /// You can provide your own extractor by implementing the [`UsernameLabelParser`] trait.
     ///
-    /// [`UsernameOpaqueLabelParser`]: rama_utils::username::UsernameOpaqueLabelParser
+    /// [`UsernameOpaqueLabelParser`]: rama_core::username::UsernameOpaqueLabelParser
     /// [`ProxyFilterUsernameParser`]: crate::proxy::ProxyFilterUsernameParser
-    /// [`UsernameLabelParser`]: rama_utils::username::UsernameLabelParser
+    /// [`UsernameLabelParser`]: rama_core::username::UsernameLabelParser
     pub fn with_labels<L2>(self) -> ProxyAuthLayer<A, C, L2> {
         ProxyAuthLayer {
             proxy_auth: self.proxy_auth,

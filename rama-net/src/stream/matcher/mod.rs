@@ -2,9 +2,9 @@
 //!
 //! See [`service::matcher` module] for more information.
 //!
-//! [`service::Matcher`]: crate::matcher::Matcher
+//! [`service::Matcher`]: rama_core::matcher::Matcher
 //! [`Socket`]: crate::stream::Socket
-//! [`service::matcher` module]: crate::matcher
+//! [`service::matcher` module]: rama_core::matcher
 
 mod socket;
 #[doc(inline)]
@@ -82,8 +82,8 @@ enum SocketMatcherKind<State, Socket> {
     All(Vec<SocketMatcher<State, Socket>>),
     /// `true` if no matchers are defined, or any of the defined matcher match.
     Any(Vec<SocketMatcher<State, Socket>>),
-    /// A custom matcher that implements [`crate::matcher::Matcher`].
-    Custom(Arc<dyn crate::matcher::Matcher<State, Socket>>),
+    /// A custom matcher that implements [`rama_core::matcher::Matcher`].
+    Custom(Arc<dyn rama_core::matcher::Matcher<State, Socket>>),
 }
 
 impl<State, Socket> Clone for SocketMatcherKind<State, Socket> {
@@ -366,10 +366,10 @@ impl<State, Socket> SocketMatcher<State, Socket> {
 
     /// Create a matcher that matches according to a custom predicate.
     ///
-    /// See [`crate::matcher::Matcher`] for more information.
+    /// See [`rama_core::matcher::Matcher`] for more information.
     pub fn custom<M>(matcher: M) -> Self
     where
-        M: crate::matcher::Matcher<State, Socket>,
+        M: rama_core::matcher::Matcher<State, Socket>,
     {
         Self {
             kind: SocketMatcherKind::Custom(Arc::new(matcher)),
@@ -379,20 +379,20 @@ impl<State, Socket> SocketMatcher<State, Socket> {
 
     /// Add a custom matcher to match on top of the existing set of [`SocketMatcher`] matchers.
     ///
-    /// See [`crate::matcher::Matcher`] for more information.
+    /// See [`rama_core::matcher::Matcher`] for more information.
     pub fn and_custom<M>(self, matcher: M) -> Self
     where
-        M: crate::matcher::Matcher<State, Socket>,
+        M: rama_core::matcher::Matcher<State, Socket>,
     {
         self.and(Self::custom(matcher))
     }
 
     /// Create a custom matcher to match as an alternative to the existing set of [`SocketMatcher`] matchers.
     ///
-    /// See [`crate::matcher::Matcher`] for more information.
+    /// See [`rama_core::matcher::Matcher`] for more information.
     pub fn or_custom<M>(self, matcher: M) -> Self
     where
-        M: crate::matcher::Matcher<State, Socket>,
+        M: rama_core::matcher::Matcher<State, Socket>,
     {
         self.or(Self::custom(matcher))
     }
@@ -435,7 +435,7 @@ impl<State, Socket> SocketMatcher<State, Socket> {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>>
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
     for SocketMatcherKind<State, Request<Body>>
 where
     State: 'static,
@@ -461,7 +461,7 @@ where
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>>
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>>
     for SocketMatcher<State, Request<Body>>
 where
     State: 'static,
@@ -482,7 +482,7 @@ where
     }
 }
 
-impl<State, Socket> crate::matcher::Matcher<State, Socket> for SocketMatcherKind<State, Socket>
+impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for SocketMatcherKind<State, Socket>
 where
     Socket: crate::stream::Socket,
     State: 'static,
@@ -501,7 +501,7 @@ where
     }
 }
 
-impl<State, Socket> crate::matcher::Matcher<State, Socket> for SocketMatcher<State, Socket>
+impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for SocketMatcher<State, Socket>
 where
     Socket: crate::stream::Socket,
     State: 'static,
@@ -520,7 +520,7 @@ where
 mod test {
     use itertools::Itertools;
 
-    use crate::matcher::Matcher;
+    use rama_core::matcher::Matcher;
 
     use super::*;
 

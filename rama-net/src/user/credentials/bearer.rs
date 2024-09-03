@@ -1,6 +1,9 @@
-use rama_core::error::{ErrorContext, OpaqueError};
 use headers::authorization;
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
+
+#[cfg(feature = "http")]
+use rama_http_types::HeaderValue;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Bearer credentials.
@@ -53,11 +56,11 @@ impl Bearer {
         format!("{BEARER_SCHEME} {}", self.0)
     }
 
-    /// View this [`Bearer`] as a [`HeaderValue`][http::HeaderValue].
-    pub fn as_header_value(&self) -> http::HeaderValue {
+    /// View this [`Bearer`] as a [`HeaderValue`].
+    pub fn as_header_value(&self) -> HeaderValue {
         let encoded = self.as_header_string();
         // we validate the inner value upon creation
-        http::HeaderValue::from_str(&encoded).expect("inner value should always be valid")
+        HeaderValue::from_str(&encoded).expect("inner value should always be valid")
     }
 
     /// Serialize this [`Bearer`] credential as a clear (not encoded) string.
@@ -76,11 +79,11 @@ const BEARER_SCHEME: &str = "Bearer";
 impl authorization::Credentials for Bearer {
     const SCHEME: &'static str = BEARER_SCHEME;
 
-    fn decode(value: &http::HeaderValue) -> Option<Self> {
+    fn decode(value: &HeaderValue) -> Option<Self> {
         Self::try_from_header_str(value.to_str().ok()?).ok()
     }
 
-    fn encode(&self) -> http::HeaderValue {
+    fn encode(&self) -> HeaderValue {
         self.as_header_value()
     }
 }
@@ -112,19 +115,19 @@ mod tests {
 
     #[test]
     fn bearer_decode() {
-        let auth = Bearer::decode(&http::HeaderValue::from_static("Bearer foobar")).unwrap();
+        let auth = Bearer::decode(&HeaderValue::from_static("Bearer foobar")).unwrap();
         assert_eq!(auth.token(), "foobar");
     }
 
     #[test]
     fn bearer_decode_case_insensitive() {
-        let auth = Bearer::decode(&http::HeaderValue::from_static("bearer foobar")).unwrap();
+        let auth = Bearer::decode(&HeaderValue::from_static("bearer foobar")).unwrap();
         assert_eq!(auth.token(), "foobar");
     }
 
     #[test]
     fn bearer_decode_extra_whitespaces() {
-        let auth = Bearer::decode(&http::HeaderValue::from_static(
+        let auth = Bearer::decode(&HeaderValue::from_static(
             "Bearer  QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
         ))
         .unwrap();

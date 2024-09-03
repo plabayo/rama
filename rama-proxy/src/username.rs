@@ -172,8 +172,8 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
 impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for ProxyFilter {
     fn write_labels(
         &self,
-        composer: &mut rama_utils::username::Composer<SEPARATOR>,
-    ) -> Result<(), rama_utils::username::ComposeError> {
+        composer: &mut rama_core::username::Composer<SEPARATOR>,
+    ) -> Result<(), rama_core::username::ComposeError> {
         if let Some(id) = &self.id {
             composer.write_label("id")?;
             composer.write_label(id.as_str())?;

@@ -6,7 +6,7 @@
 /// ## Examples
 ///
 /// ```
-/// use rama_core::error::error;
+/// use rama_error::error;
 ///
 /// let err = error!("An error occurred");
 /// let err = error!("An error occurred: {}", 42);

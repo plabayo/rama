@@ -1,6 +1,6 @@
 use crate::stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use rama_core::{context::Extensions, Context};
 use crate::stream::SocketInfo;
+use rama_core::{context::Extensions, Context};
 
 #[cfg(feature = "http")]
 use rama_http_types::Request;
@@ -41,7 +41,7 @@ impl IpNetMatcher {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for IpNetMatcher {
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for IpNetMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -54,7 +54,7 @@ impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for IpNetMatcher
     }
 }
 
-impl<State, Socket> crate::matcher::Matcher<State, Socket> for IpNetMatcher
+impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for IpNetMatcher
 where
     Socket: crate::stream::Socket,
 {
@@ -147,9 +147,9 @@ mod private {
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use rama_core::matcher::Matcher;
     use std::net::SocketAddr;
-    use super::*;
 
     const SUBNET_IPV4: &str = "192.168.0.0/24";
     const SUBNET_IPV4_VALID_CASES: [&str; 2] = ["192.168.0.0/25", "192.168.0.1"];

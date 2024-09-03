@@ -1,6 +1,6 @@
 use crate::stream::dep::ipnet::IpNet;
-use rama_core::{context::Extensions, Context};
 use crate::stream::SocketInfo;
+use rama_core::{context::Extensions, Context};
 
 #[cfg(feature = "http")]
 use rama_http_types::Request;
@@ -118,7 +118,7 @@ impl Default for PrivateIpNetMatcher {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for PrivateIpNetMatcher {
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for PrivateIpNetMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -134,7 +134,7 @@ impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for PrivateIpNet
     }
 }
 
-impl<State, Socket> crate::matcher::Matcher<State, Socket> for PrivateIpNetMatcher
+impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for PrivateIpNetMatcher
 where
     Socket: crate::stream::Socket,
 {
@@ -156,9 +156,9 @@ where
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use rama_core::matcher::Matcher;
     use std::net::SocketAddr;
-    use super::*;
 
     #[cfg(feature = "http")]
     #[test]

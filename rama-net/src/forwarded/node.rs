@@ -1,6 +1,6 @@
 use super::{ObfNode, ObfPort};
-use rama_core::error::{ErrorContext, OpaqueError};
 use crate::address::{Authority, Domain, Host};
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::{
     fmt,
     net::{IpAddr, Ipv6Addr, SocketAddr},

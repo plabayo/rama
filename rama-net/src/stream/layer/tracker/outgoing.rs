@@ -1,10 +1,10 @@
 use super::bytes::BytesRWTracker;
-use rama_core::utils::macros::define_inner_service_accessors;
 use crate::{
     client::{ConnectorService, EstablishedClientConnection},
     stream::Stream,
 };
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// A [`Service`] that wraps a [`Service`]'s output IO [`Stream`] with an atomic R/W tracker.

@@ -1,5 +1,5 @@
 use crate::Protocol;
-use rama_core::utils::macros::{str::eq_ignore_ascii_case, error::static_str_error};
+use rama_utils::macros::{error::static_str_error, str::eq_ignore_ascii_case};
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

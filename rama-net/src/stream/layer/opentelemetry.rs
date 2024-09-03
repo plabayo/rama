@@ -2,14 +2,17 @@
 //!
 //! [`Layer`]: crate::Layer
 
-use crate::telemetry::opentelemetry::{
+use crate::stream::SocketInfo;
+use rama_core::telemetry::opentelemetry::semantic_conventions::trace::{
+    CLIENT_ADDRESS, CLIENT_PORT, NETWORK_TRANSPORT, NETWORK_TYPE,
+};
+use rama_core::telemetry::opentelemetry::{
     global,
     metrics::{Histogram, Meter, UpDownCounter},
     semantic_conventions, KeyValue,
 };
-use rama_core::utils::macros::define_inner_service_accessors;
-use crate::{stream::SocketInfo, Context, Layer, Service};
-use semantic_conventions::trace::{CLIENT_ADDRESS, CLIENT_PORT, NETWORK_TRANSPORT, NETWORK_TYPE};
+use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, sync::Arc, time::SystemTime};
 
 const NETWORK_CONNECTION_DURATION: &str = "network.server.connection_duration";
@@ -71,8 +74,8 @@ impl Default for NetworkMetricsLayer {
 /// construct meters for this crate
 fn get_versioned_meter() -> Meter {
     global::meter_with_version(
-        rama_core::utils::info::NAME,
-        Some(rama_core::utils::info::VERSION),
+        rama_utils::info::NAME,
+        Some(rama_utils::info::VERSION),
         Some(semantic_conventions::SCHEMA_URL),
         None,
     )

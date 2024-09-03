@@ -1,8 +1,8 @@
-use rama_core::utils::macros::define_inner_service_accessors;
 use crate::stream::Stream;
 use rama_core::{Context, Layer, Service};
-use std::fmt;
 use rama_http_types::BodyLimit;
+use rama_utils::macros::define_inner_service_accessors;
+use std::fmt;
 
 /// Limit the size of the request and/or response bodies.
 ///

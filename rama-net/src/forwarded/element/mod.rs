@@ -1,6 +1,6 @@
 use super::{ForwardedProtocol, ForwardedVersion, NodeId};
-use rama_core::error::{ErrorContext, OpaqueError};
 use crate::address::{Authority, Host};
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::fmt;
 use std::net::SocketAddr;
 use std::{collections::HashMap, net::IpAddr};
@@ -15,7 +15,7 @@ pub(crate) use parser::{parse_one_plus_forwarded_elements, parse_single_forwarde
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// A single entry in the [`Forwarded`] chain.
 ///
-/// [`Forwarded`]: crate::net::forwarded::Forwarded
+/// [`Forwarded`]: crate::forwarded::Forwarded
 pub struct ForwardedElement {
     by_node: Option<NodeId>,
     for_node: Option<NodeId>,

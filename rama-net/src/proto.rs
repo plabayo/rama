@@ -3,7 +3,10 @@ use std::cmp::min;
 use std::str::FromStr;
 
 use rama_core::error::{ErrorContext, OpaqueError};
-use rama_core::utils::macros::str::eq_ignore_ascii_case;
+use rama_utils::macros::str::eq_ignore_ascii_case;
+
+#[cfg(feature = "http")]
+use rama_http_types::Scheme;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Web protocols that are relevant to Rama.
@@ -193,7 +196,7 @@ impl Protocol {
     }
 }
 
-rama_core::utils::macros::error::static_str_error! {
+rama_utils::macros::error::static_str_error! {
     #[doc = "invalid protocol string"]
     pub struct InvalidProtocolStr;
 }
@@ -255,17 +258,19 @@ impl FromStr for Protocol {
     }
 }
 
-impl From<http::uri::Scheme> for Protocol {
+#[cfg(feature = "http")]
+impl From<Scheme> for Protocol {
     #[inline]
-    fn from(s: http::uri::Scheme) -> Self {
+    fn from(s: Scheme) -> Self {
         s.as_str()
             .try_into()
             .expect("http crate Scheme is pre-validated by promise")
     }
 }
 
-impl From<&http::uri::Scheme> for Protocol {
-    fn from(s: &http::uri::Scheme) -> Self {
+#[cfg(feature = "http")]
+impl From<&Scheme> for Protocol {
+    fn from(s: &Scheme) -> Self {
         s.as_str()
             .try_into()
             .expect("http crate Scheme is pre-validated by promise")
@@ -434,6 +439,7 @@ mod tests {
         assert_eq!("custom".parse(), Ok(Protocol::from_static("custom")));
     }
 
+    #[cfg(feature = "http")]
     #[test]
     fn test_from_http_scheme() {
         for s in [
@@ -441,7 +447,8 @@ mod tests {
         ]
         .iter()
         {
-            let uri = http::Uri::from_str(format!("{}://example.com", s).as_str()).unwrap();
+            let uri =
+                rama_http_types::Uri::from_str(format!("{}://example.com", s).as_str()).unwrap();
             assert_eq!(Protocol::from(uri.scheme().unwrap()), *s);
         }
     }

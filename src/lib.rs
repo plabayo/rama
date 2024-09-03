@@ -25,13 +25,15 @@
 //! | 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(2)</sup> ⸱ 🏗️ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 //! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [context] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
 //! | ✅ [telemetry][opentelemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::stream::layer::opentelemetry) |
-//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config](rama_utils::username) ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
+//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
 //! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ 🏗️ Connection Pool <sup>(2)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 //! | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 //! | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/binary/rama) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client <sup>(1)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 //! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
 //! | ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
+//!
+//! [L4 Username Config]: https://docs.rs/rama-core/latest/rama_core/username/index.html
 //!
 //! > 🗒️ _Footnotes_
 //! >

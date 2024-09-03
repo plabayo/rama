@@ -1,5 +1,5 @@
-use rama_core::{context::Extensions, Context};
 use crate::stream::SocketInfo;
+use rama_core::{context::Extensions, Context};
 
 #[cfg(feature = "http")]
 use rama_http_types::Request;
@@ -44,7 +44,7 @@ impl PortMatcher {
 }
 
 #[cfg(feature = "http")]
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for PortMatcher {
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for PortMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,
@@ -57,7 +57,7 @@ impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for PortMatcher 
     }
 }
 
-impl<State, Socket> crate::matcher::Matcher<State, Socket> for PortMatcher
+impl<State, Socket> rama_core::matcher::Matcher<State, Socket> for PortMatcher
 where
     Socket: crate::stream::Socket,
 {
@@ -76,9 +76,9 @@ where
 
 #[cfg(test)]
 mod test {
+    use super::*;
     use rama_core::matcher::Matcher;
     use std::net::SocketAddr;
-    use super::*;
 
     #[cfg(feature = "http")]
     #[test]

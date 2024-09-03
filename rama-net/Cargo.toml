@@ -14,6 +14,7 @@ rust-version = { workspace = true }
 default = []
 full = ["http"]
 http = ["dep:rama-http-types", "rama-core/http"]
+telemetry = ["rama-core/telemetry"]
 
 [dependencies]
 base64 = { workspace = true }
@@ -29,6 +30,7 @@ parking_lot = { workspace = true }
 paste = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
 rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types", optional = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
@@ -40,6 +42,7 @@ venndb = { workspace = true, optional = true }
 quickcheck = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
+itertools = { workspace = true }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

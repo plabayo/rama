@@ -1,8 +1,8 @@
 use super::ExtensionValue;
 use super::{ForwardedElement, NodeId};
-use rama_core::error::{ErrorContext, OpaqueError};
 use crate::forwarded::ForwardedProtocol;
-use rama_core::utils::macros::match_ignore_ascii_case_str;
+use rama_core::error::{ErrorContext, OpaqueError};
+use rama_utils::macros::match_ignore_ascii_case_str;
 
 pub(crate) fn parse_single_forwarded_element(
     bytes: &[u8],

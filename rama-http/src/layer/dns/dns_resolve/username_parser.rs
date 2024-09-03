@@ -63,7 +63,7 @@ impl UsernameLabelParser for DnsResolveModeUsernameParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_utils::username::parse_username;
+    use rama_core::username::parse_username;
 
     #[test]
     fn test_username_dns_resolve_mod_config() {

@@ -1,14 +1,15 @@
 //! An async service which echoes the incoming bytes back on the same stream.
 
-use rama_core::{error::BoxError, Context, Service};
 use crate::stream::Stream;
+use rama_core::{error::BoxError, Context, Service};
 
 /// An async service which echoes the incoming bytes back on the same stream.
 ///
 /// # Example
 ///
 /// ```rust
-/// use rama::{error::BoxError, Context, Service, stream::service::EchoService};
+/// use rama_core::{error::BoxError, Context, Service};
+/// use rama_net::stream::service::EchoService;
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), BoxError> {

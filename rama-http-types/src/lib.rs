@@ -165,7 +165,7 @@ pub mod header {
 
     /// Static Header Value that is can be used as `User-Agent` or `Server` header.
     pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(
-        const_format::formatcp!("{}/{}", super::NAME, super::VERSION,),
+        const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION),
     );
 }
 
@@ -174,9 +174,3 @@ pub use self::dep::http::method::Method;
 pub use self::dep::http::status::StatusCode;
 pub use self::dep::http::uri::{Scheme, Uri};
 pub use self::dep::http::version::Version;
-
-/// The name of the crate.
-const NAME: &str = "rama";
-
-/// The version of the crate.
-const VERSION: &str = env!("CARGO_PKG_VERSION");
