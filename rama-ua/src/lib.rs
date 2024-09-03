@@ -46,42 +46,6 @@
 //! Please open an [issue](https://github.com/plabayo/rama/issues) in case you need support for more User Agents,
 //! and have a good case to make for it. For example we might also support the default user agents used by mobile
 //! application SDKs. This makes however only sense if we can provide Http and Tls emulation for it.
-//!
-//! # Example
-//!
-//! ```
-//! use rama::{
-//!     http::{client::HttpClientExt, IntoResponse, Request, Response, StatusCode},
-//!     service::service_fn,
-//!     ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
-//!     Context, Layer,
-//! };
-//! use std::convert::Infallible;
-//!
-//! const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
-//!
-//! async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
-//!     let ua: &UserAgent = ctx.get().unwrap();
-//!
-//!     assert_eq!(ua.header_str(), UA);
-//!     assert_eq!(ua.info(), Some(UserAgentInfo{ kind: UserAgentKind::Chromium, version: Some(124) }));
-//!     assert_eq!(ua.platform(), Some(PlatformKind::Windows));
-//!
-//!     Ok(StatusCode::OK.into_response())
-//! }
-//!
-//! # #[tokio::main]
-//! # async fn main() {
-//! let service = UserAgentClassifierLayer::new().layer(service_fn(handle));
-//!
-//! let _ = service
-//!     .get("http://www.example.com")
-//!     .typed_header(headers::UserAgent::from_static(UA))
-//!     .send(Context::default())
-//!     .await
-//!     .unwrap();
-//! # }
-//! ```
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
@@ -127,6 +91,8 @@
 #![cfg_attr(docsrs, feature(doc_auto_cfg, doc_cfg))]
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
+
+use serde::{Serialize, Deserialize};
 
 mod info;
 pub use info::{

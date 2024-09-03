@@ -1,7 +1,6 @@
 use super::FromRequest;
-use crate::http;
 use rama_utils::macros::impl_deref;
-use crate::Context;
+use rama_core::Context;
 use std::convert::Infallible;
 
 mod bytes;
@@ -40,8 +39,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::http::dep::http_body_util::BodyExt;
-    use crate::http::{self, StatusCode};
+    use crate::dep::http_body_util::BodyExt;
+    use crate::{self, StatusCode};
     use crate::{http::service::web::WebService, service::Service};
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use super::*;
 use crate::error::{error, OpaqueError};
-use crate::http::{response::IntoResponse, BodyExtractExt};
-use crate::http::{Request, Response};
+use crate::{response::IntoResponse, BodyExtractExt};
+use crate::{Request, Response};
 use crate::{Layer, Service};
 use parking_lot::Mutex;
 use std::sync::{

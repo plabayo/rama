@@ -5,11 +5,9 @@
 //! [`Policy`]: super::Policy
 
 use super::{Policy, PolicyResult, RetryBody};
-use crate::{
-    http::{Request, Response},
-    utils::backoff::Backoff,
-    Context,
-};
+use crate::{Request, Response};
+use rama_utils::backoff::Backoff;
+use rama_core::Context;
 use std::future::Future;
 
 #[derive(Debug, Clone, Default)]

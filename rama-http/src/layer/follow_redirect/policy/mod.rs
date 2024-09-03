@@ -17,10 +17,8 @@ pub use self::{
     redirect_fn::{redirect_fn, RedirectFn},
     same_origin::SameOrigin,
 };
-use crate::{
-    http::{Request, Scheme, StatusCode, Uri},
-    Context,
-};
+use crate::{Request, Scheme, StatusCode, Uri};
+use rama_core::Context;
 
 /// Trait for the policy on handling redirection responses.
 ///

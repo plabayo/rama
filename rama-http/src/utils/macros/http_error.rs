@@ -32,12 +32,12 @@ macro_rules! __define_http_rejection {
         #[non_exhaustive]
         pub struct $name;
 
-        impl $crate::http::IntoResponse for $name {
-            fn into_response(self) -> $crate::http::Response {
+        impl $crate::IntoResponse for $name {
+            fn into_response(self) -> $crate::Response {
                 $crate::__log_http_rejection!(
                     rejection_type = $name,
                     body_text = $body,
-                    status = $crate::http::StatusCode::$status,
+                    status = $crate::StatusCode::$status,
                 );
                 (self.status(), $body).into_response()
             }
@@ -50,8 +50,8 @@ macro_rules! __define_http_rejection {
             }
 
             /// Get the status code used for this rejection.
-            pub fn status(&self) -> $crate::http::StatusCode {
-                $crate::http::StatusCode::$status
+            pub fn status(&self) -> $crate::StatusCode {
+                $crate::StatusCode::$status
             }
         }
 
@@ -98,12 +98,12 @@ macro_rules! __define_http_rejection {
             }
         }
 
-        impl $crate::http::IntoResponse for $name {
-            fn into_response(self) -> $crate::http::Response {
+        impl $crate::IntoResponse for $name {
+            fn into_response(self) -> $crate::Response {
                 $crate::__log_http_rejection!(
                     rejection_type = $name,
                     body_text = self.body_text(),
-                    status = $crate::http::StatusCode::$status,
+                    status = $crate::StatusCode::$status,
                 );
                 (self.status(), self.body_text()).into_response()
             }
@@ -116,8 +116,8 @@ macro_rules! __define_http_rejection {
             }
 
             /// Get the status code used for this rejection.
-            pub fn status(&self) -> $crate::http::StatusCode {
-                $crate::http::StatusCode::$status
+            pub fn status(&self) -> $crate::StatusCode {
+                $crate::StatusCode::$status
             }
         }
 
@@ -156,8 +156,8 @@ macro_rules! __composite_http_rejection {
             ),+
         }
 
-        impl $crate::http::IntoResponse for $name {
-            fn into_response(self) -> $crate::http::Response {
+        impl $crate::IntoResponse for $name {
+            fn into_response(self) -> $crate::Response {
                 match self {
                     $(
                         Self::$variant(inner) => inner.into_response(),
@@ -177,7 +177,7 @@ macro_rules! __composite_http_rejection {
             }
 
             /// Get the status code used for this rejection.
-            pub fn status(&self) -> $crate::http::StatusCode {
+            pub fn status(&self) -> $crate::StatusCode {
                 match self {
                     $(
                         Self::$variant(inner) => inner.status(),

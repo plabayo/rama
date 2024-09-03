@@ -1,9 +1,10 @@
 use super::DnsResolveModeService;
-use crate::{http::HeaderName, Layer};
+use crate::HeaderName;
+use rama_core::Layer;
 
 /// Layer which can extend [`Dns`] overwrites with mappings.
 ///
-/// See [the module level documentation](crate::http::layer::dns) for more information.
+/// See [the module level documentation](crate::layer::dns) for more information.
 ///
 /// [`Dns`]: crate::dns::Dns
 #[derive(Debug, Clone)]

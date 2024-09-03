@@ -88,19 +88,19 @@ pub use self::{
     service::Compression,
 };
 #[doc(inline)]
-pub use crate::http::layer::util::compression::CompressionLevel;
+pub use crate::layer::util::compression::CompressionLevel;
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use crate::http::layer::compression::predicate::SizeAbove;
+    use crate::layer::compression::predicate::SizeAbove;
 
-    use crate::http::dep::http_body_util::BodyExt;
-    use crate::http::header::{
+    use crate::dep::http_body_util::BodyExt;
+    use crate::header::{
         ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_RANGE, CONTENT_TYPE, RANGE,
     };
-    use crate::http::{Body, HeaderValue, Request, Response};
+    use crate::{Body, HeaderValue, Request, Response};
     use crate::service::service_fn;
     use crate::{Context, Service};
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};

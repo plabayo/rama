@@ -2,11 +2,9 @@ use std::fmt;
 
 use super::DnsMap;
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{
+use crate::{layer::header_config::extract_header_config, utils::HeaderValueErr, HeaderName, Request};
+use rama_core::{
     error::OpaqueError,
-    http::{
-        layer::header_config::extract_header_config, utils::HeaderValueErr, HeaderName, Request,
-    },
     Context, Service,
 };
 
@@ -18,7 +16,7 @@ use crate::{
 /// See [`Dns`] and [`DnsMapLayer`] for more information.
 ///
 /// [`Dns`]: crate::dns::Dns
-/// [`DnsMapLayer`]: crate::http::layer::dns::DnsMapLayer
+/// [`DnsMapLayer`]: crate::layer::dns::DnsMapLayer
 pub struct DnsMapService<S> {
     inner: S,
     header_name: HeaderName,

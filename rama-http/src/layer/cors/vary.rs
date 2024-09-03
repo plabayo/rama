@@ -1,6 +1,6 @@
 use std::array;
 
-use crate::http::{
+use crate::{
     header::{self, HeaderName},
     HeaderValue,
 };

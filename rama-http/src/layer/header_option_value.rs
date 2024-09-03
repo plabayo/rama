@@ -4,14 +4,13 @@
 //! and has a bool-like value.
 
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{
-    error::BoxError,
-    http::{utils::HeaderValueGetter, Request},
+use rama_core::{
+    error::{ErrorExt, OpaqueError, BoxError},
     Context, Layer, Service,
 };
 use crate::{
-    error::{ErrorExt, OpaqueError},
-    http::HeaderName,
+    HeaderName,
+    utils::HeaderValueGetter, Request,
 };
 use std::{fmt, marker::PhantomData};
 
@@ -115,7 +114,7 @@ where
             }
             Err(err) => {
                 if self.optional
-                    && matches!(err, crate::http::utils::HeaderValueErr::HeaderMissing(_))
+                    && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_))
                 {
                     tracing::debug!(
                         error = %err,
@@ -201,7 +200,7 @@ impl<T, S> Layer<S> for HeaderOptionValueLayer<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::http::Method;
+    use crate::Method;
 
     #[derive(Debug, Clone, Default)]
     struct UnitValue;

@@ -1,14 +1,14 @@
 use super::predicate::DefaultPredicate;
 use super::{Compression, Predicate};
-use crate::http::layer::util::compression::{AcceptEncoding, CompressionLevel};
-use crate::Layer;
+use crate::layer::util::compression::{AcceptEncoding, CompressionLevel};
+use rama_core::Layer;
 
 /// Compress response bodies of the underlying service.
 ///
 /// This uses the `Accept-Encoding` header to pick an appropriate encoding and adds the
 /// `Content-Encoding` header to responses.
 ///
-/// See the [module docs](crate::http::layer::compression) for more details.
+/// See the [module docs](crate::layer::compression) for more details.
 #[derive(Clone, Debug, Default)]
 pub struct CompressionLayer<P = DefaultPredicate> {
     accept: AcceptEncoding,
@@ -117,8 +117,8 @@ impl CompressionLayer {
 mod tests {
     use super::*;
 
-    use crate::http::dep::http_body_util::BodyExt;
-    use crate::http::{header::ACCEPT_ENCODING, Body, Request, Response};
+    use crate::dep::http_body_util::BodyExt;
+    use crate::{header::ACCEPT_ENCODING, Body, Request, Response};
     use crate::service::service_fn;
     use crate::{Context, Service};
     use std::convert::Infallible;

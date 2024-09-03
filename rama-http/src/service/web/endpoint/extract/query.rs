@@ -1,7 +1,7 @@
 use super::FromRequestParts;
-use crate::http::dep::http::request::Parts;
-use rama_utils::macros::define_http_rejection;
-use crate::Context;
+use crate::dep::http::request::Parts;
+use crate::utils::macros::define_http_rejection;
+use rama_core::Context;
 use serde::de::DeserializeOwned;
 
 /// Extractor that deserializes query strings into some type.

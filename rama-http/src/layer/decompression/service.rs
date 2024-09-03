@@ -1,24 +1,24 @@
 use std::fmt;
 
 use super::{body::BodyInner, DecompressionBody};
-use crate::http::dep::http_body::Body;
-use crate::http::layer::util::{
+use crate::dep::http_body::Body;
+use crate::layer::util::{
     compression::{AcceptEncoding, CompressionLevel, WrapBody},
     content_encoding::SupportedEncodings,
 };
-use crate::http::{
+use crate::{
     header::{self, ACCEPT_ENCODING},
     Request, Response,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Service};
+use rama_core::{Context, Service};
 
 /// Decompresses response bodies of the underlying service.
 ///
 /// This adds the `Accept-Encoding` header to requests and transparently decompresses response
 /// bodies based on the `Content-Encoding` header.
 ///
-/// See the [module docs](crate::http::layer::decompression) for more details.
+/// See the [module docs](crate::layer::decompression) for more details.
 pub struct Decompression<S> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,

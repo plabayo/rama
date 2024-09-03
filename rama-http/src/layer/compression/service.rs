@@ -2,19 +2,19 @@ use super::body::BodyInner;
 use super::predicate::{DefaultPredicate, Predicate};
 use super::CompressionBody;
 use super::CompressionLevel;
-use crate::http::dep::http_body::Body;
-use crate::http::layer::util::compression::WrapBody;
-use crate::http::layer::util::{compression::AcceptEncoding, content_encoding::Encoding};
-use crate::http::{header, Request, Response};
+use crate::dep::http_body::Body;
+use crate::layer::util::compression::WrapBody;
+use crate::layer::util::{compression::AcceptEncoding, content_encoding::Encoding};
+use crate::{header, Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Service};
+use rama_core::{Context, Service};
 
 /// Compress response bodies of the underlying service.
 ///
 /// This uses the `Accept-Encoding` header to pick an appropriate encoding and adds the
 /// `Content-Encoding` header to responses.
 ///
-/// See the [module docs](crate::http::layer::compression) for more details.
+/// See the [module docs](crate::layer::compression) for more details.
 pub struct Compression<S, P = DefaultPredicate> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,

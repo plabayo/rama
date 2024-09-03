@@ -1,6 +1,6 @@
 use std::{fmt, sync::Arc};
 
-use crate::http::dep::http::{
+use crate::dep::http::{
     header::{HeaderName, HeaderValue},
     request::Parts as RequestParts,
 };
@@ -114,11 +114,11 @@ mod tests {
     use super::AllowPrivateNetwork;
 
     use crate::error::BoxError;
-    use crate::http::dep::http::{
+    use crate::dep::http::{
         header::ORIGIN, request::Parts, HeaderName, HeaderValue, Request, Response,
     };
-    use crate::http::layer::cors::CorsLayer;
-    use crate::http::Body;
+    use crate::layer::cors::CorsLayer;
+    use crate::Body;
     use crate::service::service_fn;
     use crate::{Context, Layer, Service};
 

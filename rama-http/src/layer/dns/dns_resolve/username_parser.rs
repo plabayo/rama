@@ -1,11 +1,10 @@
-use crate::{
+use rama_core::{
     context::Extensions,
     error::{error, ErrorContext, OpaqueError},
-    utils::macros::str::eq_ignore_ascii_case,
-    utils::username::{UsernameLabelParser, UsernameLabelState},
 };
-
 use super::DnsResolveMode;
+use rama_utils::macros::str::eq_ignore_ascii_case;
+use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]

@@ -12,9 +12,12 @@ rust-version = { workspace = true }
 
 [dependencies]
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

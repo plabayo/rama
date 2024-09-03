@@ -1,17 +1,17 @@
 use std::fmt;
 
-use crate::error::BoxError;
-use crate::http::dep::http_body::Body;
-use crate::http::dep::http_body_util::{combinators::UnsyncBoxBody, BodyExt, Empty};
-use crate::http::layer::{
+use rama_core::error::BoxError;
+use crate::dep::http_body::Body;
+use crate::dep::http_body_util::{combinators::UnsyncBoxBody, BodyExt, Empty};
+use crate::layer::{
     decompression::body::BodyInner,
     decompression::DecompressionBody,
     util::compression::{AcceptEncoding, CompressionLevel, WrapBody},
     util::content_encoding::SupportedEncodings,
 };
-use crate::http::{header, HeaderValue, Request, Response, StatusCode};
+use crate::{header, HeaderValue, Request, Response, StatusCode};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Service};
+use rama_core::{Context, Service};
 use bytes::Buf;
 
 /// Decompresses request bodies and calls its underlying service.
@@ -24,7 +24,7 @@ use bytes::Buf;
 /// will call the underlying service with the unmodified request if the encoding is not supported.
 /// This is disabled by default.
 ///
-/// See the [module docs](crate::http::layer::decompression) for more details.
+/// See the [module docs](crate::layer::decompression) for more details.
 pub struct RequestDecompression<S> {
     pub(super) inner: S,
     pub(super) accept: AcceptEncoding,

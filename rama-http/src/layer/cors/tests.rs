@@ -1,5 +1,5 @@
-use crate::http::layer::cors::{AllowOrigin, CorsLayer};
-use crate::http::{header, Body, HeaderValue, Request, Response};
+use crate::layer::cors::{AllowOrigin, CorsLayer};
+use crate::{header, Body, HeaderValue, Request, Response};
 use crate::service::service_fn;
 use crate::{Context, Layer, Service};
 use std::convert::Infallible;

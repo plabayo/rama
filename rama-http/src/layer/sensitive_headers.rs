@@ -38,16 +38,16 @@
 //! # }
 //! ```
 
-use crate::http::{HeaderName, Request, Response};
+use crate::{HeaderName, Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use std::sync::Arc;
 
 /// Mark headers as [sensitive] on both requests and responses.
 ///
 /// Produces [`SetSensitiveHeaders`] services.
 ///
-/// See the [module docs](crate::http::layer::sensitive_headers) for more details.
+/// See the [module docs](crate::layer::sensitive_headers) for more details.
 ///
 /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
 #[derive(Clone, Debug)]
@@ -84,7 +84,7 @@ impl<S> Layer<S> for SetSensitiveHeadersLayer {
 
 /// Mark headers as [sensitive] on both requests and responses.
 ///
-/// See the [module docs](crate::http::layer::sensitive_headers) for more details.
+/// See the [module docs](crate::layer::sensitive_headers) for more details.
 ///
 /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
 pub type SetSensitiveHeaders<S> = SetSensitiveRequestHeaders<SetSensitiveResponseHeaders<S>>;
@@ -93,7 +93,7 @@ pub type SetSensitiveHeaders<S> = SetSensitiveRequestHeaders<SetSensitiveRespons
 ///
 /// Produces [`SetSensitiveRequestHeaders`] services.
 ///
-/// See the [module docs](crate::http::layer::sensitive_headers) for more details.
+/// See the [module docs](crate::layer::sensitive_headers) for more details.
 ///
 /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
 #[derive(Clone, Debug)]
@@ -130,7 +130,7 @@ impl<S> Layer<S> for SetSensitiveRequestHeadersLayer {
 
 /// Mark request headers as [sensitive].
 ///
-/// See the [module docs](crate::http::layer::sensitive_headers) for more details.
+/// See the [module docs](crate::layer::sensitive_headers) for more details.
 ///
 /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
 #[derive(Clone, Debug)]
@@ -189,7 +189,7 @@ where
 ///
 /// Produces [`SetSensitiveResponseHeaders`] services.
 ///
-/// See the [module docs](crate::http::layer::sensitive_headers) for more details.
+/// See the [module docs](crate::layer::sensitive_headers) for more details.
 ///
 /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
 #[derive(Clone, Debug)]
@@ -226,7 +226,7 @@ impl<S> Layer<S> for SetSensitiveResponseHeadersLayer {
 
 /// Mark response headers as [sensitive].
 ///
-/// See the [module docs](crate::http::layer::sensitive_headers) for more details.
+/// See the [module docs](crate::layer::sensitive_headers) for more details.
 ///
 /// [sensitive]: https://docs.rs/http/latest/http/header/struct.HeaderValue.html#method.set_sensitive
 #[derive(Clone, Debug)]

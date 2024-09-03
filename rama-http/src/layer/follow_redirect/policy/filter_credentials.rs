@@ -1,11 +1,9 @@
 use super::{eq_origin, Action, Attempt, Policy};
 use crate::{
-    http::{
-        header::{self, HeaderName},
-        Request,
-    },
-    Context,
+    header::{self, HeaderName},
+    Request,
 };
+use rama_core::Context;
 
 /// A redirection [`Policy`] that removes credentials from requests in redirections.
 #[derive(Debug)]
@@ -139,7 +137,7 @@ impl<S, B, E> Policy<S, B, E> for FilterCredentials {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::Uri;
+    use crate::Uri;
 
     #[test]
     fn works() {

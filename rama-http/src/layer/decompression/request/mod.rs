@@ -5,9 +5,9 @@ pub(super) mod service;
 mod tests {
     use super::service::RequestDecompression;
 
-    use crate::http::dep::http_body_util::BodyExt;
-    use crate::http::layer::decompression::DecompressionBody;
-    use crate::http::{header, Body, Request, Response, StatusCode};
+    use crate::dep::http_body_util::BodyExt;
+    use crate::layer::decompression::DecompressionBody;
+    use crate::{header, Body, Request, Response, StatusCode};
     use crate::service::service_fn;
     use crate::{Context, Service};
 

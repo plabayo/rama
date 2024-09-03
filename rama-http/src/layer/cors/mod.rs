@@ -46,12 +46,12 @@
 
 #![allow(clippy::enum_variant_names)]
 
-use crate::http::dep::http::{
+use crate::dep::http::{
     header::{self, HeaderName},
     HeaderMap, HeaderValue, Method, Request, Response,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use bytes::{BufMut, BytesMut};
 use std::{array, fmt, mem};
 
@@ -76,7 +76,7 @@ pub use self::{
 
 /// Layer that applies the [`Cors`] middleware which adds headers for [CORS][mdn].
 ///
-/// See the [module docs](crate::http::layer::cors) for an example.
+/// See the [module docs](crate::layer::cors) for an example.
 ///
 /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
 #[derive(Debug, Clone)]
@@ -493,7 +493,7 @@ impl<S> Layer<S> for CorsLayer {
 
 /// Middleware which adds headers for [CORS][mdn].
 ///
-/// See the [module docs](crate::http::layer::cors) for an example.
+/// See the [module docs](crate::layer::cors) for an example.
 ///
 /// [mdn]: https://developer.mozilla.org/en-US/docs/Web/HTTP/CORS
 pub struct Cors<S> {

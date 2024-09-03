@@ -1,4 +1,4 @@
-use crate::net::address::Domain;
+use rama_net::address::Domain;
 use serde::Deserialize;
 use std::{collections::HashMap, net::IpAddr};
 

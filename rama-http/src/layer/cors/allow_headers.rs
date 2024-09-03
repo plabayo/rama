@@ -1,6 +1,6 @@
 use std::{array, fmt};
 
-use crate::http::dep::http::{
+use crate::dep::http::{
     header::{self, HeaderName, HeaderValue},
     request::Parts as RequestParts,
 };

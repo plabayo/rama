@@ -1,8 +1,8 @@
 use super::FromRequestParts;
-use crate::http::dep::http::request::Parts;
-use crate::http::headers::{self, Header};
-use crate::http::{HeaderName, IntoResponse, Response};
-use crate::Context;
+use crate::dep::http::request::Parts;
+use crate::headers::{self, Header};
+use crate::{HeaderName, IntoResponse, Response};
+use rama_core::Context;
 use std::ops::Deref;
 
 /// Extractor to get a TypedHeader from the request.

@@ -1,8 +1,8 @@
 //! Service that redirects all requests.
 
-use crate::http::Request;
-use crate::http::{header, HeaderValue, Response, StatusCode, Uri};
-use crate::{Context, Service};
+use crate::Request;
+use crate::{header, HeaderValue, Response, StatusCode, Uri};
+use rama_core::{Context, Service};
 use std::{
     convert::{Infallible, TryFrom},
     fmt,

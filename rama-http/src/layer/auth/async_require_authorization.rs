@@ -117,16 +117,14 @@
 //! ```
 
 use std::future::Future;
-
-use crate::http::{Request, Response};
+use crate::{Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::Context;
-use crate::{Layer, Service};
+use rama_core::{Context, Layer, Service};
 
 /// Layer that applies [`AsyncRequireAuthorization`] which authorizes all requests using the
 /// [`Authorization`] header.
 ///
-/// See the [module docs](crate::http::layer::auth::async_require_authorization) for an example.
+/// See the [module docs](crate::layer::auth::async_require_authorization) for an example.
 ///
 /// [`Authorization`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization
 #[derive(Debug, Clone)]
@@ -154,7 +152,7 @@ where
 
 /// Middleware that authorizes all requests using the [`Authorization`] header.
 ///
-/// See the [module docs](crate::http::layer::auth::async_require_authorization) for an example.
+/// See the [module docs](crate::layer::auth::async_require_authorization) for an example.
 ///
 /// [`Authorization`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization
 #[derive(Clone, Debug)]
@@ -250,7 +248,7 @@ mod tests {
     use super::*;
 
     use crate::error::BoxError;
-    use crate::http::{header, Body, StatusCode};
+    use crate::{header, Body, StatusCode};
     use crate::service::service_fn;
 
     #[derive(Clone, Copy)]

@@ -1,8 +1,8 @@
-use crate::{
+use rama_core::{
     context::Extensions,
-    http::{Method, Request},
     Context,
 };
+use crate::{Method, Request};
 use std::{
     fmt,
     fmt::{Debug, Formatter},

@@ -1,11 +1,13 @@
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use base64::Engine;
-use headers::authorization;
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
 
 #[cfg(feature = "http")]
-use rama_http_types::HeaderValue;
+use rama_http_types::{
+    HeaderValue,
+    headers::authorization,
+};
 
 #[derive(Debug, Clone)]
 /// Basic credentials.
@@ -108,6 +110,7 @@ impl Basic {
         encoded
     }
 
+    #[cfg(feature = "http")]
     /// View this [`Basic`] as a [`HeaderValue`]
     pub fn as_header_value(&self) -> HeaderValue {
         let encoded = self.as_header_string();
@@ -163,6 +166,7 @@ impl Eq for Basic {}
 
 const BASIC_SCHEME: &str = "Basic";
 
+#[cfg(feature = "http")]
 impl authorization::Credentials for Basic {
     const SCHEME: &'static str = BASIC_SCHEME;
 
@@ -179,7 +183,6 @@ impl authorization::Credentials for Basic {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use authorization::Credentials;
 
     #[test]
     fn basic_parse_empty() {
@@ -216,6 +219,48 @@ mod tests {
     }
 
     #[test]
+    fn basic_header() {
+        let auth = Basic::try_from_header_str("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==").unwrap();
+        assert_eq!(auth.username(), "Aladdin");
+        assert_eq!(auth.password(), "open sesame");
+        assert_eq!(
+            "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
+            auth.as_header_string()
+        );
+    }
+
+    #[test]
+    fn basic_header_no_password() {
+        let auth = Basic::try_from_header_str("Basic QWxhZGRpbjo=").unwrap();
+        assert_eq!(auth.username(), "Aladdin");
+        assert_eq!(auth.password(), "");
+        assert_eq!("Basic QWxhZGRpbjo=", auth.as_header_string());
+    }
+
+    #[test]
+    fn basic_clear() {
+        let auth = Basic::try_from_clear_str("Aladdin:open sesame".to_owned()).unwrap();
+        assert_eq!(auth.username(), "Aladdin");
+        assert_eq!(auth.password(), "open sesame");
+        assert_eq!("Aladdin:open sesame", auth.as_clear_string());
+    }
+
+    #[test]
+    fn basic_clear_no_password() {
+        let auth = Basic::try_from_clear_str("Aladdin:".to_owned()).unwrap();
+        assert_eq!(auth.username(), "Aladdin");
+        assert_eq!(auth.password(), "");
+        assert_eq!("Aladdin:", auth.as_clear_string());
+    }
+}
+
+#[cfg(feature = "http")]
+#[cfg(test)]
+mod tests_http {
+    use super::*;
+    use authorization::Credentials;
+
+    #[test]
     fn basic_decode() {
         let auth = Basic::decode(&HeaderValue::from_static(
             "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
@@ -250,40 +295,5 @@ mod tests {
         let auth = Basic::decode(&HeaderValue::from_static("Basic QWxhZGRpbjo=")).unwrap();
         assert_eq!(auth.username(), "Aladdin");
         assert_eq!(auth.password(), "");
-    }
-
-    #[test]
-    fn basic_header() {
-        let auth = Basic::try_from_header_str("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==").unwrap();
-        assert_eq!(auth.username(), "Aladdin");
-        assert_eq!(auth.password(), "open sesame");
-        assert_eq!(
-            "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",
-            auth.as_header_string()
-        );
-    }
-
-    #[test]
-    fn basic_header_no_password() {
-        let auth = Basic::try_from_header_str("Basic QWxhZGRpbjo=").unwrap();
-        assert_eq!(auth.username(), "Aladdin");
-        assert_eq!(auth.password(), "");
-        assert_eq!("Basic QWxhZGRpbjo=", auth.as_header_string());
-    }
-
-    #[test]
-    fn basic_clear() {
-        let auth = Basic::try_from_clear_str("Aladdin:open sesame".to_owned()).unwrap();
-        assert_eq!(auth.username(), "Aladdin");
-        assert_eq!(auth.password(), "open sesame");
-        assert_eq!("Aladdin:open sesame", auth.as_clear_string());
-    }
-
-    #[test]
-    fn basic_clear_no_password() {
-        let auth = Basic::try_from_clear_str("Aladdin:".to_owned()).unwrap();
-        assert_eq!(auth.username(), "Aladdin");
-        assert_eq!(auth.password(), "");
-        assert_eq!("Aladdin:", auth.as_clear_string());
     }
 }

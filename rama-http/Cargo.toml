@@ -34,13 +34,21 @@ mime = { workspace = true }
 mime_guess = { workspace = true }
 paste = { workspace = true }
 pin-project-lite = { workspace = true }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core", features = ["http"] }
+rama-ua = { version = "0.2.0-alpha.2", path = "../rama-ua" }
 rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.2", path = "../rama-net" }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
 tracing = { workspace = true }
+regex = { workspace = true }
+base64 = { workspace = true }
+httpdate = { workspace = true }
+tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
+http-range-header = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

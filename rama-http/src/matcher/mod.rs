@@ -3,12 +3,16 @@
 //! See [`service::matcher` module] for more information.
 //!
 //! [`service::Matcher`]: crate::matcher::Matcher
-//! [`http::Request`]: crate::http::Request
+//! [`http::Request`]: crate::Request
 //! [`service::matcher` module]: crate::matcher
-use crate::{
-    context::Extensions, http::Request, matcher::IteratorMatcherExt, net::address::Domain,
-    stream::matcher::SocketMatcher, Context,
+use rama_core::{
+    context::Extensions, matcher::IteratorMatcherExt, Context,
 };
+use rama_net::{
+    address::Domain,
+    stream::matcher::SocketMatcher,
+};
+use crate::Request;
 use std::fmt;
 use std::sync::Arc;
 

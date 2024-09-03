@@ -1,8 +1,8 @@
 use super::FromRequestParts;
-use crate::http::dep::http::request::Parts;
-use crate::http::matcher::{UriParams, UriParamsDeserializeError};
-use rama_utils::macros::{composite_http_rejection, define_http_rejection};
-use crate::Context;
+use crate::dep::http::request::Parts;
+use crate::matcher::{UriParams, UriParamsDeserializeError};
+use crate::utils::macros::{composite_http_rejection, define_http_rejection};
+use rama_core::Context;
 use serde::de::DeserializeOwned;
 use std::ops::{Deref, DerefMut};
 
@@ -75,8 +75,8 @@ impl<T> DerefMut for Path<T> {
 mod tests {
     use super::*;
 
-    use crate::http::service::web::WebService;
-    use crate::http::{Body, Request, StatusCode};
+    use crate::service::web::WebService;
+    use crate::{Body, Request, StatusCode};
     use crate::Service;
 
     #[tokio::test]

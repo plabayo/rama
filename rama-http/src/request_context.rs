@@ -17,7 +17,7 @@ use crate::tls::SecureTransport;
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context of the [`Request`] being served by the [`HttpServer`]
 ///
-/// [`HttpServer`]: crate::http::server::HttpServer
+/// [`HttpServer`]: crate::server::HttpServer
 pub struct RequestContext {
     /// The HTTP Version.
     pub http_version: Version,
@@ -60,7 +60,7 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
             })
             .or_else(|| {
                 req.headers()
-                    .get(crate::http::header::HOST)
+                    .get(crate::header::HOST)
                     .and_then(|host| {
                         host.try_into() // try to consume as Authority, otherwise as Host
                             .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
@@ -126,7 +126,7 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
             .or_else(|| {
                 parts
                     .headers
-                    .get(crate::http::header::HOST)
+                    .get(crate::header::HOST)
                     .and_then(|host| {
                         host.try_into() // try to consume as Authority, otherwise as Host
                             .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
@@ -233,11 +233,11 @@ impl From<&RequestContext> for TransportContext {
     }
 }
 
-impl<State, Body> TryFrom<(&Context<State>, &crate::http::Request<Body>)> for TransportContext {
+impl<State, Body> TryFrom<(&Context<State>, &crate::Request<Body>)> for TransportContext {
     type Error = OpaqueError;
 
     fn try_from(
-        (ctx, req): (&Context<State>, &crate::http::Request<Body>),
+        (ctx, req): (&Context<State>, &crate::Request<Body>),
     ) -> Result<TransportContext, Self::Error> {
         Ok(match ctx.get::<RequestContext>() {
             Some(req_ctx) => req_ctx.into(),
@@ -249,13 +249,13 @@ impl<State, Body> TryFrom<(&Context<State>, &crate::http::Request<Body>)> for Tr
     }
 }
 
-impl<State> TryFrom<(&Context<State>, &crate::http::dep::http::request::Parts)>
+impl<State> TryFrom<(&Context<State>, &crate::dep::http::request::Parts)>
     for TransportContext
 {
     type Error = OpaqueError;
 
     fn try_from(
-        (ctx, parts): (&Context<State>, &crate::http::dep::http::request::Parts),
+        (ctx, parts): (&Context<State>, &crate::dep::http::request::Parts),
     ) -> Result<TransportContext, Self::Error> {
         Ok(match ctx.get::<RequestContext>() {
             Some(req_ctx) => req_ctx.into(),
@@ -267,7 +267,7 @@ impl<State> TryFrom<(&Context<State>, &crate::http::dep::http::request::Parts)>
     }
 }
 
-impl<State, Body> TryRefIntoTransportContext<State> for crate::http::Request<Body> {
+impl<State, Body> TryRefIntoTransportContext<State> for crate::Request<Body> {
     type Error = OpaqueError;
 
     fn try_ref_into_transport_ctx(
@@ -278,7 +278,7 @@ impl<State, Body> TryRefIntoTransportContext<State> for crate::http::Request<Bod
     }
 }
 
-impl<State> TryRefIntoTransportContext<State> for crate::http::dep::http::request::Parts {
+impl<State> TryRefIntoTransportContext<State> for crate::dep::http::request::Parts {
     type Error = OpaqueError;
 
     fn try_ref_into_transport_ctx(
@@ -292,8 +292,8 @@ impl<State> TryRefIntoTransportContext<State> for crate::http::dep::http::reques
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::header::FORWARDED;
-    use crate::http::layer::forwarded::GetForwardedHeadersLayer;
+    use crate::header::FORWARDED;
+    use crate::layer::forwarded::GetForwardedHeadersLayer;
     use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
     use crate::service::{service_fn, Service};
     use crate::Layer;

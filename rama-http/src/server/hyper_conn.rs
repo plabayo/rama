@@ -1,6 +1,6 @@
 use super::{svc_hyper::HyperService, HttpServeResult};
-use crate::http::executor::HyperExecutor;
-use crate::http::{IntoResponse, Request};
+use crate::executor::HyperExecutor;
+use crate::{IntoResponse, Request};
 use crate::stream::Stream;
 use crate::tcp::utils::is_connection_error;
 use rama_utils::future::Fuse;
@@ -205,7 +205,7 @@ fn map_hyper_err_to_result(err: hyper::Error) -> HttpServeResult {
 }
 
 mod private {
-    use crate::http::executor::HyperExecutor;
+    use crate::executor::HyperExecutor;
 
     pub trait Sealed {}
 

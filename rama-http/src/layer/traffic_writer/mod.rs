@@ -3,12 +3,10 @@
 //! Can be useful for cli / debug purposes.
 
 use crate::{
-    http::{
-        io::{write_http_request, write_http_response},
-        Request, Response,
-    },
-    rt::Executor,
+    io::{write_http_request, write_http_response},
+    Request, Response,
 };
+use rama_core::rt::Executor;
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::mpsc::{channel, unbounded_channel, Sender, UnboundedSender},

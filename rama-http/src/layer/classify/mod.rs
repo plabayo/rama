@@ -1,6 +1,6 @@
 //! Tools for classifying responses as either success or failure.
 
-use crate::http::{HeaderMap, Request, Response, StatusCode};
+use crate::{HeaderMap, Request, Response, StatusCode};
 use std::{convert::Infallible, fmt, marker::PhantomData};
 
 pub(crate) mod grpc_errors_as_failures;

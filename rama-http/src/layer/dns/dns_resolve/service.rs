@@ -1,12 +1,11 @@
 use std::fmt;
-
 use super::DnsResolveMode;
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{
+use rama_core::{
     error::OpaqueError,
-    http::{HeaderName, Request},
     Context, Service,
 };
+use crate::{HeaderName, Request};
 
 /// Service to support configuring the DNS resolve mode.
 ///

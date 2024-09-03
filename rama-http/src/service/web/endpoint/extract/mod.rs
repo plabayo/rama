@@ -1,7 +1,7 @@
 //! Extract utilities to develop endpoint services efortless.
 
-use crate::http::{self, dep::http::request::Parts, dep::mime, header, HeaderMap, IntoResponse};
-use crate::Context;
+use crate::{self, dep::http::request::Parts, dep::mime, header, HeaderMap, IntoResponse};
+use rama_core::Context;
 use std::future::Future;
 
 mod extension;

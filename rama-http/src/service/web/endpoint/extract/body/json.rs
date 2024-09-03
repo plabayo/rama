@@ -1,11 +1,11 @@
 use super::BytesRejection;
-use crate::http::dep::http_body_util::BodyExt;
-use crate::http::service::web::extract::FromRequest;
-use crate::http::Request;
-use rama_utils::macros::{composite_http_rejection, define_http_rejection};
-use crate::Context;
+use crate::dep::http_body_util::BodyExt;
+use crate::service::web::extract::FromRequest;
+use crate::Request;
+use crate::utils::macros::{composite_http_rejection, define_http_rejection};
+use rama_core::Context;
 
-pub use crate::http::response::Json;
+pub use crate::response::Json;
 
 define_http_rejection! {
     #[status = UNSUPPORTED_MEDIA_TYPE]
@@ -44,7 +44,7 @@ where
     type Rejection = JsonRejection;
 
     async fn from_request(_ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
-        if !crate::http::service::web::extract::has_any_content_type(
+        if !crate::service::web::extract::has_any_content_type(
             req.headers(),
             &[&mime::APPLICATION_JSON],
         ) {
@@ -68,7 +68,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::http::StatusCode;
+    use crate::StatusCode;
     use crate::{http::service::web::WebService, service::Service};
 
     #[tokio::test]

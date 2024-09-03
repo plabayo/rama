@@ -1,12 +1,13 @@
 use super::open_file::{FileOpened, FileRequestExtent, OpenFileOutput};
-use crate::http::dep::http_body_util::BodyExt;
-use crate::http::{
+use crate::{
     header::{self, ALLOW},
     Body, HeaderValue, Request, Response, StatusCode,
+    layer::util::content_encoding::Encoding,
+    service::fs::AsyncReadBody,
+    dep::http_body_util::BodyExt,
 };
-use crate::{
-    error::BoxError, http::layer::util::content_encoding::Encoding,
-    http::service::fs::AsyncReadBody, Context, Service,
+use rama_core::{
+    error::BoxError, Service,
 };
 use bytes::Bytes;
 use std::{convert::Infallible, io};

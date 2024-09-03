@@ -1,6 +1,6 @@
 use super::{Latency, DEFAULT_MESSAGE_LEVEL};
-use crate::http::header::HeaderMap;
-use crate::http::layer::classify::grpc_errors_as_failures::ParsedGrpcStatus;
+use crate::header::HeaderMap;
+use crate::layer::classify::grpc_errors_as_failures::ParsedGrpcStatus;
 use rama_utils::latency::LatencyUnit;
 use std::time::Duration;
 use tracing::{Level, Span};
@@ -22,7 +22,7 @@ pub trait OnEos: Send + Sync + 'static {
     ///
     /// [`Span`]: https://docs.rs/tracing/latest/tracing/span/index.html
     /// [record]: https://docs.rs/tracing/latest/tracing/span/struct.Span.html#method.record
-    /// [`TraceLayer::make_span_with`]: crate::http::layer::trace::TraceLayer::make_span_with
+    /// [`TraceLayer::make_span_with`]: crate::layer::trace::TraceLayer::make_span_with
     fn on_eos(self, trailers: Option<&HeaderMap>, stream_duration: Duration, span: &Span);
 }
 
@@ -110,9 +110,9 @@ impl OnEos for DefaultOnEos {
             duration: stream_duration,
         };
         let status = trailers.and_then(|trailers| {
-            match crate::http::layer::classify::grpc_errors_as_failures::classify_grpc_metadata(
+            match crate::layer::classify::grpc_errors_as_failures::classify_grpc_metadata(
                 trailers,
-                crate::http::layer::classify::GrpcCode::Ok.into_bitmask(),
+                crate::layer::classify::GrpcCode::Ok.into_bitmask(),
             ) {
                 ParsedGrpcStatus::Success
                 | ParsedGrpcStatus::HeaderNotString

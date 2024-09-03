@@ -86,9 +86,9 @@
 //! # }
 //! ```
 
-use crate::http::{Body, HeaderValue, Request, Response, StatusCode};
+use crate::{Body, HeaderValue, Request, Response, StatusCode};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use futures_lite::future::FutureExt;
 use std::fmt;
 use std::{any::Any, panic::AssertUnwindSafe};

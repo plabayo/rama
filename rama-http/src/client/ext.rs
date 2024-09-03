@@ -23,7 +23,7 @@ pub trait HttpClientExt<State>:
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::http::Uri
+    /// [`Url`]: crate::Uri
     fn get(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `POST` request to a URL.
@@ -32,7 +32,7 @@ pub trait HttpClientExt<State>:
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::http::Uri
+    /// [`Url`]: crate::Uri
     fn post(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PUT` request to a URL.
@@ -41,7 +41,7 @@ pub trait HttpClientExt<State>:
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::http::Uri
+    /// [`Url`]: crate::Uri
     fn put(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `PATCH` request to a URL.
@@ -50,7 +50,7 @@ pub trait HttpClientExt<State>:
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::http::Uri
+    /// [`Url`]: crate::Uri
     fn patch(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `DELETE` request to a URL.
@@ -59,7 +59,7 @@ pub trait HttpClientExt<State>:
     ///
     /// This method fails whenever the supplied [`Url`] cannot be parsed.
     ///
-    /// [`Url`]: crate::http::Uri
+    /// [`Url`]: crate::Uri
     fn delete(&self, url: impl IntoUrl) -> RequestBuilder<Self, State, Self::ExecuteResponse>;
 
     /// Convenience method to make a `HEAD` request to a URL.
@@ -74,9 +74,9 @@ pub trait HttpClientExt<State>:
     /// Returns a [`RequestBuilder`], which will allow setting headers and
     /// the request body before sending.
     ///
-    /// [`Request`]: crate::http::Request
-    /// [`Method`]: crate::http::Method
-    /// [`Url`]: crate::http::Uri
+    /// [`Request`]: crate::Request
+    /// [`Method`]: crate::Method
+    /// [`Url`]: crate::Uri
     ///
     /// # Errors
     ///
@@ -146,7 +146,7 @@ where
             }
         };
 
-        let builder = crate::http::dep::http::request::Builder::new()
+        let builder = crate::dep::http::request::Builder::new()
             .method(method)
             .uri(uri);
 
@@ -170,7 +170,7 @@ where
 ///
 /// This trait is “sealed”, such that only types within rama can implement it.
 ///
-/// [`Url`]: crate::http::Uri
+/// [`Url`]: crate::Uri
 pub trait IntoUrl: private::IntoUrlSealed {}
 
 impl IntoUrl for Uri {}
@@ -182,11 +182,11 @@ impl IntoUrl for &String {}
 ///
 /// This trait is “sealed”, such that only types within rama can implement it.
 ///
-/// [`HeaderName`]: crate::http::HeaderName
+/// [`HeaderName`]: crate::HeaderName
 pub trait IntoHeaderName: private::IntoHeaderNameSealed {}
 
-impl IntoHeaderName for crate::http::HeaderName {}
-impl IntoHeaderName for Option<crate::http::HeaderName> {}
+impl IntoHeaderName for crate::HeaderName {}
+impl IntoHeaderName for Option<crate::HeaderName> {}
 impl IntoHeaderName for &str {}
 impl IntoHeaderName for String {}
 impl IntoHeaderName for &String {}
@@ -196,10 +196,10 @@ impl IntoHeaderName for &[u8] {}
 ///
 /// This trait is “sealed”, such that only types within rama can implement it.
 ///
-/// [`HeaderValue`]: crate::http::HeaderValue
+/// [`HeaderValue`]: crate::HeaderValue
 pub trait IntoHeaderValue: private::IntoHeaderValueSealed {}
 
-impl IntoHeaderValue for crate::http::HeaderValue {}
+impl IntoHeaderValue for crate::HeaderValue {}
 impl IntoHeaderValue for &str {}
 impl IntoHeaderValue for String {}
 impl IntoHeaderValue for &String {}
@@ -259,17 +259,17 @@ mod private {
     }
 
     pub trait IntoHeaderNameSealed {
-        fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError>;
+        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError>;
     }
 
     impl IntoHeaderNameSealed for HeaderName {
-        fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
             Ok(self)
         }
     }
 
     impl IntoHeaderNameSealed for Option<HeaderName> {
-        fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
             match self {
                 Some(name) => Ok(name),
                 None => Err(HttpClientError::from_display("Header name is required")),
@@ -278,69 +278,69 @@ mod private {
     }
 
     impl IntoHeaderNameSealed for &str {
-        fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
             let name = self
-                .parse::<crate::http::HeaderName>()
+                .parse::<crate::HeaderName>()
                 .map_err(HttpClientError::from_std)?;
             Ok(name)
         }
     }
 
     impl IntoHeaderNameSealed for String {
-        fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
             self.as_str().into_header_name()
         }
     }
 
     impl IntoHeaderNameSealed for &String {
-        fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
             self.as_str().into_header_name()
         }
     }
 
     impl IntoHeaderNameSealed for &[u8] {
-        fn into_header_name(self) -> Result<crate::http::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
             let name =
-                crate::http::HeaderName::from_bytes(self).map_err(HttpClientError::from_std)?;
+                crate::HeaderName::from_bytes(self).map_err(HttpClientError::from_std)?;
             Ok(name)
         }
     }
 
     pub trait IntoHeaderValueSealed {
-        fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError>;
+        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError>;
     }
 
-    impl IntoHeaderValueSealed for crate::http::HeaderValue {
-        fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError> {
+    impl IntoHeaderValueSealed for crate::HeaderValue {
+        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
             Ok(self)
         }
     }
 
     impl IntoHeaderValueSealed for &str {
-        fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
             let value = self
-                .parse::<crate::http::HeaderValue>()
+                .parse::<crate::HeaderValue>()
                 .map_err(HttpClientError::from_std)?;
             Ok(value)
         }
     }
 
     impl IntoHeaderValueSealed for String {
-        fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
             self.as_str().into_header_value()
         }
     }
 
     impl IntoHeaderValueSealed for &String {
-        fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
             self.as_str().into_header_value()
         }
     }
 
     impl IntoHeaderValueSealed for &[u8] {
-        fn into_header_value(self) -> Result<crate::http::HeaderValue, HttpClientError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
             let value =
-                crate::http::HeaderValue::from_bytes(self).map_err(HttpClientError::from_std)?;
+                crate::HeaderValue::from_bytes(self).map_err(HttpClientError::from_std)?;
             Ok(value)
         }
     }
@@ -376,8 +376,8 @@ where
 
 #[derive(Debug)]
 enum RequestBuilderState {
-    PreBody(crate::http::dep::http::request::Builder),
-    PostBody(crate::http::Request),
+    PreBody(crate::dep::http::request::Builder),
+    PostBody(crate::Request),
     Error(HttpClientError),
 }
 
@@ -438,18 +438,18 @@ where
 
     /// Add a typed [`Header`] to this [`Request`].
     ///
-    /// [`Header`]: crate::http::headers::Header
+    /// [`Header`]: crate::headers::Header
     pub fn typed_header<H>(self, header: H) -> Self
     where
-        H: crate::http::headers::Header,
+        H: crate::headers::Header,
     {
         self.header(H::name().clone(), header.encode_to_value())
     }
 
     /// Add all `Headers` from the [`HeaderMap`] to this [`Request`].
     ///
-    /// [`HeaderMap`]: crate::http::HeaderMap
-    pub fn headers(mut self, headers: crate::http::HeaderMap) -> Self {
+    /// [`HeaderMap`]: crate::HeaderMap
+    pub fn headers(mut self, headers: crate::HeaderMap) -> Self {
         for (key, value) in headers.into_iter() {
             self = self.header(key, value);
         }
@@ -463,7 +463,7 @@ where
         P: AsRef<str>,
     {
         let header =
-            crate::http::headers::Authorization::basic(username.as_ref(), password.as_ref());
+            crate::headers::Authorization::basic(username.as_ref(), password.as_ref());
         self.typed_header(header)
     }
 
@@ -472,7 +472,7 @@ where
     where
         T: AsRef<str>,
     {
-        let header = match crate::http::headers::Authorization::bearer(token.as_ref()) {
+        let header = match crate::headers::Authorization::bearer(token.as_ref()) {
             Ok(header) => header,
             Err(err) => {
                 self.state = match self.state {
@@ -490,10 +490,10 @@ where
 
     /// Set the [`Request`]'s [`Body`].
     ///
-    /// [`Body`]: crate::http::Body
+    /// [`Body`]: crate::Body
     pub fn body<T>(mut self, body: T) -> Self
     where
-        T: TryInto<crate::http::Body, Error: Into<BoxError>>,
+        T: TryInto<crate::Body, Error: Into<BoxError>>,
     {
         self.state = match self.state {
             RequestBuilderState::PreBody(builder) => match body.try_into() {
@@ -517,17 +517,17 @@ where
 
     /// Set the given value as a URL-Encoded Form [`Body`] in the [`Request`].
     ///
-    /// [`Body`]: crate::http::Body
+    /// [`Body`]: crate::Body
     pub fn form<T: serde::Serialize + ?Sized>(mut self, form: &T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => match serde_html_form::to_string(form) {
                 Ok(body) => {
                     let builder = match builder.headers_mut() {
                         Some(headers) => {
-                            if !headers.contains_key(crate::http::header::CONTENT_TYPE) {
+                            if !headers.contains_key(crate::header::CONTENT_TYPE) {
                                 headers.insert(
-                                    crate::http::header::CONTENT_TYPE,
-                                    crate::http::HeaderValue::from_static(
+                                    crate::header::CONTENT_TYPE,
+                                    crate::HeaderValue::from_static(
                                         "application/x-www-form-urlencoded",
                                     ),
                                 );
@@ -535,8 +535,8 @@ where
                             builder
                         }
                         None => builder.header(
-                            crate::http::header::CONTENT_TYPE,
-                            crate::http::HeaderValue::from_static(
+                            crate::header::CONTENT_TYPE,
+                            crate::HeaderValue::from_static(
                                 "application/x-www-form-urlencoded",
                             ),
                         ),
@@ -552,11 +552,11 @@ where
                 Ok(body) => {
                     if !req
                         .headers()
-                        .contains_key(crate::http::header::CONTENT_TYPE)
+                        .contains_key(crate::header::CONTENT_TYPE)
                     {
                         req.headers_mut().insert(
-                            crate::http::header::CONTENT_TYPE,
-                            crate::http::HeaderValue::from_static(
+                            crate::header::CONTENT_TYPE,
+                            crate::HeaderValue::from_static(
                                 "application/x-www-form-urlencoded",
                             ),
                         );
@@ -573,24 +573,24 @@ where
 
     /// Set the given value as a JSON [`Body`] in the [`Request`].
     ///
-    /// [`Body`]: crate::http::Body
+    /// [`Body`]: crate::Body
     pub fn json<T: serde::Serialize + ?Sized>(mut self, json: &T) -> Self {
         self.state = match self.state {
             RequestBuilderState::PreBody(mut builder) => match serde_json::to_vec(json) {
                 Ok(body) => {
                     let builder = match builder.headers_mut() {
                         Some(headers) => {
-                            if !headers.contains_key(crate::http::header::CONTENT_TYPE) {
+                            if !headers.contains_key(crate::header::CONTENT_TYPE) {
                                 headers.insert(
-                                    crate::http::header::CONTENT_TYPE,
-                                    crate::http::HeaderValue::from_static("application/json"),
+                                    crate::header::CONTENT_TYPE,
+                                    crate::HeaderValue::from_static("application/json"),
                                 );
                             }
                             builder
                         }
                         None => builder.header(
-                            crate::http::header::CONTENT_TYPE,
-                            crate::http::HeaderValue::from_static("application/json"),
+                            crate::header::CONTENT_TYPE,
+                            crate::HeaderValue::from_static("application/json"),
                         ),
                     };
                     match builder.body(body.into()) {
@@ -604,11 +604,11 @@ where
                 Ok(body) => {
                     if !req
                         .headers()
-                        .contains_key(crate::http::header::CONTENT_TYPE)
+                        .contains_key(crate::header::CONTENT_TYPE)
                     {
                         req.headers_mut().insert(
-                            crate::http::header::CONTENT_TYPE,
-                            crate::http::HeaderValue::from_static("application/json"),
+                            crate::header::CONTENT_TYPE,
+                            crate::HeaderValue::from_static("application/json"),
                         );
                     }
                     *req.body_mut() = body.into();
@@ -623,8 +623,8 @@ where
 
     /// Set the http [`Version`] of this [`Request`].
     ///
-    /// [`Version`]: crate::http::Version
-    pub fn version(mut self, version: crate::http::Version) -> Self {
+    /// [`Version`]: crate::Version
+    pub fn version(mut self, version: crate::Version) -> Self {
         match self.state {
             RequestBuilderState::PreBody(builder) => {
                 self.state = RequestBuilderState::PreBody(builder.version(version));
@@ -650,7 +650,7 @@ where
     pub async fn send(self, ctx: Context<State>) -> Result<Response<Body>, HttpClientError> {
         let request = match self.state {
             RequestBuilderState::PreBody(builder) => builder
-                .body(crate::http::Body::empty())
+                .body(crate::Body::empty())
                 .map_err(HttpClientError::from_std)?,
             RequestBuilderState::PostBody(request) => request,
             RequestBuilderState::Error(err) => return Err(err),
@@ -690,13 +690,13 @@ mod test {
     ) -> Result<Response, Infallible>
     where
         S: Send + Sync + 'static,
-        Body: crate::http::dep::http_body::Body<Data: Send + 'static, Error: Send + 'static>
+        Body: crate::dep::http_body::Body<Data: Send + 'static, Error: Send + 'static>
             + Send
             + 'static,
     {
         let ua = request
             .headers()
-            .get(crate::http::header::USER_AGENT)
+            .get(crate::header::USER_AGENT)
             .unwrap();
         assert_eq!(
             ua.to_str().unwrap(),
@@ -715,13 +715,13 @@ mod test {
     ) -> Result<Response, crate::error::BoxError>
     where
         E: Into<crate::error::BoxError>,
-        Body: crate::http::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
+        Body: crate::dep::http_body::Body<Data = bytes::Bytes, Error: Into<BoxError>>
             + Send
             + Sync
             + 'static,
     {
         match result {
-            Ok(response) => Ok(response.map(crate::http::Body::new)),
+            Ok(response) => Ok(response.map(crate::Body::new)),
             Err(err) => Err(err.into()),
         }
     }
@@ -738,7 +738,7 @@ mod test {
         #[cfg(feature = "compression")]
         let builder = (
             builder,
-            crate::http::layer::decompression::DecompressionLayer::new(),
+            crate::layer::decompression::DecompressionLayer::new(),
         );
 
         (

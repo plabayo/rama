@@ -1,10 +1,10 @@
 //! provides a [`UriMatcher`] matcher for matching requests based on their URI.
 
-use crate::{
+use rama_core::{
     context::Extensions,
-    http::{Request, Uri},
     Context,
 };
+use crate::{Request, Uri};
 
 pub mod dep {
     //! dependencies for the `uri` matcher module

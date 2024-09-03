@@ -59,12 +59,12 @@
 
 use std::fmt;
 
-use crate::http::{
+use crate::{
     header::{HeaderName, HeaderValue},
     Request, Response,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use uuid::Uuid;
 
 pub(crate) const X_REQUEST_ID: &str = "x-request-id";
@@ -387,8 +387,8 @@ impl MakeRequestId for MakeRequestUuid {
 
 #[cfg(test)]
 mod tests {
-    use crate::http::layer::set_header;
-    use crate::http::{Body, Response};
+    use crate::layer::set_header;
+    use crate::{Body, Response};
     use crate::service::service_fn;
     use crate::Layer;
     use std::{

@@ -20,7 +20,7 @@ pub trait OnFailure<FailureClass>: Send + Sync + 'static {
     ///
     /// [`Span`]: https://docs.rs/tracing/latest/tracing/span/index.html
     /// [record]: https://docs.rs/tracing/latest/tracing/span/struct.Span.html#method.record
-    /// [`TraceLayer::make_span_with`]: crate::http::layer::trace::TraceLayer::make_span_with
+    /// [`TraceLayer::make_span_with`]: crate::layer::trace::TraceLayer::make_span_with
     fn on_failure(&self, failure_classification: FailureClass, latency: Duration, span: &Span);
 }
 

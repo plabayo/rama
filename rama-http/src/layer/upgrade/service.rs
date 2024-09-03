@@ -4,9 +4,10 @@
 
 use super::Upgraded;
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{
-    context::Extensions, http::Request, matcher::Matcher, service::BoxService, Context, Service,
+use rama_core::{
+    context::Extensions, matcher::Matcher, service::BoxService, Context, Service,
 };
+use crate::Request;
 use std::{convert::Infallible, fmt, sync::Arc};
 
 /// Upgrade service can be used to handle the possibility of upgrading a request,

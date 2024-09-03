@@ -1,9 +1,11 @@
 use crate::stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net};
-use crate::stream::SocketInfo;
 use rama_core::{context::Extensions, Context};
 
 #[cfg(feature = "http")]
 use rama_http_types::Request;
+#[cfg(feature = "http")]
+use crate::stream::SocketInfo;
+
 
 #[derive(Debug, Clone)]
 /// Matcher based on whether or not the [`IpNet`] contains the [`SocketAddr`] of the peer.

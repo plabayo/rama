@@ -1,8 +1,9 @@
-use crate::http::dep::http_body_util::BodyExt;
-use crate::http::service::web::extract::FromRequest;
-use crate::http::Request;
-use rama_utils::macros::{define_http_rejection, impl_deref};
-use crate::Context;
+use crate::dep::http_body_util::BodyExt;
+use crate::service::web::extract::FromRequest;
+use crate::Request;
+use rama_utils::macros::impl_deref;
+use crate::utils::macros::define_http_rejection;
+use rama_core::Context;
 
 /// Extractor to get the response body, collected as [`Bytes`].
 ///
@@ -37,7 +38,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::http::{self, StatusCode};
+    use crate::{self, StatusCode};
     use crate::{http::service::web::WebService, service::Service};
 
     #[tokio::test]

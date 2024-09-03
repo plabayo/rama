@@ -11,11 +11,10 @@ use std::{
 };
 use tokio::io::AsyncRead;
 use tokio_util::io::StreamReader;
-
 use super::content_encoding::SupportedEncodings;
-use crate::error::BoxError;
-use crate::http::dep::http_body::{Body, Frame};
-use crate::http::HeaderValue;
+use rama_core::error::BoxError;
+use crate::dep::http_body::{Body, Frame};
+use crate::HeaderValue;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AcceptEncoding {

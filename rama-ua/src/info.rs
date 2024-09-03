@@ -1,6 +1,6 @@
 use super::parse_http_user_agent_header;
-use rama_core::match_ignore_ascii_case_str;
-use rama_core::{error, OpaqueError};
+use rama_utils::macros::match_ignore_ascii_case_str;
+use rama_core::error::OpaqueError;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{convert::Infallible, fmt, str::FromStr};
 
@@ -295,7 +295,7 @@ impl FromStr for HttpAgent {
                 "Firefox" => Ok(HttpAgent::Firefox),
                 "Safari" => Ok(HttpAgent::Safari),
                 "preserve" => Ok(HttpAgent::Preserve),
-                _ => Err(error!("invalid http agent: {}", s)),
+                _ => Err(OpaqueError::from_display(format!("invalid http agent: {}", s))),
             }
         }
     }
@@ -383,7 +383,7 @@ impl FromStr for TlsAgent {
                 "boring" | "boringssl" => Ok(TlsAgent::Boringssl),
                 "nss" => Ok(TlsAgent::Nss),
                 "preserve" => Ok(TlsAgent::Preserve),
-                _ => Err(error!("invalid tls agent: {}", s)),
+                _ => Err(OpaqueError::from_display(format!("invalid tls agent: {}", s))),
             }
         }
     }

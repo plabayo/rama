@@ -1,9 +1,11 @@
-use crate::stream::SocketInfo;
 use rama_core::{context::Extensions, Context};
 use std::net::SocketAddr;
 
 #[cfg(feature = "http")]
 use rama_http_types::Request;
+#[cfg(feature = "http")]
+use crate::stream::SocketInfo;
+
 
 #[derive(Debug, Clone)]
 /// Matcher based on the [`SocketAddr`] of the peer.
@@ -38,6 +40,7 @@ impl SocketAddressMatcher {
     }
 }
 
+#[cfg(feature = "http")]
 impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for SocketAddressMatcher {
     fn matches(
         &self,

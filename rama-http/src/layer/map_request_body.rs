@@ -56,14 +56,14 @@
 //! # }
 //! ```
 
-use crate::http::{Request, Response};
+use crate::{Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use std::fmt;
 
 /// Apply a transformation to the request body.
 ///
-/// See the [module docs](crate::http::layer::map_request_body) for an example.
+/// See the [module docs](crate::layer::map_request_body) for an example.
 #[derive(Clone)]
 pub struct MapRequestBodyLayer<F> {
     f: F,
@@ -99,7 +99,7 @@ impl<F> fmt::Debug for MapRequestBodyLayer<F> {
 
 /// Apply a transformation to the request body.
 ///
-/// See the [module docs](crate::http::layer::map_request_body) for an example.
+/// See the [module docs](crate::layer::map_request_body) for an example.
 #[derive(Clone)]
 pub struct MapRequestBody<S, F> {
     inner: S,

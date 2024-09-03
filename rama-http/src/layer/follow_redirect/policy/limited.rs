@@ -1,5 +1,4 @@
-use crate::Context;
-
+use rama_core::Context;
 use super::{Action, Attempt, Policy};
 
 /// A redirection [`Policy`] that limits the number of successive redirections.
@@ -52,7 +51,7 @@ impl<S, B, E> Policy<S, B, E> for Limited {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{Request, Uri};
+    use crate::{Request, Uri};
 
     #[test]
     fn works() {

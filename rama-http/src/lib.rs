@@ -57,8 +57,8 @@
 pub use ::rama_http_types::{
     header, headers,
     response::{self, IntoResponse, Response},
-    utils, Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue,
-    Method, Request, RequestContext, Scheme, StatusCode, Uri, Version,
+    Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue,
+    Method, Request, Scheme, StatusCode, Uri, Version,
 };
 
 pub mod matcher;
@@ -73,6 +73,9 @@ pub mod client;
 pub mod io;
 
 pub mod executor;
+
+#[doc(hidden)]
+mod utils;
 
 pub mod dep {
     //! Dependencies for rama http modules.

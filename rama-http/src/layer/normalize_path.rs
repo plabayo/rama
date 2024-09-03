@@ -37,9 +37,9 @@
 //! # }
 //! ```
 
-use crate::http::{Request, Response, Uri};
+use crate::{Request, Response, Uri};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;

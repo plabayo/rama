@@ -22,7 +22,7 @@ impl RetryBody {
     }
 }
 
-impl crate::http::dep::http_body::Body for RetryBody {
+impl crate::dep::http_body::Body for RetryBody {
     type Data = Bytes;
     type Error = crate::error::BoxError;
 
@@ -51,11 +51,11 @@ impl crate::http::dep::http_body::Body for RetryBody {
     }
 }
 
-impl From<RetryBody> for crate::http::Body {
+impl From<RetryBody> for crate::Body {
     fn from(body: RetryBody) -> Self {
         match body.bytes {
             Some(bytes) => bytes.into(),
-            None => crate::http::Body::empty(),
+            None => crate::Body::empty(),
         }
     }
 }
@@ -63,7 +63,7 @@ impl From<RetryBody> for crate::http::Body {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::BodyExtractExt;
+    use crate::BodyExtractExt;
 
     #[tokio::test]
     async fn consume_retry_body() {

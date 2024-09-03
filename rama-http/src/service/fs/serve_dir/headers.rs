@@ -1,4 +1,4 @@
-use crate::http::header::HeaderValue;
+use crate::header::HeaderValue;
 use httpdate::HttpDate;
 use std::time::SystemTime;
 

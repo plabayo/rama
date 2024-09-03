@@ -1,14 +1,14 @@
-use crate::{
+use rama_core::{
     context::Extensions,
-    http::{HeaderName, HeaderValue, Request},
     matcher::Matcher,
     Context,
 };
+use crate::{HeaderName, HeaderValue, Request};
 
 #[derive(Debug, Clone)]
 /// Matcher based on the [`Request`]'s headers.
 ///
-/// [`Request`]: crate::http::Request
+/// [`Request`]: crate::Request
 pub struct HeaderMatcher {
     name: HeaderName,
     kind: HeaderMatcherKind,

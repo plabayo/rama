@@ -2,16 +2,13 @@
 //!
 //! For now this only sets `Server` and `Date` heades.
 
-use crate::http::{
-    header::{self, RAMA_ID_HEADER_VALUE},
+use crate::{
+    header::{self, RAMA_ID_HEADER_VALUE, DATE, SERVER},
     Request, Response,
-};
-use crate::http::{
-    header::{DATE, SERVER},
     headers::{Date, HeaderMapExt},
 };
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use std::{fmt, time::SystemTime};
 
 /// Layer that applies [`AddRequiredResponseHeaders`] which adds a request header.

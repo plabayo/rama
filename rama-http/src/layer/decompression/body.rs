@@ -1,11 +1,11 @@
 #![allow(unused_imports)]
 
-use crate::error::BoxError;
-use crate::http::dep::http_body::{Body, Frame};
-use crate::http::layer::util::compression::{
+use rama_core::error::BoxError;
+use crate::dep::http_body::{Body, Frame};
+use crate::layer::util::compression::{
     AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
 };
-use crate::http::HeaderMap;
+use crate::HeaderMap;
 
 use async_compression::tokio::bufread::BrotliDecoder;
 use async_compression::tokio::bufread::GzipDecoder;

@@ -55,14 +55,14 @@
 use base64::Engine as _;
 use std::{fmt, marker::PhantomData};
 
-use crate::http::layer::validate_request::{
+use crate::layer::validate_request::{
     ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer,
 };
-use crate::http::{
+use crate::{
     header::{self, HeaderValue},
     Request, Response, StatusCode,
 };
-use crate::Context;
+use rama_core::Context;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -264,8 +264,8 @@ mod tests {
     use super::*;
 
     use crate::error::BoxError;
-    use crate::http::layer::validate_request::ValidateRequestHeaderLayer;
-    use crate::http::{header, Body};
+    use crate::layer::validate_request::ValidateRequestHeaderLayer;
+    use crate::{header, Body};
     use crate::service::service_fn;
     use crate::{Context, Layer, Service};
 

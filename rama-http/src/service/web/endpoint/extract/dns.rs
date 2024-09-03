@@ -1,6 +1,6 @@
 use super::FromRequestParts;
-use crate::http::dep::http::request::Parts;
-use crate::Context;
+use crate::dep::http::request::Parts;
+use rama_core::Context;
 use std::convert::Infallible;
 use std::ops::Deref;
 

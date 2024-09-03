@@ -41,15 +41,15 @@ use std::marker::PhantomData;
 /// but you can use the [`SetForwardedHeadersLayer::new`] constructor and pass the header type as a type parameter,
 /// alone or in a tuple with other headers.
 ///
-/// [`X-Real-Ip`]: crate::http::headers::XRealIp
-/// [`X-Client-Ip`]: crate::http::headers::XClientIp
-/// [`Client-Ip`]: crate::http::headers::ClientIp
-/// [`CF-Connecting-Ip`]: crate::http::headers::CFConnectingIp
-/// [`True-Client-Ip`]: crate::http::headers::TrueClientIp
+/// [`X-Real-Ip`]: crate::headers::XRealIp
+/// [`X-Client-Ip`]: crate::headers::XClientIp
+/// [`Client-Ip`]: crate::headers::ClientIp
+/// [`CF-Connecting-Ip`]: crate::headers::CFConnectingIp
+/// [`True-Client-Ip`]: crate::headers::TrueClientIp
 ///
 /// ## Example
 ///
-/// This example shows how you could expose the real Client IP using the [`X-Real-IP`][`crate::http::headers::XRealIp`] header.
+/// This example shows how you could expose the real Client IP using the [`X-Real-IP`][`crate::headers::XRealIp`] header.
 ///
 /// ```rust
 /// # use rama::{http::Request, stream::SocketInfo};

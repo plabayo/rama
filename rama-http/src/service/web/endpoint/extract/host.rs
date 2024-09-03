@@ -1,9 +1,10 @@
 use super::FromRequestParts;
-use crate::http::dep::http::request::Parts;
-use crate::http::RequestContext;
-use crate::net::address;
-use rama_utils::macros::{define_http_rejection, impl_deref};
-use crate::Context;
+use crate::dep::http::request::Parts;
+use crate::RequestContext;
+use rama_net::address;
+use rama_utils::macros::impl_deref;
+use crate::utils::macros::define_http_rejection;
+use rama_core::Context;
 
 /// Extractor that resolves the hostname of the request.
 ///
@@ -52,12 +53,12 @@ where
 mod tests {
     use super::*;
 
-    use crate::http::dep::http_body_util::BodyExt as _;
-    use crate::http::header::X_FORWARDED_HOST;
-    use crate::http::layer::forwarded::GetForwardedHeadersService;
-    use crate::http::service::web::WebService;
-    use crate::http::StatusCode;
-    use crate::http::{Body, HeaderName, Request};
+    use crate::dep::http_body_util::BodyExt as _;
+    use crate::header::X_FORWARDED_HOST;
+    use crate::layer::forwarded::GetForwardedHeadersService;
+    use crate::service::web::WebService;
+    use crate::StatusCode;
+    use crate::{Body, HeaderName, Request};
     use crate::Service;
 
     async fn test_host_from_request(host: &str, headers: Vec<(&HeaderName, &str)>) {

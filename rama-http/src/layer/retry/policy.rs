@@ -1,5 +1,6 @@
 use super::RetryBody;
-use crate::{http::Request, Context};
+use crate::Request;
+use rama_core::Context;
 use std::future::Future;
 
 /// A "retry policy" to classify if a request should be retried.

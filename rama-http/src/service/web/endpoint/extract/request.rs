@@ -1,6 +1,6 @@
 use super::FromRequest;
-use crate::http::Request;
-use crate::Context;
+use crate::Request;
+use rama_core::Context;
 use std::convert::Infallible;
 
 impl<S> FromRequest<S> for Request

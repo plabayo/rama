@@ -1,7 +1,5 @@
-use crate::{
-    http::{Request, Response},
-    Context,
-};
+use crate::{Request, Response};
+use rama_core::Context;
 use std::future::Future;
 
 /// Trait for validating requests.

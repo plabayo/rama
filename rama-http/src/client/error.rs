@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use crate::error::{BoxError, OpaqueError};
-use crate::http::Uri;
+use crate::Uri;
 
 // TODO: support perhaps also more context, such as tracing id, ...
 
@@ -9,7 +9,7 @@ use crate::http::Uri;
 /// An opaque error type that encapsulates all possible errors that can occur when using the
 /// [`HttpClient`] service directly, as part of a stack or as a building block for other services.
 ///
-/// [`HttpClient`]: crate::http::client::HttpClient
+/// [`HttpClient`]: crate::client::HttpClient
 pub struct HttpClientError {
     inner: OpaqueError,
     uri: Option<Uri>,

@@ -1,9 +1,9 @@
-use crate::{
+use rama_core::{
     context::Extensions,
-    http::{Request, RequestContext},
-    net::address::{Domain, Host},
     Context,
 };
+use crate::{Request, RequestContext};
+use rama_net::address::{Domain, Host};
 
 #[derive(Debug, Clone)]
 /// Matcher based on the (sub)domain of the request's URI.

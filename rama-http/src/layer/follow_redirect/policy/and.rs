@@ -1,5 +1,6 @@
 use super::{Action, Attempt, Policy};
-use crate::{http::Request, Context};
+use crate::Request;
+use rama_core::Context;
 use std::fmt::Debug;
 
 /// A redirection [`Policy`] that combines the results of two `Policy`s.
@@ -74,7 +75,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::Uri;
+    use crate::Uri;
 
     struct Taint<P> {
         policy: P,

@@ -1,5 +1,5 @@
 use super::{ClassifiedResponse, ClassifyEos, ClassifyResponse};
-use crate::http::{HeaderMap, Response};
+use crate::{HeaderMap, Response};
 use std::fmt;
 
 /// Response classifier that transforms the failure class of some other

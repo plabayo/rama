@@ -29,15 +29,15 @@
 //! # }
 //! ```
 
-use crate::http::dep::http_body_util::Limited;
-use crate::http::Request;
+use crate::dep::http_body_util::Limited;
+use crate::Request;
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use std::fmt;
 
 /// Apply a limit to the request body's size.
 ///
-/// See the [module docs](crate::http::layer::body_limit) for an example.
+/// See the [module docs](crate::layer::body_limit) for an example.
 #[derive(Debug, Clone)]
 pub struct BodyLimitLayer {
     size: usize,
@@ -60,7 +60,7 @@ impl<S> Layer<S> for BodyLimitLayer {
 
 /// Apply a transformation to the request body.
 ///
-/// See the [module docs](crate::http::layer::body_limit) for an example.
+/// See the [module docs](crate::layer::body_limit) for an example.
 #[derive(Clone)]
 pub struct BodyLimitService<S> {
     inner: S,

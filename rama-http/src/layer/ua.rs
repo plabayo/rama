@@ -1,16 +1,55 @@
-use super::{HttpAgent, TlsAgent, UserAgent};
+//! User-Agent (see also `rama-ua`) http layer support
+//!
+//! # Example
+//!
+//! ```
+//! use rama_http::{
+//!     client::HttpClientExt, IntoResponse, Request, Response, StatusCode,
+//!     layer::ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
+//! };
+//! use rama_core::{Context, Layer, service::service_fn};
+//! use std::convert::Infallible;
+//!
+//! const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
+//!
+//! async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
+//!     let ua: &UserAgent = ctx.get().unwrap();
+//!
+//!     assert_eq!(ua.header_str(), UA);
+//!     assert_eq!(ua.info(), Some(UserAgentInfo{ kind: UserAgentKind::Chromium, version: Some(124) }));
+//!     assert_eq!(ua.platform(), Some(PlatformKind::Windows));
+//!
+//!     Ok(StatusCode::OK.into_response())
+//! }
+//!
+//! # #[tokio::main]
+//! # async fn main() {
+//! let service = UserAgentClassifierLayer::new().layer(service_fn(handle));
+//!
+//! let _ = service
+//!     .get("http://www.example.com")
+//!     .typed_header(headers::UserAgent::from_static(UA))
+//!     .send(Context::default())
+//!     .await
+//!     .unwrap();
+//! # }
+//! ```
+
 use rama_utils::macros::define_inner_service_accessors;
 use crate::{
-    http::{
-        headers::{self, HeaderMapExt},
-        HeaderName, Request,
-    },
-    Layer, Service,
+    headers::{self, HeaderMapExt},
+    HeaderName, Request,
 };
+use rama_core::{Layer, Service};
 use serde::{Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
     future::Future,
+};
+
+pub use rama_ua::{
+    DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentInfo, UserAgentKind,
+    UserAgentOverwrites,
 };
 
 /// A [`Service`] that classifies the [`UserAgent`] of incoming [`Request`]s.
@@ -163,10 +202,10 @@ impl<S> Layer<S> for UserAgentClassifierLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::client::HttpClientExt;
-    use crate::http::headers;
-    use crate::http::layer::required_header::AddRequiredRequestHeadersLayer;
-    use crate::http::{IntoResponse, StatusCode};
+    use crate::client::HttpClientExt;
+    use crate::headers;
+    use crate::layer::required_header::AddRequiredRequestHeadersLayer;
+    use crate::{IntoResponse, StatusCode};
     use crate::service::service_fn;
     use crate::ua::{PlatformKind, UserAgentKind};
     use crate::{http::Response, Context};

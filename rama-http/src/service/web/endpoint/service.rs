@@ -1,11 +1,8 @@
 use std::future::Future;
-
 use super::extract::{FromRequest, FromRequestParts};
 use rama_utils::macros::all_the_tuples_no_last_special_case;
-use crate::{
-    http::{IntoResponse, Request, Response},
-    Context,
-};
+use crate::{IntoResponse, Request, Response};
+use rama_core::Context;
 
 /// [`crate::Service`] implemented for functions taking extractors.
 pub trait EndpointServiceFn<S, T>: private::Sealed<S, T> + Clone + Send + Sync + 'static {

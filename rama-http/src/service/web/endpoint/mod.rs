@@ -1,8 +1,8 @@
-use crate::{
-    http::{matcher::HttpMatcher, Body, IntoResponse, Request, Response},
-    layer::MapResponseLayer,
-    service::BoxService,
+use crate::{matcher::HttpMatcher, Body, IntoResponse, Request, Response};
+use rama_core::{
     Context, Layer, Service,
+    service::BoxService,
+    layer::MapResponseLayer,
 };
 use std::future::Future;
 use std::{convert::Infallible, fmt};
@@ -270,7 +270,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{self, dep::http_body_util::BodyExt, Body, Method, Request, StatusCode};
+    use crate::{self, dep::http_body_util::BodyExt, Body, Method, Request, StatusCode};
     use extract::*;
 
     fn assert_into_endpoint_service<T, I>(_: I)
@@ -394,7 +394,7 @@ mod tests {
             foo: String,
         }
 
-        let svc = crate::http::service::web::WebService::default().get(
+        let svc = crate::service::web::WebService::default().get(
             "/:foo/bar",
             |Host(host): Host, Path(params): Path<Params>| async move {
                 format!("{} => {}", host, params.foo)

@@ -42,18 +42,17 @@
 //! }
 //! ```
 
-use crate::http::{header::AsHeaderName, HeaderName};
+use crate::{header::AsHeaderName, HeaderName};
 use rama_utils::macros::define_inner_service_accessors;
 use serde::de::DeserializeOwned;
 use std::{fmt, marker::PhantomData};
-
-use crate::{
+use rama_core::{
     error::BoxError,
-    http::{
-        utils::{HeaderValueErr, HeaderValueGetter},
-        Request,
-    },
     Context, Layer, Service,
+};
+use crate::{
+    utils::{HeaderValueErr, HeaderValueGetter},
+    Request,
 };
 
 /// Extract a header config from a request or response without consuming it.
@@ -159,7 +158,7 @@ where
             Ok(config) => config,
             Err(err) => {
                 if self.optional
-                    && matches!(err, crate::http::utils::HeaderValueErr::HeaderMissing(_))
+                    && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_))
                 {
                     tracing::debug!(error = %err, "failed to extract header config");
                     return self.inner.serve(ctx, request).await.map_err(Into::into);
@@ -242,7 +241,7 @@ impl<T, S> Layer<S> for HeaderConfigLayer<T> {
 mod test {
     use serde::Deserialize;
 
-    use crate::http::Method;
+    use crate::Method;
 
     use super::*;
 

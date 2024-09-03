@@ -2,8 +2,8 @@
 //!
 //! See [request] and [response] for more details.
 
-use crate::http::{HeaderMap, HeaderName, HeaderValue, Request, Response};
-use crate::Context;
+use crate::{HeaderMap, HeaderName, HeaderValue, Request, Response};
+use rama_core::Context;
 use std::{
     future::{ready, Future},
     marker::PhantomData,

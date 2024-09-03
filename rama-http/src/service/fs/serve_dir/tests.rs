@@ -1,10 +1,10 @@
-use crate::http::dep::http_body::Body as HttpBody;
-use crate::http::dep::http_body_util::BodyExt;
-use crate::http::header::ALLOW;
-use crate::http::service::fs::{ServeDir, ServeFile};
-use crate::http::Body;
-use crate::http::{header, Method, Response};
-use crate::http::{Request, StatusCode};
+use crate::dep::http_body::Body as HttpBody;
+use crate::dep::http_body_util::BodyExt;
+use crate::header::ALLOW;
+use crate::service::fs::{ServeDir, ServeFile};
+use crate::Body;
+use crate::{header, Method, Response};
+use crate::{Request, StatusCode};
 use crate::service::service_fn;
 use crate::{Context, Service};
 use brotli::BrotliDecompress;

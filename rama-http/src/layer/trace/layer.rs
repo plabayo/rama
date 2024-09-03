@@ -1,17 +1,16 @@
 use std::fmt;
-
 use super::{
     DefaultMakeSpan, DefaultOnBodyChunk, DefaultOnEos, DefaultOnFailure, DefaultOnRequest,
     DefaultOnResponse, GrpcMakeClassifier, HttpMakeClassifier, Trace,
 };
-use crate::http::layer::classify::{
+use crate::layer::classify::{
     GrpcErrorsAsFailures, MakeClassifier, ServerErrorsAsFailures, SharedClassifier,
 };
-use crate::Layer;
+use rama_core::Layer;
 
 /// [`Layer`] that adds high level [tracing] to a [`Service`].
 ///
-/// See the [module docs](crate::http::layer::trace) for more details.
+/// See the [module docs](crate::layer::trace) for more details.
 ///
 /// [`Layer`]: crate::Layer
 /// [tracing]: https://crates.io/crates/tracing

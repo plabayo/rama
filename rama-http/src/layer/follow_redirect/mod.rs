@@ -102,10 +102,8 @@
 pub mod policy;
 
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{
-    http::{dep::http_body::Body, header::LOCATION, Method, Request, Response, StatusCode, Uri},
-    Context, Layer, Service,
-};
+use crate::{dep::http_body::Body, header::LOCATION, Method, Request, Response, StatusCode, Uri};
+use rama_core::{Context, Layer, Service};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
 use std::{fmt, future::Future};
 
@@ -374,7 +372,7 @@ fn resolve_uri(relative: &str, base: &Uri) -> Option<Uri> {
 #[cfg(test)]
 mod tests {
     use super::{policy::*, *};
-    use crate::http::{header::LOCATION, Body};
+    use crate::{header::LOCATION, Body};
     use crate::service::service_fn;
     use crate::Layer;
     use std::convert::Infallible;

@@ -1,9 +1,9 @@
 //! Service that serves a file.
 
 use super::ServeDir;
-use crate::http::dep::{mime::Mime, mime_guess};
-use crate::http::{HeaderValue, Request, Response};
-use crate::{Context, Service};
+use crate::dep::{mime::Mime, mime_guess};
+use crate::{HeaderValue, Request, Response};
+use rama_core::{Context, Service};
 use std::path::Path;
 
 /// Service that serves a file.
@@ -142,7 +142,7 @@ where
 #[cfg(feature = "compression")]
 mod compression_tests {
     use super::*;
-    use crate::http::Body;
+    use crate::Body;
 
     #[tokio::test]
     #[cfg(feature = "compression")]
@@ -171,13 +171,13 @@ mod compression_tests {
 
 #[cfg(test)]
 mod tests {
-    use crate::http::dep::http_body_util::BodyExt;
-    use crate::http::dep::mime::Mime;
-    use crate::http::header;
-    use crate::http::service::fs::ServeFile;
-    use crate::http::Body;
-    use crate::http::Method;
-    use crate::http::{Request, StatusCode};
+    use crate::dep::http_body_util::BodyExt;
+    use crate::dep::mime::Mime;
+    use crate::header;
+    use crate::service::fs::ServeFile;
+    use crate::Body;
+    use crate::Method;
+    use crate::{Request, StatusCode};
     use crate::{Context, Service};
     use brotli::BrotliDecompress;
     use flate2::bufread::DeflateDecoder;

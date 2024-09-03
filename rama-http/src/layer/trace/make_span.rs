@@ -1,4 +1,4 @@
-use crate::http::Request;
+use crate::Request;
 use tracing::{Level, Span};
 
 use super::DEFAULT_MESSAGE_LEVEL;

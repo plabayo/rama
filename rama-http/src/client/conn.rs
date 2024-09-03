@@ -1,5 +1,5 @@
 use super::{svc::SendRequest, HttpClientService};
-use crate::http::executor::HyperExecutor;
+use crate::executor::HyperExecutor;
 use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     error::{BoxError, OpaqueError},

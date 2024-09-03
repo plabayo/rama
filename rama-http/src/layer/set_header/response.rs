@@ -92,13 +92,13 @@
 //! ```
 
 use super::{BoxMakeHeaderValueFn, InsertHeaderMode, MakeHeaderValue};
-use crate::http::{
+use crate::{
     header::HeaderName,
     headers::{Header, HeaderExt},
     HeaderValue, Request, Response,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use std::fmt;
 
 /// Layer that applies [`SetResponseHeader`] which adds a response header.
@@ -366,7 +366,7 @@ where
 mod tests {
     use super::*;
 
-    use crate::http::{header, Body, HeaderValue, Request, Response};
+    use crate::{header, Body, HeaderValue, Request, Response};
     use crate::service::service_fn;
     use std::convert::Infallible;
 

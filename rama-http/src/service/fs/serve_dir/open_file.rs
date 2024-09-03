@@ -2,8 +2,8 @@ use super::{
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
     ServeVariant,
 };
-use crate::http::layer::util::content_encoding::{Encoding, QValue};
-use crate::http::{header, HeaderValue, Method, Request, Uri};
+use crate::layer::util::content_encoding::{Encoding, QValue};
+use crate::{header, HeaderValue, Method, Request, Uri};
 use http_range_header::RangeUnsatisfiableError;
 use std::{
     ffi::OsStr,

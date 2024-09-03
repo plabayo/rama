@@ -116,9 +116,9 @@ mod tests {
     use std::convert::Infallible;
     use std::io::Write;
 
-    use crate::http::dep::http_body_util::BodyExt;
-    use crate::http::layer::compression::Compression;
-    use crate::http::{Body, HeaderMap, HeaderName, Request, Response};
+    use crate::dep::http_body_util::BodyExt;
+    use crate::layer::compression::Compression;
+    use crate::{Body, HeaderMap, HeaderName, Request, Response};
     use crate::service::service_fn;
     use crate::{Context, Service};
 

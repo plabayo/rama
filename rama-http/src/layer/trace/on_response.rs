@@ -1,5 +1,5 @@
 use super::{Latency, DEFAULT_MESSAGE_LEVEL};
-use crate::http::Response;
+use crate::Response;
 use rama_utils::latency::LatencyUnit;
 use std::time::Duration;
 use tracing::Level;
@@ -22,7 +22,7 @@ pub trait OnResponse<B>: Send + Sync + 'static {
     ///
     /// [`Span`]: https://docs.rs/tracing/latest/tracing/span/index.html
     /// [record]: https://docs.rs/tracing/latest/tracing/span/struct.Span.html#method.record
-    /// [`TraceLayer::make_span_with`]: crate::http::layer::trace::TraceLayer::make_span_with
+    /// [`TraceLayer::make_span_with`]: crate::layer::trace::TraceLayer::make_span_with
     fn on_response(self, response: &Response<B>, latency: Duration, span: &Span);
 }
 
@@ -76,7 +76,7 @@ impl DefaultOnResponse {
     /// Defaults to [`Level::DEBUG`].
     ///
     /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`DefaultMakeSpan::level`]: crate::http::layer::trace::DefaultMakeSpan::level
+    /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
     pub fn level(mut self, level: Level) -> Self {
         self.level = level;
         self
@@ -92,7 +92,7 @@ impl DefaultOnResponse {
     /// Defaults to [`Level::DEBUG`].
     ///
     /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`DefaultMakeSpan::level`]: crate::http::layer::trace::DefaultMakeSpan::level
+    /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
     pub fn set_level(&mut self, level: Level) -> &mut Self {
         self.level = level;
         self
@@ -156,7 +156,7 @@ impl<B> OnResponse<B> for DefaultOnResponse {
 }
 
 fn status<B>(res: &Response<B>) -> Option<i32> {
-    use crate::http::layer::classify::grpc_errors_as_failures::ParsedGrpcStatus;
+    use crate::layer::classify::grpc_errors_as_failures::ParsedGrpcStatus;
 
     // gRPC-over-HTTP2 uses the "application/grpc[+format]" content type, and gRPC-Web uses
     // "application/grpc-web[+format]" or "application/grpc-web-text[+format]", where "format" is
@@ -177,9 +177,9 @@ fn status<B>(res: &Response<B>) -> Option<i32> {
         });
 
     if is_grpc {
-        match crate::http::layer::classify::grpc_errors_as_failures::classify_grpc_metadata(
+        match crate::layer::classify::grpc_errors_as_failures::classify_grpc_metadata(
             res.headers(),
-            crate::http::layer::classify::GrpcCode::Ok.into_bitmask(),
+            crate::layer::classify::GrpcCode::Ok.into_bitmask(),
         ) {
             ParsedGrpcStatus::Success
             | ParsedGrpcStatus::HeaderNotString

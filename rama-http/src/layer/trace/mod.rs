@@ -347,12 +347,12 @@
 //! [tracing]: https://crates.io/crates/tracing
 //! [`Service`]: crate::Service
 //! [`Service::serve`]: crate::Service::serve
-//! [`MakeClassifier`]: crate::http::layer::classify::MakeClassifier
-//! [`ClassifyResponse`]: crate::http::layer::classify::ClassifyResponse
+//! [`MakeClassifier`]: crate::layer::classify::MakeClassifier
+//! [`ClassifyResponse`]: crate::layer::classify::ClassifyResponse
 //! [record]: https://docs.rs/tracing/latest/tracing/span/struct.Span.html#method.record
-//! [`TraceLayer::make_span_with`]: crate::http::layer::trace::TraceLayer::make_span_with
+//! [`TraceLayer::make_span_with`]: crate::layer::trace::TraceLayer::make_span_with
 //! [`Span`]: tracing::Span
-//! [`ServerErrorsAsFailures`]: crate::http::layer::classify::ServerErrorsAsFailures
+//! [`ServerErrorsAsFailures`]: crate::layer::classify::ServerErrorsAsFailures
 
 use std::{fmt, time::Duration};
 
@@ -371,10 +371,8 @@ pub use self::{
     service::Trace,
 };
 
-use crate::{
-    http::layer::classify::{GrpcErrorsAsFailures, ServerErrorsAsFailures, SharedClassifier},
-    utils::latency::LatencyUnit,
-};
+use crate::layer::classify::{GrpcErrorsAsFailures, ServerErrorsAsFailures, SharedClassifier};
+use rama_utils::latency::LatencyUnit;
 
 /// MakeClassifier for HTTP requests.
 pub type HttpMakeClassifier = SharedClassifier<ServerErrorsAsFailures>;
@@ -463,9 +461,9 @@ mod tests {
     use super::*;
 
     use crate::error::BoxError;
-    use crate::http::dep::http_body_util::BodyExt as _;
-    use crate::http::layer::classify::ServerErrorsFailureClass;
-    use crate::http::{Body, HeaderMap, Request, Response};
+    use crate::dep::http_body_util::BodyExt as _;
+    use crate::layer::classify::ServerErrorsFailureClass;
+    use crate::{Body, HeaderMap, Request, Response};
     use crate::service::service_fn;
     use crate::{Context, Layer, Service};
     use bytes::Bytes;

@@ -40,11 +40,11 @@ use std::marker::PhantomData;
 /// but you can use the [`GetForwardedHeadersLayer::new`] constructor and pass the header type as a type parameter,
 /// alone or in a tuple with other headers.
 ///
-/// [`X-Real-Ip`]: crate::http::headers::XRealIp
-/// [`X-Client-Ip`]: crate::http::headers::XClientIp
-/// [`Client-Ip`]: crate::http::headers::ClientIp
-/// [`CF-Connecting-Ip`]: crate::http::headers::CFConnectingIp
-/// [`True-Client-Ip`]: crate::http::headers::TrueClientIp
+/// [`X-Real-Ip`]: crate::headers::XRealIp
+/// [`X-Client-Ip`]: crate::headers::XClientIp
+/// [`Client-Ip`]: crate::headers::ClientIp
+/// [`CF-Connecting-Ip`]: crate::headers::CFConnectingIp
+/// [`True-Client-Ip`]: crate::headers::TrueClientIp
 ///
 /// ## Example
 ///

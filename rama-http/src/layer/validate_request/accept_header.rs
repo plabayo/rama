@@ -1,13 +1,13 @@
 use super::ValidateRequest;
 use crate::{
-    http::dep::mime::{Mime, MimeIter},
-    http::{header, Request, Response, StatusCode},
-    Context,
+    dep::mime::{Mime, MimeIter},
+    header, Request, Response, StatusCode,
 };
+use rama_core::Context;
 use std::{fmt, marker::PhantomData, sync::Arc};
 
 /// Type that performs validation of the Accept header.
-pub struct AcceptHeader<ResBody = crate::http::Body> {
+pub struct AcceptHeader<ResBody = crate::Body> {
     header_value: Arc<Mime>,
     _ty: PhantomData<fn() -> ResBody>,
 }

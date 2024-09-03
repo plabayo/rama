@@ -1,5 +1,5 @@
 use super::DEFAULT_MESSAGE_LEVEL;
-use crate::http::Request;
+use crate::Request;
 use tracing::Level;
 use tracing::Span;
 
@@ -18,7 +18,7 @@ pub trait OnRequest<B>: Send + Sync + 'static {
     ///
     /// [`Span`]: https://docs.rs/tracing/latest/tracing/span/index.html
     /// [record]: https://docs.rs/tracing/latest/tracing/span/struct.Span.html#method.record
-    /// [`TraceLayer::make_span_with`]: crate::http::layer::trace::TraceLayer::make_span_with
+    /// [`TraceLayer::make_span_with`]: crate::layer::trace::TraceLayer::make_span_with
     fn on_request(&self, request: &Request<B>, span: &Span);
 }
 
@@ -68,7 +68,7 @@ impl DefaultOnRequest {
     /// Defaults to [`Level::DEBUG`].
     ///
     /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`DefaultMakeSpan::level`]: crate::http::layer::trace::DefaultMakeSpan::level
+    /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
     pub fn level(mut self, level: Level) -> Self {
         self.level = level;
         self
@@ -84,7 +84,7 @@ impl DefaultOnRequest {
     /// Defaults to [`Level::DEBUG`].
     ///
     /// [tracing events]: https://docs.rs/tracing/latest/tracing/#events
-    /// [`DefaultMakeSpan::level`]: crate::http::layer::trace::DefaultMakeSpan::level
+    /// [`DefaultMakeSpan::level`]: crate::layer::trace::DefaultMakeSpan::level
     pub fn set_level(&mut self, level: Level) -> &mut Self {
         self.level = level;
         self

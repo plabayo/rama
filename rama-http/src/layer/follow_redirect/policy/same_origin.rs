@@ -1,5 +1,4 @@
-use crate::Context;
-
+use rama_core::Context;
 use super::{eq_origin, Action, Attempt, Policy};
 use std::fmt;
 
@@ -35,7 +34,7 @@ impl<S, B, E> Policy<S, B, E> for SameOrigin {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::http::{Request, Uri};
+    use crate::{Request, Uri};
 
     #[test]
     fn works() {

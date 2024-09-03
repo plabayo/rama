@@ -1773,6 +1773,7 @@ dependencies = [
  "rama-proxy",
  "rama-tls",
  "rama-ua",
+ "rama-utils",
  "regex",
  "rustversion",
  "serde",
@@ -1850,6 +1851,7 @@ name = "rama-http"
 version = "0.2.0-alpha.2"
 dependencies = [
  "async-compression",
+ "base64 0.22.1",
  "bytes",
  "const_format",
  "futures-core",
@@ -1858,12 +1860,18 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "http-range-header",
+ "httpdate",
  "mime",
  "mime_guess",
  "paste",
  "pin-project-lite",
  "rama-core",
  "rama-http-types",
+ "rama-net",
+ "rama-ua",
+ "rama-utils",
+ "regex",
  "serde",
  "serde_html_form",
  "serde_json",
@@ -1978,7 +1986,10 @@ name = "rama-ua"
 version = "0.2.0-alpha.2"
 dependencies = [
  "rama-core",
+ "rama-utils",
  "serde",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

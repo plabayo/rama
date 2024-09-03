@@ -1,13 +1,13 @@
 use super::Decompression;
-use crate::http::layer::util::compression::AcceptEncoding;
-use crate::Layer;
+use crate::layer::util::compression::AcceptEncoding;
+use rama_core::Layer;
 
 /// Decompresses response bodies of the underlying service.
 ///
 /// This adds the `Accept-Encoding` header to requests and transparently decompresses response
 /// bodies based on the `Content-Encoding` header.
 ///
-/// See the [module docs](crate::http::layer::decompression) for more details.
+/// See the [module docs](crate::layer::decompression) for more details.
 #[derive(Debug, Default, Clone)]
 pub struct DecompressionLayer {
     accept: AcceptEncoding,

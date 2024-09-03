@@ -3,19 +3,14 @@
 //! For now this only sets `Host` header on http/1.1,
 //! as well as always a User-Agent for all versions.
 
-use crate::error::ErrorContext;
-use crate::http::RequestContext;
-use rama_utils::macros::define_inner_service_accessors;
 use crate::{
-    error::BoxError,
-    http::{
-        header::{self, RAMA_ID_HEADER_VALUE},
-        Request, Response,
-    },
+    RequestContext,
+    header::{self, RAMA_ID_HEADER_VALUE, HOST, USER_AGENT},
+    headers::HeaderMapExt,
+    Request, Response,
 };
-use crate::{Context, Layer, Service};
-use headers::HeaderMapExt;
-use http::header::{HOST, USER_AGENT};
+use rama_utils::macros::define_inner_service_accessors;
+use rama_core::{Context, Layer, Service, error::{BoxError, ErrorContext}};
 use std::fmt;
 
 /// Layer that applies [`AddRequiredRequestHeaders`] which adds a request header.
@@ -131,10 +126,10 @@ where
                 .context(
                     "AddRequiredRequestHeaders: get/compute RequestContext to set authority",
                 )?;
-            let host = crate::http::dep::http::uri::Authority::from_maybe_shared(
+            let host = crate::dep::http::uri::Authority::from_maybe_shared(
                 request_ctx.authority.to_string(),
             )
-            .map(crate::http::headers::Host::from)
+            .map(crate::headers::Host::from)
             .context("AddRequiredRequestHeaders: set authority")?;
             req.headers_mut().typed_insert(host);
         }
@@ -153,7 +148,7 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::http::{Body, Request};
+    use crate::{Body, Request};
     use crate::service::service_fn;
     use crate::{Context, Layer, Service};
     use std::convert::Infallible;

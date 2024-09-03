@@ -1,11 +1,11 @@
 //! Middleware for retrying "failed" requests.
 
-use crate::error::BoxError;
-use crate::http::dep::http_body::Body as HttpBody;
-use crate::http::dep::http_body_util::BodyExt;
-use crate::http::Request;
+use rama_core::error::BoxError;
+use crate::dep::http_body::Body as HttpBody;
+use crate::dep::http_body_util::BodyExt;
+use crate::Request;
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Service};
+use rama_core::{Context, Service};
 
 mod layer;
 mod policy;

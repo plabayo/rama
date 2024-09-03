@@ -5,8 +5,8 @@
 //! For example resolving them to make a connection to a target server over a proxy
 //! by IP address instead of domain name.
 
-use crate::error::{ErrorExt, OpaqueError};
-use crate::http::HeaderValue;
+use rama_core::error::{ErrorExt, OpaqueError};
+use crate::HeaderValue;
 use rama_utils::macros::match_ignore_ascii_case_str;
 use rama_core::username::{ComposeError, Composer, UsernameLabelWriter};
 use std::fmt;

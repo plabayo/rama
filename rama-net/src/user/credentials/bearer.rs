@@ -1,9 +1,11 @@
-use headers::authorization;
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
 
 #[cfg(feature = "http")]
-use rama_http_types::HeaderValue;
+use rama_http_types::{
+    HeaderValue,
+    headers::authorization,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Bearer credentials.
@@ -56,6 +58,7 @@ impl Bearer {
         format!("{BEARER_SCHEME} {}", self.0)
     }
 
+    #[cfg(feature = "http")]
     /// View this [`Bearer`] as a [`HeaderValue`].
     pub fn as_header_value(&self) -> HeaderValue {
         let encoded = self.as_header_string();
@@ -76,6 +79,7 @@ impl Bearer {
 
 const BEARER_SCHEME: &str = "Bearer";
 
+#[cfg(feature = "http")]
 impl authorization::Credentials for Bearer {
     const SCHEME: &'static str = BEARER_SCHEME;
 

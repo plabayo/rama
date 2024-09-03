@@ -1,14 +1,12 @@
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{
-    http::{Request, Response},
-    Context, Layer, Service,
-};
+use crate::{Request, Response};
+use rama_core::{Context, Layer, Service};
 use std::fmt;
 
 /// Layer that applies [`ValidateRequestHeader`] which validates all requests.
 ///
-/// See the [module docs](crate::http::layer::validate_request) for an example.
+/// See the [module docs](crate::layer::validate_request) for an example.
 pub struct ValidateRequestHeaderLayer<T> {
     validate: T,
 }
@@ -89,7 +87,7 @@ where
 
 /// Middleware that validates requests.
 ///
-/// See the [module docs](crate::http::layer::validate_request) for an example.
+/// See the [module docs](crate::layer::validate_request) for an example.
 pub struct ValidateRequestHeader<S, T> {
     inner: S,
     validate: T,
@@ -187,7 +185,7 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::http::{header, Body, StatusCode};
+    use crate::{header, Body, StatusCode};
     use crate::{error::BoxError, service::service_fn, Layer};
 
     #[tokio::test]

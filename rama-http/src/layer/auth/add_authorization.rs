@@ -40,9 +40,9 @@
 //! # }
 //! ```
 
-use crate::http::{HeaderValue, Request, Response};
+use crate::{HeaderValue, Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use base64::Engine as _;
 use std::convert::TryFrom;
 use std::fmt;
@@ -52,13 +52,13 @@ const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::
 /// Layer that applies [`AddAuthorization`] which adds authorization to all requests using the
 /// [`Authorization`] header.
 ///
-/// See the [module docs](crate::http::layer::auth::add_authorization) for an example.
+/// See the [module docs](crate::layer::auth::add_authorization) for an example.
 ///
 /// You can also use [`SetRequestHeader`] if you have a use case that isn't supported by this
 /// middleware.
 ///
 /// [`Authorization`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization
-/// [`SetRequestHeader`]: crate::http::layer::set_header::SetRequestHeader
+/// [`SetRequestHeader`]: crate::layer::set_header::SetRequestHeader
 #[derive(Debug, Clone)]
 pub struct AddAuthorizationLayer {
     value: Option<HeaderValue>,
@@ -164,13 +164,13 @@ impl<S> Layer<S> for AddAuthorizationLayer {
 
 /// Middleware that adds authorization all requests using the [`Authorization`] header.
 ///
-/// See the [module docs](crate::http::layer::auth::add_authorization) for an example.
+/// See the [module docs](crate::layer::auth::add_authorization) for an example.
 ///
 /// You can also use [`SetRequestHeader`] if you have a use case that isn't supported by this
 /// middleware.
 ///
 /// [`Authorization`]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Authorization
-/// [`SetRequestHeader`]: crate::http::layer::set_header::SetRequestHeader
+/// [`SetRequestHeader`]: crate::layer::set_header::SetRequestHeader
 pub struct AddAuthorization<S> {
     inner: S,
     value: Option<HeaderValue>,
@@ -302,8 +302,8 @@ mod tests {
     use super::*;
 
     use crate::error::BoxError;
-    use crate::http::layer::validate_request::ValidateRequestHeaderLayer;
-    use crate::http::{Body, Request, Response, StatusCode};
+    use crate::layer::validate_request::ValidateRequestHeaderLayer;
+    use crate::{Body, Request, Response, StatusCode};
     use crate::service::service_fn;
     use crate::{Context, Service};
     use std::convert::Infallible;

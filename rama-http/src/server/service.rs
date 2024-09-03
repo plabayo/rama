@@ -2,10 +2,10 @@
 
 use super::hyper_conn::HyperConnServer;
 use super::HttpServeResult;
-use crate::graceful::ShutdownGuard;
-use crate::http::executor::HyperExecutor;
-use crate::http::{IntoResponse, Request};
-use crate::rt::Executor;
+use rama_core::graceful::ShutdownGuard;
+use crate::executor::HyperExecutor;
+use crate::{IntoResponse, Request};
+use rama_core::rt::Executor;
 use crate::stream::Stream;
 use crate::tcp::server::TcpListener;
 use crate::{Context, Service};

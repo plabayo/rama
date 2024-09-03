@@ -80,14 +80,14 @@
 //! # }
 //! ```
 
-use crate::http::{Request, Response};
+use crate::{Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use std::fmt;
 
 /// Apply a transformation to the response body.
 ///
-/// See the [module docs](crate::http::layer::map_response_body) for an example.
+/// See the [module docs](crate::layer::map_response_body) for an example.
 #[derive(Clone)]
 pub struct MapResponseBodyLayer<F> {
     f: F,
@@ -123,7 +123,7 @@ impl<F> fmt::Debug for MapResponseBodyLayer<F> {
 
 /// Apply a transformation to the response body.
 ///
-/// See the [module docs](crate::http::layer::map_response_body) for an example.
+/// See the [module docs](crate::layer::map_response_body) for an example.
 #[derive(Clone)]
 pub struct MapResponseBody<S, F> {
     inner: S,

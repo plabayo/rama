@@ -1,4 +1,4 @@
-use crate::ua::{
+use crate::{
     DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentInfo, UserAgentKind,
 };
 

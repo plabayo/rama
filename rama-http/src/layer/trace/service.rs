@@ -3,19 +3,19 @@ use super::{
     DefaultOnResponse, GrpcMakeClassifier, HttpMakeClassifier, MakeSpan, OnBodyChunk, OnEos,
     OnFailure, OnRequest, OnResponse, ResponseBody,
 };
-use crate::http::dep::http_body::Body as HttpBody;
-use crate::http::layer::classify::{
+use crate::dep::http_body::Body as HttpBody;
+use crate::layer::classify::{
     ClassifiedResponse, ClassifyResponse, GrpcErrorsAsFailures, MakeClassifier,
     ServerErrorsAsFailures, SharedClassifier,
 };
-use crate::http::{Request, Response};
+use crate::{Request, Response};
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{Context, Service};
+use rama_core::{Context, Service};
 use std::{fmt, time::Instant};
 
 /// Middleware that adds high level [tracing] to a [`Service`].
 ///
-/// See the [module docs](crate::http::layer::trace) for an example.
+/// See the [module docs](crate::layer::trace) for an example.
 ///
 /// [tracing]: https://crates.io/crates/tracing
 /// [`Service`]: crate::Service

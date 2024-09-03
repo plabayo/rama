@@ -49,7 +49,7 @@ where
             SendRequest::Http2(sender) => sender.lock().await.send_request(req).await,
         }?;
 
-        Ok(resp.map(crate::http::Body::new))
+        Ok(resp.map(crate::Body::new))
     }
 }
 
@@ -94,7 +94,7 @@ fn sanitize_client_req_header<S, B>(
                     parts.headers.typed_insert(headers::Host::from(authority));
                 }
 
-                parts.uri = crate::http::Uri::from_parts(uri_parts)?;
+                parts.uri = crate::Uri::from_parts(uri_parts)?;
                 Request::from_parts(parts, body)
             } else {
                 req
