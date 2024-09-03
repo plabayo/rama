@@ -45,7 +45,7 @@ use std::fmt;
 use std::time::Duration;
 
 use crate::http::{Request, Response, StatusCode};
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
 
 /// Layer that applies the [`Timeout`] middleware which apply a timeout to requests.

@@ -1,5 +1,5 @@
 use super::{HttpAgent, TlsAgent, UserAgent};
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     http::{
         headers::{self, HeaderMapExt},
@@ -181,8 +181,8 @@ mod tests {
                 ua.header_str(),
                 format!(
                     "{}/{}",
-                    crate::utils::info::NAME,
-                    crate::utils::info::VERSION
+                    rama_utils::info::NAME,
+                    rama_utils::info::VERSION
                 )
                 .as_str(),
             );

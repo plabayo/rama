@@ -41,7 +41,7 @@
 //! ```
 
 use crate::http::{HeaderValue, Request, Response};
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
 use base64::Engine as _;
 use std::convert::TryFrom;

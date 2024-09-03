@@ -6,7 +6,7 @@ use crate::http::header::PROXY_AUTHENTICATE;
 use crate::http::headers::{authorization::Credentials, HeaderMapExt, ProxyAuthorization};
 use crate::http::{Request, Response, StatusCode};
 use crate::net::user::auth::Authority;
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
 use std::fmt;
 use std::marker::PhantomData;
@@ -58,9 +58,9 @@ impl<A, C, L> ProxyAuthLayer<A, C, L> {
     ///
     /// You can provide your own extractor by implementing the [`UsernameLabelParser`] trait.
     ///
-    /// [`UsernameOpaqueLabelParser`]: crate::utils::username::UsernameOpaqueLabelParser
+    /// [`UsernameOpaqueLabelParser`]: rama_utils::username::UsernameOpaqueLabelParser
     /// [`ProxyFilterUsernameParser`]: crate::proxy::ProxyFilterUsernameParser
-    /// [`UsernameLabelParser`]: crate::utils::username::UsernameLabelParser
+    /// [`UsernameLabelParser`]: rama_utils::username::UsernameLabelParser
     pub fn with_labels<L2>(self) -> ProxyAuthLayer<A, C, L2> {
         ProxyAuthLayer {
             proxy_auth: self.proxy_auth,

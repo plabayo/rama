@@ -44,9 +44,9 @@ pub type Response<T = Body> = http::Response<T>;
 /// # Example
 ///
 /// ```
-/// use rama::{
-///     http::response::{IntoResponse, Response},
-///     http::StatusCode,
+/// use rama_http_types::{
+///     response::{IntoResponse, Response},
+///     StatusCode,
 /// };
 ///
 /// // two fallible functions with different error types
@@ -82,7 +82,7 @@ pub type Response<T = Body> = http::Response<T>;
 /// }
 ///
 /// // we can combine them using `rama::http::response::Result` and still use `?`
-/// async fn handler() -> rama::http::response::Result<&'static str> {
+/// async fn handler() -> rama_http_types::response::Result<&'static str> {
 ///     // the errors are automatically converted to `ErrorResponse`
 ///     try_something()?;
 ///     try_something_else()?;
@@ -96,9 +96,9 @@ pub type Response<T = Body> = http::Response<T>;
 /// Since `rama::http::response::Result` has a default error type you only have to specify the `Ok` type:
 ///
 /// ```
-/// use rama::{
-///     http::response::{IntoResponse, Response, Result},
-///     http::StatusCode,
+/// use rama_http_types::{
+///     response::{IntoResponse, Response, Result},
+///     StatusCode,
 /// };
 ///
 /// // `Result<T>` automatically uses `ErrorResponse` as the error type.

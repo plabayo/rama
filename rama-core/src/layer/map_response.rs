@@ -1,5 +1,5 @@
-use crate::utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// Maps this service's response value to a different value.

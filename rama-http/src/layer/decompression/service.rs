@@ -10,7 +10,7 @@ use crate::http::{
     header::{self, ACCEPT_ENCODING},
     Request, Response,
 };
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Service};
 
 /// Decompresses response bodies of the underlying service.

@@ -63,7 +63,7 @@ use crate::http::{
     header::{HeaderName, HeaderValue},
     Request, Response,
 };
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
 use uuid::Uuid;
 

@@ -10,7 +10,7 @@ use crate::http::layer::{
     util::content_encoding::SupportedEncodings,
 };
 use crate::http::{header, HeaderValue, Request, Response, StatusCode};
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Service};
 use bytes::Buf;
 

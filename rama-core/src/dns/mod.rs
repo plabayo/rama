@@ -5,20 +5,20 @@
 //!
 //! [`Context::dns`]: crate::Context::dns
 
-use std::{
-    collections::HashMap,
-    net::{IpAddr, Ipv4Addr, Ipv6Addr},
-    sync::Arc,
-    fmt,
+use crate::{
+    combinators::Either,
+    error::{ErrorContext, OpaqueError},
 };
 use hickory_resolver::{
     config::{ResolverConfig, ResolverOpts},
     proto::rr::rdata::{A, AAAA},
     Name as DnsName, TokioAsyncResolver,
 };
-use crate::{
-    combinators::Either,
-    error::{ErrorContext, OpaqueError},
+use std::{
+    collections::HashMap,
+    fmt,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    sync::Arc,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -45,15 +45,16 @@ pub trait TryIntoName: Sized {
     fn try_into_name(self) -> Result<Name, OpaqueError>;
 }
 
-impl TryIntoName for Name
-{
+impl TryIntoName for Name {
     fn try_into_name(self) -> Result<Name, OpaqueError> {
         Ok(self)
     }
 }
 
 impl<T> TryIntoName for T
-where T: TryInto<Name, Error = OpaqueError> {
+where
+    T: TryInto<Name, Error = OpaqueError>,
+{
     fn try_into_name(self) -> Result<Name, OpaqueError> {
         self.try_into()
     }
@@ -62,21 +63,27 @@ where T: TryInto<Name, Error = OpaqueError> {
 impl<'a> TryIntoName for &'a str {
     /// Performs a utf8, IDNA or punycode, translation of the `str` into `Name`
     fn try_into_name(self) -> Result<Name, OpaqueError> {
-        DnsName::from_utf8(self).map(Name).context("try to convert &'a str into domain")
+        DnsName::from_utf8(self)
+            .map(Name)
+            .context("try to convert &'a str into domain")
     }
 }
 
 impl TryIntoName for String {
     /// Performs a utf8, IDNA or punycode, translation of the `String` into `Name`
     fn try_into_name(self) -> Result<Name, OpaqueError> {
-        DnsName::from_utf8(self).map(Name).context("try to convert String into domain")
+        DnsName::from_utf8(self)
+            .map(Name)
+            .context("try to convert String into domain")
     }
 }
 
 impl TryIntoName for &String {
     /// Performs a utf8, IDNA or punycode, translation of the `&String` into `Name`
     fn try_into_name(self) -> Result<Name, OpaqueError> {
-        DnsName::from_utf8(self).map(Name).context("try to convert &String into domain")
+        DnsName::from_utf8(self)
+            .map(Name)
+            .context("try to convert &String into domain")
     }
 }
 
@@ -142,11 +149,7 @@ impl Dns {
     ) -> Result<impl Iterator<Item = Ipv4Addr>, OpaqueError> {
         let name = Name::fqdn_from_domain(name)?;
 
-        if let Some(addresses) = self
-            .overwrites
-            .as_ref()
-            .and_then(|cache| cache.get(&name))
-        {
+        if let Some(addresses) = self.overwrites.as_ref().and_then(|cache| cache.get(&name)) {
             return Ok(Either::A(addresses.clone().into_iter().filter_map(
                 |ip| match ip {
                     IpAddr::V4(ip) => Some(ip),
@@ -184,11 +187,7 @@ impl Dns {
     ) -> Result<impl Iterator<Item = Ipv6Addr>, OpaqueError> {
         let name = Name::fqdn_from_domain(name)?;
 
-        if let Some(addresses) = self
-            .overwrites
-            .as_ref()
-            .and_then(|cache| cache.get(&name))
-        {
+        if let Some(addresses) = self.overwrites.as_ref().and_then(|cache| cache.get(&name)) {
             return Ok(Either::A(addresses.clone().into_iter().filter_map(
                 |ip| match ip {
                     IpAddr::V4(_) => None,

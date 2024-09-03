@@ -4,7 +4,7 @@ use crate::headers::{
 use crate::net::address::Domain;
 use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
 use crate::stream::SocketInfo;
-use crate::utils::macros::all_the_tuples_no_last_special_case;
+use rama_utils::macros::all_the_tuples_no_last_special_case;
 use crate::{Context, Layer, Service};
 use crate::{Request, RequestContext};
 use rama_core::error::BoxError;

@@ -10,7 +10,7 @@ use crate::http::{
     header::{DATE, SERVER},
     headers::{Date, HeaderMapExt},
 };
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
 use std::{fmt, time::SystemTime};
 

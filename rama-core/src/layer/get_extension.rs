@@ -2,8 +2,8 @@
 //!
 //! [Context]: https://docs.rs/rama/latest/rama/context/struct.Context.html
 
-use crate::utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, future::Future, marker::PhantomData};
 
 /// [`Layer`] for adding some shareable value to incoming [Context].

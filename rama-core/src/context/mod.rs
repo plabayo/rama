@@ -30,7 +30,6 @@
 //!
 //! [`rama`]: crate
 //!
-//!
 //! ## State Wraps
 //!
 //! [`rama`] was built from the ground up to operate on and between different layers of the network stack.
@@ -118,7 +117,7 @@ use crate::{dns::Dns, rt::Executor};
 use std::{fmt, future::Future, sync::Arc};
 use tokio::task::JoinHandle;
 
-pub use rama_macros::AsRef;
+pub use ::rama_macros::AsRef;
 
 mod extensions;
 #[doc(inline)]

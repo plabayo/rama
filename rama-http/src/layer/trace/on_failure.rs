@@ -1,5 +1,5 @@
 use super::{Latency, DEFAULT_ERROR_LEVEL};
-use crate::utils::latency::LatencyUnit;
+use rama_utils::latency::LatencyUnit;
 use std::{fmt, time::Duration};
 use tracing::{Level, Span};
 

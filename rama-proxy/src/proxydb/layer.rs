@@ -202,7 +202,7 @@
 //! ```
 
 use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     net::{

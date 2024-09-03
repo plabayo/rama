@@ -8,7 +8,7 @@ use crate::{
 };
 use bytes::{BufMut, BytesMut};
 use rama_error::OpaqueError;
-use rama_macros::impl_deref;
+use rama_utils::macros::impl_deref;
 use serde::Serialize;
 use std::fmt;
 
@@ -24,11 +24,7 @@ use std::fmt;
 ///
 /// ```
 /// use serde_json::json;
-/// use rama::http::{
-///     IntoResponse,
-///     // re-exported also as rama::http::service::web::extract::Json
-///     response::Json,
-/// };
+/// use rama_http_types::{IntoResponse, response::Json};
 ///
 /// async fn handler() -> impl IntoResponse {
 ///     Json(json!({
@@ -43,10 +39,7 @@ use std::fmt;
 ///
 /// ```
 /// use serde_json::json;
-/// use rama::http::service::web::extract::{
-///     // re-exported from rama::http::response::Json
-///     Json,
-/// };
+/// use rama_http_types::response::Json;
 ///
 /// #[derive(Debug, serde::Deserialize)]
 /// struct Input {

@@ -71,7 +71,7 @@ pub use body_ext::BodyExtractExt;
 pub type Request<T = Body> = http::Request<T>;
 
 pub mod response;
-pub use response::{IntoResponse, Response};
+pub use response::{IntoResponse, IntoResponseParts, Response};
 
 pub mod headers;
 

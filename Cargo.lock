@@ -1769,6 +1769,7 @@ dependencies = [
  "pin-project-lite",
  "rama-core",
  "rama-http",
+ "rama-macros",
  "rama-proxy",
  "rama-tls",
  "rama-ua",
@@ -1823,6 +1824,7 @@ dependencies = [
  "rama-error",
  "rama-http-types",
  "rama-macros",
+ "rama-utils",
  "serde",
  "tokio",
  "tokio-graceful",
@@ -1895,7 +1897,7 @@ dependencies = [
  "paste",
  "pin-project-lite",
  "rama-error",
- "rama-macros",
+ "rama-utils",
  "serde",
  "serde_html_form",
  "serde_json",
@@ -1907,13 +1909,6 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.2.0-alpha.2"
-dependencies = [
- "rama-macros-proc",
-]
-
-[[package]]
-name = "rama-macros-proc"
 version = "0.2.0-alpha.2"
 dependencies = [
  "proc-macro2",
@@ -1982,6 +1977,18 @@ version = "0.2.0-alpha.2"
 dependencies = [
  "rama-core",
  "serde",
+]
+
+[[package]]
+name = "rama-utils"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "parking_lot",
+ "pin-project-lite",
+ "quickcheck",
+ "serde",
+ "tokio",
+ "tokio-test",
 ]
 
 [[package]]

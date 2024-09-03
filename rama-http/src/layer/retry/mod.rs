@@ -4,7 +4,7 @@ use crate::error::BoxError;
 use crate::http::dep::http_body::Body as HttpBody;
 use crate::http::dep::http_body_util::BodyExt;
 use crate::http::Request;
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Service};
 
 mod layer;

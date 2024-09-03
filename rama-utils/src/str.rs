@@ -6,7 +6,7 @@ use std::{borrow::Cow, fmt};
 /// A string which can never be empty.
 pub struct NonEmptyString(Cow<'static, str>);
 
-crate::utils::macros::error::static_str_error! {
+crate::macros::error::static_str_error! {
     #[doc = "empty string"]
     pub struct EmptyStringErr;
 }

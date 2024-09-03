@@ -1,6 +1,6 @@
 use super::{Latency, DEFAULT_MESSAGE_LEVEL};
 use crate::http::Response;
-use crate::utils::latency::LatencyUnit;
+use rama_utils::latency::LatencyUnit;
 use std::time::Duration;
 use tracing::Level;
 use tracing::Span;

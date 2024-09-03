@@ -1,5 +1,5 @@
 use super::{ProxyFilter, StringFilter};
-use crate::utils::macros::match_ignore_ascii_case_str;
+use rama_utils::macros::match_ignore_ascii_case_str;
 use crate::{
     net::{
         address::ProxyAddress,

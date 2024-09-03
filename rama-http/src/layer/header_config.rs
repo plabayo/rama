@@ -43,7 +43,7 @@
 //! ```
 
 use crate::http::{header::AsHeaderName, HeaderName};
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use serde::de::DeserializeOwned;
 use std::{fmt, marker::PhantomData};
 

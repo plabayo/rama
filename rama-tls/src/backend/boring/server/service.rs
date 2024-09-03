@@ -1,5 +1,5 @@
 use super::ServerConfig;
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     error::{ErrorContext, ErrorExt, OpaqueError},
     stream::Stream,

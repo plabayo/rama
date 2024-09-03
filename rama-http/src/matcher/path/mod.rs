@@ -114,7 +114,7 @@ impl std::error::Error for UriParamsDeserializeError {}
 
 impl IntoResponse for UriParamsDeserializeError {
     fn into_response(self) -> crate::http::Response {
-        crate::utils::macros::log_http_rejection!(
+        rama_utils::macros::log_http_rejection!(
             rejection_type = UriParamsDeserializeError,
             body_text = self.body_text(),
             status = self.status(),

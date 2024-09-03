@@ -75,8 +75,8 @@ impl InnerHttpProxyConnector {
              User-Agent: {ua_name}/{ua_version}\r\n\
              ",
             authority = self.authority,
-            ua_name = crate::utils::info::NAME,
-            ua_version = crate::utils::info::VERSION,
+            ua_name = rama_utils::info::NAME,
+            ua_version = rama_utils::info::VERSION,
         )
         .into_bytes();
         if let Some(ref headers) = self.headers {

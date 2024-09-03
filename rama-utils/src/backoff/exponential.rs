@@ -3,9 +3,8 @@ use std::fmt::{self, Display};
 use std::time::Duration;
 use tokio::time;
 
-use crate::utils::rng::{HasherRng, Rng};
-
 use super::Backoff;
+use crate::rng::{HasherRng, Rng};
 
 /// A jittered [exponential backoff] strategy.
 ///

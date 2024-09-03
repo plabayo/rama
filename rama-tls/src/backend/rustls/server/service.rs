@@ -1,4 +1,4 @@
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     stream::Stream,
     tls::{
@@ -210,7 +210,7 @@ mod tests {
 
     #[test]
     fn assert_send() {
-        use crate::utils::test_helpers::assert_send;
+        use rama_utils::test_helpers::assert_send;
 
         assert_send::<TlsAcceptorService<(), ()>>();
         assert_send::<TlsAcceptorService<(), TlsClientConfigHandler<()>>>();
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn assert_sync() {
-        use crate::utils::test_helpers::assert_sync;
+        use rama_utils::test_helpers::assert_sync;
 
         assert_sync::<TlsAcceptorService<(), ()>>();
         assert_sync::<TlsAcceptorService<(), TlsClientConfigHandler<()>>>();

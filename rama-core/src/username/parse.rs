@@ -1,7 +1,7 @@
+use super::DEFAULT_USERNAME_LABEL_SEPARATOR;
 use crate::context::Extensions;
 use crate::error::{BoxError, OpaqueError};
-use crate::utils::macros::all_the_tuples_no_last_special_case;
-use crate::utils::username::DEFAULT_USERNAME_LABEL_SEPARATOR;
+use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{convert::Infallible, fmt};
 
 /// Parse a username, extracting the username (first part)

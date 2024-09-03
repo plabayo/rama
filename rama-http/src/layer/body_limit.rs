@@ -31,7 +31,7 @@
 
 use crate::http::dep::http_body_util::Limited;
 use crate::http::Request;
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
 use std::fmt;
 

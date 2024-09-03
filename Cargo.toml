@@ -2,18 +2,18 @@
 members = [
     ".",
     "fuzz",
-    "rama-cli",
+    "rama-utils",
     "rama-core",
     "rama-error",
     "rama-http",
     "rama-http-backend",
     "rama-http-types",
     "rama-macros",
-    "rama-macros-proc",
     "rama-net",
     "rama-proxy",
     "rama-tls",
     "rama-ua",
+    "rama-cli",
 ]
 
 [workspace.package]
@@ -175,6 +175,7 @@ parking_lot = { workspace = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
+rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
 rama-core = { version = "0.2.0-alpha.2", path = "rama-core" }
 rama-http = { version = "0.2.0-alpha.2", path = "rama-http", optional = true }
 rama-proxy = { version = "0.2.0-alpha.2", path = "rama-proxy", optional = true }

@@ -1,4 +1,10 @@
-//! `async fn serve(&self, Context<S>, Request) -> Result<Response, Error>`
+//! utilities crate for rama
+//!
+//! `rama-utils` contains utilities used by `rama`,
+//! not really being part of one of the other crates, or used
+//! by plenty of other crates.
+//!
+//! # Rama
 //!
 //! Crate used by the end-user `rama` crate and `rama` crate authors alike.
 //!
@@ -6,15 +12,6 @@
 //!
 //! - Github: <https://github.com/plabayo/rama>
 //! - Book: <https://ramaproxy.org/book/>
-//!
-//! # rama service
-//!
-//! Heavily inspired by [tower-service](https://docs.rs/tower-service/0.3.0/tower_service/trait.Service.html)
-//! and the vast [Tokio](https://docs.rs/tokio/latest/tokio/) ecosystem which makes use of it.
-//!
-//! Initially the goal was to rely on `tower-service` directly, but it turned out to be
-//! too restrictive and difficult to work with, for the use cases we have in Rama.
-//! See <https://ramaproxy.org/book/faq.html> for more information regarding this and more.
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
@@ -61,25 +58,16 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-pub mod context;
-pub use context::Context;
+#[doc(hidden)]
+#[macro_use]
+pub mod macros;
 
-pub use ::rama_error as error;
+pub mod backoff;
+pub mod future;
+pub mod info;
+pub mod latency;
+pub mod rng;
+pub mod str;
 
-pub mod dns;
-pub mod graceful;
-pub mod rt;
-
-pub mod service;
-pub use service::Service;
-
-pub mod layer;
-pub use layer::Layer;
-
-pub mod combinators;
-pub mod matcher;
-
-pub mod username;
-
-#[cfg(feature = "telemetry")]
-pub mod telemetry;
+#[doc(hidden)]
+pub mod test_helpers;

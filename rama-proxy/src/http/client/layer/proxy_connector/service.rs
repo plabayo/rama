@@ -1,5 +1,5 @@
 use super::InnerHttpProxyConnector;
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     http::headers::ProxyAuthorization,

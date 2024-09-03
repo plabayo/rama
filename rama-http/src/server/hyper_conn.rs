@@ -3,7 +3,7 @@ use crate::http::executor::HyperExecutor;
 use crate::http::{IntoResponse, Request};
 use crate::stream::Stream;
 use crate::tcp::utils::is_connection_error;
-use crate::utils::future::Fuse;
+use rama_utils::future::Fuse;
 use crate::Context;
 use crate::Service;
 use hyper::server::conn::http1::Builder as Http1Builder;

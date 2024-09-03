@@ -40,7 +40,9 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-macros
 
-`rama-macros` contains the macros used by `rama`.
+`rama-macros` contains the procedural macros used by `rama`.
+
+Exposed in the `rama` crate, or you can use it directly.
 
 Learn more about `rama`:
 

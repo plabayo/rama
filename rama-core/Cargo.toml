@@ -34,6 +34,7 @@ paste = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-error = { version = "0.2.0-alpha.2", path = "../rama-error" }
 rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types", optional = true }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
 rama-macros = { version = "0.2.0-alpha.2", path = "../rama-macros" }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }

@@ -1,10 +1,9 @@
 #[cfg(test)]
 mod test {
+    use crate::context::AsRef;
     use std::ops::Deref;
     use std::sync::atomic::AtomicU64;
     use std::sync::Arc;
-
-    use crate::context::AsRef;
 
     struct Database;
 

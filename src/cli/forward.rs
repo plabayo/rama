@@ -1,5 +1,5 @@
 use crate::error::OpaqueError;
-use crate::utils::macros::match_ignore_ascii_case_str;
+use rama_utils::macros::match_ignore_ascii_case_str;
 use std::str::FromStr;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

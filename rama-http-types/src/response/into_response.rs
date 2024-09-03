@@ -9,7 +9,7 @@ use crate::{
 };
 use bytes::{buf::Chain, Buf, Bytes, BytesMut};
 use rama_error::BoxError;
-use rama_macros::all_the_tuples_no_last_special_case;
+use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{
     borrow::Cow,
     convert::Infallible,

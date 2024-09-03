@@ -1,6 +1,6 @@
 use super::FromRequest;
 use crate::http;
-use crate::utils::macros::impl_deref;
+use rama_utils::macros::impl_deref;
 use crate::Context;
 use std::convert::Infallible;
 

@@ -1,5 +1,5 @@
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     http::{Request, Response},
     Context, Layer, Service,

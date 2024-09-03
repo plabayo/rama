@@ -1,6 +1,6 @@
 use super::{IntoResponse, IntoResponseParts, Response, ResponseParts, TryIntoHeaderError};
 use crate::{HeaderName, HeaderValue};
-use rama_macros::impl_deref;
+use rama_utils::macros::impl_deref;
 use std::fmt;
 
 /// Append headers to a response.
@@ -9,15 +9,15 @@ use std::fmt;
 /// existing `content-type` headers. If instead you want to append headers, use `AppendHeaders`:
 ///
 /// ```rust
-/// use rama::{
-///     http::response::{AppendHeaders, IntoResponse},
-///     http::header::SET_COOKIE,
+/// use rama_http_types::{
+///     response::{AppendHeaders, IntoResponse},
+///     header::SET_COOKIE,
 /// };
 ///
 /// async fn handler() -> impl IntoResponse {
 ///     // something that sets the `set-cookie` header
 ///     let set_some_cookies = /* ... */
-///     # rama::http::HeaderMap::new();
+///     # rama_http_types::HeaderMap::new();
 ///
 ///     (
 ///         set_some_cookies,

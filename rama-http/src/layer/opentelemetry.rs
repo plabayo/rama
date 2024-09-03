@@ -2,7 +2,7 @@
 //!
 //! [`Layer`]: crate::Layer
 
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     http::RequestContext,
     telemetry::opentelemetry::{
@@ -119,8 +119,8 @@ impl Default for RequestMetricsLayer {
 /// construct meters for this crate
 fn get_versioned_meter() -> Meter {
     global::meter_with_version(
-        crate::utils::info::NAME,
-        Some(crate::utils::info::VERSION),
+        rama_utils::info::NAME,
+        Some(rama_utils::info::VERSION),
         Some(semantic_conventions::SCHEMA_URL),
         None,
     )

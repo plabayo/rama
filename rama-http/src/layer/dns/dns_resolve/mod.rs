@@ -7,8 +7,8 @@
 
 use crate::error::{ErrorExt, OpaqueError};
 use crate::http::HeaderValue;
-use crate::utils::macros::match_ignore_ascii_case_str;
-use crate::utils::username::{ComposeError, Composer, UsernameLabelWriter};
+use rama_utils::macros::match_ignore_ascii_case_str;
+use rama_utils::username::{ComposeError, Composer, UsernameLabelWriter};
 use std::fmt;
 
 mod service;
@@ -120,7 +120,7 @@ impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for DnsResolveMode {
 mod tests {
     use super::*;
     use crate::context::Extensions;
-    use crate::utils::username::{compose_username, parse_username};
+    use rama_utils::username::{compose_username, parse_username};
 
     #[test]
     fn parse_username_label_compose_parse_dns_resolve_mode() {

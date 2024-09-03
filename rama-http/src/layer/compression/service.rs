@@ -6,7 +6,7 @@ use crate::http::dep::http_body::Body;
 use crate::http::layer::util::compression::WrapBody;
 use crate::http::layer::util::{compression::AcceptEncoding, content_encoding::Encoding};
 use crate::http::{header, Request, Response};
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Service};
 
 /// Compress response bodies of the underlying service.

@@ -3,7 +3,7 @@ use std::{fmt, ops::DerefMut};
 use tokio::sync::Mutex;
 
 use super::TcpConnector;
-use crate::utils::macros::impl_deref;
+use rama_utils::macros::impl_deref;
 use crate::{
     error::{BoxError, ErrorExt, OpaqueError},
     net::{

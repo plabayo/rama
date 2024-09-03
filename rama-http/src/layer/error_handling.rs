@@ -44,7 +44,7 @@
 //! # }
 //! ```
 
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     http::{IntoResponse, Request, Response},
     Context, Layer, Service,

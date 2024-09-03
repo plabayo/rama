@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use super::extract::{FromRequest, FromRequestParts};
-use crate::utils::macros::all_the_tuples_no_last_special_case;
+use rama_utils::macros::all_the_tuples_no_last_special_case;
 use crate::{
     http::{IntoResponse, Request, Response},
     Context,

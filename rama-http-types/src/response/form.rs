@@ -6,7 +6,7 @@ use crate::dep::mime;
 use crate::response::{IntoResponse, Response};
 use crate::Body;
 use rama_error::OpaqueError;
-use rama_macros::impl_deref;
+use rama_utils::macros::impl_deref;
 use serde::Serialize;
 
 /// Wrapper used to create Form Http [`Response`]s,
@@ -20,7 +20,7 @@ use serde::Serialize;
 ///
 /// ```
 /// use serde::Serialize;
-/// use rama::http::{
+/// use rama_http_types::{
 ///     IntoResponse,
 ///     response::Form
 /// };
@@ -44,9 +44,7 @@ use serde::Serialize;
 /// ## Extracting Form from a Request
 ///
 /// ```
-/// use rama::http::service::web::extract::{
-///     Form
-/// };
+/// use rama_http_types::response::Form;
 ///
 /// #[derive(Debug, serde::Deserialize)]
 /// struct Input {

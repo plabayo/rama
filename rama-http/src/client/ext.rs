@@ -702,8 +702,8 @@ mod test {
             ua.to_str().unwrap(),
             format!(
                 "{}/{}",
-                crate::utils::info::NAME,
-                crate::utils::info::VERSION
+                rama_utils::info::NAME,
+                rama_utils::info::VERSION
             )
         );
 

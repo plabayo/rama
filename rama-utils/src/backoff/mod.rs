@@ -28,6 +28,33 @@ pub trait Backoff: Send + Sync + 'static {
     fn reset(&self) -> impl std::future::Future<Output = ()> + Send + '_;
 }
 
+impl Backoff for () {
+    async fn next_backoff(&self) -> bool {
+        false
+    }
+
+    async fn reset(&self) {}
+}
+
+impl<T: Backoff> Backoff for Option<T> {
+    async fn next_backoff(&self) -> bool {
+        false
+    }
+
+    async fn reset(&self) {}
+}
+
+impl<T: Backoff> Backoff for std::sync::Arc<T> {
+    #[inline]
+    fn next_backoff(&self) -> impl std::future::Future<Output = bool> + Send + '_ {
+        (**self).next_backoff()
+    }
+
+    fn reset(&self) -> impl std::future::Future<Output = ()> + Send + '_ {
+        (**self).reset()
+    }
+}
+
 mod exponential;
 #[doc(inline)]
 pub use exponential::ExponentialBackoff;

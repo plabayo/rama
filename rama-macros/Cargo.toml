@@ -1,6 +1,6 @@
 [package]
 name = "rama-macros"
-description = "macros in function of rama"
+description = "procedural macross for rama"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -10,10 +10,18 @@ categories = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[lib]
+proc-macro = true
+
 [dependencies]
-rama-macros-proc = { version = "0.2.0-alpha.2", path = "../rama-macros-proc" }
+proc-macro2 = { workspace = true }
+quote = { workspace = true }
+syn = { workspace = true, features = ["full", "parsing"] }
 
 [dev-dependencies]
+rama = { path = ".." }
+syn = { workspace = true, features = ["full", "extra-traits"] }
+trybuild = { workspace = true }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

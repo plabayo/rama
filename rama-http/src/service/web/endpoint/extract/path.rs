@@ -1,7 +1,7 @@
 use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
 use crate::http::matcher::{UriParams, UriParamsDeserializeError};
-use crate::utils::macros::{composite_http_rejection, define_http_rejection};
+use rama_utils::macros::{composite_http_rejection, define_http_rejection};
 use crate::Context;
 use serde::de::DeserializeOwned;
 use std::ops::{Deref, DerefMut};

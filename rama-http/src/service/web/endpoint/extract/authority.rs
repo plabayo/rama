@@ -2,7 +2,7 @@ use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
 use crate::http::RequestContext;
 use crate::net::address;
-use crate::utils::macros::{define_http_rejection, impl_deref};
+use rama_utils::macros::{define_http_rejection, impl_deref};
 use crate::Context;
 
 /// Extractor that resolves the authority of the request.

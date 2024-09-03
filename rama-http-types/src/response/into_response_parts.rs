@@ -1,10 +1,10 @@
-use super::{IntoResponse, Response};
 use crate::{
     dep::http::Extensions,
     header::{HeaderMap, HeaderName, HeaderValue},
+    response::{IntoResponse, Response},
     StatusCode,
 };
-use rama_macros::all_the_tuples_no_last_special_case;
+use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{convert::Infallible, fmt};
 
 /// Trait for adding headers and extensions to a response.
@@ -12,9 +12,9 @@ use std::{convert::Infallible, fmt};
 /// # Example
 ///
 /// ```rust
-/// use rama::{
-///     http::response::{ResponseParts, IntoResponse, IntoResponseParts, Response},
-///     http::{StatusCode, HeaderName, HeaderValue},
+/// use rama_http_types::{
+///     response::{ResponseParts, IntoResponse, IntoResponseParts, Response},
+///     StatusCode, HeaderName, HeaderValue,
 /// };
 ///
 /// // Hypothetical helper type for setting a single header

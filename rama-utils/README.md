@@ -12,10 +12,10 @@
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 
-[crates-badge]: https://img.shields.io/crates/v/rama-macros-proc.svg
-[crates-url]: https://crates.io/crates/rama-macros-proc
-[docs-badge]: https://img.shields.io/docsrs/rama-macros-proc/latest
-[docs-url]: https://docs.rs/rama-macros-proc/latest/rama_macros_proc/index.html
+[crates-badge]: https://img.shields.io/crates/v/rama-utils.svg
+[crates-url]: https://crates.io/crates/rama-utils
+[docs-badge]: https://img.shields.io/docsrs/rama-utils/latest
+[docs-url]: https://docs.rs/rama-utils/latest/rama_utils/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
@@ -38,11 +38,11 @@
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
-## rama-macros-proc
+## rama-utils
 
-`rama-macros-proc` contains the procedural macros used by `rama`.
-
-Exposed via the `rama-macros`, `rama-core` and `rama` crates.
+`rama-utils` contains utilities used by `rama`,
+not really being part of one of the other crates, or used
+by plenty of other crates.
 
 Learn more about `rama`:
 

@@ -1,5 +1,5 @@
 use super::ProxyFilter;
-use crate::utils::macros::match_ignore_ascii_case_str;
+use rama_utils::macros::match_ignore_ascii_case_str;
 use crate::{
     context::Extensions,
     error::{error, OpaqueError},
@@ -172,8 +172,8 @@ impl UsernameLabelParser for ProxyFilterUsernameParser {
 impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for ProxyFilter {
     fn write_labels(
         &self,
-        composer: &mut crate::utils::username::Composer<SEPARATOR>,
-    ) -> Result<(), crate::utils::username::ComposeError> {
+        composer: &mut rama_utils::username::Composer<SEPARATOR>,
+    ) -> Result<(), rama_utils::username::ComposeError> {
         if let Some(id) = &self.id {
             composer.write_label("id")?;
             composer.write_label(id.as_str())?;

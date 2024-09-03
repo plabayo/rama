@@ -5,7 +5,7 @@ use crate::http::dep::http_body_util::BodyExt;
 use crate::http::io::write_http_response;
 use crate::http::{Body, Request, Response};
 use crate::rt::Executor;
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
 use bytes::Bytes;
 use std::fmt::Debug;

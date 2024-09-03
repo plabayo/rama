@@ -38,7 +38,7 @@
 //! ```
 
 use crate::http::{Request, Response, Uri};
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
 use std::borrow::Cow;
 use std::fmt;

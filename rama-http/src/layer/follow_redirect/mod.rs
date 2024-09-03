@@ -101,7 +101,7 @@
 
 pub mod policy;
 
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     http::{dep::http_body::Body, header::LOCATION, Method, Request, Response, StatusCode, Uri},
     Context, Layer, Service,

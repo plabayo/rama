@@ -3,7 +3,7 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
-use crate::utils::macros::define_inner_service_accessors;
+use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     context::Extensions, http::Request, matcher::Matcher, service::BoxService, Context, Service,
 };

@@ -1,5 +1,5 @@
 use crate::{header, Body, HeaderValue, IntoResponse, Response};
-use rama_macros::impl_deref;
+use rama_utils::macros::impl_deref;
 use std::fmt;
 
 /// An HTML response.

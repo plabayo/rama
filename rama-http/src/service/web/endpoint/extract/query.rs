@@ -1,6 +1,6 @@
 use super::FromRequestParts;
 use crate::http::dep::http::request::Parts;
-use crate::utils::macros::define_http_rejection;
+use rama_utils::macros::define_http_rejection;
 use crate::Context;
 use serde::de::DeserializeOwned;
 
