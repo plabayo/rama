@@ -27,9 +27,9 @@ Financial contributors help in compensate for the many unpaid developer hours we
 
 ## 💎 | Financial Contributions
 
-You can become a regular financial contributor to Rama by paying for a monthly subscription at [polar.sh/plabayo](https://polar.sh/plabayo/subscriptions). In case you want a specific github issue to be resolved or like you can also fund issues via that platform. One time contributions are possible as well and greatly appreciated.
+You can become a regular financial contributor to Rama by paying for a monthly subscription at [polar.sh/plabayo](https://polar.sh/plabayo). In case you want a specific github issue to be resolved or like you can also fund issues via that platform. One time contributions are possible as well and greatly appreciated.
 
-> 💡 Business subscriptions are available at [polar.sh/plabayo](https://polar.sh/plabayo/subscriptions) for businesses, enterprises and individuals who can afford it 🙏. These subscriptions keep the development of Rama and other projects sustainable and unlocks support for you and your team in the integration and usage of Rama.
+> 💡 Business subscriptions are available at [polar.sh/plabayo](https://polar.sh/plabayo) for businesses, enterprises and individuals who can afford it 🙏. These subscriptions keep the development of Rama and other projects sustainable and unlocks support for you and your team in the integration and usage of Rama.
 >
 > 👉 For even more custom integrations or features you can always get in touch by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
 
