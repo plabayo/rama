@@ -302,3 +302,5 @@ pub use ::rama_ua as ua;
 
 #[cfg(feature = "cli")]
 pub mod cli;
+
+pub use ::rama_utils as utils;

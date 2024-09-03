@@ -18,11 +18,11 @@ telemetry = ["rama-core/telemetry"]
 
 [dependencies]
 base64 = { workspace = true }
+bytes = { workspace = true }
 futures-lite = { workspace = true }
 headers = { workspace = true }
 hickory-resolver = { workspace = true }
 ipnet = { workspace = true }
-bytes = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
@@ -30,8 +30,8 @@ parking_lot = { workspace = true }
 paste = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
-rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
 rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types", optional = true }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-graceful = { workspace = true }
@@ -39,10 +39,10 @@ tracing = { workspace = true }
 venndb = { workspace = true, optional = true }
 
 [dev-dependencies]
+itertools = { workspace = true }
 quickcheck = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
-itertools = { workspace = true }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

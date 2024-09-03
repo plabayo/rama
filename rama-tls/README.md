@@ -39,10 +39,7 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-tls
 
-User-Agent (UA) support for `rama`.
-
-This crate only focusses on the majority user-agents within
-the web space. Feature requests are welcome, but keep this scope in mind.
+Tls support for `rama`.
 
 Learn more about `rama`:
 

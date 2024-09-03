@@ -2,7 +2,7 @@
 members = [
     ".",
     "fuzz",
-    "rama-utils",
+    "rama-cli",
     "rama-core",
     "rama-error",
     "rama-http",
@@ -13,7 +13,7 @@ members = [
     "rama-proxy",
     "rama-tls",
     "rama-ua",
-    "rama-cli",
+    "rama-utils",
 ]
 
 [workspace.package]
@@ -175,12 +175,13 @@ parking_lot = { workspace = true }
 paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
 rama-core = { version = "0.2.0-alpha.2", path = "rama-core" }
 rama-http = { version = "0.2.0-alpha.2", path = "rama-http", optional = true }
+rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
 rama-proxy = { version = "0.2.0-alpha.2", path = "rama-proxy", optional = true }
 rama-tls = { version = "0.2.0-alpha.2", path = "rama-tls", optional = true }
 rama-ua = { version = "0.2.0-alpha.2", path = "rama-ua", optional = true }
+rama-utils = { version = "0.2.0-alpha.2", path = "rama-utils" }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }

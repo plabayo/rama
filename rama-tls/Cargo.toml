@@ -1,6 +1,6 @@
 [package]
 name = "rama-tls"
-description = "user-agent (UA) support for rama"
+description = "tls support for rama"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
