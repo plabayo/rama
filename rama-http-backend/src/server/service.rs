@@ -3,10 +3,6 @@
 use super::hyper_conn::HyperConnServer;
 use super::HttpServeResult;
 use crate::executor::HyperExecutor;
-use rama_net::stream::Stream;
-use rama_tcp::server::TcpListener;
-use rama_core::{Context, Service};
-use rama_http_types::{IntoResponse, Request};
 use hyper::server::conn::http2::Builder as H2ConnBuilder;
 use hyper::{rt::Timer, server::conn::http1::Builder as Http1ConnBuilder};
 use hyper_util::server::conn::auto::Builder as AutoConnBuilder;
@@ -14,6 +10,10 @@ use hyper_util::server::conn::auto::Http1Builder as InnerAutoHttp1Builder;
 use hyper_util::server::conn::auto::Http2Builder as InnerAutoHttp2Builder;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
+use rama_core::{Context, Service};
+use rama_http_types::{IntoResponse, Request};
+use rama_net::stream::Stream;
+use rama_tcp::server::TcpListener;
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
@@ -25,7 +25,7 @@ use tokio::net::ToSocketAddrs;
 ///
 /// Supported Protocols: HTTP/1, H2, Auto (HTTP/1 + H2)
 ///
-/// [`Service`]: crate::Service
+/// [`Service`]: rama_core::Service
 pub struct HttpServer<B> {
     builder: B,
 }
@@ -660,7 +660,7 @@ where
     /// Same as [`Self::listen`], but it will respect the given [`ShutdownGuard`],
     /// and also pass it to the service.
     ///
-    /// [`ShutdownGuard`]: crate::graceful::ShutdownGuard
+    /// [`ShutdownGuard`]: rama_core::graceful::ShutdownGuard
     pub async fn listen_graceful<S, Response, A>(
         self,
         guard: ShutdownGuard,
@@ -683,8 +683,8 @@ where
     ///
     /// Same as [`Self::listen`], but including the given state in the [`Service`]'s [`Context`].
     ///
-    /// [`Service`]: crate::Service
-    /// [`Context`]: crate::Context
+    /// [`Service`]: rama_core::Service
+    /// [`Context`]: rama_core::Context
     pub async fn listen_with_state<State, S, Response, A>(
         self,
         state: State,
@@ -709,8 +709,8 @@ where
     ///
     /// Same as [`Self::listen_graceful`], but including the given state in the [`Service`]'s [`Context`].
     ///
-    /// [`Service`]: crate::Service
-    /// [`Context`]: crate::Context
+    /// [`Service`]: rama_core::Service
+    /// [`Context`]: rama_core::Context
     pub async fn listen_graceful_with_state<State, S, Response, A>(
         self,
         guard: ShutdownGuard,

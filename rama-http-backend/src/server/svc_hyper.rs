@@ -1,5 +1,5 @@
-use rama_http_types::{BodyLimit, IntoResponse, Request};
 use rama_core::{Context, Service};
+use rama_http_types::{BodyLimit, IntoResponse, Request};
 use std::{convert::Infallible, fmt, future::Future, pin::Pin, sync::Arc};
 
 /// Wrapper service that implements [`hyper::service::Service`].

@@ -3,8 +3,8 @@ use rama_core::{
     Context, Service,
 };
 use rama_http_types::{
-    dep::http::uri::PathAndQuery, dep::http_body, header::HOST, headers::HeaderMapExt,
-    Request, Response, Version, Method,
+    dep::http::uri::PathAndQuery, dep::http_body, header::HOST, headers::HeaderMapExt, Method,
+    Request, Response, Version,
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
 use tokio::sync::Mutex;
@@ -91,7 +91,9 @@ fn sanitize_client_req_header<S, B>(
                 }
 
                 if !parts.headers.contains_key(HOST) {
-                    parts.headers.typed_insert(rama_http_types::headers::Host::from(authority));
+                    parts
+                        .headers
+                        .typed_insert(rama_http_types::headers::Host::from(authority));
                 }
 
                 parts.uri = rama_http_types::Uri::from_parts(uri_parts)?;

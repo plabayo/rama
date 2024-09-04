@@ -14,8 +14,8 @@ impl HttpProxyConnectorLayer {
     /// which will only connect via an http proxy in case the [`ProxyAddress`] is available
     /// in the [`Context`].
     ///
-    /// [`Context`]: crate::Context
-    /// [`ProxyAddress`]: crate::net::address::ProxyAddress
+    /// [`Context`]: rama_core::Context
+    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn optional() -> Self {
         Self { required: false }
     }
@@ -24,8 +24,8 @@ impl HttpProxyConnectorLayer {
     /// which will always connect via an http proxy, but fail in case the [`ProxyAddress`] is
     /// not available in the [`Context`].
     ///
-    /// [`Context`]: crate::Context
-    /// [`ProxyAddress`]: crate::net::address::ProxyAddress
+    /// [`Context`]: rama_core::Context
+    /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn required() -> Self {
         Self { required: true }
     }

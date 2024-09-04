@@ -1,5 +1,6 @@
 use super::{svc::SendRequest, HttpClientService};
 use crate::executor::HyperExecutor;
+use hyper_util::rt::TokioIo;
 use rama_core::{
     error::{BoxError, OpaqueError},
     Context, Layer, Service,
@@ -9,7 +10,6 @@ use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     stream::Stream,
 };
-use hyper_util::rt::TokioIo;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 use tokio::sync::Mutex;

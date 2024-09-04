@@ -1,13 +1,13 @@
 use super::{service::UpgradeHandler, UpgradeService, Upgraded};
-use rama_http_types::Request;
 use rama_core::{matcher::Matcher, Context, Layer, Service};
+use rama_http_types::Request;
 use std::{convert::Infallible, fmt, sync::Arc};
 
 /// UpgradeLayer is a middleware that can be used to upgrade a request.
 ///
 /// See [`UpgradeService`] for more details.
 ///
-/// [`UpgradeService`]: crate::layer::upgrade::UpgradeService
+/// [`UpgradeService`]: crate::server::layer::upgrade::UpgradeService
 pub struct UpgradeLayer<S, O> {
     handlers: Vec<Arc<UpgradeHandler<S, O>>>,
 }

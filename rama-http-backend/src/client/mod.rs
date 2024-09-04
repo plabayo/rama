@@ -1,13 +1,13 @@
 //! Rama HTTP client module,
 //! which provides the [`HttpClient`] type to serve HTTP requests.
 
+use proxy::layer::HttpProxyConnector;
 use rama_core::{
-    error::{BoxError, OpaqueError, ErrorExt},
+    error::{BoxError, ErrorExt, OpaqueError},
     Context, Service,
 };
 use rama_http_types::{dep::http_body, Request, Response};
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
-use proxy::layer::HttpProxyConnector;
 use rama_tcp::client::service::TcpConnector;
 
 // TODO: also support client config in boring...

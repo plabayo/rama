@@ -43,7 +43,7 @@ mod tests {
         let counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
 
         let (tx, rx) = oneshot::channel();
-        let shutdown = crate::graceful::Shutdown::new(async move {
+        let shutdown = rama_core::graceful::Shutdown::new(async move {
             rx.await.unwrap();
         });
 

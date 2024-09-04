@@ -52,7 +52,7 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-pub mod server;
 pub mod client;
+pub mod server;
 
 mod executor;

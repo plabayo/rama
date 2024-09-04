@@ -1,12 +1,12 @@
 use super::{svc_hyper::HyperService, HttpServeResult};
 use crate::executor::HyperExecutor;
-use rama_net::stream::Stream;
-use rama_tcp::utils::is_connection_error;
-use rama_core::{Context, Service};
-use rama_http_types::{IntoResponse, Request};
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::{rt::TokioIo, server::conn::auto::Builder as AutoBuilder};
+use rama_core::{Context, Service};
+use rama_http_types::{IntoResponse, Request};
+use rama_net::stream::Stream;
+use rama_tcp::utils::is_connection_error;
 use rama_utils::future::Fuse;
 use std::convert::Infallible;
 use std::error::Error;

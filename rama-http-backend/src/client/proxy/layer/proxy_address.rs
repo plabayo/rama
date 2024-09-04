@@ -2,8 +2,8 @@ use rama_core::{
     error::{ErrorContext, OpaqueError},
     Context, Layer, Service,
 };
-use std::{fmt, future::Future};
 use rama_net::address::ProxyAddress;
+use std::{fmt, future::Future};
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which allows you to add a [`ProxyAddress`]
@@ -12,8 +12,8 @@ use rama_net::address::ProxyAddress;
 ///
 /// See [`HttpProxyAddressService`] for more information.
 ///
-/// [`Context`]: crate::Context
-/// [`HttpProxyConnectorLayer`]: crate::proxy::http::client::layer::HttpProxyConnectorLayer
+/// [`Context`]: rama_core::Context
+/// [`HttpProxyConnectorLayer`]: crate::client::proxy::layer::HttpProxyConnectorLayer
 pub struct HttpProxyAddressLayer {
     address: Option<ProxyAddress>,
     preserve: bool,
@@ -88,8 +88,8 @@ impl<S> Layer<S> for HttpProxyAddressLayer {
 /// to the [`Context`] in order to have your client connector
 /// make a connection via this proxy (e.g. by using [`HttpProxyConnectorLayer`]).
 ///
-/// [`Context`]: crate::Context
-/// [`HttpProxyConnectorLayer`]: crate::proxy::http::client::layer::HttpProxyConnectorLayer
+/// [`Context`]: rama_core::Context
+/// [`HttpProxyConnectorLayer`]: crate::client::proxy::layer::HttpProxyConnectorLayer
 pub struct HttpProxyAddressService<S> {
     inner: S,
     address: Option<ProxyAddress>,

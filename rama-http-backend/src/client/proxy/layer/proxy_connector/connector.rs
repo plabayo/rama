@@ -6,10 +6,7 @@ use rama_http_types::{
     headers::{Header, HeaderMapExt},
     HeaderMap, HeaderName, HeaderValue,
 };
-use rama_net::{
-    address::Authority,
-    stream::Stream,
-};
+use rama_net::{address::Authority, stream::Stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Debug, Clone)]

@@ -1,21 +1,21 @@
 use super::InnerHttpProxyConnector;
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{
     error::{BoxError, ErrorExt, OpaqueError},
     Context, Service,
 };
+use rama_http_types::headers::ProxyAuthorization;
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
-    user::ProxyCredential,
     stream::Stream,
     transport::TryRefIntoTransportContext,
+    user::ProxyCredential,
 };
-use rama_http_types::headers::ProxyAuthorization;
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 #[cfg(feature = "tls")]
-use crate::tls::HttpsTunnel;
+use rama_net::tls::HttpsTunnel;
 
 /// A connector which can be used to establish a connection over an HTTP Proxy.
 ///
