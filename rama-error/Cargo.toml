@@ -1,0 +1,22 @@
+[package]
+name = "rama-error"
+description = "error types and utilities for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[dependencies]
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

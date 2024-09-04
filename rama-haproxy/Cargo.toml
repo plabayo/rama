@@ -1,0 +1,30 @@
+[package]
+name = "rama-haproxy"
+description = "rama HaProxy support"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+
+[dependencies]
+rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.2", path = "../rama-net" }
+tokio = { workspace = true, features = ["macros", "io-std"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio-test = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

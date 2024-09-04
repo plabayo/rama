@@ -1,6 +1,6 @@
 [package]
 name = "rama-macros"
-description = "procedural macros in function of the rama proxy modules crate"
+description = "procedural macross for rama"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -19,7 +19,7 @@ quote = { workspace = true }
 syn = { workspace = true, features = ["full", "parsing"] }
 
 [dev-dependencies]
-rama = { path = ".." }
+rama = { path = "..", features = ["full"] }
 syn = { workspace = true, features = ["full", "extra-traits"] }
 trybuild = { workspace = true }
 

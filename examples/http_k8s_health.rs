@@ -9,7 +9,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_k8s_health
+//! cargo run --example http_k8s_health --features=http-full
 //! ```
 //!
 //! # Expected output

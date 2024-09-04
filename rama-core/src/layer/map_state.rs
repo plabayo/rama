@@ -1,5 +1,5 @@
-use crate::utils::macros::define_inner_service_accessors;
 use crate::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{future::Future, sync::Arc};
 
 /// Middleware that can be used to map the state,

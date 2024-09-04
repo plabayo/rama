@@ -21,7 +21,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --features=telemetry --example http_telemetry
+//! cargo run --example http_telemetry --features=http-full,telemetry
 //! ```
 //!
 //! # Expected output
@@ -48,8 +48,8 @@ use rama::{
         server::HttpServer,
         service::web::{extract::State, WebService},
     },
+    net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,
-    stream::layer::opentelemetry::NetworkMetricsLayer,
     tcp::server::TcpListener,
     telemetry::opentelemetry::{
         self,

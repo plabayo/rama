@@ -20,7 +20,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_mitm_proxy --features=rustls
+//! cargo run --example http_mitm_proxy --features=http-full,rustls
 //! ```
 //!
 //! # Expected output
@@ -29,7 +29,7 @@
 //!
 //! ```sh
 //! curl -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' http://www.example.com/
-//! curl -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' https://www.example.com/
+//! curl -k -v -x http://127.0.0.1:62017 --proxy-user 'john:secret' https://www.example.com/
 //! ```
 
 use rama::{
@@ -47,23 +47,24 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
-        Body, IntoResponse, Request, RequestContext, Response, StatusCode,
+        Body, IntoResponse, Request, Response, StatusCode,
     },
     layer::ConsumeErrLayer,
+    net::http::RequestContext,
+    net::stream::layer::http::BodyLimitLayer,
     net::user::Basic,
     rt::Executor,
     service::service_fn,
-    stream::layer::http::BodyLimitLayer,
     tcp::server::TcpListener,
     tls::{
-        backend::rustls::{
+        dep::rcgen::{self, KeyPair},
+        rustls::{
             dep::{
                 pki_types::{CertificateDer, PrivatePkcs8KeyDer},
                 rustls::ServerConfig,
             },
             server::TlsAcceptorLayer,
         },
-        dep::rcgen::KeyPair,
     },
     Layer, Service,
 };

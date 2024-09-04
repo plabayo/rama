@@ -5,6 +5,7 @@ use rama::{
     cli::args::RequestArgsBuilder,
     error::{error, BoxError, ErrorContext, OpaqueError},
     graceful::{self, Shutdown, ShutdownGuard},
+    http::client::proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
     http::{
         client::HttpClient,
         layer::{
@@ -19,7 +20,6 @@ use rama::{
     },
     layer::{HijackLayer, MapResultLayer},
     net::{address::ProxyAddress, user::ProxyCredential},
-    proxy::http::client::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
     rt::Executor,
     service::service_fn,
     Context, Layer, Service,

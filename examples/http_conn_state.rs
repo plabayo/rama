@@ -11,7 +11,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_conn_state
+//! cargo run --example http_conn_state --features=http-full
 //! ```
 //!
 //! # Expected output

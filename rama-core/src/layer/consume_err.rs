@@ -1,5 +1,5 @@
-use crate::utils::macros::define_inner_service_accessors;
 use crate::{error::BoxError, Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt};
 
 use sealed::{DefaulResponse, StaticResponse, Trace};

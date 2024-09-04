@@ -12,10 +12,10 @@
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 
-[crates-badge]: https://img.shields.io/crates/v/rama.svg
-[crates-url]: https://crates.io/crates/rama/0.2.0-alpha.1
-[docs-badge]: https://img.shields.io/docsrs/rama/latest
-[docs-url]: https://docs.rs/rama/latest/rama/index.html
+[crates-badge]: https://img.shields.io/crates/v/rama-macros.svg
+[crates-url]: https://crates.io/crates/rama-macros
+[docs-badge]: https://img.shields.io/docsrs/rama-macros/latest
+[docs-url]: https://docs.rs/rama-macros/latest/rama_macros/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
@@ -41,3 +41,10 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 ## rama-macros
 
 `rama-macros` contains the procedural macros used by `rama`.
+
+Exposed in the `rama` crate, or you can use it directly.
+
+Learn more about `rama`:
+
+- Github: <https://github.com/plabayo/rama>
+- Book: <https://ramaproxy.org/book/>

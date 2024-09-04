@@ -13,9 +13,9 @@
 //! [`Context`]: crate::Context
 
 use super::{context::Extensions, Context};
-use crate::utils::macros::all_the_tuples_no_last_special_case;
 use crate::Service;
 use paste::paste;
+use rama_utils::macros::all_the_tuples_no_last_special_case;
 
 mod op_or;
 #[doc(inline)]

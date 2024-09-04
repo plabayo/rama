@@ -1,6 +1,5 @@
 //! build requests from command line arguments
 
-use crate::utils::macros::match_ignore_ascii_case_str;
 use crate::{
     error::{ErrorContext, OpaqueError},
     http::{
@@ -8,6 +7,7 @@ use crate::{
         Body, Method, Request, Uri,
     },
 };
+use rama_utils::macros::match_ignore_ascii_case_str;
 use serde_json::Value;
 use std::collections::HashMap;
 

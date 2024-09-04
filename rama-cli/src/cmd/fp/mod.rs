@@ -10,7 +10,7 @@ use rama::{
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
             forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
-            set_header::SetResponseHeaderLayer, trace::TraceLayer,
+            set_header::SetResponseHeaderLayer, trace::TraceLayer, ua::UserAgentClassifierLayer,
         },
         matcher::HttpMatcher,
         response::Redirect,
@@ -22,13 +22,12 @@ use rama::{
         limit::policy::ConcurrentPolicy, ConsumeErrLayer, HijackLayer, Layer, LimitLayer,
         TimeoutLayer,
     },
-    proxy::pp::server::HaProxyLayer,
+    net::stream::layer::http::BodyLimitLayer,
+    proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::service_fn,
-    stream::layer::http::BodyLimitLayer,
     tcp::server::TcpListener,
-    tls::backend::boring::server::TlsAcceptorLayer,
-    ua::UserAgentClassifierLayer,
+    tls::boring::server::TlsAcceptorLayer,
     utils::backoff::ExponentialBackoff,
 };
 use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};

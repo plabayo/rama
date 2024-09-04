@@ -24,9 +24,9 @@
 //! ```
 
 use super::{Policy, PolicyOutput, PolicyResult};
-use crate::utils::backoff::Backoff;
 use crate::Context;
 use parking_lot::Mutex;
+use rama_utils::backoff::Backoff;
 use std::fmt;
 use std::sync::Arc;
 
@@ -141,49 +141,6 @@ where
     }
 }
 
-impl<B, C, State, Request> Policy<State, Request> for ConcurrentPolicy<Option<B>, C>
-where
-    B: Backoff,
-    C: ConcurrentTracker,
-    State: Send + Sync + 'static,
-    Request: Send + 'static,
-{
-    type Guard = C::Guard;
-    type Error = C::Error;
-
-    async fn check(
-        &self,
-        ctx: Context<State>,
-        request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
-        let tracker_err = match self.tracker.try_access() {
-            Ok(guard) => {
-                return PolicyResult {
-                    ctx,
-                    request,
-                    output: PolicyOutput::Ready(guard),
-                }
-            }
-            Err(err) => err,
-        };
-        let output = match &self.backoff {
-            Some(backoff) => {
-                if !backoff.next_backoff().await {
-                    PolicyOutput::Abort(tracker_err)
-                } else {
-                    PolicyOutput::Retry
-                }
-            }
-            None => PolicyOutput::Abort(tracker_err),
-        };
-        PolicyResult {
-            ctx,
-            request,
-            output,
-        }
-    }
-}
-
 /// The error that indicates the request is aborted,
 /// because the concurrent request limit is reached.
 #[derive(Debug)]
@@ -196,32 +153,6 @@ impl std::fmt::Display for LimitReached {
 }
 
 impl std::error::Error for LimitReached {}
-
-impl<State, Request, C> Policy<State, Request> for ConcurrentPolicy<(), C>
-where
-    State: Send + Sync + 'static,
-    Request: Send + 'static,
-    C: ConcurrentTracker,
-{
-    type Guard = C::Guard;
-    type Error = C::Error;
-
-    async fn check(
-        &self,
-        ctx: Context<State>,
-        request: Request,
-    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
-        let output = match self.tracker.try_access() {
-            Ok(guard) => PolicyOutput::Ready(guard),
-            Err(err) => PolicyOutput::Abort(err),
-        };
-        PolicyResult {
-            ctx,
-            request,
-            output,
-        }
-    }
-}
 
 /// The tracker trait that can be implemented to provide custom concurrent request tracking.
 ///

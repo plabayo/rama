@@ -8,7 +8,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_web_service_dir_and_api
+//! cargo run --example http_web_service_dir_and_api --features=compression,http-full
 //! ```
 //!
 //! # Expected output
@@ -35,8 +35,8 @@ use rama::{
             WebService,
         },
     },
+    net::stream::{matcher::SocketMatcher, SocketInfo},
     rt::Executor,
-    stream::{matcher::SocketMatcher, SocketInfo},
     Layer,
 };
 

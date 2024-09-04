@@ -9,7 +9,7 @@
 [![Lines of Code][loc-badge]][loc-url]
 
 [crates-badge]: https://img.shields.io/crates/v/rama.svg
-[crates-url]: https://crates.io/crates/rama/0.2.0-alpha.1
+[crates-url]: https://crates.io/crates/rama
 [docs-badge]: https://img.shields.io/docsrs/rama/latest
 [docs-url]: https://docs.rs/rama/latest/rama/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
@@ -57,17 +57,17 @@ This framework comes with 🔋 batteries included, giving you the full freedome 
 
 | category | support list |
 |-|-|
-| ✅ [transports](https://ramaproxy.org/docs/rama/stream/index.html) | ✅ [tcp](https://ramaproxy.org/docs/rama/tcp/index.html) ⸱ 🏗️ udp <sup>(2)</sup> ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/stream/layer/index.html) |
+| ✅ [transports](https://ramaproxy.org/docs/rama/net/stream/index.html) | ✅ [tcp](https://ramaproxy.org/docs/rama/tcp/index.html) ⸱ 🏗️ udp <sup>(2)</sup> ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/net/stream/layer/index.html) |
 | ✅ [http](https://ramaproxy.org/docs/rama/http/index.html) | ✅ [auto](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.auto) ⸱ ✅ [http/1.1](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.http1) ⸱ ✅ [h2](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.h2) ⸱ 🏗️ h3 <sup>(2)</sup> ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/http/layer/index.html) |
 | ✅ web server | ✅ [fs](https://ramaproxy.org/docs/rama/http/service/fs/index.html) ⸱ ✅ [redirect](https://ramaproxy.org/docs/rama/http/service/redirect/struct.Redirect.html) ⸱ ✅ [dyn router](https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html) ⸱ ✅ [static router](https://ramaproxy.org/docs/rama/http/service/web/macro.match_service.html) ⸱ ✅ [handler extractors](https://ramaproxy.org/docs/rama/http/service/web/extract/index.html) ⸱ ✅ [k8s healthcheck](https://ramaproxy.org/docs/rama/http/service/web/k8s/index.html) |
-| ✅ http [client](https://ramaproxy.org/docs/rama/http/client/index.html) | ✅ [client](https://ramaproxy.org/docs/rama/http/client/struct.HttpClient.html) ⸱ ✅ [high level API](https://ramaproxy.org/docs/rama/http/client/trait.HttpClientExt.html) ⸱ ✅ [Proxy Connect](https://ramaproxy.org/docs/rama/proxy/http/client/layer/struct.HttpProxyConnector.html) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
+| ✅ http [client](https://ramaproxy.org/docs/rama/http/client/index.html) | ✅ [client](https://ramaproxy.org/docs/rama/http/client/struct.HttpClient.html) ⸱ ✅ [high level API](https://ramaproxy.org/docs/rama/http/service/client/trait.HttpClientExt.html) ⸱ ✅ [Proxy Connect](https://ramaproxy.org/docs/rama/proxy/http/client/layer/struct.HttpProxyConnector.html) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
 | ✅ [tls](https://ramaproxy.org/docs/rama/tls/index.html) | ✅ [Rustls](https://ramaproxy.org/docs/rama/tls/backend/rustls/index.html) ⸱ ✅ [BoringSSL](https://ramaproxy.org/docs/rama/tls/backend/boring/index.html) ⸱ ❌ NSS <sup>(3)</sup> |
 | ✅ [dns](https://ramaproxy.org/docs/rama/dns/index.html) | ✅ [DNS Resolver](https://ramaproxy.org/docs/rama/dns/struct.Dns.html) |
-| ✅ [proxy protocols](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [PROXY protocol](https://ramaproxy.org/docs/rama/proxy/pp/index.html) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(1)</sup> ⸱ 🏗️ SOCKS5H <sup>(1)</sup> |
+| ✅ [proxy protocols](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [PROXY protocol](https://ramaproxy.org/docs/rama/proxy/haproxy/index.html) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(1)</sup> ⸱ 🏗️ SOCKS5H <sup>(1)</sup> |
 | 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(2)</sup> ⸱ 🏗️ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service](https://ramaproxy.org/docs/rama/service/trait.Service.html) ⸱ ✅ [Layer](https://ramaproxy.org/docs/rama/layer/trait.Layer.html) ⸱ ✅ [context](https://ramaproxy.org/docs/rama/context/index.html) ⸱ ✅ [dyn dispatch](https://ramaproxy.org/docs/rama/service/struct.BoxService.html) ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/layer/index.html) |
-| ✅ [telemetry](https://ramaproxy.org/docs/rama/telemetry/index.html) | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html) ⸱ ✅ [http metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html) ⸱ ✅ [transport metrics](https://ramaproxy.org/docs/rama/stream/layer/opentelemetry/index.html) |
-| ✅ upstream [proxies](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [MemoryProxyDB](https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html) ⸱ ✅ [L4 Username Config](https://ramaproxy.org/docs/rama/utils/username/index.html) ⸱ ✅ [Proxy Filters](https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html) |
+| ✅ [telemetry](https://ramaproxy.org/docs/rama/telemetry/index.html) | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html) ⸱ ✅ [http metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html) ⸱ ✅ [transport metrics](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html) |
+| ✅ upstream [proxies](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [MemoryProxyDB](https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html) ⸱ ✅ [L4 Username Config](https://ramaproxy.org/docs/rama/username/index.html) ⸱ ✅ [Proxy Filters](https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html) |
 | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html) |
 | ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ 🏗️ Connection Pool <sup>(2)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
@@ -155,7 +155,7 @@ It goes also without saying that we do not nilly-willy change designs or break o
 there is still plenty to be improve and work out. Production use and feedback from you and other users helps a lot with that. As such,
 if you use Rama do let us know feedback over [Discord][discord-url], [email](mailto:glen@plabayo.tech) or a [GitHub issue](https://github.com/plabayo/rama/issues).
 
-👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commcercial purposes. Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo/subscriptions). It helps make the development cycle to remain sustainable, and is beneficial to you as well. As part of your benefits we are also available to assist you with migrations between breaking releases. For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf. A win for everybody. 💪
+👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commcercial purposes. Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo). It helps make the development cycle to remain sustainable, and is beneficial to you as well. As part of your benefits we are also available to assist you with migrations between breaking releases. For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf. A win for everybody. 💪
 
 ## 📣 | Rama Ecosystem
 
@@ -172,6 +172,31 @@ Please prefix all rama community crates with "rama-x", this way the crates are e
 and are sufficiently different from "official" rama crates".
 
 Once you have such a crate published do let us know it, such that we can list them here.
+
+### 📦 | Rama Crates
+
+The `rama` crate can be used as the one and only dependency.
+However, as you can also read in the "DIY" chapter of the book
+at <https://ramaproxy.org/book/diy.html#empowering>, you are able
+to pick and choose not only what specific parts of `rama` you wish to use,
+but also in fact what specific (sub) crates.
+
+Here is a list of all `rama` crates:
+
+- [`rama`](https://crates.io/crates/rama): one crate to rule them all
+- [`rama-error`](https://crates.io/crates/rama-error): error utilities for rama and its users
+- [`rama-macros`]: `rama-macros` contains the procedural macros used by `rama`
+- [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
+  context used by all other `rama` code, as well as some other _core_ utilities
+- [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
+- [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
+- [`rama-tls`](https://crates.io/crates/rama-tls): TLS support for rama (types, `rustls` and `boring`)
+- [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
+- [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HaProxy support
+- [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
+- [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
+- [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
+- [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 
 ## 🏢 | Proxy Examples
 
@@ -253,7 +278,7 @@ It's a powerful concept, originally introduced to Rust by [the Tower ecosystem](
 
 Rama provides an [`HttpClient`](https://ramaproxy.org/docs/rama/http/client/struct.HttpClient.html) which sends your _Http_ `Request` over the network and returns the `Response` if it receives and read one or an `Error` otherwise. Combined with [the many Layers (middleware)](https://ramaproxy.org/docs/rama/http/layer/index.html) that `Rama` provides and perhaps also some developed by you it is possible to create a powerful _Http_ client suited to your needs.
 
-As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramaproxy.org/docs/rama/http/client/trait.HttpClientExt.html) trait in your Rust module to be able to use your _Http_ Client [`Service`][rama-service] stack using a high level API to build and send requests with ease.
+As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramaproxy.org/docs/rama/http/service/client/trait.HttpClientExt.html) trait in your Rust module to be able to use your _Http_ Client [`Service`][rama-service] stack using a high level API to build and send requests with ease.
 
 ### 🧑‍💻 | Http Client Example
 
@@ -388,7 +413,7 @@ An extra big shoutout goes also to the online communities surrounding and part o
 
 Rama is **completely free, open-source software** which needs lots of effort and time to develop and maintain.
 
-You can become a regular financial contributor to Rama by paying for a monthly subscription at [polar.sh/plabayo](https://polar.sh/plabayo/subscriptions). In case you want a specific github issue to be resolved or like you can also fund issues via that platform. One time contributions are possible as well and greatly appreciated.
+You can become a regular financial contributor to Rama by paying for a monthly subscription at [polar.sh/plabayo](https://polar.sh/plabayo). In case you want a specific github issue to be resolved or like you can also fund issues via that platform. One time contributions are possible as well and greatly appreciated.
 
 Alternatively you can also become a (monthly subscriber) sponsor or pay a one-time donation via [Github Sponsors][ghs-url]. For one-time donations you are also free to use ["Buy me a Coffee"][bmac-url] or ["Paypal Donations"][paypal-url] in case you are more at ease with any of these.
 

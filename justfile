@@ -31,7 +31,7 @@ test:
 	cargo test --all-features --workspace
 
 test-ignored:
-	cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
+	cargo test --features=cli,telemetry,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
 
 qa: lint check clippy doc test
 

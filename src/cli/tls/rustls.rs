@@ -2,8 +2,8 @@
 
 use crate::error::BoxError;
 use crate::http::Version;
-use crate::tls::backend::rustls::dep::pemfile;
-use crate::tls::backend::rustls::dep::rustls::{KeyLogFile, ServerConfig};
+use crate::tls::rustls::dep::pemfile;
+use crate::tls::rustls::dep::rustls::{KeyLogFile, ServerConfig};
 use base64::Engine;
 use std::io::BufReader;
 use std::sync::Arc;

@@ -1,0 +1,45 @@
+[package]
+name = "rama-tls"
+description = "tls implementations for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+rustls = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls", "rama-net/rustls"]
+boring = ["dep:boring", "dep:tokio-boring", "rama-net/boring"]
+rustls-ring = ["rustls", "tokio-rustls/ring", "rustls/ring", "rama-net/rustls-ring"]
+
+[dependencies]
+boring = { workspace = true, optional = true }
+parking_lot = { workspace = true }
+pin-project-lite = { workspace = true }
+rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.2", path = "../rama-net", features = ["http", "tls"] }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
+rcgen = { workspace = true }
+rustls = { workspace = true, optional = true }
+rustls-native-certs = { workspace = true, optional = true }
+rustls-pemfile = { workspace = true, optional = true }
+rustls-pki-types = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "io-std"] }
+tokio-boring = { workspace = true, optional = true }
+tokio-rustls = { workspace = true, optional = true }
+tracing = { workspace = true }
+webpki-roots = { workspace = true, optional = true }
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

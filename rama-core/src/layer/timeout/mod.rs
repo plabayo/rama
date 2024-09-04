@@ -4,8 +4,8 @@
 //! will be aborted.
 
 use super::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
-use crate::utils::macros::define_inner_service_accessors;
 use crate::{Context, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::Duration};
 
 mod error;

@@ -6,7 +6,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_connect_proxy
+//! cargo run --example http_connect_proxy --features=http-full
 //! ```
 //!
 //! # Expected output
@@ -70,15 +70,16 @@ use rama::{
         response::Json,
         server::HttpServer,
         service::web::{extract::Path, match_service},
-        Body, IntoResponse, Request, RequestContext, Response, StatusCode,
+        Body, IntoResponse, Request, Response, StatusCode,
     },
     layer::HijackLayer,
+    net::http::RequestContext,
+    net::stream::layer::http::BodyLimitLayer,
     net::{address::Domain, user::Basic},
     rt::Executor,
     service::service_fn,
-    stream::layer::http::BodyLimitLayer,
     tcp::{server::TcpListener, utils::is_connection_error},
-    utils::username::{
+    username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },
     Context, Layer, Service,

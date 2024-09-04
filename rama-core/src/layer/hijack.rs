@@ -7,8 +7,8 @@
 //! [`Service`]: crate
 //! [`Matcher`]: crate::matcher::Matcher
 
-use crate::utils::macros::define_inner_service_accessors;
 use crate::{context::Extensions, matcher::Matcher, Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 
 /// Middleware to hijack request to a [`Service`] which match using a [`Matcher`].
 ///

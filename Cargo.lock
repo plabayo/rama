@@ -430,9 +430,9 @@ checksum = "8318a53db07bb3f8dca91a600466bdb3f2eaadeedfdbcf02e1accbad9271ba50"
 
 [[package]]
 name = "cc"
-version = "1.1.15"
+version = "1.1.16"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "57b6a275aa2903740dc87da01c62040406b8812552e97129a63ea8850a17c6e6"
+checksum = "e9d013ecb737093c0e86b151a7b837993cf9ec6c502946cfb44bedc392421e0b"
 dependencies = [
  "jobserver",
  "libc",
@@ -467,9 +467,9 @@ dependencies = [
 
 [[package]]
 name = "clap"
-version = "4.5.16"
+version = "4.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ed6719fffa43d0d87e5fd8caeab59be1554fb028cd30edc88fc4369b17971019"
+checksum = "3e5a21b8495e732f1b3c364c9949b201ca7bae518c502c80256c96ad79eaf6ac"
 dependencies = [
  "clap_builder",
  "clap_derive",
@@ -477,9 +477,9 @@ dependencies = [
 
 [[package]]
 name = "clap_builder"
-version = "4.5.15"
+version = "4.5.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "216aec2b177652e3846684cbfe25c9964d18ec45234f0f5da5157b207ed1aab6"
+checksum = "8cf2dd12af7a047ad9d6da2b6b249759a22a7abc0f474c1dae1777afa4b21a73"
 dependencies = [
  "anstream",
  "anstyle",
@@ -1734,68 +1734,33 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 name = "rama"
 version = "0.2.0-alpha.2"
 dependencies = [
- "arc-swap",
- "async-compression",
  "base64 0.22.1",
- "bitflags",
- "boring",
- "brotli",
  "bytes",
- "const_format",
  "divan",
  "escargot",
- "flate2",
- "futures-core",
- "futures-lite",
- "h2",
- "headers",
  "hex",
- "http",
- "http-body",
- "http-body-util",
- "http-range-header",
- "httpdate",
- "hyper",
- "hyper-util",
- "ipnet",
- "iri-string",
  "itertools 0.13.0",
- "mime",
- "mime_guess",
- "nom",
- "opentelemetry",
  "opentelemetry-otlp",
- "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
- "parking_lot",
- "paste",
- "percent-encoding",
- "pin-project-lite",
  "rama-core",
- "rcgen",
+ "rama-haproxy",
+ "rama-http",
+ "rama-http-backend",
+ "rama-macros",
+ "rama-net",
+ "rama-proxy",
+ "rama-tcp",
+ "rama-tls",
+ "rama-ua",
+ "rama-utils",
  "regex",
- "rustls",
- "rustls-native-certs",
- "rustls-pemfile",
- "rustls-pki-types",
  "rustversion",
  "serde",
  "serde_html_form",
  "serde_json",
- "sync_wrapper 1.0.1",
- "tempfile",
  "tokio",
- "tokio-boring",
- "tokio-rustls",
- "tokio-test",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
- "unicode-normalization",
- "uuid",
- "venndb",
- "webpki-roots",
- "zstd",
 ]
 
 [[package]]
@@ -1818,23 +1783,26 @@ dependencies = [
 name = "rama-core"
 version = "0.2.0-alpha.2"
 dependencies = [
- "base64 0.22.1",
  "futures-lite",
- "headers",
  "hickory-resolver",
- "http",
+ "opentelemetry",
+ "opentelemetry-semantic-conventions",
+ "opentelemetry_sdk",
  "parking_lot",
  "paste",
- "pin-project-lite",
  "quickcheck",
+ "rama-error",
  "rama-macros",
- "serde",
+ "rama-utils",
  "tokio",
  "tokio-graceful",
  "tokio-test",
  "tracing",
- "venndb",
 ]
+
+[[package]]
+name = "rama-error"
+version = "0.2.0-alpha.2"
 
 [[package]]
 name = "rama-fuzz"
@@ -1842,6 +1810,108 @@ version = "0.0.0"
 dependencies = [
  "libfuzzer-sys",
  "rama",
+]
+
+[[package]]
+name = "rama-haproxy"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "rama-core",
+ "rama-net",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
+name = "rama-http"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "async-compression",
+ "base64 0.22.1",
+ "bitflags",
+ "brotli",
+ "bytes",
+ "flate2",
+ "futures-lite",
+ "headers",
+ "http",
+ "http-body",
+ "http-body-util",
+ "http-range-header",
+ "httpdate",
+ "iri-string",
+ "itertools 0.13.0",
+ "mime",
+ "mime_guess",
+ "parking_lot",
+ "paste",
+ "percent-encoding",
+ "pin-project-lite",
+ "rama-core",
+ "rama-http-backend",
+ "rama-http-types",
+ "rama-net",
+ "rama-tcp",
+ "rama-ua",
+ "rama-utils",
+ "regex",
+ "serde",
+ "serde_html_form",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-test",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+ "zstd",
+]
+
+[[package]]
+name = "rama-http-backend"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "h2",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
+ "rama-core",
+ "rama-http-types",
+ "rama-net",
+ "rama-tcp",
+ "rama-tls",
+ "rama-utils",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rama-http-types"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "bytes",
+ "const_format",
+ "futures-core",
+ "futures-lite",
+ "headers",
+ "http",
+ "http-body",
+ "http-body-util",
+ "mime",
+ "mime_guess",
+ "paste",
+ "pin-project-lite",
+ "rama-error",
+ "rama-utils",
+ "serde",
+ "serde_html_form",
+ "serde_json",
+ "sync_wrapper 1.0.1",
+ "tokio",
+ "tokio-test",
+ "tracing",
 ]
 
 [[package]]
@@ -1853,6 +1923,120 @@ dependencies = [
  "rama",
  "syn",
  "trybuild",
+]
+
+[[package]]
+name = "rama-net"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "base64 0.22.1",
+ "boring",
+ "bytes",
+ "futures-lite",
+ "headers",
+ "hex",
+ "ipnet",
+ "itertools 0.13.0",
+ "nom",
+ "opentelemetry",
+ "pin-project-lite",
+ "quickcheck",
+ "rama-core",
+ "rama-http-types",
+ "rama-utils",
+ "rustls",
+ "serde",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "venndb",
+]
+
+[[package]]
+name = "rama-proxy"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "arc-swap",
+ "itertools 0.13.0",
+ "rama-core",
+ "rama-http-types",
+ "rama-net",
+ "rama-tcp",
+ "rama-utils",
+ "serde",
+ "serde_html_form",
+ "serde_json",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "unicode-normalization",
+ "venndb",
+]
+
+[[package]]
+name = "rama-socks5"
+version = "0.2.0-alpha.2"
+
+[[package]]
+name = "rama-tcp"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "rama-core",
+ "rama-http-types",
+ "rama-net",
+ "rama-utils",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rama-tls"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "boring",
+ "parking_lot",
+ "pin-project-lite",
+ "rama-core",
+ "rama-http-types",
+ "rama-net",
+ "rama-utils",
+ "rcgen",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-boring",
+ "tokio-rustls",
+ "tracing",
+ "webpki-roots",
+]
+
+[[package]]
+name = "rama-ua"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "rama-core",
+ "rama-utils",
+ "serde",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "rama-udp"
+version = "0.2.0-alpha.2"
+
+[[package]]
+name = "rama-utils"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "parking_lot",
+ "pin-project-lite",
+ "quickcheck",
+ "serde",
+ "tokio",
+ "tokio-test",
 ]
 
 [[package]]
@@ -2145,9 +2329,9 @@ dependencies = [
 
 [[package]]
 name = "serde_json"
-version = "1.0.127"
+version = "1.0.128"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8043c06d9f82bd7271361ed64f415fe5e12a77fdb52e573e7f06a516dea329ad"
+checksum = "6ff5456707a1de34e7e37f2a6fd3d3f808c318259cbd01ab6377795054b483d8"
 dependencies = [
  "itoa",
  "memchr",
@@ -2468,9 +2652,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-util"
-version = "0.7.11"
+version = "0.7.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9cf6b47b3771c49ac75ad09a6162f53ad4b8088b76ac60e8ec1455b31a189fe1"
+checksum = "61e7c3654c13bcd040d4a03abee2c75b1d14a37b423cf5a813ceae1cc903ec6a"
 dependencies = [
  "bytes",
  "futures-core",

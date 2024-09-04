@@ -11,8 +11,6 @@ env:
 on:
   # Runs on pushes targeting the default branch
   push:
-    # todo: switch back to "main" once mdbook-graphviz is fixed
-    # see: https://github.com/dylanowen/mdbook-graphviz/issues/107
     branches: ["main"]
 
   # Allows you to run this workflow manually from the Actions tab

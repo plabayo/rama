@@ -1,10 +1,13 @@
 //! Macros for [`rama`].
 //!
-//! [`rama`]: https://crates.io/crates/rama/0.2.0-alpha.1
+//! [`rama`]: https://crates.io/crates/rama
 
+#![doc(
+    html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
+)]
+#![doc(html_logo_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png")]
 #![warn(
     clippy::all,
-    clippy::dbg_macro,
     clippy::todo,
     clippy::empty_enum,
     clippy::enum_glob_use,

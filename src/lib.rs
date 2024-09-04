@@ -15,23 +15,25 @@
 //!
 //! | category | support list |
 //! |-|-|
-//! | ✅ [transports](crate::stream) | ✅ [tcp] ⸱ 🏗️ udp <sup>(1)</sup> ⸱ ✅ [middleware](crate::stream::layer) |
+//! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ 🏗️ udp <sup>(1)</sup> ⸱ ✅ [middleware](crate::net::stream::layer) |
 //! | ✅ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(1)</sup> ⸱ ✅ [middleware](crate::http::layer) |
 //! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
-//! | ✅ [http client](crate::http::client) | ✅ [client](crate::http::client::HttpClient) ⸱ ✅ [high level API](crate::http::client::HttpClientExt) ⸱ ✅ [Proxy Connect](crate::proxy::http::client::layer::HttpProxyConnector) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
-//! | ✅ [tls] | ✅ [Rustls](crate::tls::backend::rustls) ⸱ ✅ [BoringSSL](crate::tls::backend::boring) ⸱ ❌ NSS <sup>(3)</sup> |
+//! | ✅ [http client](crate::http::client) | ✅ [client](crate::http::client::HttpClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
+//! | ✅ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ ✅ [BoringSSL](crate::tls::boring) ⸱ ❌ NSS <sup>(3)</sup> |
 //! | ✅ [dns] | ✅ [DNS Resolver][crate::dns::Dns] |
-//! | ✅ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::pp) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(1)</sup> ⸱ 🏗️ SOCKS5H <sup>(1)</sup> |
+//! | ✅ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::haproxy) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(1)</sup> ⸱ 🏗️ SOCKS5H <sup>(1)</sup> |
 //! | 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(2)</sup> ⸱ 🏗️ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 //! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [context] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
-//! | ✅ [telemetry][opentelemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::stream::layer::opentelemetry) |
-//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config](crate::utils::username) ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
+//! | ✅ [telemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry][telemetry::opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::net::stream::layer::opentelemetry) |
+//! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
 //! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ 🏗️ Connection Pool <sup>(2)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 //! | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 //! | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/binary/rama) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client <sup>(1)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 //! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
 //! | ❌ browser | ❌ JS Engine <sup>(3)</sup> ⸱ ❌ [Web API](https://developer.mozilla.org/en-US/docs/Web/API) Emulation <sup>(3)</sup> |
+//!
+//! [L4 Username Config]: https://docs.rs/rama-core/latest/rama_core/username/index.html
 //!
 //! > 🗒️ _Footnotes_
 //! >
@@ -99,7 +101,7 @@
 //! if you use Rama do let us know feedback over [Discord][discord-url], [email](mailto:glen@plabayo.tech) or a [GitHub issue](https://github.com/plabayo/rama/issues).
 //!
 //! 👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commcercial purposes.
-//! Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo/subscriptions).
+//! Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo).
 //! It helps make the development cycle to remain sustainable, and is beneficial to you as well.
 //! As part of your benefits we are also available to assist you with migrations between breaking releases.
 //! For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf.
@@ -187,7 +189,7 @@
 //!
 //! Rama provides an [`HttpClient`](https://ramaproxy.org/docs/rama/http/client/struct.HttpClient.html) which sends your _Http_ `Request` over the network and returns the `Response` if it receives and read one or an `Error` otherwise. Combined with [the many Layers (middleware)](https://ramaproxy.org/docs/rama/http/layer/index.html) that `Rama` provides and perhaps also some developed by you it is possible to create a powerful _Http_ client suited to your needs.
 //!
-//! As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramaproxy.org/docs/rama/http/client/trait.HttpClientExt.html) trait in your Rust module to be able to use your _Http_ Client [`Service`][rama-service] stack using a high level API to build and send requests with ease.
+//! As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramaproxy.org/docs/rama/http/service/client/trait.HttpClientExt.html) trait in your Rust module to be able to use your _Http_ Client [`Service`][rama-service] stack using a high level API to build and send requests with ease.
 //!
 //! ### 🧑‍💻 | Http Client Example
 //!
@@ -274,28 +276,41 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-#[cfg(feature = "telemetry")]
-pub mod telemetry;
-
 pub use ::rama_core::{
-    combinators, context, dns, error, graceful, layer, matcher, net, rt, service, Context, Layer,
-    Service,
+    combinators, context, dns, error, graceful, layer, matcher, rt, service, username, Context,
+    Layer, Service,
 };
 
-pub mod stream;
+#[cfg(feature = "tcp")]
+pub use ::rama_tcp as tcp;
 
-pub mod tcp;
+#[cfg(feature = "telemetry")]
+pub use ::rama_core::telemetry;
 
 #[cfg(feature = "tls")]
-pub mod tls;
+pub use ::rama_tls as tls;
 
+#[cfg(feature = "net")]
+pub use ::rama_net as net;
+
+#[cfg(feature = "http")]
 pub mod http;
 
-pub mod proxy;
-pub mod ua;
+#[cfg(any(feature = "proxy", feature = "haproxy"))]
+pub mod proxy {
+    //! rama proxy support
+
+    #[cfg(feature = "proxy")]
+    pub use ::rama_proxy::*;
+
+    #[cfg(feature = "haproxy")]
+    pub use ::rama_haproxy as haproxy;
+}
+
+#[cfg(feature = "ua")]
+pub use ::rama_ua as ua;
 
 #[cfg(feature = "cli")]
 pub mod cli;
 
-#[macro_use]
-pub mod utils;
+pub use ::rama_utils as utils;

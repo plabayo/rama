@@ -30,14 +30,13 @@
 //!
 //! [`rama`]: crate
 //!
-//!
 //! ## State Wraps
 //!
 //! [`rama`] was built from the ground up to operate on and between different layers of the network stack.
 //! This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
 //!
-//! When creating a [`TcpListener`] with state you are essentially creating and injecting state, which will remain
-//! as "read-only" for the enire life cycle of that [`TcpListener`] and to be made available for every incoming _tcp_ connection,
+//! When creating a `TcpListener` with state you are essentially creating and injecting state, which will remain
+//! as "read-only" for the enire life cycle of that `TcpListener` and to be made available for every incoming _tcp_ connection,
 //! as well as the application requests (Http requests). This is great for stuff that is okay to share, but it is not desired
 //! for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus
 //! you do not wish to keep a global cache for this, as it would either be shared or get overly complicated to ensure
@@ -57,8 +56,6 @@
 //! state from within a middleware. E.g. in case your middleware expects a data source for some specific data type,
 //! it is of no use to have that middleware compile without knowing for sure that data source is made available
 //! to that middleware.
-//!
-//! [`TcpListener`]: crate::tcp::server::TcpListener
 //!
 //! # Example
 //!
@@ -118,7 +115,7 @@ use crate::{dns::Dns, rt::Executor};
 use std::{fmt, future::Future, sync::Arc};
 use tokio::task::JoinHandle;
 
-pub use rama_macros::AsRef;
+pub use ::rama_macros::AsRef;
 
 mod extensions;
 #[doc(inline)]

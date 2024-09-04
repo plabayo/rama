@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn assert_send() {
-        use crate::utils::test_helpers::*;
+        use rama_utils::test_helpers::*;
 
         assert_send::<AddSvc>();
         assert_send::<MulSvc>();
@@ -229,7 +229,7 @@ mod tests {
 
     #[test]
     fn assert_sync() {
-        use crate::utils::test_helpers::*;
+        use rama_utils::test_helpers::*;
 
         assert_sync::<AddSvc>();
         assert_sync::<MulSvc>();

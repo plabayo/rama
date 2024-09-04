@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_service_fs
+//! cargo run --example http_service_fs --features=http-full
 //! ```
 //!
 //! # Expected output

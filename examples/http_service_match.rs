@@ -4,7 +4,7 @@
 //! the [`http_web_service_dir_and_api`] example.
 //!
 //! ```sh
-//! cargo run --example http_service_match
+//! cargo run --example http_service_match --features=http-full
 //! ```
 //!
 //! # Expected output
@@ -33,8 +33,8 @@ use rama::{
     Layer,
 };
 
-use serde_json::json;
 /// Everything else we need is provided by the standard library, community crates or tokio.
+use serde_json::json;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;

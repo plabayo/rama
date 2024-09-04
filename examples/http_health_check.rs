@@ -9,7 +9,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_health_check
+//! cargo run --example http_health_check --features=http-full
 //! ```
 //!
 //! # Expected output

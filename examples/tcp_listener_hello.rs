@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tcp_listener_hello
+//! cargo run --example tcp_listener_hello --features=tcp
 //! ```
 //!
 //! # Expected output
@@ -16,12 +16,11 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with the source code of this example.
 
-use std::convert::Infallible;
-
 use rama::{
-    stream::{Socket, Stream},
+    net::stream::{Socket, Stream},
     tcp::server::TcpListener,
 };
+use std::convert::Infallible;
 use tokio::io::AsyncWriteExt;
 
 const SRC: &str = include_str!("./tcp_listener_hello.rs");

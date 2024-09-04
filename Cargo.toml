@@ -1,5 +1,24 @@
 [workspace]
-members = [".", "fuzz", "rama-cli", "rama-core", "rama-macros"]
+members = [
+    ".",
+    "fuzz",
+    "rama-cli",
+    "rama-core",
+    "rama-error",
+    "rama-haproxy",
+    "rama-http",
+    "rama-http-backend",
+    "rama-http-types",
+    "rama-macros",
+    "rama-net",
+    "rama-proxy",
+    "rama-socks5",
+    "rama-tcp",
+    "rama-tls",
+    "rama-ua",
+    "rama-udp",
+    "rama-utils",
+]
 
 [workspace.package]
 version = "0.2.0-alpha.2"
@@ -51,11 +70,11 @@ nom = "7.1.3"
 opentelemetry-otlp = { version = "0.17", features = [ "tokio" ] }
 opentelemetry_sdk = { version = "0.24", default-features = false, features = [
     "trace",
+    "rt-tokio",
 ] }
 opentelemetry-semantic-conventions = "0.16"
 quickcheck = "1.0"
 quote = "1.0"
-ratatui = "0.26"
 rcgen = "0.13.0"
 regex = "1.10.3"
 rustls = { version = "0.23", default-features = false, features = [
@@ -118,95 +137,71 @@ rust-version = { workspace = true }
 
 [features]
 default = []
-telemetry = [
-    "dep:opentelemetry",
-    "dep:opentelemetry_sdk",
-    "dep:opentelemetry-semantic-conventions",
+full = [
+    "telemetry",
+    "compression",
+    "rustls",
+    "boring",
+    "cli",
+    "tcp",
+    "http-full",
+    "proxy-full",
 ]
-compression = ["dep:async-compression"]
-rustls-ring = ["tokio-rustls/ring", "rustls/ring"]
-tls = ["dep:rcgen"]
-rustls = ["tls", "dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls"]
-boring = ["tls", "dep:boring", "dep:tokio-boring", "nom"]
-cli = []
+telemetry = ["rama-core/telemetry", "rama-net/telemetry", "rama-http/telemetry"]
+compression = ["http", "rama-http/compression"]
+tls = ["net", "dep:rama-tls", "rama-net/tls", "rama-http/tls", "rama-http-backend/tls"]
+rustls = ["tls", "rama-tls/rustls", "rama-net/rustls", "rama-http-backend/rustls"]
+rustls-ring = ["tls", "rama-tls/rustls-ring"]
+boring = ["tls", "rama-tls/boring", "rama-net/boring", "rama-http-backend/boring"]
+cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
+net = ["dep:rama-net"]
+tcp = ["net", "dep:rama-tcp"]
+http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-tcp/http"]
+http-full = ["http", "tcp", "dep:rama-http-backend"]
+proxy = ["dep:rama-proxy"]
+haproxy = ["dep:rama-haproxy"]
+ua = ["dep:rama-ua"]
+proxy-memory-db = ["proxy", "rama-proxy/memory-db", "rama-net/venndb"]
+proxy-live-update = ["proxy", "rama-proxy/live-update"]
+proxy-csv = ["proxy", "rama-proxy/csv"]
+proxy-full = ["proxy-memory-db", "proxy-live-update", "proxy-csv", "haproxy"]
 
 [build-dependencies]
 rustversion = { workspace = true }
 
 [dependencies]
-arc-swap = { workspace = true }
-async-compression = { workspace = true, features = [
-    "tokio",
-    "brotli",
-    "zlib",
-    "gzip",
-    "zstd",
-], optional = true }
-base64 = { workspace = true }
-bitflags = { workspace = true }
-boring = { workspace = true, optional = true }
-bytes = { workspace = true }
-const_format = { workspace = true }
-futures-core = { workspace = true }
-futures-lite = { workspace = true }
-h2 = { workspace = true }
-headers = { workspace = true }
-hex = { workspace = true }
-http = { workspace = true }
-http-body = { workspace = true }
-http-body-util = { workspace = true }
-http-range-header = { workspace = true }
-httpdate = { workspace = true }
-hyper = { workspace = true, features = ["http1", "http2", "server", "client"] }
-hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
-ipnet = { workspace = true }
-iri-string = { workspace = true }
-mime = { workspace = true }
-mime_guess = { workspace = true }
-nom = { workspace = true, optional = true }
-opentelemetry = { workspace = true, optional = true }
-opentelemetry-semantic-conventions = { workspace = true, optional = true }
-opentelemetry_sdk = { workspace = true, optional = true }
-parking_lot = { workspace = true }
-paste = { workspace = true }
-percent-encoding = { workspace = true }
-pin-project-lite = { workspace = true }
+base64 = { workspace = true, optional = true }
+bytes = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
 rama-core = { version = "0.2.0-alpha.2", path = "rama-core" }
-rcgen = { workspace = true, optional = true }
-regex = { workspace = true }
-rustls = { workspace = true, optional = true }
-rustls-native-certs = { workspace = true, optional = true }
-rustls-pemfile = { workspace = true, optional = true }
-rustls-pki-types = { workspace = true, optional = true }
-serde = { workspace = true, features = ["derive"] }
-serde_html_form = { workspace = true }
-serde_json = { workspace = true }
-sync_wrapper = { workspace = true }
-tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
-tokio-boring = { workspace = true, optional = true }
-tokio-rustls = { workspace = true, optional = true }
-tokio-util = { workspace = true }
-tracing = { workspace = true }
-unicode-normalization = { workspace = true }
-uuid = { workspace = true, features = ["v4"] }
-venndb = { workspace = true }
-webpki-roots = { workspace = true, optional = true }
+rama-haproxy = { version = "0.2.0-alpha.2", path = "rama-haproxy", optional = true }
+rama-http = { version = "0.2.0-alpha.2", path = "rama-http", optional = true }
+rama-http-backend = { version = "0.2.0-alpha.2", path = "rama-http-backend", optional = true }
+rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
+rama-net = { version = "0.2.0-alpha.2", path = "rama-net", optional = true }
+rama-proxy = { version = "0.2.0-alpha.2", path = "rama-proxy", optional = true }
+rama-tcp = { version = "0.2.0-alpha.2", path = "rama-tcp", optional = true }
+rama-tls = { version = "0.2.0-alpha.2", path = "rama-tls", optional = true }
+rama-ua = { version = "0.2.0-alpha.2", path = "rama-ua", optional = true }
+rama-utils = { version = "0.2.0-alpha.2", path = "rama-utils" }
+serde_html_form = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
+tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
-brotli = { workspace = true }
+bytes = { workspace = true }
 divan = { workspace = true }
 escargot = { workspace = true }
-flate2 = { workspace = true }
 itertools = { workspace = true }
 opentelemetry-otlp = { workspace = true }
-opentelemetry_sdk = { workspace = true, features = [ "rt-tokio"] }
-rustversion = { workspace = true }
-tempfile = { workspace = true }
-tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
+opentelemetry_sdk = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-zstd = { workspace = true }
 
 [profile.dev.package."*"]
 opt-level = 3
@@ -224,29 +219,89 @@ name = "ua_parse"
 harness = false
 
 [[example]]
+name = "http_conn_state"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_connect_proxy"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_form"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_health_check"
+required-features = ["http-full"]
+
+[[example]]
 name = "http_high_level_client"
-required-features = ["compression"]
+required-features = ["compression", "http-full"]
+
+[[example]]
+name = "http_k8s_health"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_key_value_store"
+required-features = ["compression", "http-full"]
+
+[[example]]
+name = "http_listener_hello"
+required-features = ["http-full"]
 
 [[example]]
 name = "http_mitm_proxy"
-required-features = ["rustls"]
+required-features = ["http-full", "rustls"]
+
+[[example]]
+name = "http_rate_limit"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_service_fs"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_service_hello"
+required-features = ["compression", "http-full"]
+
+[[example]]
+name = "http_service_match"
+required-features = ["http-full"]
 
 [[example]]
 name = "http_telemetry"
-required-features = ["telemetry"]
+required-features = ["http-full", "telemetry"]
+
+[[example]]
+name = "http_user_agent_classifier"
+required-features = ["http-full"]
+
+[[example]]
+name = "http_web_service_dir_and_api"
+required-features = ["compression", "http-full"]
 
 [[example]]
 name = "https_connect_proxy"
-required-features = ["rustls"]
+required-features = ["http-full", "rustls"]
 
 [[example]]
 name = "mtls_tunnel_and_service"
-required-features = ["rustls"]
+required-features = ["http-full", "rustls"]
+
+[[example]]
+name = "tcp_listener_hello"
+required-features = ["tcp"]
+
+[[example]]
+name = "tcp_listener_layers"
+required-features = ["tcp"]
 
 [[example]]
 name = "tls_boring_termination"
-required-features = ["boring"]
+required-features = ["boring", "haproxy", "http-full"]
 
 [[example]]
 name = "tls_termination"
-required-features = ["rustls"]
+required-features = ["haproxy", "http-full", "rustls"]

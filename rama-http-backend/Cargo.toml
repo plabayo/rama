@@ -1,0 +1,41 @@
+[package]
+name = "rama-http-backend"
+description = "error types and utilities for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+tls = ["dep:rama-tls", "rama-net/tls"]
+rustls = ["tls", "rama-net/rustls", "rama-tls/rustls"]
+boring = ["tls", "rama-net/boring", "rama-tls/boring"]
+rustls-ring = ["rustls", "rama-tls/rustls-ring"]
+
+[dependencies]
+h2 = { workspace = true }
+hyper = { workspace = true, features = ["http1", "http2", "server", "client"] }
+hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
+pin-project-lite = { workspace = true }
+rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.2", path = "../rama-net", features = ["http"] }
+rama-tcp = { version = "0.2.0-alpha.2", path = "../rama-tcp", features = ["http"] }
+rama-tls = { version = "0.2.0-alpha.2", path = "../rama-tls", optional = true }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
+tokio = { workspace = true, features = ["macros"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

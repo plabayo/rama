@@ -5,8 +5,8 @@
 use std::fmt;
 
 use crate::error::BoxError;
-use crate::utils::macros::define_inner_service_accessors;
 use crate::{Context, Service};
+use rama_utils::macros::define_inner_service_accessors;
 
 pub mod policy;
 use policy::UnlimitedPolicy;
