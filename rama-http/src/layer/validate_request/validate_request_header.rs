@@ -1,7 +1,7 @@
 use super::{AcceptHeader, BoxValidateRequestFn, ValidateRequest};
-use rama_utils::macros::define_inner_service_accessors;
 use crate::{Request, Response};
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// Layer that applies [`ValidateRequestHeader`] which validates all requests.
@@ -185,8 +185,8 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::{header, Body, StatusCode};
     use crate::{error::BoxError, service::service_fn, Layer};
+    use crate::{header, Body, StatusCode};
 
     #[tokio::test]
     async fn valid_accept_header() {

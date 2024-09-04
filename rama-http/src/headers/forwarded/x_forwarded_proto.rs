@@ -1,6 +1,6 @@
 use crate::headers::{self, Header};
 use crate::{HeaderName, HeaderValue};
-use rama_core::net::forwarded::{ForwardedElement, ForwardedProtocol};
+use rama_net::forwarded::{ForwardedElement, ForwardedProtocol};
 
 /// The X-Forwarded-Proto (XFP) header is a de-facto standard header for
 /// identifying the protocol (HTTP or HTTPS) that a client used to connect to your proxy or load balancer.

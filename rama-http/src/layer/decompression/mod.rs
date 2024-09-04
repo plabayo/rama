@@ -119,8 +119,8 @@ mod tests {
     use crate::dep::http_body_util::BodyExt;
     use crate::layer::compression::Compression;
     use crate::{Body, HeaderMap, HeaderName, Request, Response};
-    use crate::service::service_fn;
-    use crate::{Context, Service};
+    use rama_core::service::service_fn;
+    use rama_core::{Context, Service};
 
     use flate2::write::GzEncoder;
 

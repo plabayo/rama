@@ -4,13 +4,15 @@
 //! as well as always a User-Agent for all versions.
 
 use crate::{
-    RequestContext,
-    header::{self, RAMA_ID_HEADER_VALUE, HOST, USER_AGENT},
+    header::{self, HOST, RAMA_ID_HEADER_VALUE, USER_AGENT},
     headers::HeaderMapExt,
-    Request, Response,
+    Request, RequestContext, Response,
+};
+use rama_core::{
+    error::{BoxError, ErrorContext},
+    Context, Layer, Service,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use rama_core::{Context, Layer, Service, error::{BoxError, ErrorContext}};
 use std::fmt;
 
 /// Layer that applies [`AddRequiredRequestHeaders`] which adds a request header.
@@ -149,8 +151,8 @@ where
 mod test {
     use super::*;
     use crate::{Body, Request};
-    use crate::service::service_fn;
-    use crate::{Context, Layer, Service};
+    use rama_core::service::service_fn;
+    use rama_core::{Context, Layer, Service};
     use std::convert::Infallible;
 
     #[tokio::test]

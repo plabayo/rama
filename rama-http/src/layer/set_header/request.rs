@@ -84,10 +84,10 @@ use super::{BoxMakeHeaderValueFn, InsertHeaderMode, MakeHeaderValue};
 use crate::{
     header::HeaderName,
     headers::{Header, HeaderExt},
-    Request, Response, HeaderValue
+    HeaderValue, Request, Response,
 };
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// Layer that applies [`SetRequestHeader`] which adds a request header.

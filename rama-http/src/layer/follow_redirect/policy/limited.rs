@@ -1,5 +1,5 @@
-use rama_core::Context;
 use super::{Action, Attempt, Policy};
+use rama_core::Context;
 
 /// A redirection [`Policy`] that limits the number of successive redirections.
 #[derive(Debug)]

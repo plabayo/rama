@@ -77,7 +77,7 @@ mod tests {
 
     use crate::service::web::WebService;
     use crate::{Body, Request, StatusCode};
-    use crate::Service;
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_host_from_request() {

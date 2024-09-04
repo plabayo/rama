@@ -1,6 +1,6 @@
 //! Http OpenTelemetry [`Layer`] Support for Rama.
 //!
-//! [`Layer`]: crate::Layer
+//! [`Layer`]: rama_core::Layer
 
 use crate::stream::SocketInfo;
 use rama_core::telemetry::opentelemetry::semantic_conventions::trace::{

@@ -2,10 +2,9 @@ use rama_core::{context::Extensions, Context};
 use std::net::SocketAddr;
 
 #[cfg(feature = "http")]
-use rama_http_types::Request;
-#[cfg(feature = "http")]
 use crate::stream::SocketInfo;
-
+#[cfg(feature = "http")]
+use rama_http_types::Request;
 
 #[derive(Debug, Clone)]
 /// Matcher based on the [`SocketAddr`] of the peer.

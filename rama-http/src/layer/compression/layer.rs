@@ -119,8 +119,8 @@ mod tests {
 
     use crate::dep::http_body_util::BodyExt;
     use crate::{header::ACCEPT_ENCODING, Body, Request, Response};
-    use crate::service::service_fn;
-    use crate::{Context, Service};
+    use rama_core::service::service_fn;
+    use rama_core::{Context, Service};
     use std::convert::Infallible;
     use tokio::fs::File;
     use tokio_util::io::ReaderStream;
@@ -137,7 +137,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accept_encoding_configuration_works() -> Result<(), crate::error::BoxError> {
+    async fn accept_encoding_configuration_works() -> Result<(), rama_core::error::BoxError> {
         let deflate_only_layer = CompressionLayer::new()
             .quality(CompressionLevel::Best)
             .br(false)

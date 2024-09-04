@@ -1,7 +1,7 @@
 use crate::headers::{self, Header};
 use crate::{HeaderName, HeaderValue};
 use rama_core::error::{ErrorContext, OpaqueError};
-use rama_core::net::forwarded::{ForwardedElement, ForwardedProtocol, ForwardedVersion, NodeId};
+use rama_net::forwarded::{ForwardedElement, ForwardedProtocol, ForwardedVersion, NodeId};
 
 /// The Via general header is added by proxies, both forward and reverse.
 ///

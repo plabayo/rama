@@ -101,10 +101,10 @@
 
 pub mod policy;
 
-use rama_utils::macros::define_inner_service_accessors;
 use crate::{dep::http_body::Body, header::LOCATION, Method, Request, Response, StatusCode, Uri};
-use rama_core::{Context, Layer, Service};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
+use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, future::Future};
 
 use self::policy::{Action, Attempt, Policy, Standard};
@@ -372,9 +372,9 @@ fn resolve_uri(relative: &str, base: &Uri) -> Option<Uri> {
 #[cfg(test)]
 mod tests {
     use super::{policy::*, *};
-    use crate::{header::LOCATION, Body};
     use crate::service::service_fn;
-    use crate::Layer;
+    use crate::{header::LOCATION, Body};
+    use rama_core::Layer;
     use std::convert::Infallible;
 
     #[tokio::test]

@@ -94,7 +94,7 @@ pub mod authorization {
     pub use headers::authorization::{Authorization, Basic, Bearer};
 }
 
-pub use rama_http_types::HeaderExt;
+pub use rama_http_types::headers::HeaderExt;
 
 pub(crate) mod util;
 pub use util::quality_value::{Quality, QualityValue};

@@ -1,9 +1,10 @@
 use super::BytesRejection;
 use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::FromRequest;
+use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use crate::Request;
-use rama_utils::macros::{composite_http_rejection, define_http_rejection, impl_deref};
 use rama_core::Context;
+use rama_utils::macros::impl_deref;
 
 /// Extractor to get the response body, collected as [`String`].
 #[derive(Debug, Clone)]
@@ -47,10 +48,8 @@ where
     type Rejection = TextRejection;
 
     async fn from_request(_ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
-        if !crate::service::web::extract::has_any_content_type(
-            req.headers(),
-            &[&mime::TEXT_PLAIN],
-        ) {
+        if !crate::service::web::extract::has_any_content_type(req.headers(), &[&mime::TEXT_PLAIN])
+        {
             return Err(InvalidTextContentType.into());
         }
 

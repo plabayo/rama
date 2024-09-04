@@ -24,7 +24,7 @@ impl RetryBody {
 
 impl crate::dep::http_body::Body for RetryBody {
     type Data = Bytes;
-    type Error = crate::error::BoxError;
+    type Error = rama_core::error::BoxError;
 
     fn poll_frame(
         mut self: std::pin::Pin<&mut Self>,

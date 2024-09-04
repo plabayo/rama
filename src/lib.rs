@@ -281,7 +281,8 @@ pub use ::rama_core::{
     Layer, Service,
 };
 
-pub mod tcp;
+#[cfg(feature = "tcp")]
+pub use ::rama_tcp as tcp;
 
 #[cfg(feature = "telemetry")]
 pub use ::rama_core::telemetry;
@@ -289,10 +290,11 @@ pub use ::rama_core::telemetry;
 #[cfg(feature = "tls")]
 pub use ::rama_tls as tls;
 
-#[cfg(feature = "http")]
-pub use ::rama_http as http;
+#[cfg(feature = "net")]
+pub use ::rama_net as net;
 
-// TODO: integrate http-backend in here somehow...
+#[cfg(feature = "http")]
+pub mod http;
 
 #[cfg(feature = "proxy")]
 pub use ::rama_proxy as proxy;

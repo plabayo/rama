@@ -1,8 +1,5 @@
-use rama_core::{
-    context::Extensions,
-    Context,
-};
 use crate::{Request, RequestContext};
+use rama_core::{context::Extensions, Context};
 use rama_net::address::{Domain, Host};
 
 #[derive(Debug, Clone)]
@@ -28,7 +25,7 @@ impl DomainMatcher {
     }
 }
 
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for DomainMatcher {
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainMatcher {
     fn matches(
         &self,
         ext: Option<&mut Extensions>,

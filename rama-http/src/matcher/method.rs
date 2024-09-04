@@ -1,8 +1,5 @@
-use rama_core::{
-    context::Extensions,
-    Context,
-};
 use crate::{Method, Request};
+use rama_core::{context::Extensions, Context};
 use std::{
     fmt,
     fmt::{Debug, Formatter},
@@ -51,7 +48,7 @@ impl MethodMatcher {
     }
 }
 
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for MethodMatcher {
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for MethodMatcher {
     /// returns true on a match, false otherwise
     fn matches(
         &self,

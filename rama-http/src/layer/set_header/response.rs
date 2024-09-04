@@ -97,8 +97,8 @@ use crate::{
     headers::{Header, HeaderExt},
     HeaderValue, Request, Response,
 };
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// Layer that applies [`SetResponseHeader`] which adds a response header.
@@ -366,8 +366,8 @@ where
 mod tests {
     use super::*;
 
-    use crate::{header, Body, HeaderValue, Request, Response};
     use crate::service::service_fn;
+    use crate::{header, Body, HeaderValue, Request, Response};
     use std::convert::Infallible;
 
     #[tokio::test]

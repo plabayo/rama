@@ -101,10 +101,10 @@ mod tests {
         ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_RANGE, CONTENT_TYPE, RANGE,
     };
     use crate::{Body, HeaderValue, Request, Response};
-    use crate::service::service_fn;
-    use crate::{Context, Service};
     use async_compression::tokio::write::{BrotliDecoder, BrotliEncoder};
     use flate2::read::GzDecoder;
+    use rama_core::service::service_fn;
+    use rama_core::{Context, Service};
     use std::convert::Infallible;
     use std::io::Read;
     use std::sync::{Arc, RwLock};

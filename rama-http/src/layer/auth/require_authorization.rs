@@ -263,11 +263,11 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::error::BoxError;
     use crate::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::{header, Body};
-    use crate::service::service_fn;
-    use crate::{Context, Layer, Service};
+    use rama_core::error::BoxError;
+    use rama_core::service::service_fn;
+    use rama_core::{Context, Layer, Service};
 
     #[tokio::test]
     async fn valid_basic_token() {

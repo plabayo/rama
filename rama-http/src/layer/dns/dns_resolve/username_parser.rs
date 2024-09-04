@@ -1,18 +1,18 @@
+use super::DnsResolveMode;
+use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 use rama_core::{
     context::Extensions,
     error::{error, ErrorContext, OpaqueError},
 };
-use super::DnsResolveMode;
 use rama_utils::macros::str::eq_ignore_ascii_case;
-use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
 /// A parser which parses [`DnsResolveMode`]s from username labels
 /// and adds it to the [`Context`]'s [`Extensions`].
 ///
-/// [`Context`]: crate::Context
-/// [`Extensions`]: crate::context::Extensions
+/// [`Context`]: rama_core::Context
+/// [`Extensions`]: rama_core::context::Extensions
 pub struct DnsResolveModeUsernameParser {
     key_found: bool,
     mode: DnsResolveMode,

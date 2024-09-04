@@ -37,8 +37,8 @@
 use std::fmt;
 
 use crate::{Request, Response, StatusCode};
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 
 /// Layer that applies [`SetStatus`] which overrides the status codes.
 #[derive(Debug, Clone)]

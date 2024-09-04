@@ -79,8 +79,8 @@ impl From<NonEmptyString> for ProxyID {
 /// [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
 /// [`Request`]: crate::http::Request
 /// [`ProxyAuthLayer`]: crate::http::layer::proxy_auth::ProxyAuthLayer
-/// [`Context`]: crate::Context
-/// [`Extensions`]: crate::context::Extensions
+/// [`Context`]: rama_core::Context
+/// [`Extensions`]: rama_core::context::Extensions
 pub struct ProxyFilter {
     /// The ID of the proxy to select.
     pub id: Option<NonEmptyString>,

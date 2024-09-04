@@ -1,5 +1,5 @@
 use super::HttpProxyConnector;
-use crate::Layer;
+use rama_core::Layer;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which wraps the given service with a [`HttpProxyConnector`].

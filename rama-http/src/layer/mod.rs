@@ -13,8 +13,8 @@
 //! This is done to allow the layer to be used as a service, and to allow it to be
 //! composed with other layers.
 //!
-//! [`Layer`]: crate::Layer
-//! [`Service`]: crate::Service
+//! [`Layer`]: rama_core::Layer
+//! [`Service`]: rama_core::Service
 
 pub mod auth;
 pub mod body_limit;
@@ -24,6 +24,7 @@ pub mod cors;
 pub mod dns;
 pub mod error_handling;
 pub mod follow_redirect;
+pub mod forwarded;
 pub mod header_config;
 pub mod header_option_value;
 pub mod map_request_body;
@@ -42,10 +43,7 @@ pub mod timeout;
 pub mod trace;
 pub mod traffic_writer;
 pub mod ua;
-pub mod upgrade;
 pub mod validate_request;
-
-pub use ::rama_http_types::layer::forwarded;
 
 #[cfg(feature = "telemetry")]
 pub mod opentelemetry;

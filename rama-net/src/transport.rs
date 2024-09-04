@@ -2,9 +2,10 @@
 //!
 //! See [`TransportContext`] for the centerpiece of this module.
 
+use crate::http::RequestContext;
 use crate::{address::Authority, Protocol};
-use rama_core::Context;
-use rama_http_types::Version;
+use rama_core::{error::OpaqueError, Context};
+use rama_http_types::{dep::http::request::Parts as HttpParts, Request, Version};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context as relevant to the transport layer,
@@ -48,4 +49,36 @@ pub trait TryRefIntoTransportContext<State> {
         &self,
         ctx: &Context<State>,
     ) -> Result<TransportContext, Self::Error>;
+}
+
+impl<State, Body> TryFrom<(&Context<State>, &Request<Body>)> for TransportContext {
+    type Error = OpaqueError;
+
+    fn try_from(
+        (ctx, req): (&Context<State>, &Request<Body>),
+    ) -> Result<TransportContext, Self::Error> {
+        Ok(match ctx.get::<RequestContext>() {
+            Some(req_ctx) => req_ctx.into(),
+            None => {
+                let req_ctx = RequestContext::try_from((ctx, req))?;
+                req_ctx.into()
+            }
+        })
+    }
+}
+
+impl<State> TryFrom<(&Context<State>, &HttpParts)> for TransportContext {
+    type Error = OpaqueError;
+
+    fn try_from(
+        (ctx, parts): (&Context<State>, &HttpParts),
+    ) -> Result<TransportContext, Self::Error> {
+        Ok(match ctx.get::<RequestContext>() {
+            Some(req_ctx) => req_ctx.into(),
+            None => {
+                let req_ctx = RequestContext::try_from((ctx, parts))?;
+                req_ctx.into()
+            }
+        })
+    }
 }

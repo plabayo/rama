@@ -1,7 +1,7 @@
 //! Extract a header config from a request or response and insert it into the [`Extensions`] of its [`Context`].
 //!
-//! [`Extensions`]: crate::context::Extensions
-//! [`Context`]: crate::Context
+//! [`Extensions`]: rama_core::context::Extensions
+//! [`Context`]: rama_core::Context
 //!
 //! # Example
 //!
@@ -43,17 +43,14 @@
 //! ```
 
 use crate::{header::AsHeaderName, HeaderName};
-use rama_utils::macros::define_inner_service_accessors;
-use serde::de::DeserializeOwned;
-use std::{fmt, marker::PhantomData};
-use rama_core::{
-    error::BoxError,
-    Context, Layer, Service,
-};
 use crate::{
     utils::{HeaderValueErr, HeaderValueGetter},
     Request,
 };
+use rama_core::{error::BoxError, Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
+use serde::de::DeserializeOwned;
+use std::{fmt, marker::PhantomData};
 
 /// Extract a header config from a request or response without consuming it.
 pub fn extract_header_config<H, T, G>(request: &G, header_name: H) -> Result<T, HeaderValueErr>
@@ -71,7 +68,7 @@ where
 /// A [`Service`] which extracts a header config from a request or response
 /// and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: crate::context::Extensions
+/// [`Extensions`]: rama_core::context::Extensions
 pub struct HeaderConfigService<T, S> {
     inner: S,
     header_name: HeaderName,
@@ -157,9 +154,7 @@ where
         let config = match extract_header_config::<_, T, _>(&request, &self.header_name) {
             Ok(config) => config,
             Err(err) => {
-                if self.optional
-                    && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_))
-                {
+                if self.optional && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_)) {
                     tracing::debug!(error = %err, "failed to extract header config");
                     return self.inner.serve(ctx, request).await.map_err(Into::into);
                 } else {
@@ -175,7 +170,7 @@ where
 /// Layer which extracts a header config for the given HeaderName
 /// from a request or response and inserts it into the [`Extensions`] of that object.
 ///
-/// [`Extensions`]: crate::context::Extensions
+/// [`Extensions`]: rama_core::context::Extensions
 pub struct HeaderConfigLayer<T> {
     header_name: HeaderName,
     optional: bool,

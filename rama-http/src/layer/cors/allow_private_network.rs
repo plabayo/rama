@@ -113,14 +113,14 @@ impl Default for AllowPrivateNetworkInner {
 mod tests {
     use super::AllowPrivateNetwork;
 
-    use crate::error::BoxError;
     use crate::dep::http::{
         header::ORIGIN, request::Parts, HeaderName, HeaderValue, Request, Response,
     };
     use crate::layer::cors::CorsLayer;
     use crate::Body;
-    use crate::service::service_fn;
-    use crate::{Context, Layer, Service};
+    use rama_core::error::BoxError;
+    use rama_core::service::service_fn;
+    use rama_core::{Context, Layer, Service};
 
     static REQUEST_PRIVATE_NETWORK: HeaderName =
         HeaderName::from_static("access-control-request-private-network");

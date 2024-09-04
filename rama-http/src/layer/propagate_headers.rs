@@ -36,8 +36,8 @@
 //! ```
 
 use crate::{header::HeaderName, Request, Response};
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 
 /// Layer that applies [`PropagateHeader`] which propagates headers from requests to responses.
 ///

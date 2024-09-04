@@ -9,8 +9,8 @@ use crate::layer::classify::{
     ServerErrorsAsFailures, SharedClassifier,
 };
 use crate::{Request, Response};
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, time::Instant};
 
 /// Middleware that adds high level [tracing] to a [`Service`].

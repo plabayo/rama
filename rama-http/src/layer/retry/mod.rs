@@ -1,11 +1,11 @@
 //! Middleware for retrying "failed" requests.
 
-use rama_core::error::BoxError;
 use crate::dep::http_body::Body as HttpBody;
 use crate::dep::http_body_util::BodyExt;
 use crate::Request;
-use rama_utils::macros::define_inner_service_accessors;
+use rama_core::error::BoxError;
 use rama_core::{Context, Service};
+use rama_utils::macros::define_inner_service_accessors;
 
 mod layer;
 mod policy;
@@ -233,7 +233,7 @@ mod test {
                 let txt = req.try_into_string().await.unwrap();
                 match txt.as_str() {
                     "internal" => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-                    "error" => Err(crate::error::BoxError::from("custom error")),
+                    "error" => Err(rama_core::error::BoxError::from("custom error")),
                     _ => Ok(txt.into_response()),
                 }
             },

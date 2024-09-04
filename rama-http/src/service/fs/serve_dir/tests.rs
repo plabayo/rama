@@ -5,11 +5,11 @@ use crate::service::fs::{ServeDir, ServeFile};
 use crate::Body;
 use crate::{header, Method, Response};
 use crate::{Request, StatusCode};
-use crate::service::service_fn;
-use crate::{Context, Service};
 use brotli::BrotliDecompress;
 use bytes::Bytes;
 use flate2::bufread::{DeflateDecoder, GzDecoder};
+use rama_core::service::service_fn;
+use rama_core::{Context, Service};
 use std::convert::Infallible;
 use std::io::Read;
 

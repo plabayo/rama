@@ -3,7 +3,7 @@ use crate::headers::Header;
 use crate::{HeaderName, HeaderValue};
 use paste::paste;
 use rama_core::error::{ErrorContext, OpaqueError};
-use rama_core::net::forwarded::{ForwardedElement, NodeId};
+use rama_net::forwarded::{ForwardedElement, NodeId};
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};
 

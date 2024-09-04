@@ -11,8 +11,8 @@ use crate::{
 /// A parser which parses [`ProxyFilter`]s from username labels
 /// and adds it to the [`Context`]'s [`Extensions`].
 ///
-/// [`Context`]: crate::Context
-/// [`Extensions`]: crate::context::Extensions
+/// [`Context`]: rama_core::Context
+/// [`Extensions`]: rama_core::context::Extensions
 pub struct ProxyFilterUsernameParser {
     key: Option<ProxyFilterKey>,
     proxy_filter: ProxyFilter,

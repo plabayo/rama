@@ -1,7 +1,7 @@
 use crate::headers::{self, Header};
 use crate::{HeaderName, HeaderValue};
-use rama_core::net::address::Host;
-use rama_core::net::forwarded::{ForwardedAuthority, ForwardedElement};
+use rama_net::address::Host;
+use rama_net::forwarded::{ForwardedAuthority, ForwardedElement};
 
 /// The X-Forwarded-Host (XFH) header is a de-facto standard header for identifying the
 /// original host requested by the client in the Host HTTP request header.

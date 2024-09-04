@@ -12,6 +12,7 @@ rust-version = { workspace = true }
 
 [dependencies]
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rama-tcp = { version = "0.2.0-alpha.2", path = "../rama-tcp", features = ["http"] }
 
 [dev-dependencies]
 

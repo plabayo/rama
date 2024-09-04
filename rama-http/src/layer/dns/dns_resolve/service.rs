@@ -1,11 +1,8 @@
-use std::fmt;
 use super::DnsResolveMode;
-use rama_utils::macros::define_inner_service_accessors;
-use rama_core::{
-    error::OpaqueError,
-    Context, Service,
-};
 use crate::{HeaderName, Request};
+use rama_core::{error::OpaqueError, Context, Service};
+use rama_utils::macros::define_inner_service_accessors;
+use std::fmt;
 
 /// Service to support configuring the DNS resolve mode.
 ///
@@ -53,7 +50,11 @@ impl<State, Body, S> Service<State, Request<Body>> for DnsResolveModeService<S>
 where
     State: Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    S: Service<State, Request<Body>, Error: Into<crate::error::BoxError> + Send + Sync + 'static>,
+    S: Service<
+        State,
+        Request<Body>,
+        Error: Into<rama_core::error::BoxError> + Send + Sync + 'static,
+    >,
 {
     type Response = S::Response;
     type Error = OpaqueError;

@@ -1,5 +1,5 @@
-pub use rama_core::net::forwarded::Forwarded;
-use rama_core::net::forwarded::ForwardedElement;
+pub use rama_net::forwarded::Forwarded;
+use rama_net::forwarded::ForwardedElement;
 
 mod via;
 #[doc(inline)]

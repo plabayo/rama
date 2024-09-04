@@ -2,9 +2,10 @@ use crate::headers::{
     ForwardHeader, HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
 use crate::Request;
-use rama_core::net::forwarded::ForwardedElement;
-use rama_core::utils::macros::all_the_tuples_no_last_special_case;
-use rama_core::{net::forwarded::Forwarded, Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
+use rama_net::forwarded::Forwarded;
+use rama_net::forwarded::ForwardedElement;
+use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;

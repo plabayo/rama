@@ -5,9 +5,9 @@ use crate::{
     Body, IntoResponse, Request, Response, StatusCode, Uri,
 };
 use rama_core::{
-    service::{service_fn, BoxService, Service},
-    matcher::Matcher,
     context::Extensions,
+    matcher::Matcher,
+    service::{service_fn, BoxService, Service},
     Context,
 };
 use std::{convert::Infallible, fmt, future::Future, marker::PhantomData, sync::Arc};
@@ -332,8 +332,8 @@ pub use __match_service as match_service;
 #[cfg(test)]
 mod test {
     use crate::dep::http_body_util::BodyExt;
-    use crate::matcher::MethodMatcher;
     use crate::Body;
+    use rama_core::MethodMatcher;
 
     use super::*;
 

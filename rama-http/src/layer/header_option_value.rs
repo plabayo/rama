@@ -3,15 +3,12 @@
 //! the header with the given [`HeaderName`] is present
 //! and has a bool-like value.
 
-use rama_utils::macros::define_inner_service_accessors;
+use crate::{utils::HeaderValueGetter, HeaderName, Request};
 use rama_core::{
-    error::{ErrorExt, OpaqueError, BoxError},
+    error::{BoxError, ErrorExt, OpaqueError},
     Context, Layer, Service,
 };
-use crate::{
-    HeaderName,
-    utils::HeaderValueGetter, Request,
-};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, marker::PhantomData};
 
 /// A [`Service`] which stores the [`Default`] value of type `T` in case
@@ -113,9 +110,7 @@ where
                 }
             }
             Err(err) => {
-                if self.optional
-                    && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_))
-                {
+                if self.optional && matches!(err, crate::utils::HeaderValueErr::HeaderMissing(_)) {
                     tracing::debug!(
                         error = %err,
                         header_name = %self.header_name,

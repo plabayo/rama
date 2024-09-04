@@ -82,8 +82,8 @@ pub trait Policy<S, R, E>: Send + Sync + 'static {
     /// information about the number of retries required or to record that a
     /// failure failed after exhausting all retries.
     ///
-    /// [`Service::Response`]: crate::Service::Response
-    /// [`Service::Error`]: crate::Service::Error
+    /// [`Service::Response`]: rama_core::Service::Response
+    /// [`Service::Error`]: rama_core::Service::Error
     fn retry(
         &self,
         ctx: Context<S>,
@@ -159,7 +159,7 @@ where
 
 macro_rules! impl_retry_policy_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+, State, Response, Error> Policy<State, Response, Error> for crate::combinators::$id<$($param),+>
+        impl<$($param),+, State, Response, Error> Policy<State, Response, Error> for rama_core::combinators::$id<$($param),+>
         where
             $($param: Policy<State, Response, Error>),+,
             State: Send + Sync + 'static,
@@ -174,7 +174,7 @@ macro_rules! impl_retry_policy_either {
             ) -> PolicyResult<State, Response, Error> {
                 match self {
                     $(
-                        crate::combinators::$id::$param(policy) => policy.retry(ctx, req, result).await,
+                        rama_core::combinators::$id::$param(policy) => policy.retry(ctx, req, result).await,
                     )+
                 }
             }
@@ -186,7 +186,7 @@ macro_rules! impl_retry_policy_either {
             ) -> Option<(Context<State>, http::Request<RetryBody>)> {
                 match self {
                     $(
-                        crate::combinators::$id::$param(policy) => policy.clone_input(ctx, req),
+                        rama_core::combinators::$id::$param(policy) => policy.clone_input(ctx, req),
                     )+
                 }
             }
@@ -194,4 +194,4 @@ macro_rules! impl_retry_policy_either {
     };
 }
 
-crate::combinators::impl_either!(impl_retry_policy_either);
+rama_core::combinators::impl_either!(impl_retry_policy_either);

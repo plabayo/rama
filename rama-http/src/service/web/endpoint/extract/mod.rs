@@ -1,6 +1,6 @@
 //! Extract utilities to develop endpoint services efortless.
 
-use crate::{self, dep::http::request::Parts, dep::mime, header, HeaderMap, IntoResponse};
+use crate::{dep::http::request::Parts, dep::mime, header, HeaderMap, IntoResponse};
 use rama_core::Context;
 use std::future::Future;
 
@@ -86,7 +86,7 @@ pub trait FromRequest<S, M = private::ViaRequest>: Sized + Send + Sync + 'static
     /// Perform the extraction.
     fn from_request(
         ctx: Context<S>,
-        req: http::Request,
+        req: crate::Request,
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send;
 }
 
@@ -97,7 +97,7 @@ where
 {
     type Rejection = <Self as FromRequestParts<S>>::Rejection;
 
-    async fn from_request(ctx: Context<S>, req: http::Request) -> Result<Self, Self::Rejection> {
+    async fn from_request(ctx: Context<S>, req: crate::Request) -> Result<Self, Self::Rejection> {
         let (parts, _) = req.into_parts();
         Self::from_request_parts(&ctx, &parts).await
     }

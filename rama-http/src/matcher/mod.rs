@@ -2,17 +2,12 @@
 //!
 //! See [`service::matcher` module] for more information.
 //!
-//! [`service::Matcher`]: crate::matcher::Matcher
+//! [`service::Matcher`]: rama_core::matcher::Matcher
 //! [`http::Request`]: crate::Request
-//! [`service::matcher` module]: crate::matcher
-use rama_core::{
-    context::Extensions, matcher::IteratorMatcherExt, Context,
-};
-use rama_net::{
-    address::Domain,
-    stream::matcher::SocketMatcher,
-};
+//! [`service::matcher` module]: rama_core
 use crate::Request;
+use rama_core::{context::Extensions, matcher::IteratorMatcherExt, Context};
+use rama_net::{address::Domain, stream::matcher::SocketMatcher};
 use std::fmt;
 use std::sync::Arc;
 
@@ -85,8 +80,8 @@ pub enum HttpMatcherKind<State, Body> {
     ///
     /// [`SocketAddr`]: std::net::SocketAddr
     Socket(SocketMatcher<State, Request<Body>>),
-    /// A custom matcher that implements [`crate::matcher::Matcher`].
-    Custom(Arc<dyn crate::matcher::Matcher<State, Request<Body>>>),
+    /// A custom matcher that implements [`rama_core::matcher::Matcher`].
+    Custom(Arc<dyn rama_core::matcher::Matcher<State, Request<Body>>>),
 }
 
 impl<State, Body> Clone for HttpMatcherKind<State, Body> {
@@ -578,10 +573,10 @@ impl<State, Body> HttpMatcher<State, Body> {
 
     /// Create a matcher that matches according to a custom predicate.
     ///
-    /// See [`crate::matcher::Matcher`] for more information.
+    /// See [`rama_core::matcher::Matcher`] for more information.
     pub fn custom<M>(matcher: M) -> Self
     where
-        M: crate::matcher::Matcher<State, Request<Body>>,
+        M: rama_core::matcher::Matcher<State, Request<Body>>,
     {
         Self {
             kind: HttpMatcherKind::Custom(Arc::new(matcher)),
@@ -591,20 +586,20 @@ impl<State, Body> HttpMatcher<State, Body> {
 
     /// Add a custom matcher to match on top of the existing set of [`HttpMatcher`] matchers.
     ///
-    /// See [`crate::matcher::Matcher`] for more information.
+    /// See [`rama_core::matcher::Matcher`] for more information.
     pub fn and_custom<M>(self, matcher: M) -> Self
     where
-        M: crate::matcher::Matcher<State, Request<Body>>,
+        M: rama_core::matcher::Matcher<State, Request<Body>>,
     {
         self.and(Self::custom(matcher))
     }
 
     /// Create a custom matcher to match as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
-    /// See [`crate::matcher::Matcher`] for more information.
+    /// See [`rama_core::matcher::Matcher`] for more information.
     pub fn or_custom<M>(self, matcher: M) -> Self
     where
-        M: crate::matcher::Matcher<State, Request<Body>>,
+        M: rama_core::matcher::Matcher<State, Request<Body>>,
     {
         self.or(Self::custom(matcher))
     }
@@ -681,7 +676,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     }
 }
 
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for HttpMatcher<State, Body>
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for HttpMatcher<State, Body>
 where
     State: Send + Sync + 'static,
     Body: Send + 'static,
@@ -701,7 +696,7 @@ where
     }
 }
 
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for HttpMatcherKind<State, Body>
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for HttpMatcherKind<State, Body>
 where
     State: Send + Sync + 'static,
     Body: Send + 'static,
@@ -731,7 +726,7 @@ where
 mod test {
     use itertools::Itertools;
 
-    use crate::matcher::Matcher;
+    use rama_core::matcher::Matcher;
 
     use super::*;
 

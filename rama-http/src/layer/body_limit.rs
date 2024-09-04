@@ -31,8 +31,8 @@
 
 use crate::dep::http_body_util::Limited;
 use crate::Request;
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// Apply a limit to the request body's size.

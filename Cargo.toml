@@ -5,6 +5,7 @@ members = [
     "rama-cli",
     "rama-core",
     "rama-error",
+    "rama-tcp",
     "rama-http",
     "rama-http-backend",
     "rama-http-types",
@@ -140,7 +141,9 @@ rustls = ["tls", "rama-tls/rustls"]
 rustls-ring = ["tls", "rama-tls/rustls-ring"]
 boring = ["tls", "rama-tls/boring"]
 cli = []
-http = ["dep:rama-http"]
+net = []
+tcp = ["net"]
+http = ["dep:rama-http", "dep:rama-http-backend", "net", "ua"]
 proxy = ["dep:rama-proxy"]
 ua = ["dep:rama-ua"]
 
@@ -176,12 +179,15 @@ paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.2", path = "rama-core" }
+rama-net = { version = "0.2.0-alpha.2", path = "rama-net", optional = true }
 rama-http = { version = "0.2.0-alpha.2", path = "rama-http", optional = true }
+rama-http-backend = { version = "0.2.0-alpha.2", path = "rama-http-backend", optional = true }
 rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
 rama-proxy = { version = "0.2.0-alpha.2", path = "rama-proxy", optional = true }
 rama-tls = { version = "0.2.0-alpha.2", path = "rama-tls", optional = true }
 rama-ua = { version = "0.2.0-alpha.2", path = "rama-ua", optional = true }
 rama-utils = { version = "0.2.0-alpha.2", path = "rama-utils" }
+rama-tcp = { version = "0.2.0-alpha.2", path = "rama-tcp", optional = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }

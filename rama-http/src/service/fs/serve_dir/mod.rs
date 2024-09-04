@@ -1,13 +1,13 @@
-use rama_core::error::BoxError;
 use crate::dep::http_body::Body as HttpBody;
 use crate::layer::{
     set_status::SetStatus,
     util::content_encoding::{encodings, SupportedEncodings},
 };
 use crate::{header, Body, HeaderValue, Method, Request, Response, StatusCode};
-use rama_core::{Context, Service};
 use bytes::Bytes;
 use percent_encoding::percent_decode;
+use rama_core::error::BoxError;
+use rama_core::{Context, Service};
 use std::{
     convert::Infallible,
     path::{Component, Path, PathBuf},

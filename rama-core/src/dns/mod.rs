@@ -123,11 +123,11 @@ impl Dns {
     ///
     /// Note that this impacts both [`Self::ipv4_lookup`] and [`Self::ipv6_lookup`],
     /// meaning that no Ipv6 addresses will be returned for the domain.
-    pub fn insert_overwrite(&mut self, name: Name, addresses: Vec<IpAddr>) -> &mut Self {
+    pub fn insert_overwrite(&mut self, name: impl TryIntoName, addresses: Vec<IpAddr>) -> Result<&mut Self, OpaqueError> {
         self.overwrites
             .get_or_insert_with(HashMap::new)
-            .insert(name, addresses);
-        self
+            .insert(name.try_into_name()?, addresses);
+        Ok(self)
     }
 
     /// Extend the overwrites with a new mapping.
@@ -135,11 +135,13 @@ impl Dns {
     /// Existing mappings will be overwritten.
     ///
     /// See [`Self::insert_overwrite`] for more information.
-    pub fn extend_overwrites(&mut self, overwrites: HashMap<Name, Vec<IpAddr>>) -> &mut Self {
-        self.overwrites
-            .get_or_insert_with(HashMap::new)
-            .extend(overwrites);
-        self
+    pub fn extend_overwrites(&mut self, overwrites: HashMap<impl TryIntoName, Vec<IpAddr>>) -> Result<&mut Self, OpaqueError> {
+        let map = self.overwrites
+            .get_or_insert_with(HashMap::new);
+        for (name, addresses) in overwrites.into_iter() {
+            map.insert(name.try_into_name()?, addresses);
+        }
+        Ok(self)
     }
 
     /// Performs a 'A' DNS record lookup.

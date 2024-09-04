@@ -13,12 +13,6 @@ use rama_http_types::headers::authorization::Credentials;
 /// [`Credential`]: headers::authorization::Credentials
 pub trait Authority<C, L>: Send + Sync + 'static {
     /// Returns `true` if the credentials are authorized, otherwise `false`.
-    ///
-    /// If the `filter_char` is defined it is expected that the authority,
-    /// takes into account that the username contains [`ProxyFilter`] data,
-    /// and that it is extracted out prior to validation.
-    ///
-    /// [`ProxyFilter`]: crate::proxy::ProxyFilter
     fn authorized(&self, credentials: C) -> impl Future<Output = Option<Extensions>> + Send + '_;
 }
 

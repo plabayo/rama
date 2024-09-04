@@ -1,10 +1,4 @@
 /// Can be used to communicate the desire to limit the size of request/response bodies.
-///
-/// It is for example used by the [`BodyLimitLayer`] to add this to the request [`Context`],
-/// such that http services used can apply the limit when found in that [`Context`].
-///
-/// [`Context`]: crate::Context`
-/// [`BodyLimitLayer`]: crate::layer::body_limit::BodyLimitLayer
 #[derive(Debug, Clone, Copy)]
 pub struct BodyLimit {
     kind: Option<BodyLimitKind>,

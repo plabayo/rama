@@ -1,6 +1,6 @@
 use crate::headers::{self, Header};
 use crate::{HeaderName, HeaderValue};
-use rama_core::net::forwarded::ForwardedElement;
+use rama_net::forwarded::ForwardedElement;
 use std::iter::FromIterator;
 use std::net::IpAddr;
 

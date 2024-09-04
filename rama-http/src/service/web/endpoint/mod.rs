@@ -1,9 +1,5 @@
 use crate::{matcher::HttpMatcher, Body, IntoResponse, Request, Response};
-use rama_core::{
-    Context, Layer, Service,
-    service::BoxService,
-    layer::MapResponseLayer,
-};
+use rama_core::{layer::MapResponseLayer, service::BoxService, Context, Layer, Service};
 use std::future::Future;
 use std::{convert::Infallible, fmt};
 

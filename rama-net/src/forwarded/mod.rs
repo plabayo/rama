@@ -43,7 +43,7 @@ pub use version::ForwardedVersion;
 ///
 /// RFC: <https://datatracker.ietf.org/doc/html/rfc7239>
 ///
-/// [`Context`]: crate::Context
+/// [`Context`]: rama_core::Context
 pub struct Forwarded {
     first: ForwardedElement,
     others: Vec<ForwardedElement>,

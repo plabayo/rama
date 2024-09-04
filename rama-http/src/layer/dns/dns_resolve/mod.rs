@@ -5,10 +5,10 @@
 //! For example resolving them to make a connection to a target server over a proxy
 //! by IP address instead of domain name.
 
-use rama_core::error::{ErrorExt, OpaqueError};
 use crate::HeaderValue;
-use rama_utils::macros::match_ignore_ascii_case_str;
+use rama_core::error::{ErrorExt, OpaqueError};
 use rama_core::username::{ComposeError, Composer, UsernameLabelWriter};
+use rama_utils::macros::match_ignore_ascii_case_str;
 use std::fmt;
 
 mod service;
@@ -26,7 +26,7 @@ pub use username_parser::DnsResolveModeUsernameParser;
 #[derive(Debug, Clone, Default, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// A vanity [`Extensions`] type for others to easily check if eager DNS resolution is enabled.
 ///
-/// [`Extensions`]: crate::context::Extensions
+/// [`Extensions`]: rama_core::context::Extensions
 pub struct DnsResolveMode(ResolveMode);
 
 impl fmt::Display for DnsResolveMode {
@@ -119,7 +119,7 @@ impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for DnsResolveMode {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::Extensions;
+    use rama_core::context::Extensions;
     use rama_core::username::{compose_username, parse_username};
 
     #[test]

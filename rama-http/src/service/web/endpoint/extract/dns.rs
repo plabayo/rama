@@ -8,8 +8,8 @@ use std::ops::Deref;
 /// Extractor to get a clone of the [`Dns`] from the [`Context`].
 ///
 /// [`Dns`]: crate::dns::Dns
-/// [`Context`]: crate::Context
-pub struct Dns(pub crate::dns::Dns);
+/// [`Context`]: rama_core::Context
+pub struct Dns(pub rama_core::dns::Dns);
 
 impl<T> FromRequestParts<T> for Dns
 where
@@ -23,7 +23,7 @@ where
 }
 
 impl Deref for Dns {
-    type Target = crate::dns::Dns;
+    type Target = rama_core::dns::Dns;
 
     fn deref(&self) -> &Self::Target {
         &self.0

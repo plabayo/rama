@@ -35,12 +35,12 @@
 //! # }
 //! ```
 
-use rama_utils::macros::define_inner_service_accessors;
 use crate::{
     headers::{self, HeaderMapExt},
     HeaderName, Request,
 };
-use rama_core::{Layer, Service};
+use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use serde::{Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
@@ -57,8 +57,8 @@ pub use rama_ua::{
 /// The [`Extensions`] of the [`Context`] is updated with the [`UserAgent`]
 /// if the [`Request`] contains a valid [`UserAgent`] header.
 ///
-/// [`Extensions`]: crate::context::Extensions
-/// [`Context`]: crate::Context
+/// [`Extensions`]: rama_core::context::Extensions
+/// [`Context`]: rama_core::Context
 pub struct UserAgentClassifier<S> {
     inner: S,
     overwrite_header: Option<HeaderName>,
@@ -121,7 +121,7 @@ where
 
     fn serve(
         &self,
-        mut ctx: crate::Context<State>,
+        mut ctx: Context<State>,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let mut user_agent = req
@@ -205,10 +205,10 @@ mod tests {
     use crate::client::HttpClientExt;
     use crate::headers;
     use crate::layer::required_header::AddRequiredRequestHeadersLayer;
-    use crate::{IntoResponse, StatusCode};
     use crate::service::service_fn;
     use crate::ua::{PlatformKind, UserAgentKind};
     use crate::{http::Response, Context};
+    use crate::{IntoResponse, StatusCode};
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -218,12 +218,7 @@ mod tests {
 
             assert_eq!(
                 ua.header_str(),
-                format!(
-                    "{}/{}",
-                    rama_utils::info::NAME,
-                    rama_utils::info::VERSION
-                )
-                .as_str(),
+                format!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION).as_str(),
             );
             assert!(ua.info().is_none());
             assert!(ua.platform().is_none());

@@ -1,0 +1,32 @@
+[package]
+name = "rama-tcp"
+description = "TCP support for rama"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = { workspace = true }
+categories = { workspace = true }
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[features]
+default = []
+http = ["dep:rama-http-types", "rama-net/http"]
+
+[dependencies]
+tokio = { workspace = true, features = ["macros", "net"] }
+rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types", optional = true }
+rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
+rama-net = { version = "0.2.0-alpha.2", path = "../rama-net" }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

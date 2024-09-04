@@ -57,8 +57,8 @@
 //! ```
 
 use crate::{Request, Response};
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// Apply a transformation to the request body.

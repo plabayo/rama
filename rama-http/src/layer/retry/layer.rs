@@ -1,5 +1,5 @@
 use super::Retry;
-use crate::Layer;
+use rama_core::Layer;
 use std::fmt;
 
 /// Retry requests based on a policy

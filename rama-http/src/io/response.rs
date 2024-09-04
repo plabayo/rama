@@ -1,11 +1,9 @@
 use crate::{
-    error::BoxError,
-    http::{
-        dep::{http_body, http_body_util::BodyExt},
-        Body, Response,
-    },
+    dep::{http_body, http_body_util::BodyExt},
+    Body, Response,
 };
 use bytes::Bytes;
+use rama_core::error::BoxError;
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Write an HTTP response to a writer in std http format.

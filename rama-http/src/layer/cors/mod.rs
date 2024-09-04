@@ -50,9 +50,9 @@ use crate::dep::http::{
     header::{self, HeaderName},
     HeaderMap, HeaderValue, Method, Request, Response,
 };
-use rama_utils::macros::define_inner_service_accessors;
-use rama_core::{Context, Layer, Service};
 use bytes::{BufMut, BytesMut};
+use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{array, fmt, mem};
 
 mod allow_credentials;

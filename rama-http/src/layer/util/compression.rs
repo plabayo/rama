@@ -1,9 +1,13 @@
 //! Types used by compression and decompression middleware.
 
+use super::content_encoding::SupportedEncodings;
+use crate::dep::http_body::{Body, Frame};
+use crate::HeaderValue;
 use bytes::{Buf, Bytes, BytesMut};
 use futures_lite::ready;
 use futures_lite::Stream;
 use pin_project_lite::pin_project;
+use rama_core::error::BoxError;
 use std::{
     io,
     pin::Pin,
@@ -11,10 +15,6 @@ use std::{
 };
 use tokio::io::AsyncRead;
 use tokio_util::io::StreamReader;
-use super::content_encoding::SupportedEncodings;
-use rama_core::error::BoxError;
-use crate::dep::http_body::{Body, Frame};
-use crate::HeaderValue;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct AcceptEncoding {

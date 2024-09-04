@@ -1,13 +1,13 @@
 use crate::headers::{
     ForwardHeader, HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
-use crate::net::address::Domain;
-use crate::net::forwarded::{Forwarded, ForwardedElement, NodeId};
-use crate::stream::SocketInfo;
-use rama_utils::macros::all_the_tuples_no_last_special_case;
-use crate::{Context, Layer, Service};
 use crate::{Request, RequestContext};
 use rama_core::error::BoxError;
+use rama_core::{Context, Layer, Service};
+use rama_net::address::Domain;
+use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
+use rama_net::stream::SocketInfo;
+use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::fmt;
 use std::marker::PhantomData;
 

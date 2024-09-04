@@ -14,7 +14,7 @@
 //!
 //! [`ProxyAddress`]: crate::net::address::ProxyAddress
 //! [`ProxyDB`]: crate::proxy::ProxyDB
-//! [`Context`]: crate::Context
+//! [`Context`]: rama_core::Context
 //! [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
 //!
 //! # Example

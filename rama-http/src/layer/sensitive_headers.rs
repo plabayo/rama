@@ -39,8 +39,8 @@
 //! ```
 
 use crate::{HeaderName, Request, Response};
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
 
 /// Mark headers as [sensitive] on both requests and responses.

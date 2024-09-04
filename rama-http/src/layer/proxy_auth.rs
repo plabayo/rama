@@ -5,9 +5,9 @@
 use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::{authorization::Credentials, HeaderMapExt, ProxyAuthorization};
 use crate::{Request, Response, StatusCode};
-use rama_net::auth::Authority;
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_net::user::auth::Authority;
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 use std::marker::PhantomData;
 

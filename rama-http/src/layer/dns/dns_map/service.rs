@@ -1,12 +1,11 @@
 use std::fmt;
 
 use super::DnsMap;
-use rama_utils::macros::define_inner_service_accessors;
-use crate::{layer::header_config::extract_header_config, utils::HeaderValueErr, HeaderName, Request};
-use rama_core::{
-    error::OpaqueError,
-    Context, Service,
+use crate::{
+    layer::header_config::extract_header_config, utils::HeaderValueErr, HeaderName, Request,
 };
+use rama_core::{error::OpaqueError, Context, Service};
+use rama_utils::macros::define_inner_service_accessors;
 
 /// Service to support DNS lookup overwrites.
 ///
@@ -52,7 +51,7 @@ impl<State, Body, E, S> Service<State, Request<Body>> for DnsMapService<S>
 where
     State: Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    E: Into<crate::error::BoxError> + Send + Sync + 'static,
+    E: Into<rama_core::error::BoxError> + Send + Sync + 'static,
     S: Service<State, Request<Body>, Error = E>,
 {
     type Response = S::Response;
@@ -72,7 +71,7 @@ where
             }
             Err(HeaderValueErr::HeaderMissing(_)) => (), // ignore if missing, it's opt-in
             Ok(dns_map) => {
-                ctx.dns_mut().extend_overwrites(dns_map.0);
+                ctx.dns_mut().extend_overwrites(dns_map.0)?;
             }
         }
 

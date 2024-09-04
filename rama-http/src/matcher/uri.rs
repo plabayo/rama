@@ -1,10 +1,7 @@
 //! provides a [`UriMatcher`] matcher for matching requests based on their URI.
 
-use rama_core::{
-    context::Extensions,
-    Context,
-};
 use crate::{Request, Uri};
+use rama_core::{context::Extensions, Context};
 
 pub mod dep {
     //! dependencies for the `uri` matcher module
@@ -45,7 +42,7 @@ impl From<Regex> for UriMatcher {
     }
 }
 
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for UriMatcher {
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for UriMatcher {
     fn matches(
         &self,
         _ext: Option<&mut Extensions>,

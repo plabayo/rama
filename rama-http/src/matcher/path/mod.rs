@@ -1,8 +1,5 @@
-use rama_core::{
-    context::Extensions,
-    Context,
-};
 use crate::{IntoResponse, Request, StatusCode};
+use rama_core::{context::Extensions, Context};
 use std::collections::HashMap;
 
 mod de;
@@ -75,7 +72,7 @@ pub struct UriParamsDeserializeError(de::PathDeserializationError);
 impl UriParamsDeserializeError {
     /// Get the response body text used for this rejection.
     pub fn body_text(&self) -> String {
-        use crate::matcher::path::de::ErrorKind;
+        use de::ErrorKind;
         match self.0.kind {
             ErrorKind::Message(_)
             | ErrorKind::NoParams
@@ -90,7 +87,7 @@ impl UriParamsDeserializeError {
 
     /// Get the status code used for this rejection.
     pub fn status(&self) -> StatusCode {
-        use crate::matcher::path::de::ErrorKind;
+        use de::ErrorKind;
         match self.0.kind {
             ErrorKind::Message(_)
             | ErrorKind::NoParams
@@ -114,7 +111,7 @@ impl std::error::Error for UriParamsDeserializeError {}
 
 impl IntoResponse for UriParamsDeserializeError {
     fn into_response(self) -> crate::Response {
-        rama_utils::macros::log_http_rejection!(
+        crate::utils::macros::log_http_rejection!(
             rejection_type = UriParamsDeserializeError,
             body_text = self.body_text(),
             status = self.status(),
@@ -245,7 +242,7 @@ impl PathMatcher {
     }
 }
 
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for PathMatcher {
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for PathMatcher {
     fn matches(
         &self,
         ext: Option<&mut Extensions>,

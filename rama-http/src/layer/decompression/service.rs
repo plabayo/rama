@@ -10,8 +10,8 @@ use crate::{
     header::{self, ACCEPT_ENCODING},
     Request, Response,
 };
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Service};
+use rama_utils::macros::define_inner_service_accessors;
 
 /// Decompresses response bodies of the underlying service.
 ///

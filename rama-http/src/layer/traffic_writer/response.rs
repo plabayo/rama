@@ -1,13 +1,13 @@
 use super::WriterMode;
-use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use crate::dep::http_body;
 use crate::dep::http_body_util::BodyExt;
 use crate::io::write_http_response;
 use crate::{Body, Request, Response};
-use rama_core::rt::Executor;
-use rama_utils::macros::define_inner_service_accessors;
-use rama_core::{Context, Layer, Service};
 use bytes::Bytes;
+use rama_core::error::{BoxError, ErrorContext, OpaqueError};
+use rama_core::rt::Executor;
+use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt::Debug;
 use std::future::Future;
 use tokio::io::{stderr, stdout, AsyncWrite};

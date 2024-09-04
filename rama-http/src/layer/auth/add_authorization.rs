@@ -41,9 +41,9 @@
 //! ```
 
 use crate::{HeaderValue, Request, Response};
-use rama_utils::macros::define_inner_service_accessors;
-use rama_core::{Context, Layer, Service};
 use base64::Engine as _;
+use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::convert::TryFrom;
 use std::fmt;
 
@@ -301,11 +301,11 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::error::BoxError;
     use crate::layer::validate_request::ValidateRequestHeaderLayer;
     use crate::{Body, Request, Response, StatusCode};
-    use crate::service::service_fn;
-    use crate::{Context, Service};
+    use rama_core::error::BoxError;
+    use rama_core::service::service_fn;
+    use rama_core::{Context, Service};
     use std::convert::Infallible;
 
     #[tokio::test]

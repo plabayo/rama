@@ -66,3 +66,9 @@ pub use proto::Protocol;
 
 #[cfg(feature = "http")]
 pub mod transport;
+
+#[cfg(feature = "http")]
+pub mod http;
+
+#[cfg(feature = "tls")]
+pub mod tls;

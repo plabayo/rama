@@ -1,4 +1,5 @@
 use super::Host;
+use rama_core::dns::TryIntoName;
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{borrow::Cow, cmp::Ordering, fmt, iter::repeat};
 
@@ -163,6 +164,12 @@ impl TryFrom<Vec<u8>> for Domain {
         } else {
             Err(OpaqueError::from_display("invalid domain"))
         }
+    }
+}
+
+impl TryIntoName for Domain {
+    fn try_into_name(self) -> Result<rama_core::dns::Name, OpaqueError> {
+        self.to_string().try_into_name()
     }
 }
 

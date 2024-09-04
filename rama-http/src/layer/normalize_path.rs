@@ -38,8 +38,8 @@
 //! ```
 
 use crate::{Request, Response, Uri};
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 use std::fmt;
 use std::future::Future;
@@ -171,7 +171,7 @@ fn normalize_trailing_slash(uri: &mut Uri) {
 mod tests {
     use super::*;
     use crate::service::service_fn;
-    use crate::Layer;
+    use rama_core::Layer;
     use std::convert::Infallible;
 
     #[tokio::test]

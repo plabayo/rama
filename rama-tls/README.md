@@ -39,7 +39,7 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-tls
 
-Tls support for `rama`.
+Tls implementations for `rama`.
 
 Learn more about `rama`:
 

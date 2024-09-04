@@ -1,6 +1,7 @@
 use super::FromRequest;
-use rama_utils::macros::impl_deref;
 use rama_core::Context;
+use rama_http_types as http;
+use rama_utils::macros::impl_deref;
 use std::convert::Infallible;
 
 mod bytes;

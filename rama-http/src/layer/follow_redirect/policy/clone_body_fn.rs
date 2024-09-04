@@ -1,5 +1,5 @@
-use rama_core::Context;
 use super::{Action, Attempt, Policy};
+use rama_core::Context;
 use std::fmt;
 
 /// A redirection [`Policy`] created from a closure.

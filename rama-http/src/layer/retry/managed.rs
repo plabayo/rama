@@ -6,8 +6,8 @@
 
 use super::{Policy, PolicyResult, RetryBody};
 use crate::{Request, Response};
-use rama_utils::backoff::Backoff;
 use rama_core::Context;
+use rama_utils::backoff::Backoff;
 use std::future::Future;
 
 #[derive(Debug, Clone, Default)]
@@ -16,7 +16,7 @@ use std::future::Future;
 ///
 /// This requires the [`ManagedPolicy`] to be used.
 ///
-/// [`Extensions`]: crate::context::Extensions
+/// [`Extensions`]: rama_core::context::Extensions
 #[non_exhaustive]
 pub struct DoNotRetry;
 

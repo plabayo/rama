@@ -178,10 +178,10 @@ mod tests {
     use crate::Body;
     use crate::Method;
     use crate::{Request, StatusCode};
-    use crate::{Context, Service};
     use brotli::BrotliDecompress;
     use flate2::bufread::DeflateDecoder;
     use flate2::bufread::GzDecoder;
+    use rama_core::{Context, Service};
     use std::io::Read;
     use std::str::FromStr;
 

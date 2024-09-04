@@ -1,9 +1,9 @@
 use super::*;
-use crate::error::{error, OpaqueError};
 use crate::{response::IntoResponse, BodyExtractExt};
-use crate::{Request, Response};
 use crate::{Layer, Service};
+use crate::{Request, Response};
 use parking_lot::Mutex;
+use rama_core::error::{error, OpaqueError};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
@@ -225,7 +225,7 @@ async fn retry_mutating_policy() {
 
 type State = ();
 type InnerError = &'static str;
-type Error = crate::error::OpaqueError;
+type Error = rama_core::error::OpaqueError;
 
 fn request(s: &'static str) -> Request<RetryBody> {
     Request::builder()

@@ -460,13 +460,13 @@ impl fmt::Display for Latency {
 mod tests {
     use super::*;
 
-    use crate::error::BoxError;
     use crate::dep::http_body_util::BodyExt as _;
     use crate::layer::classify::ServerErrorsFailureClass;
     use crate::{Body, HeaderMap, Request, Response};
-    use crate::service::service_fn;
-    use crate::{Context, Layer, Service};
     use bytes::Bytes;
+    use rama_core::error::BoxError;
+    use rama_core::service::service_fn;
+    use rama_core::{Context, Layer, Service};
     use std::sync::OnceLock;
     use std::{
         sync::atomic::{AtomicU32, Ordering},

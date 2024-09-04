@@ -1,5 +1,5 @@
-use rama_core::Context;
 use super::{eq_origin, Action, Attempt, Policy};
+use rama_core::Context;
 use std::fmt;
 
 /// A redirection [`Policy`] that stops cross-origin redirections.

@@ -6,7 +6,7 @@ use std::{fmt, future::Future};
 
 /// A [`Service`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.
 ///
-/// [`Service`]: crate::Service
+/// [`Service`]: rama_core::Service
 /// [`Stream`]: crate::stream::Stream
 pub struct IncomingBytesTrackerService<S> {
     inner: S,
@@ -65,8 +65,8 @@ where
 
 /// A [`Layer`] that wraps a [`Service`]'s input IO [`Stream`] with an atomic R/W tracker.
 ///
-/// [`Layer`]: crate::Layer
-/// [`Service`]: crate::Service
+/// [`Layer`]: rama_core::Layer
+/// [`Service`]: rama_core::Service
 /// [`Stream`]: crate::stream::Stream
 #[derive(Debug, Clone)]
 #[non_exhaustive]

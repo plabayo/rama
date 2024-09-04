@@ -1,6 +1,5 @@
 use std::fmt;
 
-use rama_core::error::BoxError;
 use crate::dep::http_body::Body;
 use crate::dep::http_body_util::{combinators::UnsyncBoxBody, BodyExt, Empty};
 use crate::layer::{
@@ -10,9 +9,10 @@ use crate::layer::{
     util::content_encoding::SupportedEncodings,
 };
 use crate::{header, HeaderValue, Request, Response, StatusCode};
-use rama_utils::macros::define_inner_service_accessors;
-use rama_core::{Context, Service};
 use bytes::Buf;
+use rama_core::error::BoxError;
+use rama_core::{Context, Service};
+use rama_utils::macros::define_inner_service_accessors;
 
 /// Decompresses request bodies and calls its underlying service.
 ///

@@ -4,10 +4,7 @@ use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
 
 #[cfg(feature = "http")]
-use rama_http_types::{
-    HeaderValue,
-    headers::authorization,
-};
+use rama_http_types::{headers::authorization, HeaderValue};
 
 #[derive(Debug, Clone)]
 /// Basic credentials.
@@ -203,22 +200,6 @@ mod tests {
     }
 
     #[test]
-    fn basic_encode() {
-        let auth = Basic::new("Aladdin", "open sesame");
-        let value = auth.encode();
-
-        assert_eq!(value, "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",);
-    }
-
-    #[test]
-    fn basic_encode_no_password() {
-        let auth = Basic::unprotected("Aladdin");
-        let value = auth.encode();
-
-        assert_eq!(value, "Basic QWxhZGRpbjo=",);
-    }
-
-    #[test]
     fn basic_header() {
         let auth = Basic::try_from_header_str("Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==").unwrap();
         assert_eq!(auth.username(), "Aladdin");
@@ -259,6 +240,22 @@ mod tests {
 mod tests_http {
     use super::*;
     use authorization::Credentials;
+
+    #[test]
+    fn basic_encode() {
+        let auth = Basic::new("Aladdin", "open sesame");
+        let value = auth.encode();
+
+        assert_eq!(value, "Basic QWxhZGRpbjpvcGVuIHNlc2FtZQ==",);
+    }
+
+    #[test]
+    fn basic_encode_no_password() {
+        let auth = Basic::unprotected("Aladdin");
+        let value = auth.encode();
+
+        assert_eq!(value, "Basic QWxhZGRpbjo=",);
+    }
 
     #[test]
     fn basic_decode() {

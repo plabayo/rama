@@ -116,10 +116,10 @@
 //! # }
 //! ```
 
-use std::future::Future;
 use crate::{Request, Response};
-use rama_utils::macros::define_inner_service_accessors;
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
+use std::future::Future;
 
 /// Layer that applies [`AsyncRequireAuthorization`] which authorizes all requests using the
 /// [`Authorization`] header.
@@ -247,9 +247,9 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::error::BoxError;
-    use crate::{header, Body, StatusCode};
     use crate::service::service_fn;
+    use crate::{header, Body, StatusCode};
+    use rama_core::error::BoxError;
 
     #[derive(Clone, Copy)]
     struct MyAuth;

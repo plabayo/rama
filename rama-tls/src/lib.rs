@@ -1,4 +1,4 @@
-//! TLS module for Rama.
+//! TLS implementations for Rama.
 //!
 //! # Rama
 //!
@@ -54,23 +54,24 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-mod enums;
-use client::ClientHello;
-pub use enums::{
-    ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
-    ProtocolVersion, SignatureScheme, SupportedGroup,
-};
+#[cfg(feature = "rustls")]
+pub mod rustls;
 
-pub mod backend;
+#[cfg(feature = "boring")]
+pub mod boring;
 
-pub mod client;
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+pub use rustls as std;
 
-#[derive(Debug, Clone)]
-/// Context information that can be provided `https` connectors`,
-/// to configure the connection in function on an https tunnel.
-pub struct HttpsTunnel {
-    /// The server name to use for the connection.
-    pub server_name: String,
+#[cfg(feature = "boring")]
+pub use boring as std;
+
+pub mod types {
+    //! common tls types
+    pub use ::rama_net::tls::{
+        client, ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
+        HttpsTunnel, ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup,
+    };
 }
 
 pub mod dep {
@@ -84,32 +85,5 @@ pub mod dep {
         //! [`rcgen`]: https://docs.rs/rcgen
 
         pub use rcgen::*;
-    }
-}
-
-#[derive(Debug, Clone, Default)]
-/// An [`Extensions`] value that can be added to the [`Context`]
-/// of a transport layer to signal that the transport is secure.
-///
-/// [`Extensions`]: crate::context::Extensions
-/// [`Context`]: crate::Context
-pub struct SecureTransport {
-    client_hello: Option<ClientHello>,
-}
-
-impl SecureTransport {
-    /// Create a [`SecureTransport`] with a [`ClientHello`]
-    /// attached to it, containing the client hello info
-    /// used to establish this secure transport.
-    pub fn with_client_hello(hello: ClientHello) -> Self {
-        Self {
-            client_hello: Some(hello),
-        }
-    }
-
-    /// Return the [`ClientHello`] used to establish this secure transport,
-    /// only available if the tls service stored it.
-    pub fn client_hello(&self) -> Option<&ClientHello> {
-        self.client_hello.as_ref()
     }
 }

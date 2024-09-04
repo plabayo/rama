@@ -1,8 +1,5 @@
-use rama_core::{
-    context::Extensions,
-    Context,
-};
 use crate::{Request, Version};
+use rama_core::{context::Extensions, Context};
 use std::fmt::{self, Debug, Formatter};
 
 /// A matcher that matches one or more HTTP methods.
@@ -44,7 +41,7 @@ impl VersionMatcher {
     }
 }
 
-impl<State, Body> crate::matcher::Matcher<State, Request<Body>> for VersionMatcher {
+impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for VersionMatcher {
     /// returns true on a match, false otherwise
     fn matches(
         &self,
@@ -98,7 +95,7 @@ impl TryFrom<Version> for VersionMatcher {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::matcher::Matcher;
+    use rama_core::matcher::Matcher;
 
     #[test]
     fn test_version_matcher() {

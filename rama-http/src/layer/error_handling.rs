@@ -44,9 +44,9 @@
 //! # }
 //! ```
 
-use rama_utils::macros::define_inner_service_accessors;
 use crate::{IntoResponse, Request, Response};
 use rama_core::{Context, Layer, Service};
+use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt};
 
 /// A [`Layer`] that wraps a [`Service`] and converts errors into [`Response`]s.

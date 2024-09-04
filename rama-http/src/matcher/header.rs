@@ -1,9 +1,5 @@
-use rama_core::{
-    context::Extensions,
-    matcher::Matcher,
-    Context,
-};
 use crate::{HeaderName, HeaderValue, Request};
+use rama_core::{context::Extensions, matcher::Matcher, Context};
 
 #[derive(Debug, Clone)]
 /// Matcher based on the [`Request`]'s headers.

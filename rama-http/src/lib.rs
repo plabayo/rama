@@ -55,24 +55,19 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub use ::rama_http_types::{
-    header, headers,
+    header,
     response::{self, IntoResponse, Response},
-    Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue,
-    Method, Request, Scheme, StatusCode, Uri, Version,
+    Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, Method,
+    Request, Scheme, StatusCode, Uri, Version,
 };
 
+pub mod headers;
 pub mod matcher;
 
 pub mod layer;
 pub mod service;
 
-pub mod server;
-
-pub mod client;
-
 pub mod io;
-
-pub mod executor;
 
 #[doc(hidden)]
 mod utils;
@@ -84,7 +79,3 @@ pub mod dep {
 
     pub use ::rama_http_types::dep::{http, http_body, http_body_util, mime, mime_guess};
 }
-
-mod request_context;
-#[doc(inline)]
-pub use request_context::RequestContext;

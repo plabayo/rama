@@ -1,26 +1,19 @@
 //! Http OpenTelemetry [`Layer`] Support for Rama.
 //!
-//! [`Layer`]: crate::Layer
+//! [`Layer`]: rama_core::Layer
 
+use crate::{
+    headers::{ContentLength, HeaderMapExt, UserAgent},
+    IntoResponse, Request, RequestContext, Response,
+};
+use rama_core::telemetry::opentelemetry::{
+    global,
+    metrics::{Histogram, Meter, UpDownCounter},
+    semantic_conventions, KeyValue,
+};
+use rama_core::{Context, Layer, Service};
+use rama_net::stream::SocketInfo;
 use rama_utils::macros::define_inner_service_accessors;
-use crate::{
-    http::RequestContext,
-    telemetry::opentelemetry::{
-        global,
-        metrics::{Histogram, Meter, UpDownCounter},
-        semantic_conventions, KeyValue,
-    },
-};
-use crate::{
-    http::{
-        self,
-        headers::{HeaderMapExt, UserAgent},
-        IntoResponse, Request, Response,
-    },
-    stream::SocketInfo,
-    Context, Layer, Service,
-};
-use headers::ContentLength;
 use std::{fmt, sync::Arc, time::SystemTime};
 
 // Follows the experimental semantic conventions for HTTP metrics:
