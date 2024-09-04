@@ -2,7 +2,7 @@ use super::State;
 use rama::{
     error::{BoxError, ErrorContext},
     http::{dep::http::request::Parts, headers::Forwarded, Request},
-    net::{stream::SocketInfo, http::RequestContext},
+    net::{http::RequestContext, stream::SocketInfo},
     tls::types::{
         client::{ClientHello, ClientHelloExtension},
         SecureTransport,

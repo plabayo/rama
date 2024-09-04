@@ -78,6 +78,7 @@ pub struct Proxy {
     pub asn: Option<Asn>,
 }
 
+#[cfg(feature = "memory-db")]
 /// Validate the proxy is valid according to rules that are not enforced by the type system.
 fn proxydb_insert_validator(proxy: &Proxy) -> bool {
     (proxy.datacenter || proxy.residential || proxy.mobile)
@@ -352,7 +353,7 @@ mod tests {
         let mut reader = ProxyCsvRowReader::raw("id1,1,,,,,,,,,authority,,,,,,,\nid2,,1,,,,,,,,authority,,,,,,,\nid3,,1,1,,,,,,,authority,,,,,,,\nid4,,1,1,,,,,1,,authority,,,,,,,\nid5,,1,1,,,,,1,,authority,,,,,,,");
         while let Some(proxy) = reader.next().await.unwrap() {
             assert_eq!(
-                ProxyDBErrorKind::InvalidRow,
+                MemoryProxyDBInsertErrorKind::InvalidRow,
                 db.append(proxy).unwrap_err().kind
             );
         }

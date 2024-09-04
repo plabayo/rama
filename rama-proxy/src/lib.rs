@@ -292,7 +292,6 @@ mod proxydb;
 #[doc(inline)]
 pub use proxydb::{Proxy, ProxyDB, ProxyFilter, ProxyID, ProxyQueryPredicate, StringFilter};
 
-#[cfg(feature = "http")]
 #[doc(inline)]
 pub use proxydb::layer::{ProxyDBLayer, ProxyDBService, ProxyFilterMode, UsernameFormatter};
 

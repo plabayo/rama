@@ -137,16 +137,26 @@ rust-version = { workspace = true }
 
 [features]
 default = []
+full = [
+    "telemetry",
+    "compression",
+    "rustls",
+    "boring",
+    "cli",
+    "tcp",
+    "http-full",
+    "proxy-full",
+]
 telemetry = ["rama-core/telemetry", "rama-net/telemetry", "rama-http/telemetry"]
 compression = ["http", "rama-http/compression"]
-tls = ["net", "rama-net/tls", "rama-http/tls", "rama-http-backend/tls"]
+tls = ["net", "dep:rama-tls", "rama-net/tls", "rama-http/tls", "rama-http-backend/tls"]
 rustls = ["tls", "rama-tls/rustls", "rama-net/rustls", "rama-http-backend/rustls"]
 rustls-ring = ["tls", "rama-tls/rustls-ring"]
 boring = ["tls", "rama-tls/boring", "rama-net/boring", "rama-http-backend/boring"]
 cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
-net = []
+net = ["dep:rama-net"]
 tcp = ["net", "dep:rama-tcp"]
-http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-proxy/http", "rama-tcp/http"]
+http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-tcp/http"]
 http-full = ["http", "dep:rama-http-backend"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]

@@ -13,8 +13,8 @@ rust-version = { workspace = true }
 [features]
 default = []
 tls = ["dep:rama-tls", "rama-net/tls"]
-rustls = ["tls", "rama-tls/rustls"]
-boring = ["tls", "rama-net/boring"]
+rustls = ["tls", "rama-net/rustls", "rama-tls/rustls"]
+boring = ["tls", "rama-net/boring", "rama-tls/boring"]
 rustls-ring = ["rustls", "rama-tls/rustls-ring"]
 
 [dependencies]

@@ -12,6 +12,7 @@ libfuzzer-sys = "0.4"
 
 [dependencies.rama]
 path = ".."
+features = ["ua"]
 
 [[bin]]
 name = "ua_parse"

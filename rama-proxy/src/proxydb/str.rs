@@ -119,6 +119,7 @@ impl<'de> Deserialize<'de> for StringFilter {
     }
 }
 
+#[cfg(feature = "memory-db")]
 impl venndb::Any for StringFilter {
     fn is_any(&self) -> bool {
         self.0 == "*"

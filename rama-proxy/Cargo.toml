@@ -11,16 +11,15 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 
 [features]
-default = ["memory-db", "csv"]
+default = []
 memory-db = ["dep:venndb", "rama-net/venndb"]
 live-update = ["dep:arc-swap"]
-http = ["rama-net/http"]
 csv = ["dep:tokio", "tokio/fs"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.2", path = "../rama-net" }
+rama-net = { version = "0.2.0-alpha.2", path = "../rama-net", features = ["http"] }
 rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, optional = true }

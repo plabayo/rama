@@ -1,5 +1,6 @@
 //! Rama TCP Client module.
 
+#[cfg(feature = "http")]
 pub mod service;
 
 mod connect;
