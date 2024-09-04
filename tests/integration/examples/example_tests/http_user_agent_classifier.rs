@@ -1,5 +1,5 @@
 use super::utils;
-use rama::http::BodyExtractExt;
+use rama::http::{headers, BodyExtractExt};
 use rama::ua::{HttpAgent, TlsAgent, UserAgentOverwrites};
 use rama::Context;
 

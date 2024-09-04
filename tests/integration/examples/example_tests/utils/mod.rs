@@ -2,8 +2,10 @@
 
 use rama::{
     error::{BoxError, OpaqueError},
+    http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
+    http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::{
-        client::{HttpClient, HttpClientExt, IntoUrl, RequestBuilder},
+        client::HttpClient,
         layer::{
             decompression::DecompressionLayer,
             follow_redirect::FollowRedirectLayer,
@@ -14,9 +16,8 @@ use rama::{
         Request, Response,
     },
     layer::MapResultLayer,
-    proxy::http::client::layer::SetProxyAuthHttpHeaderLayer,
+    net::stream::Stream,
     service::BoxService,
-    stream::Stream,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
     Layer, Service,
 };
@@ -72,7 +73,7 @@ where
     ) -> Self {
         let child = escargot::CargoBuild::new()
             .arg(format!(
-                "--features=cli,compression,{}",
+                "--features=cli,compression,tcp,http-full,proxy-full,{}",
                 extra_features.unwrap_or_default()
             ))
             .example(example_name.as_ref())

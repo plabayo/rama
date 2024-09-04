@@ -75,7 +75,6 @@ opentelemetry_sdk = { version = "0.24", default-features = false, features = [
 opentelemetry-semantic-conventions = "0.16"
 quickcheck = "1.0"
 quote = "1.0"
-ratatui = "0.26"
 rcgen = "0.13.0"
 regex = "1.10.3"
 rustls = { version = "0.23", default-features = false, features = [
@@ -192,8 +191,11 @@ tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 bytes = { workspace = true }
+escargot = { workspace = true }
+itertools = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
+regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }

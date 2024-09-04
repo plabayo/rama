@@ -660,6 +660,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "escargot"
+version = "0.5.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c000f23e9d459aef148b7267e02b03b94a0aaacf4ec64c65612f67e02f525fb6"
+dependencies = [
+ "log",
+ "once_cell",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1692,7 +1704,9 @@ version = "0.2.0-alpha.2"
 dependencies = [
  "base64 0.22.1",
  "bytes",
+ "escargot",
  "hex",
+ "itertools 0.13.0",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "rama-core",
@@ -1706,6 +1720,7 @@ dependencies = [
  "rama-tls",
  "rama-ua",
  "rama-utils",
+ "regex",
  "rustversion",
  "serde",
  "serde_html_form",

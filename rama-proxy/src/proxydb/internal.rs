@@ -181,7 +181,7 @@ impl Proxy {
 mod tests {
     use super::*;
     use crate::proxydb::csv::{parse_csv_row, ProxyCsvRowReader};
-    use crate::proxydb::ProxyDB;
+    use crate::proxydb::internal::{ProxyDB, ProxyDBErrorKind};
     use itertools::Itertools;
 
     #[test]
@@ -353,7 +353,10 @@ mod tests {
         let mut db = ProxyDB::new();
         let mut reader = ProxyCsvRowReader::raw("id1,1,,,,,,,,,authority,,,,,,,\nid2,,1,,,,,,,,authority,,,,,,,\nid3,,1,1,,,,,,,authority,,,,,,,\nid4,,1,1,,,,,1,,authority,,,,,,,\nid5,,1,1,,,,,1,,authority,,,,,,,");
         while let Some(proxy) = reader.next().await.unwrap() {
-            assert_eq!(ProxyDB::InvalidRow, db.append(proxy).unwrap_err().kind);
+            assert_eq!(
+                ProxyDBErrorKind::InvalidRow,
+                db.append(proxy).unwrap_err().kind
+            );
         }
     }
 }

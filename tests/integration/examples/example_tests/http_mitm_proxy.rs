@@ -1,16 +1,16 @@
 use super::utils;
-use rama::tls::backend::rustls::dep::{
+use rama::tls::dep::rcgen::{self, KeyPair};
+use rama::tls::rustls::dep::{
     pki_types::{CertificateDer, PrivatePkcs8KeyDer},
     rustls::ServerConfig,
 };
-use rama::tls::dep::rcgen::KeyPair;
 use rama::{
     http::{response::Json, server::HttpServer, BodyExtractExt, Request},
     net::address::ProxyAddress,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::backend::rustls::server::TlsAcceptorLayer,
+    tls::rustls::server::TlsAcceptorLayer,
     Context, Layer,
 };
 use serde_json::{json, Value};
