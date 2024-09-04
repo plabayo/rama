@@ -1535,10 +1535,12 @@ dependencies = [
  "rama-ua",
  "rama-utils",
  "rustversion",
+ "serde",
  "serde_html_form",
  "serde_json",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

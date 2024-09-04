@@ -278,7 +278,7 @@
 
 pub use ::rama_core::{
     combinators, context, dns, error, graceful, layer, matcher, rt, service, Context, Layer,
-    Service,
+    Service, username,
 };
 
 #[cfg(feature = "tcp")]
