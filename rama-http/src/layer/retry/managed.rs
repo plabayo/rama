@@ -306,10 +306,8 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        http::{IntoResponse, StatusCode},
-        utils::{backoff::ExponentialBackoff, rng::HasherRng},
-    };
+    use crate::{IntoResponse, StatusCode};
+    use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::time::Duration;
 
     fn assert_clone_input_none(

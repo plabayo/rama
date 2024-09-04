@@ -5,11 +5,11 @@
 //! # Example
 //!
 //! ```
-//! use rama::http::layer::sensitive_headers::SetSensitiveHeadersLayer;
-//! use rama::http::{Body, Request, Response, header::AUTHORIZATION};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::sensitive_headers::SetSensitiveHeadersLayer;
+//! use rama_http::{Body, Request, Response, header::AUTHORIZATION};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //! use std::{iter::once, convert::Infallible};
 //!
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
@@ -38,7 +38,7 @@
 //! # }
 //! ```
 
-use crate::{HeaderName, Request, Response};
+use crate::{header, HeaderName, Request, Response};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
@@ -174,7 +174,7 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let headers = req.headers_mut();
         for header in &*self.headers {
-            if let http::header::Entry::Occupied(mut entry) = headers.entry(header) {
+            if let header::Entry::Occupied(mut entry) = headers.entry(header) {
                 for value in entry.iter_mut() {
                     value.set_sensitive(true);
                 }
@@ -272,7 +272,7 @@ where
 
         let headers = res.headers_mut();
         for header in self.headers.iter() {
-            if let http::header::Entry::Occupied(mut entry) = headers.entry(header) {
+            if let header::Entry::Occupied(mut entry) = headers.entry(header) {
                 for value in entry.iter_mut() {
                     value.set_sensitive(true);
                 }
@@ -286,11 +286,12 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{http::header, service::service_fn};
+    use crate::{header, HeaderValue, Request, Response};
+    use rama_core::service::service_fn;
 
     #[tokio::test]
     async fn multiple_value_header() {
-        async fn response_set_cookie(req: http::Request<()>) -> Result<http::Response<()>, ()> {
+        async fn response_set_cookie(req: Request<()>) -> Result<Response<()>, ()> {
             let mut iter = req.headers().get_all(header::COOKIE).iter().peekable();
 
             assert!(iter.peek().is_some());
@@ -299,23 +300,15 @@ mod tests {
                 assert!(value.is_sensitive())
             }
 
-            let mut resp = http::Response::new(());
-            resp.headers_mut().append(
-                header::CONTENT_TYPE,
-                http::HeaderValue::from_static("text/html"),
-            );
-            resp.headers_mut().append(
-                header::SET_COOKIE,
-                http::HeaderValue::from_static("cookie-1"),
-            );
-            resp.headers_mut().append(
-                header::SET_COOKIE,
-                http::HeaderValue::from_static("cookie-2"),
-            );
-            resp.headers_mut().append(
-                header::SET_COOKIE,
-                http::HeaderValue::from_static("cookie-3"),
-            );
+            let mut resp = Response::new(());
+            resp.headers_mut()
+                .append(header::CONTENT_TYPE, HeaderValue::from_static("text/html"));
+            resp.headers_mut()
+                .append(header::SET_COOKIE, HeaderValue::from_static("cookie-1"));
+            resp.headers_mut()
+                .append(header::SET_COOKIE, HeaderValue::from_static("cookie-2"));
+            resp.headers_mut()
+                .append(header::SET_COOKIE, HeaderValue::from_static("cookie-3"));
             Ok(resp)
         }
 
@@ -325,11 +318,11 @@ mod tests {
         )
             .layer(service_fn(response_set_cookie));
 
-        let mut req = http::Request::new(());
+        let mut req = Request::new(());
         req.headers_mut()
-            .append(header::COOKIE, http::HeaderValue::from_static("cookie+1"));
+            .append(header::COOKIE, HeaderValue::from_static("cookie+1"));
         req.headers_mut()
-            .append(header::COOKIE, http::HeaderValue::from_static("cookie+2"));
+            .append(header::COOKIE, HeaderValue::from_static("cookie+2"));
 
         let resp = service.serve(Context::default(), req).await.unwrap();
 

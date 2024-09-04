@@ -3,11 +3,11 @@
 //! # Example
 //!
 //! ```
-//! use rama::http::{Body, Request, Response};
+//! use rama_http::{Body, Request, Response};
 //! use std::convert::Infallible;
-//! use rama::service::service_fn;
-//! use rama::{Context, Layer, Service};
-//! use rama::http::layer::body_limit::BodyLimitLayer;
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Layer, Service};
+//! use rama_http::layer::body_limit::BodyLimitLayer;
 //!
 //! async fn handle<B>(_: Request<B>) -> Result<Response, Infallible> {
 //!     // ...

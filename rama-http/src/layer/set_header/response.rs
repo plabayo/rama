@@ -9,11 +9,11 @@
 //! Setting a header from a fixed value provided when the middleware is constructed:
 //!
 //! ```
-//! use rama::http::layer::set_header::SetResponseHeaderLayer;
-//! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::set_header::SetResponseHeaderLayer;
+//! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
@@ -45,12 +45,12 @@
 //! Setting a header based on a value determined dynamically from the response:
 //!
 //! ```
-//! use rama::http::layer::set_header::SetResponseHeaderLayer;
-//! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use crate::rama::http::dep::http_body::Body as _;
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::set_header::SetResponseHeaderLayer;
+//! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
+//! use crate::rama_http::dep::http_body::Body as _;
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
@@ -366,8 +366,8 @@ where
 mod tests {
     use super::*;
 
-    use crate::service::service_fn;
     use crate::{header, Body, HeaderValue, Request, Response};
+    use rama_core::service::service_fn;
     use std::convert::Infallible;
 
     #[tokio::test]

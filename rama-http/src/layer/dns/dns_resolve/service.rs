@@ -12,9 +12,7 @@ use std::fmt;
 /// a way to have requested the intent
 /// to reoslve DNS even if it is not needed.
 ///
-/// See [`Dns`] and [`DnsResolveMode`] for more information.
-///
-/// [`Dns`]: crate::dns::Dns
+/// See `Dns` (`rama_core`) and [`DnsResolveMode`] for more information.
 pub struct DnsResolveModeService<S> {
     inner: S,
     header_name: HeaderName,

@@ -3,13 +3,13 @@
 //! # Example
 //!
 //! ```
-//! use rama::http::layer::request_id::{
+//! use rama_http::layer::request_id::{
 //!     SetRequestIdLayer, PropagateRequestIdLayer, MakeRequestId, RequestId,
 //! };
-//! use rama::http::{Body, Request, Response, header::HeaderName};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::{Body, Request, Response, header::HeaderName};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //! use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
 //!
 //! # #[tokio::main]
@@ -388,8 +388,8 @@ impl MakeRequestId for MakeRequestUuid {
 #[cfg(test)]
 mod tests {
     use crate::layer::set_header;
-    use crate::service::service_fn;
     use crate::{Body, Response};
+    use rama_core::service::service_fn;
     use rama_core::Layer;
     use std::{
         convert::Infallible,

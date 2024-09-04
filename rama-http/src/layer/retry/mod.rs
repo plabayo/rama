@@ -171,13 +171,10 @@ where
 mod test {
     use super::*;
     use crate::{
-        http::{
-            layer::retry::managed::DoNotRetry, BodyExtractExt, IntoResponse, Response, StatusCode,
-        },
-        service::service_fn,
-        utils::{backoff::ExponentialBackoff, rng::HasherRng},
-        Context, Layer,
+        layer::retry::managed::DoNotRetry, BodyExtractExt, IntoResponse, Response, StatusCode,
     };
+    use rama_core::{service::service_fn, Context, Layer};
+    use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::{
         sync::{atomic::AtomicUsize, Arc},
         time::Duration,

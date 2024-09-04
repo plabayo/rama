@@ -35,10 +35,10 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// # Examples
 /// ```
 /// use std::iter::FromIterator;
-/// use rama::http::headers::{Accept, QualityValue, HeaderMapExt};
-/// use rama::http::dep::mime;
+/// use rama_http::headers::{Accept, QualityValue, HeaderMapExt};
+/// use rama_http::dep::mime;
 ///
-/// let mut headers = rama::http::HeaderMap::new();
+/// let mut headers = rama_http::HeaderMap::new();
 ///
 /// headers.typed_insert(
 ///     Accept::from_iter(vec![
@@ -49,10 +49,10 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 ///
 /// ```
 /// use std::iter::FromIterator;
-/// use rama::http::headers::{Accept, QualityValue, HeaderMapExt};
-/// use rama::http::dep::mime;
+/// use rama_http::headers::{Accept, QualityValue, HeaderMapExt};
+/// use rama_http::dep::mime;
 ///
-/// let mut headers = rama::http::HeaderMap::new();
+/// let mut headers = rama_http::HeaderMap::new();
 /// headers.typed_insert(
 ///     Accept::from_iter(vec![
 ///         QualityValue::new(mime::APPLICATION_JSON, Default::default()),
@@ -61,10 +61,10 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// ```
 /// ```
 /// use std::iter::FromIterator;
-/// use rama::http::headers::{Accept, QualityValue, HeaderMapExt};
-/// use rama::http::dep::mime;
+/// use rama_http::headers::{Accept, QualityValue, HeaderMapExt};
+/// use rama_http::dep::mime;
 ///
-/// let mut headers = rama::http::HeaderMap::new();
+/// let mut headers = rama_http::HeaderMap::new();
 ///
 /// headers.typed_insert(
 ///     Accept::from_iter(vec![

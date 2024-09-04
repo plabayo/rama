@@ -6,7 +6,7 @@ use std::{convert::Infallible, fmt, str::FromStr};
 
 /// User Agent (UA) information.
 ///
-/// See [the module level documentation](crate::ua) for more information.
+/// See [the module level documentation](crate) for more information.
 #[derive(Debug, Clone)]
 pub struct UserAgent {
     pub(super) header: String,
@@ -44,7 +44,7 @@ pub struct UserAgentInfo {
 }
 
 impl UserAgent {
-    /// Create a new [`UserAgent`] from a [`User-Agent` header](crate::http::headers::UserAgent) value.
+    /// Create a new [`UserAgent`] from a `User-Agent` (header) value.
     pub fn new(header: impl Into<String>) -> Self {
         parse_http_user_agent_header(header.into())
     }
@@ -61,7 +61,7 @@ impl UserAgent {
         self
     }
 
-    /// Preserve the incoming [`User-Agent` header](crate::http::headers::UserAgent) value.
+    /// Preserve the incoming `User-Agent` (header) value.
     ///
     /// This is used to indicate to emulators that they should respect the User-Agent header
     /// attached to this [`UserAgent`], if possible.
@@ -76,7 +76,7 @@ impl UserAgent {
         self.preserve_ua_header
     }
 
-    /// returns [the 'User-Agent' http header](crate::http::headers::UserAgent) value used by the [`UserAgent`].
+    /// returns the `User-Agent` (header) value used by the [`UserAgent`].
     pub fn header_str(&self) -> &str {
         &self.header
     }
@@ -124,7 +124,7 @@ impl UserAgent {
 
     /// returns the [`HttpAgent`] used by the [`UserAgent`].
     ///
-    /// [`UserAgent`]: crate::ua::UserAgent
+    /// [`UserAgent`]: super::UserAgent
     pub fn http_agent(&self) -> HttpAgent {
         match &self.http_agent_overwrite {
             Some(agent) => agent.clone(),
@@ -143,7 +143,7 @@ impl UserAgent {
 
     /// returns the [`TlsAgent`] used by the [`UserAgent`].
     ///
-    /// [`UserAgent`]: crate::ua::UserAgent
+    /// [`UserAgent`]: super::UserAgent
     pub fn tls_agent(&self) -> TlsAgent {
         match &self.tls_agent_overwrite {
             Some(agent) => agent.clone(),
@@ -170,8 +170,6 @@ impl FromStr for UserAgent {
 }
 
 /// The kind of [`UserAgent`]
-///
-/// [`UserAgent`]: crate::ua::UserAgent
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UserAgentKind {
     /// Chromium Browser

@@ -7,14 +7,14 @@
 //! ```rust
 //! use bytes::Bytes;
 //! use futures_lite::stream::StreamExt;
-//! use rama::error::BoxError;
-//! use rama::http::dep::http_body::Frame;
-//! use rama::http::dep::http_body_util::{BodyExt , StreamBody};
-//! use rama::http::dep::http_body_util::combinators::BoxBody as InnerBoxBody;
-//! use rama::http::layer::compression::CompressionLayer;
-//! use rama::http::{Body, Request, Response, header::ACCEPT_ENCODING};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
+//! use rama_http::dep::http_body::Frame;
+//! use rama_http::dep::http_body_util::{BodyExt , StreamBody};
+//! use rama_http::dep::http_body_util::combinators::BoxBody as InnerBoxBody;
+//! use rama_http::layer::compression::CompressionLayer;
+//! use rama_http::{Body, Request, Response, header::ACCEPT_ENCODING};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
 //! use std::convert::Infallible;
 //! use tokio::fs::{self, File};
 //! use tokio_util::io::ReaderStream;

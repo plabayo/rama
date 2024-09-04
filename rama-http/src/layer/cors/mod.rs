@@ -6,10 +6,10 @@
 //! use std::convert::Infallible;
 //! use bytes::Bytes;
 //!
-//! use rama::http::{Body, Request, Response, Method, header};
-//! use rama::http::layer::cors::{Any, CorsLayer};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
+//! use rama_http::{Body, Request, Response, Method, header};
+//! use rama_http::layer::cors::{Any, CorsLayer};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
 //!
 //! async fn handle(request: Request) -> Result<Response, Infallible> {
 //!     Ok(Response::new(Body::default()))
@@ -150,7 +150,7 @@ impl CorsLayer {
     /// Set the [`Access-Control-Allow-Credentials`][mdn] header.
     ///
     /// ```
-    /// use rama::http::layer::cors::CorsLayer;
+    /// use rama_http::layer::cors::CorsLayer;
     ///
     /// let layer = CorsLayer::new().allow_credentials(true);
     /// ```
@@ -167,8 +167,8 @@ impl CorsLayer {
     /// Set the value of the [`Access-Control-Allow-Headers`][mdn] header.
     ///
     /// ```
-    /// use rama::http::layer::cors::CorsLayer;
-    /// use rama::http::header::{AUTHORIZATION, ACCEPT};
+    /// use rama_http::layer::cors::CorsLayer;
+    /// use rama_http::header::{AUTHORIZATION, ACCEPT};
     ///
     /// let layer = CorsLayer::new().allow_headers([AUTHORIZATION, ACCEPT]);
     /// ```
@@ -176,7 +176,7 @@ impl CorsLayer {
     /// All headers can be allowed with
     ///
     /// ```
-    /// use rama::http::layer::cors::{Any, CorsLayer};
+    /// use rama_http::layer::cors::{Any, CorsLayer};
     ///
     /// let layer = CorsLayer::new().allow_headers(Any);
     /// ```
@@ -197,8 +197,8 @@ impl CorsLayer {
     /// #         vec![HeaderValue::from_static("http://example.com")]
     /// #     }
     /// # }
-    /// use rama::http::layer::cors::{CorsLayer, AllowOrigin};
-    /// use rama::http::dep::http::{request::Parts as RequestParts, HeaderValue};
+    /// use rama_http::layer::cors::{CorsLayer, AllowOrigin};
+    /// use rama_http::dep::http::{request::Parts as RequestParts, HeaderValue};
     ///
     /// let client = get_api_client();
     ///
@@ -246,7 +246,7 @@ impl CorsLayer {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use rama::http::layer::cors::CorsLayer;
+    /// use rama_http::layer::cors::CorsLayer;
     ///
     /// let layer = CorsLayer::new().max_age(Duration::from_secs(60) * 10);
     /// ```
@@ -266,8 +266,8 @@ impl CorsLayer {
     /// # struct MyServerConfig { cors_max_age: Duration }
     /// use std::time::Duration;
     ///
-    /// use rama::http::dep::http::{request::Parts as RequestParts, HeaderValue};
-    /// use rama::http::layer::cors::{CorsLayer, MaxAge};
+    /// use rama_http::dep::http::{request::Parts as RequestParts, HeaderValue};
+    /// use rama_http::layer::cors::{CorsLayer, MaxAge};
     ///
     /// let layer = CorsLayer::new().max_age(MaxAge::dynamic(
     ///     |_origin: &HeaderValue, parts: &RequestParts| -> Duration {
@@ -292,8 +292,8 @@ impl CorsLayer {
     /// Set the value of the [`Access-Control-Allow-Methods`][mdn] header.
     ///
     /// ```
-    /// use rama::http::layer::cors::CorsLayer;
-    /// use rama::http::Method;
+    /// use rama_http::layer::cors::CorsLayer;
+    /// use rama_http::Method;
     ///
     /// let layer = CorsLayer::new().allow_methods([Method::GET, Method::POST]);
     /// ```
@@ -301,7 +301,7 @@ impl CorsLayer {
     /// All methods can be allowed with
     ///
     /// ```
-    /// use rama::http::layer::cors::{Any, CorsLayer};
+    /// use rama_http::layer::cors::{Any, CorsLayer};
     ///
     /// let layer = CorsLayer::new().allow_methods(Any);
     /// ```
@@ -321,8 +321,8 @@ impl CorsLayer {
     /// Set the value of the [`Access-Control-Allow-Origin`][mdn] header.
     ///
     /// ```
-    /// use rama::http::HeaderValue;
-    /// use rama::http::layer::cors::CorsLayer;
+    /// use rama_http::HeaderValue;
+    /// use rama_http::layer::cors::CorsLayer;
     ///
     /// let layer = CorsLayer::new().allow_origin(
     ///     "http://example.com".parse::<HeaderValue>().unwrap(),
@@ -332,7 +332,7 @@ impl CorsLayer {
     /// Multiple origins can be allowed with
     ///
     /// ```
-    /// use rama::http::layer::cors::CorsLayer;
+    /// use rama_http::layer::cors::CorsLayer;
     ///
     /// let origins = [
     ///     "http://example.com".parse().unwrap(),
@@ -345,7 +345,7 @@ impl CorsLayer {
     /// All origins can be allowed with
     ///
     /// ```
-    /// use rama::http::layer::cors::{Any, CorsLayer};
+    /// use rama_http::layer::cors::{Any, CorsLayer};
     ///
     /// let layer = CorsLayer::new().allow_origin(Any);
     /// ```
@@ -353,8 +353,8 @@ impl CorsLayer {
     /// You can also use a closure
     ///
     /// ```
-    /// use rama::http::layer::cors::{CorsLayer, AllowOrigin};
-    /// use rama::http::dep::http::{request::Parts as RequestParts, HeaderValue};
+    /// use rama_http::layer::cors::{CorsLayer, AllowOrigin};
+    /// use rama_http::dep::http::{request::Parts as RequestParts, HeaderValue};
     ///
     /// let layer = CorsLayer::new().allow_origin(AllowOrigin::predicate(
     ///     |origin: &HeaderValue, _request_parts: &RequestParts| {
@@ -378,8 +378,8 @@ impl CorsLayer {
     /// Set the value of the [`Access-Control-Expose-Headers`][mdn] header.
     ///
     /// ```
-    /// use rama::http::layer::cors::CorsLayer;
-    /// use rama::http::header::CONTENT_ENCODING;
+    /// use rama_http::layer::cors::CorsLayer;
+    /// use rama_http::header::CONTENT_ENCODING;
     ///
     /// let layer = CorsLayer::new().expose_headers([CONTENT_ENCODING]);
     /// ```
@@ -387,7 +387,7 @@ impl CorsLayer {
     /// All headers can be allowed with
     ///
     /// ```
-    /// use rama::http::layer::cors::{Any, CorsLayer};
+    /// use rama_http::layer::cors::{Any, CorsLayer};
     ///
     /// let layer = CorsLayer::new().expose_headers(Any);
     /// ```
@@ -407,7 +407,7 @@ impl CorsLayer {
     /// Set the value of the [`Access-Control-Allow-Private-Network`][wicg] header.
     ///
     /// ```
-    /// use rama::http::layer::cors::CorsLayer;
+    /// use rama_http::layer::cors::CorsLayer;
     ///
     /// let layer = CorsLayer::new().allow_private_network(true);
     /// ```

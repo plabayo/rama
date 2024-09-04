@@ -1,6 +1,6 @@
 //! Http [`Layer`]s provided by Rama.
 //!
-//! A [`Layer`], as defined in [`crate::service`],
+//! A [`Layer`], as defined in [`rama_core::Service`],
 //! is a middleware that can modify the request and/or response of a [`Service`]s.
 //! It is also capable of branching between two or more [`Service`]s.
 //!

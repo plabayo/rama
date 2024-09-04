@@ -3,15 +3,15 @@
 //! # Example
 //!
 //! ```
-//! use rama::http::{Body, Request, Response};
-//! use rama::http::dep::http_body;
+//! use rama_http::{Body, Request, Response};
+//! use rama_http::dep::http_body;
 //! use bytes::Bytes;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{ready, Context, Poll}};
-//! use rama::{Layer, Service, context};
-//! use rama::service::service_fn;
-//! use rama::http::layer::map_request_body::MapRequestBodyLayer;
-//! use rama::error::BoxError;
+//! use rama_core::{Layer, Service, context};
+//! use rama_core::service::service_fn;
+//! use rama_http::layer::map_request_body::MapRequestBodyLayer;
+//! use rama_core::error::BoxError;
 //!
 //! // A wrapper for a `Full<Bytes>`
 //! struct BodyWrapper {

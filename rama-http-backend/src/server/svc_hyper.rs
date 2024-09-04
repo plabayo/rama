@@ -1,4 +1,4 @@
-use crate::{BodyLimit, IntoResponse, Request};
+use rama_http_types::{BodyLimit, IntoResponse, Request};
 use rama_core::{Context, Service};
 use std::{convert::Infallible, fmt, future::Future, pin::Pin, sync::Arc};
 
@@ -30,7 +30,7 @@ where
     T: Service<S, Request, Response = Response, Error = Infallible>,
     Response: IntoResponse + Send + 'static,
 {
-    type Response = crate::Response;
+    type Response = rama_http_types::Response;
     type Error = std::convert::Infallible;
     type Future =
         Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send + 'static>>;
@@ -42,14 +42,14 @@ where
         let body_limit = ctx.get::<BodyLimit>().cloned();
 
         let req = match body_limit.and_then(|limit| limit.request()) {
-            Some(limit) => req.map(|body| crate::Body::with_limit(body, limit)),
-            None => req.map(crate::Body::new),
+            Some(limit) => req.map(|body| rama_http_types::Body::with_limit(body, limit)),
+            None => req.map(rama_http_types::Body::new),
         };
 
         Box::pin(async move {
             let resp = inner.serve(ctx, req).await.into_response();
             Ok(match body_limit.and_then(|limit| limit.response()) {
-                Some(limit) => resp.map(|body| crate::Body::with_limit(body, limit)),
+                Some(limit) => resp.map(|body| rama_http_types::Body::with_limit(body, limit)),
                 // If there is no limit, we can just return the response as is.
                 None => resp,
             })

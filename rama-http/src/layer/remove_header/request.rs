@@ -3,11 +3,11 @@
 //! # Example
 //!
 //! ```
-//! use rama::http::layer::remove_header::RemoveRequestHeaderLayer;
-//! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::remove_header::RemoveRequestHeaderLayer;
+//! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
@@ -172,11 +172,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{
-        http::{Body, Response},
-        service::service_fn,
-        Layer, Service,
-    };
+    use crate::{Body, Response};
+    use rama_core::{service::service_fn, Layer, Service};
     use std::convert::Infallible;
 
     #[tokio::test]

@@ -1,9 +1,9 @@
 use super::*;
 use crate::{response::IntoResponse, BodyExtractExt};
-use crate::{Layer, Service};
 use crate::{Request, Response};
 use parking_lot::Mutex;
 use rama_core::error::{error, OpaqueError};
+use rama_core::{Layer, Service};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,

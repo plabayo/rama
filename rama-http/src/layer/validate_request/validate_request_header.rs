@@ -44,7 +44,7 @@ impl<ResBody> ValidateRequestHeaderLayer<AcceptHeader<ResBody>> {
     /// # Example
     ///
     /// ```
-    /// use rama::http::layer::validate_request::{AcceptHeader, ValidateRequestHeaderLayer};
+    /// use rama_http::layer::validate_request::{AcceptHeader, ValidateRequestHeaderLayer};
     ///
     /// let layer = ValidateRequestHeaderLayer::<AcceptHeader>::accept("application/json");
     /// ```
@@ -185,8 +185,8 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::{error::BoxError, service::service_fn, Layer};
     use crate::{header, Body, StatusCode};
+    use rama_core::{error::BoxError, service::service_fn, Layer};
 
     #[tokio::test]
     async fn valid_accept_header() {

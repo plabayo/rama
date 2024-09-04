@@ -9,12 +9,12 @@
 //! use bytes::{Bytes, BytesMut};
 //! use flate2::{write::GzEncoder, Compression};
 //!
-//! use rama::http::{Body, header, HeaderValue, Request, Response};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::http::layer::decompression::{DecompressionBody, RequestDecompressionLayer};
-//! use rama::http::dep::http_body_util::BodyExt;
-//! use rama::error::BoxError;
+//! use rama_http::{Body, header, HeaderValue, Request, Response};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_http::layer::decompression::{DecompressionBody, RequestDecompressionLayer};
+//! use rama_http::dep::http_body_util::BodyExt;
+//! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
@@ -51,12 +51,12 @@
 //!
 //! use bytes::{Bytes, BytesMut};
 //!
-//! use rama::http::{Body, Request, Response};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::http::layer::{compression::Compression, decompression::DecompressionLayer};
-//! use rama::http::dep::http_body_util::BodyExt;
-//! use rama::error::BoxError;
+//! use rama_http::{Body, Request, Response};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_http::layer::{compression::Compression, decompression::DecompressionLayer};
+//! use rama_http::dep::http_body_util::BodyExt;
+//! use rama_core::error::BoxError;
 //!
 //! #
 //! # #[tokio::main]

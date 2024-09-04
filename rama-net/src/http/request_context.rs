@@ -12,9 +12,7 @@ use rama_http_types::{dep::http::request::Parts, Request, Uri, Version};
 use crate::tls::SecureTransport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// The context of the [`Request`] being served by the [`HttpServer`]
-///
-/// [`HttpServer`]: crate::server::HttpServer
+/// The context of the [`Request`].
 pub struct RequestContext {
     /// The HTTP Version.
     pub http_version: Version,

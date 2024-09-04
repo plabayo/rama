@@ -7,12 +7,12 @@
 //! ```
 //! use bytes::Bytes;
 //!
-//! use rama::http::layer::validate_request::{ValidateRequestHeader, ValidateRequestHeaderLayer};
-//! use rama::http::layer::auth::AddAuthorizationLayer;
-//! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::validate_request::{ValidateRequestHeader, ValidateRequestHeaderLayer};
+//! use rama_http::layer::auth::AddAuthorizationLayer;
+//! use rama_http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! # async fn handle(request: Request) -> Result<Response, BoxError> {
 //! #     Ok(Response::new(Body::default()))

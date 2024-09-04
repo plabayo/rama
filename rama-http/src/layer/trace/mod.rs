@@ -5,10 +5,10 @@
 //! Adding tracing to your service can be as simple as:
 //!
 //! ```rust
-//! use rama::http::{Body, Request, Response};
-//! use rama::service::service_fn;
-//! use rama::{Context, Layer, Service};
-//! use rama::http::layer::trace::TraceLayer;
+//! use rama_http::{Body, Request, Response};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Layer, Service};
+//! use rama_http::layer::trace::TraceLayer;
 //! use std::convert::Infallible;
 //!
 //! async fn handle(request: Request) -> Result<Response, Infallible> {
@@ -34,8 +34,8 @@
 //! If you run this application with `RUST_LOG=rama=trace cargo run` you should see logs like:
 //!
 //! ```text
-//! Mar 05 20:50:28.523 DEBUG request{method=GET path="/foo"}: rama::http::layer::trace::on_request: started processing request
-//! Mar 05 20:50:28.524 DEBUG request{method=GET path="/foo"}: rama::http::layer::trace::on_response: finished processing request latency=1 ms status=200
+//! Mar 05 20:50:28.523 DEBUG request{method=GET path="/foo"}: rama_http::layer::trace::on_request: started processing request
+//! Mar 05 20:50:28.524 DEBUG request{method=GET path="/foo"}: rama_http::layer::trace::on_response: finished processing request latency=1 ms status=200
 //! ```
 //!
 //! # Customization
@@ -45,14 +45,14 @@
 //! The default behaviour supports some customization:
 //!
 //! ```rust
-//! use rama::http::{Body, Request, Response, HeaderMap, StatusCode};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
+//! use rama_http::{Body, Request, Response, HeaderMap, StatusCode};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
 //! use tracing::Level;
-//! use rama::http::layer::trace::{
+//! use rama_http::layer::trace::{
 //!     TraceLayer, DefaultMakeSpan, DefaultOnRequest, DefaultOnResponse,
 //! };
-//! use rama::utils::latency::LatencyUnit;
+//! use rama_utils::latency::LatencyUnit;
 //! use std::time::Duration;
 //! use std::convert::Infallible;
 //!
@@ -89,10 +89,10 @@
 //! However for maximum control you can provide callbacks:
 //!
 //! ```rust
-//! use rama::http::{Body, Request, Response, HeaderMap, StatusCode};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
+//! use rama_http::{Body, Request, Response, HeaderMap, StatusCode};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
 //! use tracing::Span;
 //! use std::convert::Infallible;
@@ -139,10 +139,10 @@
 //! Setting the behaviour to `()` will be disable that particular step:
 //!
 //! ```rust
-//! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
+//! use rama_http::{Body, Request, Response, StatusCode};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_http::layer::{classify::ServerErrorsFailureClass, trace::TraceLayer};
 //! use std::time::Duration;
 //! use tracing::Span;
 //! # use std::convert::Infallible;
@@ -222,10 +222,10 @@
 //! field values][record] that weren't known when the span was created.
 //!
 //! ```rust
-//! use rama::http::{Body, Request, Response, HeaderMap, StatusCode};
-//! use rama::service::service_fn;
-//! use rama::Layer;
-//! use rama::http::layer::trace::TraceLayer;
+//! use rama_http::{Body, Request, Response, HeaderMap, StatusCode};
+//! use rama_core::service::service_fn;
+//! use rama_core::Layer;
+//! use rama_http::layer::trace::TraceLayer;
 //! use tracing::Span;
 //! use std::time::Duration;
 //! use std::convert::Infallible;
@@ -264,10 +264,10 @@
 //! A [`MakeClassifier`] can be provided when creating a [`TraceLayer`]:
 //!
 //! ```rust
-//! use rama::http::{Body, Request, Response};
-//! use rama::service::service_fn;
-//! use rama::Layer;
-//! use rama::http::layer::{
+//! use rama_http::{Body, Request, Response};
+//! use rama_core::service::service_fn;
+//! use rama_core::Layer;
+//! use rama_http::layer::{
 //!     trace::TraceLayer,
 //!     classify::{
 //!         MakeClassifier, ClassifyResponse, ClassifiedResponse, NeverClassifyEos,
@@ -345,8 +345,8 @@
 //!   responses.
 //!
 //! [tracing]: https://crates.io/crates/tracing
-//! [`Service`]: crate::Service
-//! [`Service::serve`]: crate::Service::serve
+//! [`Service`]: rama_core::Service
+//! [`Service::serve`]: rama_core::Service::serve
 //! [`MakeClassifier`]: crate::layer::classify::MakeClassifier
 //! [`ClassifyResponse`]: crate::layer::classify::ClassifyResponse
 //! [record]: https://docs.rs/tracing/latest/tracing/span/struct.Span.html#method.record

@@ -39,12 +39,13 @@ const DEFAULT_CAPACITY: usize = 65536;
 /// # Example
 ///
 /// ```rust,no_run
-/// use rama::{
-///     http::{server::HttpServer, service::fs::ServeDir},
+/// use rama_http_backend::server::HttpServer;
+/// use rama_http::service::fs::{ServeDir, ServeFile};
+/// use rama_core::{
 ///     rt::Executor,
-///     tcp::server::TcpListener,
 ///     Layer, layer::TraceErrLayer,
 /// };
+/// use rama_tcp::server::TcpListener;
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -311,15 +312,13 @@ impl<F> ServeDir<F> {
     /// This can be used to respond with a different file:
     ///
     /// ```rust,no_run
-    /// use rama::{
-    ///     http::{
-    ///         server::HttpServer,
-    ///         service::fs::{ServeDir, ServeFile},
-    ///     },
+    /// use rama_core::{
     ///     rt::Executor,
     ///     Layer, layer::TraceErrLayer,
-    ///     tcp::server::TcpListener,
     /// };
+    /// use rama_tcp::server::TcpListener;
+    /// use rama_http_backend::server::HttpServer;
+    /// use rama_http::service::fs::{ServeDir, ServeFile};
     ///
     /// #[tokio::main]
     /// async fn main() {
@@ -360,16 +359,14 @@ impl<F> ServeDir<F> {
     /// This can be used to respond with a different file:
     ///
     /// ```rust,no_run
-    /// use rama::{
-    ///     http::{
-    ///         server::HttpServer,
-    ///         service::fs::{ServeDir, ServeFile},
-    ///     },
+    /// use rama_core::{
     ///     rt::Executor,
     ///     layer::TraceErrLayer,
-    ///     tcp::server::TcpListener,
     ///     Layer,
     /// };
+    /// use rama_tcp::server::TcpListener;
+    /// use rama_http_backend::server::HttpServer;
+    /// use rama_http::service::fs::{ServeDir, ServeFile};
     ///
     /// #[tokio::main]
     /// async fn main() {
@@ -426,14 +423,16 @@ impl<F> ServeDir<F> {
     /// # Example
     ///
     /// ```rust,no_run
-    /// use rama::{
-    ///     http::{server::HttpServer, service::fs::ServeDir, Body, Request, Response, StatusCode},
+    /// use rama_core::{
     ///     rt::Executor,
     ///     service::service_fn,
     ///     layer::TraceErrLayer,
-    ///     tcp::server::TcpListener,
     ///     Context, Layer,
     /// };
+    /// use rama_tcp::server::TcpListener;
+    /// use rama_http_backend::server::HttpServer;
+    /// use rama_http::service::fs::ServeDir;
+    /// use rama_http::{Body, Request, Response, StatusCode};
     /// use std::convert::Infallible;
     ///
     /// #[tokio::main]

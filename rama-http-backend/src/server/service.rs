@@ -6,7 +6,7 @@ use crate::executor::HyperExecutor;
 use rama_net::stream::Stream;
 use rama_tcp::server::TcpListener;
 use rama_core::{Context, Service};
-use crate::{IntoResponse, Request};
+use rama_http_types::{IntoResponse, Request};
 use hyper::server::conn::http2::Builder as H2ConnBuilder;
 use hyper::{rt::Timer, server::conn::http1::Builder as Http1ConnBuilder};
 use hyper_util::server::conn::auto::Builder as AutoConnBuilder;

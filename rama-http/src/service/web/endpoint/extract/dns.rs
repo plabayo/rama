@@ -7,7 +7,7 @@ use std::ops::Deref;
 #[derive(Debug, Clone)]
 /// Extractor to get a clone of the [`Dns`] from the [`Context`].
 ///
-/// [`Dns`]: crate::dns::Dns
+/// [`Dns`]: rama_core::dns::Dns
 /// [`Context`]: rama_core::Context
 pub struct Dns(pub rama_core::dns::Dns);
 

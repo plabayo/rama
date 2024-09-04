@@ -6,10 +6,10 @@
 //! # Example
 //!
 //! ```rust
-//! use rama::http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
-//! use rama::http::service::web::{WebService, extract::Extension};
-//! use rama::http::{Body, Request, StatusCode, HeaderName};
-//! use rama::{Context, Service, Layer};
+//! use rama_http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
+//! use rama_http::service::web::{WebService, extract::Extension};
+//! use rama_http::{Body, Request, StatusCode, HeaderName};
+//! use rama_core::{Context, Service, Layer};
 //! use serde::Deserialize;
 //!
 //! #[derive(Debug, Deserialize, Clone)]
@@ -250,7 +250,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            crate::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+            rama_core::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
                 let cfg: &Config = ctx.get().unwrap();
                 assert_eq!(cfg.s, "E&G");
                 assert_eq!(cfg.n, 1);
@@ -278,7 +278,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            crate::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+            rama_core::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
                 let cfg: &Config = ctx.get().unwrap();
                 assert_eq!(cfg.s, "E&G");
                 assert_eq!(cfg.n, 1);
@@ -305,7 +305,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            crate::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+            rama_core::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
                 assert!(ctx.get::<Config>().is_none());
 
                 Ok::<_, std::convert::Infallible>(())
@@ -327,7 +327,7 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = crate::service::service_fn(|_: Request<()>| async move {
+        let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
             Ok::<_, std::convert::Infallible>(())
         });
 
@@ -349,7 +349,7 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = crate::service::service_fn(|_: Request<()>| async move {
+        let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
             Ok::<_, std::convert::Infallible>(())
         });
 
@@ -371,7 +371,7 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = crate::service::service_fn(|_: Request<()>| async move {
+        let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
             Ok::<_, std::convert::Infallible>(())
         });
 

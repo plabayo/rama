@@ -5,11 +5,11 @@
 //! ```
 //! use std::{iter::once, convert::Infallible};
 //! use bytes::Bytes;
-//! use rama::http::layer::set_status::SetStatusLayer;
-//! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::service::service_fn;
-//! use rama::{Context, Layer, Service};
-//! use rama::error::BoxError;
+//! use rama_http::layer::set_status::SetStatusLayer;
+//! use rama_http::{Body, Request, Response, StatusCode};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Layer, Service};
+//! use rama_core::error::BoxError;
 //!
 //! async fn handle(req: Request) -> Result<Response, Infallible> {
 //!     // ...

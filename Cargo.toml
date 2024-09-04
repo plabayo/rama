@@ -12,6 +12,7 @@ members = [
     "rama-macros",
     "rama-net",
     "rama-proxy",
+    "rama-haproxy",
     "rama-tls",
     "rama-ua",
     "rama-utils",
@@ -145,6 +146,7 @@ net = []
 tcp = ["net"]
 http = ["dep:rama-http", "dep:rama-http-backend", "net", "ua"]
 proxy = ["dep:rama-proxy"]
+haproxy = ["dep:rama-haproxy"]
 ua = ["dep:rama-ua"]
 
 [build-dependencies]
@@ -165,8 +167,6 @@ http-body = { workspace = true }
 http-body-util = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
-hyper = { workspace = true, features = ["http1", "http2", "server", "client"] }
-hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
 ipnet = { workspace = true }
 iri-string = { workspace = true }
 mime = { workspace = true }
@@ -184,6 +184,7 @@ rama-http = { version = "0.2.0-alpha.2", path = "rama-http", optional = true }
 rama-http-backend = { version = "0.2.0-alpha.2", path = "rama-http-backend", optional = true }
 rama-macros = { version = "0.2.0-alpha.2", path = "rama-macros" }
 rama-proxy = { version = "0.2.0-alpha.2", path = "rama-proxy", optional = true }
+rama-haproxy = { version = "0.2.0-alpha.2", path = "rama-haproxy", optional = true }
 rama-tls = { version = "0.2.0-alpha.2", path = "rama-tls", optional = true }
 rama-ua = { version = "0.2.0-alpha.2", path = "rama-ua", optional = true }
 rama-utils = { version = "0.2.0-alpha.2", path = "rama-utils" }

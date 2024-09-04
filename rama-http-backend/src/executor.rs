@@ -1,6 +1,6 @@
 //! tmp executor for http (while hyper is still third party)
 
-use crate::rt::Executor;
+use rama_core::rt::Executor;
 
 #[derive(Default, Debug, Clone)]
 /// Newtype to be able to implement Executor interface

@@ -8,11 +8,11 @@
 //! ```rust
 //! use std::convert::Infallible;
 //!
-//! use rama::http::{Request, Response, Body, header::HeaderName};
-//! use rama::http::layer::catch_panic::CatchPanicLayer;
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::{Request, Response, Body, header::HeaderName};
+//! use rama_http::layer::catch_panic::CatchPanicLayer;
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
@@ -41,11 +41,11 @@
 //! ```rust
 //! use std::{any::Any, convert::Infallible};
 //!
-//! use rama::http::{Body, Request, StatusCode, Response, header::{self, HeaderName}};
-//! use rama::http::layer::catch_panic::CatchPanicLayer;
-//! use rama::service::{Service, service_fn};
-//! use rama::Layer;
-//! use rama::error::BoxError;
+//! use rama_http::{Body, Request, StatusCode, Response, header::{self, HeaderName}};
+//! use rama_http::layer::catch_panic::CatchPanicLayer;
+//! use rama_core::service::{Service, service_fn};
+//! use rama_core::Layer;
+//! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
@@ -292,8 +292,10 @@ mod tests {
 
     use super::*;
 
-    use crate::{http::dep::http_body_util::BodyExt, service::service_fn};
-    use hyper::Response;
+    use crate::dep::http_body_util::BodyExt;
+    use crate::{Body, Response};
+    use rama_core::service::service_fn;
+    use rama_core::{Context, Service};
     use std::convert::Infallible;
 
     #[tokio::test]

@@ -69,8 +69,7 @@ pub mod service;
 
 pub mod io;
 
-#[doc(hidden)]
-mod utils;
+pub mod utils;
 
 pub mod dep {
     //! Dependencies for rama http modules.

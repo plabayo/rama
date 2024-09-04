@@ -67,8 +67,9 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{self, StatusCode};
-    use crate::{http::service::web::WebService, service::Service};
+    use crate::service::web::WebService;
+    use crate::{header, Method, Request, StatusCode};
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_text() {
@@ -76,9 +77,9 @@ mod test {
             assert_eq!(body, "test");
         });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
-            .header(http::header::CONTENT_TYPE, "text/plain")
+        let req = Request::builder()
+            .method(Method::POST)
+            .header(header::CONTENT_TYPE, "text/plain")
             .body("test".into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
@@ -91,8 +92,8 @@ mod test {
             unreachable!();
         });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
+        let req = Request::builder()
+            .method(Method::POST)
             .body("test".into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
@@ -105,9 +106,9 @@ mod test {
             unreachable!();
         });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
-            .header(http::header::CONTENT_TYPE, "application/json")
+        let req = Request::builder()
+            .method(Method::POST)
+            .header(header::CONTENT_TYPE, "application/json")
             .body("test".into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
@@ -120,9 +121,9 @@ mod test {
             unreachable!();
         });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
-            .header(http::header::CONTENT_TYPE, "text/plain")
+        let req = Request::builder()
+            .method(Method::POST)
+            .header(header::CONTENT_TYPE, "text/plain")
             .body(vec![0, 159, 146, 150].into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();

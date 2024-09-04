@@ -9,11 +9,11 @@
 //! Setting a header from a fixed value provided when the middleware is constructed:
 //!
 //! ```
-//! use rama::http::layer::set_header::SetRequestHeaderLayer;
-//! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::set_header::SetRequestHeaderLayer;
+//! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
@@ -43,11 +43,11 @@
 //! Setting a header based on a value determined dynamically from the request:
 //!
 //! ```
-//! use rama::http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use rama::http::layer::set_header::SetRequestHeaderLayer;
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
+//! use rama_http::layer::set_header::SetRequestHeaderLayer;
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {

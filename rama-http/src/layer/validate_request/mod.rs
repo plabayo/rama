@@ -3,11 +3,11 @@
 //! # Example
 //!
 //! ```
-//! use rama::http::layer::validate_request::ValidateRequestHeaderLayer;
-//! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::validate_request::ValidateRequestHeaderLayer;
+//! use rama_http::{Body, Request, Response, StatusCode, header::ACCEPT};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! async fn handle(request: Request) -> Result<Response, BoxError> {
 //!     Ok(Response::new(Body::empty()))
@@ -50,11 +50,11 @@
 //! Custom validation can be made by implementing [`ValidateRequest`]:
 //!
 //! ```
-//! use rama::http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
-//! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
+//! use rama_http::{Body, Request, Response, StatusCode, header::ACCEPT};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! #[derive(Clone, Copy)]
 //! pub struct MyHeader { /* ...  */ }
@@ -105,11 +105,11 @@
 //!
 //! ```
 //! use bytes::Bytes;
-//! use rama::http::{Body, Request, Response, StatusCode, header::ACCEPT};
-//! use rama::http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::{Body, Request, Response, StatusCode, header::ACCEPT};
+//! use rama_http::layer::validate_request::{ValidateRequestHeaderLayer, ValidateRequest};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! async fn handle(request: Request) -> Result<Response, BoxError> {
 //!     # Ok(Response::builder().body(Body::empty()).unwrap())

@@ -12,7 +12,7 @@ pub(crate) struct Endpoint<State> {
 
 /// utility trait to accept multiple types as an endpoint service for [`super::WebService`]
 pub trait IntoEndpointService<State, T>: private::Sealed<T> {
-    /// convert the type into a [`crate::Service`].
+    /// convert the type into a [`rama_core::Service`].
     fn into_endpoint_service(
         self,
     ) -> impl Service<State, Request, Response = Response, Error = Infallible>;
@@ -266,7 +266,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{self, dep::http_body_util::BodyExt, Body, Method, Request, StatusCode};
+    use crate::{dep::http_body_util::BodyExt, Body, Method, Request, StatusCode};
     use extract::*;
 
     fn assert_into_endpoint_service<T, I>(_: I)
@@ -287,7 +287,7 @@ mod tests {
         #[derive(Debug, Clone)]
         struct OkService;
 
-        impl<State> Service<State, http::Request> for OkService
+        impl<State> Service<State, Request> for OkService
         where
             State: Send + Sync + 'static,
         {
@@ -297,7 +297,7 @@ mod tests {
             async fn serve(
                 &self,
                 _ctx: Context<State>,
-                _req: http::Request,
+                _req: Request,
             ) -> Result<Self::Response, Self::Error> {
                 Ok(StatusCode::OK)
             }
@@ -307,7 +307,7 @@ mod tests {
         let resp = svc
             .serve(
                 Context::default(),
-                http::Request::builder()
+                Request::builder()
                     .uri("http://example.com")
                     .body(Body::empty())
                     .unwrap(),
@@ -333,7 +333,7 @@ mod tests {
         let resp = svc
             .serve(
                 Context::default(),
-                http::Request::builder()
+                Request::builder()
                     .uri("http://example.com")
                     .body(Body::empty())
                     .unwrap(),
@@ -351,7 +351,7 @@ mod tests {
         let resp = svc
             .serve(
                 Context::default(),
-                http::Request::builder()
+                Request::builder()
                     .uri("http://example.com")
                     .body(Body::empty())
                     .unwrap(),
@@ -371,7 +371,7 @@ mod tests {
         let resp = svc
             .serve(
                 Context::default(),
-                http::Request::builder()
+                Request::builder()
                     .uri("http://example.com")
                     .body(Body::empty())
                     .unwrap(),
@@ -401,7 +401,7 @@ mod tests {
         let resp = svc
             .serve(
                 Context::default(),
-                http::Request::builder()
+                Request::builder()
                     .uri("http://example.com/42/bar")
                     .body(Body::empty())
                     .unwrap(),

@@ -139,7 +139,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{http::Body, service::service_fn, Layer};
+    use crate::Body;
+    use rama_core::{service::service_fn, Layer};
     use std::convert::Infallible;
 
     #[tokio::test]

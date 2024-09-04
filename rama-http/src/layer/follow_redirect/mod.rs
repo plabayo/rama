@@ -17,10 +17,10 @@
 //! ## Basic usage
 //!
 //! ```
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::http::{Body, Request, Response, StatusCode, header};
-//! use rama::http::layer::follow_redirect::{FollowRedirectLayer, RequestUri};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_http::{Body, Request, Response, StatusCode, header};
+//! use rama_http::layer::follow_redirect::{FollowRedirectLayer, RequestUri};
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), std::convert::Infallible> {
@@ -56,15 +56,15 @@
 //! # #![allow(unused)]
 //!
 //! # use std::convert::Infallible;
-//! use rama::service::service_fn;
-//! use rama::layer::MapErrLayer;
-//! use rama::{Context, Service, Layer};
-//! use rama::http::{Body, Request, Response};
-//! use rama::http::layer::follow_redirect::{
+//! use rama_core::service::service_fn;
+//! use rama_core::layer::MapErrLayer;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_http::{Body, Request, Response};
+//! use rama_http::layer::follow_redirect::{
 //!     policy::{self, PolicyExt},
 //!     FollowRedirectLayer,
 //! };
-//! use rama::error::OpaqueError;
+//! use rama_core::error::OpaqueError;
 //!
 //! #[derive(Debug)]
 //! enum MyError {
@@ -372,8 +372,8 @@ fn resolve_uri(relative: &str, base: &Uri) -> Option<Uri> {
 #[cfg(test)]
 mod tests {
     use super::{policy::*, *};
-    use crate::service::service_fn;
     use crate::{header::LOCATION, Body};
+    use rama_core::service::service_fn;
     use rama_core::Layer;
     use std::convert::Infallible;
 

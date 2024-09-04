@@ -137,15 +137,15 @@ impl<S, P> Compression<S, P> {
     /// # Changing the compression predicate
     ///
     /// ```
-    /// use rama::http::layer::compression::{
+    /// use rama_http::layer::compression::{
     ///     Compression,
     ///     predicate::{Predicate, NotForContentType, DefaultPredicate},
     /// };
-    /// use rama::service::service_fn;
+    /// use rama_core::service::service_fn;
     ///
     /// // Placeholder service_fn
     /// let service = service_fn(|_: ()| async {
-    ///     Ok::<_, std::io::Error>(rama::http::Response::new(()))
+    ///     Ok::<_, std::io::Error>(rama_http::Response::new(()))
     /// });
     ///
     /// // build our custom compression predicate

@@ -7,11 +7,11 @@
 //! ```
 //! use bytes::Bytes;
 //!
-//! use rama::http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
-//! use rama::http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
-//! use rama::service::service_fn;
-//! use rama::{Context, Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
+//! use rama_http::{Body, Request, Response, StatusCode, header::AUTHORIZATION};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! #[derive(Clone, Copy)]
 //! struct MyAuth;
@@ -77,11 +77,11 @@
 //! ```
 //! use bytes::Bytes;
 //!
-//! use rama::http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
-//! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::service::service_fn;
-//! use rama::{Service, Layer};
-//! use rama::error::BoxError;
+//! use rama_http::layer::auth::{AsyncRequireAuthorizationLayer, AsyncAuthorizeRequest};
+//! use rama_http::{Body, Request, Response, StatusCode};
+//! use rama_core::service::service_fn;
+//! use rama_core::{Service, Layer};
+//! use rama_core::error::BoxError;
 //!
 //! async fn check_auth<B>(request: &Request<B>) -> Option<UserId> {
 //!     // ...
@@ -247,9 +247,9 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::service::service_fn;
     use crate::{header, Body, StatusCode};
     use rama_core::error::BoxError;
+    use rama_core::service::service_fn;
 
     #[derive(Clone, Copy)]
     struct MyAuth;

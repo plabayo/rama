@@ -2,11 +2,9 @@ use super::DnsMapService;
 use crate::HeaderName;
 use rama_core::Layer;
 
-/// Layer which can extend [`Dns`] overwrites with mappings.
+/// Layer which can extend `Dns` (see `rama_core`) overwrites with mappings.
 ///
 /// See [the module level documentation](crate::layer::dns) for more information.
-///
-/// [`Dns`]: crate::dns::Dns
 #[derive(Debug, Clone)]
 pub struct DnsMapLayer {
     header_name: HeaderName,
@@ -30,12 +28,9 @@ impl<S> Layer<S> for DnsMapLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        http::{Request, RequestContext},
-        net::address::Host,
-        service::service_fn,
-        Context, Service,
-    };
+    use crate::Request;
+    use rama_core::{service::service_fn, Context, Service};
+    use rama_net::{address::Host, http::RequestContext};
     use std::net::{IpAddr, Ipv4Addr};
 
     #[tokio::test]

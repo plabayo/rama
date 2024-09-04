@@ -8,13 +8,16 @@
 //! using the [`DnsMapLayer`].
 //!
 //! ```rust
-//! use rama::{
-//!     http::layer::dns::DnsMapLayer,
-//!     http::{HeaderName, Request, RequestContext},
-//!     net::address::Host,
+//! use rama_core::{
 //!     service::service_fn,
 //!     Context, Service, Layer,
 //! };
+//! use rama_http::{
+//!     layer::dns::DnsMapLayer,
+//!     HeaderName, Request,
+//! };
+//! use rama_net::http::RequestContext;
+//! use rama_net::address::Host;
 //! use std::{
 //!     convert::Infallible,
 //!     net::{IpAddr, Ipv4Addr},

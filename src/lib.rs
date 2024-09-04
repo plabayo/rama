@@ -296,8 +296,16 @@ pub use ::rama_net as net;
 #[cfg(feature = "http")]
 pub mod http;
 
-#[cfg(feature = "proxy")]
-pub use ::rama_proxy as proxy;
+#[cfg(any(feature = "proxy", feature = "haproxy"))]
+pub mod proxy {
+    //! rama proxy support
+
+    #[cfg(feature = "proxy")]
+    pub use ::rama_proxy::*;
+
+    #[cfg(feature = "haproxy")]
+    pub use ::rama_haproxy as haproxy;
+}
 
 #[cfg(feature = "ua")]
 pub use ::rama_ua as ua;

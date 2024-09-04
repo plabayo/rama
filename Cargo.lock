@@ -1752,8 +1752,6 @@ dependencies = [
  "http-body-util",
  "http-range-header",
  "httpdate",
- "hyper",
- "hyper-util",
  "ipnet",
  "iri-string",
  "itertools 0.13.0",
@@ -1768,6 +1766,7 @@ dependencies = [
  "percent-encoding",
  "pin-project-lite",
  "rama-core",
+ "rama-haproxy",
  "rama-http",
  "rama-http-backend",
  "rama-macros",
@@ -1850,14 +1849,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-haproxy"
+version = "0.2.0-alpha.2"
+dependencies = [
+ "rama-core",
+ "rama-net",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "rama-http"
 version = "0.2.0-alpha.2"
 dependencies = [
  "async-compression",
  "base64 0.22.1",
  "bitflags",
+ "brotli",
  "bytes",
  "const_format",
+ "flate2",
  "futures-core",
  "futures-lite",
  "headers",
@@ -1867,15 +1879,18 @@ dependencies = [
  "http-range-header",
  "httpdate",
  "iri-string",
+ "itertools 0.13.0",
  "mime",
  "mime_guess",
+ "parking_lot",
  "paste",
  "percent-encoding",
  "pin-project-lite",
  "rama-core",
+ "rama-http-backend",
  "rama-http-types",
  "rama-net",
- "rama-tls",
+ "rama-tcp",
  "rama-ua",
  "rama-utils",
  "regex",
@@ -1883,19 +1898,32 @@ dependencies = [
  "serde_html_form",
  "serde_json",
  "sync_wrapper 1.0.1",
+ "tempfile",
  "tokio",
  "tokio-test",
  "tokio-util",
  "tracing",
+ "tracing-subscriber",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
 name = "rama-http-backend"
 version = "0.2.0-alpha.2"
 dependencies = [
+ "h2",
+ "hyper",
+ "hyper-util",
+ "pin-project-lite",
  "rama-core",
+ "rama-http-types",
+ "rama-net",
  "rama-tcp",
+ "rama-tls",
+ "rama-utils",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

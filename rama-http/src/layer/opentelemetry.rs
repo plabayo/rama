@@ -4,7 +4,7 @@
 
 use crate::{
     headers::{ContentLength, HeaderMapExt, UserAgent},
-    IntoResponse, Request, RequestContext, Response,
+    IntoResponse, Request, Response,
 };
 use rama_core::telemetry::opentelemetry::{
     global,
@@ -12,6 +12,7 @@ use rama_core::telemetry::opentelemetry::{
     semantic_conventions, KeyValue,
 };
 use rama_core::{Context, Layer, Service};
+use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, sync::Arc, time::SystemTime};
@@ -31,7 +32,7 @@ const HTTP_SERVER_ACTIVE_REQUESTS: &str = "http.server.active_requests";
 // TODO: do we also want to track actual calculated body size?
 // this would mean we _need_ to buffer the body, which is not ideal
 // Perhaps make it opt-in?
-// NOTE: we could also make this opt-in via BytesRWTrackerHandle (rama::stream::BytesRWTrackerHandle)
+// NOTE: we could also make this opt-in via BytesRWTrackerHandle (rama_core::servicestream::BytesRWTrackerHandle)
 // this would however not work properly (I think) with h2/h3...
 // const HTTP_SERVER_REQUEST_SIZE: &str = "http.server.request.size";
 // const HTTP_SERVER_RESPONSE_SIZE: &str = "http.server.response.size";

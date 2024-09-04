@@ -1,11 +1,12 @@
 use crate::headers::{
     ForwardHeader, HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
-use crate::{Request, RequestContext};
+use crate::Request;
 use rama_core::error::BoxError;
 use rama_core::{Context, Layer, Service};
 use rama_net::address::Domain;
 use rama_net::forwarded::{Forwarded, ForwardedElement, NodeId};
+use rama_net::http::RequestContext;
 use rama_net::stream::SocketInfo;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::fmt;
@@ -52,12 +53,11 @@ use std::marker::PhantomData;
 /// This example shows how you could expose the real Client IP using the [`X-Real-IP`][`crate::headers::XRealIp`] header.
 ///
 /// ```rust
-/// # use rama::{http::Request, stream::SocketInfo};
-/// use rama::{
-///     http::{headers::XRealIp, layer::forwarded::SetForwardedHeadersLayer},
-///     service::service_fn,
-///     Context, Service, Layer,
-/// };
+/// use rama_net::stream::SocketInfo;
+/// use rama_http::Request;
+/// use rama_core::service::service_fn;
+/// use rama_http::{headers::XRealIp, layer::forwarded::SetForwardedHeadersLayer};
+/// use rama_core::{Context, Service, Layer};
 /// use std::convert::Infallible;
 ///
 /// # type Body = ();
@@ -408,14 +408,10 @@ all_the_tuples_no_last_special_case!(set_forwarded_service_for_tuple);
 mod tests {
     use super::*;
     use crate::{
-        error::OpaqueError,
-        http::{
-            headers::{TrueClientIp, XClientIp, XRealIp},
-            IntoResponse, Response, StatusCode,
-        },
-        service::service_fn,
-        Layer,
+        headers::{TrueClientIp, XClientIp, XRealIp},
+        IntoResponse, Response, StatusCode,
     };
+    use rama_core::{error::OpaqueError, service::service_fn, Layer};
     use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}

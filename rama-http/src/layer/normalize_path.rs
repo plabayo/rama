@@ -7,11 +7,11 @@
 //!
 //! ```
 //! use std::{iter::once, convert::Infallible};
-//! use rama::error::BoxError;
-//! use rama::service::service_fn;
-//! use rama::{Context, Layer, Service};
-//! use rama::http::{Body, Request, Response, StatusCode};
-//! use rama::http::layer::normalize_path::NormalizePathLayer;
+//! use rama_core::error::BoxError;
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Layer, Service};
+//! use rama_http::{Body, Request, Response, StatusCode};
+//! use rama_http::layer::normalize_path::NormalizePathLayer;
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
@@ -170,7 +170,7 @@ fn normalize_trailing_slash(uri: &mut Uri) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::service::service_fn;
+    use rama_core::service::service_fn;
     use rama_core::Layer;
     use std::convert::Infallible;
 

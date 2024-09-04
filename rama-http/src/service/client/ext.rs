@@ -1,10 +1,11 @@
-use super::HttpClientError;
-use crate::{
-    error::BoxError,
-    http::{headers::HeaderExt, Method, Request, Response, Uri},
+use crate::{headers::HeaderExt, Method, Request, Response, Uri};
+use rama_core::{
+    error::{BoxError, ErrorExt, OpaqueError},
     Context, Service,
 };
 use std::future::Future;
+
+// TODO: integrate client ext into rama-http, as it is backend agnostic!, can live under service?!
 
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,
@@ -208,137 +209,134 @@ impl IntoHeaderValue for &[u8] {}
 mod private {
     use http::HeaderName;
 
-    use crate::net::Protocol;
+    use rama_net::Protocol;
 
     use super::*;
 
     pub trait IntoUrlSealed {
-        fn into_url(self) -> Result<Uri, HttpClientError>;
+        fn into_url(self) -> Result<Uri, OpaqueError>;
     }
 
     impl IntoUrlSealed for Uri {
-        fn into_url(self) -> Result<Uri, HttpClientError> {
+        fn into_url(self) -> Result<Uri, OpaqueError> {
             let protocol: Option<Protocol> = self.scheme().map(Into::into);
             match protocol {
                 Some(protocol) => {
                     if protocol.is_http() {
                         Ok(self)
                     } else {
-                        Err(HttpClientError::from_display(format!(
+                        Err(OpaqueError::from_display(format!(
                             "Unsupported protocol: {protocol}"
                         )))
                     }
                 }
-                None => Err(HttpClientError::from_display("Missing scheme in URI")),
+                None => Err(OpaqueError::from_display("Missing scheme in URI")),
             }
         }
     }
 
     impl IntoUrlSealed for &str {
-        fn into_url(self) -> Result<Uri, HttpClientError> {
+        fn into_url(self) -> Result<Uri, OpaqueError> {
             match self.parse::<Uri>() {
                 Ok(uri) => uri.into_url(),
-                Err(_) => Err(HttpClientError::from_display(format!(
-                    "Invalid URL: {}",
-                    self
-                ))),
+                Err(_) => Err(OpaqueError::from_display(format!("Invalid URL: {}", self))),
             }
         }
     }
 
     impl IntoUrlSealed for String {
-        fn into_url(self) -> Result<Uri, HttpClientError> {
+        fn into_url(self) -> Result<Uri, OpaqueError> {
             self.as_str().into_url()
         }
     }
 
     impl IntoUrlSealed for &String {
-        fn into_url(self) -> Result<Uri, HttpClientError> {
+        fn into_url(self) -> Result<Uri, OpaqueError> {
             self.as_str().into_url()
         }
     }
 
     pub trait IntoHeaderNameSealed {
-        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError>;
+        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError>;
     }
 
     impl IntoHeaderNameSealed for HeaderName {
-        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
             Ok(self)
         }
     }
 
     impl IntoHeaderNameSealed for Option<HeaderName> {
-        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
             match self {
                 Some(name) => Ok(name),
-                None => Err(HttpClientError::from_display("Header name is required")),
+                None => Err(OpaqueError::from_display("Header name is required")),
             }
         }
     }
 
     impl IntoHeaderNameSealed for &str {
-        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
             let name = self
                 .parse::<crate::HeaderName>()
-                .map_err(HttpClientError::from_std)?;
+                .map_err(OpaqueError::from_std)?;
             Ok(name)
         }
     }
 
     impl IntoHeaderNameSealed for String {
-        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
             self.as_str().into_header_name()
         }
     }
 
     impl IntoHeaderNameSealed for &String {
-        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
+        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
             self.as_str().into_header_name()
         }
     }
 
     impl IntoHeaderNameSealed for &[u8] {
-        fn into_header_name(self) -> Result<crate::HeaderName, HttpClientError> {
-            let name = crate::HeaderName::from_bytes(self).map_err(HttpClientError::from_std)?;
+        fn into_header_name(self) -> Result<crate::HeaderName, OpaqueError> {
+            let name = crate::HeaderName::from_bytes(self).map_err(OpaqueError::from_std)?;
             Ok(name)
         }
     }
 
     pub trait IntoHeaderValueSealed {
-        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError>;
+        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError>;
     }
 
     impl IntoHeaderValueSealed for crate::HeaderValue {
-        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
             Ok(self)
         }
     }
 
     impl IntoHeaderValueSealed for &str {
-        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
             let value = self
                 .parse::<crate::HeaderValue>()
-                .map_err(HttpClientError::from_std)?;
+                .map_err(OpaqueError::from_std)?;
             Ok(value)
         }
     }
 
     impl IntoHeaderValueSealed for String {
-        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
             self.as_str().into_header_value()
         }
     }
 
     impl IntoHeaderValueSealed for &String {
-        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
+        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
             self.as_str().into_header_value()
         }
     }
 
     impl IntoHeaderValueSealed for &[u8] {
-        fn into_header_value(self) -> Result<crate::HeaderValue, HttpClientError> {
-            let value = crate::HeaderValue::from_bytes(self).map_err(HttpClientError::from_std)?;
+        fn into_header_value(self) -> Result<crate::HeaderValue, OpaqueError> {
+            let value = crate::HeaderValue::from_bytes(self).map_err(OpaqueError::from_std)?;
             Ok(value)
         }
     }
@@ -376,7 +374,7 @@ where
 enum RequestBuilderState {
     PreBody(crate::dep::http::request::Builder),
     PostBody(crate::Request),
-    Error(HttpClientError),
+    Error(OpaqueError),
 }
 
 impl<'a, S, State, Body> RequestBuilder<'a, S, State, Response<Body>>
@@ -476,7 +474,7 @@ where
                     RequestBuilderState::Error(original_err) => {
                         RequestBuilderState::Error(original_err)
                     }
-                    _ => RequestBuilderState::Error(HttpClientError::from_std(err)),
+                    _ => RequestBuilderState::Error(OpaqueError::from_std(err)),
                 };
                 return self;
             }
@@ -496,16 +494,16 @@ where
             RequestBuilderState::PreBody(builder) => match body.try_into() {
                 Ok(body) => match builder.body(body) {
                     Ok(req) => RequestBuilderState::PostBody(req),
-                    Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
+                    Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
                 },
-                Err(err) => RequestBuilderState::Error(HttpClientError::from_boxed(err.into())),
+                Err(err) => RequestBuilderState::Error(OpaqueError::from_boxed(err.into())),
             },
             RequestBuilderState::PostBody(mut req) => match body.try_into() {
                 Ok(body) => {
                     *req.body_mut() = body;
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::from_boxed(err.into())),
+                Err(err) => RequestBuilderState::Error(OpaqueError::from_boxed(err.into())),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -538,10 +536,10 @@ where
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
-                        Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
+                        Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
                     }
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
+                Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
             },
             RequestBuilderState::PostBody(mut req) => match serde_html_form::to_string(form) {
                 Ok(body) => {
@@ -554,7 +552,7 @@ where
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
+                Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -585,10 +583,10 @@ where
                     };
                     match builder.body(body.into()) {
                         Ok(req) => RequestBuilderState::PostBody(req),
-                        Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
+                        Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
                     }
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
+                Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
             },
             RequestBuilderState::PostBody(mut req) => match serde_json::to_vec(json) {
                 Ok(body) => {
@@ -601,7 +599,7 @@ where
                     *req.body_mut() = body.into();
                     RequestBuilderState::PostBody(req)
                 }
-                Err(err) => RequestBuilderState::Error(HttpClientError::from_std(err)),
+                Err(err) => RequestBuilderState::Error(OpaqueError::from_std(err)),
             },
             RequestBuilderState::Error(err) => RequestBuilderState::Error(err),
         };
@@ -634,11 +632,11 @@ where
     /// # Errors
     ///
     /// This method fails if there was an error while sending [`Request`].
-    pub async fn send(self, ctx: Context<State>) -> Result<Response<Body>, HttpClientError> {
+    pub async fn send(self, ctx: Context<State>) -> Result<Response<Body>, OpaqueError> {
         let request = match self.state {
             RequestBuilderState::PreBody(builder) => builder
                 .body(crate::Body::empty())
-                .map_err(HttpClientError::from_std)?,
+                .map_err(OpaqueError::from_std)?,
             RequestBuilderState::PostBody(request) => request,
             RequestBuilderState::Error(err) => return Err(err),
         };
@@ -646,7 +644,7 @@ where
         let uri = request.uri().clone();
         match self.http_client_service.serve(ctx, request).await {
             Ok(response) => Ok(response),
-            Err(err) => Err(HttpClientError::from_boxed(err.into()).with_uri(uri)),
+            Err(err) => Err(OpaqueError::from_boxed(err.into()).context(uri.to_string())),
         }
     }
 }
@@ -657,18 +655,18 @@ mod test {
 
     use super::*;
     use crate::{
-        http::{
-            layer::{
-                required_header::AddRequiredRequestHeadersLayer,
-                retry::{ManagedPolicy, RetryLayer},
-                trace::TraceLayer,
-            },
-            IntoResponse,
+        layer::{
+            required_header::AddRequiredRequestHeadersLayer,
+            retry::{ManagedPolicy, RetryLayer},
+            trace::TraceLayer,
         },
+        IntoResponse,
+    };
+    use rama_core::{
         layer::{Layer, MapResultLayer},
         service::{service_fn, BoxService},
-        utils::backoff::ExponentialBackoff,
     };
+    use rama_utils::backoff::ExponentialBackoff;
     use std::convert::Infallible;
 
     async fn fake_client_fn<S, Body>(
@@ -706,8 +704,8 @@ mod test {
         }
     }
 
-    type HttpClientError = rama_core::error::BoxError;
-    type HttpClient<S> = BoxService<S, Request, Response, HttpClientError>;
+    type OpaqueError = rama_core::error::BoxError;
+    type HttpClient<S> = BoxService<S, Request, Response, OpaqueError>;
 
     fn client<S: Send + Sync + 'static>() -> HttpClient<S> {
         let builder = (

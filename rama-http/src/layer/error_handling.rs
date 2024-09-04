@@ -3,15 +3,15 @@
 //! # Example
 //!
 //! ```
-//! use rama::{
-//!     http::{
-//!         client::HttpClientExt,
-//!         layer::{error_handling::ErrorHandlerLayer, timeout::TimeoutLayer},
-//!         service::web::WebService,
-//!         Body, IntoResponse, Request, Response, StatusCode,
-//!     },
+//! use rama_core::{
 //!     service::service_fn,
 //!     Context, Service, Layer,
+//! };
+//! use rama_http::{
+//!     service::client::HttpClientExt,
+//!     layer::{error_handling::ErrorHandlerLayer, timeout::TimeoutLayer},
+//!     service::web::WebService,
+//!     Body, IntoResponse, Request, Response, StatusCode,
 //! };
 //! use std::time::Duration;
 //!

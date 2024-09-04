@@ -1,16 +1,16 @@
-use crate::{
+use rama_core::{
     error::{BoxError, OpaqueError},
-    http::{
-        self, dep::http::uri::PathAndQuery, dep::http_body, header::HOST, headers::HeaderMapExt,
-        Request, RequestContext, Response, Version,
-    },
-    net::address::ProxyAddress,
     Context, Service,
 };
+use rama_http_types::{
+    dep::http::uri::PathAndQuery, dep::http_body, header::HOST, headers::HeaderMapExt,
+    Request, Response, Version, Method,
+};
+use rama_net::{address::ProxyAddress, http::RequestContext};
 use tokio::sync::Mutex;
 
 #[derive(Debug)]
-// TODO: once we have hyper as `rama::http::core` we can
+// TODO: once we have hyper as `rama_core` we can
 // drop this mutex as there is no inherint reason for `sender` to be mutable...
 pub(super) enum SendRequest<Body> {
     Http1(Mutex<hyper::client::conn::http1::SendRequest<Body>>),
@@ -49,7 +49,7 @@ where
             SendRequest::Http2(sender) => sender.lock().await.send_request(req).await,
         }?;
 
-        Ok(resp.map(crate::Body::new))
+        Ok(resp.map(rama_http_types::Body::new))
     }
 }
 
@@ -58,7 +58,7 @@ fn sanitize_client_req_header<S, B>(
     req: Request<B>,
 ) -> Result<Request<B>, BoxError> {
     Ok(match req.method() {
-        &http::Method::CONNECT => {
+        &Method::CONNECT => {
             // CONNECT
             if req.uri().host().is_none() {
                 return Err(OpaqueError::from_display("missing host in CONNECT request").into());
@@ -91,10 +91,10 @@ fn sanitize_client_req_header<S, B>(
                 }
 
                 if !parts.headers.contains_key(HOST) {
-                    parts.headers.typed_insert(headers::Host::from(authority));
+                    parts.headers.typed_insert(rama_http_types::headers::Host::from(authority));
                 }
 
-                parts.uri = crate::Uri::from_parts(uri_parts)?;
+                parts.uri = rama_http_types::Uri::from_parts(uri_parts)?;
                 Request::from_parts(parts, body)
             } else {
                 req

@@ -3,9 +3,9 @@
 //! If the request does not complete within the specified timeout it will be aborted and a `408
 //! Request Timeout` response will be sent.
 //!
-//! # Differences from `rama::service::layer::Timeout`
+//! # Differences from `rama_core::service::layer::Timeout`
 //!
-//! The generic [`Timeout`](crate::layer::timeout::Timeout) middleware uses an error to signal timeout, i.e.
+//! The generic [`Timeout`] middleware uses an error to signal timeout, i.e.
 //! it changes the error type to [`BoxError`](rama_core::error::BoxError). For HTTP services that is rarely
 //! what you want as returning errors will terminate the connection without sending a response.
 //!
@@ -18,11 +18,11 @@
 //! ```
 //! use std::{convert::Infallible, time::Duration};
 //!
-//! use rama::Layer;
-//! use rama::service::service_fn;
-//! use rama::http::{Body, Request, Response};
-//! use rama::http::layer::timeout::TimeoutLayer;
-//! use rama::error::BoxError;
+//! use rama_core::Layer;
+//! use rama_core::service::service_fn;
+//! use rama_http::{Body, Request, Response};
+//! use rama_http::layer::timeout::TimeoutLayer;
+//! use rama_core::error::BoxError;
 //!
 //! async fn handle(_: Request) -> Result<Response, Infallible> {
 //!     // ...

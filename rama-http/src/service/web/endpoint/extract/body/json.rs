@@ -68,8 +68,9 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::service::web::WebService;
     use crate::StatusCode;
-    use crate::{http::service::web::WebService, service::Service};
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_json() {

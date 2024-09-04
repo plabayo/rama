@@ -1,8 +1,8 @@
 //! User Agent (UA) parser and types.
 //!
 //! This module provides a parser ([`UserAgent::new`]) for User Agents
-//! as well as a classifier ([`UserAgentClassifierLayer`]) that can be used to
-//! classify incoming requests based on their [User Agent (header)](crate::http::headers::UserAgent).
+//! as well as a classifier (`UserAgentClassifierLayer` in `rama_http`) that can be used to
+//! classify incoming requests based on their User Agent (header).
 //!
 //! Learn more about User Agents (UA) and why Rama supports it
 //! at <https://ramaproxy.org/book/intro/user_agent.html>.
@@ -102,24 +102,24 @@ pub use info::{
 mod parse;
 use parse::parse_http_user_agent_header;
 
-/// Information that can be used to overwrite the [`UserAgent`] of a [`Request`].
+/// Information that can be used to overwrite the [`UserAgent`] of an http request.
 ///
-/// Used by the [`UserAgentClassifier`] to overwrite the specified
+/// Used by the `UserAgentClassifier` (see `rama-http`) to overwrite the specified
 /// information duing the classification of the [`UserAgent`].
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UserAgentOverwrites {
-    /// Overwrite the [`UserAgent`] of the [`Request`] with a custom value.
+    /// Overwrite the [`UserAgent`] of the http `Request` with a custom value.
     ///
     /// This value will be used instead of
-    /// [the 'User-Agent' http header](crate::http::headers::UserAgent) value.
+    /// the 'User-Agent' http (header) value.
     ///
     /// This is useful in case you cannot set the User-Agent header in your request.
     pub ua: Option<String>,
-    /// Overwrite the [`HttpAgent`] of the [`Request`] with a custom value.
+    /// Overwrite the [`HttpAgent`] of the http `Request` with a custom value.
     pub http: Option<HttpAgent>,
-    /// Overwrite the [`TlsAgent`] of the [`Request`] with a custom value.
+    /// Overwrite the [`TlsAgent`] of the http `Request` with a custom value.
     pub tls: Option<TlsAgent>,
-    /// Preserve the original [`UserAgent`] header of the [`Request`].
+    /// Preserve the original [`UserAgent`] header of the http `Request`.
     pub preserve_ua: Option<bool>,
 }
 

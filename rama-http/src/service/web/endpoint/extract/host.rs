@@ -1,9 +1,9 @@
 use super::FromRequestParts;
 use crate::dep::http::request::Parts;
 use crate::utils::macros::define_http_rejection;
-use crate::RequestContext;
 use rama_core::Context;
 use rama_net::address;
+use rama_net::http::RequestContext;
 use rama_utils::macros::impl_deref;
 
 /// Extractor that resolves the hostname of the request.
@@ -57,9 +57,9 @@ mod tests {
     use crate::header::X_FORWARDED_HOST;
     use crate::layer::forwarded::GetForwardedHeadersService;
     use crate::service::web::WebService;
-    use crate::Service;
     use crate::StatusCode;
     use crate::{Body, HeaderName, Request};
+    use rama_core::Service;
 
     async fn test_host_from_request(host: &str, headers: Vec<(&HeaderName, &str)>) {
         let svc = GetForwardedHeadersService::x_forwarded_host(

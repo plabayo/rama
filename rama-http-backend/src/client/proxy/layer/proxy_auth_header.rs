@@ -1,8 +1,11 @@
-use crate::{
-    http::headers::{HeaderMapExt, ProxyAuthorization},
-    http::{Request, RequestContext},
-    net::{address::ProxyAddress, user::ProxyCredential},
-    Context, Layer, Service,
+use rama_http_types::{
+    headers::{HeaderMapExt, ProxyAuthorization},
+    Request,
+};
+use rama_core::{Context, Layer, Service};
+use rama_net::{
+    http::RequestContext,
+    address::ProxyAddress, user::ProxyCredential,
 };
 use std::{fmt, future::Future};
 

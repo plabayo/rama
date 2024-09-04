@@ -54,12 +54,11 @@ impl<A, C, L> ProxyAuthLayer<A, C, L> {
     /// Overwrite the Labels extract type
     ///
     /// This is used if the username contains labels that you need to extract out.
-    /// Example implementations are [`UsernameOpaqueLabelParser`] and [`ProxyFilterUsernameParser`].
+    /// Example implementation is the [`UsernameOpaqueLabelParser`].
     ///
     /// You can provide your own extractor by implementing the [`UsernameLabelParser`] trait.
     ///
     /// [`UsernameOpaqueLabelParser`]: rama_core::username::UsernameOpaqueLabelParser
-    /// [`ProxyFilterUsernameParser`]: crate::proxy::ProxyFilterUsernameParser
     /// [`UsernameLabelParser`]: rama_core::username::UsernameLabelParser
     pub fn with_labels<L2>(self) -> ProxyAuthLayer<A, C, L2> {
         ProxyAuthLayer {

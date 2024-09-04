@@ -55,11 +55,11 @@ pub trait MakeClassifier: Send + Sync + 'static {
 ///
 /// ```
 /// use std::fmt;
-/// use rama::http::layer::classify::{
+/// use rama_http::layer::classify::{
 ///     ClassifyResponse, ClassifiedResponse, NeverClassifyEos,
 ///     SharedClassifier, MakeClassifier,
 /// };
-/// use rama::http::Response;
+/// use rama_http::Response;
 ///
 /// // A response classifier that only considers errors to be failures.
 /// #[derive(Clone, Copy)]
@@ -187,7 +187,7 @@ pub trait ClassifyResponse: Send + Sync + 'static {
     /// # Example
     ///
     /// ```
-    /// use rama::http::layer::classify::{
+    /// use rama_http::layer::classify::{
     ///     ServerErrorsAsFailures, ServerErrorsFailureClass,
     ///     ClassifyResponse, ClassifiedResponse
     /// };

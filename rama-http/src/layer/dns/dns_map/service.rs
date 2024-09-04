@@ -10,11 +10,10 @@ use rama_utils::macros::define_inner_service_accessors;
 /// Service to support DNS lookup overwrites.
 ///
 /// No DNS lookup is performed by this service, it only adds
-/// the overwrites to the [`Dns`] data of the [`Context`].
+/// the overwrites to the `Dns` (see `rama_core`) data of the [`Context`].
 ///
-/// See [`Dns`] and [`DnsMapLayer`] for more information.
+/// See [`DnsMapLayer`] for more information.
 ///
-/// [`Dns`]: crate::dns::Dns
 /// [`DnsMapLayer`]: crate::layer::dns::DnsMapLayer
 pub struct DnsMapService<S> {
     inner: S,

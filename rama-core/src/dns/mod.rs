@@ -126,7 +126,7 @@ impl Dns {
     pub fn insert_overwrite(&mut self, name: impl TryIntoName, addresses: Vec<IpAddr>) -> Result<&mut Self, OpaqueError> {
         self.overwrites
             .get_or_insert_with(HashMap::new)
-            .insert(name.try_into_name()?, addresses);
+            .insert(Name::fqdn_from_domain(name)?, addresses);
         Ok(self)
     }
 
@@ -139,7 +139,7 @@ impl Dns {
         let map = self.overwrites
             .get_or_insert_with(HashMap::new);
         for (name, addresses) in overwrites.into_iter() {
-            map.insert(name.try_into_name()?, addresses);
+            map.insert(Name::fqdn_from_domain(name)?, addresses);
         }
         Ok(self)
     }

@@ -18,7 +18,7 @@ use std::{fmt, time::Instant};
 /// See the [module docs](crate::layer::trace) for an example.
 ///
 /// [tracing]: https://crates.io/crates/tracing
-/// [`Service`]: crate::Service
+/// [`Service`]: rama_core::Service
 pub struct Trace<
     S,
     M,

@@ -7,7 +7,7 @@ macro_rules! __log_http_rejection {
         status = $status:expr,
     ) => {
         tracing::event!(
-            target: "rama::rejection",
+            target: "rama_core::servicerejection",
             tracing::Level::TRACE,
             status = $status.as_u16(),
             body = $body_text,

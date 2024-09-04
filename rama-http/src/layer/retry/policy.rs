@@ -8,9 +8,9 @@ use std::future::Future;
 /// # Example
 ///
 /// ```
-/// use rama::Context;
-/// use rama::http::Request;
-/// use rama::http::layer::retry::{Policy, PolicyResult, RetryBody};
+/// use rama_core::Context;
+/// use rama_http::Request;
+/// use rama_http::layer::retry::{Policy, PolicyResult, RetryBody};
 /// use std::sync::Arc;
 /// use parking_lot::Mutex;
 ///

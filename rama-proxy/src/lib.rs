@@ -1,4 +1,9 @@
-//! proxy protocols and upstream proxy support.
+//! rama proxy types and utilities
+//!
+//! proxy protocols are implemented in their relevant crates:
+//!
+//! - HaProxy: `rama-haproxy`
+//! - HttpProxy: `rama-http-backend`
 //!
 //! See the [`ProxyFilter`] for more information on how to select a proxy,
 //! and the [`ProxyDB`] trait for how to implement a proxy database.
@@ -38,7 +43,6 @@ mod username;
 
 pub use username::ProxyFilterUsernameParser;
 
-pub mod http;
 pub mod pp;
 
 mod proxydb;

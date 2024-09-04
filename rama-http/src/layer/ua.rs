@@ -4,7 +4,7 @@
 //!
 //! ```
 //! use rama_http::{
-//!     client::HttpClientExt, IntoResponse, Request, Response, StatusCode,
+//!     service::client::HttpClientExt, IntoResponse, Request, Response, StatusCode,
 //!     layer::ua::{PlatformKind, UserAgent, UserAgentClassifierLayer, UserAgentKind, UserAgentInfo},
 //! };
 //! use rama_core::{Context, Layer, service::service_fn};
@@ -41,7 +41,6 @@ use crate::{
 };
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use serde::{Deserialize, Serialize};
 use std::{
     fmt::{self, Debug},
     future::Future,
@@ -202,13 +201,11 @@ impl<S> Layer<S> for UserAgentClassifierLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::HttpClientExt;
-    use crate::headers;
     use crate::layer::required_header::AddRequiredRequestHeadersLayer;
-    use crate::service::service_fn;
-    use crate::ua::{PlatformKind, UserAgentKind};
-    use crate::{http::Response, Context};
-    use crate::{IntoResponse, StatusCode};
+    use crate::service::client::HttpClientExt;
+    use crate::{headers, IntoResponse, Response, StatusCode};
+    use rama_core::service::service_fn;
+    use rama_core::Context;
     use std::convert::Infallible;
 
     #[tokio::test]

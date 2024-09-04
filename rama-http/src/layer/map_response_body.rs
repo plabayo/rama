@@ -4,14 +4,14 @@
 //!
 //! ```
 //! use bytes::Bytes;
-//! use rama::http::{Body, Request, Response};
-//! use rama::http::dep::http_body;
+//! use rama_http::{Body, Request, Response};
+//! use rama_http::dep::http_body;
 //! use std::convert::Infallible;
 //! use std::{pin::Pin, task::{Context, Poll}};
-//! use rama::{Layer, Service, context};
-//! use rama::service::service_fn;
-//! use rama::http::layer::map_response_body::MapResponseBodyLayer;
-//! use rama::error::BoxError;
+//! use rama_core::{Layer, Service, context};
+//! use rama_core::service::service_fn;
+//! use rama_http::layer::map_response_body::MapResponseBodyLayer;
+//! use rama_core::error::BoxError;
 //! use futures_lite::ready;
 //!
 //! // A wrapper for a `http_body::Body` that prints the size of data chunks

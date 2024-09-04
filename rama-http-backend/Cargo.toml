@@ -10,9 +10,26 @@ categories = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[features]
+default = []
+tls = ["dep:rama-tls", "rama-net/tls"]
+rustls = ["tls", "rama-tls/rustls"]
+boring = ["tls", "rama-net/boring"]
+rustls-ring = ["rustls", "rama-tls/rustls-ring"]
+
 [dependencies]
-rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
+rama-tls = { version = "0.2.0-alpha.2", path = "../rama-tls", optional = true }
+rama-net = { version = "0.2.0-alpha.2", path = "../rama-net", features = ["http"] }
+rama-core = { version = "0.2.0-alpha.2", path = "../rama-core", features = ["http"] }
 rama-tcp = { version = "0.2.0-alpha.2", path = "../rama-tcp", features = ["http"] }
+rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types" }
+hyper = { workspace = true, features = ["http1", "http2", "server", "client"] }
+hyper-util = { workspace = true, features = ["tokio", "server-auto"] }
+h2 = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }
+pin-project-lite = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 

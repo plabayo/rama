@@ -1,9 +1,9 @@
-use crate::{
+use rama_core::{
     error::{ErrorContext, OpaqueError},
-    net::address::ProxyAddress,
     Context, Layer, Service,
 };
 use std::{fmt, future::Future};
+use rama_net::address::ProxyAddress;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which allows you to add a [`ProxyAddress`]

@@ -6,12 +6,13 @@
 use crate::{
     header::{self, HOST, RAMA_ID_HEADER_VALUE, USER_AGENT},
     headers::HeaderMapExt,
-    Request, RequestContext, Response,
+    Request, Response,
 };
 use rama_core::{
     error::{BoxError, ErrorContext},
     Context, Layer, Service,
 };
+use rama_net::http::RequestContext;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 

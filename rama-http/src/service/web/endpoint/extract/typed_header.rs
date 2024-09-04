@@ -130,13 +130,11 @@ impl std::error::Error for TypedHeaderRejection {
 #[cfg(test)]
 mod tests {
     use crate::{
-        http::{
-            headers::ContentType,
-            service::web::extract::{FromRequestParts, TypedHeader},
-            Body, Request,
-        },
-        Context,
+        headers::ContentType,
+        service::web::extract::{FromRequestParts, TypedHeader},
+        Body, Request,
     };
+    use rama_core::Context;
 
     #[tokio::test]
     async fn test_get_typed_header() {

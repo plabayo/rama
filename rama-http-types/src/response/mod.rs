@@ -81,7 +81,7 @@ pub type Response<T = Body> = http::Response<T>;
 ///     }
 /// }
 ///
-/// // we can combine them using `rama::http::response::Result` and still use `?`
+/// // we can combine them using `rama_http::response::Result` and still use `?`
 /// async fn handler() -> rama_http_types::response::Result<&'static str> {
 ///     // the errors are automatically converted to `ErrorResponse`
 ///     try_something()?;
@@ -93,7 +93,7 @@ pub type Response<T = Body> = http::Response<T>;
 ///
 /// # As a replacement for `std::result::Result`
 ///
-/// Since `rama::http::response::Result` has a default error type you only have to specify the `Ok` type:
+/// Since `rama_http::response::Result` has a default error type you only have to specify the `Ok` type:
 ///
 /// ```
 /// use rama_http_types::{
@@ -108,7 +108,7 @@ pub type Response<T = Body> = http::Response<T>;
 ///     Ok("it worked!")
 /// }
 ///
-/// // You can still specify the error even if you've imported `rama::http::response::Result`
+/// // You can still specify the error even if you've imported `rama_http::response::Result`
 /// fn try_something() -> Result<(), StatusCode> {
 ///     // ...
 ///     # unimplemented!()

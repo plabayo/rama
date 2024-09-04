@@ -38,8 +38,9 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{self, StatusCode};
-    use crate::{http::service::web::WebService, service::Service};
+    use crate::service::web::WebService;
+    use crate::{Method, Request, StatusCode};
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_bytes() {
@@ -47,8 +48,8 @@ mod test {
             assert_eq!(body, "test");
         });
 
-        let req = http::Request::builder()
-            .method(http::Method::GET)
+        let req = Request::builder()
+            .method(Method::GET)
             .body("test".into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();

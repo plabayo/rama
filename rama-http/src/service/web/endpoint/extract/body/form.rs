@@ -77,9 +77,9 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate;
-    use crate::StatusCode;
-    use crate::{http::service::web::WebService, service::Service};
+    use crate::service::web::WebService;
+    use crate::{Body, Method, Request, StatusCode};
+    use rama_core::Service;
 
     #[tokio::test]
     async fn test_form_post_form_urlencoded() {
@@ -94,9 +94,9 @@ mod test {
             assert_eq!(body.age, 29);
         });
 
-        let req = http::Request::builder()
+        let req = Request::builder()
             .uri("/")
-            .method(http::Method::POST)
+            .method(Method::POST)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(r#"name=Devan&age=29"#.into())
             .unwrap();
@@ -117,9 +117,9 @@ mod test {
             panic!("should not reach here");
         });
 
-        let req = http::Request::builder()
+        let req = Request::builder()
             .uri("/")
-            .method(http::Method::POST)
+            .method(Method::POST)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(r#"age=29"#.into())
             .unwrap();
@@ -140,9 +140,9 @@ mod test {
             panic!("should not reach here");
         });
 
-        let req = http::Request::builder()
+        let req = Request::builder()
             .uri("/")
-            .method(http::Method::GET)
+            .method(Method::GET)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(r#"name=Devan&age=29"#.into())
             .unwrap();
@@ -163,10 +163,10 @@ mod test {
             assert_eq!(body.age, 29);
         });
 
-        let req = http::Request::builder()
+        let req = Request::builder()
             .uri("/?name=Devan&age=29")
-            .method(http::Method::GET)
-            .body(http::Body::empty())
+            .method(Method::GET)
+            .body(Body::empty())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
@@ -185,10 +185,10 @@ mod test {
             panic!("should not reach here");
         });
 
-        let req = http::Request::builder()
+        let req = Request::builder()
             .uri("/?name=Devan")
-            .method(http::Method::GET)
-            .body(http::Body::empty())
+            .method(Method::GET)
+            .body(Body::empty())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);

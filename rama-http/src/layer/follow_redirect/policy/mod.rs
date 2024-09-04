@@ -32,9 +32,9 @@ use rama_core::Context;
 ///
 /// ```
 /// use std::collections::HashSet;
-/// use rama::Context;
-/// use rama::http::{Request, Uri};
-/// use rama::http::layer::follow_redirect::policy::{Action, Attempt, Policy};
+/// use rama_core::Context;
+/// use rama_http::{Request, Uri};
+/// use rama_http::layer::follow_redirect::policy::{Action, Attempt, Policy};
 ///
 /// #[derive(Clone)]
 /// pub struct DetectCycle {
@@ -110,8 +110,8 @@ pub trait PolicyExt {
     ///
     /// ```
     /// use bytes::Bytes;
-    /// use rama::http::Body;
-    /// use rama::http::layer::follow_redirect::policy::{self, clone_body_fn, Limited, PolicyExt};
+    /// use rama_http::Body;
+    /// use rama_http::layer::follow_redirect::policy::{self, clone_body_fn, Limited, PolicyExt};
     ///
     /// enum MyBody {
     ///     Bytes(Bytes),
@@ -140,7 +140,7 @@ pub trait PolicyExt {
     /// # Example
     ///
     /// ```
-    /// use rama::http::layer::follow_redirect::policy::{self, Action, Limited, PolicyExt};
+    /// use rama_http::layer::follow_redirect::policy::{self, Action, Limited, PolicyExt};
     ///
     /// #[derive(Clone)]
     /// enum MyError {

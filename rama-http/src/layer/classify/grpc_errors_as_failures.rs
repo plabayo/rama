@@ -162,7 +162,7 @@ impl GrpcErrorsAsFailures {
     /// thats likely the clients fault:
     ///
     /// ```rust
-    /// use rama::http::layer::classify::{GrpcErrorsAsFailures, GrpcCode};
+    /// use rama_http::layer::classify::{GrpcErrorsAsFailures, GrpcCode};
     ///
     /// let classifier = GrpcErrorsAsFailures::new()
     ///     .with_success(GrpcCode::InvalidArgument)

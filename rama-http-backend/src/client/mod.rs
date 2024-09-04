@@ -1,31 +1,23 @@
 //! Rama HTTP client module,
 //! which provides the [`HttpClient`] type to serve HTTP requests.
 
-use crate::{
-    error::BoxError,
-    http::{dep::http_body, Request, Response},
-    net::client::{ConnectorService, EstablishedClientConnection},
-    proxy::http::client::layer::HttpProxyConnector,
-    tcp::client::service::TcpConnector,
+use rama_core::{
+    error::{BoxError, OpaqueError, ErrorExt},
     Context, Service,
 };
+use rama_http_types::{dep::http_body, Request, Response};
+use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use proxy::layer::HttpProxyConnector;
+use rama_tcp::client::service::TcpConnector;
 
 // TODO: also support client config in boring...
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls::backend::rustls::dep::rustls::ClientConfig;
+use rama_tls::rustls::dep::rustls::ClientConfig;
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use std::sync::Arc;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use crate::tls::backend::std::client::HttpsConnector;
-
-mod error;
-#[doc(inline)]
-pub use error::HttpClientError;
-
-mod ext;
-#[doc(inline)]
-pub use ext::{HttpClientExt, IntoUrl, RequestBuilder};
+use rama_tls::std::client::HttpsConnector;
 
 mod svc;
 #[doc(inline)]
@@ -34,6 +26,8 @@ pub use svc::HttpClientService;
 mod conn;
 #[doc(inline)]
 pub use conn::{HttpConnector, HttpConnectorLayer};
+
+pub mod proxy;
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -83,7 +77,7 @@ where
     Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Response = Response;
-    type Error = HttpClientError;
+    type Error = OpaqueError;
 
     async fn serve(
         &self,
@@ -109,10 +103,10 @@ where
         let EstablishedClientConnection { ctx, req, conn, .. } = connector
             .connect(ctx, req)
             .await
-            .map_err(|err| HttpClientError::from_boxed(err).with_uri(uri.clone()))?;
+            .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
 
         conn.serve(ctx, req)
             .await
-            .map_err(|err| HttpClientError::from_boxed(err).with_uri(uri))
+            .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))
     }
 }

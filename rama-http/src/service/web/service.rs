@@ -265,14 +265,14 @@ where
 /// # Example
 ///
 /// ```rust
-/// use rama::http::matcher::{HttpMatcher, MethodMatcher};
-/// use rama::http::{Body, Request, Response, StatusCode};
-/// use rama::http::dep::http_body_util::BodyExt;
-/// use rama::{Context, Service};
+/// use rama_http::matcher::{HttpMatcher, MethodMatcher};
+/// use rama_http::{Body, Request, Response, StatusCode};
+/// use rama_http::dep::http_body_util::BodyExt;
+/// use rama_core::{Context, Service};
 ///
 /// #[tokio::main]
 /// async fn main() {
-///   let svc = rama::http::service::web::match_service! {
+///   let svc = rama_http::service::web::match_service! {
 ///     HttpMatcher::get("/hello") => "hello",
 ///     HttpMatcher::post("/world") => "world",
 ///     MethodMatcher::CONNECT => "connect",
@@ -292,11 +292,11 @@ where
 /// Which is short for the following:
 ///
 /// ```rust
-/// use rama::http::matcher::{HttpMatcher, MethodMatcher};
-/// use rama::http::{Body, Request, Response, StatusCode};
-/// use rama::http::dep::http_body_util::BodyExt;
-/// use rama::http::service::web::IntoEndpointService;
-/// use rama::{Context, Service};
+/// use rama_http::matcher::{HttpMatcher, MethodMatcher};
+/// use rama_http::{Body, Request, Response, StatusCode};
+/// use rama_http::dep::http_body_util::BodyExt;
+/// use rama_http::service::web::IntoEndpointService;
+/// use rama_core::{Context, Service};
 ///
 /// #[tokio::main]
 /// async fn main() {
@@ -332,8 +332,8 @@ pub use __match_service as match_service;
 #[cfg(test)]
 mod test {
     use crate::dep::http_body_util::BodyExt;
+    use crate::matcher::MethodMatcher;
     use crate::Body;
-    use rama_core::MethodMatcher;
 
     use super::*;
 

@@ -2,12 +2,12 @@
 //!
 //! As defined in <https://www.ietf.org/rfc/rfc2068.txt>.
 
-use crate::{
-    http::{
-        headers::{Header, HeaderMapExt},
-        HeaderMap, HeaderName, HeaderValue,
-    },
-    net::address::Authority,
+use rama_http_types::{
+    headers::{Header, HeaderMapExt},
+    HeaderMap, HeaderName, HeaderValue,
+};
+use rama_net::{
+    address::Authority,
     stream::Stream,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

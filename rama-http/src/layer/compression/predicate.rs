@@ -99,7 +99,7 @@ where
 /// by combining types in this module:
 ///
 /// ```rust
-/// use rama::http::layer::compression::predicate::{SizeAbove, NotForContentType, Predicate};
+/// use rama_http::layer::compression::predicate::{SizeAbove, NotForContentType, Predicate};
 ///
 /// // slightly large min size than the default 32
 /// let predicate = SizeAbove::new(256)

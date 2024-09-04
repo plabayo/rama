@@ -1,11 +1,13 @@
 use super::{svc::SendRequest, HttpClientService};
 use crate::executor::HyperExecutor;
-use crate::{
+use rama_core::{
     error::{BoxError, OpaqueError},
-    http::{dep::http_body, Request, Version},
-    net::client::{ConnectorService, EstablishedClientConnection},
-    stream::Stream,
     Context, Layer, Service,
+};
+use rama_http_types::{dep::http_body, Request, Version};
+use rama_net::{
+    client::{ConnectorService, EstablishedClientConnection},
+    stream::Stream,
 };
 use hyper_util::rt::TokioIo;
 use rama_utils::macros::define_inner_service_accessors;

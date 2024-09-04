@@ -53,11 +53,11 @@ use std::marker::PhantomData;
 /// header in case your application is behind a proxy which sets this header.
 ///
 /// ```rust
-/// use rama::{
-///     http::{headers::Forwarded, layer::forwarded::GetForwardedHeadersLayer, Request},
+/// use rama_core::{
 ///     service::service_fn,
 ///     Context, Service, Layer,
 /// };
+/// use rama_http::{headers::Forwarded, layer::forwarded::GetForwardedHeadersLayer, Request};
 /// use std::{convert::Infallible, net::IpAddr};
 ///
 /// #[tokio::main]
@@ -352,12 +352,8 @@ mod tests {
         headers::{ClientIp, TrueClientIp, XClientIp, XRealIp},
         IntoResponse, Response, StatusCode,
     };
-    use rama_core::{
-        error::OpaqueError,
-        net::forwarded::{ForwardedProtocol, ForwardedVersion},
-        service::service_fn,
-        Layer,
-    };
+    use rama_core::{error::OpaqueError, service::service_fn, Layer};
+    use rama_net::forwarded::{ForwardedProtocol, ForwardedVersion};
     use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}

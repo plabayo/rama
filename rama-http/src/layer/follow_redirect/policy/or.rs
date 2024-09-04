@@ -74,7 +74,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{http::Uri, Context};
+    use crate::Uri;
+    use rama_core::Context;
 
     struct Taint<P> {
         policy: P,
