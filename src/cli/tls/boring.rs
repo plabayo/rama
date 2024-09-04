@@ -2,11 +2,11 @@
 
 use crate::error::{BoxError, ErrorContext};
 use crate::http::Version;
-use crate::tls::backend::boring::server::ServerConfig;
-use crate::tls::ApplicationProtocol;
+use crate::tls::boring::dep::boring::pkey::PKey;
+use crate::tls::boring::dep::boring::x509::X509;
+use crate::tls::boring::server::ServerConfig;
+use crate::tls::types::ApplicationProtocol;
 use base64::Engine;
-use boring::pkey::PKey;
-use boring::x509::X509;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 

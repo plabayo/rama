@@ -13,19 +13,21 @@ use crate::{
         dep::http_body_util::BodyExt,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
-            forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
+            forwarded::GetForwardedHeadersLayer,
+            required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer,
+            ua::{UserAgent, UserAgentClassifierLayer},
         },
         response::Json,
         server::HttpServer,
-        IntoResponse, Request, RequestContext, Response,
+        IntoResponse, Request, Response,
     },
     layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
     net::forwarded::Forwarded,
-    proxy::pp::server::HaProxyLayer,
+    net::http::RequestContext,
+    net::stream::{layer::http::BodyLimitLayer, SocketInfo},
+    proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
-    stream::{layer::http::BodyLimitLayer, SocketInfo},
-    ua::{UserAgent, UserAgentClassifierLayer},
     Context, Layer, Service,
 };
 use serde_json::json;
@@ -36,14 +38,14 @@ use tokio::net::TcpStream;
 use crate::{
     cli::tls::TlsServerCertKeyPair,
     error::{ErrorContext, OpaqueError},
-    tls::{client::ClientHelloExtension, SecureTransport},
+    tls::types::{client::ClientHelloExtension, SecureTransport},
 };
 
 #[cfg(feature = "boring")]
-use crate::tls::backend::boring::server::TlsAcceptorLayer;
+use crate::tls::boring::server::TlsAcceptorLayer;
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls::backend::rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler};
+use crate::tls::rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler};
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own echo [`Service`],

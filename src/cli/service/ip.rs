@@ -10,17 +10,16 @@ use crate::{
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
             forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
-            trace::TraceLayer,
+            trace::TraceLayer, ua::UserAgentClassifierLayer,
         },
         server::HttpServer,
         IntoResponse, Request, Response, StatusCode,
     },
     layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
     net::forwarded::Forwarded,
-    proxy::pp::server::HaProxyLayer,
+    net::stream::{layer::http::BodyLimitLayer, SocketInfo, Stream},
+    proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
-    stream::{layer::http::BodyLimitLayer, SocketInfo, Stream},
-    ua::UserAgentClassifierLayer,
     Context, Layer, Service,
 };
 use std::{convert::Infallible, marker::PhantomData, time::Duration};

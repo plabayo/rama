@@ -4,23 +4,20 @@
 //! `rama-http` and `rama-http-backend`.
 
 pub use ::rama_http::{
-    header,
+    dep, header, headers, io, matcher,
     response::{self, IntoResponse, Response},
-    Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, Method,
-    Request, Scheme, StatusCode, Uri, Version,
-    headers, matcher, service, io, dep, RequestContext,
+    service, Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue,
+    Method, Request, Scheme, StatusCode, Uri, Version,
 };
 
 pub mod layer {
-    //! Http [`Layer`]s provided by Rama.
+    //! Http [`Layer`][crate::Layer]s provided by Rama.
     //!
     //! mostly contains re-exports from
     //! `rama-http` and `rama-http-backend`.
 
     pub use ::rama_http::layer::*;
-    pub use ::rama_http_backend::layer::*;
+    pub use ::rama_http_backend::server::layer::*;
 }
 
-pub use ::rama_http_backend::{
-    server, client,
-};
+pub use ::rama_http_backend::{client, server};

@@ -37,7 +37,7 @@ pub enum ForwardKind {
     TrueClientIp,
     /// [`HaProxy`] protocol (transport layer).
     ///
-    /// [`HaProxy`]: crate::proxy::pp
+    /// [`HaProxy`]: crate::proxy::haproxy
     HaProxy,
 }
 
