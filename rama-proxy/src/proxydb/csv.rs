@@ -1,7 +1,17 @@
+use super::{Proxy, StringFilter};
+use rama_net::{
+    address::ProxyAddress,
+    asn::{Asn, InvalidAsn},
+    user::ProxyCredential,
+};
+use std::path::Path;
+use tokio::{
+    fs::File,
+    io::{AsyncBufReadExt, BufReader, Lines},
+};
+
 #[derive(Debug)]
-/// A CSV Reader that can be used to create a [`MemoryProxyDB`] from a CSV file or raw data.
-///
-/// [`MemoryProxyDB`]: crate::proxy::proxydb::MemoryProxyDB
+/// A CSV Reader that can be used to create a [`Proxy`] database from a CSV file or raw data.
 pub struct ProxyCsvRowReader {
     data: ProxyCsvRowReaderData,
 }
@@ -63,7 +73,7 @@ fn strip_csv_quotes(p: &str) -> &str {
         .unwrap_or(p)
 }
 
-fn parse_csv_row(row: &str) -> Option<Proxy> {
+pub(crate) fn parse_csv_row(row: &str) -> Option<Proxy> {
     let mut iter = row.split(',').map(strip_csv_quotes);
 
     let id = iter.next().and_then(|s| s.try_into().ok())?;
@@ -130,7 +140,7 @@ fn parse_csv_row(row: &str) -> Option<Proxy> {
 }
 
 fn parse_csv_bool(value: &str) -> Option<bool> {
-    match_ignore_ascii_case_str! {
+    rama_utils::macros::match_ignore_ascii_case_str! {
         match(value) {
             "true" | "1" => Some(true),
             "" | "false" | "0" | "null" | "nil" => Some(false),
@@ -204,13 +214,14 @@ impl From<std::io::Error> for ProxyCsvRowReaderError {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
-    use itertools::Itertools;
-
-    use crate::net::Protocol;
-
     use super::*;
+    use crate::ProxyFilter;
+    use rama_net::{
+        transport::{TransportContext, TransportProtocol},
+        Protocol,
+    };
+    use rama_utils::str::NonEmptyString;
+    use std::str::FromStr;
 
     #[test]
     fn test_parse_csv_bool() {
@@ -522,5 +533,139 @@ mod tests {
     async fn test_proxy_csv_row_reader_failure_invalid_row() {
         let mut reader = ProxyCsvRowReader::raw(",,,,,,,,,,,");
         assert!(reader.next().await.is_err());
+    }
+
+    #[test]
+    fn test_proxy_is_match_happy_path_proxy_with_any_filter_string_cases() {
+        let proxy = parse_csv_row("id,1,,1,,,,,,,authority,*,*,*,*,*,*,0").unwrap();
+        let ctx = TransportContext {
+            protocol: TransportProtocol::Tcp,
+            app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
+            authority: "localhost:8443".try_into().unwrap(),
+        };
+
+        for filter in [
+            ProxyFilter::default(),
+            ProxyFilter {
+                pool_id: Some(vec![StringFilter::new("pool_a")]),
+                country: Some(vec![StringFilter::new("country_a")]),
+                city: Some(vec![StringFilter::new("city_a")]),
+                carrier: Some(vec![StringFilter::new("carrier_a")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(vec![StringFilter::new("pool_a")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                continent: Some(vec![StringFilter::new("continent_a")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                country: Some(vec![StringFilter::new("country_a")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                state: Some(vec![StringFilter::new("state_a")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                city: Some(vec![StringFilter::new("city_a")]),
+                carrier: Some(vec![StringFilter::new("carrier_a")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                carrier: Some(vec![StringFilter::new("carrier_a")]),
+                ..Default::default()
+            },
+        ] {
+            assert!(proxy.is_match(&ctx, &filter), "filter: {:?}", filter);
+        }
+    }
+
+    #[test]
+    fn test_proxy_is_match_happy_path_proxy_with_any_filters_cases() {
+        let proxy =
+            parse_csv_row("id,1,,1,,,,,,,authority,pool,continent,country,state,city,carrier,42")
+                .unwrap();
+        let ctx = TransportContext {
+            protocol: TransportProtocol::Tcp,
+            app_protocol: Some(Protocol::HTTPS),
+            http_version: None,
+            authority: "localhost:8443".try_into().unwrap(),
+        };
+
+        for filter in [
+            ProxyFilter::default(),
+            ProxyFilter {
+                pool_id: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                continent: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                country: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                state: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                city: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                carrier: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(vec![StringFilter::new("pool")]),
+                continent: Some(vec![StringFilter::new("continent")]),
+                country: Some(vec![StringFilter::new("country")]),
+                state: Some(vec![StringFilter::new("state")]),
+                city: Some(vec![StringFilter::new("city")]),
+                carrier: Some(vec![StringFilter::new("carrier")]),
+                asn: Some(vec![Asn::from_static(42)]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(vec![StringFilter::new("*")]),
+                country: Some(vec![StringFilter::new("country")]),
+                city: Some(vec![StringFilter::new("city")]),
+                carrier: Some(vec![StringFilter::new("carrier")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(vec![StringFilter::new("pool")]),
+                country: Some(vec![StringFilter::new("*")]),
+                city: Some(vec![StringFilter::new("city")]),
+                carrier: Some(vec![StringFilter::new("carrier")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(vec![StringFilter::new("pool")]),
+                country: Some(vec![StringFilter::new("country")]),
+                city: Some(vec![StringFilter::new("*")]),
+                carrier: Some(vec![StringFilter::new("carrier")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                pool_id: Some(vec![StringFilter::new("pool")]),
+                country: Some(vec![StringFilter::new("country")]),
+                city: Some(vec![StringFilter::new("city")]),
+                carrier: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+            ProxyFilter {
+                continent: Some(vec![StringFilter::new("*")]),
+                ..Default::default()
+            },
+        ] {
+            assert!(proxy.is_match(&ctx, &filter), "filter: {:?}", filter);
+        }
     }
 }

@@ -1,218 +1,15 @@
-//! [`ProxyDB`] layer support to select a proxy based on the given [`Context`].
-//!
-//! This layer expects a [`ProxyFilter`] to be available in the [`Context`],
-//! which can be added by using the [`HeaderConfigLayer`]
-//! when operating on the HTTP layer and/or by parsing it via the TCP proxy username labels (e.g. `john-country-us-residential`),
-//! in case you support that as part of your transport-layer authentication. And of course you can
-//! combine the two approaches.
-//!
-//! You can also give a single [`Proxy`] as "proxy db".
-//!
-//! The end result is that a [`ProxyAddress`] will be set in case a proxy was selected,
-//! an error is returned in case no proxy could be selected while one was expected
-//! or of course because the inner [`Service`] failed.
-//!
-//! [`ProxyAddress`]: crate::net::address::ProxyAddress
-//! [`ProxyDB`]: crate::proxy::ProxyDB
-//! [`Context`]: rama_core::Context
-//! [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
-//!
-//! # Example
-//!
-//! ```rust
-//! use rama::{
-//!    http::{Body, Version, Request},
-//!    proxy::{
-//!         MemoryProxyDB, MemoryProxyDBQueryError, ProxyCsvRowReader, Proxy,
-//!         layer::{ProxyDBLayer, ProxyFilterMode},
-//!         ProxyFilter,
-//!    },
-//!    service::service_fn,
-//!    Context, Service, Layer,
-//!    net::address::ProxyAddress,
-//!    utils::str::NonEmptyString,
-//! };
-//! use itertools::Itertools;
-//! use std::{convert::Infallible, sync::Arc};
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     let db = MemoryProxyDB::try_from_iter([
-//!         Proxy {
-//!             id: NonEmptyString::from_static("42"),
-//!             address: "12.34.12.34:8080".try_into().unwrap(),
-//!             tcp: true,
-//!             udp: true,
-//!             http: true,
-//!             https: false,
-//!             socks5: true,
-//!             socks5h: false,
-//!             datacenter: false,
-//!             residential: true,
-//!             mobile: true,
-//!             pool_id: None,
-//!             continent: Some("*".into()),
-//!             country: Some("*".into()),
-//!             state: Some("*".into()),
-//!             city: Some("*".into()),
-//!             carrier: Some("*".into()),
-//!             asn: None,
-//!         },
-//!         Proxy {
-//!             id: NonEmptyString::from_static("100"),
-//!             address: "123.123.123.123:8080".try_into().unwrap(),
-//!             tcp: true,
-//!             udp: false,
-//!             http: true,
-//!             https: false,
-//!             socks5: false,
-//!             socks5h: false,
-//!             datacenter: true,
-//!             residential: false,
-//!             mobile: false,
-//!             pool_id: None,
-//!             continent: None,
-//!             country: Some("US".into()),
-//!             state: None,
-//!             city: None,
-//!             carrier: None,
-//!             asn: None,
-//!         },
-//!     ])
-//!     .unwrap();
-//!
-//!     let service =
-//!         ProxyDBLayer::new(Arc::new(db)).filter_mode(ProxyFilterMode::Default)
-//!         .layer(service_fn(|ctx: Context<()>, _: Request| async move {
-//!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-//!         }));
-//!
-//!     let mut ctx = Context::default();
-//!     ctx.insert(ProxyFilter {
-//!         country: Some(vec!["BE".into()]),
-//!         mobile: Some(true),
-//!         residential: Some(true),
-//!         ..Default::default()
-//!     });
-//!
-//!     let req = Request::builder()
-//!         .version(Version::HTTP_3)
-//!         .method("GET")
-//!         .uri("https://example.com")
-//!         .body(Body::empty())
-//!         .unwrap();
-//!
-//!     let proxy_address = service.serve(ctx, req).await.unwrap();
-//!     assert_eq!(proxy_address.authority.to_string(), "12.34.12.34:8080");
-//! }
-//! ```
-//!
-//! ## Single Proxy Router
-//!
-//! Another example is a single proxy through which
-//! one can connect with config for further downstream proxies
-//! passed by username labels.
-//!
-//! Note that the username formatter is available for any proxy db,
-//! it is not specific to the usage of a single proxy.
-//!
-//! ```rust
-//! use rama::{
-//!    http::{Body, Version, Request},
-//!    proxy::{
-//!         Proxy,
-//!         layer::{ProxyDBLayer, ProxyFilterMode},
-//!         ProxyFilter,
-//!    },
-//!    service::service_fn,
-//!    Context, Service, Layer,
-//!    net::address::ProxyAddress,
-//!    utils::str::NonEmptyString,
-//! };
-//! use itertools::Itertools;
-//! use std::{convert::Infallible, sync::Arc};
-//!
-//! #[tokio::main]
-//! async fn main() {
-//!     let proxy = Proxy {
-//!         id: NonEmptyString::from_static("1"),
-//!         address: "john:secret@proxy.example.com:60000".try_into().unwrap(),
-//!         tcp: true,
-//!         udp: true,
-//!         http: true,
-//!         https: false,
-//!         socks5: true,
-//!         socks5h: false,
-//!         datacenter: false,
-//!         residential: true,
-//!         mobile: false,
-//!         pool_id: None,
-//!         continent: Some("*".into()),
-//!         country: Some("*".into()),
-//!         state: Some("*".into()),
-//!         city: Some("*".into()),
-//!         carrier: Some("*".into()),
-//!         asn: None,
-//!     };
-//!
-//!     let service = ProxyDBLayer::new(Arc::new(proxy))
-//!         .filter_mode(ProxyFilterMode::Default)
-//!         .username_formatter(|_ctx: &Context<()>, proxy: &Proxy, filter: &ProxyFilter, username: &str| {
-//!             use std::fmt::Write;
-//!
-//!             let mut output = String::new();
-//!
-//!             if let Some(countries) =
-//!                 filter.country.as_ref().filter(|t| !t.is_empty())
-//!             {
-//!                 let _ = write!(output, "country-{}", countries[0]);
-//!             }
-//!             if let Some(states) =
-//!                 filter.state.as_ref().filter(|t| !t.is_empty())
-//!             {
-//!                 let _ = write!(output, "state-{}", states[0]);
-//!             }
-//!
-//!             (!output.is_empty()).then(|| format!("{username}-{output}"))
-//!         })
-//!         .layer(service_fn(|ctx: Context<()>, _: Request| async move {
-//!             Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
-//!         }));
-//!
-//!     let mut ctx = Context::default();
-//!     ctx.insert(ProxyFilter {
-//!         country: Some(vec!["BE".into()]),
-//!         residential: Some(true),
-//!         ..Default::default()
-//!     });
-//!
-//!     let req = Request::builder()
-//!         .version(Version::HTTP_3)
-//!         .method("GET")
-//!         .uri("https://example.com")
-//!         .body(Body::empty())
-//!         .unwrap();
-//!
-//!     let proxy_address = service.serve(ctx, req).await.unwrap();
-//!     assert_eq!(
-//!         "socks5://john-country-be:secret@proxy.example.com:60000",
-//!         proxy_address.to_string()
-//!     );
-//! }
-//! ```
-
 use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
-use rama_utils::macros::define_inner_service_accessors;
-use crate::{
+use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
-    net::{
-        address::ProxyAddress,
-        user::{Basic, ProxyCredential},
-        Protocol,
-    },
-    stream::transport::{TransportProtocol, TryRefIntoTransportContext},
     Context, Layer, Service,
 };
+use rama_net::{
+    address::ProxyAddress,
+    transport::{TransportProtocol, TryRefIntoTransportContext},
+    user::{Basic, ProxyCredential},
+    Protocol,
+};
+use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 /// A [`Service`] which selects a [`Proxy`] based on the given [`Context`].
@@ -223,9 +20,9 @@ use std::fmt;
 /// A predicate can be used to provide additional filtering on the found proxies,
 /// that otherwise did match the used [`ProxyFilter`].
 ///
-/// See [the module docs](self) for examples and more info on the usage of this service.
+/// See [the crate docs](crate) for examples and more info on the usage of this service.
 ///
-/// [`Proxy`]: crate::proxy::Proxy
+/// [`Proxy`]: crate::Proxy
 pub struct ProxyDBService<S, D, P, F> {
     inner: S,
     db: D,
@@ -358,7 +155,7 @@ impl<S, D, P, F> ProxyDBService<S, D, P, F> {
         }
     }
 
-    /// Set a [`UsernameFormatter`] that will be used to format
+    /// Set a [`UsernameFormatter`][crate::UsernameFormatter] that will be used to format
     /// the username based on the selected [`Proxy`]. This is required
     /// in case the proxy is a router that accepts or maybe even requires
     /// username labels to configure proxies further down/up stream.
@@ -508,7 +305,7 @@ where
 /// A [`Layer`] which wraps an inner [`Service`] to select a [`Proxy`] based on the given [`Context`],
 /// and insert, if a [`Proxy`] is selected, it in the [`Context`] for further processing.
 ///
-/// See [the module docs](self) for examples and more info on the usage of this service.
+/// See [the crate docs](crate) for examples and more info on the usage of this service.
 pub struct ProxyDBLayer<D, P, F> {
     db: D,
     mode: ProxyFilterMode,
@@ -597,7 +394,7 @@ impl<D, P, F> ProxyDBLayer<D, P, F> {
         }
     }
 
-    /// Set a [`UsernameFormatter`] that will be used to format
+    /// Set a [`UsernameFormatter`][crate::UsernameFormatter] that will be used to format
     /// the username based on the selected [`Proxy`]. This is required
     /// in case the proxy is a router that accepts or maybe even requires
     /// username labels to configure proxies further down/up stream.
@@ -674,20 +471,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use itertools::Itertools;
-
     use super::*;
-    use crate::{
-        http::{Body, Request, Version},
-        net::{
-            address::{Authority, ProxyAddress},
-            asn::Asn,
-            Protocol,
-        },
-        proxy::{MemoryProxyDB, Proxy, ProxyCsvRowReader, StringFilter},
-        service::service_fn,
-        utils::str::NonEmptyString,
+    use crate::{MemoryProxyDB, Proxy, ProxyCsvRowReader, StringFilter};
+    use itertools::Itertools;
+    use rama_core::service::service_fn;
+    use rama_http_types::{Body, Request, Version};
+    use rama_net::{
+        address::{Authority, ProxyAddress},
+        asn::Asn,
+        Protocol,
     };
+    use rama_utils::str::NonEmptyString;
     use std::{convert::Infallible, str::FromStr, sync::Arc};
 
     #[tokio::test]
@@ -951,7 +745,7 @@ mod tests {
             ..Default::default()
         });
 
-        let req = crate::tcp::client::Request::new("www.example.com:443".parse().unwrap())
+        let req = rama_tcp::client::Request::new("www.example.com:443".parse().unwrap())
             .with_protocol(Protocol::HTTPS);
 
         let proxy_address = service.serve(ctx, req).await.unwrap();

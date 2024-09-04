@@ -2002,7 +2002,19 @@ name = "rama-proxy"
 version = "0.2.0-alpha.2"
 dependencies = [
  "arc-swap",
+ "itertools 0.13.0",
  "rama-core",
+ "rama-http-types",
+ "rama-net",
+ "rama-tcp",
+ "rama-utils",
+ "serde",
+ "serde_html_form",
+ "serde_json",
+ "tokio",
+ "tokio-test",
+ "tracing",
+ "unicode-normalization",
  "venndb",
 ]
 

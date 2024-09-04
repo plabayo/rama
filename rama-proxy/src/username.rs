@@ -1,10 +1,10 @@
 use super::ProxyFilter;
-use rama_utils::macros::match_ignore_ascii_case_str;
-use crate::{
+use rama_core::{
     context::Extensions,
     error::{error, OpaqueError},
-    utils::username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
+    username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
 };
+use rama_utils::macros::match_ignore_ascii_case_str;
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
@@ -259,14 +259,10 @@ impl<const SEPARATOR: char> UsernameLabelWriter<SEPARATOR> for ProxyFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        net::asn::Asn,
-        proxy::StringFilter,
-        utils::{
-            str::NonEmptyString,
-            username::{compose_username, parse_username},
-        },
-    };
+    use crate::StringFilter;
+    use rama_core::username::{compose_username, parse_username};
+    use rama_net::asn::Asn;
+    use rama_utils::str::NonEmptyString;
 
     #[test]
     fn test_username_config() {

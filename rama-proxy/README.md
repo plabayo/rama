@@ -39,7 +39,7 @@ The reasons behind the creation of rama can be read in [the "Why Rama" chapter](
 
 ## rama-proxy
 
-Proxy protocols and upstream proxy support for rama.
+Proxy types and utilities for rama.
 
 Learn more about `rama`:
 

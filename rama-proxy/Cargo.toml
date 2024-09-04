@@ -1,6 +1,6 @@
 [package]
 name = "rama-proxy"
-description = "proxy protocols and upstream proxy support for rama"
+description = "proxy types and utilities for rama"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
@@ -12,16 +12,31 @@ rust-version = { workspace = true }
 
 [features]
 default = ["memory-db", "csv"]
-memory-db = ["dep:venndb", "rama-core/venndb"]
+memory-db = ["dep:venndb", "rama-core/venndb", "rama-net/venndb"]
 live-update = ["dep:arc-swap"]
-csv = []
+http = ["rama-net/http"]
+csv = ["dep:tokio", "tokio/fs"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
+rama-net = { version = "0.2.0-alpha.2", path = "../rama-net" }
 venndb = { workspace = true, optional = true }
+serde = { workspace = true, features = ["derive"] }
+tokio = { workspace = true, optional = true }
+unicode-normalization = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["macros"] }
+tokio-test = { workspace = true }
+itertools = { workspace = true }
+rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.2", path = "../rama-net", features = ["http"] }
+rama-tcp = { version = "0.2.0-alpha.2", path = "../rama-tcp", features = ["http"] }
+serde_json = { workspace = true }
+serde_html_form = { workspace = true }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

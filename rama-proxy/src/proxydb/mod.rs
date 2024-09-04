@@ -1,9 +1,9 @@
-use crate::{
-    error::BoxError,
-    net::asn::Asn,
-    stream::transport::{TransportContext, TransportProtocol},
-    utils::str::NonEmptyString,
+use rama_core::error::BoxError;
+use rama_net::{
+    asn::Asn,
+    transport::{TransportContext, TransportProtocol},
 };
+use rama_utils::str::NonEmptyString;
 use serde::Deserialize;
 use std::{fmt, future::Future};
 
@@ -20,15 +20,16 @@ mod csv;
 #[cfg(feature = "csv")]
 pub use csv::{ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind};
 
-pub mod layer;
+#[cfg(feature = "http")]
+pub(super) mod layer;
 
 mod str;
 #[doc(inline)]
 pub use str::StringFilter;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-/// `ID` of the selected proxy. Inserted by the [`layer::ProxyDBService`],
-/// if and only if a proxy is selected.
+/// `ID` of the selected proxy. To be inserted into the `Context`,
+/// only if that proxy is selected.
 pub struct ProxyID(NonEmptyString);
 
 impl ProxyID {
@@ -71,14 +72,12 @@ impl From<NonEmptyString> for ProxyID {
 ///
 /// ## Usage
 ///
-/// - Use [`HeaderConfigLayer`] to have this proxy filter be given by the [`Request`] headers,
+/// - Use `HeaderConfigLayer` (`rama-http`) to have this proxy filter be given by the http `Request` headers,
 ///   which will add the extracted and parsed [`ProxyFilter`] to the [`Context`]'s [`Extensions`].
-/// - Or extract yourself from the username/token validated in the [`ProxyAuthLayer`]
+/// - Or extract yourself from the username/token validated in the `ProxyAuthLayer` (`rama-http`)
 ///   to add it manually to the [`Context`]'s [`Extensions`].
 ///
-/// [`HeaderConfigLayer`]: crate::http::layer::header_config::HeaderConfigLayer
 /// [`Request`]: crate::http::Request
-/// [`ProxyAuthLayer`]: crate::http::layer::proxy_auth::ProxyAuthLayer
 /// [`Context`]: rama_core::Context
 /// [`Extensions`]: rama_core::context::Extensions
 pub struct ProxyFilter {
@@ -175,7 +174,7 @@ where
 
 macro_rules! impl_proxydb_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
-        impl<$($param),+> ProxyDB for crate::combinators::$id<$($param),+>
+        impl<$($param),+> ProxyDB for rama_core::combinators::$id<$($param),+>
         where
             $(
                 $param: ProxyDB<Error: Into<BoxError>>,
@@ -192,7 +191,7 @@ macro_rules! impl_proxydb_either {
         ) -> Result<Proxy, Self::Error> {
             match self {
                 $(
-                    crate::combinators::$id::$param(s) => s.get_proxy_if(ctx, filter, predicate).await.map_err(Into::into),
+                    rama_core::combinators::$id::$param(s) => s.get_proxy_if(ctx, filter, predicate).await.map_err(Into::into),
                 )+
             }
         }
@@ -205,7 +204,7 @@ macro_rules! impl_proxydb_either {
         ) -> Result<Proxy, Self::Error> {
             match self {
                 $(
-                    crate::combinators::$id::$param(s) => s.get_proxy(ctx, filter).await.map_err(Into::into),
+                    rama_core::combinators::$id::$param(s) => s.get_proxy(ctx, filter).await.map_err(Into::into),
                 )+
             }
         }
@@ -213,7 +212,7 @@ macro_rules! impl_proxydb_either {
     };
 }
 
-crate::combinators::impl_either!(impl_proxydb_either);
+rama_core::combinators::impl_either!(impl_proxydb_either);
 
 /// Trait that is used by the [`ProxyDB`] for providing an optional
 /// filter predicate to rule out returned results.
@@ -512,15 +511,11 @@ impl MemoryProxyDBQueryError {
 
 #[cfg(test)]
 mod tests {
-    use std::str::FromStr;
-
-    use crate::{
-        net::{address::ProxyAddress, Protocol},
-        utils::str::NonEmptyString,
-    };
-
     use super::*;
     use itertools::Itertools;
+    use rama_net::{address::ProxyAddress, Protocol};
+    use rama_utils::str::NonEmptyString;
+    use std::str::FromStr;
 
     const RAW_CSV_DATA: &str = include_str!("./test_proxydb_rows.csv");
 

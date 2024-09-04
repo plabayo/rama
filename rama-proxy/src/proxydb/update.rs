@@ -1,7 +1,6 @@
-use crate::error::{BoxError, OpaqueError};
-
 use super::ProxyDB;
 use arc_swap::ArcSwap;
+use rama_core::error::{BoxError, OpaqueError};
 use std::{fmt, ops::Deref, sync::Arc};
 
 /// Create a new [`ProxyDB`] updater which allows you to have a (typically in-memory) [`ProxyDB`]
@@ -62,7 +61,7 @@ where
 
     async fn get_proxy_if(
         &self,
-        ctx: crate::stream::transport::TransportContext,
+        ctx: rama_net::transport::TransportContext,
         filter: super::ProxyFilter,
         predicate: impl super::ProxyQueryPredicate,
     ) -> Result<super::Proxy, Self::Error> {
@@ -80,7 +79,7 @@ where
 
     async fn get_proxy(
         &self,
-        ctx: crate::stream::transport::TransportContext,
+        ctx: rama_net::transport::TransportContext,
         filter: super::ProxyFilter,
     ) -> Result<super::Proxy, Self::Error> {
         match self.0.load().deref().deref() {
@@ -119,12 +118,12 @@ impl<T: fmt::Debug> fmt::Debug for LiveUpdateProxyDBSetter<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
-        net::asn::Asn,
-        proxy::{Proxy, ProxyFilter},
-        stream::transport::{TransportContext, TransportProtocol},
-        utils::str::NonEmptyString,
+    use crate::{Proxy, ProxyFilter};
+    use rama_net::{
+        asn::Asn,
+        transport::{TransportContext, TransportProtocol},
     };
+    use rama_utils::str::NonEmptyString;
 
     use super::*;
 
