@@ -1,6 +1,6 @@
 use super::parse_http_user_agent_header;
-use rama_utils::macros::match_ignore_ascii_case_str;
 use rama_core::error::OpaqueError;
+use rama_utils::macros::match_ignore_ascii_case_str;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{convert::Infallible, fmt, str::FromStr};
 

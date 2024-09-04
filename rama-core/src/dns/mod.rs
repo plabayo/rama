@@ -123,7 +123,11 @@ impl Dns {
     ///
     /// Note that this impacts both [`Self::ipv4_lookup`] and [`Self::ipv6_lookup`],
     /// meaning that no Ipv6 addresses will be returned for the domain.
-    pub fn insert_overwrite(&mut self, name: impl TryIntoName, addresses: Vec<IpAddr>) -> Result<&mut Self, OpaqueError> {
+    pub fn insert_overwrite(
+        &mut self,
+        name: impl TryIntoName,
+        addresses: Vec<IpAddr>,
+    ) -> Result<&mut Self, OpaqueError> {
         self.overwrites
             .get_or_insert_with(HashMap::new)
             .insert(Name::fqdn_from_domain(name)?, addresses);
@@ -135,9 +139,11 @@ impl Dns {
     /// Existing mappings will be overwritten.
     ///
     /// See [`Self::insert_overwrite`] for more information.
-    pub fn extend_overwrites(&mut self, overwrites: HashMap<impl TryIntoName, Vec<IpAddr>>) -> Result<&mut Self, OpaqueError> {
-        let map = self.overwrites
-            .get_or_insert_with(HashMap::new);
+    pub fn extend_overwrites(
+        &mut self,
+        overwrites: HashMap<impl TryIntoName, Vec<IpAddr>>,
+    ) -> Result<&mut Self, OpaqueError> {
+        let map = self.overwrites.get_or_insert_with(HashMap::new);
         for (name, addresses) in overwrites.into_iter() {
             map.insert(Name::fqdn_from_domain(name)?, addresses);
         }

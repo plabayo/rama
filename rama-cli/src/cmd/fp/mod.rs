@@ -11,6 +11,7 @@ use rama::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
             forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
             set_header::SetResponseHeaderLayer, trace::TraceLayer,
+            ua::UserAgentClassifierLayer,
         },
         matcher::HttpMatcher,
         response::Redirect,
@@ -25,10 +26,9 @@ use rama::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::service_fn,
-    stream::layer::http::BodyLimitLayer,
+    net::stream::layer::http::BodyLimitLayer,
     tcp::server::TcpListener,
     tls::boring::server::TlsAcceptorLayer,
-    ua::UserAgentClassifierLayer,
     utils::backoff::ExponentialBackoff,
 };
 use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};

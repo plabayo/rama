@@ -12,8 +12,7 @@ rust-version = { workspace = true }
 
 [features]
 default = []
-full = ["http", "rustls", "boring", "telemetry"]
-http = ["dep:rama-http-types", "rama-core/http"]
+http = ["dep:rama-http-types"]
 tls = ["dep:hex"]
 rustls = ["tls", "dep:rustls"]
 boring = ["tls", "dep:boring", "dep:nom"]
@@ -27,14 +26,9 @@ bytes = { workspace = true }
 futures-lite = { workspace = true }
 headers = { workspace = true }
 hex = { workspace = true, optional = true }
-hickory-resolver = { workspace = true }
 ipnet = { workspace = true }
 nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
-opentelemetry-semantic-conventions = { workspace = true, optional = true }
-opentelemetry_sdk = { workspace = true, optional = true }
-parking_lot = { workspace = true }
-paste = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types", optional = true }
@@ -42,7 +36,6 @@ rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
-tokio-graceful = { workspace = true }
 tracing = { workspace = true }
 venndb = { workspace = true, optional = true }
 

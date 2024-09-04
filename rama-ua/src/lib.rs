@@ -92,7 +92,7 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 
 mod info;
 pub use info::{

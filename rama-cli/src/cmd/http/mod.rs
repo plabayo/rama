@@ -19,7 +19,7 @@ use rama::{
     },
     layer::{HijackLayer, MapResultLayer},
     net::{address::ProxyAddress, user::ProxyCredential},
-    proxy::http::client::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
+    http::client::proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
     rt::Executor,
     service::service_fn,
     Context, Layer, Service,

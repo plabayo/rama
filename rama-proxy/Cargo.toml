@@ -12,7 +12,7 @@ rust-version = { workspace = true }
 
 [features]
 default = ["memory-db", "csv"]
-memory-db = ["dep:venndb", "rama-core/venndb", "rama-net/venndb"]
+memory-db = ["dep:venndb", "rama-net/venndb"]
 live-update = ["dep:arc-swap"]
 http = ["rama-net/http"]
 csv = ["dep:tokio", "tokio/fs"]

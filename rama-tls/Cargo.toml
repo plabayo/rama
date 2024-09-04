@@ -18,10 +18,9 @@ rustls-ring = ["rustls", "tokio-rustls/ring", "rustls/ring", "rama-net/rustls-ri
 
 [dependencies]
 boring = { workspace = true, optional = true }
-hex = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.2", path = "../rama-core", features = ["http"] }
+rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types" }
 rama-net = { version = "0.2.0-alpha.2", path = "../rama-net", features = ["http", "tls"] }
 rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
