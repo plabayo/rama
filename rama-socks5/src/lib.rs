@@ -1,4 +1,4 @@
-//! TCP support for Rama.
+//! SOCKS5 support for Rama.
 //!
 //! # Rama
 //!
@@ -54,6 +54,5 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-pub mod client;
-pub mod server;
-pub mod utils;
+/// TODO
+pub const PLACEHOLDER: bool = true;

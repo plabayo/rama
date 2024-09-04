@@ -22,11 +22,14 @@ telemetry = ["rama-core/telemetry"]
 
 [dependencies]
 base64 = { workspace = true }
+boring = { workspace = true, optional = true }
 bytes = { workspace = true }
 futures-lite = { workspace = true }
 headers = { workspace = true }
+hex = { workspace = true, optional = true }
 hickory-resolver = { workspace = true }
 ipnet = { workspace = true }
+nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
@@ -36,15 +39,12 @@ pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types", optional = true }
 rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
+rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-graceful = { workspace = true }
 tracing = { workspace = true }
 venndb = { workspace = true, optional = true }
-boring = { workspace = true, optional = true }
-rustls = { workspace = true, optional = true }
-nom = { workspace = true, optional = true }
-hex = { workspace = true, optional = true }
 
 [dev-dependencies]
 itertools = { workspace = true }

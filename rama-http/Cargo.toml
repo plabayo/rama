@@ -24,6 +24,8 @@ async-compression = { workspace = true, features = [
     "gzip",
     "zstd",
 ], optional = true }
+base64 = { workspace = true }
+bitflags = { workspace = true }
 bytes = { workspace = true }
 const_format = { workspace = true }
 futures-core = { workspace = true }
@@ -32,43 +34,41 @@ headers = { workspace = true }
 http = { workspace = true }
 http-body = { workspace = true }
 http-body-util = { workspace = true }
+http-range-header = { workspace = true }
+httpdate = { workspace = true }
+iri-string = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
 paste = { workspace = true }
+percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
 rama-core = { version = "0.2.0-alpha.2", path = "../rama-core", features = ["http"] }
-rama-ua = { version = "0.2.0-alpha.2", path = "../rama-ua" }
 rama-http-types = { version = "0.2.0-alpha.2", path = "../rama-http-types" }
 rama-net = { version = "0.2.0-alpha.2", path = "../rama-net", features = ["http"] }
+rama-ua = { version = "0.2.0-alpha.2", path = "../rama-ua" }
+rama-utils = { version = "0.2.0-alpha.2", path = "../rama-utils" }
+regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
-tracing = { workspace = true }
-regex = { workspace = true }
-base64 = { workspace = true }
-httpdate = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
-http-range-header = { workspace = true }
-iri-string = { workspace = true }
 tokio-util = { workspace = true, features = ["io"] }
+tracing = { workspace = true }
 uuid = { workspace = true, features = ["v4"] }
-percent-encoding = { workspace = true }
-bitflags = { workspace = true }
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
-tokio-test = { workspace = true }
+brotli = { workspace = true }
+flate2 = { workspace = true }
 itertools = { workspace = true }
 parking_lot = { workspace = true }
-flate2 = { workspace = true }
-brotli = { workspace = true }
-zstd = { workspace = true }
-tempfile = { workspace = true }
 rama-http-backend = { version = "0.2.0-alpha.2", path = "../rama-http-backend" }
 rama-tcp = { version = "0.2.0-alpha.2", path = "../rama-tcp" }
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["full"] }
+tokio-test = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
+zstd = { workspace = true }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

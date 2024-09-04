@@ -1767,6 +1767,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-socks5"
+version = "0.2.0-alpha.2"
+
+[[package]]
 name = "rama-tcp"
 version = "0.2.0-alpha.2"
 dependencies = [
@@ -1812,6 +1816,10 @@ dependencies = [
  "serde_json",
  "tokio",
 ]
+
+[[package]]
+name = "rama-udp"
+version = "0.2.0-alpha.2"
 
 [[package]]
 name = "rama-utils"
