@@ -191,6 +191,7 @@ tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 bytes = { workspace = true }
+divan = { workspace = true }
 escargot = { workspace = true }
 itertools = { workspace = true }
 opentelemetry-otlp = { workspace = true }
