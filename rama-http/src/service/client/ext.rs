@@ -5,8 +5,6 @@ use rama_core::{
 };
 use std::future::Future;
 
-// TODO: integrate client ext into rama-http, as it is backend agnostic!, can live under service?!
-
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,
 /// in a more ergonomic way.

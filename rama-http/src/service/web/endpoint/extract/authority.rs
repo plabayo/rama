@@ -7,17 +7,6 @@ use rama_net::http::RequestContext;
 use rama_utils::macros::impl_deref;
 
 /// Extractor that resolves the authority of the request.
-///
-/// Host, part authority, is resolved through the following, in order:
-/// - `Forwarded` header
-/// - `X-Forwarded-Host` header
-/// - `Host` header
-/// - request target / URI
-///
-/// TODO: update the above once we have forwarded better implemented!
-///
-/// Note that user agents can set `X-Forwarded-Host` and `Host` headers to arbitrary values so make
-/// sure to validate them to avoid security issues.
 #[derive(Debug, Clone)]
 pub struct Authority(pub address::Authority);
 
