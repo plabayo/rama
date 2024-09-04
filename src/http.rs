@@ -17,7 +17,10 @@ pub mod layer {
     //! `rama-http` and `rama-http-backend`.
 
     pub use ::rama_http::layer::*;
+
+    #[cfg(feature = "http-full")]
     pub use ::rama_http_backend::server::layer::*;
 }
 
+#[cfg(feature = "http-full")]
 pub use ::rama_http_backend::{client, server};

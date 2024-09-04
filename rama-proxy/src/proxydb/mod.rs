@@ -7,7 +7,9 @@ use rama_utils::str::NonEmptyString;
 use serde::Deserialize;
 use std::{fmt, future::Future};
 
+#[cfg(feature = "live-update")]
 mod update;
+#[cfg(feature = "live-update")]
 #[doc(inline)]
 pub use update::{proxy_db_updater, LiveUpdateProxyDB, LiveUpdateProxyDBSetter};
 
