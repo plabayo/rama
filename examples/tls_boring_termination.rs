@@ -7,7 +7,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_boring_termination --features=boring
+//! cargo run --example tls_boring_termination --features=boring,haproxy,http-full
 //! ```
 //!
 //! # Expected output
@@ -38,17 +38,17 @@ use rama::{
     graceful::Shutdown,
     layer::{ConsumeErrLayer, GetExtensionLayer},
     net::forwarded::Forwarded,
-    proxy::pp::{
+    net::stream::{SocketInfo, Stream},
+    proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
     service::service_fn,
-    stream::{SocketInfo, Stream},
     tcp::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
     tls::{
-        backend::boring::{
+        boring::{
             dep::boring::{
                 asn1::Asn1Time,
                 bn::{BigNum, MsbOption},
@@ -62,7 +62,7 @@ use rama::{
             },
             server::{ServerConfig, TlsAcceptorLayer},
         },
-        ApplicationProtocol, SecureTransport,
+        types::{ApplicationProtocol, SecureTransport},
     },
     Context, Layer,
 };

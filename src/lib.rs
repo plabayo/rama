@@ -277,8 +277,8 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub use ::rama_core::{
-    combinators, context, dns, error, graceful, layer, matcher, rt, service, Context, Layer,
-    Service, username,
+    combinators, context, dns, error, graceful, layer, matcher, rt, service, username, Context,
+    Layer, Service,
 };
 
 #[cfg(feature = "tcp")]

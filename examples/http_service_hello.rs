@@ -5,7 +5,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_service_hello
+//! cargo run --example http_service_hello --features=compression,http-full
 //! ```
 //!
 //! # Expected output
@@ -35,12 +35,12 @@ use rama::{
         IntoResponse, Request,
     },
     layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
-    rt::Executor,
-    service::service_fn,
-    stream::{
+    net::stream::{
         layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
         SocketInfo,
     },
+    rt::Executor,
+    service::service_fn,
     tcp::server::TcpListener,
     utils::latency::LatencyUnit,
     Context, Layer,

@@ -2,7 +2,7 @@
 //! layer stack in a high level manner using the HttpClientExt.
 //!
 //! ```sh
-//! cargo run --example http_high_level_client
+//! cargo run --example http_high_level_client --features=compression,http-full
 //! ```
 //!
 //! # Expected output
@@ -14,7 +14,7 @@
 
 use rama::{
     http::{
-        client::{HttpClient, HttpClientExt},
+        client::HttpClient,
         headers::{authorization::Basic, Accept, Authorization, HeaderMapExt},
         layer::{
             auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
@@ -25,6 +25,7 @@ use rama::{
         },
         response::Json,
         server::HttpServer,
+        service::client::HttpClientExt,
         service::web::WebService,
         Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
     },

@@ -6,7 +6,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_rate_limit
+//! cargo run --example http_rate_limit --features=http-full
 //! ```
 //!
 //! # Expected output
@@ -47,9 +47,9 @@ use rama::{
         limit::policy::{ConcurrentPolicy, LimitReached},
         Layer, LimitLayer, MapResultLayer, TraceErrLayer,
     },
+    net::stream::matcher::SocketMatcher,
     rt::Executor,
     service::service_fn,
-    stream::matcher::SocketMatcher,
     utils::backoff::ExponentialBackoff,
 };
 use serde_json::json;

@@ -16,7 +16,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_termination --features=rustls
+//! cargo run --example tls_termination --features=haproxy,http-full,rustls
 //! ```
 //!
 //! # Expected output
@@ -46,25 +46,25 @@ use rama::{
     graceful::Shutdown,
     layer::ConsumeErrLayer,
     net::forwarded::Forwarded,
-    proxy::pp::{
+    net::stream::{SocketInfo, Stream},
+    proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
     service::service_fn,
-    stream::{SocketInfo, Stream},
     tcp::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
     tls::{
-        backend::rustls::{
+        dep::rcgen::{self, KeyPair},
+        rustls::{
             dep::{
                 pki_types::{CertificateDer, PrivatePkcs8KeyDer},
                 rustls::ServerConfig,
             },
             server::{TlsAcceptorLayer, TlsClientConfigHandler},
         },
-        client::ClientHello,
-        dep::rcgen::KeyPair,
+        types::client::ClientHello,
     },
     Context, Layer,
 };

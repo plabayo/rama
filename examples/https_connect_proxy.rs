@@ -6,7 +6,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example https_connect_proxy --features=rustls
+//! cargo run --example https_connect_proxy --features=http-full,rustls
 //! ```
 //!
 //! # Expected output
@@ -34,23 +34,24 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
-        Body, IntoResponse, Request, RequestContext, Response, StatusCode,
+        Body, IntoResponse, Request, Response, StatusCode,
     },
+    net::http::RequestContext,
+    net::stream::layer::http::BodyLimitLayer,
     net::user::Basic,
     rt::Executor,
     service::service_fn,
-    stream::layer::http::BodyLimitLayer,
     tcp::{server::TcpListener, utils::is_connection_error},
     tls::{
-        backend::rustls::{
+        dep::rcgen::{self, KeyPair},
+        rustls::{
             dep::{
                 pki_types::{CertificateDer, PrivatePkcs8KeyDer},
                 rustls::ServerConfig,
             },
             server::{TlsAcceptorLayer, TlsClientConfigHandler},
         },
-        client::ClientHello,
-        dep::rcgen::KeyPair,
+        types::client::ClientHello,
     },
     Context, Layer, Service,
 };

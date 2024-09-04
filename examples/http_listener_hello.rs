@@ -4,7 +4,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_listener_hello
+//! cargo run --example http_listener_hello --features=http-full
 //! ```
 //!
 //! # Expected output

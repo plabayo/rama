@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tcp_listener_layers
+//! cargo run --example tcp_listener_layers --features=tcp
 //! ```
 //!
 //! # Expected output
@@ -20,8 +20,8 @@
 
 use rama::{
     layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
+    net::stream::{matcher::SocketMatcher, service::EchoService},
     service::service_fn,
-    stream::{matcher::SocketMatcher, service::EchoService},
     tcp::server::TcpListener,
     Layer,
 };

@@ -6,7 +6,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example mtls_tunnel_and_service --features=rustls
+//! cargo run --example mtls_tunnel_and_service --features=http-full,rustls
 //! ```
 //!
 //! # Expected output
@@ -29,16 +29,14 @@
 // as to make it easy to use them and ensure that the versions remain compatible
 // (given most do not have a stable release yet)
 use rama::{
-    layer::TraceErrLayer,
-    service::service_fn,
-    tls::backend::rustls::dep::{
+    tls::dep::rcgen::{self, KeyPair},
+    tls::rustls::dep::{
         pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName},
         rustls::{
             server::WebPkiClientVerifier, ClientConfig, KeyLogFile, RootCertStore, ServerConfig,
         },
         tokio_rustls::TlsConnector,
     },
-    Layer,
 };
 
 // rama provides everything out of the box to build mtls web services and proxies
@@ -51,12 +49,13 @@ use rama::{
         server::HttpServer,
         service::web::WebService,
     },
+    layer::TraceErrLayer,
     rt::Executor,
+    service::service_fn,
     tcp::server::TcpListener,
-    tls::backend::rustls::server::TlsAcceptorLayer,
-    Context,
+    tls::rustls::server::TlsAcceptorLayer,
+    Context, Layer,
 };
-use rcgen::KeyPair;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{sync::Arc, time::Duration};

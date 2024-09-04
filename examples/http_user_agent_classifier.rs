@@ -3,7 +3,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example http_user_agent_classifier
+//! cargo run --example http_user_agent_classifier --features=http-full
 //! ```
 //!
 //! # Expected output
@@ -17,10 +17,10 @@
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the user agent info exposed by Rama.
 
 use rama::{
+    http::layer::ua::{UserAgent, UserAgentClassifierLayer},
     http::{response::Json, server::HttpServer, HeaderName, IntoResponse, Request, Response},
     rt::Executor,
     service::service_fn,
-    ua::{UserAgent, UserAgentClassifierLayer},
     Context, Layer,
 };
 use serde_json::json;
