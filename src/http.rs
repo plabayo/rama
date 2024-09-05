@@ -3,6 +3,7 @@
 //! mostly contains re-exports from
 //! `rama-http` and `rama-http-backend`.
 
+#[doc(inline)]
 pub use ::rama_http::{
     dep, header, headers, io, matcher,
     response::{self, IntoResponse, Response},
@@ -16,11 +17,14 @@ pub mod layer {
     //! mostly contains re-exports from
     //! `rama-http` and `rama-http-backend`.
 
+    #[doc(inline)]
     pub use ::rama_http::layer::*;
 
     #[cfg(feature = "http-full")]
+    #[doc(inline)]
     pub use ::rama_http_backend::server::layer::*;
 }
 
 #[cfg(feature = "http-full")]
+#[doc(inline)]
 pub use ::rama_http_backend::{client, server};

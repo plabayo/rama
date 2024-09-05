@@ -198,7 +198,7 @@
 //! ```rust,ignore
 //! # #[cfg(feature = "do-not-ever-run")]
 //! # {
-//! use rama::http::client::HttpClientExt;
+//! use rama::http::service::client::HttpClientExt;
 //!
 //! let client = (
 //!     TraceLayer::new_for_http(),
@@ -276,21 +276,26 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
+#[doc(inline)]
 pub use ::rama_core::{
     combinators, context, dns, error, graceful, layer, matcher, rt, service, username, Context,
     Layer, Service,
 };
 
 #[cfg(feature = "tcp")]
+#[doc(inline)]
 pub use ::rama_tcp as tcp;
 
 #[cfg(feature = "telemetry")]
+#[doc(inline)]
 pub use ::rama_core::telemetry;
 
 #[cfg(feature = "tls")]
+#[doc(inline)]
 pub use ::rama_tls as tls;
 
 #[cfg(feature = "net")]
+#[doc(inline)]
 pub use ::rama_net as net;
 
 #[cfg(feature = "http")]
@@ -301,16 +306,20 @@ pub mod proxy {
     //! rama proxy support
 
     #[cfg(feature = "proxy")]
+    #[doc(inline)]
     pub use ::rama_proxy::*;
 
     #[cfg(feature = "haproxy")]
+    #[doc(inline)]
     pub use ::rama_haproxy as haproxy;
 }
 
 #[cfg(feature = "ua")]
+#[doc(inline)]
 pub use ::rama_ua as ua;
 
 #[cfg(feature = "cli")]
 pub mod cli;
 
+#[doc(inline)]
 pub use ::rama_utils as utils;

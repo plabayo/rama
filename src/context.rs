@@ -59,5 +59,8 @@
 //!
 //! [`TcpListener`]: crate::tcp::server::TcpListener
 
+#[doc(inline)]
 pub use ::rama_core::context as context;
+
+#[doc(inline)]
 pub use ::rama_macros::AsRef;

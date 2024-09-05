@@ -286,7 +286,7 @@ As a 🍒 cherry on the cake you can import the [`HttpClientExt`](https://ramapr
 > 💡 The full "high level" example can be found at [/examples/http_high_level_client.rs](https://github.com/plabayo/rama/tree/main/examples/http_high_level_client.rs).
 
 ```rust
-use rama::http::client::HttpClientExt;
+use rama::http::service::client::HttpClientExt;
 
 let client = (
     TraceLayer::new_for_http(),
