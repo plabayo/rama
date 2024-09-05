@@ -32,6 +32,11 @@ impl StringFilter {
     pub fn into_inner(self) -> String {
         self.0
     }
+
+    /// Return `true` if this value is considered an "any" value
+    pub fn is_any(&self) -> bool {
+        self.0 == "*"
+    }
 }
 
 impl PartialEq for StringFilter {
@@ -122,7 +127,7 @@ impl<'de> Deserialize<'de> for StringFilter {
 #[cfg(feature = "memory-db")]
 impl venndb::Any for StringFilter {
     fn is_any(&self) -> bool {
-        self.0 == "*"
+        Self::is_any(self)
     }
 }
 
@@ -178,8 +183,6 @@ mod tests {
 
     #[test]
     fn test_string_filter_any() {
-        use venndb::Any;
-
         let filter = StringFilter::any();
         assert!(filter.is_any());
 

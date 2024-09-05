@@ -45,6 +45,11 @@ impl Asn {
             AsnData::Unspecified => 0,
         }
     }
+
+    /// Returns `true` if this value is considered to be "any" value.
+    pub fn is_any(&self) -> bool {
+        self.0 == AsnData::Unspecified
+    }
 }
 
 const fn is_valid_asn_range(value: u32) -> bool {
@@ -113,7 +118,7 @@ impl fmt::Display for Asn {
 #[cfg(feature = "venndb")]
 impl venndb::Any for Asn {
     fn is_any(&self) -> bool {
-        self.0 == AsnData::Unspecified
+        Self::is_any(self)
     }
 }
 
