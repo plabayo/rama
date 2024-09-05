@@ -295,7 +295,10 @@ where
             ctx.insert(proxy_address);
 
             // insert the id of the selected proxy
-            ctx.insert(super::ProxyID::from(proxy.id));
+            ctx.insert(super::ProxyID::from(proxy.id.clone()));
+
+            // insert the entire proxy also in there, for full "Context"
+            ctx.insert(proxy);
         }
 
         self.inner.serve(ctx, req).await.map_err(Into::into)
