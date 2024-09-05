@@ -11,12 +11,14 @@ mod update;
 pub use update::{proxy_db_updater, LiveUpdateProxyDB, LiveUpdateProxyDBSetter};
 
 mod internal;
+#[doc(inline)]
 pub use internal::Proxy;
 
 #[cfg(feature = "csv")]
 mod csv;
 
 #[cfg(feature = "csv")]
+#[doc(inline)]
 pub use csv::{ProxyCsvRowReader, ProxyCsvRowReaderError, ProxyCsvRowReaderErrorKind};
 
 pub(super) mod layer;

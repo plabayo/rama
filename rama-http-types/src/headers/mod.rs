@@ -62,8 +62,10 @@
 //! }
 //! ```
 
+#[doc(inline)]
 pub use headers::{Header, HeaderMapExt};
 
+#[doc(inline)]
 pub use headers::{
     AcceptRanges, AccessControlAllowCredentials, AccessControlAllowHeaders,
     AccessControlAllowMethods, AccessControlAllowOrigin, AccessControlExposeHeaders,
@@ -79,9 +81,12 @@ pub use headers::{
 pub mod authorization {
     //! Authorization header and types.
 
+    #[doc(inline)]
     pub use headers::authorization::Credentials;
+    #[doc(inline)]
     pub use headers::authorization::{Authorization, Basic, Bearer};
 }
 
 mod ext;
+#[doc(inline)]
 pub use ext::HeaderExt;

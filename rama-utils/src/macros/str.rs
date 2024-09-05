@@ -42,4 +42,5 @@ macro_rules! __eq_ignore_ascii_case {
         $crate::macros::str::EqIgnoreAsciiCase($lhs, $rhs).const_eval()
     };
 }
+#[doc(inline)]
 pub use crate::__eq_ignore_ascii_case as eq_ignore_ascii_case;

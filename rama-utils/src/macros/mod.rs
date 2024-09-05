@@ -56,6 +56,7 @@ macro_rules! __opaque_body {
         }
     };
 }
+#[doc(inline)]
 pub use crate::__opaque_body as opaque_body;
 
 #[doc(hidden)]
@@ -75,6 +76,7 @@ macro_rules! __all_the_tuples_minus_one_no_last_special_case {
         $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11);
     };
 }
+#[doc(inline)]
 pub use crate::__all_the_tuples_minus_one_no_last_special_case as all_the_tuples_minus_one_no_last_special_case;
 
 #[doc(hidden)]
@@ -85,6 +87,7 @@ macro_rules! __all_the_tuples_no_last_special_case {
         $name!(T1, T2, T3, T4, T5, T6, T7, T8, T9, T10, T11, T12);
     };
 }
+#[doc(inline)]
 pub use crate::__all_the_tuples_no_last_special_case as all_the_tuples_no_last_special_case;
 
 #[doc(hidden)]
@@ -114,6 +117,7 @@ macro_rules! __match_ignore_ascii_case_str {
         }
     };
 }
+#[doc(inline)]
 pub use crate::__match_ignore_ascii_case_str as match_ignore_ascii_case_str;
 
 #[doc(hidden)]
@@ -131,6 +135,7 @@ macro_rules! __define_inner_service_accessors {
         }
     };
 }
+#[doc(inline)]
 pub use crate::__define_inner_service_accessors as define_inner_service_accessors;
 
 #[doc(hidden)]
@@ -172,6 +177,7 @@ macro_rules! __impl_deref {
         }
     };
 }
+#[doc(inline)]
 pub use crate::__impl_deref as impl_deref;
 
 #[cfg(test)]

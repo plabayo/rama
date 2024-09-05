@@ -33,6 +33,7 @@ pub mod dep {
         //!
         //! [`ipnet`]: https://docs.rs/ipnet
 
+        #[doc(inline)]
         pub use ipnet::*;
     }
 }

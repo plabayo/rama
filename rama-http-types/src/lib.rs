@@ -55,15 +55,12 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub(crate) mod body;
-#[doc(inline)]
 pub use body::{Body, BodyDataStream};
 
 mod body_limit;
-#[doc(inline)]
 pub use body_limit::BodyLimit;
 
 mod body_ext;
-#[doc(inline)]
 pub use body_ext::BodyExtractExt;
 
 /// Type alias for [`http::Request`] whose body type
@@ -87,6 +84,7 @@ pub mod dep {
         //!
         //! [`http`]: https://docs.rs/http
 
+        #[doc(inline)]
         pub use http::*;
     }
 
@@ -97,6 +95,7 @@ pub mod dep {
         //!
         //! [`http-body`]: https://docs.rs/http-body
 
+        #[doc(inline)]
         pub use http_body::*;
     }
 
@@ -108,6 +107,7 @@ pub mod dep {
         //! [`http-body`]: https://docs.rs/http-body
         //! [`http-body-util`]: https://docs.rs/http-body-util
 
+        #[doc(inline)]
         pub use http_body_util::*;
     }
 
@@ -118,6 +118,7 @@ pub mod dep {
         //!
         //! [`mime`]: https://docs.rs/mime
 
+        #[doc(inline)]
         pub use mime::*;
     }
 
@@ -128,6 +129,7 @@ pub mod dep {
         //!
         //! [`mime_guess`]: https://docs.rs/mime_guess
 
+        #[doc(inline)]
         pub use mime_guess::*;
     }
 }
@@ -135,6 +137,7 @@ pub mod dep {
 pub mod header {
     //! HTTP header types
 
+    #[doc(inline)]
     pub use crate::dep::http::header::*;
 
     macro_rules! static_header {
@@ -169,8 +172,13 @@ pub mod header {
     );
 }
 
+#[doc(inline)]
 pub use self::dep::http::header::{HeaderMap, HeaderName, HeaderValue};
+#[doc(inline)]
 pub use self::dep::http::method::Method;
+#[doc(inline)]
 pub use self::dep::http::status::StatusCode;
+#[doc(inline)]
 pub use self::dep::http::uri::{Scheme, Uri};
+#[doc(inline)]
 pub use self::dep::http::version::Version;

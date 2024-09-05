@@ -14,7 +14,7 @@ Rama offers support to:
 
 More Information:
 
-* ⛰️ The source code for User Agent (UA) support can be found at <https://github.com/plabayo/rama/tree/main/src/ua>;
+* ⛰️ The source code for User Agent (UA) support can be found at <https://github.com/plabayo/rama/tree/main/rama-ua/src>;
 * 📖 and the edge documentation for it can be found at <https://ramaproxy.org/docs/rama/ua/index.html>.
 
 ## Fingerprinting

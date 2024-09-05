@@ -232,7 +232,7 @@ pub use ext::{ErrorContext, ErrorExt, OpaqueError};
 
 mod macros;
 #[doc(inline)]
-pub use crate::__error as error;
+pub use macros::error;
 
 #[cfg(test)]
 mod test {

@@ -13,6 +13,7 @@ pub mod dep {
         //!
         //! [`boring`]: https://docs.rs/boring
 
+        #[doc(inline)]
         pub use boring::*;
     }
 
@@ -20,6 +21,7 @@ pub mod dep {
         //! Full Re-export of the [`tokio-boring`] crate.
         //!
         //! [`tokio-boring`]: https://docs.rs/tokio-boring
+        #[doc(inline)]
         pub use tokio_boring::*;
     }
 }

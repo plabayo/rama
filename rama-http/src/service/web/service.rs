@@ -327,7 +327,7 @@ macro_rules! __match_service {
 }
 
 #[doc(inline)]
-pub use __match_service as match_service;
+pub use crate::__match_service as match_service;
 
 #[cfg(test)]
 mod test {

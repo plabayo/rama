@@ -3,6 +3,7 @@
 //! This module re-exports the crates supported and used by rama for (open) telemetry,
 //! such that you can make use of it for custom metrics, registries and more.
 
+#[doc(inline)]
 pub use ::opentelemetry::*;
 
 #[doc(inline)]

@@ -62,8 +62,10 @@
 //! }
 //! ```
 
+#[doc(inline)]
 pub use rama_http_types::headers::{Header, HeaderMapExt};
 
+#[doc(inline)]
 pub use rama_http_types::headers::{
     AcceptRanges, AccessControlAllowCredentials, AccessControlAllowHeaders,
     AccessControlAllowMethods, AccessControlAllowOrigin, AccessControlExposeHeaders,
@@ -90,11 +92,14 @@ pub use forwarded::{
 pub mod authorization {
     //! Authorization header and types.
 
-    pub use headers::authorization::Credentials;
-    pub use headers::authorization::{Authorization, Basic, Bearer};
+    #[doc(inline)]
+    pub use ::headers::authorization::Credentials;
+    #[doc(inline)]
+    pub use ::headers::authorization::{Authorization, Basic, Bearer};
 }
 
-pub use rama_http_types::headers::HeaderExt;
+#[doc(inline)]
+pub use ::rama_http_types::headers::HeaderExt;
 
 pub(crate) mod util;
 pub use util::quality_value::{Quality, QualityValue};

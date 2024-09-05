@@ -14,6 +14,7 @@ pub mod dep {
         //!
         //! [`pki-types`]: https://docs.rs/rustls-pki-types
 
+        #[doc(inline)]
         pub use rustls_pki_types::*;
     }
 
@@ -23,6 +24,7 @@ pub mod dep {
         //! A basic parser for .pem files containing cryptographic keys and certificates.
         //!
         //! [`rustls-pemfile`]: https://docs.rs/rustls-pemfile
+        #[doc(inline)]
         pub use rustls_pemfile::*;
     }
 
@@ -33,6 +35,7 @@ pub mod dep {
         //! store when operating as a TLS client.
         //!
         //! [`rustls-native-certs`]: https://docs.rs/rustls-native-certs
+        #[doc(inline)]
         pub use rustls_native_certs::*;
     }
 
@@ -45,6 +48,7 @@ pub mod dep {
         //! [`tokio-rustls`]: https://docs.rs/tokio-rustls
         //! [`TlsAcceptorLayer`]: crate::rustls::server::TlsAcceptorLayer
 
+        #[doc(inline)]
         pub use rustls::*;
 
         pub mod client {
@@ -53,7 +57,9 @@ pub mod dep {
             //! [`rustls`]: https://docs.rs/rustls
             //! [`tokio-rustls`]: https://docs.rs/tokio-rustls
 
+            #[doc(inline)]
             pub use rustls::client::*;
+            #[doc(inline)]
             pub use tokio_rustls::client::TlsStream;
         }
 
@@ -63,7 +69,9 @@ pub mod dep {
             //! [`rustls`]: https://docs.rs/rustls
             //! [`tokio-rustls`]: https://docs.rs/tokio-rustls
 
+            #[doc(inline)]
             pub use rustls::server::*;
+            #[doc(inline)]
             pub use tokio_rustls::server::TlsStream;
         }
     }
@@ -72,6 +80,7 @@ pub mod dep {
         //! Full Re-export of the [`tokio-rustls`] crate.
         //!
         //! [`tokio-rustls`]: https://docs.rs/tokio-rustls
+        #[doc(inline)]
         pub use tokio_rustls::*;
     }
 
@@ -81,6 +90,7 @@ pub mod dep {
         //! This crate provides a function to load the Mozilla root CA store.
         //!
         //! [`webpki-roots`]: https://docs.rs/webpki-roots
+        #[doc(inline)]
         pub use webpki_roots::*;
     }
 }

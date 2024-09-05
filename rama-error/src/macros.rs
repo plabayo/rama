@@ -12,8 +12,8 @@
 /// let err = error!("An error occurred: {}", 42);
 /// let err = error!(std::io::Error::new(std::io::ErrorKind::Other, "oh no!"));
 /// ```
-#[macro_export]
 #[doc(hidden)]
+#[macro_export]
 macro_rules! __error {
     ($msg:literal $(,)?) => ({
         $crate::OpaqueError::from_display($msg)
@@ -25,3 +25,4 @@ macro_rules! __error {
         $crate::OpaqueError::from_std($err)
     });
 }
+pub use crate::__error as error;

@@ -68,6 +68,7 @@ pub use boring as std;
 
 pub mod types {
     //! common tls types
+    #[doc(inline)]
     pub use ::rama_net::tls::{
         client, ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
         HttpsTunnel, ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup,
@@ -84,6 +85,7 @@ pub mod dep {
         //!
         //! [`rcgen`]: https://docs.rs/rcgen
 
+        #[doc(inline)]
         pub use rcgen::*;
     }
 }

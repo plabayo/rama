@@ -28,4 +28,5 @@ macro_rules! __static_str_error {
         impl std::error::Error for $name {}
     }
 }
+#[doc(inline)]
 pub use crate::__static_str_error as static_str_error;
