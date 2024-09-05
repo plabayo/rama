@@ -20,6 +20,7 @@ pub mod auth;
 pub mod body_limit;
 pub mod catch_panic;
 pub mod classify;
+pub mod collect_body;
 pub mod cors;
 pub mod dns;
 pub mod error_handling;
