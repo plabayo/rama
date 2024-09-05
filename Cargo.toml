@@ -83,7 +83,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
     "aws_lc_rs",
 ] }
-rustls-native-certs = "0.7.2"
+rustls-native-certs = "0.8.0"
 rustls-pemfile = "2.1"
 rustversion = "1.0.9"
 serde = "1.0"
