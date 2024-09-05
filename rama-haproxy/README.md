@@ -1,4 +1,4 @@
-[![rama banner](../docs/img/rama_banner.jpeg)](https://ramahaproxy.org/)
+[![rama banner](../docs/img/rama_banner.jpeg)](https://ramaproxy.org/)
 
 [![Crates.io][crates-badge]][crates-url]
 [![Docs.rs][docs-badge]][docs-url]
@@ -35,7 +35,7 @@
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
-The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramahaproxy.org/book/why_rama).
+The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 
 ## rama-haproxy
 
@@ -44,4 +44,4 @@ Rama HaProxy support.
 Learn more about `rama`:
 
 - Github: <https://github.com/plabayo/rama>
-- Book: <https://ramahaproxy.org/book/>
+- Book: <https://ramaproxy.org/book/>

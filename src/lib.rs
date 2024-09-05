@@ -217,7 +217,7 @@
 //! the UA emulation data for the Http and TLS layers. It is not meant to fingerprint humans or users. Instead it is meant to help
 //! automated processes look like a human.
 //!
-//! > 💡 This example showcases how you can make use of the [`match_service`](https://ramaproxy.org/docs/rama/http/service/web/macro.match_service.html)
+//! > 💡 This example showcases how you can make use of the [`match_service`](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html)
 //! > macro to create a `Box`-free service router. Another example of this approach can be seen in the
 //! > [http_service_match.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_match.rs) example.
 //!
