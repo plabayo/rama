@@ -26,8 +26,8 @@ license = "MIT OR Apache-2.0"
 edition = "2021"
 repository = "https://github.com/plabayo/rama"
 homepage = "https://ramaproxy.org"
-keywords = ["io", "async", "non-blocking", "futures"]
-categories = ["asynchronous", "network-programming"]
+keywords = ["io", "async", "non-blocking", "futures", "service", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
 rust-version = "1.80.0"
 
