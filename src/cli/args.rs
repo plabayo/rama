@@ -518,7 +518,14 @@ mod tests {
                     "description='CLI HTTP client'",
                 ],
                 "POST / HTTP/1.1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 35\r\n\r\n{\"description\":\"'CLI HTTP client'\"}",
-            )
+            ),
+            (
+                vec![
+                    "example.com",
+                    "x-cfg:a=1&foo=bar&foo=baz",
+                ],
+                "GET / HTTP/1.1\r\nx-cfg: a=1&foo=bar&foo=baz\r\n\r\n",
+            ),
         ] {
             let mut builder = RequestArgsBuilder::new();
             for arg in args {
