@@ -81,7 +81,7 @@ where
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
         match self {
             Some(inner) => inner.matches(ext, ctx, req),
-            None => true,
+            None => false,
         }
     }
 }

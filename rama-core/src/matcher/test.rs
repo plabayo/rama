@@ -71,7 +71,7 @@ impl<State> Matcher<State, u8> for ConstMatcher {
 
 #[test]
 fn test_option() {
-    assert!(Option::<ConstMatcher>::None.matches(None, &Context::default(), &0));
+    assert!(!Option::<ConstMatcher>::None.matches(None, &Context::default(), &0));
     assert!(Some(ConstMatcher(0)).matches(None, &Context::default(), &0));
     assert!(!Some(ConstMatcher(1)).matches(None, &Context::default(), &0));
 }
