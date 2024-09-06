@@ -113,9 +113,8 @@ mod test {
             age: u8,
         }
 
-        let service = WebService::default().post("/", |Form(_): Form<Input>| async move {
-            panic!("should not reach here");
-        });
+        let service =
+            WebService::default().post("/", |Form(_): Form<Input>| async move { StatusCode::OK });
 
         let req = Request::builder()
             .uri("/")
@@ -136,9 +135,8 @@ mod test {
             age: u8,
         }
 
-        let service = WebService::default().get("/", |Form(_): Form<Input>| async move {
-            panic!("should not reach here");
-        });
+        let service =
+            WebService::default().get("/", |Form(_): Form<Input>| async move { StatusCode::OK });
 
         let req = Request::builder()
             .uri("/")
@@ -181,9 +179,8 @@ mod test {
             age: u8,
         }
 
-        let service = WebService::default().get("/", |Form(_): Form<Input>| async move {
-            panic!("should not reach here");
-        });
+        let service =
+            WebService::default().get("/", |Form(_): Form<Input>| async move { StatusCode::OK });
 
         let req = Request::builder()
             .uri("/?name=Devan")

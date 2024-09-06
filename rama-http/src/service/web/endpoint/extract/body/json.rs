@@ -108,9 +108,8 @@ mod test {
             _alive: Option<bool>,
         }
 
-        let service = WebService::default().post("/", |Json(_): Json<Input>| async move {
-            unreachable!("This endpoint should not be called");
-        });
+        let service =
+            WebService::default().post("/", |Json(_): Json<Input>| async move { StatusCode::OK });
 
         let req = http::Request::builder()
             .method(http::Method::POST)
@@ -130,9 +129,8 @@ mod test {
             _alive: Option<bool>,
         }
 
-        let service = WebService::default().post("/", |Json(_): Json<Input>| async move {
-            unreachable!("This endpoint should not be called");
-        });
+        let service =
+            WebService::default().post("/", |Json(_): Json<Input>| async move { StatusCode::OK });
 
         let req = http::Request::builder()
             .method(http::Method::POST)

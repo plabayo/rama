@@ -32,7 +32,7 @@ fn parse_header(header: &str) -> Result<Header, ParseError> {
     }
 
     let mut iterator = header
-        .splitn(PARTS, |c| c == SEPARATOR || c == CARRIAGE_RETURN)
+        .splitn(PARTS, [SEPARATOR, CARRIAGE_RETURN])
         .peekable();
 
     let prefix = iterator.next().ok_or(ParseError::MissingPrefix)?;
