@@ -1,4 +1,4 @@
-use rama_core::error::BoxError;
+use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_net::{asn::Asn, transport::TransportContext};
 use rama_utils::str::NonEmptyString;
 use serde::Deserialize;
@@ -143,6 +143,77 @@ pub trait ProxyDB: Send + Sync + 'static {
         filter: ProxyFilter,
     ) -> impl Future<Output = Result<Proxy, Self::Error>> + Send + '_ {
         self.get_proxy_if(ctx, filter, true)
+    }
+}
+
+impl ProxyDB for () {
+    type Error = OpaqueError;
+
+    #[inline]
+    async fn get_proxy_if(
+        &self,
+        _ctx: TransportContext,
+        _filter: ProxyFilter,
+        _predicate: impl ProxyQueryPredicate,
+    ) -> Result<Proxy, Self::Error> {
+        Err(OpaqueError::from_display(
+            "()::get_proxy_if: no ProxyDB defined",
+        ))
+    }
+
+    #[inline]
+    async fn get_proxy(
+        &self,
+        _ctx: TransportContext,
+        _filter: ProxyFilter,
+    ) -> Result<Proxy, Self::Error> {
+        Err(OpaqueError::from_display(
+            "()::get_proxy: no ProxyDB defined",
+        ))
+    }
+}
+
+impl<T> ProxyDB for Option<T>
+where
+    T: ProxyDB<Error: Into<BoxError>>,
+{
+    type Error = OpaqueError;
+
+    #[inline]
+    async fn get_proxy_if(
+        &self,
+        ctx: TransportContext,
+        filter: ProxyFilter,
+        predicate: impl ProxyQueryPredicate,
+    ) -> Result<Proxy, Self::Error> {
+        match self {
+            Some(db) => db
+                .get_proxy_if(ctx, filter, predicate)
+                .await
+                .map_err(|err| OpaqueError::from_boxed(err.into()))
+                .context("Some::get_proxy_if"),
+            None => Err(OpaqueError::from_display(
+                "None::get_proxy_if: no ProxyDB defined",
+            )),
+        }
+    }
+
+    #[inline]
+    async fn get_proxy(
+        &self,
+        ctx: TransportContext,
+        filter: ProxyFilter,
+    ) -> Result<Proxy, Self::Error> {
+        match self {
+            Some(db) => db
+                .get_proxy(ctx, filter)
+                .await
+                .map_err(|err| OpaqueError::from_boxed(err.into()))
+                .context("Some::get_proxy"),
+            None => Err(OpaqueError::from_display(
+                "None::get_proxy: no ProxyDB defined",
+            )),
+        }
     }
 }
 
