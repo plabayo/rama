@@ -1801,6 +1801,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-dns"
+version = "0.2.0-alpha.3"
+dependencies = [
+ "hickory-resolver",
+ "rama-core",
+ "rama-net",
+ "rama-utils",
+ "serde",
+ "serde_html_form",
+ "tokio",
+]
+
+[[package]]
 name = "rama-error"
 version = "0.2.0-alpha.3"
 

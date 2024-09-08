@@ -4,6 +4,7 @@ members = [
     "fuzz",
     "rama-cli",
     "rama-core",
+    "rama-dns",
     "rama-error",
     "rama-haproxy",
     "rama-http",
