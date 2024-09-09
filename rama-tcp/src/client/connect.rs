@@ -23,9 +23,13 @@ use tokio::{
     },
 };
 
+/// Trait used internally by [`tcp_connect`] and the `TcpConnector`
+/// to actually establish the [`TcpStream`.]
 pub trait TcpStreamConnector: Send + Sync + 'static {
+    /// Type of error that can occurr when establishing the connection failed.
     type Error;
 
+    /// Connect to the target via the given [`SocketAddr`]ess to establish a [`TcpStream`].
     fn connect(
         &self,
         addr: SocketAddr,
