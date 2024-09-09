@@ -2,7 +2,10 @@ use crate::DnsResolver;
 use rama_net::address::Domain;
 use rama_utils::macros::{error::static_str_error, impl_deref};
 use serde::Deserialize;
-use std::{collections::HashMap, net::IpAddr};
+use std::{
+    collections::HashMap,
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
+};
 
 #[derive(Debug, Clone)]
 /// Wrapper struct that can be used to add
@@ -64,10 +67,7 @@ static_str_error! {
 impl DnsResolver for InMemoryDns {
     type Error = DomainNotMappedErr;
 
-    async fn ipv4_lookup(
-        &self,
-        domain: Domain,
-    ) -> Result<impl Iterator<Item = std::net::Ipv4Addr>, Self::Error> {
+    async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         self.map
             .as_ref()
             .and_then(|m| m.get(&domain))
@@ -79,15 +79,12 @@ impl DnsResolver for InMemoryDns {
                         IpAddr::V6(_) => None,
                     })
                     .collect();
-                (!ips.is_empty()).then(|| ips.into_iter())
+                (!ips.is_empty()).then_some(ips)
             })
             .ok_or(DomainNotMappedErr)
     }
 
-    async fn ipv6_lookup(
-        &self,
-        domain: Domain,
-    ) -> Result<impl Iterator<Item = std::net::Ipv6Addr>, Self::Error> {
+    async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
         self.map
             .as_ref()
             .and_then(|m| m.get(&domain))
@@ -99,7 +96,7 @@ impl DnsResolver for InMemoryDns {
                         IpAddr::V6(ip) => Some(*ip),
                     })
                     .collect();
-                (!ips.is_empty()).then(|| ips.into_iter())
+                (!ips.is_empty()).then_some(ips)
             })
             .ok_or(DomainNotMappedErr)
     }
@@ -120,6 +117,7 @@ mod tests {
                 .ipv4_lookup(Domain::from_static("example.com"))
                 .await
                 .unwrap()
+                .into_iter()
                 .next()
                 .unwrap(),
             Ipv4Addr::new(127, 0, 0, 1)
@@ -142,6 +140,7 @@ mod tests {
                 .ipv6_lookup(Domain::from_static("example.com"))
                 .await
                 .unwrap()
+                .into_iter()
                 .next()
                 .unwrap(),
             Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)
@@ -155,7 +154,8 @@ mod tests {
         let mut ipv4_it = dns_overwrite
             .ipv4_lookup(Domain::from_static("example.com"))
             .await
-            .unwrap();
+            .unwrap()
+            .into_iter();
         assert_eq!(ipv4_it.next().unwrap(), Ipv4Addr::new(127, 0, 0, 1));
         assert_eq!(ipv4_it.next().unwrap(), Ipv4Addr::new(127, 0, 0, 2));
         assert!(ipv4_it.next().is_none());
@@ -174,6 +174,7 @@ mod tests {
                 .ipv4_lookup(Domain::from_static("example.com"))
                 .await
                 .unwrap()
+                .into_iter()
                 .next()
                 .unwrap(),
             Ipv4Addr::new(127, 0, 0, 1)
@@ -183,6 +184,7 @@ mod tests {
                 .ipv6_lookup(Domain::from_static("example.com"))
                 .await
                 .unwrap()
+                .into_iter()
                 .next()
                 .unwrap(),
             Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)

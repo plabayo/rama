@@ -1743,6 +1743,7 @@ dependencies = [
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "rama-core",
+ "rama-dns",
  "rama-haproxy",
  "rama-http",
  "rama-http-backend",
@@ -1784,7 +1785,6 @@ name = "rama-core"
 version = "0.2.0-alpha.3"
 dependencies = [
  "futures-lite",
- "hickory-resolver",
  "opentelemetry",
  "opentelemetry-semantic-conventions",
  "opentelemetry_sdk",
@@ -1995,6 +1995,7 @@ name = "rama-tcp"
 version = "0.2.0-alpha.3"
 dependencies = [
  "rama-core",
+ "rama-dns",
  "rama-http-types",
  "rama-net",
  "rama-utils",

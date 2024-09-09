@@ -5,7 +5,7 @@ pub mod service;
 
 mod connect;
 #[doc(inline)]
-pub use connect::{connect, connect_trusted};
+pub use connect::tcp_connect;
 
 #[cfg(feature = "http")]
 mod request;

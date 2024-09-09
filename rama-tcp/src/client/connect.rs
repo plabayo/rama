@@ -1,12 +1,14 @@
 use rama_core::{
-    combinators::Either4,
-    dns::Dns,
-    error::{ErrorContext, OpaqueError},
+    combinators::Either,
+    error::{BoxError, ErrorContext, OpaqueError},
     Context,
 };
+use rama_dns::{DnsOverwrite, DnsResolver};
 use rama_net::address::{Authority, Domain, Host};
 use std::{
+    future::Future,
     net::{IpAddr, SocketAddr},
+    ops::Deref,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -21,36 +23,91 @@ use tokio::{
     },
 };
 
-/// Establish a TCP connection for the given authority.
-///
-/// In the case where the authority is already an IP address, we can directly connect to it.
-/// Otherwise, we'll try to establish a connection with dual-stack parallel connections,
-/// meaning that we'll try to connect to the domain using both IPv4 and IPv6,
-/// with multiple concurrent connection attempts.
-pub async fn connect<State: Send + Sync + 'static>(
-    ctx: &Context<State>,
-    authority: Authority,
-) -> Result<(TcpStream, SocketAddr), OpaqueError> {
-    connect_inner(ctx, authority, false).await
+pub trait TcpStreamConnector: Send + Sync + 'static {
+    type Error;
+
+    fn connect(
+        &self,
+        addr: SocketAddr,
+    ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_;
 }
 
-/// Establish a TCP connection for the given authority.
-///
-/// Same as [`connect`] but without allowing DNS overwrites.
-pub async fn connect_trusted<State: Send + Sync + 'static>(
-    ctx: &Context<State>,
-    authority: Authority,
-) -> Result<(TcpStream, SocketAddr), OpaqueError> {
-    connect_inner(ctx, authority, true).await
+impl TcpStreamConnector for () {
+    type Error = std::io::Error;
+
+    fn connect(
+        &self,
+        addr: SocketAddr,
+    ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
+        TcpStream::connect(addr)
+    }
 }
 
-async fn connect_inner<State>(
+impl<T: TcpStreamConnector> TcpStreamConnector for Arc<T> {
+    type Error = T::Error;
+
+    fn connect(
+        &self,
+        addr: SocketAddr,
+    ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
+        (**self).connect(addr)
+    }
+}
+
+impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
+where
+    ConnectFn: Fn(SocketAddr) -> ConnectFnFut + Send + Sync + 'static,
+    ConnectFnFut: Future<Output = Result<TcpStream, ConnectFnErr>> + Send + 'static,
+    ConnectFnErr: Into<BoxError> + Send + 'static,
+{
+    type Error = ConnectFnErr;
+
+    fn connect(
+        &self,
+        addr: SocketAddr,
+    ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
+        (self)(addr)
+    }
+}
+
+macro_rules! impl_stream_connector_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+> TcpStreamConnector for ::rama_core::combinators::$id<$($param),+>
+        where
+            $(
+                $param: TcpStreamConnector<Error: Into<BoxError>>,
+            )+
+        {
+            type Error = BoxError;
+
+            async fn connect(
+                &self,
+                addr: SocketAddr,
+            ) -> Result<TcpStream, Self::Error> {
+                match self {
+                    $(
+                        ::rama_core::combinators::$id::$param(s) => s.connect(addr).await.map_err(Into::into),
+                    )+
+                }
+            }
+        }
+    };
+}
+
+::rama_core::combinators::impl_either!(impl_stream_connector_either);
+
+/// Establish a [`TcpStream`] connection for the given [`Authority`].
+pub async fn tcp_connect<State, Dns, Connector>(
     ctx: &Context<State>,
     authority: Authority,
-    trusted_only: bool,
+    allow_overwrites: bool,
+    dns: Dns,
+    connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     State: Send + Sync + 'static,
+    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
     let (host, port) = authority.into_parts();
     let domain = match host {
@@ -58,16 +115,49 @@ where
         Host::Address(ip) => {
             // if the authority is already defined as an IP address, we can directly connect to it
             let addr = (ip, port).into();
-            let stream = TcpStream::connect(&addr)
+            let stream = connector
+                .connect(addr)
                 .await
+                .map_err(|err| OpaqueError::from_boxed(err.into()))
                 .context("establish tcp client connection")?;
             return Ok((stream, addr));
         }
     };
 
+    if allow_overwrites {
+        if let Some(dns_overwrite) = ctx.get::<DnsOverwrite>() {
+            if let Ok(tuple) = tcp_connect_inner(
+                ctx,
+                domain.clone(),
+                port,
+                dns_overwrite.deref().clone(),
+                connector.clone(),
+            )
+            .await
+            {
+                return Ok(tuple);
+            }
+        }
+    }
+
     //... otherwise we'll try to establish a connection,
     // with dual-stack parallel connections...
 
+    tcp_connect_inner(ctx, domain, port, dns, connector).await
+}
+
+async fn tcp_connect_inner<State, Dns, Connector>(
+    ctx: &Context<State>,
+    domain: Domain,
+    port: u16,
+    dns: Dns,
+    connector: Connector,
+) -> Result<(TcpStream, SocketAddr), OpaqueError>
+where
+    State: Send + Sync + 'static,
+    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
+{
     let (tx, mut rx) = channel(1);
 
     let connected = Arc::new(AtomicBool::new(false));
@@ -76,35 +166,33 @@ where
     // IPv6
     let ipv6_tx = tx.clone();
     let ipv6_domain = domain.clone();
-    let ipv6_dns = ctx.dns().clone();
     let ipv6_connected = connected.clone();
     let ipv6_sem = sem.clone();
-    ctx.spawn(tcp_connect(
-        ipv6_dns,
+    ctx.spawn(tcp_connect_inner_branch(
+        dns.clone(),
+        connector.clone(),
         IpKind::Ipv6,
         ipv6_domain,
         port,
         ipv6_tx,
         ipv6_connected,
         ipv6_sem,
-        trusted_only,
     ));
 
     // IPv4
     let ipv4_tx = tx;
     let ipv4_domain = domain.clone();
-    let ipv4_dns = ctx.dns().clone();
     let ipv4_connected = connected.clone();
     let ipv4_sem = sem;
-    ctx.spawn(tcp_connect(
-        ipv4_dns,
+    ctx.spawn(tcp_connect_inner_branch(
+        dns,
+        connector,
         IpKind::Ipv4,
         ipv4_domain,
         port,
         ipv4_tx,
         ipv4_connected,
         ipv4_sem,
-        trusted_only,
     ));
 
     // wait for the first connection to succeed,
@@ -126,42 +214,31 @@ enum IpKind {
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn tcp_connect(
+async fn tcp_connect_inner_branch<Dns, Connector>(
     dns: Dns,
+    connector: Connector,
     ip_kind: IpKind,
     domain: Domain,
     port: u16,
     tx: Sender<(TcpStream, SocketAddr)>,
     connected: Arc<AtomicBool>,
     sem: Arc<Semaphore>,
-    trusted_only: bool,
-) {
-    let ip_it = match (ip_kind, trusted_only) {
-        (IpKind::Ipv4, false) => match dns.ipv4_lookup(domain).await {
-            Ok(it) => Either4::A(it.map(IpAddr::V4)),
+) where
+    Dns: DnsResolver<Error: Into<BoxError>> + Clone,
+    Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
+{
+    let ip_it = match ip_kind {
+        IpKind::Ipv4 => match dns.ipv4_lookup(domain).await {
+            Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
             Err(err) => {
-                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
+                tracing::trace!(err = %err.into(), "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
                 return;
             }
         },
-        (IpKind::Ipv4, true) => match dns.ipv4_lookup_trusted(domain).await {
-            Ok(it) => Either4::B(it.map(IpAddr::V4)),
+        IpKind::Ipv6 => match dns.ipv6_lookup(domain).await {
+            Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
-                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to trusted IPv4 addresses");
-                return;
-            }
-        },
-        (IpKind::Ipv6, false) => match dns.ipv6_lookup(domain).await {
-            Ok(it) => Either4::C(it.map(IpAddr::V6)),
-            Err(err) => {
-                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv6 addresses");
-                return;
-            }
-        },
-        (IpKind::Ipv6, true) => match dns.ipv6_lookup_trusted(domain).await {
-            Ok(it) => Either4::D(it.map(IpAddr::V6)),
-            Err(err) => {
-                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to trusted IPv6 addresses");
+                tracing::trace!(err = %err.into(), "[{ip_kind:?}] failed to resolve domain to IPv6 addresses");
                 return;
             }
         },
@@ -188,6 +265,7 @@ async fn tcp_connect(
             return;
         }
 
+        let connector = connector.clone();
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             if connected.load(Ordering::SeqCst) {
@@ -197,7 +275,7 @@ async fn tcp_connect(
 
             tracing::trace!("[{ip_kind:?}] #{index}: tcp connect attempt to {addr}");
 
-            match TcpStream::connect(&addr).await {
+            match connector.connect(addr).await {
                 Ok(stream) => {
                     tracing::trace!("[{ip_kind:?}] #{index}: tcp connection stablished to {addr}");
                     if let Err(err) = tx.send((stream, addr)).await {
@@ -205,7 +283,7 @@ async fn tcp_connect(
                     }
                 }
                 Err(err) => {
-                    tracing::trace!(err = %err, "[{ip_kind:?}] #{index}: tcp connector failed to connect");
+                    tracing::trace!(err = %err.into(), "[{ip_kind:?}] #{index}: tcp connector failed to connect");
                 }
             };
         });

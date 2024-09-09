@@ -70,13 +70,13 @@ pub trait DnsResolver: Send + Sync + 'static {
     fn ipv4_lookup(
         &self,
         domain: Domain,
-    ) -> impl Future<Output = Result<impl Iterator<Item = Ipv4Addr>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Vec<Ipv4Addr>, Self::Error>> + Send + '_;
 
     /// Resolve the 'AAAA' records accessible by this resolver for the given [`Domain`] into [`Ipv6Addr`]esses.
     fn ipv6_lookup(
         &self,
         domain: Domain,
-    ) -> impl Future<Output = Result<impl Iterator<Item = Ipv6Addr>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Vec<Ipv6Addr>, Self::Error>> + Send + '_;
 }
 
 impl<R: DnsResolver> DnsResolver for Arc<R> {
@@ -85,14 +85,14 @@ impl<R: DnsResolver> DnsResolver for Arc<R> {
     fn ipv4_lookup(
         &self,
         domain: Domain,
-    ) -> impl Future<Output = Result<impl Iterator<Item = Ipv4Addr>, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Vec<Ipv4Addr>, Self::Error>> + Send + '_ {
         (**self).ipv4_lookup(domain)
     }
 
     fn ipv6_lookup(
         &self,
         domain: Domain,
-    ) -> impl Future<Output = Result<impl Iterator<Item = Ipv6Addr>, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Vec<Ipv6Addr>, Self::Error>> + Send + '_ {
         (**self).ipv6_lookup(domain)
     }
 }
@@ -100,20 +100,14 @@ impl<R: DnsResolver> DnsResolver for Arc<R> {
 impl<R: DnsResolver<Error: Into<BoxError>>> DnsResolver for Option<R> {
     type Error = BoxError;
 
-    async fn ipv4_lookup(
-        &self,
-        domain: Domain,
-    ) -> Result<impl Iterator<Item = Ipv4Addr>, Self::Error> {
+    async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         match self {
             Some(d) => d.ipv4_lookup(domain).await.map_err(Into::into),
             None => Err(DomainNotMappedErr.into()),
         }
     }
 
-    async fn ipv6_lookup(
-        &self,
-        domain: Domain,
-    ) -> Result<impl Iterator<Item = Ipv6Addr>, Self::Error> {
+    async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
         match self {
             Some(d) => d.ipv6_lookup(domain).await.map_err(Into::into),
             None => Err(DomainNotMappedErr.into()),
@@ -132,13 +126,12 @@ macro_rules! impl_dns_resolver_either_either {
             async fn ipv4_lookup(
                 &self,
                 domain: Domain,
-            ) -> Result<impl Iterator<Item = Ipv4Addr>, Self::Error>{
+            ) -> Result<Vec<Ipv4Addr>, Self::Error>{
                 match self {
                     $(
                         ::rama_core::combinators::$id::$param(d) => d.ipv4_lookup(domain)
                             .await
-                            .map_err(Into::into)
-                            .map(::rama_core::combinators::$id::$param),
+                            .map_err(Into::into),
                     )+
                 }
             }
@@ -146,13 +139,12 @@ macro_rules! impl_dns_resolver_either_either {
             async fn ipv6_lookup(
                 &self,
                 domain: Domain,
-            ) -> Result<impl Iterator<Item = Ipv6Addr>, Self::Error> {
+            ) -> Result<Vec<Ipv6Addr>, Self::Error> {
                 match self {
                     $(
                         ::rama_core::combinators::$id::$param(d) => d.ipv6_lookup(domain)
                             .await
-                            .map_err(Into::into)
-                            .map(::rama_core::combinators::$id::$param),
+                            .map_err(Into::into),
                     )+
                 }
             }

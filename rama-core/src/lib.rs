@@ -65,7 +65,6 @@ pub use context::Context;
 
 pub use ::rama_error as error;
 
-pub mod dns;
 pub mod graceful;
 pub mod rt;
 

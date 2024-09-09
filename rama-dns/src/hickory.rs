@@ -7,7 +7,10 @@ use hickory_resolver::{
 };
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::Domain;
-use std::sync::Arc;
+use std::{
+    net::{Ipv4Addr, Ipv6Addr},
+    sync::Arc,
+};
 
 pub use hickory_resolver::config;
 
@@ -96,10 +99,7 @@ impl HickoryDnsBuilder {
 impl DnsResolver for HickoryDns {
     type Error = OpaqueError;
 
-    async fn ipv4_lookup(
-        &self,
-        domain: Domain,
-    ) -> Result<impl Iterator<Item = std::net::Ipv4Addr>, Self::Error> {
+    async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
         let name = fqdn_from_domain(domain)?;
         Ok(self
             .0
@@ -107,13 +107,11 @@ impl DnsResolver for HickoryDns {
             .await
             .context("lookup IPv4 address(es)")?
             .into_iter()
-            .map(|A(ip)| ip))
+            .map(|A(ip)| ip)
+            .collect())
     }
 
-    async fn ipv6_lookup(
-        &self,
-        domain: Domain,
-    ) -> Result<impl Iterator<Item = std::net::Ipv6Addr>, Self::Error> {
+    async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
         let name = fqdn_from_domain(domain)?;
         Ok(self
             .0
@@ -121,7 +119,8 @@ impl DnsResolver for HickoryDns {
             .await
             .context("lookup IPv6 address(es)")?
             .into_iter()
-            .map(|AAAA(ip)| ip))
+            .map(|AAAA(ip)| ip)
+            .collect())
     }
 }
 
