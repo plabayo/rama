@@ -231,14 +231,16 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
         IpKind::Ipv4 => match dns.ipv4_lookup(domain).await {
             Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
             Err(err) => {
-                tracing::trace!(err = %err.into(), "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
+                let err = OpaqueError::from_boxed(err.into());
+                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
                 return;
             }
         },
         IpKind::Ipv6 => match dns.ipv6_lookup(domain).await {
             Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
-                tracing::trace!(err = %err.into(), "[{ip_kind:?}] failed to resolve domain to IPv6 addresses");
+                let err = OpaqueError::from_boxed(err.into());
+                tracing::trace!(err = ?err, "[{ip_kind:?}] failed to resolve domain to IPv6 addresses");
                 return;
             }
         },
@@ -283,7 +285,8 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                     }
                 }
                 Err(err) => {
-                    tracing::trace!(err = %err.into(), "[{ip_kind:?}] #{index}: tcp connector failed to connect");
+                    let err = OpaqueError::from_boxed(err.into());
+                    tracing::trace!(err = %err, "[{ip_kind:?}] #{index}: tcp connector failed to connect");
                 }
             };
         });

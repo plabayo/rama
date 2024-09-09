@@ -35,7 +35,7 @@ rama-http-types = { version = "0.2.0-alpha.3", path = "../rama-http-types", opti
 rama-utils = { version = "0.2.0-alpha.3", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
-tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
+tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net"] }
 tracing = { workspace = true }
 venndb = { workspace = true, optional = true }
 
