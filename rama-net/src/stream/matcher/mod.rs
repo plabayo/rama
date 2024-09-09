@@ -22,7 +22,7 @@ mod loopback;
 #[doc(inline)]
 pub use loopback::LoopbackMatcher;
 
-mod ip;
+pub mod ip;
 #[doc(inline)]
 pub use ip::IpNetMatcher;
 

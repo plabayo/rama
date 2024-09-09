@@ -1,4 +1,7 @@
-use crate::stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net};
+//! ip matcher and utilities
+
+pub use crate::stream::dep::ipnet::{IpNet, Ipv4Net, Ipv6Net};
+
 use rama_core::{context::Extensions, Context};
 
 #[cfg(feature = "http")]
@@ -72,7 +75,9 @@ where
     }
 }
 
+/// utility trait to consume a tpe into an [`IpNet`]
 pub trait IntoIpNet: private::Sealed {
+    /// Consume `self` into an [`IpNet`]
     fn into_ip_net(self) -> IpNet;
 }
 
@@ -115,18 +120,6 @@ impl_ip_net_from_ip_addr_into_all!(
     [u8; 16],
     [u8; 4],
 );
-
-impl IntoIpNet for String {
-    fn into_ip_net(self) -> IpNet {
-        self.parse().expect("failed to parse ip network")
-    }
-}
-
-impl IntoIpNet for &str {
-    fn into_ip_net(self) -> IpNet {
-        self.parse().expect("failed to parse ip network")
-    }
-}
 
 mod private {
     use super::*;
@@ -199,7 +192,7 @@ mod test {
         assert!(matcher.matches(None, &ctx, &req));
 
         // test #5: match: valid ipv4 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV4);
+        let matcher = IpNetMatcher::new(SUBNET_IPV4.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV4_VALID_CASES.iter() {
             let addr = socket_addr_from_case(subnet);
             ctx.insert(SocketInfo::new(None, addr));
@@ -213,7 +206,7 @@ mod test {
         }
 
         // test #6: match: valid ipv6 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV6);
+        let matcher = IpNetMatcher::new(SUBNET_IPV6.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV6_VALID_CASES.iter() {
             let addr = socket_addr_from_case(subnet);
             ctx.insert(SocketInfo::new(None, addr));
@@ -227,7 +220,7 @@ mod test {
         }
 
         // test #7: match: invalid ipv4 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV4);
+        let matcher = IpNetMatcher::new(SUBNET_IPV4.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV4_INVALID_CASES.iter() {
             let addr = socket_addr_from_case(subnet);
             ctx.insert(SocketInfo::new(None, addr));
@@ -241,7 +234,7 @@ mod test {
         }
 
         // test #8: match: invalid ipv6 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV6);
+        let matcher = IpNetMatcher::new(SUBNET_IPV6.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV6_INVALID_CASES.iter() {
             let addr = socket_addr_from_case(subnet);
             ctx.insert(SocketInfo::new(None, addr));
@@ -301,7 +294,7 @@ mod test {
         assert!(matcher.matches(None, &ctx, &socket));
 
         // test #4: match: valid ipv4 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV4);
+        let matcher = IpNetMatcher::new(SUBNET_IPV4.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV4_VALID_CASES.iter() {
             let addr = socket_addr_from_case(subnet);
             socket.peer_addr = Some(addr);
@@ -315,7 +308,7 @@ mod test {
         }
 
         // test #5: match: valid ipv6 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV6);
+        let matcher = IpNetMatcher::new(SUBNET_IPV6.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV6_VALID_CASES.iter() {
             let addr = socket_addr_from_case(subnet);
             socket.peer_addr = Some(addr);
@@ -329,7 +322,7 @@ mod test {
         }
 
         // test #6: match: invalid ipv4 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV4);
+        let matcher = IpNetMatcher::new(SUBNET_IPV4.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV4_INVALID_CASES.iter() {
             let addr = socket_addr_from_case(subnet);
             socket.peer_addr = Some(addr);
@@ -343,7 +336,7 @@ mod test {
         }
 
         // test #7: match: invalid ipv6 subnets
-        let matcher = IpNetMatcher::new(SUBNET_IPV6);
+        let matcher = IpNetMatcher::new(SUBNET_IPV6.parse::<IpNet>().unwrap());
         for subnet in SUBNET_IPV6_INVALID_CASES.iter() {
             let addr = socket_addr_from_case(subnet);
             socket.peer_addr = Some(addr);
