@@ -114,3 +114,22 @@ rama-cli-release-build TARGET:
 rama-cli-release-build-all:
 	just rama-cli-release-build x86_64-apple-darwin
 	just rama-cli-release-build aarch64-apple-darwin
+
+publish:
+    cargo publish -p rama-error
+    cargo publish -p rama-macros
+    cargo publish -p rama-utils
+    cargo publish -p rama-core
+    cargo publish -p rama-http-types
+    cargo publish -p rama-net
+    cargo publish -p rama-ua
+    cargo publish -p rama-dns
+    cargo publish -p rama-tcp
+    cargo publish -p rama-tls
+    cargo publish -p rama-http-backend
+    cargo publish -p rama-http
+    cargo publish -p rama-haproxy
+    cargo publish -p rama-proxy
+    cargo publish -p rama-udp
+    cargo publish -p rama-socks5
+    cargo publish -p rama
