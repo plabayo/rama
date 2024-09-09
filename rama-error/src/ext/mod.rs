@@ -261,6 +261,20 @@ mod tests {
     }
 
     #[test]
+    fn test_chain_error_source() {
+        let error = OpaqueError::from_boxed(
+            CustomError
+                .context("foo")
+                .context("bar")
+                .backtrace()
+                .context("baz")
+                .into_boxed(),
+        );
+        let source = std::error::Error::source(&error).unwrap();
+        assert!(source.is::<CustomError>());
+    }
+
+    #[test]
     fn custom_error_backtrace() {
         let error = CustomError;
         let error = error.backtrace();
