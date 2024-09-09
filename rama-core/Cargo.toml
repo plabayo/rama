@@ -25,9 +25,9 @@ opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 paste = { workspace = true }
-rama-error = { version = "0.2.0-alpha.3", path = "../rama-error" }
-rama-macros = { version = "0.2.0-alpha.3", path = "../rama-macros" }
-rama-utils = { version = "0.2.0-alpha.3", path = "../rama-utils" }
+rama-error = { version = "0.2.0-alpha.4", path = "../rama-error" }
+rama-macros = { version = "0.2.0-alpha.4", path = "../rama-macros" }
+rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
 tokio = { workspace = true, features = ["macros", "fs", "io-std"] }
 tokio-graceful = { workspace = true }
 tracing = { workspace = true }

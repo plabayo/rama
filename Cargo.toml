@@ -22,7 +22,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0-alpha.3"
+version = "0.2.0-alpha.4"
 license = "MIT OR Apache-2.0"
 edition = "2021"
 repository = "https://github.com/plabayo/rama"
@@ -175,18 +175,18 @@ rustversion = { workspace = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.3", path = "rama-core" }
-rama-dns = { version = "0.2.0-alpha.3", path = "rama-dns", optional = true }
-rama-haproxy = { version = "0.2.0-alpha.3", path = "rama-haproxy", optional = true }
-rama-http = { version = "0.2.0-alpha.3", path = "rama-http", optional = true }
-rama-http-backend = { version = "0.2.0-alpha.3", path = "rama-http-backend", optional = true }
-rama-macros = { version = "0.2.0-alpha.3", path = "rama-macros" }
-rama-net = { version = "0.2.0-alpha.3", path = "rama-net", optional = true }
-rama-proxy = { version = "0.2.0-alpha.3", path = "rama-proxy", optional = true }
-rama-tcp = { version = "0.2.0-alpha.3", path = "rama-tcp", optional = true }
-rama-tls = { version = "0.2.0-alpha.3", path = "rama-tls", optional = true }
-rama-ua = { version = "0.2.0-alpha.3", path = "rama-ua", optional = true }
-rama-utils = { version = "0.2.0-alpha.3", path = "rama-utils" }
+rama-core = { version = "0.2.0-alpha.4", path = "rama-core" }
+rama-dns = { version = "0.2.0-alpha.4", path = "rama-dns", optional = true }
+rama-haproxy = { version = "0.2.0-alpha.4", path = "rama-haproxy", optional = true }
+rama-http = { version = "0.2.0-alpha.4", path = "rama-http", optional = true }
+rama-http-backend = { version = "0.2.0-alpha.4", path = "rama-http-backend", optional = true }
+rama-macros = { version = "0.2.0-alpha.4", path = "rama-macros" }
+rama-net = { version = "0.2.0-alpha.4", path = "rama-net", optional = true }
+rama-proxy = { version = "0.2.0-alpha.4", path = "rama-proxy", optional = true }
+rama-tcp = { version = "0.2.0-alpha.4", path = "rama-tcp", optional = true }
+rama-tls = { version = "0.2.0-alpha.4", path = "rama-tls", optional = true }
+rama-ua = { version = "0.2.0-alpha.4", path = "rama-ua", optional = true }
+rama-utils = { version = "0.2.0-alpha.4", path = "rama-utils" }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }

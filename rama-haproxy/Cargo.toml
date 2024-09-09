@@ -14,8 +14,8 @@ rust-version = { workspace = true }
 default = []
 
 [dependencies]
-rama-core = { version = "0.2.0-alpha.3", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.3", path = "../rama-net" }
+rama-core = { version = "0.2.0-alpha.4", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.4", path = "../rama-net" }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tracing = { workspace = true }
 

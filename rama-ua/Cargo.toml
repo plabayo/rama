@@ -11,8 +11,8 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 
 [dependencies]
-rama-core = { version = "0.2.0-alpha.3", path = "../rama-core" }
-rama-utils = { version = "0.2.0-alpha.3", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.4", path = "../rama-core" }
+rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
 serde = { workspace = true, features = ["derive"] }
 
 [dev-dependencies]
