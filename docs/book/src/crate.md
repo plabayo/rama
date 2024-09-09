@@ -30,6 +30,7 @@ Here is a list of all `rama` crates:
 - [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
   context used by all other `rama` code, as well as some other _core_ utilities
 - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
+- [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 - [`rama-tls`](https://crates.io/crates/rama-tls): TLS support for rama (types, `rustls` and `boring`)
 - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama

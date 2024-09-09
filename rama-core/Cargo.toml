@@ -20,7 +20,6 @@ telemetry = [
 
 [dependencies]
 futures-lite = { workspace = true }
-hickory-resolver = { workspace = true }
 opentelemetry = { workspace = true, optional = true }
 opentelemetry-semantic-conventions = { workspace = true, optional = true }
 opentelemetry_sdk = { workspace = true, optional = true }

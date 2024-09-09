@@ -1,29 +1,28 @@
 [package]
-name = "rama-tcp"
-description = "TCP support for rama"
+name = "rama-dns"
+description = "DNS support for rama"
 version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 repository = { workspace = true }
-keywords = ["io", "async", "non-blocking", "futures", "tcp", "network", "rama"]
+keywords = ["io", "async", "non-blocking", "futures", "dns", "network", "rama"]
 categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
 [features]
 default = []
-http = ["dep:rama-http-types", "rama-net/http"]
 
 [dependencies]
+hickory-resolver = { workspace = true }
 rama-core = { version = "0.2.0-alpha.3", path = "../rama-core" }
-rama-dns = { version = "0.2.0-alpha.3", path = "../rama-dns" }
-rama-http-types = { version = "0.2.0-alpha.3", path = "../rama-http-types", optional = true }
 rama-net = { version = "0.2.0-alpha.3", path = "../rama-net" }
 rama-utils = { version = "0.2.0-alpha.3", path = "../rama-utils" }
+serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "net"] }
-tracing = { workspace = true }
 
 [dev-dependencies]
+serde_html_form = { workspace = true }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

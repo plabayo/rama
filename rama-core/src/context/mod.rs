@@ -111,7 +111,7 @@
 //! ```
 
 use crate::graceful::ShutdownGuard;
-use crate::{dns::Dns, rt::Executor};
+use crate::rt::Executor;
 use std::{fmt, future::Future, sync::Arc};
 use tokio::task::JoinHandle;
 
@@ -128,7 +128,6 @@ mod state;
 /// See [`crate::context`] for more information.
 pub struct Context<S> {
     state: Arc<S>,
-    dns: Dns,
     executor: Executor,
     extensions: Extensions,
 }
@@ -137,7 +136,6 @@ impl<S: fmt::Debug> fmt::Debug for Context<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Context")
             .field("state", &self.state)
-            .field("dns", &self.dns)
             .field("executor", &self.executor)
             .field("extensions", &self.extensions)
             .finish()
@@ -154,7 +152,6 @@ impl<S> Clone for Context<S> {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
-            dns: self.dns.clone(),
             executor: self.executor.clone(),
             extensions: self.extensions.clone(),
         }
@@ -166,7 +163,6 @@ impl<S> Context<S> {
     pub fn new(state: Arc<S>, executor: Executor) -> Self {
         Self {
             state,
-            dns: Dns::default(),
             executor,
             extensions: Extensions::new(),
         }
@@ -194,20 +190,9 @@ impl<S> Context<S> {
     {
         Context {
             state: f(self.state),
-            dns: self.dns,
             executor: self.executor,
             extensions: self.extensions,
         }
-    }
-
-    /// Get a reference to the [`Dns`] resolver.
-    pub fn dns(&self) -> &Dns {
-        &self.dns
-    }
-
-    /// Get a mutable reference to the [`Dns`] resolver.
-    pub fn dns_mut(&mut self) -> &mut Dns {
-        &mut self.dns
     }
 
     /// Get a reference to the executor.

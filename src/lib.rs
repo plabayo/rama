@@ -20,7 +20,7 @@
 //! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
 //! | ✅ [http client](crate::http::client) | ✅ [client](crate::http::client::HttpClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
 //! | ✅ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ ✅ [BoringSSL](crate::tls::boring) ⸱ ❌ NSS <sup>(3)</sup> |
-//! | ✅ [dns] | ✅ [DNS Resolver][crate::dns::Dns] |
+//! | ✅ [dns] | ✅ [DNS Resolver][crate::dns::DnsResolver] |
 //! | ✅ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::haproxy) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(1)</sup> ⸱ 🏗️ SOCKS5H <sup>(1)</sup> |
 //! | 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(2)</sup> ⸱ 🏗️ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 //! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [context] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
@@ -142,6 +142,7 @@
 //! - [`rama-core`](https://crates.io/crates/rama-core): core crate containing the service, layer and
 //!   context used by all other `rama` code, as well as some other _core_ utilities
 //! - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
+//! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 //! - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 //! - [`rama-tls`](https://crates.io/crates/rama-tls): TLS support for rama (types, `rustls` and `boring`)
 //! - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
@@ -319,8 +320,8 @@
 
 #[doc(inline)]
 pub use ::rama_core::{
-    combinators, context, dns, error, graceful, layer, matcher, rt, service, username, Context,
-    Layer, Service,
+    combinators, context, error, graceful, layer, matcher, rt, service, username, Context, Layer,
+    Service,
 };
 
 #[cfg(feature = "tcp")]
@@ -334,6 +335,10 @@ pub use ::rama_core::telemetry;
 #[cfg(feature = "tls")]
 #[doc(inline)]
 pub use ::rama_tls as tls;
+
+#[cfg(feature = "dns")]
+#[doc(inline)]
+pub use ::rama_dns as dns;
 
 #[cfg(feature = "net")]
 #[doc(inline)]

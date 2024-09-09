@@ -32,10 +32,6 @@ mod state;
 #[doc(inline)]
 pub use state::State;
 
-mod dns;
-#[doc(inline)]
-pub use dns::Dns;
-
 mod typed_header;
 #[doc(inline)]
 pub use typed_header::{TypedHeader, TypedHeaderRejection, TypedHeaderRejectionReason};

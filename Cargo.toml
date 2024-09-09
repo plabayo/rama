@@ -4,6 +4,7 @@ members = [
     "fuzz",
     "rama-cli",
     "rama-core",
+    "rama-dns",
     "rama-error",
     "rama-haproxy",
     "rama-http",
@@ -155,7 +156,8 @@ rustls-ring = ["tls", "rama-tls/rustls-ring"]
 boring = ["tls", "rama-tls/boring", "rama-net/boring", "rama-http-backend/boring"]
 cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
 net = ["dep:rama-net"]
-tcp = ["net", "dep:rama-tcp"]
+dns = ["net", "dep:rama-dns"]
+tcp = ["dns", "dep:rama-tcp"]
 http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-tcp/http"]
 http-full = ["http", "tcp", "dep:rama-http-backend"]
 proxy = ["dep:rama-proxy"]
@@ -174,6 +176,7 @@ base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 rama-core = { version = "0.2.0-alpha.3", path = "rama-core" }
+rama-dns = { version = "0.2.0-alpha.3", path = "rama-dns", optional = true }
 rama-haproxy = { version = "0.2.0-alpha.3", path = "rama-haproxy", optional = true }
 rama-http = { version = "0.2.0-alpha.3", path = "rama-http", optional = true }
 rama-http-backend = { version = "0.2.0-alpha.3", path = "rama-http-backend", optional = true }
