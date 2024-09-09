@@ -6,7 +6,7 @@ license = { workspace = true }
 edition = { workspace = true }
 repository = { workspace = true }
 keywords = ["error", "error-handling", "rama"]
-categories = ["Rust patterns"]
+categories = ["rust-patterns"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
