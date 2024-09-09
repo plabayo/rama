@@ -5,7 +5,7 @@ version = { workspace = true }
 license = { workspace = true }
 edition = { workspace = true }
 repository = { workspace = true }
-keywords = ["io", "async", "non-blocking", "proxy", "server", "client", "middleware", "service", "http", "rama"]
+keywords = ["io", "async", "proxy", "http", "rama"]
 categories = ["asynchronous", "network-programming", "web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
