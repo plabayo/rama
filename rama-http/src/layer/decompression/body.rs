@@ -1,6 +1,6 @@
 #![allow(unused_imports)]
 
-use crate::dep::http_body::{Body, Frame};
+use crate::dep::http_body::{Body, Frame, SizeHint};
 use crate::layer::util::compression::{
     AsyncReadBody, BodyIntoStream, CompressionLevel, DecorateAsyncRead, WrapBody,
 };
@@ -134,6 +134,13 @@ where
                 Some(Err(err)) => Poll::Ready(Some(Err(err.into()))),
                 None => Poll::Ready(None),
             },
+        }
+    }
+
+    fn size_hint(&self) -> SizeHint {
+        match self.inner {
+            BodyInner::Identity { ref inner } => inner.size_hint(),
+            _ => SizeHint::default(),
         }
     }
 }

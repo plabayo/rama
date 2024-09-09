@@ -209,7 +209,29 @@ where
     type Output = ZstdEncoder<Self::Input>;
 
     fn apply(input: Self::Input, quality: CompressionLevel) -> Self::Output {
-        ZstdEncoder::with_quality(input, quality.into_async_compression())
+        // See https://issues.chromium.org/issues/41493659:
+        //  "For memory usage reasons, Chromium limits the window size to 8MB"
+        // See https://datatracker.ietf.org/doc/html/rfc8878#name-window-descriptor
+        //  "For improved interoperability, it's recommended for decoders to support values
+        //  of Window_Size up to 8 MB and for encoders not to generate frames requiring a
+        //  Window_Size larger than 8 MB."
+        // Level 17 in zstd (as of v1.5.6) is the first level with a window size of 8 MB (2^23):
+        // https://github.com/facebook/zstd/blob/v1.5.6/lib/compress/clevels.h#L25-L51
+        // Set the parameter for all levels >= 17. This will either have no effect (but reduce
+        // the risk of future changes in zstd) or limit the window log to 8MB.
+        let needs_window_limit = match quality {
+            CompressionLevel::Best => true, // level 20
+            CompressionLevel::Precise(level) => level >= 17,
+            _ => false,
+        };
+        // The parameter is not set for levels below 17 as it will increase the window size
+        // for those levels.
+        if needs_window_limit {
+            let params = [async_compression::zstd::CParameter::window_log(23)];
+            ZstdEncoder::with_quality_and_params(input, quality.into_async_compression(), &params)
+        } else {
+            ZstdEncoder::with_quality(input, quality.into_async_compression())
+        }
     }
 
     fn get_pin_mut(pinned: Pin<&mut Self::Output>) -> Pin<&mut Self::Input> {

@@ -190,4 +190,42 @@ mod tests {
 
         Ok(())
     }
+
+    #[tokio::test]
+    async fn zstd_is_web_safe() -> Result<(), rama_core::error::BoxError> {
+        // Test ensuring that zstd compression will not exceed an 8MiB window size; browsers do not
+        // accept responses using 16MiB+ window sizes.
+
+        async fn zeroes(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+            Ok(Response::new(Body::from(vec![0u8; 18_874_368])))
+        }
+        // zstd will (I believe) lower its window size if a larger one isn't beneficial and
+        // it knows the size of the input; use an 18MiB body to ensure it would want a
+        // >=16MiB window (though it might not be able to see the input size here).
+
+        let zstd_layer = CompressionLayer::new()
+            .quality(CompressionLevel::Best)
+            .br(false)
+            .deflate(false)
+            .gzip(false);
+
+        let service = zstd_layer.layer(service_fn(zeroes));
+
+        let request = Request::builder()
+            .header(ACCEPT_ENCODING, "zstd")
+            .body(Body::empty())?;
+
+        let response = service.serve(Context::default(), request).await?;
+
+        assert_eq!(response.headers()["content-encoding"], "zstd");
+
+        let body = response.into_body();
+        let bytes = body.collect().await?.to_bytes();
+        let mut dec = zstd::Decoder::new(&*bytes)?;
+        dec.window_log_max(23)?; // Limit window size accepted by decoder to 2 ^ 23 bytes (8MiB)
+
+        std::io::copy(&mut dec, &mut std::io::sink())?;
+
+        Ok(())
+    }
 }
