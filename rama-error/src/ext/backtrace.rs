@@ -43,6 +43,10 @@ impl<E: Error> Debug for BacktraceError<E> {
 
 impl<E: Error + 'static> Error for BacktraceError<E> {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
-        self.inner.source()
+        if let Some(err) = self.inner.source() {
+            return Some(err);
+        }
+        let err = &self.inner;
+        Some(err as &(dyn std::error::Error + 'static))
     }
 }

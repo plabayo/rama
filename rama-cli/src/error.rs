@@ -38,6 +38,10 @@ impl std::fmt::Display for ErrorWithExitCode {
 
 impl std::error::Error for ErrorWithExitCode {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.error.source()
+        if let Some(err) = self.error.source() {
+            return Some(err);
+        }
+        let err = self.error.as_ref();
+        Some(err as &(dyn std::error::Error + 'static))
     }
 }

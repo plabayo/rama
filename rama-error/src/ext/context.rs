@@ -34,7 +34,11 @@ where
     E: std::error::Error + 'static,
 {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.error.source()
+        if let Some(err) = self.error.source() {
+            return Some(err);
+        }
+        let err = &self.error;
+        Some(err as &(dyn std::error::Error + 'static))
     }
 }
 

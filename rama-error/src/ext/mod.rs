@@ -243,7 +243,11 @@ mod tests {
 
     impl std::error::Error for WrapperError {
         fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-            Some(self.0.as_ref())
+            if let Some(err) = self.0.source() {
+                return Some(err);
+            }
+            let err = self.0.as_ref();
+            Some(err as &(dyn std::error::Error + 'static))
         }
     }
 
