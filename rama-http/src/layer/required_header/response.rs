@@ -5,7 +5,7 @@
 use crate::{
     header::{self, DATE, RAMA_ID_HEADER_VALUE, SERVER},
     headers::{Date, HeaderMapExt},
-    Request, Response,
+    HeaderValue, Request, Response,
 };
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -17,12 +17,16 @@ use std::{fmt, time::SystemTime};
 #[derive(Debug, Clone, Default)]
 pub struct AddRequiredResponseHeadersLayer {
     overwrite: bool,
+    server_header_value: Option<HeaderValue>,
 }
 
 impl AddRequiredResponseHeadersLayer {
     /// Create a new [`AddRequiredResponseHeadersLayer`].
     pub const fn new() -> Self {
-        Self { overwrite: false }
+        Self {
+            overwrite: false,
+            server_header_value: None,
+        }
     }
 
     /// Set whether to overwrite the existing headers.
@@ -40,6 +44,30 @@ impl AddRequiredResponseHeadersLayer {
     /// Default is `false`.
     pub fn set_overwrite(&mut self, overwrite: bool) -> &mut Self {
         self.overwrite = overwrite;
+        self
+    }
+
+    /// Set a custom [`SERVER`] header value.
+    ///
+    /// By default a versioned `rama` value is used.
+    pub fn server_header_value(mut self, value: HeaderValue) -> Self {
+        self.server_header_value = Some(value);
+        self
+    }
+
+    /// Maybe set a custom [`SERVER`] header value.
+    ///
+    /// By default a versioned `rama` value is used.
+    pub fn maybe_server_header_value(mut self, value: Option<HeaderValue>) -> Self {
+        self.server_header_value = value;
+        self
+    }
+
+    /// Set a custom [`SERVER`] header value.
+    ///
+    /// By default a versioned `rama` value is used.
+    pub fn set_server_header_value(&mut self, value: HeaderValue) -> &mut Self {
+        self.server_header_value = Some(value);
         self
     }
 }
@@ -51,6 +79,7 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
         AddRequiredResponseHeaders {
             inner,
             overwrite: self.overwrite,
+            server_header_value: self.server_header_value.clone(),
         }
     }
 }
@@ -60,6 +89,7 @@ impl<S> Layer<S> for AddRequiredResponseHeadersLayer {
 pub struct AddRequiredResponseHeaders<S> {
     inner: S,
     overwrite: bool,
+    server_header_value: Option<HeaderValue>,
 }
 
 impl<S> AddRequiredResponseHeaders<S> {
@@ -68,6 +98,7 @@ impl<S> AddRequiredResponseHeaders<S> {
         Self {
             inner,
             overwrite: false,
+            server_header_value: None,
         }
     }
 
@@ -86,6 +117,30 @@ impl<S> AddRequiredResponseHeaders<S> {
     /// Default is `false`.
     pub fn set_overwrite(&mut self, overwrite: bool) -> &mut Self {
         self.overwrite = overwrite;
+        self
+    }
+
+    /// Set a custom [`SERVER`] header value.
+    ///
+    /// By default a versioned `rama` value is used.
+    pub fn server_header_value(mut self, value: HeaderValue) -> Self {
+        self.server_header_value = Some(value);
+        self
+    }
+
+    /// Maybe set a custom [`SERVER`] header value.
+    ///
+    /// By default a versioned `rama` value is used.
+    pub fn maybe_server_header_value(mut self, value: Option<HeaderValue>) -> Self {
+        self.server_header_value = value;
+        self
+    }
+
+    /// Set a custom [`SERVER`] header value.
+    ///
+    /// By default a versioned `rama` value is used.
+    pub fn set_server_header_value(&mut self, value: HeaderValue) -> &mut Self {
+        self.server_header_value = Some(value);
         self
     }
 
@@ -99,6 +154,7 @@ where
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AddRequiredResponseHeaders")
             .field("inner", &self.inner)
+            .field("server_header_value", &self.server_header_value)
             .finish()
     }
 }
@@ -121,10 +177,20 @@ where
         let mut resp = self.inner.serve(ctx, req).await?;
 
         if self.overwrite {
-            resp.headers_mut()
-                .insert(SERVER, RAMA_ID_HEADER_VALUE.clone());
+            resp.headers_mut().insert(
+                SERVER,
+                self.server_header_value
+                    .as_ref()
+                    .unwrap_or(&RAMA_ID_HEADER_VALUE)
+                    .clone(),
+            );
         } else if let header::Entry::Vacant(header) = resp.headers_mut().entry(SERVER) {
-            header.insert(RAMA_ID_HEADER_VALUE.clone());
+            header.insert(
+                self.server_header_value
+                    .as_ref()
+                    .unwrap_or(&RAMA_ID_HEADER_VALUE)
+                    .clone(),
+            );
         }
 
         if self.overwrite || !resp.headers().contains_key(DATE) {
@@ -164,6 +230,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_required_response_headers_custom_server() {
+        let svc = AddRequiredResponseHeadersLayer::default()
+            .server_header_value(HeaderValue::from_static("foo"))
+            .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
+                assert!(!req.headers().contains_key(SERVER));
+                assert!(!req.headers().contains_key(DATE));
+                Ok::<_, Infallible>(Response::new(Body::empty()))
+            }));
+
+        let req = Request::new(Body::empty());
+        let resp = svc.serve(Context::default(), req).await.unwrap();
+
+        assert_eq!(
+            resp.headers().get(SERVER).and_then(|v| v.to_str().ok()),
+            Some("foo")
+        );
+        assert!(resp.headers().contains_key(DATE));
+    }
+
+    #[tokio::test]
     async fn add_required_response_headers_overwrite() {
         let svc = AddRequiredResponseHeadersLayer::new()
             .overwrite(true)
@@ -185,6 +271,33 @@ mod tests {
         assert_eq!(
             resp.headers().get(SERVER).unwrap(),
             RAMA_ID_HEADER_VALUE.to_str().unwrap()
+        );
+        assert_ne!(resp.headers().get(DATE).unwrap(), "bar");
+    }
+
+    #[tokio::test]
+    async fn add_required_response_headers_overwrite_custom_ua() {
+        let svc = AddRequiredResponseHeadersLayer::new()
+            .overwrite(true)
+            .server_header_value(HeaderValue::from_static("foo"))
+            .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
+                assert!(!req.headers().contains_key(SERVER));
+                assert!(!req.headers().contains_key(DATE));
+                Ok::<_, Infallible>(
+                    Response::builder()
+                        .header(SERVER, "foo")
+                        .header(DATE, "bar")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+            }));
+
+        let req = Request::new(Body::empty());
+        let resp = svc.serve(Context::default(), req).await.unwrap();
+
+        assert_eq!(
+            resp.headers().get(SERVER).and_then(|v| v.to_str().ok()),
+            Some("foo")
         );
         assert_ne!(resp.headers().get(DATE).unwrap(), "bar");
     }
