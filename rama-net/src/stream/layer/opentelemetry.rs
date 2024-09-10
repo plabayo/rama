@@ -4,8 +4,9 @@
 
 use crate::stream::SocketInfo;
 use rama_core::telemetry::opentelemetry::semantic_conventions::trace::{
-    CLIENT_ADDRESS, CLIENT_PORT, NETWORK_TRANSPORT, NETWORK_TYPE,
+    NETWORK_TRANSPORT, NETWORK_TYPE,
 };
+use rama_core::telemetry::opentelemetry::AttributesFactory;
 use rama_core::telemetry::opentelemetry::{
     global,
     metrics::{Histogram, Meter, UpDownCounter},
@@ -13,6 +14,8 @@ use rama_core::telemetry::opentelemetry::{
 };
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
+use std::borrow::Cow;
+use std::net::IpAddr;
 use std::{fmt, sync::Arc, time::SystemTime};
 
 const NETWORK_CONNECTION_DURATION: &str = "network.server.connection_duration";
@@ -48,19 +51,57 @@ impl Metrics {
     }
 }
 
-#[derive(Debug, Clone)]
 /// A layer that records network server metrics using OpenTelemetry.
-pub struct NetworkMetricsLayer {
+pub struct NetworkMetricsLayer<F = ()> {
     metrics: Arc<Metrics>,
+    attributes_factory: F,
+}
+
+impl<F: fmt::Debug> fmt::Debug for NetworkMetricsLayer<F> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.debug_struct("NetworkMetricsLayer")
+            .field("metrics", &self.metrics)
+            .field("attributes_factory", &self.attributes_factory)
+            .finish()
+    }
+}
+
+impl<F: Clone> Clone for NetworkMetricsLayer<F> {
+    fn clone(&self) -> Self {
+        NetworkMetricsLayer {
+            metrics: self.metrics.clone(),
+            attributes_factory: self.attributes_factory.clone(),
+        }
+    }
 }
 
 impl NetworkMetricsLayer {
-    /// Create a new [`NetworkMetricsLayer`] using the global [`Meter`] provider.
+    /// Create a new [`NetworkMetricsLayer`] using the global [`Meter`] provider,
+    /// with the default name and version.
     pub fn new() -> Self {
-        let meter = get_versioned_meter();
+        Self::custom(rama_utils::info::NAME, rama_utils::info::VERSION)
+    }
+
+    /// Create a new [`NetworkMetricsLayer`] using the global [`Meter`] provider,
+    /// with a custom name and version.
+    pub fn custom(
+        name: impl Into<Cow<'static, str>>,
+        version: impl Into<Cow<'static, str>>,
+    ) -> Self {
+        let meter = get_versioned_meter(name, version);
         let metrics = Metrics::new(meter);
         Self {
             metrics: Arc::new(metrics),
+            attributes_factory: (),
+        }
+    }
+
+    /// Attach an [`AttributesFactory`] to this [`NetworkMetricsLayer`], allowing
+    /// you to inject custom attributes.
+    pub fn with_attributes<F>(self, attributes: F) -> NetworkMetricsLayer<F> {
+        NetworkMetricsLayer {
+            metrics: self.metrics,
+            attributes_factory: attributes,
         }
     }
 }
@@ -72,33 +113,38 @@ impl Default for NetworkMetricsLayer {
 }
 
 /// construct meters for this crate
-fn get_versioned_meter() -> Meter {
+fn get_versioned_meter(
+    name: impl Into<Cow<'static, str>>,
+    version: impl Into<Cow<'static, str>>,
+) -> Meter {
     global::meter_with_version(
-        rama_utils::info::NAME,
-        Some(rama_utils::info::VERSION),
+        name,
+        Some(version),
         Some(semantic_conventions::SCHEMA_URL),
         None,
     )
 }
 
-impl<S> Layer<S> for NetworkMetricsLayer {
-    type Service = NetworkMetricsService<S>;
+impl<S, F: Clone> Layer<S> for NetworkMetricsLayer<F> {
+    type Service = NetworkMetricsService<S, F>;
 
     fn layer(&self, inner: S) -> Self::Service {
         NetworkMetricsService {
             inner,
             metrics: self.metrics.clone(),
+            attributes_factory: self.attributes_factory.clone(),
         }
     }
 }
 
 /// A [`Service`] that records network server metrics using OpenTelemetry.
-pub struct NetworkMetricsService<S> {
+pub struct NetworkMetricsService<S, F = ()> {
     inner: S,
     metrics: Arc<Metrics>,
+    attributes_factory: F,
 }
 
-impl<S> NetworkMetricsService<S> {
+impl<S> NetworkMetricsService<S, ()> {
     /// Create a new [`NetworkMetricsService`].
     pub fn new(inner: S) -> Self {
         NetworkMetricsLayer::new().layer(inner)
@@ -107,12 +153,39 @@ impl<S> NetworkMetricsService<S> {
     define_inner_service_accessors!();
 }
 
-impl<S: fmt::Debug> fmt::Debug for NetworkMetricsService<S> {
+impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for NetworkMetricsService<S, F> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NetworkMetricsService")
             .field("inner", &self.inner)
             .field("metrics", &self.metrics)
+            .field("attributes_factory", &self.attributes_factory)
             .finish()
+    }
+}
+
+impl<S, F> NetworkMetricsService<S, F> {
+    fn compute_attributes<State>(&self, ctx: &Context<State>) -> Vec<KeyValue>
+    where
+        F: AttributesFactory<State>,
+    {
+        let mut attributes = self.attributes_factory.attributes(2, ctx);
+
+        // client info
+        if let Some(socket_info) = ctx.get::<SocketInfo>() {
+            let peer_addr = socket_info.peer_addr();
+            attributes.push(KeyValue::new(
+                NETWORK_TYPE,
+                match peer_addr.ip() {
+                    IpAddr::V4(_) => "ipv4",
+                    IpAddr::V6(_) => "ipv6",
+                },
+            ));
+        }
+
+        // connection info
+        attributes.push(KeyValue::new(NETWORK_TRANSPORT, "tcp")); // TODO: do not hardcode this once we support UDP
+
+        attributes
     }
 }
 
@@ -130,7 +203,7 @@ where
         ctx: Context<State>,
         stream: Stream,
     ) -> Result<Self::Response, Self::Error> {
-        let attributes: Vec<KeyValue> = compute_attributes(&ctx);
+        let attributes: Vec<KeyValue> = self.compute_attributes(&ctx);
 
         self.metrics.network_active_connections.add(1, &attributes);
 
@@ -151,24 +224,4 @@ where
             Err(err) => Err(err),
         }
     }
-}
-
-fn compute_attributes<State>(ctx: &Context<State>) -> Vec<KeyValue> {
-    let mut attributes = Vec::with_capacity(4);
-
-    // client info
-    if let Some(socket_info) = ctx.get::<SocketInfo>() {
-        let peer_addr = socket_info.peer_addr();
-        attributes.push(KeyValue::new(CLIENT_ADDRESS, peer_addr.ip().to_string()));
-        attributes.push(KeyValue::new(
-            NETWORK_TYPE,
-            if peer_addr.is_ipv4() { "ipv4" } else { "ipv6" },
-        ));
-        attributes.push(KeyValue::new(CLIENT_PORT, peer_addr.port() as i64));
-    }
-
-    // connection info
-    attributes.push(KeyValue::new(NETWORK_TRANSPORT, "tcp")); // TODO: do not hardcode this once we support UDP
-
-    attributes
 }
