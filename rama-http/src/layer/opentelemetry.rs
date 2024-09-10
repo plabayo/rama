@@ -230,9 +230,10 @@ impl<S, F> RequestMetricsService<S, F> {
     }
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for RequestMetricsService<S>
+impl<S, F, State, Body> Service<State, Request<Body>> for RequestMetricsService<S, F>
 where
     S: Service<State, Request<Body>, Response: IntoResponse>,
+    F: AttributesFactory<State>,
     State: Send + Sync + 'static,
     Body: Send + 'static,
 {

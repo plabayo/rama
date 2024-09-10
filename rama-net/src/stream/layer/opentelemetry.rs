@@ -189,9 +189,10 @@ impl<S, F> NetworkMetricsService<S, F> {
     }
 }
 
-impl<S, State, Stream> Service<State, Stream> for NetworkMetricsService<S>
+impl<S, F, State, Stream> Service<State, Stream> for NetworkMetricsService<S, F>
 where
     S: Service<State, Stream>,
+    F: AttributesFactory<State>,
     State: Send + Sync + 'static,
     Stream: crate::stream::Stream,
 {
