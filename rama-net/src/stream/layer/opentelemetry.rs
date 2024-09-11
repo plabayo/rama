@@ -3,15 +3,18 @@
 //! [`Layer`]: rama_core::Layer
 
 use crate::stream::SocketInfo;
+use rama_core::telemetry::opentelemetry::semantic_conventions::resource::{
+    SERVICE_NAME, SERVICE_VERSION,
+};
 use rama_core::telemetry::opentelemetry::semantic_conventions::trace::{
     NETWORK_TRANSPORT, NETWORK_TYPE,
 };
-use rama_core::telemetry::opentelemetry::AttributesFactory;
 use rama_core::telemetry::opentelemetry::{
     global,
     metrics::{Histogram, Meter, UpDownCounter},
     semantic_conventions, KeyValue,
 };
+use rama_core::telemetry::opentelemetry::{AttributesFactory, MeterOptions, ServiceInfo};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
@@ -30,15 +33,21 @@ struct Metrics {
 
 impl Metrics {
     /// Create a new [`NetworkMetrics`]
-    fn new(meter: Meter) -> Self {
+    fn new(meter: Meter, prefix: Option<String>) -> Self {
         let network_connection_duration = meter
-            .f64_histogram(NETWORK_CONNECTION_DURATION)
+            .f64_histogram(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{NETWORK_CONNECTION_DURATION}")),
+                None => Cow::Borrowed(NETWORK_CONNECTION_DURATION),
+            })
             .with_description("Measures the duration of inbound network connections.")
             .with_unit("s")
             .init();
 
         let network_active_connections = meter
-            .i64_up_down_counter(NETWORK_SERVER_ACTIVE_CONNECTIONS)
+            .i64_up_down_counter(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{NETWORK_SERVER_ACTIVE_CONNECTIONS}")),
+                None => Cow::Borrowed(NETWORK_SERVER_ACTIVE_CONNECTIONS),
+            })
             .with_description(
                 "Measures the number of concurrent network connections that are currently in-flight.",
             )
@@ -79,17 +88,20 @@ impl NetworkMetricsLayer {
     /// Create a new [`NetworkMetricsLayer`] using the global [`Meter`] provider,
     /// with the default name and version.
     pub fn new() -> Self {
-        Self::custom(rama_utils::info::NAME, rama_utils::info::VERSION)
+        Self::custom(MeterOptions::default())
     }
 
     /// Create a new [`NetworkMetricsLayer`] using the global [`Meter`] provider,
     /// with a custom name and version.
-    pub fn custom(
-        name: impl Into<Cow<'static, str>>,
-        version: impl Into<Cow<'static, str>>,
-    ) -> Self {
-        let meter = get_versioned_meter(name, version);
-        let metrics = Metrics::new(meter);
+    pub fn custom(opts: MeterOptions) -> Self {
+        let meter = get_versioned_meter(
+            opts.service.unwrap_or_else(|| ServiceInfo {
+                name: rama_utils::info::NAME.to_owned(),
+                version: rama_utils::info::VERSION.to_owned(),
+            }),
+            opts.attributes,
+        );
+        let metrics = Metrics::new(meter, opts.metric_prefix);
         Self {
             metrics: Arc::new(metrics),
             attributes_factory: (),
@@ -112,16 +124,15 @@ impl Default for NetworkMetricsLayer {
     }
 }
 
-/// construct meters for this crate
-fn get_versioned_meter(
-    name: impl Into<Cow<'static, str>>,
-    version: impl Into<Cow<'static, str>>,
-) -> Meter {
+fn get_versioned_meter(service_info: ServiceInfo, attributes: Option<Vec<KeyValue>>) -> Meter {
+    let mut attributes = attributes.unwrap_or_else(|| Vec::with_capacity(2));
+    attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
+    attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version.clone()));
     global::meter_with_version(
-        name,
-        Some(version),
+        service_info.name,
+        Some(service_info.version),
         Some(semantic_conventions::SCHEMA_URL),
-        None,
+        Some(attributes),
     )
 }
 

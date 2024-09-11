@@ -9,7 +9,11 @@ use crate::{
 use rama_core::telemetry::opentelemetry::{
     global,
     metrics::{Histogram, Meter, UpDownCounter},
-    semantic_conventions, AttributesFactory, KeyValue,
+    semantic_conventions::{
+        self,
+        resource::{SERVICE_NAME, SERVICE_VERSION},
+    },
+    AttributesFactory, KeyValue, MeterOptions, ServiceInfo,
 };
 use rama_core::{Context, Layer, Service};
 use rama_net::http::RequestContext;
@@ -40,15 +44,21 @@ struct Metrics {
 
 impl Metrics {
     /// Create a new [`RequestMetrics`]
-    fn new(meter: Meter) -> Self {
+    fn new(meter: Meter, prefix: Option<String>) -> Self {
         let http_server_duration = meter
-            .f64_histogram(HTTP_SERVER_DURATION)
+            .f64_histogram(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_DURATION}")),
+                None => Cow::Borrowed(HTTP_SERVER_DURATION),
+            })
             .with_description("Measures the duration of inbound HTTP requests.")
             .with_unit("s")
             .init();
 
         let http_server_active_requests = meter
-            .i64_up_down_counter(HTTP_SERVER_ACTIVE_REQUESTS)
+            .i64_up_down_counter(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_ACTIVE_REQUESTS}")),
+                None => Cow::Borrowed(HTTP_SERVER_ACTIVE_REQUESTS),
+            })
             .with_description(
                 "Measures the number of concurrent HTTP requests that are currently in-flight.",
             )
@@ -89,17 +99,20 @@ impl RequestMetricsLayer<()> {
     /// Create a new [`RequestMetricsLayer`] using the global [`Meter`] provider,
     /// with the default name and version.
     pub fn new() -> Self {
-        Self::custom(rama_utils::info::NAME, rama_utils::info::VERSION)
+        Self::custom(MeterOptions::default())
     }
 
     /// Create a new [`RequestMetricsLayer`] using the global [`Meter`] provider,
     /// with a custom name and version.
-    pub fn custom(
-        name: impl Into<Cow<'static, str>>,
-        version: impl Into<Cow<'static, str>>,
-    ) -> Self {
-        let meter = get_versioned_meter(name, version);
-        let metrics = Metrics::new(meter);
+    pub fn custom(opts: MeterOptions) -> Self {
+        let meter = get_versioned_meter(
+            opts.service.unwrap_or_else(|| ServiceInfo {
+                name: rama_utils::info::NAME.to_owned(),
+                version: rama_utils::info::VERSION.to_owned(),
+            }),
+            opts.attributes,
+        );
+        let metrics = Metrics::new(meter, opts.metric_prefix);
         Self {
             metrics: Arc::new(metrics),
             attributes_factory: (),
@@ -122,16 +135,15 @@ impl Default for RequestMetricsLayer {
     }
 }
 
-/// construct meters for this crate
-fn get_versioned_meter(
-    name: impl Into<Cow<'static, str>>,
-    version: impl Into<Cow<'static, str>>,
-) -> Meter {
+fn get_versioned_meter(service_info: ServiceInfo, attributes: Option<Vec<KeyValue>>) -> Meter {
+    let mut attributes = attributes.unwrap_or_else(|| Vec::with_capacity(2));
+    attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
+    attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version.clone()));
     global::meter_with_version(
-        name,
-        Some(version),
+        service_info.name,
+        Some(service_info.version),
         Some(semantic_conventions::SCHEMA_URL),
-        None,
+        Some(attributes),
     )
 }
 
