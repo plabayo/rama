@@ -73,7 +73,7 @@ opentelemetry_sdk = { version = "0.25.0", default-features = false, features = [
     "trace",
     "rt-tokio",
 ] }
-opentelemetry-semantic-conventions = "0.16"
+opentelemetry-semantic-conventions = "0.25"
 quickcheck = "1.0"
 quote = "1.0"
 rcgen = "0.13.0"
