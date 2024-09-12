@@ -11,7 +11,7 @@ use rama_core::telemetry::opentelemetry::semantic_conventions::trace::{
 };
 use rama_core::telemetry::opentelemetry::{
     global,
-    metrics::{Histogram, Meter, UpDownCounter},
+    metrics::{Counter, Histogram, Meter},
     semantic_conventions, KeyValue,
 };
 use rama_core::telemetry::opentelemetry::{AttributesFactory, MeterOptions, ServiceInfo};
@@ -22,13 +22,13 @@ use std::net::IpAddr;
 use std::{fmt, sync::Arc, time::SystemTime};
 
 const NETWORK_CONNECTION_DURATION: &str = "network.server.connection_duration";
-const NETWORK_SERVER_ACTIVE_CONNECTIONS: &str = "network.server.active_connections";
+const NETWORK_SERVER_TOTAL_CONNECTIONS: &str = "network.server.total_connections";
 
 /// Records network server metrics
 #[derive(Clone, Debug)]
 struct Metrics {
     network_connection_duration: Histogram<f64>,
-    network_active_connections: UpDownCounter<i64>,
+    network_total_connections: Counter<u64>,
 }
 
 impl Metrics {
@@ -43,19 +43,19 @@ impl Metrics {
             .with_unit("s")
             .init();
 
-        let network_active_connections = meter
-            .i64_up_down_counter(match &prefix {
-                Some(prefix) => Cow::Owned(format!("{prefix}.{NETWORK_SERVER_ACTIVE_CONNECTIONS}")),
-                None => Cow::Borrowed(NETWORK_SERVER_ACTIVE_CONNECTIONS),
+        let network_total_connections = meter
+            .u64_counter(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{NETWORK_SERVER_TOTAL_CONNECTIONS}")),
+                None => Cow::Borrowed(NETWORK_SERVER_TOTAL_CONNECTIONS),
             })
             .with_description(
-                "Measures the number of concurrent network connections that are currently in-flight.",
+                "measures the number of total network connections that have been established so far",
             )
             .init();
 
         Metrics {
             network_connection_duration,
-            network_active_connections,
+            network_total_connections,
         }
     }
 }
@@ -217,13 +217,12 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let attributes: Vec<KeyValue> = self.compute_attributes(&ctx);
 
-        self.metrics.network_active_connections.add(1, &attributes);
+        self.metrics.network_total_connections.add(1, &attributes);
 
         // used to compute the duration of the connection
         let timer = SystemTime::now();
 
         let result = self.inner.serve(ctx, stream).await;
-        self.metrics.network_active_connections.add(-1, &attributes);
 
         match result {
             Ok(res) => {

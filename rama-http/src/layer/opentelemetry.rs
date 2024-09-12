@@ -8,7 +8,7 @@ use crate::{
 };
 use rama_core::telemetry::opentelemetry::{
     global,
-    metrics::{Histogram, Meter, UpDownCounter},
+    metrics::{Counter, Histogram, Meter},
     semantic_conventions::{
         self,
         resource::{SERVICE_NAME, SERVICE_VERSION},
@@ -28,8 +28,10 @@ use semantic_conventions::attribute::{
     URL_SCHEME, USER_AGENT_ORIGINAL,
 };
 
-const HTTP_SERVER_DURATION: &str = "http.server.duration";
-const HTTP_SERVER_ACTIVE_REQUESTS: &str = "http.server.active_requests";
+const HTTP_SERVER_DURATION: &str = "http.requests.duration";
+const HTTP_SERVER_TOTAL_REQUESTS: &str = "http.requests.total";
+const HTTP_SERVER_TOTAL_FAILURES: &str = "http.failures.total";
+const HTTP_SERVER_TOTAL_RESPONSES: &str = "http.responses.total";
 
 /// Records http server metrics
 ///
@@ -39,7 +41,9 @@ const HTTP_SERVER_ACTIVE_REQUESTS: &str = "http.server.active_requests";
 #[derive(Clone, Debug)]
 struct Metrics {
     http_server_duration: Histogram<f64>,
-    http_server_active_requests: UpDownCounter<i64>,
+    http_server_total_requests: Counter<u64>,
+    http_server_total_responses: Counter<u64>,
+    http_server_total_failures: Counter<u64>,
 }
 
 impl Metrics {
@@ -54,18 +58,36 @@ impl Metrics {
             .with_unit("s")
             .init();
 
-        let http_server_active_requests = meter
-            .i64_up_down_counter(match &prefix {
-                Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_ACTIVE_REQUESTS}")),
-                None => Cow::Borrowed(HTTP_SERVER_ACTIVE_REQUESTS),
+        let http_server_total_requests = meter
+            .u64_counter(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_TOTAL_REQUESTS}")),
+                None => Cow::Borrowed(HTTP_SERVER_TOTAL_REQUESTS),
+            })
+            .with_description("Measures the total number of HTTP requests have been seen.")
+            .init();
+
+        let http_server_total_responses = meter
+            .u64_counter(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_TOTAL_RESPONSES}")),
+                None => Cow::Borrowed(HTTP_SERVER_TOTAL_RESPONSES),
+            })
+            .with_description("Measures the total number of HTTP responses have been seen.")
+            .init();
+
+        let http_server_total_failures = meter
+            .u64_counter(match &prefix {
+                Some(prefix) => Cow::Owned(format!("{prefix}.{HTTP_SERVER_TOTAL_FAILURES}")),
+                None => Cow::Borrowed(HTTP_SERVER_TOTAL_FAILURES),
             })
             .with_description(
-                "Measures the number of concurrent HTTP requests that are currently in-flight.",
+                "Measures the total number of failed HTTP requests that have been seen.",
             )
             .init();
 
         Metrics {
-            http_server_active_requests,
+            http_server_total_requests,
+            http_server_total_responses,
+            http_server_total_failures,
             http_server_duration,
         }
     }
@@ -259,15 +281,12 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let mut attributes: Vec<KeyValue> = self.compute_attributes(&mut ctx, &req);
 
-        self.metrics.http_server_active_requests.add(1, &attributes);
+        self.metrics.http_server_total_requests.add(1, &attributes);
 
         // used to compute the duration of the request
         let timer = SystemTime::now();
 
         let result = self.inner.serve(ctx, req).await;
-        self.metrics
-            .http_server_active_requests
-            .add(-1, &attributes);
 
         match result {
             Ok(res) => {
@@ -278,6 +297,7 @@ where
                     res.status().as_u16() as i64,
                 ));
 
+                self.metrics.http_server_total_responses.add(1, &attributes);
                 self.metrics.http_server_duration.record(
                     timer.elapsed().map(|t| t.as_secs_f64()).unwrap_or_default(),
                     &attributes,
@@ -285,7 +305,11 @@ where
 
                 Ok(res)
             }
-            Err(err) => Err(err),
+            Err(err) => {
+                self.metrics.http_server_total_failures.add(1, &attributes);
+
+                Err(err)
+            }
         }
     }
 }
