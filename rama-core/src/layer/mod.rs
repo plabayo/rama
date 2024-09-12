@@ -493,6 +493,186 @@ where
     }
 }
 
+#[rustfmt::skip]
+impl<S, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21> Layer<S>
+    for (L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21)
+where
+    L1: Layer<L2::Service>,
+    L2: Layer<L3::Service>,
+    L3: Layer<L4::Service>,
+    L4: Layer<L5::Service>,
+    L5: Layer<L6::Service>,
+    L6: Layer<L7::Service>,
+    L7: Layer<L8::Service>,
+    L8: Layer<L9::Service>,
+    L9: Layer<L10::Service>,
+    L10: Layer<L11::Service>,
+    L11: Layer<L12::Service>,
+    L12: Layer<L13::Service>,
+    L13: Layer<L14::Service>,
+    L14: Layer<L15::Service>,
+    L15: Layer<L16::Service>,
+    L16: Layer<L17::Service>,
+    L17: Layer<L18::Service>,
+    L18: Layer<L19::Service>,
+    L19: Layer<L20::Service>,
+    L20: Layer<L21::Service>,
+    L21: Layer<S>,
+{
+    type Service = L1::Service;
+
+    fn layer(&self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21) = self;
+        l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21).layer(service))
+    }
+}
+
+#[rustfmt::skip]
+impl<S, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22> Layer<S>
+    for (L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22)
+where
+    L1: Layer<L2::Service>,
+    L2: Layer<L3::Service>,
+    L3: Layer<L4::Service>,
+    L4: Layer<L5::Service>,
+    L5: Layer<L6::Service>,
+    L6: Layer<L7::Service>,
+    L7: Layer<L8::Service>,
+    L8: Layer<L9::Service>,
+    L9: Layer<L10::Service>,
+    L10: Layer<L11::Service>,
+    L11: Layer<L12::Service>,
+    L12: Layer<L13::Service>,
+    L13: Layer<L14::Service>,
+    L14: Layer<L15::Service>,
+    L15: Layer<L16::Service>,
+    L16: Layer<L17::Service>,
+    L17: Layer<L18::Service>,
+    L18: Layer<L19::Service>,
+    L19: Layer<L20::Service>,
+    L20: Layer<L21::Service>,
+    L21: Layer<L22::Service>,
+    L22: Layer<S>,
+{
+    type Service = L1::Service;
+
+    fn layer(&self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22) = self;
+        l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22).layer(service))
+    }
+}
+
+#[rustfmt::skip]
+impl<S, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23> Layer<S>
+    for (L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23)
+where
+    L1: Layer<L2::Service>,
+    L2: Layer<L3::Service>,
+    L3: Layer<L4::Service>,
+    L4: Layer<L5::Service>,
+    L5: Layer<L6::Service>,
+    L6: Layer<L7::Service>,
+    L7: Layer<L8::Service>,
+    L8: Layer<L9::Service>,
+    L9: Layer<L10::Service>,
+    L10: Layer<L11::Service>,
+    L11: Layer<L12::Service>,
+    L12: Layer<L13::Service>,
+    L13: Layer<L14::Service>,
+    L14: Layer<L15::Service>,
+    L15: Layer<L16::Service>,
+    L16: Layer<L17::Service>,
+    L17: Layer<L18::Service>,
+    L18: Layer<L19::Service>,
+    L19: Layer<L20::Service>,
+    L20: Layer<L21::Service>,
+    L21: Layer<L22::Service>,
+    L22: Layer<L23::Service>,
+    L23: Layer<S>,
+{
+    type Service = L1::Service;
+
+    fn layer(&self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23) = self;
+        l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23).layer(service))
+    }
+}
+
+#[rustfmt::skip]
+impl<S, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24> Layer<S>
+    for (L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24)
+where
+    L1: Layer<L2::Service>,
+    L2: Layer<L3::Service>,
+    L3: Layer<L4::Service>,
+    L4: Layer<L5::Service>,
+    L5: Layer<L6::Service>,
+    L6: Layer<L7::Service>,
+    L7: Layer<L8::Service>,
+    L8: Layer<L9::Service>,
+    L9: Layer<L10::Service>,
+    L10: Layer<L11::Service>,
+    L11: Layer<L12::Service>,
+    L12: Layer<L13::Service>,
+    L13: Layer<L14::Service>,
+    L14: Layer<L15::Service>,
+    L15: Layer<L16::Service>,
+    L16: Layer<L17::Service>,
+    L17: Layer<L18::Service>,
+    L18: Layer<L19::Service>,
+    L19: Layer<L20::Service>,
+    L20: Layer<L21::Service>,
+    L21: Layer<L22::Service>,
+    L22: Layer<L23::Service>,
+    L23: Layer<L24::Service>,
+    L24: Layer<S>,
+{
+    type Service = L1::Service;
+
+    fn layer(&self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24) = self;
+        l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24).layer(service))
+    }
+}
+
+#[rustfmt::skip]
+impl<S, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24, L25> Layer<S>
+    for (L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14, L15, L16, L17, L18, L19, L20, L21, L22, L23, L24, L25)
+where
+    L1: Layer<L2::Service>,
+    L2: Layer<L3::Service>,
+    L3: Layer<L4::Service>,
+    L4: Layer<L5::Service>,
+    L5: Layer<L6::Service>,
+    L6: Layer<L7::Service>,
+    L7: Layer<L8::Service>,
+    L8: Layer<L9::Service>,
+    L9: Layer<L10::Service>,
+    L10: Layer<L11::Service>,
+    L11: Layer<L12::Service>,
+    L12: Layer<L13::Service>,
+    L13: Layer<L14::Service>,
+    L14: Layer<L15::Service>,
+    L15: Layer<L16::Service>,
+    L16: Layer<L17::Service>,
+    L17: Layer<L18::Service>,
+    L18: Layer<L19::Service>,
+    L19: Layer<L20::Service>,
+    L20: Layer<L21::Service>,
+    L21: Layer<L22::Service>,
+    L22: Layer<L23::Service>,
+    L23: Layer<L24::Service>,
+    L24: Layer<L25::Service>,
+    L25: Layer<S>,
+{
+    type Service = L1::Service;
+
+    fn layer(&self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24, l25) = self;
+        l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24, l25).layer(service))
+    }
+}
+
 mod into_error;
 #[doc(inline)]
 pub use into_error::{LayerErrorFn, LayerErrorStatic, MakeLayerError};
