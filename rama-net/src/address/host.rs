@@ -2,7 +2,7 @@ use super::Domain;
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{
     fmt,
-    net::{IpAddr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
 #[cfg(feature = "http")]
@@ -54,6 +54,57 @@ impl PartialEq<String> for Host {
 impl PartialEq<Host> for String {
     fn eq(&self, other: &Host) -> bool {
         other == self.as_str()
+    }
+}
+
+impl PartialEq<Ipv4Addr> for Host {
+    fn eq(&self, other: &Ipv4Addr) -> bool {
+        match self {
+            Self::Name(_) => false,
+            Self::Address(ip) => match ip {
+                IpAddr::V4(ip) => ip == other,
+                IpAddr::V6(ip) => ip.to_ipv4().map(|ip| ip == *other).unwrap_or_default(),
+            },
+        }
+    }
+}
+
+impl PartialEq<Host> for Ipv4Addr {
+    fn eq(&self, other: &Host) -> bool {
+        other == self
+    }
+}
+
+impl PartialEq<Ipv6Addr> for Host {
+    fn eq(&self, other: &Ipv6Addr) -> bool {
+        match self {
+            Self::Name(_) => false,
+            Self::Address(ip) => match ip {
+                IpAddr::V4(ip) => ip.to_ipv6_mapped() == *other,
+                IpAddr::V6(ip) => ip == other,
+            },
+        }
+    }
+}
+
+impl PartialEq<Host> for Ipv6Addr {
+    fn eq(&self, other: &Host) -> bool {
+        other == self
+    }
+}
+
+impl PartialEq<IpAddr> for Host {
+    fn eq(&self, other: &IpAddr) -> bool {
+        match other {
+            IpAddr::V4(ip) => self == ip,
+            IpAddr::V6(ip) => self == ip,
+        }
+    }
+}
+
+impl PartialEq<Host> for IpAddr {
+    fn eq(&self, other: &Host) -> bool {
+        other == self
     }
 }
 
@@ -342,6 +393,86 @@ mod tests {
         ] {
             assert!(Host::try_from(str).is_err(), "parsing {}", str);
             assert!(Host::try_from(str.to_owned()).is_err(), "parsing {}", str);
+        }
+    }
+
+    #[test]
+    fn compare_host_with_ipv4_bidirectional() {
+        let test_cases = [
+            (
+                true,
+                "127.0.0.1".parse::<Host>().unwrap(),
+                Ipv4Addr::new(127, 0, 0, 1),
+            ),
+            (
+                false,
+                "127.0.0.2".parse::<Host>().unwrap(),
+                Ipv4Addr::new(127, 0, 0, 1),
+            ),
+            (
+                false,
+                "127.0.0.1".parse::<Host>().unwrap(),
+                Ipv4Addr::new(127, 0, 0, 2),
+            ),
+        ];
+        for (expected, a, b) in test_cases {
+            assert_eq!(expected, a == b, "a[{a}] == b[{b}]");
+            assert_eq!(expected, b == a, "b[{b}] == a[{a}]");
+        }
+    }
+
+    #[test]
+    fn compare_host_with_ipv6_bidirectional() {
+        let test_cases = [
+            (
+                true,
+                "::1".parse::<Host>().unwrap(),
+                Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+            ),
+            (
+                false,
+                "::2".parse::<Host>().unwrap(),
+                Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+            ),
+            (
+                false,
+                "::1".parse::<Host>().unwrap(),
+                Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2),
+            ),
+        ];
+        for (expected, a, b) in test_cases {
+            assert_eq!(expected, a == b, "a[{a}] == b[{b}]");
+            assert_eq!(expected, b == a, "b[{b}] == a[{a}]");
+        }
+    }
+
+    #[test]
+    fn compare_host_with_ip_bidirectional() {
+        let test_cases = [
+            (
+                true,
+                "127.0.0.1".parse::<Host>().unwrap(),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            ),
+            (
+                false,
+                "127.0.0.2".parse::<Host>().unwrap(),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            ),
+            (
+                false,
+                "127.0.0.1".parse::<Host>().unwrap(),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 2)),
+            ),
+            (
+                false,
+                "::2".parse::<Host>().unwrap(),
+                IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            ),
+        ];
+        for (expected, a, b) in test_cases {
+            assert_eq!(expected, a == b, "a[{a}] == b[{b}]");
+            assert_eq!(expected, b == a, "b[{b}] == a[{a}]");
         }
     }
 }
