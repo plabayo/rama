@@ -2,7 +2,7 @@
 //!
 //! See [`Asn`] and its methods for more information.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -119,6 +119,18 @@ impl fmt::Display for Asn {
 impl venndb::Any for Asn {
     fn is_any(&self) -> bool {
         Self::is_any(self)
+    }
+}
+
+impl Serialize for Asn {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0 {
+            AsnData::Unspecified => 0u32.serialize(serializer),
+            AsnData::Specified(u) => u.serialize(serializer),
+        }
     }
 }
 

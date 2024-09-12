@@ -1,7 +1,7 @@
 use crate::DnsResolver;
 use rama_net::address::Domain;
 use rama_utils::macros::{error::static_str_error, impl_deref};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
@@ -26,6 +26,18 @@ impl<'de> Deserialize<'de> for DnsOverwrite {
         Ok(DnsOverwrite(InMemoryDns {
             map: (!map.is_empty()).then_some(map),
         }))
+    }
+}
+
+impl Serialize for DnsOverwrite {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.0.map.as_ref() {
+            Some(map) => map.serialize(serializer),
+            None => HashMap::<Domain, Vec<IpAddr>>::default().serialize(serializer),
+        }
     }
 }
 

@@ -1,7 +1,7 @@
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_net::{asn::Asn, transport::TransportContext};
 use rama_utils::str::NonEmptyString;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::{fmt, future::Future};
 
 #[cfg(feature = "live-update")]
@@ -57,7 +57,7 @@ impl From<NonEmptyString> for ProxyID {
     }
 }
 
-#[derive(Debug, Default, Clone, Deserialize, PartialEq, Eq, Hash)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 /// Filter to select a specific kind of proxy.
 ///
 /// If the `id` is specified the other fields are used

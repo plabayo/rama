@@ -15,7 +15,7 @@ use rama::{
     },
     Context,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 type Html = rama::http::response::Html<String>;
@@ -123,7 +123,7 @@ pub(super) async fn get_report(mut ctx: Context<State>, req: Request) -> Result<
 // endpoints: ACME
 //------------------------------------------
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub(super) struct AcmeChallengeParams {
     token: String,
 }
@@ -149,7 +149,7 @@ pub(super) async fn get_acme_challenge(
 // endpoints: XHR
 //------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub(super) struct APINumberParams {
     number: usize,
 }
