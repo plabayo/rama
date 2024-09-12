@@ -120,6 +120,18 @@ impl From<IpAddr> for Host {
     }
 }
 
+impl From<Ipv4Addr> for Host {
+    fn from(ip: Ipv4Addr) -> Self {
+        Host::Address(IpAddr::V4(ip))
+    }
+}
+
+impl From<Ipv6Addr> for Host {
+    fn from(ip: Ipv6Addr) -> Self {
+        Host::Address(IpAddr::V6(ip))
+    }
+}
+
 impl fmt::Display for Host {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
