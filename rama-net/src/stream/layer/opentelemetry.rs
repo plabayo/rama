@@ -63,6 +63,7 @@ impl Metrics {
 /// A layer that records network server metrics using OpenTelemetry.
 pub struct NetworkMetricsLayer<F = ()> {
     metrics: Arc<Metrics>,
+    base_attributes: Vec<KeyValue>,
     attributes_factory: F,
 }
 
@@ -70,6 +71,7 @@ impl<F: fmt::Debug> fmt::Debug for NetworkMetricsLayer<F> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("NetworkMetricsLayer")
             .field("metrics", &self.metrics)
+            .field("base_attributes", &self.base_attributes)
             .field("attributes_factory", &self.attributes_factory)
             .finish()
     }
@@ -79,6 +81,7 @@ impl<F: Clone> Clone for NetworkMetricsLayer<F> {
     fn clone(&self) -> Self {
         NetworkMetricsLayer {
             metrics: self.metrics.clone(),
+            base_attributes: self.base_attributes.clone(),
             attributes_factory: self.attributes_factory.clone(),
         }
     }
@@ -94,16 +97,21 @@ impl NetworkMetricsLayer {
     /// Create a new [`NetworkMetricsLayer`] using the global [`Meter`] provider,
     /// with a custom name and version.
     pub fn custom(opts: MeterOptions) -> Self {
-        let meter = get_versioned_meter(
-            opts.service.unwrap_or_else(|| ServiceInfo {
-                name: rama_utils::info::NAME.to_owned(),
-                version: rama_utils::info::VERSION.to_owned(),
-            }),
-            opts.attributes,
-        );
+        let service_info = opts.service.unwrap_or_else(|| ServiceInfo {
+            name: rama_utils::info::NAME.to_owned(),
+            version: rama_utils::info::VERSION.to_owned(),
+        });
+
+        let mut attributes = opts.attributes.unwrap_or_else(|| Vec::with_capacity(2));
+        attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
+        attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version.clone()));
+
+        let meter = get_versioned_meter(service_info);
         let metrics = Metrics::new(meter, opts.metric_prefix);
+
         Self {
             metrics: Arc::new(metrics),
+            base_attributes: attributes,
             attributes_factory: (),
         }
     }
@@ -113,6 +121,7 @@ impl NetworkMetricsLayer {
     pub fn with_attributes<F>(self, attributes: F) -> NetworkMetricsLayer<F> {
         NetworkMetricsLayer {
             metrics: self.metrics,
+            base_attributes: self.base_attributes,
             attributes_factory: attributes,
         }
     }
@@ -124,15 +133,12 @@ impl Default for NetworkMetricsLayer {
     }
 }
 
-fn get_versioned_meter(service_info: ServiceInfo, attributes: Option<Vec<KeyValue>>) -> Meter {
-    let mut attributes = attributes.unwrap_or_else(|| Vec::with_capacity(2));
-    attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
-    attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version.clone()));
+fn get_versioned_meter(service_info: ServiceInfo) -> Meter {
     global::meter_with_version(
         service_info.name,
         Some(service_info.version),
         Some(semantic_conventions::SCHEMA_URL),
-        Some(attributes),
+        None,
     )
 }
 
@@ -143,6 +149,7 @@ impl<S, F: Clone> Layer<S> for NetworkMetricsLayer<F> {
         NetworkMetricsService {
             inner,
             metrics: self.metrics.clone(),
+            base_attributes: self.base_attributes.clone(),
             attributes_factory: self.attributes_factory.clone(),
         }
     }
@@ -152,6 +159,7 @@ impl<S, F: Clone> Layer<S> for NetworkMetricsLayer<F> {
 pub struct NetworkMetricsService<S, F = ()> {
     inner: S,
     metrics: Arc<Metrics>,
+    base_attributes: Vec<KeyValue>,
     attributes_factory: F,
 }
 
@@ -169,8 +177,20 @@ impl<S: fmt::Debug, F: fmt::Debug> fmt::Debug for NetworkMetricsService<S, F> {
         f.debug_struct("NetworkMetricsService")
             .field("inner", &self.inner)
             .field("metrics", &self.metrics)
+            .field("base_attributes", &self.base_attributes)
             .field("attributes_factory", &self.attributes_factory)
             .finish()
+    }
+}
+
+impl<S: Clone, F: Clone> Clone for NetworkMetricsService<S, F> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+            metrics: self.metrics.clone(),
+            base_attributes: self.base_attributes.clone(),
+            attributes_factory: self.attributes_factory.clone(),
+        }
     }
 }
 
@@ -179,7 +199,10 @@ impl<S, F> NetworkMetricsService<S, F> {
     where
         F: AttributesFactory<State>,
     {
-        let mut attributes = self.attributes_factory.attributes(2, ctx);
+        let mut attributes = self
+            .attributes_factory
+            .attributes(2 + self.base_attributes.len(), ctx);
+        attributes.extend(self.base_attributes.iter().cloned());
 
         // client info
         if let Some(socket_info) = ctx.get::<SocketInfo>() {
