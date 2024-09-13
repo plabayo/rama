@@ -30,7 +30,7 @@ impl<State, F> AttributesFactory<State> for F
 where
     F: Fn(usize, &Context<State>) -> Vec<KeyValue> + Send + Sync + 'static,
 {
-    fn attributes(&self, size_hint: usize, _ctx: &Context<State>) -> Vec<KeyValue> {
-        Vec::with_capacity(size_hint)
+    fn attributes(&self, size_hint: usize, ctx: &Context<State>) -> Vec<KeyValue> {
+        (self)(size_hint, ctx)
     }
 }

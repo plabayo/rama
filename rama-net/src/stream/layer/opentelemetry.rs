@@ -259,3 +259,107 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default_svc_compute_attributes_default() {
+        let svc = NetworkMetricsService::new(());
+        let attributes = svc.compute_attributes(&Context::default());
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == SERVICE_NAME));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == SERVICE_VERSION));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == NETWORK_TRANSPORT));
+    }
+
+    #[test]
+    fn test_custom_svc_compute_attributes_default() {
+        let svc = NetworkMetricsLayer::custom(MeterOptions {
+            service: Some(ServiceInfo {
+                name: "test".to_owned(),
+                version: "42".to_owned(),
+            }),
+            metric_prefix: Some("foo".to_owned()),
+            ..Default::default()
+        })
+        .layer(());
+
+        let attributes = svc.compute_attributes(&Context::default());
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test"));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42"));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == NETWORK_TRANSPORT));
+    }
+
+    #[test]
+    fn test_custom_svc_compute_attributes_attributes_vec() {
+        let svc = NetworkMetricsLayer::custom(MeterOptions {
+            service: Some(ServiceInfo {
+                name: "test".to_owned(),
+                version: "42".to_owned(),
+            }),
+            metric_prefix: Some("foo".to_owned()),
+            ..Default::default()
+        })
+        .with_attributes(vec![KeyValue::new("test", "attribute_fn")])
+        .layer(());
+
+        let attributes = svc.compute_attributes(&Context::default());
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test"));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42"));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == NETWORK_TRANSPORT));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == "test" && attr.value.as_str() == "attribute_fn"));
+    }
+
+    #[test]
+    fn test_custom_svc_compute_attributes_attribute_fn() {
+        let svc = NetworkMetricsLayer::custom(MeterOptions {
+            service: Some(ServiceInfo {
+                name: "test".to_owned(),
+                version: "42".to_owned(),
+            }),
+            metric_prefix: Some("foo".to_owned()),
+            ..Default::default()
+        })
+        .with_attributes(|size_hint: usize, _ctx: &Context<()>| {
+            let mut attributes = Vec::with_capacity(size_hint + 1);
+            attributes.push(KeyValue::new("test", "attribute_fn"));
+            attributes
+        })
+        .layer(());
+
+        let attributes = svc.compute_attributes(&Context::default());
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test"));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42"));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == NETWORK_TRANSPORT));
+        assert!(attributes
+            .iter()
+            .any(|attr| attr.key.as_str() == "test" && attr.value.as_str() == "attribute_fn"));
+    }
+}
