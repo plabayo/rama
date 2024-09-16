@@ -46,12 +46,16 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
 
         let authority = uri
             .host()
-            .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
+            .and_then(|h| Host::try_from(h).ok().map(|h| {
+                tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
+                (h, default_port).into()
+            }))
             .or_else(|| {
                 ctx.get::<Forwarded>().and_then(|f| {
                     f.client_host().map(|fauth| {
                         let (host, port) = fauth.clone().into_parts();
                         let port = port.unwrap_or(default_port);
+                        tracing::trace!(uri = %uri, host = %host, "request context: detected host from forwarded info");
                         (host, port).into()
                     })
                 })
@@ -61,7 +65,10 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
                     .get(rama_http_types::header::HOST)
                     .and_then(|host| {
                         host.try_into() // try to consume as Authority, otherwise as Host
-                            .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
+                            .or_else(|_| Host::try_from(host).map(|h| {
+                                tracing::trace!(uri = %uri, host = %h, "request context: detected host from host header");
+                                (h, default_port).into()
+                            }))
                             .ok()
                     })
             })
@@ -110,12 +117,16 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
 
         let authority = uri
             .host()
-            .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
+            .and_then(|h| Host::try_from(h).ok().map(|h| {
+                tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
+                (h, default_port).into()
+            }))
             .or_else(|| {
                 ctx.get::<Forwarded>().and_then(|f| {
                     f.client_host().map(|fauth| {
                         let (host, port) = fauth.clone().into_parts();
                         let port = port.unwrap_or(default_port);
+                        tracing::trace!(uri = %uri, host = %host, "request context: detected host from forwarded info");
                         (host, port).into()
                     })
                 })
@@ -126,7 +137,10 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
                     .get(rama_http_types::header::HOST)
                     .and_then(|host| {
                         host.try_into() // try to consume as Authority, otherwise as Host
-                            .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
+                            .or_else(|_| Host::try_from(host).map(|h| {
+                                tracing::trace!(uri = %uri, host = %h, "request context: detected host from host header");
+                                (h, default_port).into()
+                            }))
                             .ok()
                     })
             })
