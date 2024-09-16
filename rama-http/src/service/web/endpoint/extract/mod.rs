@@ -28,10 +28,6 @@ mod context;
 mod method;
 mod request;
 
-mod state;
-#[doc(inline)]
-pub use state::State;
-
 mod typed_header;
 #[doc(inline)]
 pub use typed_header::{TypedHeader, TypedHeaderRejection, TypedHeaderRejectionReason};

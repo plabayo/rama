@@ -103,7 +103,7 @@ pub mod policy;
 
 use crate::{dep::http_body::Body, header::LOCATION, Method, Request, Response, StatusCode, Uri};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
-use rama_core::{Context, Layer, Service};
+use rama_core::{context::StateTransformer, error::BoxError, Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, future::Future};
 
@@ -113,8 +113,9 @@ use self::policy::{Action, Attempt, Policy, Standard};
 ///
 /// See the [module docs](self) for more details.
 #[derive(Clone)]
-pub struct FollowRedirectLayer<P = Standard> {
+pub struct FollowRedirectLayer<P = Standard, T = ()> {
     policy: P,
+    state_transformer: T,
 }
 
 impl FollowRedirectLayer {
@@ -128,14 +129,16 @@ impl Default for FollowRedirectLayer {
     fn default() -> Self {
         FollowRedirectLayer {
             policy: Standard::default(),
+            state_transformer: (),
         }
     }
 }
 
-impl<P: fmt::Debug> fmt::Debug for FollowRedirectLayer<P> {
+impl<P: fmt::Debug, T: fmt::Debug> fmt::Debug for FollowRedirectLayer<P, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FollowRedirectLayer")
             .field("policy", &self.policy)
+            .field("state_transformer", &self.state_transformer)
             .finish()
     }
 }
@@ -143,28 +146,48 @@ impl<P: fmt::Debug> fmt::Debug for FollowRedirectLayer<P> {
 impl<P> FollowRedirectLayer<P> {
     /// Create a new [`FollowRedirectLayer`] with the given redirection [`Policy`].
     pub fn with_policy(policy: P) -> Self {
-        FollowRedirectLayer { policy }
+        FollowRedirectLayer {
+            policy,
+            state_transformer: (),
+        }
     }
 }
 
-impl<S, P> Layer<S> for FollowRedirectLayer<P>
+impl<P> FollowRedirectLayer<P> {
+    /// Add a [`StateTransformer`] to the [`FollowRedirectLayer`]
+    /// to customise how the state is to be created for each call.
+    pub fn with_state_transformer<T>(self, transformer: T) -> FollowRedirectLayer<P, T> {
+        FollowRedirectLayer {
+            policy: self.policy,
+            state_transformer: transformer,
+        }
+    }
+}
+
+impl<S, P, T> Layer<S> for FollowRedirectLayer<P, T>
 where
     S: Clone,
     P: Clone,
+    T: Clone,
 {
-    type Service = FollowRedirect<S, P>;
+    type Service = FollowRedirect<S, P, T>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        FollowRedirect::with_policy(inner, self.policy.clone())
+        FollowRedirect {
+            inner,
+            policy: self.policy.clone(),
+            state_transformer: self.state_transformer.clone(),
+        }
     }
 }
 
 /// Middleware that retries requests with a [`Service`] to follow redirection responses.
 ///
 /// See the [module docs](self) for more details.
-pub struct FollowRedirect<S, P = Standard> {
+pub struct FollowRedirect<S, P = Standard, T = ()> {
     inner: S,
     policy: P,
+    state_transformer: T,
 }
 
 impl<S> FollowRedirect<S> {
@@ -174,28 +197,32 @@ impl<S> FollowRedirect<S> {
     }
 }
 
-impl<S, P> fmt::Debug for FollowRedirect<S, P>
+impl<S, P, T> fmt::Debug for FollowRedirect<S, P, T>
 where
     S: fmt::Debug,
     P: fmt::Debug,
+    T: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FollowRedirect")
             .field("inner", &self.inner)
             .field("policy", &self.policy)
+            .field("state_transformer", &self.state_transformer)
             .finish()
     }
 }
 
-impl<S, P> Clone for FollowRedirect<S, P>
+impl<S, P, T> Clone for FollowRedirect<S, P, T>
 where
     S: Clone,
     P: Clone,
+    T: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
             policy: self.policy.clone(),
+            state_transformer: self.state_transformer.clone(),
         }
     }
 }
@@ -203,22 +230,43 @@ where
 impl<S, P> FollowRedirect<S, P> {
     /// Create a new [`FollowRedirect`] with the given redirection [`Policy`].
     pub fn with_policy(inner: S, policy: P) -> Self {
-        FollowRedirect { inner, policy }
+        FollowRedirect {
+            inner,
+            policy,
+            state_transformer: (),
+        }
+    }
+
+    /// Add a [`StateTransformer`] to the [`FollowRedirect`]
+    /// to customise how the state is to be created for each call.
+    pub fn with_state_transformer<T>(self, transformer: T) -> FollowRedirect<S, P, T> {
+        FollowRedirect {
+            inner: self.inner,
+            policy: self.policy,
+            state_transformer: transformer,
+        }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<State, ReqBody, ResBody, S, P> Service<State, Request<ReqBody>> for FollowRedirect<S, P>
+impl<State, ReqBody, ResBody, S, P, T> Service<State, Request<ReqBody>> for FollowRedirect<S, P, T>
 where
     State: Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
+    S: Service<T::Output, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
     ReqBody: Body + Default + Send + 'static,
     ResBody: Send + 'static,
     P: Policy<State, ReqBody, S::Error> + Clone,
+    T: StateTransformer<
+            State,
+            Output: Send + Sync + 'static,
+            Error: Into<BoxError> + Send + Sync + 'static,
+        > + Send
+        + Sync
+        + 'static,
 {
     type Response = Response<ResBody>;
-    type Error = S::Error;
+    type Error = BoxError;
 
     fn serve(
         &self,
@@ -237,10 +285,17 @@ where
         policy.on_request(&mut ctx, &mut req);
 
         let service = &self.inner;
+        let state_transformer = &self.state_transformer;
 
         async move {
             loop {
-                let mut res = service.serve(ctx.clone(), req).await?;
+                let state = state_transformer
+                    .transform_state(&ctx)
+                    .map_err(Into::into)?;
+                let mut res = service
+                    .serve(ctx.clone_with_state(state), req)
+                    .await
+                    .map_err(Into::into)?;
                 res.extensions_mut().insert(RequestUri(uri.clone()));
 
                 match res.status() {
@@ -284,7 +339,7 @@ where
                     location: &location,
                     previous: &uri,
                 };
-                match policy.redirect(&ctx, &attempt)? {
+                match policy.redirect(&ctx, &attempt).map_err(Into::into)? {
                     Action::Follow => {
                         uri = location;
                         body.try_clone_from(&ctx, &mut policy, &taken_body);

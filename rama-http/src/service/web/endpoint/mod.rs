@@ -425,7 +425,6 @@ mod tests {
         assert_into_endpoint_service(|Query(query): Query<Params>| async move { query.foo });
         assert_into_endpoint_service(|method: Method| async move { method.to_string() });
         assert_into_endpoint_service(|req: Request| async move { req.uri().to_string() });
-        assert_into_endpoint_service(|State(_state): State<()>| async { StatusCode::OK });
         assert_into_endpoint_service(|Extension(ext): Extension<Params>| async { ext.foo });
         assert_into_endpoint_service(|_host: Host| async { StatusCode::OK });
         assert_into_endpoint_service(|Host(_host): Host| async { StatusCode::OK });

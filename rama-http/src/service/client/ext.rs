@@ -705,7 +705,7 @@ mod test {
     type OpaqueError = rama_core::error::BoxError;
     type HttpClient<S> = BoxService<S, Request, Response, OpaqueError>;
 
-    fn client<S: Send + Sync + 'static>() -> HttpClient<S> {
+    fn client<S: Clone + Send + Sync + 'static>() -> HttpClient<S> {
         let builder = (
             MapResultLayer::new(map_internal_client_error),
             TraceLayer::new_for_http(),

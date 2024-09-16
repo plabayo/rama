@@ -235,7 +235,7 @@ pub trait CloneInput<S>: private::Sealed<(S,)> + Send + Sync + 'static {
     ) -> Option<(Context<S>, Request<RetryBody>)>;
 }
 
-impl<S> CloneInput<S> for Undefined {
+impl<S: Clone> CloneInput<S> for Undefined {
     fn clone_input(
         &self,
         ctx: &Context<S>,

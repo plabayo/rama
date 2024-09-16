@@ -8,6 +8,7 @@ use hyper::{rt::Timer, server::conn::http1::Builder as Http1ConnBuilder};
 use hyper_util::server::conn::auto::Builder as AutoConnBuilder;
 use hyper_util::server::conn::auto::Http1Builder as InnerAutoHttp1Builder;
 use hyper_util::server::conn::auto::Http2Builder as InnerAutoHttp2Builder;
+use rama_core::context::StateTransformer;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::{Context, Service};
@@ -26,28 +27,43 @@ use tokio::net::ToSocketAddrs;
 /// Supported Protocols: HTTP/1, H2, Auto (HTTP/1 + H2)
 ///
 /// [`Service`]: rama_core::Service
-pub struct HttpServer<B> {
+pub struct HttpServer<B, T = ()> {
     builder: B,
+    state_transformer: T,
 }
 
-impl<B> fmt::Debug for HttpServer<B>
+impl<B> HttpServer<B> {
+    /// Attach a [`StateTransformer`] to this [`HttpServer`].
+    pub fn with_state_transformer<T>(self, transformer: T) -> HttpServer<B, T> {
+        HttpServer {
+            builder: self.builder,
+            state_transformer: transformer,
+        }
+    }
+}
+
+impl<B, T> fmt::Debug for HttpServer<B, T>
 where
     B: fmt::Debug,
+    T: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpServer")
             .field("builder", &self.builder)
+            .field("state_transformer", &self.state_transformer)
             .finish()
     }
 }
 
-impl<B> Clone for HttpServer<B>
+impl<B, T> Clone for HttpServer<B, T>
 where
     B: Clone,
+    T: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             builder: self.builder.clone(),
+            state_transformer: self.state_transformer.clone(),
         }
     }
 }
@@ -57,6 +73,7 @@ impl HttpServer<Http1ConnBuilder> {
     pub fn http1() -> Self {
         Self {
             builder: Http1ConnBuilder::new(),
+            state_transformer: (),
         }
     }
 }
@@ -190,6 +207,7 @@ impl HttpServer<H2ConnBuilder<HyperExecutor>> {
     pub fn h2(exec: Executor) -> Self {
         Self {
             builder: H2ConnBuilder::new(HyperExecutor(exec)),
+            state_transformer: (),
         }
     }
 }
@@ -335,6 +353,7 @@ impl HttpServer<AutoConnBuilder<HyperExecutor>> {
     pub fn auto(exec: Executor) -> Self {
         Self {
             builder: AutoConnBuilder::new(HyperExecutor(exec)),
+            state_transformer: (),
         }
     }
 }
@@ -607,18 +626,23 @@ impl<'a, E> AutoH2Config<'a, E> {
     }
 }
 
-impl<B> HttpServer<B>
+impl<B, T> HttpServer<B, T>
 where
     B: HyperConnServer,
 {
     /// Turn this `HttpServer` into a [`Service`] that can be used to serve
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
-    pub fn service<State, S, Response>(self, service: S) -> HttpService<B, S, State>
+    pub fn service<State, S, Response>(self, service: S) -> HttpService<B, S, T>
     where
-        S: Service<State, Request, Response = Response, Error = Infallible>,
+        S: Service<T::Output, Request, Response = Response, Error = Infallible>,
+        T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
     {
-        HttpService::new(self.builder, service)
+        HttpService::new(self.builder, service, self.state_transformer.clone())
     }
 
     /// Serve a single IO Byte Stream (e.g. a TCP Stream) as HTTP.
@@ -629,13 +653,18 @@ where
         service: S,
     ) -> HttpServeResult
     where
-        State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible>,
+        State: Clone + Send + Sync + 'static,
+        S: Service<T::Output, Request, Response = Response, Error = Infallible>,
+        T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
         IO: Stream,
     {
         self.builder
-            .hyper_serve_connection(ctx, stream, service)
+            .hyper_serve_connection(ctx, stream, service, self.state_transformer.clone())
             .await
     }
 
@@ -644,7 +673,12 @@ where
     /// It's a shortcut in case you don't need to operate on the transport layer directly.
     pub async fn listen<S, Response, A>(self, addr: A, service: S) -> HttpServeResult
     where
-        S: Service<(), Request, Response = Response, Error = Infallible>,
+        S: Service<T::Output, Request, Response = Response, Error = Infallible>,
+        T: StateTransformer<(), Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -668,7 +702,12 @@ where
         service: S,
     ) -> HttpServeResult
     where
-        S: Service<(), Request, Response = Response, Error = Infallible>,
+        S: Service<T::Output, Request, Response = Response, Error = Infallible>,
+        T: StateTransformer<(), Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -692,8 +731,13 @@ where
         service: S,
     ) -> HttpServeResult
     where
-        State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible>,
+        State: Clone + Send + Sync + 'static,
+        S: Service<T::Output, Request, Response = Response, Error = Infallible>,
+        T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -719,8 +763,13 @@ where
         service: S,
     ) -> HttpServeResult
     where
-        State: Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible>,
+        State: Clone + Send + Sync + 'static,
+        S: Service<T::Output, Request, Response = Response, Error = Infallible>,
+        T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -734,43 +783,57 @@ where
 }
 
 /// A [`Service`] that can be used to serve IO Byte streams (e.g. a TCP Stream) as HTTP.
-pub struct HttpService<B, S, State> {
+pub struct HttpService<B, S, T> {
     builder: Arc<B>,
     service: Arc<S>,
-    _phantom: std::marker::PhantomData<State>,
+    state_transformer: T,
 }
 
-impl<B, S, State> std::fmt::Debug for HttpService<B, S, State> {
+impl<B, S, T> std::fmt::Debug for HttpService<B, S, T>
+where
+    B: fmt::Debug,
+    S: fmt::Debug,
+    T: fmt::Debug,
+{
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HttpService").finish()
+        f.debug_struct("HttpService")
+            .field("builder", &self.builder)
+            .field("service", &self.service)
+            .field("state_transformer", &self.state_transformer)
+            .finish()
     }
 }
 
-impl<B, S, State> HttpService<B, S, State> {
-    fn new(builder: B, service: S) -> Self {
+impl<B, S, T> HttpService<B, S, T> {
+    fn new(builder: B, service: S, state_transformer: T) -> Self {
         Self {
             builder: Arc::new(builder),
             service: Arc::new(service),
-            _phantom: std::marker::PhantomData,
+            state_transformer,
         }
     }
 }
 
-impl<B, S, State> Clone for HttpService<B, S, State> {
+impl<B, S, T: Clone> Clone for HttpService<B, S, T> {
     fn clone(&self) -> Self {
         Self {
             builder: self.builder.clone(),
             service: self.service.clone(),
-            _phantom: std::marker::PhantomData,
+            state_transformer: self.state_transformer.clone(),
         }
     }
 }
 
-impl<B, State, S, Response, IO> Service<State, IO> for HttpService<B, S, State>
+impl<B, State, S, T, Response, IO> Service<State, IO> for HttpService<B, S, T>
 where
     B: HyperConnServer,
     State: Send + Sync + 'static,
-    S: Service<State, Request, Response = Response, Error = Infallible>,
+    S: Service<T::Output, Request, Response = Response, Error = Infallible>,
+    T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     Response: IntoResponse + Send + 'static,
     IO: Stream,
 {
@@ -783,6 +846,8 @@ where
         stream: IO,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let service = self.service.clone();
-        self.builder.hyper_serve_connection(ctx, stream, service)
+        let state_transformer = self.state_transformer.clone();
+        self.builder
+            .hyper_serve_connection(ctx, stream, service, state_transformer)
     }
 }

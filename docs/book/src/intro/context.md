@@ -69,16 +69,15 @@ It might of course still mean the app returns an error response when it is absen
 `rama` was built from the ground up to operate on and between different layers of the network stack.
 This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
 
-When creating a [`TcpListener`](https://ramaproxy.org/docs/rama/tcp/server/struct.TcpListener.html)
-with state you are essentially creating and injecting state, which will remain
-as "read-only" for the enire life cycle of that [`TcpListener`](https://ramaproxy.org/docs/rama/tcp/server/struct.TcpListener.html)
-and to be made available for every incoming _tcp_ connection,
-as well as the application requests (Http requests). This is great for stuff that is okay to share, but it is not desired
+When creating a `TcpListener` with state the state will be owned by that `TcpListener`. By default
+it will clone the state and pass a clone to each incoming `tcp` connection. You can however also
+inject your own state provider to customise that behaviour. Pretty much the same goes for an `HttpServer`,
+where it will do the same for each incoming http request. This is great for stuff that is okay to share, but it is not desired
 for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus
 you do not wish to keep a global cache for this, as it would either be shared or get overly complicated to ensure
 you keep things separate and clean.
 
-The solution is to wrap your state.
+One solution is to wrap your state.
 
 > See for reference: [/examples/http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
 
