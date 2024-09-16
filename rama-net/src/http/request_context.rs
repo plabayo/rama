@@ -108,13 +108,16 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
         let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let authority = ctx
-            .get::<Forwarded>()
-            .and_then(|f| {
-                f.client_host().map(|fauth| {
-                    let (host, port) = fauth.clone().into_parts();
-                    let port = port.unwrap_or(default_port);
-                    (host, port).into()
+        let authority = uri
+            .host()
+            .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
+            .or_else(|| {
+                ctx.get::<Forwarded>().and_then(|f| {
+                    f.client_host().map(|fauth| {
+                        let (host, port) = fauth.clone().into_parts();
+                        let port = port.unwrap_or(default_port);
+                        (host, port).into()
+                    })
                 })
             })
             .or_else(|| {
@@ -126,10 +129,6 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
                             .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
                             .ok()
                     })
-            })
-            .or_else(|| {
-                uri.host()
-                    .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
             })
             .ok_or_else(|| {
                 OpaqueError::from_display(
@@ -163,15 +162,14 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
 
 #[allow(clippy::unnecessary_lazy_evaluations)]
 fn protocol_from_uri_or_context<State>(ctx: &Context<State>, uri: &Uri) -> Protocol {
-    ctx.get::<Forwarded>()
+    uri.scheme().map(|s| {
+        tracing::trace!(uri = %uri, "request context: detected protocol from scheme");
+        s.into()
+    }).or_else(|| ctx.get::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
             tracing::trace!(uri = %uri, "request context: detected protocol from forwarded client proto");
             p.into()
-        }))
-        .or_else(|| uri.scheme().map(|s| {
-            tracing::trace!(uri = %uri, "request context: detected protocol from scheme");
-            s.into()
-        }))
+        })))
         .or_else(|| {
             #[cfg(feature = "tls")]
             {
