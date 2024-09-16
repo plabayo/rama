@@ -44,13 +44,16 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
         let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let authority = ctx
-            .get::<Forwarded>()
-            .and_then(|f| {
-                f.client_host().map(|fauth| {
-                    let (host, port) = fauth.clone().into_parts();
-                    let port = port.unwrap_or(default_port);
-                    (host, port).into()
+        let authority = uri
+            .host()
+            .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
+            .or_else(|| {
+                ctx.get::<Forwarded>().and_then(|f| {
+                    f.client_host().map(|fauth| {
+                        let (host, port) = fauth.clone().into_parts();
+                        let port = port.unwrap_or(default_port);
+                        (host, port).into()
+                    })
                 })
             })
             .or_else(|| {
@@ -61,10 +64,6 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
                             .or_else(|_| Host::try_from(host).map(|h| (h, default_port).into()))
                             .ok()
                     })
-            })
-            .or_else(|| {
-                uri.host()
-                    .and_then(|h| Host::try_from(h).ok().map(|h| (h, default_port).into()))
             })
             .ok_or_else(|| {
                 OpaqueError::from_display("RequestContext: no authourity found in http::Request")

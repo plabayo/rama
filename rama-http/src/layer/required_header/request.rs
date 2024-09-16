@@ -270,7 +270,7 @@ mod test {
         let svc = AddRequiredRequestHeadersLayer::new()
             .overwrite(true)
             .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
-                assert_eq!(req.headers().get(HOST).unwrap(), "example.com:80");
+                assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1:80");
                 assert_eq!(
                     req.headers().get(USER_AGENT).unwrap(),
                     RAMA_ID_HEADER_VALUE.to_str().unwrap()
@@ -297,7 +297,7 @@ mod test {
             .overwrite(true)
             .user_agent_header_value(HeaderValue::from_static("foo"))
             .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
-                assert_eq!(req.headers().get(HOST).unwrap(), "example.com:80");
+                assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1:80");
                 assert_eq!(
                     req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),
                     Some("foo")
