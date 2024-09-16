@@ -41,7 +41,7 @@ where
 impl<T, Fut, F> GetExtensionLayer<T, Fut, F>
 where
     F: FnOnce(T) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = ()> + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
 {
     /// Create a new [`GetExtensionLayer`].
     pub const fn new(callback: F) -> Self {
@@ -108,7 +108,7 @@ impl<S, T, Fut, F> GetExtension<S, T, Fut, F> {
     pub const fn new(inner: S, callback: F) -> Self
     where
         F: FnOnce(T) -> Fut + Clone + Send + Sync + 'static,
-        Fut: Future<Output = ()> + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
     {
         Self {
             inner,
@@ -127,7 +127,7 @@ where
     S: Service<State, Request>,
     T: Clone + Send + Sync + 'static,
     F: FnOnce(T) -> Fut + Clone + Send + Sync + 'static,
-    Fut: Future<Output = ()> + Send + Sync + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
