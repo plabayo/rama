@@ -207,7 +207,7 @@ where
                     .context("missing proxy filter")?,
             ),
             ProxyFilterMode::Fallback(ref filter) => {
-                ctx.get::<ProxyFilter>().cloned().or(Some(filter.clone()))
+                Some(ctx.get_or_insert_with(|| filter.clone()).clone())
             }
         };
 
