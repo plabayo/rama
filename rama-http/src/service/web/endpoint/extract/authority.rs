@@ -49,14 +49,18 @@ mod tests {
     use crate::{Body, HeaderName, Request};
     use rama_core::Service;
 
-    async fn test_authority_from_request(authority: &str, headers: Vec<(&HeaderName, &str)>) {
+    async fn test_authority_from_request(
+        uri: &str,
+        authority: &str,
+        headers: Vec<(&HeaderName, &str)>,
+    ) {
         let svc = GetForwardedHeadersService::x_forwarded_host(
             WebService::default().get("/", |Authority(authority): Authority| async move {
                 authority.to_string()
             }),
         );
 
-        let mut builder = Request::builder().method("GET").uri("http://example.com/");
+        let mut builder = Request::builder().method("GET").uri(uri);
         for (header, value) in headers {
             builder = builder.header(header, value);
         }
@@ -71,6 +75,7 @@ mod tests {
     #[tokio::test]
     async fn host_header() {
         test_authority_from_request(
+            "/",
             "some-domain:123",
             vec![(&http::header::HOST, "some-domain:123")],
         )
@@ -80,6 +85,7 @@ mod tests {
     #[tokio::test]
     async fn x_forwarded_host_header() {
         test_authority_from_request(
+            "/",
             "some-domain:456",
             vec![(&X_FORWARDED_HOST, "some-domain:456")],
         )
@@ -89,6 +95,7 @@ mod tests {
     #[tokio::test]
     async fn x_forwarded_host_precedence_over_host_header() {
         test_authority_from_request(
+            "/",
             "some-domain:456",
             vec![
                 (&X_FORWARDED_HOST, "some-domain:456"),
@@ -100,6 +107,6 @@ mod tests {
 
     #[tokio::test]
     async fn uri_host() {
-        test_authority_from_request("example.com:80", vec![]).await;
+        test_authority_from_request("http://example.com", "example.com:80", vec![]).await;
     }
 }
