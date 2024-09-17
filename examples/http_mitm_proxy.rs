@@ -52,29 +52,24 @@ use rama::{
     layer::ConsumeErrLayer,
     net::http::RequestContext,
     net::stream::layer::http::BodyLimitLayer,
+    net::tls::{
+        server::{SelfSignedData, ServerAuth, ServerConfig},
+        ApplicationProtocol,
+    },
     net::user::Basic,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::{
-        dep::rcgen::{self, KeyPair},
-        rustls::{
-            dep::{
-                pki_types::{CertificateDer, PrivatePkcs8KeyDer},
-                rustls::ServerConfig,
-            },
-            server::TlsAcceptorLayer,
-        },
-    },
+    tls::rustls::server::{ServiceData, TlsAcceptorLayer},
     Layer, Service,
 };
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 #[derive(Debug, Clone)]
 struct State {
-    mitm_tls_config: Arc<ServerConfig>,
+    mitm_tls_service_data: ServiceData,
 }
 
 type Context = rama::Context<State>;
@@ -90,12 +85,11 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
-    let mitm_tls_config = Arc::new(
-        mitm_tls_server_credentials()
-            .map_err(OpaqueError::from_boxed)
-            .context("generate self-signed mitm tls cert")?,
-    );
-    let state = State { mitm_tls_config };
+    let mitm_tls_service_data =
+        new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
+    let state = State {
+        mitm_tls_service_data,
+    };
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -167,8 +161,8 @@ async fn http_connect_proxy(mut ctx: Context, upgraded: Upgraded) -> Result<(), 
 
     let http_transport_service = HttpServer::auto(ctx.executor().clone()).service(http_service);
 
-    let https_service =
-        TlsAcceptorLayer::new(ctx.state().mitm_tls_config.clone()).layer(http_transport_service);
+    let https_service = TlsAcceptorLayer::new(ctx.state().mitm_tls_service_data.clone())
+        .layer(http_transport_service);
 
     https_service
         .serve(ctx, upgraded)
@@ -217,40 +211,18 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-fn mitm_tls_server_credentials() -> Result<ServerConfig, BoxError> {
-    // Create an issuer CA cert.
-    let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-    let ca_key_pair = KeyPair::generate_for(alg).expect("generate ca key pair");
-
-    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("create ca params");
-    ca_params
-        .distinguished_name
-        .push(rcgen::DnType::OrganizationName, "Rustls Server Acceptor");
-    ca_params
-        .distinguished_name
-        .push(rcgen::DnType::CommonName, "Example CA");
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![
-        rcgen::KeyUsagePurpose::KeyCertSign,
-        rcgen::KeyUsagePurpose::DigitalSignature,
-        rcgen::KeyUsagePurpose::CrlSign,
-    ];
-    let ca_cert = ca_params.self_signed(&ca_key_pair)?;
-
-    let server_key_pair = KeyPair::generate_for(alg)?;
-    let mut server_ee_params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()])?;
-    server_ee_params.is_ca = rcgen::IsCa::NoCa;
-    server_ee_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-    let server_cert = server_ee_params.signed_by(&server_key_pair, &ca_cert, &ca_key_pair)?;
-    let server_cert_der: CertificateDer = server_cert.into();
-    let server_key_der = PrivatePkcs8KeyDer::from(server_key_pair.serialize_der());
-
-    let mut tls_server_config = ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![server_cert_der],
-            PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned()).into(),
-        )?;
-    tls_server_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-    Ok(tls_server_config)
+fn new_mitm_tls_service_data() -> Result<ServiceData, OpaqueError> {
+    let tls_server_config = ServerConfig {
+        application_layer_protocol_negotiation: Some(vec![
+            ApplicationProtocol::HTTP_11,
+            ApplicationProtocol::HTTP_2,
+        ]),
+        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
+            organisation_name: Some("Rustls Server Acceptor".to_owned()),
+            ..Default::default()
+        }))
+    };
+    tls_server_config
+        .try_into()
+        .context("create tls server config")
 }

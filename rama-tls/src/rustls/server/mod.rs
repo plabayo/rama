@@ -19,8 +19,14 @@ pub use service::TlsAcceptorService;
 
 mod client_config;
 #[doc(inline)]
-pub use client_config::{ServerConfigProvider, TlsClientConfigHandler};
+pub use client_config::{ServiceDataProvider, TlsClientConfigHandler};
 
 mod layer;
 #[doc(inline)]
 pub use layer::TlsAcceptorLayer;
+
+mod service_data;
+#[doc(inline)]
+pub use service_data::ServiceData;
+
+mod key_log;

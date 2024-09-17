@@ -18,7 +18,7 @@ macro_rules! enum_builder {
         #[non_exhaustive]
         #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Copy)]
         $enum_vis enum $enum_name {
-            $( $enum_var),*
+            $($enum_var),*
             ,Unknown(u8)
         }
 

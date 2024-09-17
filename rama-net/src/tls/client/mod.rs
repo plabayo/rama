@@ -14,3 +14,7 @@ pub use hello::{ClientHello, ClientHelloExtension};
 
 #[cfg(feature = "boring")]
 mod parser;
+
+mod config;
+#[doc(inline)]
+pub use config::{ClientAuth, ClientConfig, ServerVerifyMode};

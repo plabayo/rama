@@ -31,6 +31,11 @@ impl NonEmptyString {
     pub fn as_str(&self) -> &str {
         self.0.as_ref()
     }
+
+    /// Views this [`NonEmptyString`] as a bytes slice.
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_ref().as_bytes()
+    }
 }
 
 impl fmt::Display for NonEmptyString {

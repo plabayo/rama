@@ -1,6 +1,6 @@
 use crate::{
     rustls::dep::{
-        rustls::{server::Acceptor, ServerConfig},
+        rustls::server::Acceptor,
         tokio_rustls::{server::TlsStream, LazyConfigAcceptor, TlsAcceptor},
     },
     types::client::ClientHello,
@@ -12,23 +12,22 @@ use rama_core::{
 };
 use rama_net::stream::Stream;
 use rama_utils::macros::define_inner_service_accessors;
-use std::sync::Arc;
 
-use super::{ServerConfigProvider, TlsClientConfigHandler};
+use super::{client_config::ServiceDataProvider, ServiceData, TlsClientConfigHandler};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
 pub struct TlsAcceptorService<S, H> {
-    config: Arc<ServerConfig>,
+    data: ServiceData,
     client_config_handler: H,
     inner: S,
 }
 
 impl<S, H> TlsAcceptorService<S, H> {
     /// Creates a new [`TlsAcceptorService`].
-    pub const fn new(config: Arc<ServerConfig>, inner: S, client_config_handler: H) -> Self {
+    pub const fn new(data: ServiceData, inner: S, client_config_handler: H) -> Self {
         Self {
-            config,
+            data,
             client_config_handler,
             inner,
         }
@@ -40,7 +39,7 @@ impl<S, H> TlsAcceptorService<S, H> {
 impl<S: std::fmt::Debug, H: std::fmt::Debug> std::fmt::Debug for TlsAcceptorService<S, H> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TlsAcceptorService")
-            .field("config", &self.config)
+            .field("data", &self.data)
             .field("client_config_handler", &self.client_config_handler)
             .field("inner", &self.inner)
             .finish()
@@ -54,7 +53,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            config: self.config.clone(),
+            data: self.data.clone(),
             client_config_handler: self.client_config_handler.clone(),
             inner: self.inner.clone(),
         }
@@ -71,7 +70,7 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
-        let acceptor = TlsAcceptor::from(self.config.clone());
+        let acceptor = TlsAcceptor::from(self.data.server_config.clone());
 
         let stream = acceptor.accept(stream).await?;
 
@@ -104,7 +103,7 @@ where
             SecureTransport::default()
         };
 
-        let stream = start.into_stream(self.config.clone()).await?;
+        let stream = start.into_stream(self.data.server_config.clone()).await?;
 
         ctx.insert(secure_transport);
         self.inner.serve(ctx, stream).await.map_err(|err| {
@@ -120,7 +119,7 @@ where
     T: Send + Sync + 'static,
     IO: Stream + Unpin + 'static,
     S: Service<T, TlsStream<IO>, Error: Into<BoxError>>,
-    F: ServerConfigProvider,
+    F: ServiceDataProvider<Error: Into<BoxError>>,
 {
     type Response = S::Response;
     type Error = BoxError;
@@ -138,14 +137,15 @@ where
             SecureTransport::default()
         };
 
-        let config = self
+        let service_data = self
             .client_config_handler
-            .server_config_provider
-            .get_server_config(accepted_client_hello)
-            .await?
-            .unwrap_or_else(|| self.config.clone());
+            .service_data_provider
+            .get_service_data(accepted_client_hello)
+            .await
+            .map_err(Into::into)?
+            .unwrap_or_else(|| self.data.clone());
 
-        let stream = start.into_stream(config).await?;
+        let stream = start.into_stream(service_data.server_config).await?;
 
         ctx.insert(secure_transport);
         self.inner.serve(ctx, stream).await.map_err(|err| {

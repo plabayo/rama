@@ -1,12 +1,10 @@
-use super::{TlsAcceptorService, TlsClientConfigHandler};
-use crate::rustls::dep::rustls::ServerConfig;
+use super::{ServiceData, TlsAcceptorService, TlsClientConfigHandler};
 use rama_core::Layer;
-use std::sync::Arc;
 
 /// A [`Layer`] which wraps the given service with a [`TlsAcceptorService`].
 #[derive(Clone)]
 pub struct TlsAcceptorLayer<H> {
-    config: Arc<ServerConfig>,
+    data: ServiceData,
     client_config_handler: H,
 }
 
@@ -21,9 +19,9 @@ impl TlsAcceptorLayer<()> {
     /// which is used to configure the inner TLS acceptor.
     ///
     /// [`ServerConfig`]: https://docs.rs/rustls/latest/rustls/server/struct.ServerConfig.html
-    pub const fn new(config: Arc<ServerConfig>) -> Self {
+    pub const fn new(data: ServiceData) -> Self {
         Self {
-            config,
+            data,
             client_config_handler: (),
         }
     }
@@ -34,11 +32,11 @@ impl<F> TlsAcceptorLayer<TlsClientConfigHandler<F>> {
     /// which is used to configure the inner TLS acceptor and the given
     /// [`TlsClientConfigHandler`], which is used to configure or track the inner TLS connector.
     pub fn with_client_config_handler(
-        config: Arc<ServerConfig>,
+        data: ServiceData,
         client_config_handler: TlsClientConfigHandler<F>,
     ) -> Self {
         Self {
-            config,
+            data,
             client_config_handler,
         }
     }
@@ -48,11 +46,7 @@ impl<H: Clone, S> Layer<S> for TlsAcceptorLayer<H> {
     type Service = TlsAcceptorService<S, H>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        TlsAcceptorService::new(
-            self.config.clone(),
-            inner,
-            self.client_config_handler.clone(),
-        )
+        TlsAcceptorService::new(self.data.clone(), inner, self.client_config_handler.clone())
     }
 }
 
