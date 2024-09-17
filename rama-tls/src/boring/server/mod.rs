@@ -16,7 +16,7 @@ pub use config::ServerConfig;
 
 mod service;
 #[doc(inline)]
-pub use service::{TlsAcceptorError, TlsAcceptorService};
+pub use service::TlsAcceptorService;
 
 mod layer;
 #[doc(inline)]
