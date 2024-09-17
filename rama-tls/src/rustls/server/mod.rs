@@ -15,7 +15,7 @@
 
 mod service;
 #[doc(inline)]
-pub use service::{TlsAcceptorError, TlsAcceptorService};
+pub use service::TlsAcceptorService;
 
 mod client_config;
 #[doc(inline)]

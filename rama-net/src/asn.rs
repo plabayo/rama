@@ -146,16 +146,7 @@ impl<'de> Deserialize<'de> for Asn {
     }
 }
 
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-/// Error to indicate an invalid ASN for any reason,
-/// most typically being because it is within the reserved space.
-pub struct InvalidAsn;
-
-impl fmt::Display for InvalidAsn {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid ASN")
-    }
+rama_utils::macros::error::static_str_error! {
+    #[doc = "invalid ASN (e.g. within reserved space)"]
+    pub struct InvalidAsn;
 }
-
-impl std::error::Error for InvalidAsn {}

@@ -264,7 +264,7 @@ where
     pub async fn serve_fn<F, X, R, O, E>(self, f: F)
     where
         F: Factory<X, R, O, E>,
-        R: Future<Output = Result<O, E>> + Send + Sync + 'static,
+        R: Future<Output = Result<O, E>> + Send + 'static,
         O: Send + Sync + 'static,
         E: Send + Sync + 'static,
         X: FromContextRequest<T::Output, TcpStream>,
@@ -331,7 +331,7 @@ where
     pub async fn serve_fn_graceful<F, X, R, O, E>(self, guard: ShutdownGuard, service: F)
     where
         F: Factory<X, R, O, E>,
-        R: Future<Output = Result<O, E>> + Send + Sync + 'static,
+        R: Future<Output = Result<O, E>> + Send + 'static,
         O: Send + Sync + 'static,
         E: Send + Sync + 'static,
         X: FromContextRequest<T::Output, TcpStream>,
