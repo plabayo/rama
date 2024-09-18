@@ -60,7 +60,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::rustls::server::{ServiceData, TlsAcceptorLayer},
+    tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
     Layer, Service,
 };
 use std::{convert::Infallible, time::Duration};
@@ -69,7 +69,7 @@ use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, Env
 
 #[derive(Debug, Clone)]
 struct State {
-    mitm_tls_service_data: ServiceData,
+    mitm_tls_service_data: TlsAcceptorData,
 }
 
 type Context = rama::Context<State>;
@@ -211,7 +211,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
-fn new_mitm_tls_service_data() -> Result<ServiceData, OpaqueError> {
+fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
             ApplicationProtocol::HTTP_11,

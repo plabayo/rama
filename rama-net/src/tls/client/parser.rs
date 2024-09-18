@@ -4,7 +4,7 @@
 //! src and attribution: <https://github.com/rusticata/tls-parser>
 
 use super::{ClientHello, ClientHelloExtension};
-use crate::address::Domain;
+use crate::address::Host;
 use crate::tls::{
     enums::CompressionAlgorithm, ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion,
 };
@@ -159,13 +159,13 @@ fn parse_tls_extension_sni_content(i: &[u8]) -> IResult<&[u8], ClientHelloExtens
 // } NameType;
 //
 // opaque HostName<1..2^16-1>;
-fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Domain> {
+fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Host> {
     let (i, nt) = be_u8(i)?;
     if nt != 0 {
         return Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::IsNot)));
     }
     let (i, v) = length_data(be_u16)(i)?;
-    let domain = Domain::try_from(v)
+    let domain = Host::try_from(v)
         .map_err(|_| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?;
     Ok((i, domain))
 }
@@ -359,7 +359,7 @@ mod tests {
         );
         assert_eq_server_name_extension(
             &client_hello.extensions()[1],
-            Some(&Domain::from_static("init.itunes.apple.com")),
+            Some(&Host::Name(Domain::from_static("init.itunes.apple.com"))),
         );
         assert_eq_opaque_extension(
             &client_hello.extensions()[2],
@@ -488,13 +488,10 @@ mod tests {
         }
     }
 
-    fn assert_eq_server_name_extension(
-        ext: &ClientHelloExtension,
-        expected_domain: Option<&Domain>,
-    ) {
+    fn assert_eq_server_name_extension(ext: &ClientHelloExtension, expected_host: Option<&Host>) {
         match ext {
             ClientHelloExtension::ServerName(domain) => {
-                assert_eq!(domain.as_ref(), expected_domain);
+                assert_eq!(domain.as_ref(), expected_host);
             }
             other => {
                 panic!("unexpected extension: {other:?}");

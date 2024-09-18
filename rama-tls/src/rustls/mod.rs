@@ -4,6 +4,8 @@ pub mod client;
 pub mod server;
 pub mod verify;
 
+mod key_log;
+
 pub mod dep {
     //! Dependencies for rama rustls modules.
     //!

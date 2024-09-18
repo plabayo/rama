@@ -1,7 +1,5 @@
-use rama_utils::str::NonEmptyString;
-
 use super::ClientHelloExtension;
-use crate::tls::{CipherSuite, CompressionAlgorithm, KeyLogIntent};
+use crate::tls::{CipherSuite, CompressionAlgorithm, DataEncoding, KeyLogIntent};
 
 #[derive(Debug, Clone, Default)]
 /// Common API to configure a TLS Client
@@ -21,17 +19,33 @@ pub struct ClientConfig {
     pub server_verify_mode: ServerVerifyMode,
     /// optionally define raw (PEM-encoded) client auth certs
     pub client_auth: Option<ClientAuth>,
+    /// optionally provide the option expose the client cert if one is defined
+    ///
+    /// this will effectively clone the memory to keep these at hand,
+    /// so only enable this option if you need it for something specific
+    ///
+    /// Nop-operation in case client_auth is `None`.
+    pub expose_client_cert: bool,
     /// key log intent
     pub key_logger: KeyLogIntent,
 }
 
 #[derive(Debug, Clone)]
+/// The kind of client auth to be used.
+pub enum ClientAuth {
+    /// Request the tls implementation to generate self-signed single data
+    SelfSigned,
+    /// Single data provided by the configurator
+    Single(ClientAuthData),
+}
+
+#[derive(Debug, Clone)]
 /// Raw private key and certificate data to facilitate client authentication.
-pub struct ClientAuth {
-    /// PEM-encoded (x509) private key used by client
-    pub private_key_pem: NonEmptyString,
-    /// PEM-encoded certificate chain as a companion to the private key
-    pub cert_chain_pem: NonEmptyString,
+pub struct ClientAuthData {
+    /// private key used by client
+    pub private_key: DataEncoding,
+    /// certificate chain as a companion to the private key
+    pub cert_chain: DataEncoding,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]

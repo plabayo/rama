@@ -274,7 +274,7 @@ where
         } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let host = match ctx.get::<HttpsTunnel>() {
-            Some(tunnel) => tunnel.server_name.clone(),
+            Some(tunnel) => tunnel.server_host.clone(),
             None => {
                 tracing::trace!(
                     "HttpsConnector(tunnel): return inner connection: no Https tunnel is requested"

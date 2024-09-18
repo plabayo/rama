@@ -49,7 +49,7 @@ just qa
 Before you can do this you do require the following to be installed:
 
 * `Rust`, version 1.80 or beyond: <https://www.rust-lang.org/tools/install>
-* `just` (to run _just_ (config) files): <https://just.systems/man/en/chapter_4.html>
+* `just` (to run _just_ (config) files): <https://just.systems/man/en/packages.html>
 * `cargo hack`: <https://github.com/taiki-e/cargo-hack?tab=readme-ov-file#installation>
 
 Once this is all done you should be able to run `just qa`.

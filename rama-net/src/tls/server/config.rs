@@ -1,6 +1,6 @@
 use rama_utils::str::NonEmptyString;
 
-use crate::tls::{ApplicationProtocol, KeyLogIntent, ProtocolVersion};
+use crate::tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion};
 
 #[derive(Debug, Clone)]
 /// Common API to configure a TLS Server
@@ -58,12 +58,12 @@ pub struct SelfSignedData {
 }
 
 #[derive(Debug, Clone)]
-/// Raw private key and certificate data to facilitate client authentication.
+/// Raw private key and certificate data to facilitate server authentication.
 pub struct ServerAuthData {
-    /// PEM-encoded (x509) private key used by client
-    pub private_key_pem: NonEmptyString,
-    /// PEM-encoded certificate chain as a companion to the private key
-    pub cert_chain_pem: NonEmptyString,
+    /// private key used by server
+    pub private_key: DataEncoding,
+    /// certificate chain as a companion to the private key
+    pub cert_chain: DataEncoding,
 
     /// `ocsp` is a DER-encoded OCSP response
     pub ocsp: Option<Vec<u8>>,

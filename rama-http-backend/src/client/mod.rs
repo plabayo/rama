@@ -7,17 +7,17 @@ use rama_core::{
     Context, Service,
 };
 use rama_http_types::{dep::http_body, Request, Response};
-use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use rama_net::{
+    client::{ConnectorService, EstablishedClientConnection},
+    tls::{client::NegotiatedTlsParameters, ApplicationProtocol},
+};
 use rama_tcp::client::service::TcpConnector;
 
-// TODO: also support client config in boring...
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama_tls::rustls::dep::rustls::ClientConfig;
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use std::sync::Arc;
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use rama_tls::std::client::{HttpsConnector, TlsConnectorData};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_tls::std::client::HttpsConnector;
+use rama_net::tls::client::ClientConfig;
 
 mod svc;
 #[doc(inline)]
@@ -39,8 +39,8 @@ pub mod proxy;
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
 pub struct HttpClient {
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
-    tls_config: Option<Arc<ClientConfig>>,
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    tls_config: Option<ClientConfig>,
 }
 
 impl HttpClient {
@@ -49,23 +49,23 @@ impl HttpClient {
         Self::default()
     }
 
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Set the [`ClientConfig`] of this [`HttpClient`].
-    pub fn set_tls_config(&mut self, cfg: Arc<ClientConfig>) -> &mut Self {
+    pub fn set_tls_config(&mut self, cfg: ClientConfig) -> &mut Self {
         self.tls_config = Some(cfg);
         self
     }
 
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Replace this [`HttpClient`] with the [`ClientConfig`] set.
-    pub fn with_tls_config(mut self, cfg: Arc<ClientConfig>) -> Self {
+    pub fn with_tls_config(mut self, cfg: ClientConfig) -> Self {
         self.tls_config = Some(cfg);
         self
     }
 
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Replace this [`HttpClient`] with an option of [`ClientConfig`] set.
-    pub fn maybe_with_tls_config(mut self, cfg: Option<Arc<ClientConfig>>) -> Self {
+    pub fn maybe_with_tls_config(mut self, cfg: Option<ClientConfig>) -> Self {
         self.tls_config = cfg;
         self
     }
@@ -86,27 +86,66 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
 
-        #[cfg(all(feature = "rustls", not(feature = "boring")))]
-        let connector = HttpConnector::new(
-            HttpsConnector::auto(HttpProxyConnector::optional(HttpsConnector::tunnel(
-                TcpConnector::new(),
-            )))
-            .maybe_with_config(self.tls_config.clone()),
-        );
-        #[cfg(feature = "boring")]
-        let connector = HttpConnector::new(HttpsConnector::auto(HttpProxyConnector::optional(
-            HttpsConnector::tunnel(TcpConnector::new()),
-        )));
+        // record original req version,
+        // so we can put the response back
+        let original_req_version = req.version();
+
+        let transport_connector =
+            HttpProxyConnector::optional(HttpsConnector::tunnel(TcpConnector::new()));
+
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let connector = {
+            let tls_connector_data = match &self.tls_config {
+                Some(tls_config) => tls_config
+                    .clone()
+                    .try_into()
+                    .context("HttpClient: create https connector config data")?,
+                None => TlsConnectorData::new_http_auto(),
+            };
+            HttpConnector::new(
+                HttpsConnector::auto(transport_connector).with_config(tls_connector_data),
+            )
+        };
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        let connector = HttpConnector::new(HttpProxyConnector::optional(TcpConnector::new()));
+        let connector = HttpConnector::new(transport_connector);
 
         let EstablishedClientConnection { ctx, req, conn, .. } = connector
             .connect(ctx, req)
             .await
             .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
 
-        conn.serve(ctx, req)
+        if let Some(proto) = ctx
+            .get::<NegotiatedTlsParameters>()
+            .and_then(|params| params.application_layer_protocol.as_ref())
+        {
+            *req.version_mut() = match proto {
+                ApplicationProtocol::HTTP_09 => rama_http_types::Version::HTTP_09,
+                ApplicationProtocol::HTTP_10 => rama_http_types::Version::HTTP_10,
+                ApplicationProtocol::HTTP_11 => rama_http_types::Version::HTTP_11,
+                ApplicationProtocol::HTTP_2 => rama_http_types::Version::HTTP_2,
+                ApplicationProtocol::HTTP_3 => rama_http_types::Version::HTTP_3,
+                _ => {
+                    return Err(OpaqueError::from_display(
+                        "HttpClient: unsupported negotiated ALPN: {proto}",
+                    ));
+                }
+            };
+        }
+
+        let mut resp = conn
+            .serve(ctx, req)
             .await
-            .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))
+            .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
+
+        trace!(
+            "incoming response version {}, normalizing to {}",
+            resp.version(),
+            original_req_version
+        );
+        // NOTE: in case http response writer does not handle possible conversion issues,
+        // we might need to do more complex normalization here... Worries for the future, maybe
+        *resp.version_mut() = original_req_version;
+
+        Ok(resp)
     }
 }

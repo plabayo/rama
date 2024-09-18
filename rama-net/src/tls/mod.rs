@@ -1,6 +1,8 @@
 //! rama common tls types
 //!
 
+use rama_utils::str::NonEmptyString;
+
 mod enums;
 pub use enums::{
     ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
@@ -15,7 +17,7 @@ pub mod server;
 /// to configure the connection in function on an https tunnel.
 pub struct HttpsTunnel {
     /// The server name to use for the connection.
-    pub server_name: String,
+    pub server_host: crate::address::Host,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -55,4 +57,14 @@ pub enum KeyLogIntent {
     Disabled,
     /// Request a keys to be logged to the given file path.
     File(std::path::PathBuf),
+}
+
+#[derive(Debug, Clone)]
+/// Implementation agnostic encoding of common data such
+/// as certificates and keys.
+pub enum DataEncoding {
+    /// Distinguished Encoding Rules (DER) (binary)
+    Der(Vec<u8>),
+    /// Privacy Enhanced Mail (PEM) (plain text)
+    Pem(NonEmptyString),
 }

@@ -13,19 +13,19 @@ use rama_core::{
 use rama_net::stream::Stream;
 use rama_utils::macros::define_inner_service_accessors;
 
-use super::{client_config::ServiceDataProvider, ServiceData, TlsClientConfigHandler};
+use super::{client_config::ServiceDataProvider, TlsAcceptorData, TlsClientConfigHandler};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
 pub struct TlsAcceptorService<S, H> {
-    data: ServiceData,
+    data: TlsAcceptorData,
     client_config_handler: H,
     inner: S,
 }
 
 impl<S, H> TlsAcceptorService<S, H> {
     /// Creates a new [`TlsAcceptorService`].
-    pub const fn new(data: ServiceData, inner: S, client_config_handler: H) -> Self {
+    pub const fn new(data: TlsAcceptorData, inner: S, client_config_handler: H) -> Self {
         Self {
             data,
             client_config_handler,

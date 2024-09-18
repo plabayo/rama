@@ -189,6 +189,70 @@ impl TryFrom<&HeaderValue> for Host {
     }
 }
 
+#[cfg(feature = "rustls")]
+impl<'a> TryFrom<rustls::pki_types::ServerName<'a>> for Host {
+    type Error = OpaqueError;
+
+    fn try_from(value: rustls::pki_types::ServerName<'a>) -> Result<Self, Self::Error> {
+        match value {
+            rustls::pki_types::ServerName::DnsName(name) => {
+                Ok(Domain::try_from(name.as_ref().to_owned())?.into())
+            }
+            rustls::pki_types::ServerName::IpAddress(ip) => Ok(Host::from(IpAddr::from(ip))),
+            _ => Err(OpaqueError::from_display(format!(
+                "urecognised rustls (PKI) server name: {value:?}",
+            ))),
+        }
+    }
+}
+
+#[cfg(feature = "rustls")]
+impl<'a> TryFrom<Host> for rustls::pki_types::ServerName<'a> {
+    type Error = OpaqueError;
+
+    fn try_from(value: Host) -> Result<Self, Self::Error> {
+        match value {
+            Host::Name(name) => Ok(rustls::pki_types::ServerName::DnsName(
+                rustls::pki_types::DnsName::try_from(name.as_str().to_owned())
+                    .context("convert domain to rustls (PKI) ServerName")?,
+            )),
+            Host::Address(ip) => Ok(rustls::pki_types::ServerName::IpAddress(ip.into())),
+        }
+    }
+}
+
+#[cfg(feature = "rustls")]
+impl<'a> TryFrom<&rustls::pki_types::ServerName<'a>> for Host {
+    type Error = OpaqueError;
+
+    fn try_from(value: &rustls::pki_types::ServerName<'a>) -> Result<Self, Self::Error> {
+        match value {
+            rustls::pki_types::ServerName::DnsName(name) => {
+                Ok(Domain::try_from(name.as_ref().to_owned())?.into())
+            }
+            rustls::pki_types::ServerName::IpAddress(ip) => Ok(Host::from(IpAddr::from(*ip))),
+            _ => Err(OpaqueError::from_display(format!(
+                "urecognised rustls (PKI) server name: {value:?}",
+            ))),
+        }
+    }
+}
+
+#[cfg(feature = "rustls")]
+impl<'a> TryFrom<&'a Host> for rustls::pki_types::ServerName<'a> {
+    type Error = OpaqueError;
+
+    fn try_from(value: &'a Host) -> Result<Self, Self::Error> {
+        match value {
+            Host::Name(name) => Ok(rustls::pki_types::ServerName::DnsName(
+                rustls::pki_types::DnsName::try_from(name.as_str())
+                    .context("convert domain to rustls (PKI) ServerName")?,
+            )),
+            Host::Address(ip) => Ok(rustls::pki_types::ServerName::IpAddress((*ip).into())),
+        }
+    }
+}
+
 impl TryFrom<Vec<u8>> for Host {
     type Error = OpaqueError;
 

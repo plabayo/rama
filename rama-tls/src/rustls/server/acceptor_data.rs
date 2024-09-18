@@ -2,10 +2,10 @@ use crate::dep::rcgen::{self, KeyPair};
 use crate::rustls::dep::pemfile;
 use crate::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::rustls::dep::rustls::{self, server::WebPkiClientVerifier, RootCertStore};
-use crate::rustls::server::key_log::KeyLogFile;
+use crate::rustls::key_log::KeyLogFile;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth};
-use rama_net::tls::KeyLogIntent;
+use rama_net::tls::{DataEncoding, KeyLogIntent};
 use std::io::BufReader;
 use std::sync::Arc;
 
@@ -14,18 +14,18 @@ use std::sync::Arc;
 ///
 /// Created by converting a [`rustls::ServerConfig`] into it directly,
 /// or by trying to turn the _rama_ opiniated [`rama_net::tls::server::ServerConfig`] into it.
-pub struct ServiceData {
+pub struct TlsAcceptorData {
     pub(super) server_config: Arc<rustls::ServerConfig>,
 }
 
-impl From<rustls::ServerConfig> for ServiceData {
+impl From<rustls::ServerConfig> for TlsAcceptorData {
     #[inline]
     fn from(value: rustls::ServerConfig) -> Self {
         Arc::new(value).into()
     }
 }
 
-impl From<Arc<rustls::ServerConfig>> for ServiceData {
+impl From<Arc<rustls::ServerConfig>> for TlsAcceptorData {
     fn from(value: Arc<rustls::ServerConfig>) -> Self {
         Self {
             server_config: value,
@@ -33,7 +33,7 @@ impl From<Arc<rustls::ServerConfig>> for ServiceData {
     }
 }
 
-impl TryFrom<rama_net::tls::server::ServerConfig> for ServiceData {
+impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
     type Error = OpaqueError;
 
     fn try_from(value: rama_net::tls::server::ServerConfig) -> Result<Self, Self::Error> {
@@ -59,10 +59,10 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for ServiceData {
                 let mut root_cert_storage = RootCertStore::empty();
                 root_cert_storage
                     .add(client_cert_der)
-                    .context("rusts/ServiceData: add client cert to root cert storage")?;
+                    .context("rustls/TlsAcceptorData: add client cert to root cert storage")?;
                 let cert_verifier = WebPkiClientVerifier::builder(Arc::new(root_cert_storage))
                     .build()
-                    .context("rusts/ServiceData: create webpki client verifier")?;
+                    .context("rustls/TlsAcceptorData: create webpki client verifier")?;
                 builder.with_client_cert_verifier(cert_verifier)
             }
         };
@@ -70,31 +70,47 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for ServiceData {
         let mut server_config = match value.server_auth {
             ServerAuth::SelfSigned(data) => {
                 let (cert_chain, key_der) =
-                    self_signed_server_auth(data).context("rusts/ServiceData")?;
+                    self_signed_server_auth(data).context("rustls/TlsAcceptorData")?;
                 builder
                     .with_single_cert(cert_chain, key_der)
-                    .context("rusts/ServiceData: build base self-signed rustls ServerConfig")?
+                    .context("rustls/TlsAcceptorData: build base self-signed rustls ServerConfig")?
             }
             ServerAuth::Single(data) => {
                 // server TLS Certs
-                let mut pem = BufReader::new(data.cert_chain_pem.as_bytes());
-                let mut cert_chain = Vec::new();
-                for cert in pemfile::certs(&mut pem) {
-                    cert_chain.push(cert.expect("parse tls server cert"));
-                }
+                let cert_chain = match data.cert_chain {
+                    DataEncoding::Der(raw_data) => vec![CertificateDer::from(raw_data)],
+                    DataEncoding::Pem(raw_data) => {
+                        let mut pem = BufReader::new(raw_data.as_bytes());
+                        let mut cert_chain = Vec::new();
+                        for cert in pemfile::certs(&mut pem) {
+                            cert_chain.push(
+                                cert.context("rustls/TlsAcceptorData: parse tls server cert")?,
+                            );
+                        }
+                        cert_chain
+                    }
+                };
 
                 // server TLS key
-                let mut key_reader = BufReader::new(data.private_key_pem.as_bytes());
-                let key_der = pemfile::private_key(&mut key_reader)
-                    .expect("read private key")
-                    .expect("private found");
+                let key_der = match data.private_key {
+                    DataEncoding::Der(raw_data) => raw_data
+                        .try_into()
+                        .map_err(|_| OpaqueError::from_display("invalid key data"))
+                        .context("rustls/TlsAcceptorData: read private (DER) key")?,
+                    DataEncoding::Pem(raw_data) => {
+                        let mut key_reader = BufReader::new(raw_data.as_bytes());
+                        pemfile::private_key(&mut key_reader)
+                            .context("rustls/TlsAcceptorData: read private (PEM) key")?
+                            .context("rustls/TlsAcceptorData: private found (in PEM)")?
+                    }
+                };
 
                 // builder with server auth configured
                 match data.ocsp {
                     None => builder.with_single_cert(cert_chain, key_der),
                     Some(ocsp) => builder.with_single_cert_with_ocsp(cert_chain, key_der, ocsp),
                 }
-                .context("rusts/ServiceData: build base rustls ServerConfig")?
+                .context("rustls/TlsAcceptorData: build base rustls ServerConfig")?
             }
         };
 
@@ -102,7 +118,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for ServiceData {
         match value.key_logger {
             KeyLogIntent::Disabled => (),
             KeyLogIntent::File(path) => {
-                let key_logger = KeyLogFile::new(path).context("rusts/ServiceData")?;
+                let key_logger = KeyLogFile::new(path).context("rustls/TlsAcceptorData")?;
                 server_config.key_log = Arc::new(key_logger);
             }
         };
@@ -116,7 +132,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for ServiceData {
             .collect();
 
         // return the created server config, all good if you reach here
-        Ok(ServiceData {
+        Ok(TlsAcceptorData {
             server_config: Arc::new(server_config),
         })
     }

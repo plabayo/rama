@@ -1,4 +1,4 @@
-use super::ServiceData;
+use super::TlsAcceptorData;
 use crate::types::client::ClientHello;
 use std::{fmt, future::Future};
 
@@ -59,19 +59,19 @@ pub trait ServiceDataProvider: Send + Sync + 'static {
     fn get_service_data(
         &self,
         client_hello: ClientHello,
-    ) -> impl Future<Output = Result<Option<ServiceData>, Self::Error>> + Send + '_;
+    ) -> impl Future<Output = Result<Option<TlsAcceptorData>, Self::Error>> + Send + '_;
 }
 
 impl<F, Fut, Error> ServiceDataProvider for F
 where
     F: Fn(ClientHello) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<Option<ServiceData>, Error>> + Send + 'static,
+    Fut: Future<Output = Result<Option<TlsAcceptorData>, Error>> + Send + 'static,
 {
     type Error = Error;
     fn get_service_data(
         &self,
         client_hello: ClientHello,
-    ) -> impl Future<Output = Result<Option<ServiceData>, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Option<TlsAcceptorData>, Self::Error>> + Send + '_ {
         (self)(client_hello)
     }
 }

@@ -25,8 +25,6 @@ mod layer;
 #[doc(inline)]
 pub use layer::TlsAcceptorLayer;
 
-mod service_data;
+mod acceptor_data;
 #[doc(inline)]
-pub use service_data::ServiceData;
-
-mod key_log;
+pub use acceptor_data::TlsAcceptorData;

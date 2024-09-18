@@ -1,19 +1,18 @@
-use crate::rustls::dep::pki_types::ServerName;
-use crate::rustls::dep::rustls::ClientConfig;
-use crate::rustls::dep::rustls::RootCertStore;
+use super::TlsConnectorData;
 use crate::rustls::dep::tokio_rustls::{client::TlsStream, TlsConnector};
-use crate::rustls::verify::NoServerCertVerifier;
 use crate::types::HttpsTunnel;
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
+use rama_core::error::ErrorContext;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::{Context, Layer, Service};
-use rama_http_types::Version;
+use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::stream::Stream;
+use rama_net::tls::client::NegotiatedTlsParameters;
+use rama_net::tls::ApplicationProtocol;
 use rama_net::transport::TryRefIntoTransportContext;
-use std::sync::OnceLock;
-use std::{fmt, sync::Arc};
+use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// A [`Layer`] which wraps the given service with a [`HttpsConnector`].
@@ -21,37 +20,37 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// See [`HttpsConnector`] for more information.
 #[derive(Clone)]
 pub struct HttpsConnectorLayer<K = ConnectorKindAuto> {
-    config: Option<Arc<ClientConfig>>,
+    connector_data: Option<TlsConnectorData>,
     _kind: std::marker::PhantomData<K>,
 }
 
 impl<K> std::fmt::Debug for HttpsConnectorLayer<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpsConnectorLayer")
-            .field("config", &self.config)
+            .field("connector_data", &self.connector_data)
             .finish()
     }
 }
 
 impl<K> HttpsConnectorLayer<K> {
-    /// Attach a client config to this [`HttpsConnectorLayer`],
-    /// to be used instead of a globally shared default client config.
-    pub fn with_config(mut self, config: Arc<ClientConfig>) -> Self {
-        self.config = Some(config);
+    /// Attach [`TlsConnectorData`] to this [`HttpsConnectorLayer`],
+    /// to be used instead of a globally shared [`TlsConnectorData::default`].
+    pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
+        self.connector_data = Some(connector_data);
         self
     }
 
-    /// Maybe attach a client config to this [`HttpsConnectorLayer`],
-    /// to be used instead of a globally shared default client config.
-    pub fn maybe_with_config(mut self, config: Option<Arc<ClientConfig>>) -> Self {
-        self.config = config;
+    /// Maybe attach [`TlsConnectorData`] to this [`HttpsConnectorLayer`],
+    /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
+    pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
+        self.connector_data = connector_data;
         self
     }
 
-    /// Attach a client config to this [`HttpsConnectorLayer`],
+    /// Attach [`TlsConnectorData`] to this [`HttpsConnectorLayer`],
     /// to be used instead of a globally shared default client config.
-    pub fn set_config(&mut self, config: Arc<ClientConfig>) -> &mut Self {
-        self.config = Some(config);
+    pub fn set_connector_data(&mut self, connector_data: TlsConnectorData) -> &mut Self {
+        self.connector_data = Some(connector_data);
         self
     }
 }
@@ -62,7 +61,7 @@ impl HttpsConnectorLayer<ConnectorKindAuto> {
     /// otherwise it will forward the pre-established inner connection.
     pub fn auto() -> Self {
         Self {
-            config: None,
+            connector_data: None,
             _kind: std::marker::PhantomData,
         }
     }
@@ -73,7 +72,7 @@ impl HttpsConnectorLayer<ConnectorKindSecure> {
     /// establish a secure connection regardless of the request it is for.
     pub fn secure_only() -> Self {
         Self {
-            config: None,
+            connector_data: None,
             _kind: std::marker::PhantomData,
         }
     }
@@ -84,7 +83,7 @@ impl HttpsConnectorLayer<ConnectorKindTunnel> {
     /// a secure connection if the request is to be tunneled.
     pub fn tunnel() -> Self {
         Self {
-            config: None,
+            connector_data: None,
             _kind: std::marker::PhantomData,
         }
     }
@@ -94,10 +93,10 @@ impl<K, S> Layer<S> for HttpsConnectorLayer<K> {
     type Service = HttpsConnector<S, K>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        let connector = HttpsConnector::new(inner);
-        match self.config.clone() {
-            Some(config) => connector.with_config(config),
-            None => connector,
+        HttpsConnector {
+            inner,
+            connector_data: self.connector_data.clone(),
+            _kind: self._kind,
         }
     }
 }
@@ -117,7 +116,7 @@ impl Default for HttpsConnectorLayer<ConnectorKindAuto> {
 /// establish a secure connection.
 pub struct HttpsConnector<S, K = ConnectorKindAuto> {
     inner: S,
-    config: Option<Arc<ClientConfig>>,
+    connector_data: Option<TlsConnectorData>,
     _kind: std::marker::PhantomData<K>,
 }
 
@@ -125,7 +124,7 @@ impl<S: fmt::Debug, K> fmt::Debug for HttpsConnector<S, K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpsConnector")
             .field("inner", &self.inner)
-            .field("config", &self.config)
+            .field("connector_data", &self.connector_data)
             .finish()
     }
 }
@@ -134,7 +133,7 @@ impl<S: Clone, K> Clone for HttpsConnector<S, K> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            config: self.config.clone(),
+            connector_data: self.connector_data.clone(),
             _kind: std::marker::PhantomData,
         }
     }
@@ -145,26 +144,35 @@ impl<S, K> HttpsConnector<S, K> {
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
-            config: None,
+            connector_data: None,
             _kind: std::marker::PhantomData,
         }
     }
 
-    /// Attach a client config to this [`HttpsConnector`],
-    pub fn with_config(mut self, config: Arc<ClientConfig>) -> Self {
-        self.config = Some(config);
+    /// Attach [`TlsConnectorData`] to this [`HttpsConnector`],
+    /// to be used instead of a globally shared [`TlsConnectorData::default`].
+    ///
+    /// NOTE: for a smooth interaction with HTTP you most likely do want to
+    /// create tls connector data to at the very least define the ALPN's correctly.
+    ///
+    /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
+    /// It will be then also be the [`HttpsConnector`] that sets the request http version correctly.
+    pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
+        self.connector_data = Some(connector_data);
         self
     }
 
-    /// Maybe attach a client config to this [`HttpsConnector`],
-    pub fn maybe_with_config(mut self, config: Option<Arc<ClientConfig>>) -> Self {
-        self.config = config;
+    /// Maybe attach [`TlsConnectorData`] to this [`HttpsConnector`],
+    /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
+    pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
+        self.connector_data = connector_data;
         self
     }
 
-    /// Set a client config to this [`HttpsConnector`],
-    pub fn set_config(&mut self, config: Arc<ClientConfig>) -> &mut Self {
-        self.config = Some(config);
+    /// Attach [`TlsConnectorData`] to this [`HttpsConnector`],
+    /// to be used instead of a globally shared default client config.
+    pub fn set_connector_data(&mut self, connector_data: TlsConnectorData) -> &mut Self {
+        self.connector_data = Some(connector_data);
         self
     }
 }
@@ -246,28 +254,24 @@ where
             });
         }
 
-        let domain =
-            rustls_pki_types::ServerName::try_from(transport_ctx.authority.host().to_string())
-                .map_err(|err| err.context("HttpsConnector(auto): invalid DNS Hostname (tls)"))?
-                .to_owned();
+        let server_host = transport_ctx.authority.host().clone();
 
         tracing::trace!(
             authority = %transport_ctx.authority,
             app_protocol = ?transport_ctx.app_protocol,
-            http_version = ?transport_ctx.http_version,
             "HttpsConnector(auto): attempt to secure inner connection",
         );
 
-        let stream = self
-            .handshake(domain, transport_ctx.http_version, conn)
-            .await?;
+        let (stream, negotiated_params) = self.handshake(server_host, conn).await?;
 
         tracing::trace!(
             authority = %transport_ctx.authority,
             app_protocol = ?transport_ctx.app_protocol,
-            http_version = ?transport_ctx.http_version,
             "HttpsConnector(auto): protocol secure, established tls connection",
         );
+
+        ctx.insert(negotiated_params);
+
         Ok(EstablishedClientConnection {
             ctx,
             req,
@@ -311,18 +315,13 @@ where
         tracing::trace!(
             authority = %transport_ctx.authority,
             app_protocol = ?transport_ctx.app_protocol,
-            http_version = ?transport_ctx.http_version,
             "HttpsConnector(secure): attempt to secure inner connection",
         );
 
-        let host = transport_ctx.authority.host().to_string();
-        let domain = rustls_pki_types::ServerName::try_from(host)
-            .map_err(|err| err.context("invalid DNS Hostname (tls)"))?
-            .to_owned();
+        let server_host = transport_ctx.authority.host().clone();
 
-        let conn = self
-            .handshake(domain, transport_ctx.http_version, conn)
-            .await?;
+        let (conn, negotiated_params) = self.handshake(server_host, conn).await?;
+        ctx.insert(negotiated_params);
 
         Ok(EstablishedClientConnection {
             ctx,
@@ -348,16 +347,14 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection {
-            ctx,
+            mut ctx,
             req,
             conn,
             addr,
         } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        let domain = match ctx.get::<HttpsTunnel>() {
-            Some(tunnel) => rustls_pki_types::ServerName::try_from(tunnel.server_name.as_str())
-                .map_err(|err| err.context("invalid DNS Hostname (tls) for https tunnel"))?
-                .to_owned(),
+        let server_host = match ctx.get::<HttpsTunnel>() {
+            Some(tunnel) => tunnel.server_host.clone(),
             None => {
                 tracing::trace!(
                     "HttpsConnector(tunnel): return inner connection: no Https tunnel is requested"
@@ -373,7 +370,8 @@ where
             }
         };
 
-        let conn = self.handshake(domain, None, conn).await?;
+        let (conn, negotiated_params) = self.handshake(server_host, conn).await?;
+        ctx.insert(negotiated_params);
 
         tracing::trace!("HttpsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection {
@@ -390,23 +388,40 @@ where
 impl<S, K> HttpsConnector<S, K> {
     async fn handshake<T>(
         &self,
-        server_name: ServerName<'static>,
-        http_version: Option<Version>,
+        server_host: Host,
         stream: T,
-    ) -> Result<TlsStream<T>, BoxError>
+    ) -> Result<(TlsStream<T>, NegotiatedTlsParameters), BoxError>
     where
         T: Stream + Unpin,
     {
-        let config = self
-            .config
-            .clone()
-            .unwrap_or_else(|| new_tls_client_config(http_version));
+        let (config, server_host) = match &self.connector_data {
+            Some(connector_data) => {
+                let client_config = connector_data.client_config.clone();
+                let server_host = connector_data.server_name().cloned().unwrap_or(server_host);
+                (client_config, server_host)
+            }
+            None => (TlsConnectorData::default().client_config, server_host),
+        };
+
+        let server_name = rustls_pki_types::ServerName::try_from(server_host)?;
+
         let connector = TlsConnector::from(config);
 
-        connector
-            .connect(server_name, stream)
-            .await
-            .map_err(Into::into)
+        let stream = connector.connect(server_name, stream).await?;
+
+        let (_, conn_data_ref) = stream.get_ref();
+
+        let params = NegotiatedTlsParameters {
+            protocol_version: conn_data_ref
+                .protocol_version()
+                .context("no protocol version available")?
+                .into(),
+            application_layer_protocol: conn_data_ref
+                .alpn_protocol()
+                .map(ApplicationProtocol::from),
+        };
+
+        Ok((stream, params))
     }
 }
 
@@ -496,32 +511,6 @@ where
             AutoTlsStreamDataProj::Plain { inner } => inner.poll_shutdown(cx),
         }
     }
-}
-
-fn new_tls_client_config(http_version: Option<Version>) -> Arc<ClientConfig> {
-    static ROOT_CERTS: OnceLock<Arc<RootCertStore>> = OnceLock::new();
-    let root_certs = ROOT_CERTS
-        .get_or_init(|| {
-            let mut root_storage = RootCertStore::empty();
-            root_storage.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-            Arc::new(root_storage)
-        })
-        .clone();
-
-    let mut config = ClientConfig::builder()
-        .with_root_certificates(root_certs)
-        .with_no_client_auth();
-    config
-        .dangerous()
-        .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
-    config.alpn_protocols = match http_version {
-        Some(Version::HTTP_11) => vec![b"http/1.1".to_vec()],
-        Some(Version::HTTP_2) => vec![b"h2".to_vec()],
-        Some(Version::HTTP_3) => vec![b"h3".to_vec()],
-        _ => vec![],
-    };
-
-    Arc::new(config)
 }
 
 mod private {

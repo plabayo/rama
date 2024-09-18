@@ -1,4 +1,4 @@
-use crate::address::Domain;
+use crate::address::{Domain, Host};
 use crate::tls::{
     enums::CompressionAlgorithm, ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,
@@ -44,10 +44,10 @@ impl ClientHello {
     /// Return the server name (SNI) if it is set in the [`ClientHelloExtension`] defined in this [`ClientHello`].
     ///
     /// See [`ClientHelloExtension::ServerName`] for more information about the server name.
-    pub fn ext_server_name(&self) -> Option<&Domain> {
+    pub fn ext_server_name(&self) -> Option<&Host> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::ServerName(ref domain) = ext {
-                return domain.as_ref();
+            if let ClientHelloExtension::ServerName(ref host) = ext {
+                return host.as_ref();
             }
         }
         None
@@ -147,7 +147,7 @@ pub enum ClientHelloExtension {
     ///
     /// - <https://www.iana.org/go/rfc6066>
     /// - <https://www.iana.org/go/rfc9261>
-    ServerName(Option<Domain>),
+    ServerName(Option<Host>),
     /// indicates which elliptic curves the client supports
     ///
     /// This extension is required... despite being an extension.
