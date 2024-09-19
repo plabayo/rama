@@ -249,11 +249,13 @@ fn self_signed_server_auth(
     let server_cert = server_ee_params
         .signed_by(&server_key_pair, &ca_cert, &ca_key_pair)
         .context("self-signed: sign servert cert")?;
+
+    let server_ca_cert_der: CertificateDer = ca_cert.into();
     let server_cert_der: CertificateDer = server_cert.into();
     let server_key_der = PrivatePkcs8KeyDer::from(server_key_pair.serialize_der());
 
     Ok((
-        vec![server_cert_der],
+        vec![server_cert_der, server_ca_cert_der],
         PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned()).into(),
     ))
 }

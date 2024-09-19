@@ -24,6 +24,18 @@ pub struct TlsConnectorData {
 }
 
 impl TlsConnectorData {
+    /// Create a default [`TlsConnectorData`].
+    ///
+    /// This constructor is best fit for tunnel purposes,
+    /// for https purposes and other application protocols
+    /// you may want to use another constructor instead.
+    pub fn new() -> Result<TlsConnectorData, OpaqueError> {
+        let cfg = rustls::ClientConfig::builder()
+            .with_root_certificates(client_root_certs())
+            .with_no_client_auth();
+        Ok(cfg.into())
+    }
+
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.
@@ -202,6 +214,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
         match value.server_verify_mode {
             ServerVerifyMode::Auto => (), // = default
             ServerVerifyMode::Disable => {
+                trace!("rustls: tls connector data: disable server cert verification");
                 client_config
                     .dangerous()
                     .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));

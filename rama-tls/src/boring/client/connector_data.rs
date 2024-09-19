@@ -137,6 +137,18 @@ impl ConnectConfigurationInput {
 }
 
 impl TlsConnectorData {
+    /// Create a default [`TlsConnectorData`].
+    ///
+    /// This constructor is best fit for tunnel purposes,
+    /// for https purposes and other application protocols
+    /// you may want to use another constructor instead.
+    pub fn new() -> Result<TlsConnectorData, OpaqueError> {
+        Ok(TlsConnectorData {
+            connect_config_input: Arc::new(ConnectConfigurationInput::default()),
+            server_name: None,
+        })
+    }
+
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.

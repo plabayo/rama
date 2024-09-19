@@ -39,6 +39,8 @@ pub mod proxy;
 pub struct HttpClient {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_config: Option<ClientConfig>,
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    proxy_tls_config: Option<ClientConfig>,
 }
 
 impl HttpClient {
@@ -67,6 +69,27 @@ impl HttpClient {
         self.tls_config = cfg;
         self
     }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Set the [`ClientConfig`] for the https proxy tunnel if needed within this [`HttpClient`].
+    pub fn set_proxy_tls_config(&mut self, cfg: ClientConfig) -> &mut Self {
+        self.proxy_tls_config = Some(cfg);
+        self
+    }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Replace this [`HttpClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
+    pub fn with_proxy_tls_config(mut self, cfg: ClientConfig) -> Self {
+        self.proxy_tls_config = Some(cfg);
+        self
+    }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Replace this [`HttpClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
+    pub fn maybe_proxy_with_tls_config(mut self, cfg: Option<ClientConfig>) -> Self {
+        self.proxy_tls_config = cfg;
+        self
+    }
 }
 
 impl<State, Body> Service<State, Request<Body>> for HttpClient
@@ -88,25 +111,49 @@ where
         // so we can put the response back
         let original_req_version = req.version();
 
-        let transport_connector =
-            HttpProxyConnector::optional(HttpsConnector::tunnel(TcpConnector::new()));
+        let tcp_connector = TcpConnector::new();
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
         let connector = {
+            let proxy_tls_connector_data = match &self.proxy_tls_config {
+                Some(proxy_tls_config) => {
+                    trace!("create proxy https connector using pre-defined rama tls client config");
+                    proxy_tls_config
+                        .clone()
+                        .try_into()
+                        .context("HttpClient: create proxy https connector data from tls config")?
+                }
+                None => {
+                    trace!("create proxy https connector using the 'new_http_auto' constructor");
+                    TlsConnectorData::new().context(
+                        "HttpClient: create proxy https connector data with no application presets",
+                    )?
+                }
+            };
+
+            let transport_connector = HttpProxyConnector::optional(
+                HttpsConnector::tunnel(tcp_connector).with_connector_data(proxy_tls_connector_data),
+            );
             let tls_connector_data = match &self.tls_config {
-                Some(tls_config) => tls_config
-                    .clone()
-                    .try_into()
-                    .context("HttpClient: create https connector data from tls config")?,
-                None => TlsConnectorData::new_http_auto()
-                    .context("HttpClient: create https connector data for http (auto(")?,
+                Some(tls_config) => {
+                    trace!("create https connector using pre-defined rama tls client config");
+                    tls_config
+                        .clone()
+                        .try_into()
+                        .context("HttpClient: create https connector data from tls config")?
+                }
+                None => {
+                    trace!("create https connector using the 'new_http_auto' constructor");
+                    TlsConnectorData::new_http_auto()
+                        .context("HttpClient: create https connector data for http (auto)")?
+                }
             };
             HttpConnector::new(
                 HttpsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
             )
         };
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        let connector = HttpConnector::new(transport_connector);
+        let connector = HttpConnector::new(HttpProxyConnector::optional(tcp_connector));
 
         // NOTE: stack might change request version based on connector data,
         // such as ALPN (tls), as such it is important to reset it back below,
