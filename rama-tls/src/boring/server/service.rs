@@ -164,7 +164,7 @@ where
                 .context("build boring ssl acceptor: set alpn")?;
         }
 
-        if let Some(keylog_filename) = &tls_config.keylog_filename {
+        if let Some(keylog_filename) = tls_config.keylog_intent.file_path() {
             trace!(path = ?keylog_filename, "boring acceptor service: open keylog file for debug purposes");
             // open file in append mode and write keylog to it with callback
             let file = std::fs::OpenOptions::new()

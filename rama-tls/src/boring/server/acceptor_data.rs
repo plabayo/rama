@@ -15,7 +15,6 @@ use rama_net::tls::{
     server::{ClientVerifyMode, SelfSignedData, ServerAuth},
     ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion,
 };
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -35,7 +34,7 @@ pub(super) struct TlsConfig {
     /// Optionally set the ALPN protocols supported by the service's inner application service.
     pub(super) alpn_protocols: Option<Vec<ApplicationProtocol>>,
     /// Optionally write logging information to facilitate tls interception.
-    pub(super) keylog_filename: Option<PathBuf>,
+    pub(super) keylog_intent: KeyLogIntent,
     /// optionally define protocol versions to support
     pub(super) protocol_versions: Option<Vec<ProtocolVersion>>,
     /// optionally define client certificates in case client auth is enabled
@@ -112,20 +111,13 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
             }
         };
 
-        // set key logger if one is requested
-        let keylog_filename = match value.key_logger {
-            KeyLogIntent::Disabled => None,
-            KeyLogIntent::Environment => std::env::var("SSLKEYLOGFILE").ok().map(Into::into),
-            KeyLogIntent::File(path) => Some(path.clone()),
-        };
-
         // return the created server config, all good if you reach here
         Ok(TlsAcceptorData {
             config: Arc::new(TlsConfig {
                 private_key,
                 cert_chain,
                 alpn_protocols: value.application_layer_protocol_negotiation.clone(),
-                keylog_filename,
+                keylog_intent: value.key_logger,
                 protocol_versions: value.protocol_versions.clone(),
                 client_cert_chain,
             }),

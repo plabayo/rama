@@ -5,7 +5,7 @@ use crate::rustls::dep::rustls::{self, server::WebPkiClientVerifier, RootCertSto
 use crate::rustls::key_log::KeyLogFile;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth};
-use rama_net::tls::{DataEncoding, KeyLogIntent};
+use rama_net::tls::DataEncoding;
 use std::io::BufReader;
 use std::sync::Arc;
 
@@ -187,18 +187,9 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
         };
 
         // set key logger if one is requested
-        match value.key_logger {
-            KeyLogIntent::Disabled => (),
-            KeyLogIntent::Environment => {
-                if let Ok(path) = std::env::var("SSLKEYLOGFILE") {
-                    let key_logger = KeyLogFile::new(path).context("rustls/TlsAcceptorData")?;
-                    server_config.key_log = Arc::new(key_logger);
-                }
-            }
-            KeyLogIntent::File(path) => {
-                let key_logger = KeyLogFile::new(path).context("rustls/TlsAcceptorData")?;
-                server_config.key_log = Arc::new(key_logger);
-            }
+        if let Some(path) = value.key_logger.file_path() {
+            let key_logger = KeyLogFile::new(path).context("rustls/TlsAcceptorData")?;
+            server_config.key_log = Arc::new(key_logger);
         };
 
         // set ALPN for negotiation, resulting in the (default) empty Vec if none was defined

@@ -7,7 +7,7 @@ use crate::rustls::verify::NoServerCertVerifier;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::Host;
 use rama_net::tls::client::{ClientAuth, ClientHelloExtension, ServerVerifyMode};
-use rama_net::tls::{ApplicationProtocol, DataEncoding, KeyLogIntent};
+use rama_net::tls::{ApplicationProtocol, DataEncoding};
 use std::io::BufReader;
 use std::sync::{Arc, OnceLock};
 use tracing::trace;
@@ -222,18 +222,9 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
         }
 
         // set key logger if one is requested
-        match value.key_logger {
-            KeyLogIntent::Disabled => (),
-            KeyLogIntent::Environment => {
-                if let Ok(path) = std::env::var("SSLKEYLOGFILE") {
-                    let key_logger = KeyLogFile::new(path).context("rustls/TlsConnectorData")?;
-                    client_config.key_log = Arc::new(key_logger);
-                }
-            }
-            KeyLogIntent::File(path) => {
-                let key_logger = KeyLogFile::new(path).context("rustls/TlsConnectorData")?;
-                client_config.key_log = Arc::new(key_logger);
-            }
+        if let Some(path) = value.key_logger.file_path() {
+            let key_logger = KeyLogFile::new(path).context("rustls/TlsConnectorData")?;
+            client_config.key_log = Arc::new(key_logger);
         };
 
         // set all other extensions that we recognise for rustls purposes

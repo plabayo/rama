@@ -17,7 +17,6 @@ use rama_net::tls::{
 };
 use rama_net::tls::{openssl_cipher_list_str_from_cipher_list, ApplicationProtocol, KeyLogIntent};
 use rama_net::{address::Host, tls::client::ServerVerifyMode};
-use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::trace;
 
@@ -32,7 +31,7 @@ pub struct TlsConnectorData {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ConnectConfigurationInput {
-    pub(super) keylog_filename: Option<PathBuf>,
+    pub(super) keylog_intent: KeyLogIntent,
     pub(super) cipher_list: Option<String>,
     pub(super) alpn_protos: Option<Vec<u8>>,
     pub(super) curves: Option<Vec<SslCurve>>,
@@ -55,7 +54,7 @@ impl ConnectConfigurationInput {
             boring::ssl::SslConnector::builder(boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
 
-        if let Some(keylog_filename) = self.keylog_filename.as_deref() {
+        if let Some(keylog_filename) = self.keylog_intent.file_path().as_deref() {
             // open file in append mode and write keylog to it with callback
             trace!(path = ?keylog_filename, "boring connector: open keylog file for debug purposes");
             let file = std::fs::OpenOptions::new()
@@ -230,12 +229,6 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
     type Error = OpaqueError;
 
     fn try_from(value: rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
-        let keylog_filename = match value.key_logger {
-            KeyLogIntent::Disabled => None,
-            KeyLogIntent::Environment => std::env::var("SSLKEYLOGFILE").ok().map(Into::into),
-            KeyLogIntent::File(keylog_filename) => Some(keylog_filename.clone()),
-        };
-
         let cipher_list = value
             .cipher_suites
             .as_deref()
@@ -356,7 +349,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
 
         Ok(TlsConnectorData {
             connect_config_input: Arc::new(ConnectConfigurationInput {
-                keylog_filename,
+                keylog_intent: value.key_logger,
                 cipher_list,
                 alpn_protos,
                 curves,
