@@ -17,7 +17,7 @@ mod parser;
 
 mod config;
 #[doc(inline)]
-pub use config::{ClientAuth, ClientConfig, ServerVerifyMode};
+pub use config::{ClientAuth, ClientAuthData, ClientConfig, ServerVerifyMode};
 
 use super::{ApplicationProtocol, ProtocolVersion};
 
