@@ -10,9 +10,9 @@
 //!   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
 //!   plain text stream to the first.
 
-mod config;
+mod acceptor_data;
 #[doc(inline)]
-pub use config::ServerConfig;
+pub use acceptor_data::TlsAcceptorData;
 
 mod service;
 #[doc(inline)]

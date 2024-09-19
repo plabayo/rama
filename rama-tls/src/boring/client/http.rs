@@ -1,11 +1,14 @@
+use super::TlsConnectorData;
 use crate::types::HttpsTunnel;
-use boring::ssl::SslVerifyMode;
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
-use rama_core::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
+use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::{Context, Layer, Service};
+use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::stream::Stream;
+use rama_net::tls::client::NegotiatedTlsParameters;
+use rama_net::tls::ApplicationProtocol;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -16,12 +19,39 @@ use tokio_boring::SslStream;
 /// See [`HttpsConnector`] for more information.
 #[derive(Clone)]
 pub struct HttpsConnectorLayer<K = ConnectorKindAuto> {
+    connector_data: Option<TlsConnectorData>,
     _kind: std::marker::PhantomData<K>,
 }
 
 impl<K> std::fmt::Debug for HttpsConnectorLayer<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("HttpsConnectorLayer").finish()
+        f.debug_struct("HttpsConnectorLayer")
+            .field("connector_data", &self.connector_data)
+            .field("_kind", &format_args!("<{}>", std::any::type_name::<K>()))
+            .finish()
+    }
+}
+
+impl<K> HttpsConnectorLayer<K> {
+    /// Attach [`TlsConnectorData`] to this [`HttpsConnectorLayer`],
+    /// to be used instead of a globally shared [`TlsConnectorData::default`].
+    pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
+        self.connector_data = Some(connector_data);
+        self
+    }
+
+    /// Maybe attach [`TlsConnectorData`] to this [`HttpsConnectorLayer`],
+    /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
+    pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
+        self.connector_data = connector_data;
+        self
+    }
+
+    /// Attach [`TlsConnectorData`] to this [`HttpsConnectorLayer`],
+    /// to be used instead of a globally shared default client config.
+    pub fn set_connector_data(&mut self, connector_data: TlsConnectorData) -> &mut Self {
+        self.connector_data = Some(connector_data);
+        self
     }
 }
 
@@ -31,6 +61,7 @@ impl HttpsConnectorLayer<ConnectorKindAuto> {
     /// otherwise it will forward the pre-established inner connection.
     pub fn auto() -> Self {
         Self {
+            connector_data: None,
             _kind: std::marker::PhantomData,
         }
     }
@@ -41,6 +72,7 @@ impl HttpsConnectorLayer<ConnectorKindSecure> {
     /// establish a secure connection regardless of the request it is for.
     pub fn secure_only() -> Self {
         Self {
+            connector_data: None,
             _kind: std::marker::PhantomData,
         }
     }
@@ -51,6 +83,7 @@ impl HttpsConnectorLayer<ConnectorKindTunnel> {
     /// a secure connection if the request is to be tunneled.
     pub fn tunnel() -> Self {
         Self {
+            connector_data: None,
             _kind: std::marker::PhantomData,
         }
     }
@@ -60,7 +93,11 @@ impl<K, S> Layer<S> for HttpsConnectorLayer<K> {
     type Service = HttpsConnector<S, K>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        HttpsConnector::new(inner)
+        HttpsConnector {
+            inner,
+            connector_data: self.connector_data.clone(),
+            _kind: self._kind,
+        }
     }
 }
 
@@ -79,6 +116,7 @@ impl Default for HttpsConnectorLayer<ConnectorKindAuto> {
 /// establish a secure connection.
 pub struct HttpsConnector<S, K = ConnectorKindAuto> {
     inner: S,
+    connector_data: Option<TlsConnectorData>,
     _kind: std::marker::PhantomData<K>,
 }
 
@@ -86,6 +124,8 @@ impl<S: fmt::Debug, K> fmt::Debug for HttpsConnector<S, K> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpsConnector")
             .field("inner", &self.inner)
+            .field("connector_data", &self.connector_data)
+            .field("_kind", &format_args!("<{}>", std::any::type_name::<K>()))
             .finish()
     }
 }
@@ -94,6 +134,7 @@ impl<S: Clone, K> Clone for HttpsConnector<S, K> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            connector_data: self.connector_data.clone(),
             _kind: std::marker::PhantomData,
         }
     }
@@ -104,8 +145,36 @@ impl<S, K> HttpsConnector<S, K> {
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
+            connector_data: None,
             _kind: std::marker::PhantomData,
         }
+    }
+
+    /// Attach [`TlsConnectorData`] to this [`HttpsConnector`],
+    /// to be used instead of a globally shared [`TlsConnectorData::default`].
+    ///
+    /// NOTE: for a smooth interaction with HTTP you most likely do want to
+    /// create tls connector data to at the very least define the ALPN's correctly.
+    ///
+    /// E.g. if you create an auto client, you want to make sure your ALPN can handle all.
+    /// It will be then also be the [`HttpsConnector`] that sets the request http version correctly.
+    pub fn with_connector_data(mut self, connector_data: TlsConnectorData) -> Self {
+        self.connector_data = Some(connector_data);
+        self
+    }
+
+    /// Maybe attach [`TlsConnectorData`] to this [`HttpsConnector`],
+    /// to be used if `Some` instead of a globally shared [`TlsConnectorData::default`].
+    pub fn maybe_with_connector_data(mut self, connector_data: Option<TlsConnectorData>) -> Self {
+        self.connector_data = connector_data;
+        self
+    }
+
+    /// Attach [`TlsConnectorData`] to this [`HttpsConnector`],
+    /// to be used instead of a globally shared default client config.
+    pub fn set_connector_data(&mut self, connector_data: TlsConnectorData) -> &mut Self {
+        self.connector_data = Some(connector_data);
+        self
     }
 }
 
@@ -164,7 +233,8 @@ where
             .map_err(|err| {
                 OpaqueError::from_boxed(err.into())
                     .context("HttpsConnector(auto): compute transport context")
-            })?;
+            })?
+            .clone();
 
         if !transport_ctx
             .app_protocol
@@ -186,14 +256,18 @@ where
             });
         }
 
-        let host = transport_ctx.authority.host().to_string();
+        let host = transport_ctx.authority.host().clone();
 
-        let stream = self.handshake(host, conn).await?;
+        let connector_data = ctx.get().cloned();
+        let (stream, negotiated_params) = self.handshake(connector_data, host, conn).await?;
 
         tracing::trace!(
             authority = %transport_ctx.authority,
             "HttpsConnector(auto): protocol secure, established tls connection",
         );
+
+        ctx.insert(negotiated_params);
+
         Ok(EstablishedClientConnection {
             ctx,
             req,
@@ -239,9 +313,11 @@ where
             "HttpsConnector(secure): attempt to secure inner connection",
         );
 
-        let host = transport_ctx.authority.host().to_string();
+        let host = transport_ctx.authority.host().clone();
 
-        let conn = self.handshake(host, conn).await?;
+        let connector_data = ctx.get().cloned();
+        let (conn, negotiated_params) = self.handshake(connector_data, host, conn).await?;
+        ctx.insert(negotiated_params);
 
         Ok(EstablishedClientConnection {
             ctx,
@@ -267,14 +343,14 @@ where
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection {
-            ctx,
+            mut ctx,
             req,
             conn,
             addr,
         } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let host = match ctx.get::<HttpsTunnel>() {
-            Some(tunnel) => tunnel.server_name.clone(),
+            Some(tunnel) => tunnel.server_host.clone(),
             None => {
                 tracing::trace!(
                     "HttpsConnector(tunnel): return inner connection: no Https tunnel is requested"
@@ -290,7 +366,9 @@ where
             }
         };
 
-        let stream = self.handshake(host, conn).await?;
+        let connector_data = ctx.get().cloned();
+        let (stream, negotiated_params) = self.handshake(connector_data, host, conn).await?;
+        ctx.insert(negotiated_params);
 
         tracing::trace!("HttpsConnector(tunnel): connection secured");
         Ok(EstablishedClientConnection {
@@ -305,35 +383,61 @@ where
 }
 
 impl<S, K> HttpsConnector<S, K> {
-    async fn handshake<T>(&self, target_host: String, stream: T) -> Result<SslStream<T>, BoxError>
+    async fn handshake<T>(
+        &self,
+        connector_data: Option<TlsConnectorData>,
+        server_host: Host,
+        stream: T,
+    ) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
     where
         T: Stream + Unpin,
     {
-        // TODO: make this configurable from "outside""...
-        // - for emulation
-        // - for obvious stuff like ALPN
-        // - for client preferences/options
-        // TODO: make configurable via ClientConfig
-        let mut cfg_builder =
-            boring::ssl::SslConnector::builder(boring::ssl::SslMethod::tls_client())
-                .context("create ssl connector builder")?;
-        cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
-        cfg_builder.set_verify(SslVerifyMode::NONE);
-
-        let cfg = cfg_builder
-            .build()
-            .configure()
-            .context("create ssl connector configuration")?
-            .use_server_name_indication(true)
-            .verify_hostname(false);
-        tokio_boring::connect(cfg, target_host.as_str(), stream)
+        let (config, server_host) = match connector_data.as_ref().or(self.connector_data.as_ref()) {
+            Some(connector_data) => {
+                let client_config = connector_data.connect_config_input.try_to_build_config()?;
+                let server_host = connector_data.server_name().cloned().unwrap_or(server_host);
+                (client_config, server_host)
+            }
+            None => (
+                TlsConnectorData::new_http_auto()?
+                    .connect_config_input
+                    .try_to_build_config()?,
+                server_host,
+            ),
+        };
+        let stream = tokio_boring::connect(config, server_host.to_string().as_str(), stream)
             .await
             .map_err(|err| match err.as_io_error() {
                 Some(err) => OpaqueError::from_display(err.to_string())
-                    .context("boring ssl acceptor: accept")
+                    .context("boring ssl connector: connect")
                     .into_boxed(),
-                None => OpaqueError::from_display("boring ssl acceptor: accept").into_boxed(),
-            })
+                None => OpaqueError::from_display("boring ssl connector: connect").into_boxed(),
+            })?;
+
+        let params = match stream.ssl().session() {
+            Some(ssl_session) => {
+                let protocol_version = ssl_session.protocol_version().try_into().map_err(|v| {
+                    OpaqueError::from_display(format!("protocol version {v}"))
+                        .context("boring ssl connector: min proto version")
+                })?;
+                let application_layer_protocol = stream
+                    .ssl()
+                    .selected_alpn_protocol()
+                    .map(ApplicationProtocol::from);
+                NegotiatedTlsParameters {
+                    protocol_version,
+                    application_layer_protocol,
+                }
+            }
+            None => {
+                return Err(OpaqueError::from_display(
+                    "boring ssl connector: failed to establish session...",
+                )
+                .into_boxed())
+            }
+        };
+
+        Ok((stream, params))
     }
 }
 

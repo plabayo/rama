@@ -1,10 +1,12 @@
 //! Echo service that echos the http request and tls client config
 
+use base64::engine::general_purpose::STANDARD as ENGINE;
+use base64::Engine;
 use clap::Args;
 use rama::{
-    cli::{tls::boring::TlsServerCertKeyPair, ForwardKind},
+    cli::ForwardKind,
     combinators::Either7,
-    error::{BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, OpaqueError},
     http::{
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
@@ -16,13 +18,19 @@ use rama::{
         response::Redirect,
         server::HttpServer,
         service::web::match_service,
-        HeaderName, HeaderValue, IntoResponse, Version,
+        HeaderName, HeaderValue, IntoResponse,
     },
     layer::{
         limit::policy::ConcurrentPolicy, ConsumeErrLayer, HijackLayer, Layer, LimitLayer,
         TimeoutLayer,
     },
-    net::stream::layer::http::BodyLimitLayer,
+    net::{
+        stream::layer::http::BodyLimitLayer,
+        tls::{
+            server::{ServerAuth, ServerAuthData, ServerConfig},
+            DataEncoding,
+        },
+    },
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     service::service_fn,
@@ -150,20 +158,35 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         ACMEData::default()
     };
 
-    let tls_server_cfg = cfg.secure.then(|| {
-        let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
+    let maybe_tls_server_config = cfg.secure.then(|| {
         let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
-        TlsServerCertKeyPair::new(tls_crt_pem_raw, tls_key_pem_raw)
-            .maybe_http_version(cfg.http_version.as_version())
+        let tls_key_pem_raw = std::str::from_utf8(
+            &ENGINE
+                .decode(tls_key_pem_raw)
+                .expect("base64 decode RAMA_TLS_KEY")[..],
+        )
+        .expect("base64-decoded RAMA_TLS_KEY valid utf-8")
+        .try_into()
+        .expect("tls_key_pem_raw => NonEmptyStr (RAMA_TLS_KEY)");
+        let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
+        let tls_crt_pem_raw = std::str::from_utf8(
+            &ENGINE
+                .decode(tls_crt_pem_raw)
+                .expect("base64 decode RAMA_TLS_CRT")[..],
+        )
+        .expect("base64-decoded RAMA_TLS_CRT valid utf-8")
+        .try_into()
+        .expect("tls_crt_pem_raw => NonEmptyStr (RAMA_TLS_CRT)");
+        ServerConfig::new(ServerAuth::Single(ServerAuthData {
+            private_key: DataEncoding::Pem(tls_key_pem_raw),
+            cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
+            ocsp: None,
+        }))
     });
 
-    let tls_server_cfg = match tls_server_cfg {
+    let tls_acceptor_data = match maybe_tls_server_config {
         None => None,
-        Some(cfg) => Some(
-            cfg.into_server_config()
-                .map_err(OpaqueError::from_boxed)
-                .context("build server config from env tls key/cert pair")?,
-        ),
+        Some(cfg) => Some(cfg.try_into()?),
     };
 
     let address = format!("{}:{}", cfg.interface, cfg.port);
@@ -258,8 +281,8 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             )),
             // Limit the body size to 1MB for both request and response
             BodyLimitLayer::symmetric(1024 * 1024),
-            tls_server_cfg.map(|cfg| {
-                TlsAcceptorLayer::new(Arc::new(cfg)).with_store_client_hello(true)
+            tls_acceptor_data.map(|data| {
+                TlsAcceptorLayer::new(data).with_store_client_hello(true)
             })
         );
 
@@ -315,16 +338,6 @@ enum HttpVersion {
     Auto,
     H1,
     H2,
-}
-
-impl HttpVersion {
-    fn as_version(self) -> Option<Version> {
-        match self {
-            Self::Auto => None,
-            Self::H1 => Some(Version::HTTP_11),
-            Self::H2 => Some(Version::HTTP_2),
-        }
-    }
 }
 
 impl FromStr for HttpVersion {

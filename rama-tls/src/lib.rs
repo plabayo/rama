@@ -73,18 +73,3 @@ pub mod types {
         HttpsTunnel, ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup,
     };
 }
-
-pub mod dep {
-    //! Dependencies for rama tls modules.
-    //!
-    //! Exported for your convenience.
-
-    pub mod rcgen {
-        //! Re-export of the [`rcgen`] crate.
-        //!
-        //! [`rcgen`]: https://docs.rs/rcgen
-
-        #[doc(inline)]
-        pub use rcgen::*;
-    }
-}

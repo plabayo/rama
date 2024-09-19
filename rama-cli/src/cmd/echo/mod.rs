@@ -2,14 +2,21 @@
 
 use clap::Args;
 use rama::{
-    cli::{service::echo::EchoServiceBuilder, tls::TlsServerCertKeyPair, ForwardKind},
+    cli::{service::echo::EchoServiceBuilder, ForwardKind},
     error::BoxError,
     http::{matcher::HttpMatcher, IntoResponse, Request, Response},
     layer::HijackLayer,
+    net::tls::{
+        server::{ServerAuth, ServerAuthData, ServerConfig},
+        DataEncoding,
+    },
     rt::Executor,
     tcp::server::TcpListener,
     Service,
 };
+
+use base64::engine::general_purpose::STANDARD as ENGINE;
+use base64::Engine;
 
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
@@ -68,10 +75,30 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         )
         .init();
 
-    let maybe_tls_server_cert_key_pair = cfg.secure.then(|| {
-        let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
+    let maybe_tls_server_config = cfg.secure.then(|| {
         let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
-        TlsServerCertKeyPair::new(tls_crt_pem_raw, tls_key_pem_raw)
+        let tls_key_pem_raw = std::str::from_utf8(
+            &ENGINE
+                .decode(tls_key_pem_raw)
+                .expect("base64 decode RAMA_TLS_KEY")[..],
+        )
+        .expect("base64-decoded RAMA_TLS_KEY valid utf-8")
+        .try_into()
+        .expect("tls_key_pem_raw => NonEmptyStr (RAMA_TLS_KEY)");
+        let tls_crt_pem_raw = std::env::var("RAMA_TLS_CRT").expect("RAMA_TLS_CRT");
+        let tls_crt_pem_raw = std::str::from_utf8(
+            &ENGINE
+                .decode(tls_crt_pem_raw)
+                .expect("base64 decode RAMA_TLS_CRT")[..],
+        )
+        .expect("base64-decoded RAMA_TLS_CRT valid utf-8")
+        .try_into()
+        .expect("tls_crt_pem_raw => NonEmptyStr (RAMA_TLS_CRT)");
+        ServerConfig::new(ServerAuth::Single(ServerAuthData {
+            private_key: DataEncoding::Pem(tls_key_pem_raw),
+            cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
+            ocsp: None,
+        }))
     });
 
     let maybe_acme_service = std::env::var("RAMA_ACME_DATA")
@@ -93,7 +120,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .concurrent(cfg.concurrent)
         .timeout(Duration::from_secs(cfg.timeout))
         .maybe_forward(cfg.forward)
-        .maybe_tls_server_config(maybe_tls_server_cert_key_pair)
+        .maybe_tls_server_config(maybe_tls_server_config)
         .http_layer(maybe_acme_service)
         .build(Executor::graceful(graceful.guard()))
         .expect("build echo service");

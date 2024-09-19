@@ -1,20 +1,25 @@
 //! rama common tls types
 //!
+
+use rama_utils::str::NonEmptyString;
+
 mod enums;
-use client::ClientHello;
+#[cfg(feature = "boring")]
+pub use enums::openssl_cipher_list_str_from_cipher_list;
 pub use enums::{
     ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,
 };
 
 pub mod client;
+pub mod server;
 
 #[derive(Debug, Clone)]
 /// Context information that can be provided `https` connectors`,
 /// to configure the connection in function on an https tunnel.
 pub struct HttpsTunnel {
     /// The server name to use for the connection.
-    pub server_name: String,
+    pub server_host: crate::address::Host,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -24,14 +29,14 @@ pub struct HttpsTunnel {
 /// [`Extensions`]: rama_core::context::Extensions
 /// [`Context`]: rama_core::Context
 pub struct SecureTransport {
-    client_hello: Option<ClientHello>,
+    client_hello: Option<client::ClientHello>,
 }
 
 impl SecureTransport {
     /// Create a [`SecureTransport`] with a [`ClientHello`]
     /// attached to it, containing the client hello info
     /// used to establish this secure transport.
-    pub fn with_client_hello(hello: ClientHello) -> Self {
+    pub fn with_client_hello(hello: client::ClientHello) -> Self {
         Self {
             client_hello: Some(hello),
         }
@@ -39,7 +44,31 @@ impl SecureTransport {
 
     /// Return the [`ClientHello`] used to establish this secure transport,
     /// only available if the tls service stored it.
-    pub fn client_hello(&self) -> Option<&ClientHello> {
+    pub fn client_hello(&self) -> Option<&client::ClientHello> {
         self.client_hello.as_ref()
     }
+}
+
+#[derive(Debug, Clone, Default)]
+/// Intent for a (tls) keylogger to be used.
+///
+/// Applicable to both a client- and server- config.
+pub enum KeyLogIntent {
+    #[default]
+    /// By default no key logging is used.
+    Disabled,
+    /// Request a keys to be logged to the given file path.
+    File(std::path::PathBuf),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+/// Implementation agnostic encoding of common data such
+/// as certificates and keys.
+pub enum DataEncoding {
+    /// Distinguished Encoding Rules (DER) (binary)
+    Der(Vec<u8>),
+    /// Same as [`DataEncoding::Der`], but multiple
+    DerStack(Vec<Vec<u8>>),
+    /// Privacy Enhanced Mail (PEM) (plain text)
+    Pem(NonEmptyString),
 }

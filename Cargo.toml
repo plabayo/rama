@@ -201,6 +201,7 @@ opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tracing = { workspace = true }
@@ -307,4 +308,4 @@ required-features = ["boring", "haproxy", "http-full"]
 
 [[example]]
 name = "tls_termination"
-required-features = ["haproxy", "http-full", "rustls"]
+required-features = ["rustls", "haproxy", "http-full"]

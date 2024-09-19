@@ -109,7 +109,7 @@ where
                     "http proxy connector: preparing proxy connection for tls tunnel"
                 );
                 ctx.insert(HttpsTunnel {
-                    server_name: address.authority.host().to_string(),
+                    server_host: address.authority.host().clone(),
                 });
             }
         }

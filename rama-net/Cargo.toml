@@ -15,7 +15,7 @@ default = []
 http = ["dep:rama-http-types"]
 tls = ["dep:hex"]
 rustls = ["tls", "dep:rustls"]
-boring = ["tls", "dep:boring", "dep:nom"]
+boring = ["tls", "dep:boring", "dep:nom", "dep:itertools"]
 rustls-ring = ["rustls", "rustls/ring"]
 telemetry = ["rama-core/telemetry"]
 
@@ -27,6 +27,7 @@ futures-lite = { workspace = true }
 headers = { workspace = true }
 hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
+itertools = { workspace = true, optional = true }
 nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }

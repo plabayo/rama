@@ -56,21 +56,18 @@ use rama::{
         server::TcpListener,
     },
     tls::{
-        dep::rcgen::{self, KeyPair},
-        rustls::{
-            dep::{
-                pki_types::{CertificateDer, PrivatePkcs8KeyDer},
-                rustls::ServerConfig,
-            },
-            server::{TlsAcceptorLayer, TlsClientConfigHandler},
-        },
+        rustls::server::{TlsAcceptorData, TlsAcceptorLayer, TlsClientConfigHandler},
         types::client::ClientHello,
     },
     Context, Layer,
 };
+use rama_net::tls::{
+    server::{SelfSignedData, ServerAuth, ServerConfig},
+    KeyLogIntent,
+};
 
 // everything else is provided by the standard library, community crates or tokio
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -86,38 +83,15 @@ async fn main() {
         )
         .init();
 
+    let mut tls_server_config =
+        ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
+    if let Ok(keylog_file) = std::env::var("SSLKEYLOGFILE") {
+        tls_server_config.key_logger = KeyLogIntent::File(keylog_file.into());
+    }
+
+    let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+
     let shutdown = Shutdown::default();
-
-    // Create an issuer CA cert.
-    let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
-    let ca_key_pair = KeyPair::generate_for(alg).expect("generate ca key pair");
-
-    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).expect("create ca params");
-    ca_params
-        .distinguished_name
-        .push(rcgen::DnType::OrganizationName, "Rustls Server Acceptor");
-    ca_params
-        .distinguished_name
-        .push(rcgen::DnType::CommonName, "Example CA");
-    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
-    ca_params.key_usages = vec![
-        rcgen::KeyUsagePurpose::KeyCertSign,
-        rcgen::KeyUsagePurpose::DigitalSignature,
-        rcgen::KeyUsagePurpose::CrlSign,
-    ];
-    let ca_cert = ca_params.self_signed(&ca_key_pair).expect("create ca cert");
-
-    // Create a server end entity cert issued by the CA.
-    let server_key_pair = KeyPair::generate_for(alg).expect("generate server key pair");
-    let mut server_ee_params = rcgen::CertificateParams::new(vec!["127.0.0.1".to_string()])
-        .expect("create server ee params");
-    server_ee_params.is_ca = rcgen::IsCa::NoCa;
-    server_ee_params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
-    let server_cert = server_ee_params
-        .signed_by(&server_key_pair, &ca_cert, &ca_key_pair)
-        .expect("create server cert");
-    let server_cert_der: CertificateDer = server_cert.into();
-    let server_key_der = PrivatePkcs8KeyDer::from(server_key_pair.serialize_der());
 
     // create tls proxy
     shutdown.spawn_task_fn(|guard| async move {
@@ -129,25 +103,15 @@ async fn main() {
                 // Return None in case you want to use the default acceptor Tls config
                 // Usually though when implementing this trait it's because you
                 // want to use the client hello to determine which server config to use.
-                Ok(None)
+                Ok::<_, Infallible>(None)
             });
 
-        let tls_server_config = ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(
-                vec![server_cert_der],
-                PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned()).into(),
-            )
-            .expect("create tls server config");
-
-        let tcp_service = TlsAcceptorLayer::with_client_config_handler(
-            Arc::new(tls_server_config),
-            tls_client_config_handler,
-        )
-        .layer(Forwarder::new(([127, 0, 0, 1], 62800)).connector(
-            // ha proxy protocol used to forwarded the client original IP
-            HaProxyClientLayer::tcp().layer(TcpConnector::new()),
-        ));
+        let tcp_service =
+            TlsAcceptorLayer::with_client_config_handler(acceptor_data, tls_client_config_handler)
+                .layer(Forwarder::new(([127, 0, 0, 1], 62800)).connector(
+                    // ha proxy protocol used to forwarded the client original IP
+                    HaProxyClientLayer::tcp().layer(TcpConnector::new()),
+                ));
 
         TcpListener::bind("127.0.0.1:63800")
             .await

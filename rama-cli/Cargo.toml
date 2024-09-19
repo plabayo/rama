@@ -12,6 +12,7 @@ rust-version = { workspace = true }
 default-run = "rama"
 
 [dependencies]
+base64 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }

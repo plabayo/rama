@@ -4,6 +4,8 @@ pub mod client;
 pub mod server;
 pub mod verify;
 
+mod key_log;
+
 pub mod dep {
     //! Dependencies for rama rustls modules.
     //!
@@ -37,6 +39,15 @@ pub mod dep {
         //! [`rustls-native-certs`]: https://docs.rs/rustls-native-certs
         #[doc(inline)]
         pub use rustls_native_certs::*;
+    }
+
+    pub mod rcgen {
+        //! Re-export of the [`rcgen`] crate.
+        //!
+        //! [`rcgen`]: https://docs.rs/rcgen
+
+        #[doc(inline)]
+        pub use rcgen::*;
     }
 
     pub mod rustls {
