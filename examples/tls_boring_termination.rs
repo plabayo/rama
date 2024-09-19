@@ -38,8 +38,8 @@ use rama::{
     layer::{ConsumeErrLayer, GetExtensionLayer},
     net::forwarded::Forwarded,
     net::stream::{SocketInfo, Stream},
+    net::tls::server::SelfSignedData,
     net::tls::server::{ServerAuth, ServerConfig},
-    net::tls::{server::SelfSignedData, KeyLogIntent},
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
@@ -78,9 +78,6 @@ async fn main() {
         ApplicationProtocol::HTTP_2,
         ApplicationProtocol::HTTP_11,
     ]);
-    if let Ok(keylog_file) = std::env::var("SSLKEYLOGFILE") {
-        tls_server_config.key_logger = KeyLogIntent::File(keylog_file.into());
-    }
 
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
 

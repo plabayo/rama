@@ -52,7 +52,6 @@ use rama::{
     tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
     Context, Layer,
 };
-use rama_net::tls::KeyLogIntent;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::time::Duration;
@@ -87,10 +86,6 @@ async fn main() {
         client_auth: Some(ClientAuth::SelfSigned),
         expose_client_cert: true,
         server_verify_mode: ServerVerifyMode::Disable,
-        key_logger: std::env::var("SSLKEYLOGFILE")
-            .ok()
-            .map(|f| KeyLogIntent::File(f.into()))
-            .unwrap_or(KeyLogIntent::Disabled),
         ..Default::default()
     })
     .expect("create tls connector data for client");
