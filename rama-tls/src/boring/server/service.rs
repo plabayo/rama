@@ -18,6 +18,7 @@ use rama_net::{
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
+use tracing::trace;
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
@@ -164,6 +165,7 @@ where
         }
 
         if let Some(keylog_filename) = &tls_config.keylog_filename {
+            trace!(path = ?keylog_filename, "boring acceptor service: open keylog file for debug purposes");
             // open file in append mode and write keylog to it with callback
             let file = std::fs::OpenOptions::new()
                 .append(true)

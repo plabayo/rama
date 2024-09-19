@@ -6,7 +6,7 @@ use std::io;
 use std::io::Write;
 use std::path::Path;
 use std::sync::Mutex;
-use tracing::warn;
+use tracing::{trace, warn};
 
 // Internal mutable state for KeyLogFile
 struct KeyLogFileInner {
@@ -65,6 +65,8 @@ pub(super) struct KeyLogFile(Mutex<KeyLogFileInner>);
 impl KeyLogFile {
     /// Makes a new `KeyLogFile`.
     pub(super) fn new(path: impl AsRef<Path>) -> Result<Self, OpaqueError> {
+        let path = path.as_ref();
+        trace!(?path, "rustls: open keylog file for debug purposes");
         Ok(Self(Mutex::new(KeyLogFileInner::new(path)?)))
     }
 }

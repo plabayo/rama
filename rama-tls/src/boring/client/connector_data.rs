@@ -57,6 +57,7 @@ impl ConnectConfigurationInput {
 
         if let Some(keylog_filename) = self.keylog_filename.as_deref() {
             // open file in append mode and write keylog to it with callback
+            trace!(path = ?keylog_filename, "boring connector: open keylog file for debug purposes");
             let file = std::fs::OpenOptions::new()
                 .append(true)
                 .create(true)
