@@ -41,6 +41,15 @@ pub mod dep {
         pub use rustls_native_certs::*;
     }
 
+    pub mod rcgen {
+        //! Re-export of the [`rcgen`] crate.
+        //!
+        //! [`rcgen`]: https://docs.rs/rcgen
+
+        #[doc(inline)]
+        pub use rcgen::*;
+    }
+
     pub mod rustls {
         //! Re-export of the [`rustls`] and  [`tokio-rustls`] crates.
         //!

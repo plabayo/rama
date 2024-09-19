@@ -4,6 +4,8 @@
 use rama_utils::str::NonEmptyString;
 
 mod enums;
+#[cfg(feature = "boring")]
+pub use enums::openssl_cipher_list_str_from_cipher_list;
 pub use enums::{
     ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,
@@ -59,12 +61,14 @@ pub enum KeyLogIntent {
     File(std::path::PathBuf),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Implementation agnostic encoding of common data such
 /// as certificates and keys.
 pub enum DataEncoding {
     /// Distinguished Encoding Rules (DER) (binary)
     Der(Vec<u8>),
+    /// Same as [`DataEncoding::Der`], but multiple
+    DerStack(Vec<Vec<u8>>),
     /// Privacy Enhanced Mail (PEM) (plain text)
     Pem(NonEmptyString),
 }

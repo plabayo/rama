@@ -36,8 +36,7 @@ use tokio::net::TcpStream;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
-    cli::tls::TlsServerCertKeyPair,
-    error::{ErrorContext, OpaqueError},
+    net::tls::server::ServerConfig,
     tls::types::{client::ClientHelloExtension, SecureTransport},
 };
 
@@ -56,7 +55,7 @@ pub struct EchoServiceBuilder<H> {
     forward: Option<ForwardKind>,
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    tls_server_config: Option<TlsServerCertKeyPair>,
+    tls_server_config: Option<ServerConfig>,
 
     http_service_builder: H,
 }
@@ -150,7 +149,7 @@ impl<H> EchoServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
-    pub fn tls_server_config(mut self, cfg: TlsServerCertKeyPair) -> Self {
+    pub fn tls_server_config(mut self, cfg: ServerConfig) -> Self {
         self.tls_server_config = Some(cfg);
         self
     }
@@ -158,7 +157,7 @@ impl<H> EchoServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
-    pub fn set_tls_server_config(&mut self, cfg: TlsServerCertKeyPair) -> &mut Self {
+    pub fn set_tls_server_config(&mut self, cfg: ServerConfig) -> &mut Self {
         self.tls_server_config = Some(cfg);
         self
     }
@@ -166,7 +165,7 @@ impl<H> EchoServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// maybe define a tls server cert config to be used for tls terminaton
     /// by the echo service.
-    pub fn maybe_tls_server_config(mut self, cfg: Option<TlsServerCertKeyPair>) -> Self {
+    pub fn maybe_tls_server_config(mut self, cfg: Option<ServerConfig>) -> Self {
         self.tls_server_config = cfg;
         self
     }
@@ -230,13 +229,9 @@ where
         };
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_server_cfg = match self.tls_server_config.take() {
+        let tls_acceptor_data = match self.tls_server_config {
             None => None,
-            Some(cfg) => Some(
-                cfg.into_server_config()
-                    .map_err(OpaqueError::from_boxed)
-                    .context("build server config from env tls key/cert pair")?,
-            ),
+            Some(cfg) => Some(cfg.try_into()?),
         };
 
         let tcp_service_builder = (
@@ -248,15 +243,15 @@ where
             // Limit the body size to 1MB for requests
             BodyLimitLayer::request_only(1024 * 1024),
             #[cfg(any(feature = "rustls", feature = "boring"))]
-            tls_server_cfg.map(|cfg| {
+            tls_acceptor_data.map(|data| {
                 #[cfg(feature = "boring")]
                 {
-                    TlsAcceptorLayer::new(std::sync::Arc::new(cfg)).with_store_client_hello(true)
+                    TlsAcceptorLayer::new(data).with_store_client_hello(true)
                 }
                 #[cfg(not(feature = "boring"))]
                 {
                     TlsAcceptorLayer::with_client_config_handler(
-                        std::sync::Arc::new(cfg),
+                        data,
                         TlsClientConfigHandler::default().store_client_hello(),
                     )
                 }

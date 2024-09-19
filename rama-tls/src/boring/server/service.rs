@@ -1,4 +1,4 @@
-use super::ServerConfig;
+use super::TlsAcceptorData;
 use crate::{
     boring::dep::{
         boring::ssl::{SslAcceptor, SslMethod},
@@ -12,23 +12,26 @@ use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     Context, Service,
 };
-use rama_net::stream::Stream;
+use rama_net::{
+    stream::Stream,
+    tls::{client::NegotiatedTlsParameters, ApplicationProtocol},
+};
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
 pub struct TlsAcceptorService<S> {
-    config: Arc<ServerConfig>,
+    data: TlsAcceptorData,
     store_client_hello: bool,
     inner: S,
 }
 
 impl<S> TlsAcceptorService<S> {
     /// Creates a new [`TlsAcceptorService`].
-    pub const fn new(config: Arc<ServerConfig>, inner: S, store_client_hello: bool) -> Self {
+    pub const fn new(data: TlsAcceptorData, inner: S, store_client_hello: bool) -> Self {
         Self {
-            config,
+            data,
             store_client_hello,
             inner,
         }
@@ -40,7 +43,7 @@ impl<S> TlsAcceptorService<S> {
 impl<S: std::fmt::Debug> std::fmt::Debug for TlsAcceptorService<S> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TlsAcceptorService")
-            .field("config", &self.config)
+            .field("data", &self.data)
             .field("store_client_hello", &self.store_client_hello)
             .field("inner", &self.inner)
             .finish()
@@ -53,7 +56,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            config: self.config.clone(),
+            data: self.data.clone(),
             store_client_hello: self.store_client_hello,
             inner: self.inner.clone(),
         }
@@ -70,8 +73,6 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
-        // let acceptor = TlsAcceptor::from(self.config.clone());
-
         let mut acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
             .context("create boring ssl acceptor")?;
 
@@ -80,7 +81,7 @@ where
             .set_default_verify_paths()
             .context("build boring ssl acceptor: set default verify paths")?;
 
-        for (i, ca_cert) in self.config.ca_cert_chain.iter().enumerate() {
+        for (i, ca_cert) in self.data.config.cert_chain.iter().enumerate() {
             if i == 0 {
                 acceptor_builder
                     .set_certificate(ca_cert.as_ref())
@@ -92,11 +93,35 @@ where
             }
         }
         acceptor_builder
-            .set_private_key(self.config.private_key.as_ref())
+            .set_private_key(self.data.config.private_key.as_ref())
             .context("build boring ssl acceptor: set private key")?;
         acceptor_builder
             .check_private_key()
             .context("build boring ssl acceptor: check private key")?;
+
+        if let Some(min_ver) = self.data.config.protocol_versions.iter().flatten().min() {
+            acceptor_builder
+                .set_min_proto_version(Some((*min_ver).try_into().map_err(|v| {
+                    OpaqueError::from_display(format!("protocol version {v}"))
+                        .context("build boring ssl acceptor: min proto version")
+                })?))
+                .context("build boring ssl acceptor: set min proto version")?;
+        }
+
+        if let Some(max_ver) = self.data.config.protocol_versions.iter().flatten().max() {
+            acceptor_builder
+                .set_max_proto_version(Some((*max_ver).try_into().map_err(|v| {
+                    OpaqueError::from_display(format!("protocol version {v}"))
+                        .context("build boring ssl acceptor: max proto version")
+                })?))
+                .context("build boring ssl acceptor: set max proto version")?;
+        }
+
+        for ca_cert in self.data.config.client_cert_chain.iter().flatten() {
+            acceptor_builder
+                .add_client_ca(ca_cert)
+                .context("build boring ssl acceptor: set ca client cert")?;
+        }
 
         let mut maybe_client_hello = if self.store_client_hello {
             let maybe_client_hello = Arc::new(Mutex::new(None));
@@ -117,9 +142,16 @@ where
             None
         };
 
-        if !self.config.alpn_protocols.is_empty() {
+        if !self
+            .data
+            .config
+            .alpn_protocols
+            .as_ref()
+            .map(|v| !v.is_empty())
+            .unwrap_or_default()
+        {
             let mut buf = vec![];
-            for alpn in &self.config.alpn_protocols {
+            for alpn in self.data.config.alpn_protocols.iter().flatten() {
                 alpn.encode_wire_format(&mut buf)
                     .context("build boring ssl acceptor: encode alpn")?;
             }
@@ -128,7 +160,7 @@ where
                 .context("build boring ssl acceptor: set alpn")?;
         }
 
-        if let Some(keylog_filename) = &self.config.keylog_filename {
+        if let Some(keylog_filename) = &self.data.config.keylog_filename {
             // open file in append mode and write keylog to it with callback
             let file = std::fs::OpenOptions::new()
                 .append(true)
@@ -152,6 +184,29 @@ where
                     .context("boring ssl acceptor: accept"),
                 None => OpaqueError::from_display("boring ssl acceptor: accept"),
             })?;
+
+        match stream.ssl().session() {
+            Some(ssl_session) => {
+                let protocol_version = ssl_session.protocol_version().try_into().map_err(|v| {
+                    OpaqueError::from_display(format!("protocol version {v}"))
+                        .context("boring ssl acceptor: min proto version")
+                })?;
+                let application_layer_protocol = stream
+                    .ssl()
+                    .selected_alpn_protocol()
+                    .map(ApplicationProtocol::from);
+                ctx.insert(NegotiatedTlsParameters {
+                    protocol_version,
+                    application_layer_protocol,
+                });
+            }
+            None => {
+                return Err(OpaqueError::from_display(
+                    "boring ssl acceptor: failed to establish session...",
+                )
+                .into_boxed())
+            }
+        }
 
         let secure_transport = maybe_client_hello
             .take()

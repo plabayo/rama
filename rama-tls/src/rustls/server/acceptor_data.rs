@@ -1,6 +1,6 @@
-use crate::dep::rcgen::{self, KeyPair};
 use crate::rustls::dep::pemfile;
 use crate::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use crate::rustls::dep::rcgen::{self, KeyPair};
 use crate::rustls::dep::rustls::{self, server::WebPkiClientVerifier, RootCertStore};
 use crate::rustls::key_log::KeyLogFile;
 use rama_core::error::{ErrorContext, OpaqueError};
@@ -16,6 +16,26 @@ use std::sync::Arc;
 /// or by trying to turn the _rama_ opiniated [`rama_net::tls::server::ServerConfig`] into it.
 pub struct TlsAcceptorData {
     pub(super) server_config: Arc<rustls::ServerConfig>,
+    pub(super) server_cert_chain: Option<Vec<CertificateDer<'static>>>,
+}
+
+impl TlsAcceptorData {
+    /// Return a shared reference to the underlying [`rustls::ServerConfig`].
+    pub fn server_config(&self) -> &rustls::ServerConfig {
+        self.server_config.as_ref()
+    }
+
+    /// Return a reference to the exposed server cert chain,
+    /// should these exist and be exposed.
+    pub fn server_cert_chain(&self) -> Option<&[CertificateDer<'static>]> {
+        self.server_cert_chain.as_deref()
+    }
+
+    /// Take (consume) the exposed server cert chain,
+    /// should these exist and be exposed.
+    pub fn take_server_cert_chain(&mut self) -> Option<Vec<CertificateDer<'static>>> {
+        self.server_cert_chain.take()
+    }
 }
 
 impl From<rustls::ServerConfig> for TlsAcceptorData {
@@ -29,6 +49,7 @@ impl From<Arc<rustls::ServerConfig>> for TlsAcceptorData {
     fn from(value: Arc<rustls::ServerConfig>) -> Self {
         Self {
             server_config: value,
+            server_cert_chain: None,
         }
     }
 }
@@ -37,6 +58,8 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
     type Error = OpaqueError;
 
     fn try_from(value: rama_net::tls::server::ServerConfig) -> Result<Self, Self::Error> {
+        let mut server_cert_chain = None;
+
         let v: Vec<_> = value
             .protocol_versions
             .into_iter()
@@ -54,12 +77,41 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
         // builder with client auth configured
         let builder = match value.client_verify_mode {
             ClientVerifyMode::Auto | ClientVerifyMode::Disable => builder.with_no_client_auth(),
-            ClientVerifyMode::ClientAuth(raw_pem) => {
-                let client_cert_der = CertificateDer::from(raw_pem.as_bytes());
+            ClientVerifyMode::ClientAuth(DataEncoding::Der(bytes)) => {
+                let client_cert_der = CertificateDer::from(bytes);
                 let mut root_cert_storage = RootCertStore::empty();
                 root_cert_storage
                     .add(client_cert_der)
-                    .context("rustls/TlsAcceptorData: add client cert to root cert storage")?;
+                    .context("rustls/TlsAcceptorData: der: add client cert to root cert storage")?;
+                let cert_verifier = WebPkiClientVerifier::builder(Arc::new(root_cert_storage))
+                    .build()
+                    .context("rustls/TlsAcceptorData: der: create webpki client verifier")?;
+                builder.with_client_cert_verifier(cert_verifier)
+            }
+            ClientVerifyMode::ClientAuth(DataEncoding::DerStack(bytes_list)) => {
+                let mut root_cert_storage = RootCertStore::empty();
+                for bytes in bytes_list {
+                    let client_cert_der = CertificateDer::from(bytes);
+                    root_cert_storage.add(client_cert_der).context(
+                        "rustls/TlsAcceptorData: der: add client cert to root cert storage",
+                    )?
+                }
+                let cert_verifier = WebPkiClientVerifier::builder(Arc::new(root_cert_storage))
+                    .build()
+                    .context("rustls/TlsAcceptorData: der: create webpki client verifier")?;
+                builder.with_client_cert_verifier(cert_verifier)
+            }
+            ClientVerifyMode::ClientAuth(DataEncoding::Pem(raw_pem)) => {
+                let mut root_cert_storage = RootCertStore::empty();
+                let mut pem = BufReader::new(raw_pem.as_bytes());
+                for (index, cert) in pemfile::certs(&mut pem).enumerate() {
+                    let cert = cert.with_context(|| {
+                        format!("rustls/TlsAcceptorData: pem #{index}: parse tls client cert")
+                    })?;
+                    root_cert_storage
+                        .add(cert)
+                        .with_context(|| format!("rustls/TlsAcceptorData: pem #{index}: add client cert to root cert storage"))?;
+                }
                 let cert_verifier = WebPkiClientVerifier::builder(Arc::new(root_cert_storage))
                     .build()
                     .context("rustls/TlsAcceptorData: create webpki client verifier")?;
@@ -71,6 +123,9 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
             ServerAuth::SelfSigned(data) => {
                 let (cert_chain, key_der) =
                     self_signed_server_auth(data).context("rustls/TlsAcceptorData")?;
+                if value.expose_server_cert {
+                    server_cert_chain = Some(cert_chain.clone());
+                }
                 builder
                     .with_single_cert(cert_chain, key_der)
                     .context("rustls/TlsAcceptorData: build base self-signed rustls ServerConfig")?
@@ -79,6 +134,10 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                 // server TLS Certs
                 let cert_chain = match data.cert_chain {
                     DataEncoding::Der(raw_data) => vec![CertificateDer::from(raw_data)],
+                    DataEncoding::DerStack(raw_data_list) => raw_data_list
+                        .into_iter()
+                        .map(CertificateDer::from)
+                        .collect(),
                     DataEncoding::Pem(raw_data) => {
                         let mut pem = BufReader::new(raw_data.as_bytes());
                         let mut cert_chain = Vec::new();
@@ -91,12 +150,25 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                     }
                 };
 
+                if value.expose_server_cert {
+                    server_cert_chain = Some(cert_chain.clone());
+                }
+
                 // server TLS key
                 let key_der = match data.private_key {
                     DataEncoding::Der(raw_data) => raw_data
                         .try_into()
                         .map_err(|_| OpaqueError::from_display("invalid key data"))
                         .context("rustls/TlsAcceptorData: read private (DER) key")?,
+                    DataEncoding::DerStack(raw_data_list) => {
+                        let data = raw_data_list
+                            .first()
+                            .context("rustls/TlsAcceptorData: get first (DER) key")?
+                            .clone();
+                        data.try_into()
+                            .map_err(|_| OpaqueError::from_display("invalid key data"))
+                            .context("rustls/TlsAcceptorData: read private (DER) key")?
+                    }
                     DataEncoding::Pem(raw_data) => {
                         let mut key_reader = BufReader::new(raw_data.as_bytes());
                         pemfile::private_key(&mut key_reader)
@@ -134,6 +206,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
         // return the created server config, all good if you reach here
         Ok(TlsAcceptorData {
             server_config: Arc::new(server_config),
+            server_cert_chain,
         })
     }
 }

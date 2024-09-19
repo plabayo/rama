@@ -1756,6 +1756,7 @@ dependencies = [
 name = "rama-cli"
 version = "0.2.0-alpha.4"
 dependencies = [
+ "base64 0.22.1",
  "bytes",
  "clap",
  "hex",

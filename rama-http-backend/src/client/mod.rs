@@ -3,7 +3,7 @@
 
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
-    error::{BoxError, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     Context, Service,
 };
 use rama_http_types::{dep::http_body, Request, Response};
@@ -26,6 +26,7 @@ pub use svc::HttpClientService;
 mod conn;
 #[doc(inline)]
 pub use conn::{HttpConnector, HttpConnectorLayer};
+use tracing::trace;
 
 pub mod proxy;
 
@@ -99,17 +100,20 @@ where
                 Some(tls_config) => tls_config
                     .clone()
                     .try_into()
-                    .context("HttpClient: create https connector config data")?,
-                None => TlsConnectorData::new_http_auto(),
+                    .context("HttpClient: create https connector data from tls config")?,
+                None => TlsConnectorData::new_http_auto()
+                    .context("HttpClient: create https connector data for http (auto(")?,
             };
             HttpConnector::new(
-                HttpsConnector::auto(transport_connector).with_config(tls_connector_data),
+                HttpsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
             )
         };
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
         let connector = HttpConnector::new(transport_connector);
 
-        let EstablishedClientConnection { ctx, req, conn, .. } = connector
+        let EstablishedClientConnection {
+            ctx, mut req, conn, ..
+        } = connector
             .connect(ctx, req)
             .await
             .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
@@ -138,7 +142,7 @@ where
             .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
 
         trace!(
-            "incoming response version {}, normalizing to {}",
+            "incoming response version {:?}, normalizing to {:?}",
             resp.version(),
             original_req_version
         );

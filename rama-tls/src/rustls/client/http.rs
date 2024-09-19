@@ -28,6 +28,7 @@ impl<K> std::fmt::Debug for HttpsConnectorLayer<K> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HttpsConnectorLayer")
             .field("connector_data", &self.connector_data)
+            .field("_kind", &format_args!("<{}>", std::any::type_name::<K>()))
             .finish()
     }
 }
@@ -125,6 +126,7 @@ impl<S: fmt::Debug, K> fmt::Debug for HttpsConnector<S, K> {
         f.debug_struct("HttpsConnector")
             .field("inner", &self.inner)
             .field("connector_data", &self.connector_data)
+            .field("_kind", &format_args!("<{}>", std::any::type_name::<K>()))
             .finish()
     }
 }
@@ -400,7 +402,10 @@ impl<S, K> HttpsConnector<S, K> {
                 let server_host = connector_data.server_name().cloned().unwrap_or(server_host);
                 (client_config, server_host)
             }
-            None => (TlsConnectorData::default().client_config, server_host),
+            None => (
+                TlsConnectorData::new_http_auto()?.client_config,
+                server_host,
+            ),
         };
 
         let server_name = rustls_pki_types::ServerName::try_from(server_host)?;

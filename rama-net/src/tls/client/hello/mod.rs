@@ -1,4 +1,4 @@
-use crate::address::{Domain, Host};
+use crate::address::Host;
 use crate::tls::{
     enums::CompressionAlgorithm, ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId,
     ProtocolVersion, SignatureScheme, SupportedGroup,

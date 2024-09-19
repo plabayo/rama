@@ -1,5 +1,3 @@
-use rama_utils::str::NonEmptyString;
-
 use crate::tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion};
 
 #[derive(Debug, Clone)]
@@ -7,6 +5,12 @@ use crate::tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersio
 pub struct ServerConfig {
     /// required raw (PEM-encoded) server auth certs
     pub server_auth: ServerAuth,
+
+    /// optionally provide the option expose the server cert if one is defined
+    ///
+    /// this will effectively clone the memory to keep these at hand,
+    /// so only enable this option if you need it for something specific
+    pub expose_server_cert: bool,
 
     /// optional supported versions by the server
     pub protocol_versions: Option<Vec<ProtocolVersion>>,
@@ -26,6 +30,7 @@ impl ServerConfig {
     pub fn new(auth: ServerAuth) -> Self {
         Self {
             server_auth: auth,
+            expose_server_cert: false,
             protocol_versions: None,
             application_layer_protocol_negotiation: None,
             client_verify_mode: ClientVerifyMode::default(),
@@ -79,5 +84,5 @@ pub enum ClientVerifyMode {
     /// Explicitly disable client verification (if possible)
     Disable,
     /// PEM-encoded certificate chain containing the acceptable client certificates
-    ClientAuth(NonEmptyString),
+    ClientAuth(DataEncoding),
 }

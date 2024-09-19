@@ -6,6 +6,12 @@ use rama_core::error::OpaqueError;
 #[cfg(feature = "rustls")]
 mod rustls;
 
+#[cfg(feature = "boring")]
+mod boring;
+#[cfg(feature = "boring")]
+#[doc(inline)]
+pub use boring::openssl_cipher_list_str_from_cipher_list;
+
 /// A macro which defines an enum type.
 macro_rules! enum_builder {
     (
@@ -684,6 +690,7 @@ enum_builder! {
         ECDSA_BRAINPOOLP256R1TLS13_SHA256 => 0x081a,
         ECDSA_BRAINPOOLP384R1TLS13_SHA384 => 0x081b,
         ECDSA_BRAINPOOLP512R1TLS13_SHA512 => 0x081c,
+        RSA_PKCS1_MD5_SHA1 => 0xff01,
     }
 }
 

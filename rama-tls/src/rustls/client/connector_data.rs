@@ -1,11 +1,11 @@
-use crate::dep::rcgen::{self, KeyPair};
 use crate::rustls::dep::pemfile;
 use crate::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use crate::rustls::dep::rcgen::{self, KeyPair};
 use crate::rustls::dep::rustls::{self, RootCertStore};
 use crate::rustls::key_log::KeyLogFile;
 use crate::rustls::verify::NoServerCertVerifier;
 use rama_core::error::{ErrorContext, OpaqueError};
-use rama_net::address::{Domain, Host};
+use rama_net::address::Host;
 use rama_net::tls::client::{ClientAuth, ClientHelloExtension, ServerVerifyMode};
 use rama_net::tls::{ApplicationProtocol, DataEncoding, KeyLogIntent};
 use std::io::BufReader;
@@ -16,7 +16,7 @@ use tracing::trace;
 /// Internal data used as configuration/input for the [`super::HttpsConnector`].
 ///
 /// Created by converting a [`rustls::ClientConfig`] into it directly,
-/// or by trying to turn the _rama_ opiniated [`rama_net::tls::server::ServerConfig`] into it.
+/// or by trying to turn the _rama_ opiniated [`rama_net::tls::client::ClientConfig`] into it.
 pub struct TlsConnectorData {
     pub(super) client_config: Arc<rustls::ClientConfig>,
     pub(super) client_auth_cert_chain: Option<Vec<CertificateDer<'static>>>,
@@ -27,7 +27,7 @@ impl TlsConnectorData {
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.
-    pub fn new_http_auto() -> TlsConnectorData {
+    pub fn new_http_auto() -> Result<TlsConnectorData, OpaqueError> {
         let mut cfg = rustls::ClientConfig::builder()
             .with_root_certificates(client_root_certs())
             .with_no_client_auth();
@@ -36,38 +36,29 @@ impl TlsConnectorData {
             ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
             ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
         ];
-        cfg.into()
+        Ok(cfg.into())
     }
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing http/1.1 connections.
-    pub fn new_http_1() -> TlsConnectorData {
+    pub fn new_http_1() -> Result<TlsConnectorData, OpaqueError> {
         let mut cfg = rustls::ClientConfig::builder()
             .with_root_certificates(client_root_certs())
             .with_no_client_auth();
         // needs to remain in sync with rama's default `HttpConnector`
         cfg.alpn_protocols = vec![ApplicationProtocol::HTTP_11.as_bytes().to_vec()];
-        cfg.into()
+        Ok(cfg.into())
     }
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing h2 connections.
-    pub fn new_http_2() -> TlsConnectorData {
+    pub fn new_http_2() -> Result<TlsConnectorData, OpaqueError> {
         let mut cfg = rustls::ClientConfig::builder()
             .with_root_certificates(client_root_certs())
             .with_no_client_auth();
         // needs to remain in sync with rama's default `HttpConnector`
         cfg.alpn_protocols = vec![ApplicationProtocol::HTTP_2.as_bytes().to_vec()];
-        cfg.into()
-    }
-}
-
-impl Default for TlsConnectorData {
-    fn default() -> Self {
-        rustls::ClientConfig::builder()
-            .with_root_certificates(client_root_certs())
-            .with_no_client_auth()
-            .into()
+        Ok(cfg.into())
     }
 }
 
@@ -75,6 +66,11 @@ impl TlsConnectorData {
     /// Return a shared reference to the underlying [`rustls::ClientConfig`].
     pub fn client_config(&self) -> &rustls::ClientConfig {
         self.client_config.as_ref()
+    }
+
+    /// Return a shared copy to the underlying [`rustls::ClientConfig`].
+    pub fn shared_client_config(&self) -> Arc<rustls::ClientConfig> {
+        self.client_config.clone()
     }
 
     /// Return a reference to the exposed client cert chain,
@@ -125,7 +121,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
             .find_map(|ext| {
                 if let ClientHelloExtension::SupportedVersions(versions) = ext {
                     let v: Vec<_> = versions
-                        .into_iter()
+                        .iter()
                         .filter_map(|v| (*v).try_into().ok())
                         .collect();
                     Some(rustls::ClientConfig::builder_with_protocol_versions(&v[..]))
@@ -156,12 +152,16 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                 // client TLS Certs
                 let cert_chain = match data.cert_chain {
                     DataEncoding::Der(raw_data) => vec![CertificateDer::from(raw_data)],
+                    DataEncoding::DerStack(raw_data_list) => raw_data_list
+                        .into_iter()
+                        .map(CertificateDer::from)
+                        .collect(),
                     DataEncoding::Pem(raw_data) => {
                         let mut pem = BufReader::new(raw_data.as_bytes());
                         let mut cert_chain = Vec::new();
                         for cert in pemfile::certs(&mut pem) {
                             cert_chain.push(
-                                cert.context("rustls/TlsConnectorData: parse tls server cert")?,
+                                cert.context("rustls/TlsConnectorData: parse tls client cert")?,
                             );
                         }
                         cert_chain
@@ -171,6 +171,13 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                 // client TLS key
                 let key_der = match data.private_key {
                     DataEncoding::Der(raw_data) => raw_data
+                        .try_into()
+                        .map_err(|_| OpaqueError::from_display("invalid key data"))
+                        .context("rustls/TlsConnectorData: read private (DER) key")?,
+                    DataEncoding::DerStack(raw_data_list) => raw_data_list
+                        .first()
+                        .cloned()
+                        .context("DataEncoding::DerStack: get first private (DER) key")?
                         .try_into()
                         .map_err(|_| OpaqueError::from_display("invalid key data"))
                         .context("rustls/TlsConnectorData: read private (DER) key")?,

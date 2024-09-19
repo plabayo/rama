@@ -7,10 +7,13 @@ use crate::{
     types::SecureTransport,
 };
 use rama_core::{
-    error::{BoxError, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     Context, Service,
 };
-use rama_net::stream::Stream;
+use rama_net::{
+    stream::Stream,
+    tls::{client::NegotiatedTlsParameters, ApplicationProtocol},
+};
 use rama_utils::macros::define_inner_service_accessors;
 
 use super::{client_config::ServiceDataProvider, TlsAcceptorData, TlsClientConfigHandler};
@@ -73,6 +76,16 @@ where
         let acceptor = TlsAcceptor::from(self.data.server_config.clone());
 
         let stream = acceptor.accept(stream).await?;
+        let (_, conn_data_ref) = stream.get_ref();
+        ctx.insert(NegotiatedTlsParameters {
+            protocol_version: conn_data_ref
+                .protocol_version()
+                .context("no protocol version available")?
+                .into(),
+            application_layer_protocol: conn_data_ref
+                .alpn_protocol()
+                .map(ApplicationProtocol::from),
+        });
 
         ctx.insert(SecureTransport::default());
         self.inner.serve(ctx, stream).await.map_err(|err| {
@@ -104,6 +117,16 @@ where
         };
 
         let stream = start.into_stream(self.data.server_config.clone()).await?;
+        let (_, conn_data_ref) = stream.get_ref();
+        ctx.insert(NegotiatedTlsParameters {
+            protocol_version: conn_data_ref
+                .protocol_version()
+                .context("no protocol version available")?
+                .into(),
+            application_layer_protocol: conn_data_ref
+                .alpn_protocol()
+                .map(ApplicationProtocol::from),
+        });
 
         ctx.insert(secure_transport);
         self.inner.serve(ctx, stream).await.map_err(|err| {
@@ -146,6 +169,17 @@ where
             .unwrap_or_else(|| self.data.clone());
 
         let stream = start.into_stream(service_data.server_config).await?;
+
+        let (_, conn_data_ref) = stream.get_ref();
+        ctx.insert(NegotiatedTlsParameters {
+            protocol_version: conn_data_ref
+                .protocol_version()
+                .context("no protocol version available")?
+                .into(),
+            application_layer_protocol: conn_data_ref
+                .alpn_protocol()
+                .map(ApplicationProtocol::from),
+        });
 
         ctx.insert(secure_transport);
         self.inner.serve(ctx, stream).await.map_err(|err| {
