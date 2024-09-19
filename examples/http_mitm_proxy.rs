@@ -53,6 +53,7 @@ use rama::{
     net::http::RequestContext,
     net::stream::layer::http::BodyLimitLayer,
     net::tls::{
+        client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
         server::{SelfSignedData, ServerAuth, ServerConfig},
         ApplicationProtocol,
     },
@@ -195,7 +196,17 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let client = HttpClient::default();
+    let mut client = HttpClient::default();
+    client.set_tls_config(ClientConfig {
+        server_verify_mode: ServerVerifyMode::Disable,
+        extensions: Some(vec![
+            ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
+                ApplicationProtocol::HTTP_2,
+                ApplicationProtocol::HTTP_11,
+            ]),
+        ]),
+        ..Default::default()
+    });
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {

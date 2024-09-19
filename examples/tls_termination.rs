@@ -63,7 +63,7 @@ use rama::{
 };
 use rama_net::tls::{
     server::{SelfSignedData, ServerAuth, ServerConfig},
-    ApplicationProtocol, KeyLogIntent,
+    KeyLogIntent,
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -85,10 +85,6 @@ async fn main() {
 
     let mut tls_server_config =
         ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
-    tls_server_config.application_layer_protocol_negotiation = Some(vec![
-        ApplicationProtocol::HTTP_2,
-        ApplicationProtocol::HTTP_11,
-    ]);
     if let Ok(keylog_file) = std::env::var("SSLKEYLOGFILE") {
         tls_server_config.key_logger = KeyLogIntent::File(keylog_file.into());
     }
