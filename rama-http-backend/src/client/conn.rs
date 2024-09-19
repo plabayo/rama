@@ -68,7 +68,10 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection {
             ctx,
+            #[cfg(any(feature = "rustls", feature = "boring"))]
             mut req,
+            #[cfg(not(any(feature = "rustls", feature = "boring")))]
+            req,
             conn,
             addr,
         } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
