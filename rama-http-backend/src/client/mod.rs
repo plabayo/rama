@@ -3,7 +3,7 @@
 
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorExt, OpaqueError},
     Context, Service,
 };
 use rama_http_types::{dep::http_body, Request, Response};
@@ -15,6 +15,9 @@ use rama_tls::std::client::{HttpsConnector, TlsConnectorData};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_net::tls::client::ClientConfig;
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use rama_core::error::ErrorContext;
 
 mod svc;
 #[doc(inline)]
