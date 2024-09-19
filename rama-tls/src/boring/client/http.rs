@@ -233,7 +233,8 @@ where
             .map_err(|err| {
                 OpaqueError::from_boxed(err.into())
                     .context("HttpsConnector(auto): compute transport context")
-            })?;
+            })?
+            .clone();
 
         if !transport_ctx
             .app_protocol
@@ -257,7 +258,8 @@ where
 
         let host = transport_ctx.authority.host().clone();
 
-        let (stream, negotiated_params) = self.handshake(host, conn).await?;
+        let connector_data = ctx.get().cloned();
+        let (stream, negotiated_params) = self.handshake(connector_data, host, conn).await?;
 
         tracing::trace!(
             authority = %transport_ctx.authority,
@@ -313,7 +315,8 @@ where
 
         let host = transport_ctx.authority.host().clone();
 
-        let (conn, negotiated_params) = self.handshake(host, conn).await?;
+        let connector_data = ctx.get().cloned();
+        let (conn, negotiated_params) = self.handshake(connector_data, host, conn).await?;
         ctx.insert(negotiated_params);
 
         Ok(EstablishedClientConnection {
@@ -363,7 +366,8 @@ where
             }
         };
 
-        let (stream, negotiated_params) = self.handshake(host, conn).await?;
+        let connector_data = ctx.get().cloned();
+        let (stream, negotiated_params) = self.handshake(connector_data, host, conn).await?;
         ctx.insert(negotiated_params);
 
         tracing::trace!("HttpsConnector(tunnel): connection secured");
@@ -381,13 +385,14 @@ where
 impl<S, K> HttpsConnector<S, K> {
     async fn handshake<T>(
         &self,
+        connector_data: Option<TlsConnectorData>,
         server_host: Host,
         stream: T,
     ) -> Result<(SslStream<T>, NegotiatedTlsParameters), BoxError>
     where
         T: Stream + Unpin,
     {
-        let (config, server_host) = match &self.connector_data {
+        let (config, server_host) = match connector_data.as_ref().or(self.connector_data.as_ref()) {
             Some(connector_data) => {
                 let client_config = connector_data.connect_config_input.try_to_build_config()?;
                 let server_host = connector_data.server_name().cloned().unwrap_or(server_host);

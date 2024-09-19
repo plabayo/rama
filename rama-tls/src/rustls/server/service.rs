@@ -73,7 +73,9 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
-        let acceptor = TlsAcceptor::from(self.data.server_config.clone());
+        let tls_acceptor_data = ctx.get::<TlsAcceptorData>().unwrap_or(&self.data);
+
+        let acceptor = TlsAcceptor::from(tls_acceptor_data.server_config.clone());
 
         let stream = acceptor.accept(stream).await?;
         let (_, conn_data_ref) = stream.get_ref();
@@ -106,6 +108,8 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
+        let tls_acceptor_data = ctx.get::<TlsAcceptorData>().unwrap_or(&self.data);
+
         let acceptor = LazyConfigAcceptor::new(Acceptor::default(), stream);
 
         let start = acceptor.await?;
@@ -116,7 +120,9 @@ where
             SecureTransport::default()
         };
 
-        let stream = start.into_stream(self.data.server_config.clone()).await?;
+        let stream = start
+            .into_stream(tls_acceptor_data.server_config.clone())
+            .await?;
         let (_, conn_data_ref) = stream.get_ref();
         ctx.insert(NegotiatedTlsParameters {
             protocol_version: conn_data_ref
@@ -160,15 +166,18 @@ where
             SecureTransport::default()
         };
 
-        let service_data = self
-            .client_config_handler
-            .service_data_provider
-            .get_service_data(accepted_client_hello)
-            .await
-            .map_err(Into::into)?
-            .unwrap_or_else(|| self.data.clone());
+        let tls_acceptor_data = match ctx.get::<TlsAcceptorData>() {
+            Some(data) => data.clone(),
+            None => self
+                .client_config_handler
+                .service_data_provider
+                .get_service_data(accepted_client_hello)
+                .await
+                .map_err(Into::into)?
+                .unwrap_or_else(|| self.data.clone()),
+        };
 
-        let stream = start.into_stream(service_data.server_config).await?;
+        let stream = start.into_stream(tls_acceptor_data.server_config).await?;
 
         let (_, conn_data_ref) = stream.get_ref();
         ctx.insert(NegotiatedTlsParameters {

@@ -228,13 +228,13 @@ where
             conn,
             addr,
         } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
-
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
             .map_err(|err| {
                 OpaqueError::from_boxed(err.into())
                     .context("HttpsConnector(auto): compute transport context")
-            })?;
+            })?
+            .clone();
 
         if !transport_ctx
             .app_protocol
@@ -264,7 +264,8 @@ where
             "HttpsConnector(auto): attempt to secure inner connection",
         );
 
-        let (stream, negotiated_params) = self.handshake(server_host, conn).await?;
+        let connector_data = ctx.get().cloned();
+        let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         tracing::trace!(
             authority = %transport_ctx.authority,
@@ -322,7 +323,8 @@ where
 
         let server_host = transport_ctx.authority.host().clone();
 
-        let (conn, negotiated_params) = self.handshake(server_host, conn).await?;
+        let connector_data = ctx.get().cloned();
+        let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
         ctx.insert(negotiated_params);
 
         Ok(EstablishedClientConnection {
@@ -372,7 +374,8 @@ where
             }
         };
 
-        let (conn, negotiated_params) = self.handshake(server_host, conn).await?;
+        let connector_data = ctx.get().cloned();
+        let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
         ctx.insert(negotiated_params);
 
         tracing::trace!("HttpsConnector(tunnel): connection secured");
@@ -390,13 +393,14 @@ where
 impl<S, K> HttpsConnector<S, K> {
     async fn handshake<T>(
         &self,
+        connector_data: Option<TlsConnectorData>,
         server_host: Host,
         stream: T,
     ) -> Result<(TlsStream<T>, NegotiatedTlsParameters), BoxError>
     where
         T: Stream + Unpin,
     {
-        let (config, server_host) = match &self.connector_data {
+        let (config, server_host) = match connector_data.as_ref().or(self.connector_data.as_ref()) {
             Some(connector_data) => {
                 let client_config = connector_data.client_config.clone();
                 let server_host = connector_data.server_name().cloned().unwrap_or(server_host);

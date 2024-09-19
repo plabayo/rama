@@ -73,6 +73,11 @@ where
     type Error = BoxError;
 
     async fn serve(&self, mut ctx: Context<T>, stream: IO) -> Result<Self::Response, Self::Error> {
+        // allow tls acceptor data to be injected,
+        // e.g. useful for TLS environments where some data (such as server auth, think ACME)
+        // is updated at runtime, be it infrequent
+        let tls_config = &ctx.get::<TlsAcceptorData>().unwrap_or(&self.data).config;
+
         let mut acceptor_builder = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls_server())
             .context("create boring ssl acceptor")?;
 
@@ -81,7 +86,7 @@ where
             .set_default_verify_paths()
             .context("build boring ssl acceptor: set default verify paths")?;
 
-        for (i, ca_cert) in self.data.config.cert_chain.iter().enumerate() {
+        for (i, ca_cert) in tls_config.cert_chain.iter().enumerate() {
             if i == 0 {
                 acceptor_builder
                     .set_certificate(ca_cert.as_ref())
@@ -93,13 +98,13 @@ where
             }
         }
         acceptor_builder
-            .set_private_key(self.data.config.private_key.as_ref())
+            .set_private_key(tls_config.private_key.as_ref())
             .context("build boring ssl acceptor: set private key")?;
         acceptor_builder
             .check_private_key()
             .context("build boring ssl acceptor: check private key")?;
 
-        if let Some(min_ver) = self.data.config.protocol_versions.iter().flatten().min() {
+        if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
             acceptor_builder
                 .set_min_proto_version(Some((*min_ver).try_into().map_err(|v| {
                     OpaqueError::from_display(format!("protocol version {v}"))
@@ -108,7 +113,7 @@ where
                 .context("build boring ssl acceptor: set min proto version")?;
         }
 
-        if let Some(max_ver) = self.data.config.protocol_versions.iter().flatten().max() {
+        if let Some(max_ver) = tls_config.protocol_versions.iter().flatten().max() {
             acceptor_builder
                 .set_max_proto_version(Some((*max_ver).try_into().map_err(|v| {
                     OpaqueError::from_display(format!("protocol version {v}"))
@@ -117,7 +122,7 @@ where
                 .context("build boring ssl acceptor: set max proto version")?;
         }
 
-        for ca_cert in self.data.config.client_cert_chain.iter().flatten() {
+        for ca_cert in tls_config.client_cert_chain.iter().flatten() {
             acceptor_builder
                 .add_client_ca(ca_cert)
                 .context("build boring ssl acceptor: set ca client cert")?;
@@ -142,16 +147,14 @@ where
             None
         };
 
-        if !self
-            .data
-            .config
+        if !tls_config
             .alpn_protocols
             .as_ref()
             .map(|v| !v.is_empty())
             .unwrap_or_default()
         {
             let mut buf = vec![];
-            for alpn in self.data.config.alpn_protocols.iter().flatten() {
+            for alpn in tls_config.alpn_protocols.iter().flatten() {
                 alpn.encode_wire_format(&mut buf)
                     .context("build boring ssl acceptor: encode alpn")?;
             }
@@ -160,7 +163,7 @@ where
                 .context("build boring ssl acceptor: set alpn")?;
         }
 
-        if let Some(keylog_filename) = &self.data.config.keylog_filename {
+        if let Some(keylog_filename) = &tls_config.keylog_filename {
             // open file in append mode and write keylog to it with callback
             let file = std::fs::OpenOptions::new()
                 .append(true)
