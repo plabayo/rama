@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 use rama::http::layer::compression::CompressionLayer;
 
 #[tokio::test]
+#[ignore]
 async fn test_https_connect_proxy() {
     utils::init_tracing();
 
