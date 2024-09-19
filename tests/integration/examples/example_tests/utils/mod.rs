@@ -7,7 +7,6 @@ use rama::{
     http::{
         client::HttpClient,
         layer::{
-            decompression::DecompressionLayer,
             follow_redirect::FollowRedirectLayer,
             required_header::AddRequiredRequestHeadersLayer,
             retry::{ManagedPolicy, RetryLayer},
@@ -29,6 +28,9 @@ use std::{
 use tokio::net::ToSocketAddrs;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+#[cfg(feature = "compression")]
+use rama::http::layer::decompression::DecompressionLayer;
 
 pub type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
@@ -88,6 +90,7 @@ where
         let client = (
             MapResultLayer::new(map_internal_client_error),
             TraceLayer::new_for_http(),
+            #[cfg(feature = "compression")]
             DecompressionLayer::new(),
             FollowRedirectLayer::default(),
             RetryLayer::new(

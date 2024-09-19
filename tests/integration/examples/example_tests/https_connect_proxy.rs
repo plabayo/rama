@@ -1,8 +1,7 @@
 use super::utils;
 use rama::{
     http::{
-        headers::Accept, layer::compression::CompressionLayer, response::Json, server::HttpServer,
-        BodyExtractExt, IntoResponse, Request,
+        headers::Accept, response::Json, server::HttpServer, BodyExtractExt, IntoResponse, Request,
     },
     net::address::ProxyAddress,
     rt::Executor,
@@ -11,8 +10,10 @@ use rama::{
 };
 use serde_json::{json, Value};
 
+#[cfg(feature = "compression")]
+use rama::http::layer::compression::CompressionLayer;
+
 #[tokio::test]
-#[ignore]
 async fn test_https_connect_proxy() {
     utils::init_tracing();
 
@@ -20,14 +21,18 @@ async fn test_https_connect_proxy() {
         HttpServer::auto(Executor::default())
             .listen(
                 "127.0.0.1:63002",
-                CompressionLayer::new().layer(service_fn(|req: Request| async move {
-                    tracing::debug!(uri = %req.uri(), "serve request");
-                    Ok(Json(json!({
-                        "method": req.method().as_str(),
-                        "path": req.uri().path(),
-                    }))
-                    .into_response())
-                })),
+                (
+                    #[cfg(feature = "compression")]
+                    CompressionLayer::new(),
+                )
+                    .layer(service_fn(|req: Request| async move {
+                        tracing::debug!(uri = %req.uri(), "serve request");
+                        Ok(Json(json!({
+                            "method": req.method().as_str(),
+                            "path": req.uri().path(),
+                        }))
+                        .into_response())
+                    })),
             )
             .await
             .unwrap();
