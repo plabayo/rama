@@ -73,8 +73,8 @@ async fn main() {
 
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_11,
             ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::HTTP_11,
         ]),
         ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
             organisation_name: Some("Rustls Server Acceptor".to_owned()),

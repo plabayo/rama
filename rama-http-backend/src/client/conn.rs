@@ -10,9 +10,14 @@ use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     stream::Stream,
 };
+
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 use tokio::sync::Mutex;
+use tracing::trace;
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use rama_net::tls::{client::NegotiatedTlsParameters, ApplicationProtocol};
 
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S> {
@@ -63,15 +68,42 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let EstablishedClientConnection {
             ctx,
-            req,
+            mut req,
             conn,
             addr,
         } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
+
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        if let Some(proto) = ctx
+            .get::<NegotiatedTlsParameters>()
+            .and_then(|params| params.application_layer_protocol.as_ref())
+        {
+            let new_version = match proto {
+                ApplicationProtocol::HTTP_09 => rama_http_types::Version::HTTP_09,
+                ApplicationProtocol::HTTP_10 => rama_http_types::Version::HTTP_10,
+                ApplicationProtocol::HTTP_11 => rama_http_types::Version::HTTP_11,
+                ApplicationProtocol::HTTP_2 => rama_http_types::Version::HTTP_2,
+                ApplicationProtocol::HTTP_3 => rama_http_types::Version::HTTP_3,
+                _ => {
+                    return Err(OpaqueError::from_display(
+                        "HttpConnector: unsupported negotiated ALPN: {proto}",
+                    )
+                    .into_boxed());
+                }
+            };
+            trace!(
+                "setting request version to {:?} based on negotiated APLN (was: {:?})",
+                new_version,
+                req.version(),
+            );
+            *req.version_mut() = new_version;
+        }
 
         let io = TokioIo::new(Box::pin(conn));
 
         match req.version() {
             Version::HTTP_2 => {
+                trace!(uri = %req.uri(), "create h2 client executor");
                 let executor = HyperExecutor(ctx.executor().clone());
                 let (sender, conn) = hyper::client::conn::http2::handshake(executor, io).await?;
 
@@ -91,6 +123,7 @@ where
                 })
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
+                trace!(uri = %req.uri(), "create ~h1 client executor");
                 let (sender, conn) = hyper::client::conn::http1::handshake(io).await?;
 
                 ctx.spawn(async move {

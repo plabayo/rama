@@ -7,10 +7,7 @@ use rama_core::{
     Context, Service,
 };
 use rama_http_types::{dep::http_body, Request, Response};
-use rama_net::{
-    client::{ConnectorService, EstablishedClientConnection},
-    tls::{client::NegotiatedTlsParameters, ApplicationProtocol},
-};
+use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -111,35 +108,22 @@ where
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
         let connector = HttpConnector::new(transport_connector);
 
-        let EstablishedClientConnection {
-            ctx, mut req, conn, ..
-        } = connector
+        // NOTE: stack might change request version based on connector data,
+        // such as ALPN (tls), as such it is important to reset it back below,
+        // so that the other end can read it... This might however give issues in
+        // case switching http versions requires more work than version. If so,
+        // your first place will be to check here and/or in the [`HttpConnector`].
+        let EstablishedClientConnection { ctx, req, conn, .. } = connector
             .connect(ctx, req)
             .await
             .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
 
-        if let Some(proto) = ctx
-            .get::<NegotiatedTlsParameters>()
-            .and_then(|params| params.application_layer_protocol.as_ref())
-        {
-            *req.version_mut() = match proto {
-                ApplicationProtocol::HTTP_09 => rama_http_types::Version::HTTP_09,
-                ApplicationProtocol::HTTP_10 => rama_http_types::Version::HTTP_10,
-                ApplicationProtocol::HTTP_11 => rama_http_types::Version::HTTP_11,
-                ApplicationProtocol::HTTP_2 => rama_http_types::Version::HTTP_2,
-                ApplicationProtocol::HTTP_3 => rama_http_types::Version::HTTP_3,
-                _ => {
-                    return Err(OpaqueError::from_display(
-                        "HttpClient: unsupported negotiated ALPN: {proto}",
-                    ));
-                }
-            };
-        }
-
-        let mut resp = conn
-            .serve(ctx, req)
-            .await
-            .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
+        trace!(uri = %uri, "send http req to connector stack");
+        let mut resp = conn.serve(ctx, req).await.map_err(|err| {
+            OpaqueError::from_boxed(err)
+                .with_context(|| format!("http request failure for uri: {uri}"))
+        })?;
+        trace!(uri = %uri, "response received from connector stack");
 
         trace!(
             "incoming response version {:?}, normalizing to {:?}",
