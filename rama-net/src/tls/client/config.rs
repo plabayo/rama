@@ -48,7 +48,7 @@ pub struct ClientAuthData {
     pub cert_chain: DataEncoding,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Mode of server verification by a (tls) client
 pub enum ServerVerifyMode {
     #[default]

@@ -341,8 +341,14 @@ where
 
     let mut inner_client = HttpClient::default();
 
+    let server_verify_mode = if cfg.insecure {
+        ServerVerifyMode::Disable
+    } else {
+        ServerVerifyMode::Auto
+    };
+
     inner_client.set_tls_config(ClientConfig {
-        server_verify_mode: ServerVerifyMode::Disable,
+        server_verify_mode,
         extensions: Some(vec![
             ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
                 ApplicationProtocol::HTTP_2,
@@ -353,7 +359,7 @@ where
     });
 
     inner_client.set_proxy_tls_config(ClientConfig {
-        server_verify_mode: ServerVerifyMode::Disable,
+        server_verify_mode,
         ..Default::default()
     });
 
