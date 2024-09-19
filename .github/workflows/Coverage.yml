@@ -12,6 +12,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install CMake
+        run: sudo apt-get update && sudo apt-get install -y cmake
+
       - name: Generate code coverage
         run: |
           cargo +nightly tarpaulin --verbose --all-features --workspace --timeout 120 --out xml
