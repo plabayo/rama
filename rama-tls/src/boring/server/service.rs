@@ -148,12 +148,13 @@ where
             None
         };
 
-        if !tls_config
+        if tls_config
             .alpn_protocols
             .as_ref()
             .map(|v| !v.is_empty())
             .unwrap_or_default()
         {
+            trace!("tls boring server service: set alpn protos");
             let mut buf = vec![];
             for alpn in tls_config.alpn_protocols.iter().flatten() {
                 alpn.encode_wire_format(&mut buf)
