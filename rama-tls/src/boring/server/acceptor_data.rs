@@ -115,6 +115,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
         // set key logger if one is requested
         let keylog_filename = match value.key_logger {
             KeyLogIntent::Disabled => None,
+            KeyLogIntent::Environment => std::env::var("SSLKEYLOGFILE").ok().map(Into::into),
             KeyLogIntent::File(path) => Some(path.clone()),
         };
 

@@ -231,6 +231,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
     fn try_from(value: rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
         let keylog_filename = match value.key_logger {
             KeyLogIntent::Disabled => None,
+            KeyLogIntent::Environment => std::env::var("SSLKEYLOGFILE").ok().map(Into::into),
             KeyLogIntent::File(keylog_filename) => Some(keylog_filename.clone()),
         };
 

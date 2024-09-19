@@ -55,7 +55,10 @@ impl SecureTransport {
 /// Applicable to both a client- and server- config.
 pub enum KeyLogIntent {
     #[default]
-    /// By default no key logging is used.
+    /// By default `SSLKEYLOGFILE` env variable is respected
+    /// as the path to key log to, if defined
+    Environment,
+    /// You can choose to disable the key logging explicitly
     Disabled,
     /// Request a keys to be logged to the given file path.
     File(std::path::PathBuf),
