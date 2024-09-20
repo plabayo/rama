@@ -159,7 +159,7 @@ where
                             Ok(proto) => {
                                 if alpn_protocols.contains(&proto) {
                                     let m = reader.position() as usize;
-                                    return Ok(&client_alpns[n..m]);
+                                    return Ok(&client_alpns[n+1..m]);
                                 }
                             }
                             Err(error) => {
