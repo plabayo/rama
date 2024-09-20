@@ -6,10 +6,9 @@ use crate::{
 };
 use rama_core::error::OpaqueError;
 use rama_core::Context;
+use rama_http_types::Method;
 use rama_http_types::{dep::http::request::Parts, Request, Uri, Version};
-
-#[cfg(feature = "tls")]
-use crate::tls::SecureTransport;
+use tracing::{trace, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context of the [`Request`].
@@ -35,7 +34,7 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
     fn try_from((ctx, req): (&Context<State>, &Request<Body>)) -> Result<Self, Self::Error> {
         let uri = req.uri();
 
-        let protocol = protocol_from_uri_or_context(ctx, uri);
+        let protocol = protocol_from_uri_or_context(ctx, uri, req.method());
         tracing::trace!(
             uri = %uri, "request context: detected protocol: {protocol} (scheme: {:?})",
             uri.scheme()
@@ -106,7 +105,7 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
     fn try_from((ctx, parts): (&Context<State>, &Parts)) -> Result<Self, Self::Error> {
         let uri = &parts.uri;
 
-        let protocol = protocol_from_uri_or_context(ctx, uri);
+        let protocol = protocol_from_uri_or_context(ctx, uri, &parts.method);
         tracing::trace!(
             uri = %uri, "request context: detected protocol: {protocol} (scheme: {:?})",
             uri.scheme()
@@ -175,37 +174,47 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
 }
 
 #[allow(clippy::unnecessary_lazy_evaluations)]
-fn protocol_from_uri_or_context<State>(ctx: &Context<State>, uri: &Uri) -> Protocol {
+fn protocol_from_uri_or_context<State>(
+    ctx: &Context<State>,
+    uri: &Uri,
+    method: &Method,
+) -> Protocol {
     uri.scheme().map(|s| {
         tracing::trace!(uri = %uri, "request context: detected protocol from scheme");
-        s.into()
+        let protocol = s.into();
+        if method == Method::CONNECT {
+            match protocol {
+                Protocol::HTTP => {
+                    trace!(uri = %uri, "CONNECT request: upgrade HTTP => HTTPS");
+                    Protocol::HTTPS
+                }
+                Protocol::HTTPS => Protocol::HTTPS,
+                Protocol::WS => {
+                    trace!(uri = %uri, "CONNECT request: upgrade WS => WSS");
+                    Protocol::WSS
+                }
+                Protocol::WSS => Protocol::WSS,
+                other => {
+                    warn!(uri = %uri, protocol = %other, "CONNECT request: unexpected protocol");
+                    other
+                }
+            }
+        } else {
+            protocol
+        }
     }).or_else(|| ctx.get::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
             tracing::trace!(uri = %uri, "request context: detected protocol from forwarded client proto");
             p.into()
         })))
-        .or_else(|| {
-            #[cfg(feature = "tls")]
-            {
-                // In some cases, e.g. https over HTTP/1.1 it is observed that we are missing
-                // both the scheme and authority for the request, making us not detect
-                // it correctly as https protocol (port 443 by default). The presence of the client hello
-                // config does reveal this information to us which assumes that our tls terminators
-                // do set this information, otherwise we would never the less be in the blind.
-                // TODO: make this work with TLS implementation-agnostic types once we have Boring integrated
-                ctx.contains::<SecureTransport>().then(|| {
-                    tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTPS (secure transport)");
-                    Protocol::HTTPS
-                })
-            }
-            #[cfg(not(feature = "tls"))]
-            {
-                None
-            }
-        })
         .unwrap_or_else(|| {
-            tracing::trace!(uri = %uri, "request context: defaulting protocol to HTTP");
-            Protocol::HTTP
+            if method == Method::CONNECT {
+                tracing::trace!(uri = %uri, method = %method, "request context: CONNECT: defaulting protocol to HTTPS");
+                Protocol::HTTPS
+            } else {
+                tracing::trace!(uri = %uri, method = %method, "request context: defaulting protocol to HTTP");
+                Protocol::HTTP
+            }
         })
 }
 
@@ -403,28 +412,66 @@ mod tests {
     }
 
     #[test]
-    fn test_request_ctx_https_request_behind_haproxy_secure() {
-        let req = Request::builder()
-            .uri("/en/reservation/roomdetails")
-            .version(Version::HTTP_11)
-            .header("host", "echo.ramaproxy.org")
-            .header("user-agent", "curl/8.6.0")
-            .header("accept", "*/*")
-            .body(())
-            .unwrap();
+    fn test_request_ctx_connect_req_no_scheme() {
+        let test_cases = [
+            (80, Protocol::HTTPS),
+            (433, Protocol::HTTPS),
+            (8080, Protocol::HTTPS),
+        ];
+        for (port, expected_protocol) in test_cases {
+            let req = Request::builder()
+                .uri(format!("www.example.com:{port}"))
+                .version(Version::HTTP_11)
+                .method(Method::CONNECT)
+                .header("host", "www.example.com")
+                .header("user-agent", "test/42")
+                .body(())
+                .unwrap();
 
-        let mut ctx = Context::default();
-        ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
-            NodeId::try_from("127.0.0.1:61234").unwrap(),
-        )));
-        ctx.insert(SecureTransport::default());
+            let mut ctx = Context::default();
+            let req_ctx: &mut RequestContext = ctx
+                .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
+                .unwrap();
 
-        let req_ctx: &mut RequestContext = ctx
-            .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
-            .unwrap();
+            assert_eq!(req_ctx.http_version, Version::HTTP_11);
+            assert_eq!(req_ctx.protocol, expected_protocol);
+            assert_eq!(
+                req_ctx.authority.to_string(),
+                format!("www.example.com:{}", port)
+            );
+        }
+    }
 
-        assert_eq!(req_ctx.http_version, Version::HTTP_11);
-        assert_eq!(req_ctx.protocol, "https");
-        assert_eq!(req_ctx.authority.to_string(), "echo.ramaproxy.org:443");
+    #[test]
+    fn test_request_ctx_connect_req() {
+        let test_cases = [
+            ("http", Protocol::HTTPS),
+            ("https", Protocol::HTTPS),
+            ("ws", Protocol::WSS),
+            ("wss", Protocol::WSS),
+            ("ftp", Protocol::from_static("ftp")),
+        ];
+        for (scheme, expected_protocol) in test_cases {
+            let req = Request::builder()
+                .uri(format!("{scheme}://www.example.com"))
+                .version(Version::HTTP_11)
+                .method(Method::CONNECT)
+                .header("host", "www.example.com")
+                .header("user-agent", "test/42")
+                .body(())
+                .unwrap();
+
+            let mut ctx = Context::default();
+            let req_ctx: &mut RequestContext = ctx
+                .get_or_try_insert_with_ctx(|ctx| (ctx, &req).try_into())
+                .unwrap();
+
+            assert_eq!(req_ctx.http_version, Version::HTTP_11);
+            assert_eq!(req_ctx.protocol, expected_protocol);
+            assert_eq!(
+                req_ctx.authority.to_string(),
+                format!("www.example.com:{}", expected_protocol.default_port())
+            );
+        }
     }
 }

@@ -23,6 +23,12 @@
 //! cargo run --example http_mitm_proxy --features=http-full,rustls
 //! ```
 //!
+//! Or alternatively run it using boring (ssl)
+//!
+//! ```sh
+//! cargo run --example http_mitm_proxy --features=http-full,boring
+//! ```
+//!
 //! # Expected output
 //!
 //! The server will start and listen on `:62017`. You can use `curl` to interact with the service:
@@ -61,7 +67,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
     Layer, Service,
 };
 use std::{convert::Infallible, time::Duration};
@@ -154,9 +160,17 @@ async fn http_connect_accept(
     Ok((StatusCode::OK.into_response(), ctx, req))
 }
 
-async fn http_connect_proxy(mut ctx: Context, upgraded: Upgraded) -> Result<(), Infallible> {
-    // delete request context as a new one should be made per seen request
-    ctx.remove::<RequestContext>();
+async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infallible> {
+    // In the past we deleted the request context here, as such:
+    // ```
+    // ctx.remove::<RequestContext>();
+    // ```
+    // This is however not correct, as the request context remains true.
+    // The user proxies here with a target as aim. This target, incoming version
+    // and so on does not change. This initial context remains true
+    // and should be preserved. This is especially important,
+    // as we otherwise might not be able to define the scheme/authority
+    // for upstream http requests.
 
     let http_service = new_http_mitm_proxy(ctx.executor());
 
