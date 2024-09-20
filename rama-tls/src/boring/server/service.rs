@@ -1,7 +1,7 @@
 use super::TlsAcceptorData;
 use crate::{
     boring::dep::{
-        boring::ssl::{SslAcceptor, SslMethod},
+        boring::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
         tokio_boring::SslStream,
     },
     types::client::ClientHello,
@@ -17,8 +17,8 @@ use rama_net::{
     tls::{client::NegotiatedTlsParameters, ApplicationProtocol},
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::sync::Arc;
-use tracing::trace;
+use std::{io::ErrorKind, sync::Arc};
+use tracing::{debug, trace};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
 /// stream to the given service.
@@ -148,21 +148,39 @@ where
             None
         };
 
-        if tls_config
-            .alpn_protocols
-            .as_ref()
-            .map(|v| !v.is_empty())
-            .unwrap_or_default()
-        {
-            trace!("tls boring server service: set alpn protos");
-            let mut buf = vec![];
-            for alpn in tls_config.alpn_protocols.iter().flatten() {
-                alpn.encode_wire_format(&mut buf)
-                    .context("build boring ssl acceptor: encode alpn")?;
-            }
-            acceptor_builder
-                .set_alpn_protos(&buf[..])
-                .context("build boring ssl acceptor: set alpn")?;
+        if let Some(alpn_protocols) = tls_config.alpn_protocols.clone() {
+            trace!("tls boring server service: set alpn protos callback");
+            acceptor_builder.set_alpn_select_callback(
+                move |_: &mut SslRef, client_alpns: &[u8]| {
+                    let mut reader = std::io::Cursor::new(&client_alpns[..]);
+                    loop {
+                        let n = reader.position() as usize;
+                        match ApplicationProtocol::decode_wire_format(&mut reader) {
+                            Ok(proto) => {
+                                if alpn_protocols.contains(&proto) {
+                                    let m = reader.position() as usize;
+                                    return Ok(&client_alpns[n..m]);
+                                }
+                            }
+                            Err(error) => {
+                                return Err(if error.kind() == ErrorKind::UnexpectedEof {
+                                    trace!(
+                                        %error,
+                                        "tls boring server service: alpn protos callback: no compatible ALPN found",
+                                    );
+                                    AlpnError::NOACK
+                                } else {
+                                    debug!(
+                                        %error,
+                                        "tls boring server service: alpn protos callback: client ALPN decode error",
+                                    );
+                                    AlpnError::ALERT_FATAL
+                                })
+                            }
+                        }
+                    }
+                },
+            );
         }
 
         if let Some(keylog_filename) = tls_config.keylog_intent.file_path() {

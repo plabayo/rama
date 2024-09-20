@@ -904,6 +904,18 @@ impl ApplicationProtocol {
         w.write_all(b)?;
         Ok(b.len() + 1)
     }
+
+    pub fn decode_wire_format(r: &mut impl std::io::Read) -> std::io::Result<ApplicationProtocol> {
+        let mut length = [0];
+        r.read_exact(&mut length)?;
+
+        let length = length[0] as usize;
+
+        let mut buf = vec![0; length];
+        r.read_exact(&mut buf[..])?;
+
+        Ok(buf.into())
+    }
 }
 
 #[cfg(test)]
@@ -929,5 +941,50 @@ mod tests {
             ApplicationProtocol::from(&[0xda, 0xda]).to_string()
         );
         assert_eq!("Unknown (\0)", ApplicationProtocol::from(&[0]).to_string());
+    }
+
+    #[test]
+    fn test_application_protocol_wire_format() {
+        let test_cases = [
+            (ApplicationProtocol::HTTP_11, "\x08http/1.1"),
+            (ApplicationProtocol::HTTP_2, "\x02h2"),
+        ];
+        for (proto, expected_wire_format) in test_cases {
+            let mut buf = Vec::new();
+            proto.encode_wire_format(&mut buf).unwrap();
+            assert_eq!(
+                &buf[..],
+                expected_wire_format.as_bytes(),
+                "proto({}) => expected_wire_format({})",
+                proto,
+                expected_wire_format
+            );
+
+            let mut reader = std::io::Cursor::new(&buf[..]);
+            let output_proto = ApplicationProtocol::decode_wire_format(&mut reader).unwrap();
+            assert_eq!(
+                output_proto, proto,
+                "expected_wire_format({}) => proto({})",
+                expected_wire_format, proto,
+            );
+        }
+    }
+
+    #[test]
+    fn test_application_protocol_decode_wire_format_multiple() {
+        const INPUT: &str = "\x02h2\x08http/1.1";
+        let mut r = std::io::Cursor::new(INPUT);
+        assert_eq!(
+            ApplicationProtocol::HTTP_2,
+            ApplicationProtocol::decode_wire_format(&mut r).unwrap()
+        );
+        assert_eq!(3, r.position());
+        assert_eq!(&INPUT.as_bytes()[0..3], b"\x02h2");
+        assert_eq!(
+            ApplicationProtocol::HTTP_11,
+            ApplicationProtocol::decode_wire_format(&mut r).unwrap()
+        );
+        assert_eq!(12, r.position());
+        assert_eq!(&INPUT.as_bytes()[3..12], b"\x08http/1.1");
     }
 }
