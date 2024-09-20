@@ -77,7 +77,7 @@ async fn main() {
             ApplicationProtocol::HTTP_11,
         ]),
         ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-            organisation_name: Some("Rustls Server Acceptor".to_owned()),
+            organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         }))
     };
