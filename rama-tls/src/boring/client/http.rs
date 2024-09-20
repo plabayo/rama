@@ -424,6 +424,9 @@ impl<S, K> HttpsConnector<S, K> {
                     .ssl()
                     .selected_alpn_protocol()
                     .map(ApplicationProtocol::from);
+                if let Some(ref proto) = application_layer_protocol {
+                    tracing::trace!(%proto, "boring client (connector) has selected ALPN");
+                }
                 NegotiatedTlsParameters {
                     protocol_version,
                     application_layer_protocol,
