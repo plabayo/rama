@@ -113,9 +113,21 @@ impl ConnectConfigurationInput {
             cfg_builder
                 .set_private_key(auth.private_key.as_ref())
                 .context("build (boring) ssl connector: set private key")?;
-            for cert in &auth.cert_chain {
+            if auth.cert_chain.is_empty() {
+                return Err(OpaqueError::from_display(
+                    "build (boring) ssl connector: cert chain is empty",
+                ));
+            }
+            cfg_builder
+                .set_certificate(
+                    auth.cert_chain
+                        .first()
+                        .context("build (boring) ssl connector: get primary client cert")?,
+                )
+                .context("build (boring) ssl connector: add primary client cert")?;
+            for cert in &auth.cert_chain[1..] {
                 cfg_builder
-                    .add_client_ca(cert)
+                    .add_extra_chain_cert(cert.clone())
                     .context("build (boring) ssl connector: set client cert")?;
             }
         }

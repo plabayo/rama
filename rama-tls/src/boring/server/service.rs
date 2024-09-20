@@ -152,7 +152,7 @@ where
             trace!("tls boring server service: set alpn protos callback");
             acceptor_builder.set_alpn_select_callback(
                 move |_: &mut SslRef, client_alpns: &[u8]| {
-                    let mut reader = std::io::Cursor::new(&client_alpns[..]);
+                    let mut reader = std::io::Cursor::new(client_alpns);
                     loop {
                         let n = reader.position() as usize;
                         match ApplicationProtocol::decode_wire_format(&mut reader) {
