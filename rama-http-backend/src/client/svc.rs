@@ -1,10 +1,13 @@
+use hyper::header::{CONNECTION, TRANSFER_ENCODING, UPGRADE};
 use rama_core::{
     error::{BoxError, ErrorContext, OpaqueError},
     Context, Service,
 };
 use rama_http_types::{
-    dep::http::uri::PathAndQuery, dep::http_body, header::HOST, headers::HeaderMapExt, Method,
-    Request, Response, Version,
+    dep::{http::uri::PathAndQuery, http_body},
+    header::{HOST, KEEP_ALIVE, PROXY_CONNECTION},
+    headers::HeaderMapExt,
+    Method, Request, Response, Version,
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
 use tokio::sync::Mutex;
@@ -132,8 +135,17 @@ fn sanitize_client_req_header<S, B>(
                         .context("use RequestContext.authority as http authority")?,
                 );
 
-                if uri_parts.path_and_query.as_ref().map(|pq| pq.as_str()) == Some("/") {
-                    uri_parts.path_and_query = Some(PathAndQuery::from_static("/"));
+                for illegal_h2_header in [
+                    &CONNECTION,
+                    &TRANSFER_ENCODING,
+                    &PROXY_CONNECTION,
+                    &UPGRADE,
+                    &KEEP_ALIVE,
+                    &HOST,
+                ] {
+                    if let Some(header) = parts.headers.remove(illegal_h2_header) {
+                        tracing::trace!(?header, "removed illegal (~http1) header from h2 request");
+                    }
                 }
 
                 parts.uri = rama_http_types::Uri::from_parts(uri_parts)
