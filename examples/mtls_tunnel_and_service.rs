@@ -44,7 +44,7 @@ use rama::{
     net::tls::client::ClientConfig,
     net::tls::client::{ClientAuth, ServerVerifyMode},
     net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth, ServerConfig},
-    net::tls::DataEncoding,
+    net::tls::{ApplicationProtocol, DataEncoding},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -101,6 +101,10 @@ async fn main() {
         ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
     tls_server_config.client_verify_mode =
         ClientVerifyMode::ClientAuth(DataEncoding::DerStack(tls_client_cert_chain));
+    tls_server_config.application_layer_protocol_negotiation = Some(vec![
+        ApplicationProtocol::HTTP_2,
+        ApplicationProtocol::HTTP_11,
+    ]);
     let tls_server_data =
         TlsAcceptorData::try_from(tls_server_config).expect("create tls acceptor data for server");
 

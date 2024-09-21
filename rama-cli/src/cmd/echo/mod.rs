@@ -8,7 +8,7 @@ use rama::{
     layer::HijackLayer,
     net::tls::{
         server::{ServerAuth, ServerAuthData, ServerConfig},
-        DataEncoding,
+        ApplicationProtocol, DataEncoding,
     },
     rt::Executor,
     tcp::server::TcpListener,
@@ -94,11 +94,17 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .expect("base64-decoded RAMA_TLS_CRT valid utf-8")
         .try_into()
         .expect("tls_crt_pem_raw => NonEmptyStr (RAMA_TLS_CRT)");
-        ServerConfig::new(ServerAuth::Single(ServerAuthData {
-            private_key: DataEncoding::Pem(tls_key_pem_raw),
-            cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
-            ocsp: None,
-        }))
+        ServerConfig {
+            application_layer_protocol_negotiation: Some(vec![
+                ApplicationProtocol::HTTP_2,
+                ApplicationProtocol::HTTP_11,
+            ]),
+            ..ServerConfig::new(ServerAuth::Single(ServerAuthData {
+                private_key: DataEncoding::Pem(tls_key_pem_raw),
+                cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
+                ocsp: None,
+            }))
+        }
     });
 
     let maybe_acme_service = std::env::var("RAMA_ACME_DATA")
