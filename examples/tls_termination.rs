@@ -61,10 +61,7 @@ use rama::{
     },
     Context, Layer,
 };
-use rama_net::tls::{
-    server::{SelfSignedData, ServerAuth, ServerConfig},
-    ApplicationProtocol,
-};
+use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
@@ -83,13 +80,7 @@ async fn main() {
         )
         .init();
 
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-    };
+    let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
 
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
 

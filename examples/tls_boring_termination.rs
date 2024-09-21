@@ -50,7 +50,7 @@ use rama::{
     },
     tls::{
         boring::server::{TlsAcceptorData, TlsAcceptorLayer},
-        types::{ApplicationProtocol, SecureTransport},
+        types::SecureTransport,
     },
     Context, Layer,
 };
@@ -72,12 +72,7 @@ async fn main() {
         )
         .init();
 
-    let mut tls_server_config =
-        ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
-    tls_server_config.application_layer_protocol_negotiation = Some(vec![
-        ApplicationProtocol::HTTP_2,
-        ApplicationProtocol::HTTP_11,
-    ]);
+    let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
 
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
 
