@@ -16,11 +16,11 @@ pub struct ClientConfig {
     /// - [`super::ClientHelloExtension::SupportedVersions`]
     pub extensions: Option<Vec<ClientHelloExtension>>,
     /// optionally define how server should be verified by client
-    pub server_verify_mode: ServerVerifyMode,
+    pub server_verify_mode: Option<ServerVerifyMode>,
     /// optionally define raw (PEM-encoded) client auth certs
     pub client_auth: Option<ClientAuth>,
     /// key log intent
-    pub key_logger: KeyLogIntent,
+    pub key_logger: Option<KeyLogIntent>,
 }
 
 #[derive(Debug, Clone)]

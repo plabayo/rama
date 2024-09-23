@@ -75,7 +75,7 @@ async fn main() {
     // generate client connector data
     let tls_client_data = TlsConnectorData::try_from(ClientConfig {
         client_auth: Some(ClientAuth::SelfSigned),
-        server_verify_mode: ServerVerifyMode::Disable,
+        server_verify_mode: Some(ServerVerifyMode::Disable),
         extensions: Some(vec![ClientHelloExtension::ServerName(Some(
             SERVER_AUTHORITY.into_host(),
         ))]),

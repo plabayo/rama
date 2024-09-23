@@ -31,14 +31,14 @@ pub struct TlsConnectorData {
 
 #[derive(Debug, Clone, Default)]
 pub(super) struct ConnectConfigurationInput {
-    pub(super) keylog_intent: KeyLogIntent,
+    pub(super) keylog_intent: Option<KeyLogIntent>,
     pub(super) cipher_list: Option<String>,
     pub(super) alpn_protos: Option<Vec<u8>>,
     pub(super) curves: Option<Vec<SslCurve>>,
     pub(super) min_ssl_version: Option<SslVersion>,
     pub(super) max_ssl_version: Option<SslVersion>,
     pub(super) verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
-    pub(super) server_verify_mode: ServerVerifyMode,
+    pub(super) server_verify_mode: Option<ServerVerifyMode>,
     pub(super) client_auth: Option<ConnectorConfigClientAuth>,
 }
 
@@ -71,6 +71,8 @@ impl TlsConnectorData {
         if let Some(keylog_filename) = self
             .connect_config_input
             .keylog_intent
+            .clone()
+            .unwrap_or_default()
             .file_path()
             .as_deref()
         {
@@ -120,7 +122,11 @@ impl TlsConnectorData {
             )?;
         }
 
-        match self.connect_config_input.server_verify_mode {
+        match self
+            .connect_config_input
+            .server_verify_mode
+            .unwrap_or_default()
+        {
             ServerVerifyMode::Auto => (), // nothing explicit to do
             ServerVerifyMode::Disable => {
                 cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
@@ -151,22 +157,71 @@ impl TlsConnectorData {
             }
         }
 
-        let mut cfg = cfg_builder
+        let cfg = cfg_builder
             .build()
             .configure()
             .context("create ssl connector configuration")?;
-
-        match self.connect_config_input.server_verify_mode {
-            ServerVerifyMode::Auto => (), // nothing explicit to do
-            ServerVerifyMode::Disable => {
-                cfg.set_verify_hostname(false);
-            }
-        }
 
         Ok(ConnectConfigData {
             config: cfg,
             server_name: self.server_name.clone(),
         })
+    }
+
+    /// Merge `self` together with the `other`, resulting in
+    /// a new [`TlsConnectorData`], where any defined properties of `other`
+    /// take priority over conflicting ones in `self`.
+    pub fn merge(&self, other: &TlsConnectorData) -> TlsConnectorData {
+        TlsConnectorData {
+            connect_config_input: Arc::new(ConnectConfigurationInput {
+                keylog_intent: other
+                    .connect_config_input
+                    .keylog_intent
+                    .clone()
+                    .or_else(|| self.connect_config_input.keylog_intent.clone()),
+                cipher_list: other
+                    .connect_config_input
+                    .cipher_list
+                    .clone()
+                    .or_else(|| self.connect_config_input.cipher_list.clone()),
+                alpn_protos: other
+                    .connect_config_input
+                    .alpn_protos
+                    .clone()
+                    .or_else(|| self.connect_config_input.alpn_protos.clone()),
+                curves: other
+                    .connect_config_input
+                    .curves
+                    .clone()
+                    .or_else(|| self.connect_config_input.curves.clone()),
+                min_ssl_version: other
+                    .connect_config_input
+                    .min_ssl_version
+                    .or(self.connect_config_input.min_ssl_version),
+                max_ssl_version: other
+                    .connect_config_input
+                    .max_ssl_version
+                    .or(self.connect_config_input.max_ssl_version),
+                verify_algorithm_prefs: other
+                    .connect_config_input
+                    .verify_algorithm_prefs
+                    .clone()
+                    .or_else(|| self.connect_config_input.verify_algorithm_prefs.clone()),
+                server_verify_mode: other
+                    .connect_config_input
+                    .server_verify_mode
+                    .or_else(|| self.connect_config_input.server_verify_mode),
+                client_auth: other
+                    .connect_config_input
+                    .client_auth
+                    .clone()
+                    .or_else(|| self.connect_config_input.client_auth.clone()),
+            }),
+            server_name: other
+                .server_name
+                .clone()
+                .or_else(|| self.server_name.clone()),
+        }
     }
 }
 

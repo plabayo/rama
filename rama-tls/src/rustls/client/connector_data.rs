@@ -132,6 +132,51 @@ impl TlsConnectorData {
             server_name: self.server_name.clone(),
         })
     }
+
+    /// Merge `self` together with the `other`, resulting in
+    /// a new [`TlsConnectorData`], where any defined properties of `other`
+    /// take priority over conflicting ones in `self`.
+    pub fn merge(&self, other: &TlsConnectorData) -> TlsConnectorData {
+        TlsConnectorData {
+            client_config_input: Arc::new(ClientConfigInput {
+                protocol_versions: other
+                    .client_config_input
+                    .protocol_versions
+                    .clone()
+                    .or_else(|| self.client_config_input.protocol_versions.clone()),
+                client_auth: other
+                    .client_config_input
+                    .client_auth
+                    .as_ref()
+                    .map(|(cert_chain, key_der)| (cert_chain.clone(), key_der.clone_key()))
+                    .or_else(|| {
+                        self.client_config_input
+                            .client_auth
+                            .as_ref()
+                            .map(|(cert_chain, key_der)| (cert_chain.clone(), key_der.clone_key()))
+                    }),
+                key_logger: other
+                    .client_config_input
+                    .key_logger
+                    .clone()
+                    .or_else(|| self.client_config_input.key_logger.clone()),
+                alpn_protos: other
+                    .client_config_input
+                    .alpn_protos
+                    .clone()
+                    .or_else(|| self.client_config_input.alpn_protos.clone()),
+                cert_verifier: other
+                    .client_config_input
+                    .cert_verifier
+                    .clone()
+                    .or_else(|| self.client_config_input.cert_verifier.clone()),
+            }),
+            server_name: other
+                .server_name
+                .clone()
+                .or_else(|| self.server_name.clone()),
+        }
+    }
 }
 
 impl TlsConnectorData {
@@ -219,16 +264,17 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
             }
         };
 
-        let cert_verifier: Option<Arc<dyn ServerCertVerifier>> = match value.server_verify_mode {
-            ServerVerifyMode::Auto => None, // = default
-            ServerVerifyMode::Disable => {
-                trace!("rustls: tls connector data: disable server cert verification");
-                Some(Arc::new(NoServerCertVerifier::default()))
-            }
-        };
+        let cert_verifier: Option<Arc<dyn ServerCertVerifier>> =
+            match value.server_verify_mode.unwrap_or_default() {
+                ServerVerifyMode::Auto => None, // = default
+                ServerVerifyMode::Disable => {
+                    trace!("rustls: tls connector data: disable server cert verification");
+                    Some(Arc::new(NoServerCertVerifier::default()))
+                }
+            };
 
         // set key logger if one is requested
-        let key_logger = match value.key_logger.file_path() {
+        let key_logger = match value.key_logger.clone().unwrap_or_default().file_path() {
             Some(path) => {
                 let key_logger = KeyLogFile::new(path).context("rustls/TlsConnectorData")?;
                 Some(Arc::new(key_logger))

@@ -98,7 +98,7 @@ where
         #[cfg(any(feature = "rustls", feature = "boring"))]
         {
             inner_client.set_tls_config(ClientConfig {
-                server_verify_mode: ServerVerifyMode::Disable,
+                server_verify_mode: Some(ServerVerifyMode::Disable),
                 extensions: Some(vec![
                     ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
                         ApplicationProtocol::HTTP_2,
@@ -109,7 +109,7 @@ where
             });
 
             inner_client.set_proxy_tls_config(ClientConfig {
-                server_verify_mode: ServerVerifyMode::Disable,
+                server_verify_mode: Some(ServerVerifyMode::Disable),
                 ..Default::default()
             });
         }

@@ -342,9 +342,9 @@ where
     let mut inner_client = HttpClient::default();
 
     let server_verify_mode = if cfg.insecure {
-        ServerVerifyMode::Disable
+        Some(ServerVerifyMode::Disable)
     } else {
-        ServerVerifyMode::Auto
+        None
     };
 
     inner_client.set_tls_config(ClientConfig {

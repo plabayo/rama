@@ -212,7 +212,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     // such as upstream proxies or other configurations
     let mut client = HttpClient::default();
     client.set_tls_config(ClientConfig {
-        server_verify_mode: ServerVerifyMode::Disable,
+        server_verify_mode: Some(ServerVerifyMode::Disable),
         extensions: Some(vec![
             ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
                 ApplicationProtocol::HTTP_2,
