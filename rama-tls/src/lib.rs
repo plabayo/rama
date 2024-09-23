@@ -70,6 +70,6 @@ pub mod types {
     #[doc(inline)]
     pub use ::rama_net::tls::{
         client, ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
-        HttpsTunnel, ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup,
+        ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup, TlsTunnel,
     };
 }

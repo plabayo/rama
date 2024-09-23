@@ -241,7 +241,7 @@ where
 
         self.inner.serve(ctx, stream).await.map_err(|err| {
             OpaqueError::from_boxed(err.into())
-                .context("rustls acceptor: service error")
+                .context("boring acceptor: service error")
                 .into_boxed()
         })
     }

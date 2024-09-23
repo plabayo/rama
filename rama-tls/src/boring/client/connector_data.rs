@@ -222,15 +222,6 @@ impl TlsConnectorData {
             .map(|a| &a.cert_chain[..])
     }
 
-    /// Take (consume) the exposed client cert chain,
-    /// should these exist and be exposed.
-    pub fn take_client_auth_cert_chain(&mut self) -> Option<Vec<X509>> {
-        self.connect_config_input
-            .client_auth
-            .as_ref()
-            .map(|a| a.cert_chain.clone())
-    }
-
     /// Return a reference the desired (SNI) in case it exists
     pub fn server_name(&self) -> Option<&Host> {
         self.server_name.as_ref()

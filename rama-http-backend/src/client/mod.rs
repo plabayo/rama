@@ -11,7 +11,7 @@ use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_tls::std::client::{HttpsConnector, TlsConnectorData};
+use rama_tls::std::client::{TlsConnector, TlsConnectorData};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_net::tls::client::ClientConfig;
@@ -120,39 +120,41 @@ where
         let connector = {
             let proxy_tls_connector_data = match &self.proxy_tls_config {
                 Some(proxy_tls_config) => {
-                    trace!("create proxy https connector using pre-defined rama tls client config");
+                    trace!("create proxy tls connector using pre-defined rama tls client config");
                     proxy_tls_config
                         .clone()
                         .try_into()
-                        .context("HttpClient: create proxy https connector data from tls config")?
+                        .context("HttpClient: create proxy tls connector data from tls config")?
                 }
                 None => {
-                    trace!("create proxy https connector using the 'new_http_auto' constructor");
+                    trace!("create proxy tls connector using the 'new_http_auto' constructor");
                     TlsConnectorData::new().context(
-                        "HttpClient: create proxy https connector data with no application presets",
+                        "HttpClient: create proxy tls connector data with no application presets",
                     )?
                 }
             };
 
             let transport_connector = HttpProxyConnector::optional(
-                HttpsConnector::tunnel(tcp_connector).with_connector_data(proxy_tls_connector_data),
+                TlsConnector::tunnel(tcp_connector, None)
+                    .with_connector_data(proxy_tls_connector_data),
             );
             let tls_connector_data = match &self.tls_config {
                 Some(tls_config) => {
-                    trace!("create https connector using pre-defined rama tls client config");
+                    trace!("create tls connector using pre-defined rama tls client config");
                     tls_config
                         .clone()
                         .try_into()
-                        .context("HttpClient: create https connector data from tls config")?
+                        .context("HttpClient: create tls connector data from tls config")?
                 }
                 None => {
-                    trace!("create https connector using the 'new_http_auto' constructor");
+                    trace!("create tls connector using the 'new_http_auto' constructor");
                     TlsConnectorData::new_http_auto()
-                        .context("HttpClient: create https connector data for http (auto)")?
+                        .context("HttpClient: create tls connector data for http (auto)")?
                 }
             };
             HttpConnector::new(
-                HttpsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
+                TlsConnector::http_auto(transport_connector)
+                    .with_connector_data(tls_connector_data),
             )
         };
         #[cfg(not(any(feature = "rustls", feature = "boring")))]

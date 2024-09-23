@@ -19,13 +19,6 @@ pub struct ClientConfig {
     pub server_verify_mode: ServerVerifyMode,
     /// optionally define raw (PEM-encoded) client auth certs
     pub client_auth: Option<ClientAuth>,
-    /// optionally provide the option expose the client cert if one is defined
-    ///
-    /// this will effectively clone the memory to keep these at hand,
-    /// so only enable this option if you need it for something specific
-    ///
-    /// Nop-operation in case client_auth is `None`.
-    pub expose_client_cert: bool,
     /// key log intent
     pub key_logger: KeyLogIntent,
 }

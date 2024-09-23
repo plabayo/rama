@@ -25,14 +25,8 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with `Hello, authorized client!`.
 
-// these dependencies are re-exported by rama for your convenience,
-// as to make it easy to use them and ensure that the versions remain compatible
-// (given most do not have a stable release yet)
-use rama::tls::rustls::dep::{pki_types::ServerName, tokio_rustls::TlsConnector};
-
 // rama provides everything out of the box to build mtls web services and proxies
 use rama::{
-    error::BoxError,
     graceful::Shutdown,
     http::{
         layer::trace::TraceLayer,
@@ -41,32 +35,29 @@ use rama::{
         service::web::WebService,
     },
     layer::TraceErrLayer,
-    net::tls::client::ClientConfig,
+    net::address::{Authority, Host},
     net::tls::client::{ClientAuth, ServerVerifyMode},
+    net::tls::client::{ClientConfig, ClientHelloExtension},
     net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth, ServerConfig},
     net::tls::{ApplicationProtocol, DataEncoding},
     rt::Executor,
-    service::service_fn,
+    tcp::client::service::Forwarder,
+    tcp::client::service::TcpConnector,
     tcp::server::TcpListener,
-    tls::rustls::client::TlsConnectorData,
+    tls::rustls::client::{TlsConnectorData, TlsConnectorLayer},
     tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
-    Context, Layer,
+    Layer,
 };
 
 // everything else is provided by the standard library, community crates or tokio
+use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
-use tokio::net::TcpStream;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
-const SERVER_DOMAIN: &str = "127.0.0.1";
-const SERVER_ADDR: &str = "127.0.0.1:63014";
-const TUNNEL_ADDR: &str = "127.0.0.1:62014";
-
-#[derive(Debug)]
-struct TunnelState {
-    client_data: TlsConnectorData,
-}
+const LOCALHOST: Host = Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+const SERVER_AUTHORITY: Authority = Authority::new(LOCALHOST, 63014);
+const TUNNEL_AUTHORITY: Authority = Authority::new(LOCALHOST, 62014);
 
 #[tokio::main]
 async fn main() {
@@ -84,8 +75,10 @@ async fn main() {
     // generate client connector data
     let tls_client_data = TlsConnectorData::try_from(ClientConfig {
         client_auth: Some(ClientAuth::SelfSigned),
-        expose_client_cert: true,
         server_verify_mode: ServerVerifyMode::Disable,
+        extensions: Some(vec![ClientHelloExtension::ServerName(Some(
+            SERVER_AUTHORITY.into_host(),
+        ))]),
         ..Default::default()
     })
     .expect("create tls connector data for client");
@@ -122,11 +115,11 @@ async fn main() {
             ),
         );
 
-        tracing::info!("start mtls (https) web service: {}", SERVER_ADDR);
-        TcpListener::bind(SERVER_ADDR)
+        tracing::info!("start mtls (https) web service: {}", SERVER_AUTHORITY);
+        TcpListener::bind(SERVER_AUTHORITY.to_string())
             .await
             .unwrap_or_else(|e| {
-                panic!("bind TCP Listener ({SERVER_ADDR}): mtls (https): web service: {e}")
+                panic!("bind TCP Listener ({SERVER_AUTHORITY}): mtls (https): web service: {e}")
             })
             .serve_graceful(guard, tcp_service)
             .await;
@@ -134,43 +127,24 @@ async fn main() {
 
     // create mtls tunnel proxy
     shutdown.spawn_task_fn(|guard| async move {
-        tracing::info!("start mTLS TCP Tunnel Proxys: {}", TUNNEL_ADDR);
-        TcpListener::build_with_state(TunnelState {
-            client_data: tls_client_data,
-        })
-        .bind(TUNNEL_ADDR)
-        .await
-        .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
-        .serve_graceful(guard, TraceErrLayer::new().layer(service_fn(serve_conn)))
-        .await;
+        tracing::info!("start mTLS TCP Tunnel Proxys: {}", TUNNEL_AUTHORITY);
+
+        let forwarder = Forwarder::new(SERVER_AUTHORITY).connector(
+            TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.into_host()))
+                .with_connector_data(tls_client_data)
+                .layer(TcpConnector::new()),
+        );
+
+        // L4 Proxy Service
+        TcpListener::bind(TUNNEL_AUTHORITY.to_string())
+            .await
+            .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
+            .serve_graceful(guard, TraceErrLayer::new().layer(forwarder))
+            .await;
     });
 
     shutdown
         .shutdown_with_limit(Duration::from_secs(30))
         .await
         .expect("graceful shutdown");
-}
-
-/// L4 Proxy Service
-async fn serve_conn(ctx: Context<TunnelState>, mut source: TcpStream) -> Result<(), BoxError> {
-    let state = ctx.state();
-
-    let target = TcpStream::connect(SERVER_ADDR).await?;
-    let tls_connector = TlsConnector::from(state.client_data.shared_client_config());
-    let server_name = ServerName::try_from(SERVER_DOMAIN)
-        .expect("parse server name")
-        .to_owned();
-    let mut target = tls_connector.connect(server_name, target).await?;
-
-    match tokio::io::copy_bidirectional(&mut source, &mut target).await {
-        Ok(_) => Ok(()),
-        Err(err) => {
-            if rama::tcp::utils::is_connection_error(&err) {
-                Ok(())
-            } else {
-                Err(err)
-            }
-        }
-    }?;
-    Ok(())
 }

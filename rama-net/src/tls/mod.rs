@@ -20,9 +20,9 @@ pub mod client;
 pub mod server;
 
 #[derive(Debug, Clone)]
-/// Context information that can be provided `https` connectors`,
-/// to configure the connection in function on an https tunnel.
-pub struct HttpsTunnel {
+/// Context information that can be provided by `tls` connectors`,
+/// to configure the connection in function on an tls tunnel.
+pub struct TlsTunnel {
     /// The server name to use for the connection.
     pub server_host: crate::address::Host,
 }
