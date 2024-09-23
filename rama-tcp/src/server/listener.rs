@@ -1,11 +1,9 @@
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
-use rama_core::service::handler::{Factory, FromContextRequest};
 use rama_core::Context;
 use rama_core::Service;
 use rama_net::stream::SocketInfo;
 use std::fmt;
-use std::future::Future;
 use std::pin::pin;
 use std::sync::Arc;
 use std::{io, net::SocketAddr};
@@ -205,21 +203,6 @@ where
         }
     }
 
-    /// Serve connections from this listener with the given service function.
-    ///
-    /// See [`Self::serve`] for more details.
-    pub async fn serve_fn<F, T, R, O, E>(self, f: F)
-    where
-        F: Factory<T, R, O, E>,
-        R: Future<Output = Result<O, E>> + Send + 'static,
-        O: Send + Sync + 'static,
-        E: Send + Sync + 'static,
-        T: FromContextRequest<State, TcpStream>,
-    {
-        let service = rama_core::service::service_fn(f);
-        self.serve(service).await
-    }
-
     /// Serve gracefully connections from this listener with the given service.
     ///
     /// This method does the same as [`Self::serve`] but it
@@ -259,21 +242,6 @@ where
                 }
             }
         }
-    }
-
-    /// Serve gracefully connections from this listener with the given service function.
-    ///
-    /// See [`Self::serve_graceful`] for more details.
-    pub async fn serve_fn_graceful<F, T, R, O, E>(self, guard: ShutdownGuard, service: F)
-    where
-        F: Factory<T, R, O, E>,
-        R: Future<Output = Result<O, E>> + Send + 'static,
-        O: Send + Sync + 'static,
-        E: Send + Sync + 'static,
-        T: FromContextRequest<State, TcpStream>,
-    {
-        let service = rama_core::service::service_fn(service);
-        self.serve_graceful(guard, service).await
     }
 }
 

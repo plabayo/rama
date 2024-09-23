@@ -6,6 +6,7 @@
 //!
 //! ```no_run
 //! use rama_tcp::server::TcpListener;
+//! use rama_core::service::service_fn;
 //! use tokio::{io::AsyncWriteExt, net::TcpStream};
 //!
 //! const SRC: &str = include_str!("../../../examples/tcp_listener_hello.rs");
@@ -15,7 +16,7 @@
 //!     TcpListener::bind("127.0.0.1:9000")
 //!         .await
 //!         .expect("bind TCP Listener")
-//!         .serve_fn(|mut stream: TcpStream| async move {
+//!         .serve(service_fn(|mut stream: TcpStream| async move {
 //!             let resp = [
 //!                 "HTTP/1.1 200 OK",
 //!                 "Content-Type: text/plain",
@@ -32,7 +33,7 @@
 //!                 .expect("write to stream");
 //!
 //!             Ok::<_, std::convert::Infallible>(())
-//!         })
+//!         }))
 //!         .await;
 //! }
 //! ```

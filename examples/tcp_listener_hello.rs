@@ -18,6 +18,7 @@
 
 use rama::{
     net::stream::{Socket, Stream},
+    service::service_fn,
     tcp::server::TcpListener,
 };
 use std::convert::Infallible;
@@ -32,7 +33,7 @@ async fn main() {
     TcpListener::bind(ADDR)
         .await
         .expect("bind TCP Listener")
-        .serve_fn(handle)
+        .serve(service_fn(handle))
         .await;
 }
 
