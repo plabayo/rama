@@ -358,9 +358,9 @@ dependencies = [
 
 [[package]]
 name = "boring"
-version = "4.10.2"
+version = "4.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e56b05c5e4cd1266315ac16449e38867b0b63cafc6f353f947987dafb899531"
+checksum = "07e774b91e8adadd05892dfa300bc297e703a3cea36f094a4f8c155d2b13b770"
 dependencies = [
  "bitflags",
  "boring-sys",
@@ -372,9 +372,9 @@ dependencies = [
 
 [[package]]
 name = "boring-sys"
-version = "4.10.2"
+version = "4.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "823996fa1daca300671381eaeb3d54c8fca5f10b443a9d3fa81c8ac25ce16b29"
+checksum = "49584b157cf568167bfd13c2567a4bc9e1bec9bc2a36216c54ac86925922a903"
 dependencies = [
  "bindgen 0.70.1",
  "cmake",
@@ -1635,9 +1635,9 @@ checksum = "8b870d8c151b6f2fb93e84a13146138f05d02ed11c7e7c54f8826aaaf7c9f184"
 
 [[package]]
 name = "pkg-config"
-version = "0.3.30"
+version = "0.3.31"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d231b230927b5e4ad203db57bbcbee2802f6bce620b1e4a9024a07d94e2907ec"
+checksum = "953ec861398dccce10c670dfeaf3ec4911ca479e9c02154b3a215178c5f566f2"
 
 [[package]]
 name = "powerfmt"
@@ -2589,9 +2589,9 @@ dependencies = [
 
 [[package]]
 name = "tokio-boring"
-version = "4.10.2"
+version = "4.10.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "498cc8ae7ab56be56297903b99908982dea3ed20a78131538306fef78139f186"
+checksum = "f58c50373a78923165a41b88f6c7c8d06ce2d2e1b609f631bacba1ebb48798b3"
 dependencies = [
  "boring",
  "boring-sys",
