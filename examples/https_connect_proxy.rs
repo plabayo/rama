@@ -40,16 +40,13 @@ use rama::{
     net::stream::layer::http::BodyLimitLayer,
     net::tls::{
         server::{SelfSignedData, ServerAuth, ServerConfig},
-        ApplicationProtocol,
+        ApplicationProtocol, SecureTransport,
     },
     net::user::Basic,
     rt::Executor,
     service::service_fn,
     tcp::{server::TcpListener, utils::is_connection_error},
-    tls::{
-        rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler},
-        types::client::ClientHello,
-    },
+    tls::std::server::TlsAcceptorLayer,
     Context, Layer, Service,
 };
 
@@ -87,17 +84,6 @@ async fn main() {
 
     // create tls proxy
     shutdown.spawn_task_fn(|guard| async move {
-        let tls_client_config_handler = TlsClientConfigHandler::default()
-            .store_client_hello()
-            .server_config_provider(|client_hello: ClientHello| async move {
-                tracing::debug!(?client_hello, "client hello");
-
-                // Return None in case you want to use the default acceptor Tls config
-                // Usually though when implementing this trait it's because you
-                // want to use the client hello to determine which server config to use.
-                Ok::<_, Infallible>(None)
-            });
-
         let tcp_service = TcpListener::build()
             .bind("127.0.0.1:62016")
             .await
@@ -125,10 +111,7 @@ async fn main() {
                 (
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
-                    TlsAcceptorLayer::with_client_config_handler(
-                        tls_service_data,
-                        tls_client_config_handler,
-                    ),
+                    TlsAcceptorLayer::new(tls_service_data).with_store_client_hello(true),
                 )
                     .layer(http_service),
             )
@@ -155,6 +138,11 @@ where
             return Err(StatusCode::BAD_REQUEST.into_response());
         }
     }
+
+    tracing::info!(
+        "proxy secure transport ingress: {:?}",
+        ctx.get::<SecureTransport>()
+    );
 
     Ok((StatusCode::OK.into_response(), ctx, req))
 }

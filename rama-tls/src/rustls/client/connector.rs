@@ -19,7 +19,6 @@ use tokio::io::{AsyncRead, AsyncWrite};
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
 /// See [`TlsConnector`] for more information.
-#[derive(Clone)]
 pub struct TlsConnectorLayer<K = ConnectorKindAuto> {
     connector_data: Option<TlsConnectorData>,
     kind: K,
@@ -31,6 +30,15 @@ impl<K: fmt::Debug> std::fmt::Debug for TlsConnectorLayer<K> {
             .field("connector_data", &self.connector_data)
             .field("kind", &self.kind)
             .finish()
+    }
+}
+
+impl<K: Clone> Clone for TlsConnectorLayer<K> {
+    fn clone(&self) -> Self {
+        Self {
+            connector_data: self.connector_data.clone(),
+            kind: self.kind.clone(),
+        }
     }
 }
 
@@ -61,7 +69,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request demands it,
     /// otherwise it will forward the pre-established inner connection.
-    pub fn auto() -> Self {
+    pub fn http_auto() -> Self {
         Self {
             connector_data: None,
             kind: ConnectorKindAuto,
@@ -72,7 +80,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
 impl TlsConnectorLayer<ConnectorKindSecure> {
     /// Creates a new [`TlsConnectorLayer`] which will always
     /// establish a secure connection regardless of the request it is for.
-    pub fn secure_only() -> Self {
+    pub fn https() -> Self {
         Self {
             connector_data: None,
             kind: ConnectorKindSecure,
@@ -105,7 +113,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
 
 impl Default for TlsConnectorLayer<ConnectorKindAuto> {
     fn default() -> Self {
-        Self::auto()
+        Self::http_auto()
     }
 }
 

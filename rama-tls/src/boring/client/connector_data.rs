@@ -17,7 +17,7 @@ use rama_net::tls::{
 };
 use rama_net::tls::{openssl_cipher_list_str_from_cipher_list, ApplicationProtocol, KeyLogIntent};
 use rama_net::{address::Host, tls::client::ServerVerifyMode};
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 use tracing::trace;
 
 #[derive(Debug, Clone)]
@@ -48,13 +48,32 @@ pub(super) struct ConnectorConfigClientAuth {
     pub(super) private_key: PKey<Private>,
 }
 
-impl ConnectConfigurationInput {
-    pub(super) fn try_to_build_config(&self) -> Result<ConnectConfiguration, OpaqueError> {
+pub(super) struct ConnectConfigData {
+    pub(super) config: ConnectConfiguration,
+    pub(super) server_name: Option<Host>,
+}
+
+impl fmt::Debug for ConnectConfigData {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ConnectConfigData")
+            .field("config", &"boring::ConnectConfiguration<Opaque>")
+            .field("server_name", &self.server_name)
+            .finish()
+    }
+}
+
+impl TlsConnectorData {
+    pub(super) fn try_to_build_config(&self) -> Result<ConnectConfigData, OpaqueError> {
         let mut cfg_builder =
             boring::ssl::SslConnector::builder(boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
 
-        if let Some(keylog_filename) = self.keylog_intent.file_path().as_deref() {
+        if let Some(keylog_filename) = self
+            .connect_config_input
+            .keylog_intent
+            .file_path()
+            .as_deref()
+        {
             // open file in append mode and write keylog to it with callback
             trace!(path = ?keylog_filename, "boring connector: open keylog file for debug purposes");
             let file = std::fs::OpenOptions::new()
@@ -70,38 +89,38 @@ impl ConnectConfigurationInput {
             });
         }
 
-        if let Some(s) = self.cipher_list.as_deref() {
+        if let Some(s) = self.connect_config_input.cipher_list.as_deref() {
             cfg_builder
                 .set_cipher_list(s)
                 .context("build (boring) ssl connector: set cipher list")?;
         }
 
-        if let Some(b) = self.alpn_protos.as_deref() {
+        if let Some(b) = self.connect_config_input.alpn_protos.as_deref() {
             cfg_builder
                 .set_alpn_protos(b)
                 .context("build (boring) ssl connector: set alpn protos")?;
         }
 
-        if let Some(c) = self.curves.as_deref() {
+        if let Some(c) = self.connect_config_input.curves.as_deref() {
             cfg_builder
                 .set_curves(c)
                 .context("build (boring) ssl connector: set curves")?;
         }
 
         cfg_builder
-            .set_min_proto_version(self.min_ssl_version)
+            .set_min_proto_version(self.connect_config_input.min_ssl_version)
             .context("build (boring) ssl connector: set min proto version")?;
         cfg_builder
-            .set_max_proto_version(self.max_ssl_version)
+            .set_max_proto_version(self.connect_config_input.max_ssl_version)
             .context("build (boring) ssl connector: set max proto version")?;
 
-        if let Some(s) = self.verify_algorithm_prefs.as_deref() {
+        if let Some(s) = self.connect_config_input.verify_algorithm_prefs.as_deref() {
             cfg_builder.set_verify_algorithm_prefs(s).context(
                 "build (boring) ssl connector: set signature schemes (verify algorithm prefs)",
             )?;
         }
 
-        match self.server_verify_mode {
+        match self.connect_config_input.server_verify_mode {
             ServerVerifyMode::Auto => (), // nothing explicit to do
             ServerVerifyMode::Disable => {
                 cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
@@ -109,7 +128,7 @@ impl ConnectConfigurationInput {
             }
         }
 
-        if let Some(auth) = self.client_auth.as_ref() {
+        if let Some(auth) = self.connect_config_input.client_auth.as_ref() {
             cfg_builder
                 .set_private_key(auth.private_key.as_ref())
                 .context("build (boring) ssl connector: set private key")?;
@@ -137,14 +156,17 @@ impl ConnectConfigurationInput {
             .configure()
             .context("create ssl connector configuration")?;
 
-        match self.server_verify_mode {
+        match self.connect_config_input.server_verify_mode {
             ServerVerifyMode::Auto => (), // nothing explicit to do
             ServerVerifyMode::Disable => {
                 cfg.set_verify_hostname(false);
             }
         }
 
-        Ok(cfg)
+        Ok(ConnectConfigData {
+            config: cfg,
+            server_name: self.server_name.clone(),
+        })
     }
 }
 

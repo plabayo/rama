@@ -67,7 +67,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request demands it,
     /// otherwise it will forward the pre-established inner connection.
-    pub fn auto() -> Self {
+    pub fn http_auto() -> Self {
         Self {
             connector_data: None,
             kind: ConnectorKindAuto,
@@ -78,7 +78,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
 impl TlsConnectorLayer<ConnectorKindSecure> {
     /// Creates a new [`TlsConnectorLayer`] which will always
     /// establish a secure connection regardless of the request it is for.
-    pub fn secure_only() -> Self {
+    pub fn https() -> Self {
         Self {
             connector_data: None,
             kind: ConnectorKindSecure,
@@ -111,7 +111,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
 
 impl Default for TlsConnectorLayer<ConnectorKindAuto> {
     fn default() -> Self {
-        Self::auto()
+        Self::http_auto()
     }
 }
 
@@ -318,6 +318,7 @@ where
             })?;
         tracing::trace!(
             authority = %transport_ctx.authority,
+            app_protocol = ?transport_ctx.app_protocol,
             "TlsConnector(secure): attempt to secure inner connection",
         );
 
@@ -405,27 +406,23 @@ impl<S, K> TlsConnector<S, K> {
     where
         T: Stream + Unpin,
     {
-        let (config, server_host) = match connector_data.as_ref().or(self.connector_data.as_ref()) {
-            Some(connector_data) => {
-                let client_config = connector_data.connect_config_input.try_to_build_config()?;
-                let server_host = connector_data.server_name().cloned().unwrap_or(server_host);
-                (client_config, server_host)
-            }
-            None => (
-                TlsConnectorData::new_http_auto()?
-                    .connect_config_input
-                    .try_to_build_config()?,
-                server_host,
-            ),
+        let client_config_data = match connector_data.as_ref().or(self.connector_data.as_ref()) {
+            Some(connector_data) => connector_data.try_to_build_config()?,
+            None => TlsConnectorData::new_http_auto()?.try_to_build_config()?,
         };
-        let stream = tokio_boring::connect(config, server_host.to_string().as_str(), stream)
-            .await
-            .map_err(|err| match err.as_io_error() {
-                Some(err) => OpaqueError::from_display(err.to_string())
-                    .context("boring ssl connector: connect")
-                    .into_boxed(),
-                None => OpaqueError::from_display("boring ssl connector: connect").into_boxed(),
-            })?;
+        let server_host = client_config_data.server_name.unwrap_or(server_host);
+        let stream = tokio_boring::connect(
+            client_config_data.config,
+            server_host.to_string().as_str(),
+            stream,
+        )
+        .await
+        .map_err(|err| match err.as_io_error() {
+            Some(err) => OpaqueError::from_display(err.to_string())
+                .context("boring ssl connector: connect")
+                .into_boxed(),
+            None => OpaqueError::from_display("boring ssl connector: connect").into_boxed(),
+        })?;
 
         let params = match stream.ssl().session() {
             Some(ssl_session) => {

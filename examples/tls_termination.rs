@@ -55,10 +55,7 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    tls::{
-        rustls::server::{TlsAcceptorData, TlsAcceptorLayer, TlsClientConfigHandler},
-        types::client::ClientHello,
-    },
+    tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
     Context, Layer,
 };
 use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
@@ -88,23 +85,12 @@ async fn main() {
 
     // create tls proxy
     shutdown.spawn_task_fn(|guard| async move {
-        let tls_client_config_handler = TlsClientConfigHandler::default()
-            .store_client_hello()
-            .server_config_provider(|client_hello: ClientHello| async move {
-                tracing::debug!(?client_hello, "client hello");
-
-                // Return None in case you want to use the default acceptor Tls config
-                // Usually though when implementing this trait it's because you
-                // want to use the client hello to determine which server config to use.
-                Ok::<_, Infallible>(None)
-            });
-
-        let tcp_service =
-            TlsAcceptorLayer::with_client_config_handler(acceptor_data, tls_client_config_handler)
-                .layer(Forwarder::new(([127, 0, 0, 1], 62800)).connector(
-                    // ha proxy protocol used to forwarded the client original IP
-                    HaProxyClientLayer::tcp().layer(TcpConnector::new()),
-                ));
+        let tcp_service = TlsAcceptorLayer::new(acceptor_data).layer(
+            Forwarder::new(([127, 0, 0, 1], 62800)).connector(
+                // ha proxy protocol used to forwarded the client original IP
+                HaProxyClientLayer::tcp().layer(TcpConnector::new()),
+            ),
+        );
 
         TcpListener::bind("127.0.0.1:63800")
             .await

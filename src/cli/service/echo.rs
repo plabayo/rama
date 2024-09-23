@@ -37,14 +37,9 @@ use tokio::net::TcpStream;
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
     net::tls::server::ServerConfig,
+    tls::std::server::TlsAcceptorLayer,
     tls::types::{client::ClientHelloExtension, SecureTransport},
 };
-
-#[cfg(feature = "boring")]
-use crate::tls::boring::server::TlsAcceptorLayer;
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls::rustls::server::{TlsAcceptorLayer, TlsClientConfigHandler};
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own echo [`Service`],
@@ -243,19 +238,7 @@ where
             // Limit the body size to 1MB for requests
             BodyLimitLayer::request_only(1024 * 1024),
             #[cfg(any(feature = "rustls", feature = "boring"))]
-            tls_acceptor_data.map(|data| {
-                #[cfg(feature = "boring")]
-                {
-                    TlsAcceptorLayer::new(data).with_store_client_hello(true)
-                }
-                #[cfg(not(feature = "boring"))]
-                {
-                    TlsAcceptorLayer::with_client_config_handler(
-                        data,
-                        TlsClientConfigHandler::default().store_client_hello(),
-                    )
-                }
-            }),
+            tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
         );
 
         let http_service = (
