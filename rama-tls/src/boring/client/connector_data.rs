@@ -122,6 +122,9 @@ impl TlsConnectorData {
             )?;
         }
 
+        // TODO: support grease, need to first detect it from config / client hello
+        // cfg_builder.set_grease_enabled(true);
+
         match self
             .connect_config_input
             .server_verify_mode
