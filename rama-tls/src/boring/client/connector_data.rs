@@ -92,26 +92,37 @@ impl TlsConnectorData {
         }
 
         if let Some(s) = self.connect_config_input.cipher_list.as_deref() {
+            trace!("boring connector: set cipher list: {s}");
             cfg_builder
                 .set_cipher_list(s)
                 .context("build (boring) ssl connector: set cipher list")?;
         }
 
         if let Some(b) = self.connect_config_input.alpn_protos.as_deref() {
+            trace!("boring connector: set ALPN protos: {b:?}",);
             cfg_builder
                 .set_alpn_protos(b)
                 .context("build (boring) ssl connector: set alpn protos")?;
         }
 
         if let Some(c) = self.connect_config_input.curves.as_deref() {
+            trace!("boring connector: set {} SSL curve(s)", c.len());
             cfg_builder
                 .set_curves(c)
                 .context("build (boring) ssl connector: set curves")?;
         }
 
+        trace!(
+            "boring connector: set SSL version: min: {:?}",
+            self.connect_config_input.min_ssl_version
+        );
         cfg_builder
             .set_min_proto_version(self.connect_config_input.min_ssl_version)
             .context("build (boring) ssl connector: set min proto version")?;
+        trace!(
+            "boring connector: set SSL version: max: {:?}",
+            self.connect_config_input.max_ssl_version
+        );
         cfg_builder
             .set_max_proto_version(self.connect_config_input.max_ssl_version)
             .context("build (boring) ssl connector: set max proto version")?;
@@ -130,14 +141,18 @@ impl TlsConnectorData {
             .server_verify_mode
             .unwrap_or_default()
         {
-            ServerVerifyMode::Auto => (), // nothing explicit to do
+            ServerVerifyMode::Auto => {
+                trace!("boring connector: server verify mode: auto (default verifier)");
+            } // nothing explicit to do
             ServerVerifyMode::Disable => {
+                trace!("boring connector: server verify mode: disable");
                 cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
                 cfg_builder.set_verify(SslVerifyMode::NONE);
             }
         }
 
         if let Some(auth) = self.connect_config_input.client_auth.as_ref() {
+            trace!("boring connector: client mTls: set private key");
             cfg_builder
                 .set_private_key(auth.private_key.as_ref())
                 .context("build (boring) ssl connector: set private key")?;
@@ -146,6 +161,7 @@ impl TlsConnectorData {
                     "build (boring) ssl connector: cert chain is empty",
                 ));
             }
+            trace!("boring connector: client mTls: set cert chain root");
             cfg_builder
                 .set_certificate(
                     auth.cert_chain
@@ -154,17 +170,23 @@ impl TlsConnectorData {
                 )
                 .context("build (boring) ssl connector: add primary client cert")?;
             for cert in &auth.cert_chain[1..] {
+                trace!("boring connector: client mTls: set extra cert chain");
                 cfg_builder
                     .add_extra_chain_cert(cert.clone())
                     .context("build (boring) ssl connector: set client cert")?;
             }
         }
 
+        trace!("boring connector: build SSL connector config");
         let cfg = cfg_builder
             .build()
             .configure()
             .context("create ssl connector configuration")?;
 
+        trace!(
+            "boring connector: return SSL connector config for server: {:?}",
+            self.server_name
+        );
         Ok(ConnectConfigData {
             config: cfg,
             server_name: self.server_name.clone(),
@@ -316,6 +338,10 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
             .cipher_suites
             .as_deref()
             .and_then(openssl_cipher_list_str_from_cipher_list);
+        trace!(
+            "TlsConnectorData: builder: from std client config: cipher list: {:?}",
+            cipher_list
+        );
 
         let mut server_name = None;
         let mut alpn_protos = None;
@@ -328,9 +354,29 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
         for extension in value.extensions.iter().flatten() {
             match extension {
                 ClientHelloExtension::ServerName(maybe_host) => {
-                    server_name = maybe_host.clone();
+                    server_name = match maybe_host {
+                        Some(Host::Name(_)) => {
+                            trace!("TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}", maybe_host);
+                            maybe_host.clone()
+                        }
+                        Some(Host::Address(addr)) => {
+                            // officially only domains should be send as SNI,
+                            // sso best to not pass this along and let
+                            // the TlsConnector figure out the actual (domain) host
+                            trace!("TlsConnectorData: builder: from std client config: ignore server (ip) addr from host: {:?}", addr);
+                            None
+                        }
+                        None => {
+                            trace!("TlsConnectorData: builder: from std client config: ignore server null value");
+                            None
+                        }
+                    };
                 }
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpn_list) => {
+                    trace!(
+                        "TlsConnectorData: builder: from std client config: alpn: {:?}",
+                        alpn_list
+                    );
                     let mut buf = vec![];
                     for alpn in alpn_list {
                         alpn.encode_wire_format(&mut buf)
@@ -339,6 +385,10 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                     alpn_protos = Some(buf);
                 }
                 ClientHelloExtension::SupportedGroups(groups) => {
+                    trace!(
+                        "TlsConnectorData: builder: from std client config: supported groups: {:?}",
+                        groups
+                    );
                     curves = Some(groups.iter().filter_map(|c| match (*c).try_into() {
                         Ok(v) => Some(v),
                         Err(c) => {
@@ -348,7 +398,13 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                     }).collect());
                 }
                 ClientHelloExtension::SupportedVersions(versions) => {
+                    trace!("TlsConnectorData: builder: from std client config: supported versions: {:?}", versions);
+
                     if let Some(min_ver) = versions.iter().min() {
+                        trace!(
+                            "TlsConnectorData: builder: from std client config: min version: {:?}",
+                            min_ver
+                        );
                         min_ssl_version = Some((*min_ver).try_into().map_err(|v| {
                             OpaqueError::from_display(format!("protocol version {v}"))
                                 .context("build boring ssl connector: min proto version")
@@ -356,6 +412,10 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                     }
 
                     if let Some(max_ver) = versions.iter().max() {
+                        trace!(
+                            "TlsConnectorData: builder: from std client config: max version: {:?}",
+                            max_ver
+                        );
                         max_ssl_version = Some((*max_ver).try_into().map_err(|v| {
                             OpaqueError::from_display(format!("protocol version {v}"))
                                 .context("build boring ssl connector: max proto version")
@@ -363,6 +423,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                     }
                 }
                 ClientHelloExtension::SignatureAlgorithms(schemes) => {
+                    trace!("TlsConnectorData: builder: from std client config: signature algorithms: {:?}", schemes);
                     verify_algorithm_prefs = Some(schemes.iter().filter_map(|s| match (*s).try_into() {
                         Ok(v) => Some(v),
                         Err(s) => {
@@ -372,7 +433,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                     }).collect());
                 }
                 other => {
-                    trace!(ext = ?other, "build (boring) ssl connector: ignore client hello ext");
+                    trace!(ext = ?other, "TlsConnectorData: builder: from std client config: ignore client hello ext");
                 }
             }
         }
