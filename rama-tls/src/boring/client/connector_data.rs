@@ -359,12 +359,9 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                             trace!("TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}", maybe_host);
                             maybe_host.clone()
                         }
-                        Some(Host::Address(addr)) => {
-                            // officially only domains should be send as SNI,
-                            // sso best to not pass this along and let
-                            // the TlsConnector figure out the actual (domain) host
-                            trace!("TlsConnectorData: builder: from std client config: ignore server (ip) addr from host: {:?}", addr);
-                            None
+                        Some(Host::Address(_)) => {
+                            trace!("TlsConnectorData: builder: from std client config: set server (ip) name from host: {:?}", maybe_host);
+                            maybe_host.clone()
                         }
                         None => {
                             trace!("TlsConnectorData: builder: from std client config: ignore server null value");

@@ -292,11 +292,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                     alpn_protos = Some(alpns.iter().map(|p| p.as_bytes().to_vec()).collect());
                 }
                 ClientHelloExtension::ServerName(opt_host) => {
-                    server_name = match opt_host {
-                        Some(Host::Name(_)) => opt_host.clone(),
-                        Some(Host::Address(_)) => None, // ignore ip addresses, servers might bork
-                        None => None,
-                    };
+                    server_name = opt_host.clone();
                 }
                 other => {
                     trace!(ext = ?other, "rustls/TlsConnectorData: ignore client hello ext");

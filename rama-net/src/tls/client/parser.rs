@@ -17,6 +17,7 @@ use nom::{
     IResult,
 };
 use rama_core::error::OpaqueError;
+use std::str;
 
 #[inline]
 pub(crate) fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
@@ -165,9 +166,11 @@ fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Host> {
         return Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::IsNot)));
     }
     let (i, v) = length_data(be_u16)(i)?;
-    let domain = Host::try_from(v)
+    let host = str::from_utf8(v)
+        .map_err(|_| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?
+        .parse()
         .map_err(|_| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?;
-    Ok((i, domain))
+    Ok((i, host))
 }
 
 // defined in rfc8422
@@ -273,9 +276,46 @@ fn parse_u16_type<T: From<u16>>(i: &[u8]) -> IResult<&[u8], Vec<T>> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
     use super::*;
     use crate::address::Domain;
     use crate::tls::{ECPointFormat, ExtensionId, SignatureScheme, SupportedGroup};
+
+    #[test]
+    fn test_parse_tls_extension_sni_hostname() {
+        let test_cases = [
+            ("", None),
+            ("\x00", None),
+            (
+                "\x00\x00\x05x.com",
+                Some(Host::Name(Domain::from_static("x.com"))),
+            ),
+            (
+                "\x00\x00\x10fp.ramaproxy.org",
+                Some(Host::Name(Domain::from_static("fp.ramaproxy.org"))),
+            ),
+            ("\x00\x00\x11fp.ramaproxy.org", None),
+            ("\x01\x00\x10fp.ramaproxy.org", None),
+            (
+                "\x00\x00\x09127.0.0.1",
+                Some(Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)))),
+            ),
+            (
+                "\x00\x00\x276670:2e72:616d:6170:726f:7879:2e6f:7267",
+                Some(Host::Address(IpAddr::V6(Ipv6Addr::new(
+                    0x6670, 0x2e72, 0x616d, 0x6170, 0x726f, 0x7879, 0x2e6f, 0x7267,
+                )))),
+            ),
+        ];
+        for (input, expected_output) in test_cases {
+            let result = parse_tls_extension_sni_hostname(input.as_bytes());
+            match expected_output {
+                Some(host) => assert_eq!(host, result.unwrap().1),
+                None => assert!(result.is_err()),
+            }
+        }
+    }
 
     #[test]
     fn test_parse_client_hello_zero_bytes_failure() {
