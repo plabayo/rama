@@ -98,9 +98,8 @@ fn openssl_cipher_str_from_cipher_suite(suite: super::CipherSuite) -> Option<&'s
         super::CipherSuite::TLS_DHE_RSA_WITH_3DES_EDE_CBC_SHA => Some("DHE-RSA-DES-CBC3-SHA"),
         super::CipherSuite::TLS_DH_anon_WITH_RC4_128_MD5 => Some("ADH-RC4-MD5"),
         super::CipherSuite::TLS_DH_anon_WITH_3DES_EDE_CBC_SHA => Some("ADH-DES-CBC3-SHA"),
-        super::CipherSuite::SSL_FORTEZZA_KEA_WITH_NULL_SHA => None,
-        super::CipherSuite::SSL_FORTEZZA_KEA_WITH_FORTEZZA_CBC_SHA => None,
-        super::CipherSuite::TLS_KRB5_WITH_DES_CBC_SHA_or_SSL_FORTEZZA_KEA_WITH_RC4_128_SHA => None,
+        super::CipherSuite::SSL_FORTEZZA_KEA_WITH_NULL_SHA => None, // not implemented (SSL v3.0)
+        super::CipherSuite::SSL_FORTEZZA_KEA_WITH_FORTEZZA_CBC_SHA => None, // not implemented (SSL v3.0)
         super::CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA => Some("AES128-SHA"),
         super::CipherSuite::TLS_RSA_WITH_AES_256_CBC_SHA => Some("AES256-SHA"),
         super::CipherSuite::TLS_DH_DSS_WITH_AES_128_CBC_SHA => Some("DH-DSS-AES128-SHA"),
@@ -398,8 +397,133 @@ fn openssl_cipher_str_from_cipher_suite(suite: super::CipherSuite) -> Option<&'s
         super::CipherSuite::TLS13_CHACHA20_POLY1305_SHA256 => Some("TLS_CHACHA20_POLY1305_SHA256"),
         super::CipherSuite::TLS13_AES_128_CCM_SHA256 => Some("TLS_AES_128_CCM_SHA256"),
         super::CipherSuite::TLS13_AES_128_CCM_8_SHA256 => Some("TLS_AES_128_CCM_8_SHA256"),
+        super::CipherSuite::TLS_NULL_WITH_NULL_NULL => Some("NULL"),
+        super::CipherSuite::TLS_RSA_EXPORT_WITH_RC4_40_MD5 => Some("EXP-RC4-MD5"),
+        super::CipherSuite::TLS_RSA_EXPORT_WITH_RC2_CBC_40_MD5 => Some("EXP-RC2-CBC-MD5"),
+        super::CipherSuite::TLS_RSA_EXPORT_WITH_DES40_CBC_SHA => Some("EXP-DES-CBC-SHA"),
+        super::CipherSuite::TLS_RSA_WITH_DES_CBC_SHA => Some("DES-CBC-SHA"),
+        super::CipherSuite::TLS_DH_DSS_EXPORT_WITH_DES40_CBC_SHA => Some("EXP-DH-DSS-DES-CBC-SHA"),
+        super::CipherSuite::TLS_DH_DSS_WITH_DES_CBC_SHA => Some("DH-DSS-DES-CBC-SHA"),
+        super::CipherSuite::TLS_DH_RSA_EXPORT_WITH_DES40_CBC_SHA => Some("EXP-DH-RSA-DES-CBC-SHA"),
+        super::CipherSuite::TLS_DH_RSA_WITH_DES_CBC_SHA => Some("DH-RSA-DES-CBC-SHA	"),
+        super::CipherSuite::TLS_DHE_DSS_EXPORT_WITH_DES40_CBC_SHA => {
+            Some("EXP-EDH-DSS-DES-CBC-SHA")
+        }
+        super::CipherSuite::TLS_DHE_DSS_WITH_DES_CBC_SHA => Some("EDH-DSS-DES-CBC-SHA"),
+        super::CipherSuite::TLS_DHE_RSA_EXPORT_WITH_DES40_CBC_SHA => {
+            Some("EXP-EDH-RSA-DES-CBC-SHA")
+        }
+        super::CipherSuite::TLS_DHE_RSA_WITH_DES_CBC_SHA => Some("EDH-RSA-DES-CBC-SHA"),
+        super::CipherSuite::TLS_DH_anon_EXPORT_WITH_RC4_40_MD5 => Some("EXP-ADH-RC4-MD5"),
+        super::CipherSuite::TLS_DH_anon_EXPORT_WITH_DES40_CBC_SHA => Some("EXP-ADH-DES-CBC-SHA"),
+        super::CipherSuite::TLS_DH_anon_WITH_DES_CBC_SHA => Some("ADH-DES-CBC-SHA"),
+        super::CipherSuite::TLS_KRB5_WITH_DES_CBC_SHA_or_SSL_FORTEZZA_KEA_WITH_RC4_128_SHA => {
+            Some("KRB5-DES-CBC-SHA")
+        }
+        super::CipherSuite::TLS_KRB5_WITH_3DES_EDE_CBC_SHA => Some("KRB5-DES-CBC3-SHA"),
+        super::CipherSuite::TLS_KRB5_WITH_RC4_128_SHA => Some("KRB5-RC4-SHA"),
+        super::CipherSuite::TLS_KRB5_WITH_IDEA_CBC_SHA => Some("KRB5-IDEA-CBC-SHA"),
+        super::CipherSuite::TLS_KRB5_WITH_DES_CBC_MD5 => Some("KRB5-DES-CBC-MD5"),
+        super::CipherSuite::TLS_KRB5_WITH_3DES_EDE_CBC_MD5 => Some("KRB5-DES-CBC3-MD5"),
+        super::CipherSuite::TLS_KRB5_WITH_RC4_128_MD5 => Some("KRB5-RC4-MD5"),
+        super::CipherSuite::TLS_KRB5_WITH_IDEA_CBC_MD5 => Some("KRB5-IDEA-CBC-MD5"),
+        super::CipherSuite::TLS_KRB5_EXPORT_WITH_DES_CBC_40_SHA => Some("EXP-KRB5-DES-CBC-SHA"),
+        super::CipherSuite::TLS_KRB5_EXPORT_WITH_RC2_CBC_40_SHA => Some("EXP-KRB5-RC2-CBC-SHA"),
+        super::CipherSuite::TLS_KRB5_EXPORT_WITH_RC4_40_SHA => Some("EXP-KRB5-RC4-SHA"),
+        super::CipherSuite::TLS_KRB5_EXPORT_WITH_DES_CBC_40_MD5 => Some("EXP-KRB5-DES-CBC-MD5"),
+        super::CipherSuite::TLS_KRB5_EXPORT_WITH_RC2_CBC_40_MD5 => Some("EXP-KRB5-RC2-CBC-MD5"),
+        super::CipherSuite::TLS_KRB5_EXPORT_WITH_RC4_40_MD5 => Some("EXP-KRB5-RC4-MD5"),
+        super::CipherSuite::TLS_RSA_EXPORT1024_WITH_RC4_56_MD5 => Some("EXP1024-RC4-MD5"),
+        super::CipherSuite::TLS_RSA_EXPORT1024_WITH_RC2_CBC_56_MD5 => Some("EXP1024-RC2-CBC-MD5"),
+        super::CipherSuite::TLS_RSA_EXPORT1024_WITH_DES_CBC_SHA => Some("EXP1024-DES-CBC-SHA"),
+        super::CipherSuite::TLS_DHE_DSS_EXPORT1024_WITH_DES_CBC_SHA => {
+            Some("EXP1024-DHE-DSS-DES-CBC-SHA")
+        }
+        super::CipherSuite::TLS_RSA_EXPORT1024_WITH_RC4_56_SHA => Some("EXP1024-RC4-SHA"),
+        super::CipherSuite::TLS_DHE_DSS_EXPORT1024_WITH_RC4_56_SHA => {
+            Some("EXP1024-DHE-DSS-RC4-SHA")
+        }
+        super::CipherSuite::TLS_RSA_WITH_CAMELLIA_256_CBC_SHA256 => Some("CAMELLIA256-SHA256"),
+        super::CipherSuite::TLS_RSA_WITH_CAMELLIA_128_CBC_SHA256 => Some("CAMELLIA128-SHA256"),
+        super::CipherSuite::TLS_DH_DSS_WITH_CAMELLIA_128_CBC_SHA256 => {
+            Some("DH-DSS-CAMELLIA128-SHA256")
+        }
+        super::CipherSuite::TLS_DH_RSA_WITH_CAMELLIA_128_CBC_SHA256 => {
+            Some("DH-RSA-CAMELLIA128-SHA256")
+        }
+        super::CipherSuite::TLS_DHE_DSS_WITH_CAMELLIA_128_CBC_SHA256 => {
+            Some("DHE-DSS-CAMELLIA128-SHA256")
+        }
+        super::CipherSuite::TLS_DHE_RSA_WITH_CAMELLIA_128_CBC_SHA256 => {
+            Some("DHE-RSA-CAMELLIA128-SHA256")
+        }
+        super::CipherSuite::TLS_DHE_RSA_WITH_CAMELLIA_256_CBC_SHA256 => {
+            Some("DHE-RSA-CAMELLIA256-SHA256")
+        }
+        super::CipherSuite::TLS_DH_anon_WITH_CAMELLIA_128_CBC_SHA256 => {
+            Some("ADH-CAMELLIA128-SHA256")
+        }
+        super::CipherSuite::TLS_EMPTY_RENEGOTIATION_INFO_SCSV => Some("TLS_FALLBACK_SCSV"),
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_NULL_SHA => Some("ECDH-ECDSA-NULL-SHA"),
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_RC4_128_SHA => Some("ECDH-ECDSA-RC4-SHA"),
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_3DES_EDE_CBC_SHA => Some("ECDH-ECDSA-DES-CBC3-SHA"),
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA => Some("ECDH-ECDSA-AES128-SHA"),
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA => Some("ECDH-ECDSA-AES256-SHA"),
+        super::CipherSuite::TLS_ECDH_RSA_WITH_NULL_SHA => Some("ECDH-RSA-NULL-SHA"),
+        super::CipherSuite::TLS_ECDH_RSA_WITH_RC4_128_SHA => Some("ECDH-RSA-RC4-SHA"),
+        super::CipherSuite::TLS_ECDH_RSA_WITH_3DES_EDE_CBC_SHA => Some("ECDH-RSA-DES-CBC3-SHA"),
+        super::CipherSuite::TLS_ECDH_RSA_WITH_AES_128_CBC_SHA => Some("ECDH-RSA-AES128-SHA"),
+        super::CipherSuite::TLS_ECDH_RSA_WITH_AES_256_CBC_SHA => Some("ECDH-RSA-AES256-SHA"),
+        super::CipherSuite::TLS_SRP_SHA_WITH_3DES_EDE_CBC_SHA => Some("SRP-3DES-EDE-CBC-SHA"),
+        super::CipherSuite::TLS_SRP_SHA_RSA_WITH_3DES_EDE_CBC_SHA => {
+            Some("SRP-RSA-3DES-EDE-CBC-SHA")
+        }
+        super::CipherSuite::TLS_SRP_SHA_DSS_WITH_3DES_EDE_CBC_SHA => {
+            Some("SRP-DSS-3DES-EDE-CBC-SHA")
+        }
+        super::CipherSuite::TLS_SRP_SHA_WITH_AES_128_CBC_SHA => Some("SRP-AES-128-CBC-SHA"),
+        super::CipherSuite::TLS_SRP_SHA_RSA_WITH_AES_128_CBC_SHA => Some("SRP-RSA-AES-128-CBC-SHA"),
+        super::CipherSuite::TLS_SRP_SHA_DSS_WITH_AES_128_CBC_SHA => Some("SRP-DSS-AES-128-CBC-SHA"),
+        super::CipherSuite::TLS_SRP_SHA_WITH_AES_256_CBC_SHA => Some("SRP-AES-256-CBC-SHA"),
+        super::CipherSuite::TLS_SRP_SHA_RSA_WITH_AES_256_CBC_SHA => Some("SRP-RSA-AES-256-CBC-SHA"),
+        super::CipherSuite::TLS_SRP_SHA_DSS_WITH_AES_256_CBC_SHA => Some("SRP-DSS-AES-256-CBC-SHA"),
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_AES_128_CBC_SHA256 => {
+            Some("ECDH-ECDSA-AES128-SHA256")
+        }
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_AES_256_CBC_SHA384 => {
+            Some("ECDH-ECDSA-AES256-SHA384")
+        }
+        super::CipherSuite::TLS_ECDH_RSA_WITH_AES_128_CBC_SHA256 => Some("ECDH-RSA-AES128-SHA256"),
+        super::CipherSuite::TLS_ECDH_RSA_WITH_AES_256_CBC_SHA384 => Some("ECDH-RSA-AES256-SHA384"),
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_AES_128_GCM_SHA256 => {
+            Some("ECDH-ECDSA-AES128-GCM-SHA256")
+        }
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_AES_256_GCM_SHA384 => {
+            Some("ECDH-ECDSA-AES256-GCM-SHA384")
+        }
+        super::CipherSuite::TLS_ECDH_RSA_WITH_AES_128_GCM_SHA256 => {
+            Some("ECDH-RSA-AES128-GCM-SHA256")
+        }
+        super::CipherSuite::TLS_ECDH_RSA_WITH_AES_256_GCM_SHA384 => {
+            Some("ECDH-RSA-AES256-GCM-SHA384")
+        }
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_CAMELLIA_128_CBC_SHA256 => {
+            Some("ECDH-ECDSA-CAMELLIA128-SHA256")
+        }
+        super::CipherSuite::TLS_ECDH_ECDSA_WITH_CAMELLIA_256_CBC_SHA384 => {
+            Some("ECDH-ECDSA-CAMELLIA256-SHA384")
+        }
+        super::CipherSuite::TLS_ECDH_RSA_WITH_CAMELLIA_128_CBC_SHA256 => {
+            Some("ECDH-RSA-CAMELLIA128-SHA256")
+        }
+        super::CipherSuite::TLS_ECDH_RSA_WITH_CAMELLIA_256_CBC_SHA384 => {
+            Some("ECDH-RSA-CAMELLIA256-SHA384")
+        }
         other => {
-            trace!("openssl_cipher_str_From_cipher_suite: ignore cipher suite: {other}");
+            trace!(
+                "openssl_cipher_str_From_cipher_suite: ignore cipher s
+        uite: {other}"
+            );
             None
         }
     }
