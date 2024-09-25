@@ -61,6 +61,23 @@ where
     }
 }
 
+impl<S, State, Request> Service<State, Request> for &'static S
+where
+    S: Service<State, Request>,
+{
+    type Response = S::Response;
+    type Error = S::Error;
+
+    #[inline]
+    fn serve(
+        &self,
+        ctx: Context<State>,
+        req: Request,
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+        (**self).serve(ctx, req)
+    }
+}
+
 impl<S, State, Request> Service<State, Request> for Box<S>
 where
     S: Service<State, Request>,
