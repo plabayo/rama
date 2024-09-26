@@ -9,7 +9,7 @@ use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::Domain;
 use std::{
     net::{Ipv4Addr, Ipv6Addr},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 pub use hickory_resolver::config;
@@ -20,7 +20,11 @@ pub struct HickoryDns(Arc<TokioAsyncResolver>);
 
 impl Default for HickoryDns {
     fn default() -> Self {
-        Self::builder().build()
+        // default hickory dns is global as to share the cache
+        static SHARED_HICKORY_DNS: OnceLock<HickoryDns> = OnceLock::new();
+        SHARED_HICKORY_DNS
+            .get_or_init(|| Self::builder().build())
+            .clone()
     }
 }
 

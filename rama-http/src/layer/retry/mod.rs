@@ -208,7 +208,7 @@ mod test {
                     if res.status().is_server_error() {
                         ctx.state()
                             .retry_counter
-                            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
                         (ctx, result, true)
                     } else {
                         (ctx, result, false)
@@ -271,7 +271,7 @@ mod test {
                 assert!(
                     state
                         .retry_counter
-                        .load(std::sync::atomic::Ordering::SeqCst)
+                        .load(std::sync::atomic::Ordering::Acquire)
                         > 0,
                     "{msg}"
                 );
@@ -279,7 +279,7 @@ mod test {
                 assert_eq!(
                     state
                         .retry_counter
-                        .load(std::sync::atomic::Ordering::SeqCst),
+                        .load(std::sync::atomic::Ordering::Acquire),
                     0,
                     "{msg}"
                 );
@@ -303,7 +303,7 @@ mod test {
                 assert!(
                     state
                         .retry_counter
-                        .load(std::sync::atomic::Ordering::SeqCst)
+                        .load(std::sync::atomic::Ordering::Acquire)
                         > 0,
                     "{msg}"
                 );
@@ -311,7 +311,7 @@ mod test {
                 assert_eq!(
                     state
                         .retry_counter
-                        .load(std::sync::atomic::Ordering::SeqCst),
+                        .load(std::sync::atomic::Ordering::Acquire),
                     0,
                     "{msg}"
                 )

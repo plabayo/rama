@@ -177,7 +177,7 @@ pub(super) async fn get_api_fetch_number(
     let tls_info = get_tls_display_info(&ctx);
 
     Ok(Json(json!({
-        "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
         "fp": {
             "user_agent_info": user_agent_info,
             "request_info": request_info,
@@ -249,7 +249,7 @@ pub(super) async fn get_api_xml_http_request_number(
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     Ok(Json(json!({
-        "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+        "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
         "fp": {
             "headers": http_info.headers,
             "user_agent_info": user_agent_info,

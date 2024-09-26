@@ -52,7 +52,7 @@ mod tests {
             let counter2 = counter.clone();
             executor.execute(async move {
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                counter2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                counter2.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
             });
         }
 
@@ -62,6 +62,6 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(counter.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(counter.load(std::sync::atomic::Ordering::Acquire), 1);
     }
 }

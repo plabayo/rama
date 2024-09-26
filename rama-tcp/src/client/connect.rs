@@ -202,7 +202,7 @@ where
     // wait for the first connection to succeed,
     // ignore the rest of the connections (sorry, but not sorry)
     if let Some((stream, addr)) = rx.recv().await {
-        connected.store(true, Ordering::SeqCst);
+        connected.store(true, Ordering::Release);
         return Ok((stream, addr));
     }
 
@@ -260,13 +260,13 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
         // back off retries exponentially
         if index > 0 {
             let delay = match ip_kind {
-                IpKind::Ipv4 => Duration::from_micros((35 * 2 * index) as u64),
-                IpKind::Ipv6 => Duration::from_micros((21 * 2 * index) as u64),
+                IpKind::Ipv4 => Duration::from_micros((21 * 2 * index) as u64),
+                IpKind::Ipv6 => Duration::from_micros((15 * 2 * index) as u64),
             };
             tokio::time::sleep(delay).await;
         }
 
-        if connected.load(Ordering::SeqCst) {
+        if connected.load(Ordering::Acquire) {
             tracing::trace!("[{ip_kind:?}] #{index}: abort connect loop to {addr} (connection already established)");
             return;
         }
@@ -274,7 +274,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
         let connector = connector.clone();
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
-            if connected.load(Ordering::SeqCst) {
+            if connected.load(Ordering::Acquire) {
                 tracing::trace!("[{ip_kind:?}] #{index}: abort spawned attempt to {addr} (connection already established)");
                 return;
             }
