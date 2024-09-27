@@ -230,7 +230,6 @@ where
                         inner: err.into(),
                         filter: filter.clone(),
                     })
-                    .context("select proxy in DB")
                 })?;
 
             let mut proxy_address = proxy.address.clone();
