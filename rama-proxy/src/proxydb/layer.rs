@@ -225,7 +225,13 @@ where
                 .db
                 .get_proxy_if(transport_ctx, filter.clone(), self.predicate.clone())
                 .await
-                .map_err(|err| OpaqueError::from_boxed(err.into()).context("select proxy in DB"))?;
+                .map_err(|err| {
+                    OpaqueError::from_std(ProxySelectError {
+                        inner: err.into(),
+                        filter: filter.clone(),
+                    })
+                    .context("select proxy in DB")
+                })?;
 
             let mut proxy_address = proxy.address.clone();
 
@@ -302,6 +308,28 @@ where
         }
 
         self.inner.serve(ctx, req).await.map_err(Into::into)
+    }
+}
+
+#[derive(Debug)]
+struct ProxySelectError {
+    inner: BoxError,
+    filter: ProxyFilter,
+}
+
+impl fmt::Display for ProxySelectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "proxy select error ({}) for filter: {:?}",
+            self.inner, self.filter
+        )
+    }
+}
+
+impl std::error::Error for ProxySelectError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.inner.source().unwrap_or_else(|| self.inner.as_ref()))
     }
 }
 
