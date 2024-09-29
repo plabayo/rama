@@ -52,18 +52,20 @@ impl HyperConnServer for Http1Builder {
         if let Some(guard) = guard {
             let mut cancelled_fut = pin!(Fuse::new(guard.cancelled()));
 
-            loop {
-                select! {
-                    _ = cancelled_fut.as_mut() => {
-                        tracing::trace!("signal received: initiate graceful shutdown");
-                        conn.as_mut().graceful_shutdown();
-                    }
-                    result = conn.as_mut() => {
-                        tracing::trace!("connection finished");
-                        return map_hyper_result(result);
-                    }
+            select! {
+                _ = cancelled_fut.as_mut() => {
+                    tracing::trace!("signal received: initiate graceful shutdown");
+                    conn.as_mut().graceful_shutdown();
+                }
+                result = conn.as_mut() => {
+                    tracing::trace!("connection finished");
+                    return map_hyper_result(result);
                 }
             }
+
+            let result = conn.as_mut().await;
+            tracing::trace!("connection finished after graceful shutdown");
+            map_hyper_result(result)
         } else {
             map_hyper_result(conn.await)
         }
@@ -93,18 +95,20 @@ impl HyperConnServer for Http2Builder<HyperExecutor> {
         if let Some(guard) = guard {
             let mut cancelled_fut = pin!(Fuse::new(guard.cancelled()));
 
-            loop {
-                select! {
-                    _ = cancelled_fut.as_mut() => {
-                        tracing::trace!("signal received: initiate graceful shutdown");
-                        conn.as_mut().graceful_shutdown();
-                    }
-                    result = conn.as_mut() => {
-                        tracing::trace!("connection finished");
-                        return map_hyper_result(result);
-                    }
+            select! {
+                _ = cancelled_fut.as_mut() => {
+                    tracing::trace!("signal received: initiate graceful shutdown");
+                    conn.as_mut().graceful_shutdown();
+                }
+                result = conn.as_mut() => {
+                    tracing::trace!("connection finished");
+                    return map_hyper_result(result);
                 }
             }
+
+            let result = conn.as_mut().await;
+            tracing::trace!("connection finished after graceful shutdown");
+            map_hyper_result(result)
         } else {
             map_hyper_result(conn.await)
         }
@@ -134,18 +138,20 @@ impl HyperConnServer for AutoBuilder<HyperExecutor> {
         if let Some(guard) = guard {
             let mut cancelled_fut = pin!(Fuse::new(guard.cancelled()));
 
-            loop {
-                select! {
-                    _ = cancelled_fut.as_mut() => {
-                        tracing::trace!("signal received: nop: graceful shutdown not supported for auto builder");
-                        conn.as_mut().graceful_shutdown();
-                    }
-                    result = conn.as_mut() => {
-                        tracing::trace!("connection finished");
-                        return map_boxed_hyper_result(result);
-                    }
+            select! {
+                _ = cancelled_fut.as_mut() => {
+                    tracing::trace!("signal received: nop: graceful shutdown not supported for auto builder");
+                    conn.as_mut().graceful_shutdown();
+                }
+                result = conn.as_mut() => {
+                    tracing::trace!("connection finished");
+                    return map_boxed_hyper_result(result);
                 }
             }
+
+            let result = conn.as_mut().await;
+            tracing::trace!("connection finished after graceful shutdown");
+            map_boxed_hyper_result(result)
         } else {
             map_boxed_hyper_result(conn.await)
         }
