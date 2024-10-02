@@ -102,6 +102,28 @@ pub trait Policy<S, R, E>: Send + Sync + 'static {
     ) -> Option<(Context<S>, Request<RetryBody>)>;
 }
 
+impl<P, S, R, E> Policy<S, R, E> for &'static P
+where
+    P: Policy<S, R, E>,
+{
+    fn retry(
+        &self,
+        ctx: Context<S>,
+        req: Request<RetryBody>,
+        result: Result<R, E>,
+    ) -> impl Future<Output = PolicyResult<S, R, E>> + Send + '_ {
+        (**self).retry(ctx, req, result)
+    }
+
+    fn clone_input(
+        &self,
+        ctx: &Context<S>,
+        req: &Request<RetryBody>,
+    ) -> Option<(Context<S>, Request<RetryBody>)> {
+        (**self).clone_input(ctx, req)
+    }
+}
+
 impl<P, S, R, E> Policy<S, R, E> for std::sync::Arc<P>
 where
     P: Policy<S, R, E>,

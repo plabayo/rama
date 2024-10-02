@@ -1,20 +1,19 @@
-use super::{ServerConfig, TlsAcceptorService};
+use super::{TlsAcceptorData, TlsAcceptorService};
 use rama_core::Layer;
-use std::sync::Arc;
 
 /// A [`Layer`] which wraps the given service with a [`TlsAcceptorService`].
 #[derive(Debug, Clone)]
 pub struct TlsAcceptorLayer {
-    config: Arc<ServerConfig>,
+    data: TlsAcceptorData,
     store_client_hello: bool,
 }
 
 impl TlsAcceptorLayer {
-    /// Creates a new [`TlsAcceptorLayer`] using the given [`ServerConfig`],
+    /// Creates a new [`TlsAcceptorLayer`] using the given [`TlsAcceptorData`],
     /// which is used to configure the inner TLS acceptor.
-    pub const fn new(config: Arc<ServerConfig>) -> Self {
+    pub const fn new(data: TlsAcceptorData) -> Self {
         Self {
-            config,
+            data,
             store_client_hello: false,
         }
     }
@@ -36,6 +35,6 @@ impl<S> Layer<S> for TlsAcceptorLayer {
     type Service = TlsAcceptorService<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        TlsAcceptorService::new(self.config.clone(), inner, self.store_client_hello)
+        TlsAcceptorService::new(self.data.clone(), inner, self.store_client_hello)
     }
 }

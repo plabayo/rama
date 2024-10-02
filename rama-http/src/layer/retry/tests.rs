@@ -27,11 +27,11 @@ async fn retry_errors() {
             req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
-            if self.errored.swap(true, Ordering::SeqCst) {
-                self.response_counter.fetch_add(1, Ordering::SeqCst);
+            if self.errored.swap(true, Ordering::AcqRel) {
+                self.response_counter.fetch_add(1, Ordering::AcqRel);
                 Ok("world".into_response())
             } else {
-                self.error_counter.fetch_add(1, Ordering::SeqCst);
+                self.error_counter.fetch_add(1, Ordering::AcqRel);
                 Err(error!("retry me"))
             }
         }
@@ -51,8 +51,8 @@ async fn retry_errors() {
         .await
         .unwrap();
     assert_eq!(resp.try_into_string().await.unwrap(), "world");
-    assert_eq!(response_counter.load(Ordering::SeqCst), 1);
-    assert_eq!(error_counter.load(Ordering::SeqCst), 1);
+    assert_eq!(response_counter.load(Ordering::Acquire), 1);
+    assert_eq!(error_counter.load(Ordering::Acquire), 1);
 }
 
 #[tokio::test]
@@ -71,7 +71,7 @@ async fn retry_limit() {
             req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
-            self.error_counter.fetch_add(1, Ordering::SeqCst);
+            self.error_counter.fetch_add(1, Ordering::AcqRel);
             Err(error!("error forever"))
         }
     }
@@ -87,7 +87,7 @@ async fn retry_limit() {
         .await
         .unwrap_err();
     assert_eq!(err.to_string(), "service error: error forever");
-    assert_eq!(error_counter.load(Ordering::SeqCst), 3);
+    assert_eq!(error_counter.load(Ordering::Acquire), 3);
 }
 
 #[tokio::test]
@@ -106,7 +106,7 @@ async fn retry_error_inspection() {
             req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
             assert_eq!(req.try_into_string().await.unwrap(), "hello");
-            if self.errored.swap(true, Ordering::SeqCst) {
+            if self.errored.swap(true, Ordering::AcqRel) {
                 Err(error!("reject"))
             } else {
                 Err(error!("retry me"))
@@ -195,8 +195,8 @@ async fn retry_mutating_policy() {
             _ctx: Context<State>,
             req: Request<RetryBody>,
         ) -> Result<Self::Response, Self::Error> {
-            self.response_counter.fetch_add(1, Ordering::SeqCst);
-            if self.responded.swap(true, Ordering::SeqCst) {
+            self.response_counter.fetch_add(1, Ordering::AcqRel);
+            if self.responded.swap(true, Ordering::AcqRel) {
                 assert_eq!(req.try_into_string().await.unwrap(), "retrying");
             } else {
                 assert_eq!(req.try_into_string().await.unwrap(), "hello");
@@ -220,7 +220,7 @@ async fn retry_mutating_policy() {
         .await
         .unwrap_err();
     assert_eq!(err.to_string(), "service error: out of retries");
-    assert_eq!(response_counter.load(Ordering::SeqCst), 3);
+    assert_eq!(response_counter.load(Ordering::Acquire), 3);
 }
 
 type State = ();

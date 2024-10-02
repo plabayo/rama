@@ -10,7 +10,7 @@ as a distant relative.
 - <https://github.com/tower-rs/tower/tree/71551010acff922c5b51c280e49a15ad2d33df61>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
-- <https://github.com/tower-rs/tower-http/tree/3f98dc19bc6c70aa6e4912b63538d89443f03b19>
+- <https://github.com/tower-rs/tower-http/tree/aeca2626d4b5836d2fe66877ba1b857db9851815>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in

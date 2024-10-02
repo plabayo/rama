@@ -94,7 +94,7 @@ syn = "2.0"
 sync_wrapper = "1.0"
 tempfile = "3.10"
 tokio = "1.38"
-tokio-graceful = "0.1"
+tokio-graceful = "0.2"
 tokio-rustls = { version = "0.26", default-features = false, features = [
     "logging",
     "tls12",
@@ -201,6 +201,7 @@ opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tracing = { workspace = true }
@@ -255,7 +256,7 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_mitm_proxy"
-required-features = ["http-full", "rustls"]
+required-features = ["http-full"]
 
 [[example]]
 name = "http_rate_limit"
@@ -307,4 +308,4 @@ required-features = ["boring", "haproxy", "http-full"]
 
 [[example]]
 name = "tls_termination"
-required-features = ["haproxy", "http-full", "rustls"]
+required-features = ["rustls", "haproxy", "http-full"]

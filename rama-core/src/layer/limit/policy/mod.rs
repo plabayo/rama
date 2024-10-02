@@ -152,6 +152,24 @@ where
     }
 }
 
+impl<State, Request, P> Policy<State, Request> for &'static P
+where
+    P: Policy<State, Request>,
+    State: Send + Sync + 'static,
+    Request: Send + 'static,
+{
+    type Guard = P::Guard;
+    type Error = P::Error;
+
+    async fn check(
+        &self,
+        ctx: Context<State>,
+        request: Request,
+    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+        (**self).check(ctx, request).await
+    }
+}
+
 impl<State, Request, P> Policy<State, Request> for Arc<P>
 where
     P: Policy<State, Request>,

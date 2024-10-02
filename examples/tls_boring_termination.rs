@@ -34,11 +34,12 @@
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    error::BoxError,
     graceful::Shutdown,
     layer::{ConsumeErrLayer, GetExtensionLayer},
     net::forwarded::Forwarded,
     net::stream::{SocketInfo, Stream},
+    net::tls::server::SelfSignedData,
+    net::tls::server::{ServerAuth, ServerConfig},
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
@@ -48,27 +49,14 @@ use rama::{
         server::TcpListener,
     },
     tls::{
-        boring::{
-            dep::boring::{
-                asn1::Asn1Time,
-                bn::{BigNum, MsbOption},
-                hash::MessageDigest,
-                pkey::{PKey, Private},
-                rsa::Rsa,
-                x509::{
-                    extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
-                    X509NameBuilder, X509,
-                },
-            },
-            server::{ServerConfig, TlsAcceptorLayer},
-        },
-        types::{ApplicationProtocol, SecureTransport},
+        boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+        types::SecureTransport,
     },
     Context, Layer,
 };
 
 // everything else is provided by the standard library, community crates or tokio
-use std::{convert::Infallible, sync::Arc, time::Duration};
+use std::{convert::Infallible, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
@@ -84,29 +72,16 @@ async fn main() {
         )
         .init();
 
-    let shutdown = Shutdown::default();
+    let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
 
-    // create server cert/key pair
-    let (cert, key) = mk_ca_cert().expect("generate ca/key pair");
+    let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+
+    let shutdown = Shutdown::default();
 
     // create tls proxy
     shutdown.spawn_task_fn(|guard| async move {
-        // let tls_server_config = ServerConfig::builder()
-        //     .with_no_client_auth()
-        //     .with_single_cert(
-        //         vec![server_cert_der],
-        //         PrivatePkcs8KeyDer::from(server_key_der.secret_pkcs8_der().to_owned()).into(),
-        //     )
-        //     .expect("create tls server config");
-        let mut tls_server_config = ServerConfig::new(key, vec![cert]);
-        tls_server_config.alpn_protocols =
-            vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
-        if let Ok(keylog_file) = std::env::var("SSLKEYLOGFILE") {
-            tls_server_config.keylog_filename = Some(keylog_file);
-        }
-
         let tcp_service = (
-            TlsAcceptorLayer::new(Arc::new(tls_server_config)).with_store_client_hello(true),
+            TlsAcceptorLayer::new(acceptor_data).with_store_client_hello(true),
             GetExtensionLayer::new(|st: SecureTransport| async move {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!(?client_hello, "secure connection established");
@@ -175,51 +150,4 @@ where
         .expect("write to stream");
 
     Ok(())
-}
-
-/// Make a CA certificate and private key
-fn mk_ca_cert() -> Result<(X509, PKey<Private>), BoxError> {
-    let rsa = Rsa::generate(4096)?;
-    let privkey = PKey::from_rsa(rsa)?;
-
-    let mut x509_name = X509NameBuilder::new()?;
-    x509_name.append_entry_by_text("C", "BE")?;
-    x509_name.append_entry_by_text("ST", "OVL")?;
-    x509_name.append_entry_by_text("O", "Plabayo")?;
-    x509_name.append_entry_by_text("CN", "localhost")?;
-    let x509_name = x509_name.build();
-
-    let mut cert_builder = X509::builder()?;
-    cert_builder.set_version(2)?;
-    let serial_number = {
-        let mut serial = BigNum::new()?;
-        serial.rand(159, MsbOption::MAYBE_ZERO, false)?;
-        serial.to_asn1_integer()?
-    };
-    cert_builder.set_serial_number(&serial_number)?;
-    cert_builder.set_subject_name(&x509_name)?;
-    cert_builder.set_issuer_name(&x509_name)?;
-    cert_builder.set_pubkey(&privkey)?;
-    let not_before = Asn1Time::days_from_now(0)?;
-    cert_builder.set_not_before(&not_before)?;
-    let not_after = Asn1Time::days_from_now(90)?;
-    cert_builder.set_not_after(&not_after)?;
-
-    cert_builder.append_extension(BasicConstraints::new().critical().ca().build()?)?;
-    cert_builder.append_extension(
-        KeyUsage::new()
-            .critical()
-            .key_cert_sign()
-            .crl_sign()
-            .build()?,
-    )?;
-
-    let subject_key_identifier =
-        SubjectKeyIdentifier::new().build(&cert_builder.x509v3_context(None, None))?;
-    cert_builder.append_extension(subject_key_identifier)?;
-
-    cert_builder.sign(&privkey, MessageDigest::sha256())?;
-    let cert = cert_builder.build();
-
-    Ok((cert, privkey))
 }

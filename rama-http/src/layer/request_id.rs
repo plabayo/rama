@@ -27,7 +27,7 @@
 //! impl MakeRequestId for MyMakeRequestId {
 //!     fn make_request_id<B>(&self, request: &Request<B>) -> Option<RequestId> {
 //!         let request_id = self.counter
-//!             .fetch_add(1, Ordering::SeqCst)
+//!             .fetch_add(1, Ordering::AcqRel)
 //!             .to_string()
 //!             .parse()
 //!             .unwrap();
@@ -460,7 +460,7 @@ mod tests {
     impl MakeRequestId for Counter {
         fn make_request_id<B>(&self, _request: &Request<B>) -> Option<RequestId> {
             let id =
-                HeaderValue::from_str(&self.0.fetch_add(1, Ordering::SeqCst).to_string()).unwrap();
+                HeaderValue::from_str(&self.0.fetch_add(1, Ordering::AcqRel).to_string()).unwrap();
             Some(RequestId::new(id))
         }
     }

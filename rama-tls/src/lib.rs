@@ -70,21 +70,6 @@ pub mod types {
     #[doc(inline)]
     pub use ::rama_net::tls::{
         client, ApplicationProtocol, CipherSuite, CompressionAlgorithm, ECPointFormat, ExtensionId,
-        HttpsTunnel, ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup,
+        ProtocolVersion, SecureTransport, SignatureScheme, SupportedGroup, TlsTunnel,
     };
-}
-
-pub mod dep {
-    //! Dependencies for rama tls modules.
-    //!
-    //! Exported for your convenience.
-
-    pub mod rcgen {
-        //! Re-export of the [`rcgen`] crate.
-        //!
-        //! [`rcgen`]: https://docs.rs/rcgen
-
-        #[doc(inline)]
-        pub use rcgen::*;
-    }
 }

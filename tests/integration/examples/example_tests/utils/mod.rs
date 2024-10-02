@@ -7,7 +7,6 @@ use rama::{
     http::{
         client::HttpClient,
         layer::{
-            decompression::DecompressionLayer,
             follow_redirect::FollowRedirectLayer,
             required_header::AddRequiredRequestHeadersLayer,
             retry::{ManagedPolicy, RetryLayer},
@@ -29,6 +28,15 @@ use std::{
 use tokio::net::ToSocketAddrs;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+
+#[cfg(feature = "compression")]
+use rama::http::layer::decompression::DecompressionLayer;
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use rama::net::tls::{
+    client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
+    ApplicationProtocol,
+};
 
 pub type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
@@ -85,9 +93,31 @@ where
             .spawn()
             .unwrap();
 
+        let mut inner_client = HttpClient::default();
+
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        {
+            inner_client.set_tls_config(ClientConfig {
+                server_verify_mode: Some(ServerVerifyMode::Disable),
+                extensions: Some(vec![
+                    ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
+                        ApplicationProtocol::HTTP_2,
+                        ApplicationProtocol::HTTP_11,
+                    ]),
+                ]),
+                ..Default::default()
+            });
+
+            inner_client.set_proxy_tls_config(ClientConfig {
+                server_verify_mode: Some(ServerVerifyMode::Disable),
+                ..Default::default()
+            });
+        }
+
         let client = (
             MapResultLayer::new(map_internal_client_error),
             TraceLayer::new_for_http(),
+            #[cfg(feature = "compression")]
             DecompressionLayer::new(),
             FollowRedirectLayer::default(),
             RetryLayer::new(
@@ -104,7 +134,7 @@ where
             AddRequiredRequestHeadersLayer::default(),
             SetProxyAuthHttpHeaderLayer::default(),
         )
-            .layer(HttpClient::default())
+            .layer(inner_client)
             .boxed();
 
         Self {

@@ -87,12 +87,12 @@ where
 
     let conn_count = app_metrics
         .connections
-        .load(std::sync::atomic::Ordering::SeqCst);
+        .load(std::sync::atomic::Ordering::Acquire);
     let request_count = conn_metrics
         .requests
-        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
         + 1;
-    let is_alive = if alive.load(std::sync::atomic::Ordering::SeqCst) {
+    let is_alive = if alive.load(std::sync::atomic::Ordering::Acquire) {
         "yes"
     } else {
         "no"
@@ -137,7 +137,7 @@ async fn main() {
                     let index = app
                         .app_metrics
                         .connections
-                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                        .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
                         + 1;
                     Arc::new(ConnState {
                         app,

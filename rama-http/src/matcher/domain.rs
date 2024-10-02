@@ -38,7 +38,10 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainMa
             None => {
                 let req_ctx: RequestContext = match (ctx, req).try_into() {
                     Ok(req_ctx) => req_ctx,
-                    Err(_) => return false,
+                    Err(err) => {
+                        tracing::error!(error = %err, "DomainMatcher: failed to lazy-make the request ctx");
+                        return false;
+                    }
                 };
                 let host = req_ctx.authority.host().clone();
                 if let Some(ext) = ext {
@@ -50,12 +53,17 @@ impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for DomainMa
         match host {
             Host::Name(domain) => {
                 if self.sub {
+                    tracing::trace!("DomainMatcher: ({}).is_parent_of({})", self.domain, domain);
                     self.domain.is_parent_of(&domain)
                 } else {
+                    tracing::trace!("DomainMatcher: ({}) == ({})", self.domain, domain);
                     self.domain == domain
                 }
             }
-            Host::Address(_) => false,
+            Host::Address(_) => {
+                tracing::trace!("DomainMatcher: ignore request host address");
+                false
+            }
         }
     }
 }

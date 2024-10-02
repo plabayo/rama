@@ -89,7 +89,7 @@ async fn main() {
                             "/coin",
                             |Extension(addr): Extension<SocketInfo>,
                              State(state): State<AppState>| async move {
-                                state.counter.fetch_add(1, Ordering::SeqCst);
+                                state.counter.fetch_add(1, Ordering::AcqRel);
                                 coin_page(state, addr)
                             },
                         )
@@ -111,7 +111,7 @@ fn coin_page(state: Arc<AppState>, addr: SocketInfo) -> Html<String> {
         "🌍"
     };
 
-    let count = state.counter.load(Ordering::SeqCst);
+    let count = state.counter.load(Ordering::Acquire);
     Html(format!(
         r#"
 <!DOCTYPE html>

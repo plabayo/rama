@@ -15,7 +15,7 @@ use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
 #[cfg(feature = "tls")]
-use rama_net::tls::HttpsTunnel;
+use rama_net::tls::TlsTunnel;
 
 /// A connector which can be used to establish a connection over an HTTP Proxy.
 ///
@@ -108,8 +108,8 @@ where
                     authority = %transport_ctx.authority,
                     "http proxy connector: preparing proxy connection for tls tunnel"
                 );
-                ctx.insert(HttpsTunnel {
-                    server_name: address.authority.host().to_string(),
+                ctx.insert(TlsTunnel {
+                    server_host: address.authority.host().clone(),
                 });
             }
         }

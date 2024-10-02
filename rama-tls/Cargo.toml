@@ -12,7 +12,7 @@ rust-version = { workspace = true }
 
 [features]
 default = []
-rustls = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:tokio-rustls", "rama-net/rustls"]
+rustls = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:rcgen", "dep:tokio-rustls", "rama-net/rustls"]
 boring = ["dep:boring", "dep:tokio-boring", "rama-net/boring"]
 rustls-ring = ["rustls", "tokio-rustls/ring", "rustls/ring", "rama-net/rustls-ring"]
 
@@ -24,7 +24,7 @@ rama-core = { version = "0.2.0-alpha.4", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.4", path = "../rama-http-types" }
 rama-net = { version = "0.2.0-alpha.4", path = "../rama-net", features = ["http", "tls"] }
 rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
-rcgen = { workspace = true }
+rcgen = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }
 rustls-pemfile = { workspace = true, optional = true }

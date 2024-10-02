@@ -502,22 +502,22 @@ mod tests {
             })
             .on_request(|_req: &Request, span: &Span| {
                 span.record("foo", 42);
-                ON_REQUEST_COUNT().fetch_add(1, Ordering::SeqCst);
+                ON_REQUEST_COUNT().fetch_add(1, Ordering::AcqRel);
             })
             .on_response(|_res: &Response, _latency: Duration, _span: &Span| {
-                ON_RESPONSE_COUNT().fetch_add(1, Ordering::SeqCst);
+                ON_RESPONSE_COUNT().fetch_add(1, Ordering::AcqRel);
             })
             .on_body_chunk(|_chunk: &Bytes, _latency: Duration, _span: &Span| {
-                ON_BODY_CHUNK_COUNT().fetch_add(1, Ordering::SeqCst);
+                ON_BODY_CHUNK_COUNT().fetch_add(1, Ordering::AcqRel);
             })
             .on_eos(
                 |_trailers: Option<&HeaderMap>, _latency: Duration, _span: &Span| {
-                    ON_EOS().fetch_add(1, Ordering::SeqCst);
+                    ON_EOS().fetch_add(1, Ordering::AcqRel);
                 },
             )
             .on_failure(
                 |_class: ServerErrorsFailureClass, _latency: Duration, _span: &Span| {
-                    ON_FAILURE().fetch_add(1, Ordering::SeqCst);
+                    ON_FAILURE().fetch_add(1, Ordering::AcqRel);
                 },
             );
 
@@ -528,24 +528,24 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(1, ON_REQUEST_COUNT().load(Ordering::SeqCst), "request");
-        assert_eq!(1, ON_RESPONSE_COUNT().load(Ordering::SeqCst), "request");
+        assert_eq!(1, ON_REQUEST_COUNT().load(Ordering::Acquire), "request");
+        assert_eq!(1, ON_RESPONSE_COUNT().load(Ordering::Acquire), "request");
         assert_eq!(
             0,
-            ON_BODY_CHUNK_COUNT().load(Ordering::SeqCst),
+            ON_BODY_CHUNK_COUNT().load(Ordering::Acquire),
             "body chunk"
         );
-        assert_eq!(0, ON_EOS().load(Ordering::SeqCst), "eos");
-        assert_eq!(0, ON_FAILURE().load(Ordering::SeqCst), "failure");
+        assert_eq!(0, ON_EOS().load(Ordering::Acquire), "eos");
+        assert_eq!(0, ON_FAILURE().load(Ordering::Acquire), "failure");
 
         res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             1,
-            ON_BODY_CHUNK_COUNT().load(Ordering::SeqCst),
+            ON_BODY_CHUNK_COUNT().load(Ordering::Acquire),
             "body chunk"
         );
-        assert_eq!(0, ON_EOS().load(Ordering::SeqCst), "eos");
-        assert_eq!(0, ON_FAILURE().load(Ordering::SeqCst), "failure");
+        assert_eq!(0, ON_EOS().load(Ordering::Acquire), "eos");
+        assert_eq!(0, ON_FAILURE().load(Ordering::Acquire), "failure");
     }
 
     #[tokio::test]
@@ -560,22 +560,22 @@ mod tests {
 
         let trace_layer = TraceLayer::new_for_http()
             .on_request(|_req: &Request, _span: &Span| {
-                ON_REQUEST_COUNT().fetch_add(1, Ordering::SeqCst);
+                ON_REQUEST_COUNT().fetch_add(1, Ordering::AcqRel);
             })
             .on_response(|_res: &Response, _latency: Duration, _span: &Span| {
-                ON_RESPONSE_COUNT().fetch_add(1, Ordering::SeqCst);
+                ON_RESPONSE_COUNT().fetch_add(1, Ordering::AcqRel);
             })
             .on_body_chunk(|_chunk: &Bytes, _latency: Duration, _span: &Span| {
-                ON_BODY_CHUNK_COUNT().fetch_add(1, Ordering::SeqCst);
+                ON_BODY_CHUNK_COUNT().fetch_add(1, Ordering::AcqRel);
             })
             .on_eos(
                 |_trailers: Option<&HeaderMap>, _latency: Duration, _span: &Span| {
-                    ON_EOS().fetch_add(1, Ordering::SeqCst);
+                    ON_EOS().fetch_add(1, Ordering::AcqRel);
                 },
             )
             .on_failure(
                 |_class: ServerErrorsFailureClass, _latency: Duration, _span: &Span| {
-                    ON_FAILURE().fetch_add(1, Ordering::SeqCst);
+                    ON_FAILURE().fetch_add(1, Ordering::AcqRel);
                 },
             );
 
@@ -586,24 +586,24 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(1, ON_REQUEST_COUNT().load(Ordering::SeqCst), "request");
-        assert_eq!(1, ON_RESPONSE_COUNT().load(Ordering::SeqCst), "request");
+        assert_eq!(1, ON_REQUEST_COUNT().load(Ordering::Acquire), "request");
+        assert_eq!(1, ON_RESPONSE_COUNT().load(Ordering::Acquire), "request");
         assert_eq!(
             0,
-            ON_BODY_CHUNK_COUNT().load(Ordering::SeqCst),
+            ON_BODY_CHUNK_COUNT().load(Ordering::Acquire),
             "body chunk"
         );
-        assert_eq!(0, ON_EOS().load(Ordering::SeqCst), "eos");
-        assert_eq!(0, ON_FAILURE().load(Ordering::SeqCst), "failure");
+        assert_eq!(0, ON_EOS().load(Ordering::Acquire), "eos");
+        assert_eq!(0, ON_FAILURE().load(Ordering::Acquire), "failure");
 
         res.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(
             3,
-            ON_BODY_CHUNK_COUNT().load(Ordering::SeqCst),
+            ON_BODY_CHUNK_COUNT().load(Ordering::Acquire),
             "body chunk"
         );
-        assert_eq!(0, ON_EOS().load(Ordering::SeqCst), "eos");
-        assert_eq!(0, ON_FAILURE().load(Ordering::SeqCst), "failure");
+        assert_eq!(0, ON_EOS().load(Ordering::Acquire), "eos");
+        assert_eq!(0, ON_FAILURE().load(Ordering::Acquire), "failure");
     }
 
     async fn echo(req: Request) -> Result<Response, BoxError> {

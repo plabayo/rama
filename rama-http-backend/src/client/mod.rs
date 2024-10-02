@@ -10,14 +10,14 @@ use rama_http_types::{dep::http_body, Request, Response};
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_tcp::client::service::TcpConnector;
 
-// TODO: also support client config in boring...
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama_tls::rustls::dep::rustls::ClientConfig;
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use std::sync::Arc;
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use rama_tls::std::client::{TlsConnector, TlsConnectorData};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_tls::std::client::HttpsConnector;
+use rama_net::tls::client::ClientConfig;
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use rama_core::error::ErrorContext;
 
 mod svc;
 #[doc(inline)]
@@ -26,6 +26,7 @@ pub use svc::HttpClientService;
 mod conn;
 #[doc(inline)]
 pub use conn::{HttpConnector, HttpConnectorLayer};
+use tracing::trace;
 
 pub mod proxy;
 
@@ -39,8 +40,10 @@ pub mod proxy;
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
 pub struct HttpClient {
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
-    tls_config: Option<Arc<ClientConfig>>,
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    tls_config: Option<ClientConfig>,
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    proxy_tls_config: Option<ClientConfig>,
 }
 
 impl HttpClient {
@@ -49,24 +52,45 @@ impl HttpClient {
         Self::default()
     }
 
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Set the [`ClientConfig`] of this [`HttpClient`].
-    pub fn set_tls_config(&mut self, cfg: Arc<ClientConfig>) -> &mut Self {
+    pub fn set_tls_config(&mut self, cfg: ClientConfig) -> &mut Self {
         self.tls_config = Some(cfg);
         self
     }
 
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Replace this [`HttpClient`] with the [`ClientConfig`] set.
-    pub fn with_tls_config(mut self, cfg: Arc<ClientConfig>) -> Self {
+    pub fn with_tls_config(mut self, cfg: ClientConfig) -> Self {
         self.tls_config = Some(cfg);
         self
     }
 
-    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Replace this [`HttpClient`] with an option of [`ClientConfig`] set.
-    pub fn maybe_with_tls_config(mut self, cfg: Option<Arc<ClientConfig>>) -> Self {
+    pub fn maybe_with_tls_config(mut self, cfg: Option<ClientConfig>) -> Self {
         self.tls_config = cfg;
+        self
+    }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Set the [`ClientConfig`] for the https proxy tunnel if needed within this [`HttpClient`].
+    pub fn set_proxy_tls_config(&mut self, cfg: ClientConfig) -> &mut Self {
+        self.proxy_tls_config = Some(cfg);
+        self
+    }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Replace this [`HttpClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
+    pub fn with_proxy_tls_config(mut self, cfg: ClientConfig) -> Self {
+        self.proxy_tls_config = Some(cfg);
+        self
+    }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Replace this [`HttpClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
+    pub fn maybe_proxy_with_tls_config(mut self, cfg: Option<ClientConfig>) -> Self {
+        self.proxy_tls_config = cfg;
         self
     }
 }
@@ -86,27 +110,82 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
 
-        #[cfg(all(feature = "rustls", not(feature = "boring")))]
-        let connector = HttpConnector::new(
-            HttpsConnector::auto(HttpProxyConnector::optional(HttpsConnector::tunnel(
-                TcpConnector::new(),
-            )))
-            .maybe_with_config(self.tls_config.clone()),
-        );
-        #[cfg(feature = "boring")]
-        let connector = HttpConnector::new(HttpsConnector::auto(HttpProxyConnector::optional(
-            HttpsConnector::tunnel(TcpConnector::new()),
-        )));
-        #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        let connector = HttpConnector::new(HttpProxyConnector::optional(TcpConnector::new()));
+        // record original req version,
+        // so we can put the response back
+        let original_req_version = req.version();
 
+        let tcp_connector = TcpConnector::new();
+
+        #[cfg(any(feature = "rustls", feature = "boring"))]
+        let connector = {
+            let proxy_tls_connector_data = match &self.proxy_tls_config {
+                Some(proxy_tls_config) => {
+                    trace!("create proxy tls connector using pre-defined rama tls client config");
+                    proxy_tls_config
+                        .clone()
+                        .try_into()
+                        .context("HttpClient: create proxy tls connector data from tls config")?
+                }
+                None => {
+                    trace!("create proxy tls connector using the 'new_http_auto' constructor");
+                    TlsConnectorData::new().context(
+                        "HttpClient: create proxy tls connector data with no application presets",
+                    )?
+                }
+            };
+
+            let transport_connector = HttpProxyConnector::optional(
+                TlsConnector::tunnel(tcp_connector, None)
+                    .with_connector_data(proxy_tls_connector_data),
+            );
+            let tls_connector_data = match &self.tls_config {
+                Some(tls_config) => {
+                    trace!("create tls connector using pre-defined rama tls client config");
+                    tls_config
+                        .clone()
+                        .try_into()
+                        .context("HttpClient: create tls connector data from tls config")?
+                }
+                None => {
+                    trace!("create tls connector using the 'new_http_auto' constructor");
+                    TlsConnectorData::new_http_auto()
+                        .context("HttpClient: create tls connector data for http (auto)")?
+                }
+            };
+            HttpConnector::new(
+                TlsConnector::http_auto(transport_connector)
+                    .with_connector_data(tls_connector_data),
+            )
+        };
+        #[cfg(not(any(feature = "rustls", feature = "boring")))]
+        let connector = HttpConnector::new(HttpProxyConnector::optional(tcp_connector));
+
+        // NOTE: stack might change request version based on connector data,
+        // such as ALPN (tls), as such it is important to reset it back below,
+        // so that the other end can read it... This might however give issues in
+        // case switching http versions requires more work than version. If so,
+        // your first place will be to check here and/or in the [`HttpConnector`].
         let EstablishedClientConnection { ctx, req, conn, .. } = connector
             .connect(ctx, req)
             .await
             .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
 
-        conn.serve(ctx, req)
-            .await
-            .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))
+        trace!(uri = %uri, "send http req to connector stack");
+        let mut resp = conn.serve(ctx, req).await.map_err(|err| {
+            OpaqueError::from_boxed(err)
+                .with_context(|| format!("http request failure for uri: {uri}"))
+        })?;
+        trace!(uri = %uri, "response received from connector stack");
+
+        trace!(
+            "incoming response version {:?}, normalizing to {:?}",
+            resp.version(),
+            original_req_version
+        );
+        // NOTE: in case http response writer does not handle possible conversion issues,
+        // we might need to do more complex normalization here... Worries for the future, maybe
+        *resp.version_mut() = original_req_version;
+
+        Ok(resp)
     }
 }

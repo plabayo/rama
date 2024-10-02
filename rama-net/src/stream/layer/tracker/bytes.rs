@@ -66,12 +66,12 @@ impl<S> BytesRWTracker<S> {
 
     /// Get the number of bytes read (so far).
     pub fn read(&self) -> usize {
-        self.read.load(Ordering::SeqCst)
+        self.read.load(Ordering::Acquire)
     }
 
     /// Get the number of bytes written (so far).
     pub fn written(&self) -> usize {
-        self.written.load(Ordering::SeqCst)
+        self.written.load(Ordering::Acquire)
     }
 
     /// Get a [`BytesRWTrackerHandle`] that can be used to get the number of bytes
@@ -115,7 +115,7 @@ where
             match new_size.cmp(&size) {
                 std::cmp::Ordering::Greater => {
                     let bytes_read = new_size - size;
-                    this.read.fetch_add(bytes_read, Ordering::SeqCst);
+                    this.read.fetch_add(bytes_read, Ordering::AcqRel);
                 }
                 std::cmp::Ordering::Less => {
                     tracing::error!(
@@ -142,7 +142,7 @@ where
         let this = self.as_mut().project();
         let res: Poll<Result<usize, io::Error>> = this.stream.poll_write(cx, buf);
         if let Poll::Ready(Ok(bytes_written)) = res {
-            this.written.fetch_add(bytes_written, Ordering::SeqCst);
+            this.written.fetch_add(bytes_written, Ordering::AcqRel);
         }
         res
     }
@@ -163,7 +163,7 @@ where
         let this = self.as_mut().project();
         let res: Poll<Result<usize, io::Error>> = this.stream.poll_write_vectored(cx, bufs);
         if let Poll::Ready(Ok(bytes_written)) = res {
-            this.written.fetch_add(bytes_written, Ordering::SeqCst);
+            this.written.fetch_add(bytes_written, Ordering::AcqRel);
         }
         res
     }
@@ -185,12 +185,12 @@ pub struct BytesRWTrackerHandle {
 impl BytesRWTrackerHandle {
     /// Get the number of bytes read (so far).
     pub fn read(&self) -> usize {
-        self.read.load(Ordering::SeqCst)
+        self.read.load(Ordering::Acquire)
     }
 
     /// Get the number of bytes written (so far).
     pub fn written(&self) -> usize {
-        self.written.load(Ordering::SeqCst)
+        self.written.load(Ordering::Acquire)
     }
 }
 

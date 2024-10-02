@@ -12,6 +12,8 @@
 //!
 //! [`Context`]: crate::Context
 
+use std::sync::Arc;
+
 use super::{context::Extensions, Context};
 use crate::Service;
 use paste::paste;
@@ -71,6 +73,24 @@ pub trait Matcher<State, Request>: Send + Sync + 'static {
         Self: Sized,
     {
         Not::new(self)
+    }
+}
+
+impl<State, Request, T> Matcher<State, Request> for Arc<T>
+where
+    T: Matcher<State, Request>,
+{
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+        (**self).matches(ext, ctx, req)
+    }
+}
+
+impl<State, Request, T> Matcher<State, Request> for &'static T
+where
+    T: Matcher<State, Request>,
+{
+    fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
+        (**self).matches(ext, ctx, req)
     }
 }
 
