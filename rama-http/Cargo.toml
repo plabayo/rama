@@ -27,6 +27,7 @@ async-compression = { workspace = true, features = [
 base64 = { workspace = true }
 bitflags = { workspace = true }
 bytes = { workspace = true }
+const_format = { workspace = true }
 futures-lite = { workspace = true }
 headers = { workspace = true }
 http = { workspace = true }

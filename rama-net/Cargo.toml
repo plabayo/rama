@@ -23,6 +23,7 @@ telemetry = ["rama-core/telemetry"]
 base64 = { workspace = true }
 boring = { workspace = true, optional = true }
 bytes = { workspace = true }
+const_format = { workspace = true }
 futures-lite = { workspace = true }
 headers = { workspace = true }
 hex = { workspace = true, optional = true }
