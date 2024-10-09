@@ -69,7 +69,7 @@ struct Metrics {
 }
 
 impl Metrics {
-    pub fn new() -> Self {
+    fn new() -> Self {
         let meter = opentelemetry::global::meter_with_version(
             "example.http_telemetry",
             Some(env!("CARGO_PKG_VERSION")),
@@ -98,7 +98,7 @@ async fn main() {
 
     // configure OT metrics exporter
     let export_config = ExportConfig {
-        endpoint: "http://localhost:4317".to_string(),
+        endpoint: "http://localhost:4317".to_owned(),
         timeout: Duration::from_secs(3),
         protocol: Protocol::Grpc,
     };

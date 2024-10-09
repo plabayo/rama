@@ -10,6 +10,9 @@ categories = ["web-programming"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 bytes = { workspace = true }
 const_format = { workspace = true }

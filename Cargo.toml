@@ -121,6 +121,40 @@ hickory-resolver = { version = "0.24.1", default-features = false, features = [
 ] }
 arc-swap = "1.7.1"
 
+[workspace.lints.rust]
+unreachable_pub = "deny"
+elided_lifetimes_in_paths = "allow"
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+todo = "warn"
+empty_enum = "warn"
+enum_glob_use = "warn"
+mem_forget = "warn"
+unused_self = "warn"
+filter_map_next = "warn"
+needless_continue = "warn"
+needless_borrow = "warn"
+match_wildcard_for_single_variants = "warn"
+if_let_mutex = "warn"
+await_holding_lock = "warn"
+match_on_vec_items = "warn"
+imprecise_flops = "warn"
+suboptimal_flops = "warn"
+lossy_float_literal = "warn"
+rest_pat_in_fully_bound_structs = "warn"
+fn_params_excessive_bools = "warn"
+exit = "warn"
+inefficient_to_string = "warn"
+linkedlist = "warn"
+macro_use_imports = "warn"
+option_option = "warn"
+verbose_file_reads = "warn"
+unnested_or_patterns = "warn"
+str_to_string = "warn"
+type_complexity = "allow"
+
 [package]
 name = "rama"
 readme = "README.md"
@@ -135,6 +169,9 @@ keywords = { workspace = true }
 categories = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
+
+[lints]
+workspace = true
 
 [features]
 default = []

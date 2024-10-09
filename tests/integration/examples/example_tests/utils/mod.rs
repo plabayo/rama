@@ -38,10 +38,10 @@ use rama::net::tls::{
     ApplicationProtocol,
 };
 
-pub type ClientService<State> = BoxService<State, Request, Response, BoxError>;
+type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
 /// Runner for examples.
-pub struct ExampleRunner<State = ()> {
+pub(super) struct ExampleRunner<State = ()> {
     server_process: Child,
     client: ClientService<State>,
 }
@@ -53,7 +53,7 @@ pub struct ExampleRunner<State = ()> {
 static INIT_TRACING_ONCE: Once = Once::new();
 
 /// Initialize tracing for example tests
-pub fn init_tracing() {
+pub(super) fn init_tracing() {
     INIT_TRACING_ONCE.call_once(|| {
         tracing_subscriber::registry()
             .with(fmt::layer())
@@ -75,7 +75,7 @@ where
     /// # Panics
     ///
     /// This function panics if the server process cannot be spawned.
-    pub fn interactive(
+    pub(super) fn interactive(
         example_name: impl AsRef<str>,
         extra_features: Option<&'static str>,
     ) -> Self {
@@ -144,22 +144,31 @@ where
     }
 
     /// Create a `GET` http request to be sent to the child server.
-    pub fn get(&self, url: impl IntoUrl) -> RequestBuilder<ClientService<State>, State, Response> {
+    pub(super) fn get(
+        &self,
+        url: impl IntoUrl,
+    ) -> RequestBuilder<ClientService<State>, State, Response> {
         self.client.get(url)
     }
 
     /// Create a `HEAD` http request to be sent to the child server.
-    pub fn head(&self, url: impl IntoUrl) -> RequestBuilder<ClientService<State>, State, Response> {
+    pub(super) fn head(
+        &self,
+        url: impl IntoUrl,
+    ) -> RequestBuilder<ClientService<State>, State, Response> {
         self.client.head(url)
     }
 
     /// Create a `POST` http request to be sent to the child server.
-    pub fn post(&self, url: impl IntoUrl) -> RequestBuilder<ClientService<State>, State, Response> {
+    pub(super) fn post(
+        &self,
+        url: impl IntoUrl,
+    ) -> RequestBuilder<ClientService<State>, State, Response> {
         self.client.post(url)
     }
 
     /// Create a `DELETE` http request to be sent to the child server.
-    pub fn delete(
+    pub(super) fn delete(
         &self,
         url: impl IntoUrl,
     ) -> RequestBuilder<ClientService<State>, State, Response> {
@@ -174,7 +183,7 @@ impl ExampleRunner<()> {
     ///
     /// This function panics if the server process cannot be ran,
     /// or if it failed while waiting for it to finish.
-    pub async fn run(example_name: impl AsRef<str>) -> ExitStatus {
+    pub(super) async fn run(example_name: impl AsRef<str>) -> ExitStatus {
         let example_name = example_name.as_ref().to_owned();
         tokio::task::spawn_blocking(|| {
             escargot::CargoBuild::new()
@@ -193,7 +202,10 @@ impl ExampleRunner<()> {
     }
 
     /// Establish an async R/W to the TCP server behind this [`ExampleRunner`].
-    pub async fn connect_tcp(&self, addr: impl ToSocketAddrs) -> Result<impl Stream, OpaqueError> {
+    pub(super) async fn connect_tcp(
+        &self,
+        addr: impl ToSocketAddrs,
+    ) -> Result<impl Stream, OpaqueError> {
         tokio::net::TcpStream::connect(addr)
             .await
             .map_err(OpaqueError::from_std)
