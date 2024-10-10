@@ -10,6 +10,9 @@ categories = ["rust-patterns"]
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[lints]
+workspace = true
+
 [dependencies]
 
 [dev-dependencies]

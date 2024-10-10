@@ -37,10 +37,7 @@
 //! You can now use tools like grafana to collect metrics from the collector running at 127.0.0.1:4317 over GRPC.
 
 use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig};
-use opentelemetry_sdk::{
-    metrics::reader::{DefaultAggregationSelector, DefaultTemporalitySelector},
-    Resource,
-};
+use opentelemetry_sdk::{metrics::reader::DefaultTemporalitySelector, Resource};
 use rama::{
     http::{
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
@@ -72,7 +69,7 @@ struct Metrics {
 }
 
 impl Metrics {
-    pub fn new() -> Self {
+    fn new() -> Self {
         let meter = opentelemetry::global::meter_with_version(
             "example.http_telemetry",
             Some(env!("CARGO_PKG_VERSION")),
@@ -101,7 +98,7 @@ async fn main() {
 
     // configure OT metrics exporter
     let export_config = ExportConfig {
-        endpoint: "http://localhost:4317".to_string(),
+        endpoint: "http://localhost:4317".to_owned(),
         timeout: Duration::from_secs(3),
         protocol: Protocol::Grpc,
     };
@@ -120,7 +117,6 @@ async fn main() {
         )]))
         .with_period(Duration::from_secs(3))
         .with_timeout(Duration::from_secs(10))
-        .with_aggregation_selector(DefaultAggregationSelector::new())
         .with_temporality_selector(DefaultTemporalitySelector::new())
         .build()
         .expect("build OT meter");

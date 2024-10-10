@@ -95,7 +95,7 @@ async fn main() {
                         )
                         .on(
                             HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
-                            Html("Home Sweet Home!".to_string()),
+                            Html("Home Sweet Home!".to_owned()),
                         )
                         .dir("/", "test-files/examples/webservice"),
                 ),

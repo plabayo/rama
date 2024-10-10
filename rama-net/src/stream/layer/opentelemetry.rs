@@ -106,7 +106,7 @@ impl NetworkMetricsLayer {
         attributes.push(KeyValue::new(SERVICE_NAME, service_info.name.clone()));
         attributes.push(KeyValue::new(SERVICE_VERSION, service_info.version.clone()));
 
-        let meter = get_versioned_meter(service_info);
+        let meter = get_versioned_meter();
         let metrics = Metrics::new(meter, opts.metric_prefix);
 
         Self {
@@ -133,10 +133,10 @@ impl Default for NetworkMetricsLayer {
     }
 }
 
-fn get_versioned_meter(service_info: ServiceInfo) -> Meter {
+fn get_versioned_meter() -> Meter {
     global::meter_with_version(
-        service_info.name,
-        Some(service_info.version),
+        const_format::formatcp!("{}-network-transport", rama_utils::info::NAME),
+        Some(rama_utils::info::VERSION),
         Some(semantic_conventions::SCHEMA_URL),
         None,
     )

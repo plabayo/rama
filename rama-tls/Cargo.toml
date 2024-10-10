@@ -10,6 +10,9 @@ categories = ["asynchronous", "network-programming", "cryptography", "web-progra
 authors = { workspace = true }
 rust-version = { workspace = true }
 
+[lints]
+workspace = true
+
 [features]
 default = []
 rustls = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:rcgen", "dep:tokio-rustls", "rama-net/rustls"]

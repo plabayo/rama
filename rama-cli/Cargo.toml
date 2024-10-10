@@ -11,6 +11,9 @@ authors = { workspace = true }
 rust-version = { workspace = true }
 default-run = "rama"
 
+[lints]
+workspace = true
+
 [dependencies]
 base64 = { workspace = true }
 bytes = { workspace = true }
