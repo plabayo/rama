@@ -35,14 +35,15 @@
 //! [`rama`] was built from the ground up to operate on and between different layers of the network stack.
 //! This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
 //!
-//! When creating a `TcpListener` with state you are essentially creating and injecting state, which will remain
-//! as "read-only" for the enire life cycle of that `TcpListener` and to be made available for every incoming _tcp_ connection,
-//! as well as the application requests (Http requests). This is great for stuff that is okay to share, but it is not desired
+//! When creating a `TcpListener` with state the state will be owned by that `TcpListener`. By default
+//! it will clone the state and pass a clone to each incoming `tcp` connection. You can however also
+//! inject your own state provider to customise that behaviour. Pretty much the same goes for an `HttpServer`,
+//! where it will do the same for each incoming http request. This is great for stuff that is okay to share, but it is not desired
 //! for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus
 //! you do not wish to keep a global cache for this, as it would either be shared or get overly complicated to ensure
 //! you keep things separate and clean.
 //!
-//! The solution is to wrap your state.
+//! One solution is to wrap your state.
 //!
 //! > Example: [http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
 //!
@@ -61,14 +62,13 @@
 //!
 //! ```
 //! use rama_core::Context;
-//! use std::sync::Arc;
 //!
 //! #[derive(Debug)]
 //! struct ServiceState {
 //!     value: i32,
 //! }
 //!
-//! let state = Arc::new(ServiceState{ value: 5 });
+//! let state = ServiceState{ value: 5 };
 //! let ctx = Context::with_state(state);
 //! ```
 //!
@@ -112,7 +112,7 @@
 
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
-use std::{fmt, future::Future, sync::Arc};
+use std::{fmt, future::Future};
 use tokio::task::JoinHandle;
 
 pub use ::rama_macros::AsRef;
@@ -122,12 +122,14 @@ mod extensions;
 pub use extensions::Extensions;
 
 mod state;
+#[doc(inline)]
+pub use state::StateTransformer;
 
 /// Context passed to and between services as input.
 ///
 /// See [`crate::context`] for more information.
 pub struct Context<S> {
-    state: Arc<S>,
+    state: S,
     executor: Executor,
     extensions: Extensions,
 }
@@ -144,11 +146,11 @@ impl<S: fmt::Debug> fmt::Debug for Context<S> {
 
 impl Default for Context<()> {
     fn default() -> Self {
-        Self::new(Arc::new(()), Executor::default())
+        Self::new((), Executor::default())
     }
 }
 
-impl<S> Clone for Context<S> {
+impl<S: Clone> Clone for Context<S> {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
@@ -160,7 +162,7 @@ impl<S> Clone for Context<S> {
 
 impl<S> Context<S> {
     /// Create a new [`Context`] with the given state.
-    pub fn new(state: Arc<S>, executor: Executor) -> Self {
+    pub fn new(state: S, executor: Executor) -> Self {
         Self {
             state,
             executor,
@@ -169,7 +171,7 @@ impl<S> Context<S> {
     }
 
     /// Create a new [`Context`] with the given state and default extension.
-    pub fn with_state(state: Arc<S>) -> Self {
+    pub fn with_state(state: S) -> Self {
         Self::new(state, Executor::default())
     }
 
@@ -178,20 +180,59 @@ impl<S> Context<S> {
         &self.state
     }
 
-    /// Get a cloned reference to the state.
-    pub fn state_clone(&self) -> Arc<S> {
-        self.state.clone()
+    /// Get an exclusive reference to the state.
+    pub fn state_mut(&mut self) -> &mut S {
+        &mut self.state
     }
 
     /// Map the state from one type to another.
     pub fn map_state<F, W>(self, f: F) -> Context<W>
     where
-        F: FnOnce(Arc<S>) -> Arc<W>,
+        F: FnOnce(S) -> W,
     {
         Context {
             state: f(self.state),
             executor: self.executor,
             extensions: self.extensions,
+        }
+    }
+
+    /// Swap the state from one type to another,
+    /// returning the new object as well as the previously defined state.
+    pub fn swap_state<W>(self, state: W) -> (Context<W>, S) {
+        (
+            Context {
+                state,
+                executor: self.executor,
+                extensions: self.extensions,
+            },
+            self.state,
+        )
+    }
+
+    /// Clones the internals of this [`Context`]
+    /// to provide a new context, but while mapping the state
+    /// into a new state.
+    pub fn clone_map_state<F, W>(&self, f: F) -> Context<W>
+    where
+        S: Clone,
+        F: FnOnce(S) -> W,
+    {
+        Context {
+            state: f(self.state.clone()),
+            executor: self.executor.clone(),
+            extensions: self.extensions.clone(),
+        }
+    }
+
+    /// Clones the internals of this [`Context`]
+    /// to provide a new context, but using the given state, instead of
+    /// the one defined in the current [`Context`].
+    pub fn clone_with_state<W>(&self, state: W) -> Context<W> {
+        Context {
+            state,
+            executor: self.executor.clone(),
+            extensions: self.extensions.clone(),
         }
     }
 

@@ -190,9 +190,9 @@ mod test {
         )
         .unwrap();
 
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         struct State {
-            retry_counter: AtomicUsize,
+            retry_counter: Arc<AtomicUsize>,
         }
 
         async fn retry<E>(
@@ -241,9 +241,9 @@ mod test {
         }
 
         fn ctx() -> Context<State> {
-            Context::with_state(Arc::new(State {
-                retry_counter: AtomicUsize::new(0),
-            }))
+            Context::with_state(State {
+                retry_counter: Arc::new(AtomicUsize::new(0)),
+            })
         }
 
         fn ctx_do_not_retry() -> Context<State> {
@@ -260,7 +260,7 @@ mod test {
             retried: bool,
             service: &impl Service<State, Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.state_clone();
+            let state = ctx.state().clone();
 
             let fut = service.serve(ctx, request(input));
             let res = fut.await.unwrap();
@@ -293,7 +293,7 @@ mod test {
             retried: bool,
             service: &impl Service<State, Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.state_clone();
+            let state = ctx.state().clone();
 
             let fut = service.serve(ctx, request(input));
             let res = fut.await;
