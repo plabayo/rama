@@ -2,7 +2,7 @@
 
 use rama::context::AsRef;
 
-#[derive(AsRef)]
+#[derive(Clone, AsRef)]
 struct State {
     inner: &'static str,
 }

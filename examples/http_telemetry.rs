@@ -43,7 +43,7 @@ use rama::{
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
         response::Html,
         server::HttpServer,
-        service::web::{extract::State, WebService},
+        service::web::WebService,
     },
     net::stream::layer::opentelemetry::NetworkMetricsLayer,
     rt::Executor,
@@ -57,9 +57,9 @@ use rama::{
         },
         KeyValue,
     },
-    Layer,
+    Context, Layer,
 };
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -124,7 +124,7 @@ async fn main() {
     opentelemetry::global::set_meter_provider(meter);
 
     // state for our custom app metrics
-    let state = Metrics::new();
+    let state = Arc::new(Metrics::new());
 
     let graceful = rama::graceful::Shutdown::default();
 
@@ -134,8 +134,8 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).layer(
-                WebService::default().get("/", |State(metrics): State<Metrics>| async move {
-                    metrics.counter.add(1, &[]);
+                WebService::default().get("/", |ctx: Context<Arc<Metrics>>| async move {
+                    ctx.state().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),
             ),

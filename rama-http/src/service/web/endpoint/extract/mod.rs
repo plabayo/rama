@@ -63,6 +63,12 @@ pub trait FromRequestParts<S>: Sized + Send + Sync + 'static {
     ) -> impl Future<Output = Result<Self, Self::Rejection>> + Send;
 }
 
+// TODO Add FromRequest and FromContext
+// TODO: both have blanket implementation for FromContextRequestPair
+// FromContextRequestPair is also implemented for (impl FromContext, impl FromRequest)
+
+// TODO revamp state extractor, as it's a FromContext one...
+
 /// Types that can be created from requests.
 ///
 /// Extractors that implement `FromRequest` can consume the request body and can thus only be run
@@ -71,6 +77,7 @@ pub trait FromRequestParts<S>: Sized + Send + Sync + 'static {
 /// If your extractor doesn't need to consume the request body then you should implement
 /// [`FromRequestParts`] and not [`FromRequest`].
 pub trait FromRequest<S, M = private::ViaRequest>: Sized + Send + Sync + 'static {
+    // TODO: Rename to FromContextRequestPair
     /// If the extractor fails it'll use this "rejection" type. A rejection is
     /// a kind of error that can be converted into a response.
     type Rejection: IntoResponse;

@@ -16,7 +16,6 @@ use syn::parse::Parse;
 
 mod as_ref;
 mod attr_parsing;
-mod type_parsing;
 
 /// Derive an implementation of [`AsRef`] for each field in a struct.
 ///

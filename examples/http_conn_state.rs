@@ -56,21 +56,21 @@ struct ConnMetrics {
     pub requests: AtomicUsize,
 }
 
-#[derive(Debug, AsRef, Default)]
+#[derive(Debug, Clone, AsRef, Default)]
 struct AppState {
     /// metrics with the scope of the life cycle
-    pub app_metrics: AppMetrics,
+    pub app_metrics: Arc<AppMetrics>,
 }
 
-#[derive(Debug, AsRef)]
+#[derive(Debug, Clone, AsRef)]
 struct ConnState {
     #[as_ref(wrap)]
     /// reference to app life cycle app state
-    app: Arc<AppState>,
+    app: AppState,
     /// global state injected directly into the connection state, true if app is alive
     alive: Arc<AtomicBool>,
     /// metrics with the scope of the connection
-    conn_metrics: ConnMetrics,
+    conn_metrics: Arc<ConnMetrics>,
 }
 
 async fn handle_index<S>(ctx: Context<S>, _: Request) -> Result<Html<String>, Infallible>
@@ -79,10 +79,15 @@ where
     // trait bounds regardless of how deep the state properties are "nested". In a production
     // codebase however it probably makes more sense to work with the actual type
     // for any non-generic middleware / service.
-    S: AsRef<AppMetrics> + AsRef<ConnMetrics> + AsRef<Arc<AtomicBool>> + Send + Sync + 'static,
+    S: AsRef<Arc<AppMetrics>>
+        + AsRef<Arc<ConnMetrics>>
+        + AsRef<Arc<AtomicBool>>
+        + Send
+        + Sync
+        + 'static,
 {
-    let app_metrics: &AppMetrics = ctx.state().as_ref();
-    let conn_metrics: &ConnMetrics = ctx.state().as_ref();
+    let app_metrics: &Arc<AppMetrics> = ctx.state().as_ref();
+    let conn_metrics: &Arc<ConnMetrics> = ctx.state().as_ref();
     let alive: &Arc<AtomicBool> = ctx.state().as_ref();
 
     let conn_count = app_metrics
@@ -133,20 +138,20 @@ async fn main() {
             .expect("bind TCP Listener")
             .serve_graceful(
                 guard,
-                MapStateLayer::new(move |app: Arc<AppState>| {
+                MapStateLayer::new(move |app: AppState| {
                     let index = app
                         .app_metrics
                         .connections
                         .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
                         + 1;
-                    Arc::new(ConnState {
+                    ConnState {
                         app,
                         alive,
-                        conn_metrics: ConnMetrics {
+                        conn_metrics: Arc::new(ConnMetrics {
                             index,
                             requests: AtomicUsize::new(0),
-                        },
-                    })
+                        }),
+                    }
                 })
                 .layer(tcp_http_service),
             )

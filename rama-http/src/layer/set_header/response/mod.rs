@@ -91,7 +91,6 @@
 //! # }
 //! ```
 
-use super::{BoxMakeHeaderValueFn, InsertHeaderMode, MakeHeaderValue};
 use crate::{
     header::HeaderName,
     headers::{Header, HeaderExt},
@@ -100,6 +99,11 @@ use crate::{
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
+
+mod header;
+use header::InsertHeaderMode;
+
+pub use header::{BoxMakeHeaderValueFactoryFn, MakeHeaderValue, MakeHeaderValueFactory};
 
 /// Layer that applies [`SetResponseHeader`] which adds a response header.
 ///
@@ -176,14 +180,14 @@ impl<M> SetResponseHeaderLayer<M> {
     }
 }
 
-impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
+impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeaderLayer::overriding`] for more details.
     pub fn overriding_fn(header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             header_name,
-            BoxMakeHeaderValueFn::new(make_fn),
+            BoxMakeHeaderValueFactoryFn::new(make_fn),
             InsertHeaderMode::Override,
         )
     }
@@ -194,7 +198,7 @@ impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
     pub fn appending_fn(header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             header_name,
-            BoxMakeHeaderValueFn::new(make_fn),
+            BoxMakeHeaderValueFactoryFn::new(make_fn),
             InsertHeaderMode::Append,
         )
     }
@@ -205,7 +209,7 @@ impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFn<F, A>> {
     pub fn if_not_present_fn(header_name: HeaderName, make_fn: F) -> Self {
         Self::new(
             header_name,
-            BoxMakeHeaderValueFn::new(make_fn),
+            BoxMakeHeaderValueFactoryFn::new(make_fn),
             InsertHeaderMode::IfNotPresent,
         )
     }
@@ -285,7 +289,7 @@ impl<S, M> SetResponseHeader<S, M> {
     define_inner_service_accessors!();
 }
 
-impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFn<F, A>> {
+impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeader`] from a [`super::MakeHeaderValueFn`].
     ///
     /// See [`SetResponseHeader::overriding`] for more details.
@@ -293,7 +297,7 @@ impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFn<F, A>> {
         Self::new(
             inner,
             header_name,
-            BoxMakeHeaderValueFn::new(make_fn),
+            BoxMakeHeaderValueFactoryFn::new(make_fn),
             InsertHeaderMode::Override,
         )
     }
@@ -305,7 +309,7 @@ impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFn<F, A>> {
         Self::new(
             inner,
             header_name,
-            BoxMakeHeaderValueFn::new(make_fn),
+            BoxMakeHeaderValueFactoryFn::new(make_fn),
             InsertHeaderMode::Append,
         )
     }
@@ -317,7 +321,7 @@ impl<S, F, A> SetResponseHeader<S, BoxMakeHeaderValueFn<F, A>> {
         Self::new(
             inner,
             header_name,
-            BoxMakeHeaderValueFn::new(make_fn),
+            BoxMakeHeaderValueFactoryFn::new(make_fn),
             InsertHeaderMode::IfNotPresent,
         )
     }
@@ -343,7 +347,7 @@ where
     ResBody: Send + 'static,
     State: Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    M: MakeHeaderValue<State, Response<ResBody>>,
+    M: MakeHeaderValueFactory<State, ReqBody, ResBody>,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -353,11 +357,9 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let res = self.inner.serve(ctx.clone(), req).await?;
-        let (_ctx, res) = self
-            .mode
-            .apply(&self.header_name, ctx, res, &self.make)
-            .await;
+        let (ctx, req, header_maker) = self.make.make_header_value_maker(ctx, req).await;
+        let res = self.inner.serve(ctx, req).await?;
+        let res = self.mode.apply(&self.header_name, res, header_maker).await;
         Ok(res)
     }
 }

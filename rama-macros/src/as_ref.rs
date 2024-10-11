@@ -6,10 +6,7 @@ use syn::{
     Field, ItemStruct, Token,
 };
 
-use crate::{
-    attr_parsing::{combine_unary_attribute, parse_attrs, Combine},
-    type_parsing::extract_type_from_arc,
-};
+use crate::attr_parsing::{combine_unary_attribute, parse_attrs, Combine};
 
 pub(crate) fn expand(item: ItemStruct) -> syn::Result<TokenStream> {
     if !item.generics.params.is_empty() {
@@ -53,25 +50,15 @@ fn expand_field(state: &Ident, idx: usize, field: &Field) -> TokenStream {
     };
 
     if wrap.is_some() {
-        return match extract_type_from_arc(field_ty) {
-            Some(field_ty) => {
-                quote_spanned! {span=>
-                    #[allow(clippy::needless_borrow)]
-                    impl<T> ::std::convert::AsRef<T> for #state
-                        where #field_ty: ::std::convert::AsRef<T>
-                    {
-                        fn as_ref(&self) -> &T {
-                            use ::core::ops::Deref;
-                            #body.deref().as_ref()
-                        }
-                    }
+        return quote_spanned! {span=>
+            #[allow(clippy::needless_borrow)]
+            impl<T> ::std::convert::AsRef<T> for #state
+                where #field_ty: ::std::convert::AsRef<T>
+            {
+                fn as_ref(&self) -> &T {
+                    #body.as_ref()
                 }
             }
-            None => syn::Error::new_spanned(
-                field.ty.clone(),
-                "`#[as_ref(wrap)]` is only supported for Arc types",
-            )
-            .into_compile_error(),
         };
     }
 

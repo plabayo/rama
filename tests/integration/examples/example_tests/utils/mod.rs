@@ -68,7 +68,7 @@ pub(super) fn init_tracing() {
 
 impl<State> ExampleRunner<State>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     /// Run an example server and create a client for it for interactive testing.
     ///

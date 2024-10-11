@@ -1,7 +1,7 @@
 use rama::context::AsRef;
 use std::sync::Arc;
 
-#[derive(AsRef)]
+#[derive(Clone, AsRef)]
 struct AppState {
     auth_token: String,
     #[as_ref(skip)]
@@ -11,7 +11,7 @@ struct AppState {
 #[derive(AsRef)]
 struct ConnState {
     #[as_ref(wrap)]
-    app: Arc<AppState>,
+    app: AppState,
     auth_token: String,
 }
 
