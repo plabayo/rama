@@ -75,7 +75,7 @@ async fn main() {
                     .get("/coin", coin_page)
                     .post("/coin", |ctx: Context<Arc<AppState>>| async move {
                         ctx.state().counter.fetch_add(1, Ordering::AcqRel);
-                        coin_page(ctx)
+                        coin_page(ctx).await
                     })
                     .on(
                         HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
@@ -88,7 +88,7 @@ async fn main() {
         .unwrap();
 }
 
-fn coin_page(ctx: Context<Arc<AppState>>) -> Html<String> {
+async fn coin_page(ctx: Context<Arc<AppState>>) -> Html<String> {
     let emoji = if ctx
         .get::<SocketInfo>()
         .unwrap()

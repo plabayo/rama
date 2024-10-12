@@ -31,40 +31,6 @@ where
     }
 }
 
-impl<State, F, Fut, R> IntoEndpointService<State, (State, F, Context<State>, Fut, R)> for F
-where
-    State: Clone + Send + Sync + 'static,
-    F: Fn(Context<State>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse + Send + Sync + 'static,
-{
-    fn into_endpoint_service(
-        self,
-    ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
-        InfallibleServiceFn {
-            inner: self,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<State, F, Fut, R> IntoEndpointService<State, (State, F, Context<State>, Request, Fut, R)> for F
-where
-    State: Clone + Send + Sync + 'static,
-    F: Fn(Context<State>, Request) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse + Send + Sync + 'static,
-{
-    fn into_endpoint_service(
-        self,
-    ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
-        InfallibleServiceFn {
-            inner: self,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
 impl<State, R> IntoEndpointService<State, ()> for R
 where
     State: Clone + Send + Sync + 'static,
@@ -110,60 +76,6 @@ where
     }
 }
 
-struct InfallibleServiceFn<F, A> {
-    inner: F,
-    _marker: std::marker::PhantomData<fn(A) -> ()>,
-}
-
-impl<F, A> fmt::Debug for InfallibleServiceFn<F, A>
-where
-    F: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InfallibleServiceFn")
-            .field("inner", &self.inner)
-            .field(
-                "_marker",
-                &format_args!("{}", std::any::type_name::<fn(A) -> ()>()),
-            )
-            .finish()
-    }
-}
-
-impl<F, Fut, R, State> Service<State, Request> for InfallibleServiceFn<F, (Context<State>, Fut, R)>
-where
-    State: Clone + Send + Sync + 'static,
-    F: Fn(Context<State>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse + Send + Sync + 'static,
-{
-    type Response = Response;
-    type Error = Infallible;
-
-    async fn serve(&self, ctx: Context<State>, _: Request) -> Result<Self::Response, Self::Error> {
-        Ok((self.inner)(ctx).await.into_response())
-    }
-}
-
-impl<F, Fut, R, State> Service<State, Request>
-    for InfallibleServiceFn<F, (Context<State>, Request, Fut, R)>
-where
-    State: Clone + Send + Sync + 'static,
-    F: Fn(Context<State>, Request) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse + Send + Sync + 'static,
-{
-    type Response = Response;
-    type Error = Infallible;
-
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        Ok((self.inner)(ctx, req).await.into_response())
-    }
-}
 mod service;
 #[doc(inline)]
 pub use service::EndpointServiceFn;

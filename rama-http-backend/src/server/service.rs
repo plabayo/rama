@@ -634,8 +634,13 @@ where
     /// IO Byte streams (e.g. a TCP Stream) as HTTP.
     pub fn service<State, S, Response>(self, service: S) -> HttpService<B, S, T>
     where
+        State: Send + Sync + 'static,
         S: Service<T::Output, Request, Response = Response, Error = Infallible>,
-        T: StateTransformer<State, Error = Infallible> + Clone + Send + Sync + 'static,
+        T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
     {
         HttpService::new(self.builder, service, self.state_transformer.clone())
@@ -649,9 +654,13 @@ where
         service: S,
     ) -> HttpServeResult
     where
-        State: Clone + Send + Sync + 'static,
+        State: Send + Sync + 'static,
         S: Service<T::Output, Request, Response = Response, Error = Infallible>,
-        T: StateTransformer<State, Error = Infallible> + Clone + Send + Sync + 'static,
+        T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
         IO: Stream,
     {
@@ -666,7 +675,7 @@ where
     pub async fn listen<S, Response, A>(self, addr: A, service: S) -> HttpServeResult
     where
         S: Service<T::Output, Request, Response = Response, Error = Infallible>,
-        T: StateTransformer<(), Output: Clone + Send + Sync + 'static, Error = Infallible>
+        T: StateTransformer<(), Output: Send + Sync + 'static, Error = Infallible>
             + Clone
             + Send
             + Sync
@@ -695,7 +704,7 @@ where
     ) -> HttpServeResult
     where
         S: Service<T::Output, Request, Response = Response, Error = Infallible>,
-        T: StateTransformer<(), Output: Clone + Send + Sync + 'static, Error = Infallible>
+        T: StateTransformer<(), Output: Send + Sync + 'static, Error = Infallible>
             + Clone
             + Send
             + Sync
@@ -725,7 +734,11 @@ where
     where
         State: Clone + Send + Sync + 'static,
         S: Service<T::Output, Request, Response = Response, Error = Infallible>,
-        T: StateTransformer<State, Error = Infallible> + Clone + Send + Sync + 'static,
+        T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -753,7 +766,11 @@ where
     where
         State: Clone + Send + Sync + 'static,
         S: Service<T::Output, Request, Response = Response, Error = Infallible>,
-        T: StateTransformer<State, Error = Infallible> + Clone + Send + Sync + 'static,
+        T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+            + Clone
+            + Send
+            + Sync
+            + 'static,
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
@@ -813,7 +830,11 @@ where
     B: HyperConnServer,
     State: Clone + Send + Sync + 'static,
     S: Service<T::Output, Request, Response = Response, Error = Infallible>,
-    T: StateTransformer<State, Error = Infallible> + Clone + Send + Sync + 'static,
+    T: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
     Response: IntoResponse + Send + 'static,
     IO: Stream,
 {

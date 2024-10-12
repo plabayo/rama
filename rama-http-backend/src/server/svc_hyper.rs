@@ -28,9 +28,9 @@ impl<S, T, R> HyperService<S, T, R> {
 
 impl<S, T, R, Response> hyper::service::Service<HyperRequest> for HyperService<S, T, R>
 where
-    S: Clone + Send + Sync + 'static,
+    S: Send + Sync + 'static,
     T: Service<R::Output, Request, Response = Response, Error = Infallible>,
-    R: StateTransformer<S, Error = std::convert::Infallible>,
+    R: StateTransformer<S, Output: Send + Sync + 'static, Error = std::convert::Infallible>,
     Response: IntoResponse + Send + 'static,
 {
     type Response = rama_http_types::Response;

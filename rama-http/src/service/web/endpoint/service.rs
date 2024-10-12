@@ -42,7 +42,7 @@ where
     }
 }
 
-impl<F, R, O, S> EndpointServiceFn<S, (F, R, O, (), Context<S>, ())> for F
+impl<F, R, O, S> EndpointServiceFn<S, (F, R, O, (), Context<S>)> for F
 where
     F: Fn(Context<S>) -> R + Clone + Send + Sync + 'static,
     R: Future<Output = O> + Send + 'static,
@@ -74,7 +74,7 @@ where
 macro_rules! impl_endpoint_service_fn_tuple {
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        impl<F, R, O, S, $($ty),+> EndpointServiceFn<S, (F, R, O, ($($ty),+,), (), ())> for F
+        impl<F, R, O, S, $($ty),+> EndpointServiceFn<S, (F, R, O, ($($ty),+,))> for F
             where
                 F: Fn($($ty),+) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = O> + Send + 'static,
@@ -130,7 +130,7 @@ all_the_tuples_no_last_special_case!(impl_endpoint_service_fn_tuple_with_from_re
 macro_rules! impl_endpoint_service_fn_tuple_with_context {
     ($($ty:ident),+ $(,)?) => {
         #[allow(non_snake_case)]
-        impl<F, R, O, S, $($ty),+> EndpointServiceFn<S, (F, R, O, ($($ty),+,), Context<S>, ())> for F
+        impl<F, R, O, S, $($ty),+> EndpointServiceFn<S, (F, R, O, ($($ty),+,), Context<S>)> for F
             where
                 F: Fn($($ty),+, Context<S>) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = O> + Send + 'static,
@@ -207,7 +207,7 @@ mod private {
     {
     }
 
-    impl<F, R, O, S> Sealed<S, (F, R, O, (), Context<S>, ())> for F
+    impl<F, R, O, S> Sealed<S, (F, R, O, (), Context<S>)> for F
     where
         F: Fn(Context<S>) -> R + Clone + Send + Sync + 'static,
         R: Future<Output = O> + Send + 'static,
@@ -229,7 +229,7 @@ mod private {
     macro_rules! impl_endpoint_service_fn_sealed_tuple {
         ($($ty:ident),+ $(,)?) => {
             #[allow(non_snake_case)]
-            impl<F, R, O, S, $($ty),+> Sealed<S, (F, R, O, ($($ty),+,), (), ())> for F
+            impl<F, R, O, S, $($ty),+> Sealed<S, (F, R, O, ($($ty),+,))> for F
                 where
                     F: Fn($($ty),+) -> R + Send + Sync + 'static,
                     R: Future<Output = O> + Send + 'static,
@@ -262,7 +262,7 @@ mod private {
     macro_rules! impl_endpoint_service_fn_sealed_tuple_with_context {
         ($($ty:ident),+ $(,)?) => {
             #[allow(non_snake_case)]
-            impl<F, R, O, S, $($ty),+> Sealed<S, (F, R, O, ($($ty),+,), Context<S>, ())> for F
+            impl<F, R, O, S, $($ty),+> Sealed<S, (F, R, O, ($($ty),+,), Context<S>)> for F
                 where
                     F: Fn($($ty),+, Context<S>) -> R + Send + Sync + 'static,
                     R: Future<Output = O> + Send + 'static,

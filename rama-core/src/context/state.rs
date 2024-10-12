@@ -10,7 +10,7 @@ use std::convert::Infallible;
 /// validation of dynamic (extension) state.
 pub trait StateTransformer<Input> {
     /// Transformed `State` object.
-    type Output: Clone + Send + Sync + 'static;
+    type Output;
     /// Error that is returned in case the transformation failed.
     type Error;
 
@@ -21,7 +21,7 @@ pub trait StateTransformer<Input> {
 
 impl<Input> StateTransformer<Input> for ()
 where
-    Input: Clone + Send + Sync + 'static,
+    Input: Clone,
 {
     type Output = Input;
     type Error = Infallible;
@@ -34,8 +34,6 @@ where
 impl<F, Input, Output, Error> StateTransformer<Input> for F
 where
     F: Fn(&Context<Input>) -> Result<Output, Error>,
-    Input: Clone + Send + Sync + 'static,
-    Output: Clone + Send + Sync + 'static,
 {
     type Output = Output;
     type Error = Error;

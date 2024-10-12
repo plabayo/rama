@@ -211,7 +211,7 @@ impl<S, T> TcpListener<S, T> {
 impl<State, T> TcpListener<State, T>
 where
     State: Clone + Send + Sync + 'static,
-    T: StateTransformer<State, Error: std::error::Error + 'static>,
+    T: StateTransformer<State, Output: Send + Sync + 'static, Error: std::error::Error + 'static>,
 {
     /// Serve connections from this listener with the given service.
     ///
