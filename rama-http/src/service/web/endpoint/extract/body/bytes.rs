@@ -20,13 +20,10 @@ define_http_rejection! {
     pub struct BytesRejection(Error);
 }
 
-impl<S> FromRequest<S> for Bytes
-where
-    S: Send + Sync + 'static,
-{
+impl FromRequest for Bytes {
     type Rejection = BytesRejection;
 
-    async fn from_request(_ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
+    async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         req.into_body()
             .collect()
             .await

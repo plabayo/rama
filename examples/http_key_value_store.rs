@@ -69,6 +69,7 @@ use rama::{
     rt::Executor,
     Context, Layer,
 };
+use rama_http::Request;
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc};
@@ -155,14 +156,16 @@ async fn main() {
                                     }
                                 }).into_endpoint_service()),
                         )
-                        .post("/items", |Json(dict): Json<HashMap<String, String>>, ctx: Context<Arc<AppState>>| async move {
+                        .post("/items", |ctx: Context<Arc<AppState>>, Json(dict): Json<HashMap<String, String>>| async move {
                             let mut db = ctx.state().db.write().await;
                             for (k, v) in dict {
                                 db.insert(k, bytes::Bytes::from(v));
                             }
                             StatusCode::OK
                         })
-                        .post("/item/:key", |Path(params): Path<ItemParam>, Bytes(value): Bytes, ctx: Context<Arc<AppState>>| async move {
+                        // TODO: create a way to implement FromRequest also for a tuple
+                        // for (X, Y) where X is created from Context, and Y created from Request
+                        .post("/item/:key", |Path(params): Path<ItemParam>, ctx: Context<Arc<AppState>>, Bytes(value): Bytes| async move {
                             if value.is_empty() {
                                 return StatusCode::BAD_REQUEST;
                             }

@@ -115,8 +115,6 @@ use crate::rt::Executor;
 use std::{fmt, future::Future};
 use tokio::task::JoinHandle;
 
-pub use ::rama_macros::AsRef;
-
 mod extensions;
 #[doc(inline)]
 pub use extensions::Extensions;

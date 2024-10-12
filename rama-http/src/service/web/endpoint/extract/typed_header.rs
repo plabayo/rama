@@ -1,4 +1,4 @@
-use super::FromRequestParts;
+use super::FromRequestContextRefPair;
 use crate::dep::http::request::Parts;
 use crate::headers::{self, Header};
 use crate::{HeaderName, IntoResponse, Response};
@@ -20,14 +20,17 @@ impl<H: Clone> Clone for TypedHeader<H> {
     }
 }
 
-impl<S, H> FromRequestParts<S> for TypedHeader<H>
+impl<S, H> FromRequestContextRefPair<S> for TypedHeader<H>
 where
     S: Send + Sync + 'static,
     H: Header + Send + Sync + 'static,
 {
     type Rejection = TypedHeaderRejection;
 
-    async fn from_request_parts(_ctx: &Context<S>, parts: &Parts) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(
+        _ctx: &Context<S>,
+        parts: &Parts,
+    ) -> Result<Self, Self::Rejection> {
         let mut values = parts.headers.get_all(H::name()).iter();
         let is_missing = values.size_hint() == (0, Some(0));
         H::decode(&mut values)
@@ -131,7 +134,7 @@ impl std::error::Error for TypedHeaderRejection {
 mod tests {
     use crate::{
         headers::ContentType,
-        service::web::extract::{FromRequestParts, TypedHeader},
+        service::web::extract::{FromRequestContextRefPair, TypedHeader},
         Body, Request,
     };
     use rama_core::Context;
@@ -147,11 +150,11 @@ mod tests {
 
         let ctx = Context::default();
 
-        let typed_header = match TypedHeader::<ContentType>::from_request_parts(&ctx, &parts).await
-        {
-            Ok(typed_header) => Some(typed_header),
-            Err(_) => panic!("Expected Ok"),
-        };
+        let typed_header =
+            match TypedHeader::<ContentType>::from_request_context_ref_pair(&ctx, &parts).await {
+                Ok(typed_header) => Some(typed_header),
+                Err(_) => panic!("Expected Ok"),
+            };
 
         assert_eq!(typed_header.unwrap().0, "application/json".parse().unwrap());
     }

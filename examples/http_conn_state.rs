@@ -26,7 +26,6 @@
 //! connection index and count of requests within that connection.
 
 use rama::{
-    context::AsRef,
     http::{response::Html, server::HttpServer, Request},
     layer::MapStateLayer,
     rt::Executor,
@@ -42,6 +41,8 @@ use std::{
     },
     time::Duration,
 };
+
+use derive_more::AsRef;
 
 #[derive(Debug, Default)]
 struct AppMetrics {
@@ -64,12 +65,14 @@ struct AppState {
 
 #[derive(Debug, Clone, AsRef)]
 struct ConnState {
-    #[as_ref(wrap)]
     /// reference to app life cycle app state
-    app: AppState,
+    #[as_ref(AppMetrics)]
+    app_metrics: Arc<AppMetrics>,
     /// global state injected directly into the connection state, true if app is alive
+    #[as_ref(AtomicBool)]
     alive: Arc<AtomicBool>,
     /// metrics with the scope of the connection
+    #[as_ref(ConnMetrics)]
     conn_metrics: Arc<ConnMetrics>,
 }
 
@@ -79,16 +82,11 @@ where
     // trait bounds regardless of how deep the state properties are "nested". In a production
     // codebase however it probably makes more sense to work with the actual type
     // for any non-generic middleware / service.
-    S: AsRef<Arc<AppMetrics>>
-        + AsRef<Arc<ConnMetrics>>
-        + AsRef<Arc<AtomicBool>>
-        + Send
-        + Sync
-        + 'static,
+    S: AsRef<AppMetrics> + AsRef<ConnMetrics> + AsRef<AtomicBool> + Send + Sync + 'static,
 {
-    let app_metrics: &Arc<AppMetrics> = ctx.state().as_ref();
-    let conn_metrics: &Arc<ConnMetrics> = ctx.state().as_ref();
-    let alive: &Arc<AtomicBool> = ctx.state().as_ref();
+    let app_metrics: &AppMetrics = ctx.state().as_ref();
+    let conn_metrics: &ConnMetrics = ctx.state().as_ref();
+    let alive: &AtomicBool = ctx.state().as_ref();
 
     let conn_count = app_metrics
         .connections
@@ -145,7 +143,7 @@ async fn main() {
                         .fetch_add(1, std::sync::atomic::Ordering::AcqRel)
                         + 1;
                     ConnState {
-                        app,
+                        app_metrics: app.app_metrics,
                         alive,
                         conn_metrics: Arc::new(ConnMetrics {
                             index,

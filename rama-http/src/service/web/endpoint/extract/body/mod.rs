@@ -1,5 +1,4 @@
 use super::FromRequest;
-use rama_core::Context;
 use rama_http_types as http;
 use rama_utils::macros::impl_deref;
 use std::convert::Infallible;
@@ -26,13 +25,10 @@ pub struct Body(pub http::Body);
 
 impl_deref!(Body: http::Body);
 
-impl<S> FromRequest<S> for Body
-where
-    S: Send + Sync + 'static,
-{
+impl FromRequest for Body {
     type Rejection = Infallible;
 
-    async fn from_request(_ctx: Context<S>, req: http::Request) -> Result<Self, Self::Rejection> {
+    async fn from_request(req: http::Request) -> Result<Self, Self::Rejection> {
         Ok(Self(req.into_body()))
     }
 }

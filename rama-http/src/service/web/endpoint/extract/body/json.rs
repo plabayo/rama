@@ -36,14 +36,13 @@ composite_http_rejection! {
     }
 }
 
-impl<S, T> FromRequest<S> for Json<T>
+impl<T> FromRequest for Json<T>
 where
-    S: Send + Sync + 'static,
     T: serde::de::DeserializeOwned + Send + Sync + 'static,
 {
     type Rejection = JsonRejection;
 
-    async fn from_request(_ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
+    async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         if !crate::service::web::extract::has_any_content_type(
             req.headers(),
             &[&mime::APPLICATION_JSON],
