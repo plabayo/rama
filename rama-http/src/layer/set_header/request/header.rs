@@ -35,7 +35,7 @@ pub trait MakeHeaderValueFn<S, B, A>: Send + Sync + 'static {
 
 impl<F, Fut, S, B> MakeHeaderValueFn<S, B, ()> for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     F: Fn() -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Option<HeaderValue>> + Send + 'static,
@@ -52,7 +52,7 @@ where
 
 impl<F, Fut, S, B> MakeHeaderValueFn<S, B, ((), B)> for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     F: Fn(Request<B>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = (Request<B>, Option<HeaderValue>)> + Send + 'static,
@@ -69,7 +69,7 @@ where
 
 impl<F, Fut, S, B> MakeHeaderValueFn<S, B, (Context<S>,)> for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     F: Fn(Context<S>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = (Context<S>, Option<HeaderValue>)> + Send + 'static,
@@ -153,7 +153,7 @@ where
 
 impl<S, B> MakeHeaderValue<S, B> for HeaderValue
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
 {
     fn make_header_value(
@@ -167,7 +167,7 @@ where
 
 impl<S, B> MakeHeaderValue<S, B> for Option<HeaderValue>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
 {
     fn make_header_value(

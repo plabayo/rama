@@ -55,7 +55,7 @@ impl<S, F, State, Request, Error> Service<State, Request> for MapErr<S, F>
 where
     S: Service<State, Request>,
     F: FnOnce(S::Error) -> Error + Clone + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     Error: Send + Sync + 'static,
 {

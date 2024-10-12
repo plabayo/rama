@@ -37,7 +37,7 @@ where
     B: Backoff,
     C: CloneInput<State>,
     R: RetryRule<State, Response, Error>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Response: Send + 'static,
     Error: Send + Sync + 'static,
 {
@@ -173,7 +173,7 @@ pub trait RetryRule<S, R, E>: private::Sealed<(S, R, E)> + Send + Sync + 'static
 
 impl<S, Body, E> RetryRule<S, Response<Body>, E> for Undefined
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     E: std::fmt::Debug + Send + Sync + 'static,
     Body: Send + 'static,
 {
@@ -207,7 +207,7 @@ impl<F, Fut, S, R, E> RetryRule<S, R, E> for F
 where
     F: Fn(Context<S>, Result<R, E>) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = (Context<S>, Result<R, E>, bool)> + Send + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     R: Send + 'static,
     E: Send + Sync + 'static,
 {

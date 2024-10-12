@@ -302,7 +302,7 @@ where
     S: Service<State, Request<Body>, Error: Into<BoxError>>,
     H: ForwardHeader + Send + Sync + 'static,
     Body: Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = BoxError;
@@ -354,7 +354,7 @@ macro_rules! set_forwarded_service_for_tuple {
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
             S: Service<State, Request<Body>, Error: Into<BoxError>>,
             Body: Send + 'static,
-            State: Send + Sync + 'static,
+            State: Clone + Send + Sync + 'static,
         {
             type Response = S::Response;
             type Error = BoxError;

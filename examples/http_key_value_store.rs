@@ -69,7 +69,6 @@ use rama::{
     rt::Executor,
     Context, Layer,
 };
-use rama_http::Request;
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc};

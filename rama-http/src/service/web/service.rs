@@ -42,7 +42,7 @@ impl<State> Clone for WebService<State> {
 
 impl<State> WebService<State>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     /// create a new web service
     pub(crate) fn new() -> Self {
@@ -220,7 +220,7 @@ where
 
 impl<State> Default for WebService<State>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     fn default() -> Self {
         Self::new()
@@ -229,7 +229,7 @@ where
 
 impl<State> Service<State, Request> for WebService<State>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = Infallible;

@@ -18,7 +18,7 @@ where
     F: Fn() -> R + Clone + Send + Sync + 'static,
     R: Future<Output = O> + Send + 'static,
     O: IntoResponse + Send + Sync + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     async fn call(&self, _ctx: Context<S>, _req: Request) -> Response {
         self().await.into_response()
@@ -30,7 +30,7 @@ where
     F: Fn(I) -> R + Clone + Send + Sync + 'static,
     R: Future<Output = O> + Send + 'static,
     O: IntoResponse + Send + Sync + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     I: FromRequest,
 {
     async fn call(&self, _ctx: Context<S>, req: Request) -> Response {
@@ -47,7 +47,7 @@ where
     F: Fn(Context<S>) -> R + Clone + Send + Sync + 'static,
     R: Future<Output = O> + Send + 'static,
     O: IntoResponse + Send + Sync + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     async fn call(&self, ctx: Context<S>, _req: Request) -> Response {
         self(ctx).await.into_response()
@@ -59,7 +59,7 @@ where
     F: Fn(Context<S>, I) -> R + Clone + Send + Sync + 'static,
     R: Future<Output = O> + Send + 'static,
     O: IntoResponse + Send + Sync + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     I: FromRequest,
 {
     async fn call(&self, ctx: Context<S>, req: Request) -> Response {
@@ -79,7 +79,7 @@ macro_rules! impl_endpoint_service_fn_tuple {
                 F: Fn($($ty),+) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = O> + Send + 'static,
                 O: IntoResponse + Send + Sync + 'static,
-                S: Send + Sync + 'static,
+                S: Clone + Send + Sync + 'static,
                 $($ty: FromRequestContextRefPair<S>),+,
         {
             async fn call(&self, ctx: Context<S>, req: Request) -> Response {
@@ -104,7 +104,7 @@ macro_rules! impl_endpoint_service_fn_tuple_with_from_request {
                 F: Fn($($ty),+, I) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = O> + Send + 'static,
                 O: IntoResponse + Send + Sync + 'static,
-                S: Send + Sync + 'static,
+                S: Clone + Send + Sync + 'static,
                 $($ty: FromRequestContextRefPair<S>),+,
                 I: FromRequest,
         {
@@ -135,7 +135,7 @@ macro_rules! impl_endpoint_service_fn_tuple_with_context {
                 F: Fn($($ty),+, Context<S>) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = O> + Send + 'static,
                 O: IntoResponse + Send + Sync + 'static,
-                S: Send + Sync + 'static,
+                S: Clone + Send + Sync + 'static,
                 $($ty: FromRequestContextRefPair<S>),+,
         {
             async fn call(&self, ctx: Context<S>, req: Request) -> Response {
@@ -160,7 +160,7 @@ macro_rules! impl_endpoint_service_fn_tuple_with_context_and_from_request {
                 F: Fn($($ty),+, Context<S>, I) -> R + Clone + Send + Sync + 'static,
                 R: Future<Output = O> + Send + 'static,
                 O: IntoResponse + Send + Sync + 'static,
-                S: Send + Sync + 'static,
+                S: Clone + Send + Sync + 'static,
                 $($ty: FromRequestContextRefPair<S>),+,
                 I: FromRequest,
         {
@@ -193,7 +193,7 @@ mod private {
         F: Fn() -> R + Send + Sync + 'static,
         R: Future<Output = O> + Send + 'static,
         O: IntoResponse + Send + Sync + 'static,
-        S: Send + Sync + 'static,
+        S: Clone + Send + Sync + 'static,
     {
     }
 
@@ -202,17 +202,17 @@ mod private {
         F: Fn(I) -> R + Send + Sync + 'static,
         R: Future<Output = O> + Send + 'static,
         O: IntoResponse + Send + Sync + 'static,
-        S: Send + Sync + 'static,
+        S: Clone + Send + Sync + 'static,
         I: FromRequest,
     {
     }
 
     impl<F, R, O, S> Sealed<S, (F, R, O, (), Context<S>, ())> for F
     where
-        F: Fn(Context<S>) -> R + Send + Sync + 'static,
+        F: Fn(Context<S>) -> R + Clone + Send + Sync + 'static,
         R: Future<Output = O> + Send + 'static,
         O: IntoResponse + Send + Sync + 'static,
-        S: Send + Sync + 'static,
+        S: Clone + Send + Sync + 'static,
     {
     }
 
@@ -221,7 +221,7 @@ mod private {
         F: Fn(Context<S>, I) -> R + Send + Sync + 'static,
         R: Future<Output = O> + Send + 'static,
         O: IntoResponse + Send + Sync + 'static,
-        S: Send + Sync + 'static,
+        S: Clone + Send + Sync + 'static,
         I: FromRequest,
     {
     }
@@ -234,7 +234,7 @@ mod private {
                     F: Fn($($ty),+) -> R + Send + Sync + 'static,
                     R: Future<Output = O> + Send + 'static,
                     O: IntoResponse + Send + Sync + 'static,
-                    S: Send + Sync + 'static,
+                    S: Clone + Send + Sync + 'static,
                     $($ty: FromRequestContextRefPair<S>),+,
             {}
         };
@@ -250,7 +250,7 @@ mod private {
                     F: Fn($($ty),+, I) -> R + Send + Sync + 'static,
                     R: Future<Output = O> + Send + 'static,
                     O: IntoResponse + Send + Sync + 'static,
-                    S: Send + Sync + 'static,
+                    S: Clone + Send + Sync + 'static,
                     I: FromRequest,
                     $($ty: FromRequestContextRefPair<S>),+,
             {}
@@ -267,7 +267,7 @@ mod private {
                     F: Fn($($ty),+, Context<S>) -> R + Send + Sync + 'static,
                     R: Future<Output = O> + Send + 'static,
                     O: IntoResponse + Send + Sync + 'static,
-                    S: Send + Sync + 'static,
+                    S: Clone + Send + Sync + 'static,
                     $($ty: FromRequestContextRefPair<S>),+,
             {}
         };
@@ -283,7 +283,7 @@ mod private {
                     F: Fn($($ty),+, Context<S>, I) -> R + Send + Sync + 'static,
                     R: Future<Output = O> + Send + 'static,
                     O: IntoResponse + Send + Sync + 'static,
-                    S: Send + Sync + 'static,
+                    S: Clone + Send + Sync + 'static,
                     I: FromRequest,
                     $($ty: FromRequestContextRefPair<S>),+,
             {}

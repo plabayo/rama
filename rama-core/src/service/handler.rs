@@ -136,7 +136,7 @@ impl<State, Request> FromContextRequest<State, Request> for () {
 
 impl<State, Request> FromContextRequest<State, Request> for ((), Request)
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     fn from_context_request(_ctx: Context<State>, req: Request) -> Self {
@@ -146,7 +146,7 @@ where
 
 impl<State, Request> FromContextRequest<State, Request> for (Context<State>, Request)
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     fn from_context_request(ctx: Context<State>, req: Request) -> Self {

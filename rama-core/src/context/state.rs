@@ -10,7 +10,7 @@ use std::convert::Infallible;
 /// validation of dynamic (extension) state.
 pub trait StateTransformer<Input> {
     /// Transformed `State` object.
-    type Output;
+    type Output: Clone + Send + Sync + 'static;
     /// Error that is returned in case the transformation failed.
     type Error;
 
@@ -21,7 +21,7 @@ pub trait StateTransformer<Input> {
 
 impl<Input> StateTransformer<Input> for ()
 where
-    Input: Clone,
+    Input: Clone + Send + Sync + 'static,
 {
     type Output = Input;
     type Error = Infallible;
@@ -34,6 +34,8 @@ where
 impl<F, Input, Output, Error> StateTransformer<Input> for F
 where
     F: Fn(&Context<Input>) -> Result<Output, Error>,
+    Input: Clone + Send + Sync + 'static,
+    Output: Clone + Send + Sync + 'static,
 {
     type Output = Output;
     type Error = Error;
@@ -47,56 +49,9 @@ where
 mod test {
     use rama_error::OpaqueError;
 
-    use crate::context::{AsRef, StateTransformer};
+    use crate::context::StateTransformer;
     use crate::rt::Executor;
     use crate::Context;
-    use std::ops::Deref;
-    use std::sync::atomic::AtomicU64;
-    use std::sync::Arc;
-
-    struct Database;
-
-    #[derive(AsRef)]
-    struct State {
-        db: Database,
-    }
-
-    #[derive(AsRef)]
-    struct ConnectionState {
-        inner: Arc<State>,
-        counter: Arc<AtomicU64>,
-    }
-
-    impl<T> AsRef<T> for ConnectionState
-    where
-        State: AsRef<T>,
-    {
-        fn as_ref(&self) -> &T {
-            self.inner.deref().as_ref()
-        }
-    }
-
-    impl From<Arc<State>> for ConnectionState {
-        fn from(inner: Arc<State>) -> Self {
-            Self {
-                inner,
-                counter: Arc::new(AtomicU64::new(0)),
-            }
-        }
-    }
-
-    fn assert_database<T: AsRef<Database>>(_t: &T) {}
-    fn assert_counter<T: AsRef<Arc<AtomicU64>>>(_t: &T) {}
-
-    #[test]
-    fn test_state_wrapper() {
-        let state = Arc::new(State { db: Database });
-        let connection_state = ConnectionState::from(state.clone());
-
-        assert_database(state.deref());
-        assert_database(&connection_state);
-        assert_counter(&connection_state);
-    }
 
     #[test]
     fn test_state_transform_default() {

@@ -33,7 +33,7 @@ pub trait Service<S, Request>: Sized + Send + Sync + 'static {
 
 impl<S, Request> Service<S, Request> for ()
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = Request;
@@ -179,7 +179,7 @@ macro_rules! impl_service_either {
                 $param: Service<State, Request, Response = Response, Error: Into<BoxError>>,
             )+
             Request: Send + 'static,
-            State: Send + Sync + 'static,
+            State: Clone + Send + Sync + 'static,
             Response: Send + 'static,
         {
             type Response = Response;

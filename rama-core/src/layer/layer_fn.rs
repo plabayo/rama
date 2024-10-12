@@ -90,7 +90,7 @@ mod tests {
         where
             Request: Send + 'static,
             S: Service<State, Request, Response = &'static str>,
-            State: Send + Sync + 'static,
+            State: Clone + Send + Sync + 'static,
         {
             type Response = String;
             type Error = S::Error;

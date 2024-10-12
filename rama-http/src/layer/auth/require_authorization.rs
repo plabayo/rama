@@ -173,7 +173,7 @@ impl<S, B, ResBody> ValidateRequest<S, B> for Bearer<ResBody>
 where
     ResBody: Default + Send + 'static,
     B: Send + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     type ResponseBody = ResBody;
 
@@ -236,7 +236,7 @@ impl<S, B, ResBody> ValidateRequest<S, B> for Basic<ResBody>
 where
     ResBody: Default + Send + 'static,
     B: Send + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     type ResponseBody = ResBody;
 

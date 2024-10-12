@@ -22,7 +22,7 @@ define_http_rejection! {
 
 impl<S> FromRequestContextRefPair<S> for Host
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     type Rejection = MissingHost;
 

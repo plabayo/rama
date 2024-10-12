@@ -181,7 +181,7 @@ where
     ResBody: Body<Data: Send + 'static, Error: Send + 'static> + Send + 'static,
     P: Predicate + Send + Sync + 'static,
     ReqBody: Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = Response<CompressionBody<ResBody>>;
     type Error = S::Error;

@@ -57,7 +57,7 @@ impl<ResBody> Redirect<ResBody> {
 
 impl<State, Body, ResBody> Service<State, Request<Body>> for Redirect<ResBody>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
     ResBody: Default + Send + 'static,
 {

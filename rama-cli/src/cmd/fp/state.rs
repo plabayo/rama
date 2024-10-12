@@ -1,10 +1,8 @@
 use std::{collections::HashMap, sync::atomic::AtomicUsize};
 
-use rama::context::AsRef;
-
 use super::data::DataSource;
 
-#[derive(Debug, AsRef)]
+#[derive(Debug)]
 #[non_exhaustive]
 pub(super) struct State {
     pub(super) data_source: DataSource,

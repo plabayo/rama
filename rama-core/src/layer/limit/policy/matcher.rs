@@ -6,7 +6,7 @@ impl<M, P, State, Request> Policy<State, Request> for Vec<(M, P)>
 where
     M: Matcher<State, Request>,
     P: Policy<State, Request>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Guard = Option<P::Guard>;
@@ -57,7 +57,7 @@ impl<M, P, State, Request> Policy<State, Request> for (Vec<(M, P)>, P)
 where
     M: Matcher<State, Request>,
     P: Policy<State, Request>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Guard = P::Guard;

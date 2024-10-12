@@ -77,7 +77,7 @@ mod test {
     use super::*;
     use crate::service::web::WebService;
     use crate::{Body, Method, Request, StatusCode};
-    use rama_core::Service;
+    use rama_core::{Context, Service};
 
     #[tokio::test]
     async fn test_form_post_form_urlencoded() {

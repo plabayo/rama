@@ -109,7 +109,7 @@ where
 impl<T, F, S, Request, E> Service<S, Request> for Timeout<T, F>
 where
     Request: Send + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     F: MakeLayerError<Error = E>,
     E: Into<T::Error> + Send + 'static,
     T: Service<S, Request>,

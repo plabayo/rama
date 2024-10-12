@@ -43,7 +43,7 @@ impl<S, F> MapState<S, F> {
 impl<S, F, W, State, Request> Service<State, Request> for MapState<S, F>
 where
     S: Service<W, Request>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     W: Send + Sync + 'static,
     F: FnOnce(State) -> W + Clone + Send + Sync + 'static,
     Request: Send + 'static,

@@ -334,7 +334,7 @@ impl<ReqBody, ResBody, State, S, M> Service<State, Request<ReqBody>> for SetRequ
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     M: MakeHeaderValue<State, ReqBody>,
 {

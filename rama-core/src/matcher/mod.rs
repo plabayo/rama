@@ -117,7 +117,7 @@ where
 
 impl<State, Request> Matcher<State, Request> for Box<(dyn Matcher<State, Request> + 'static)>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, req: &Request) -> bool {
@@ -137,7 +137,7 @@ macro_rules! impl_matcher_either {
         where
             $($param: Matcher<State, Request>),+,
             Request: Send + 'static,
-            State: Send + Sync + 'static,
+            State: Clone + Send + Sync + 'static,
         {
             fn matches(
                 &self,
@@ -164,7 +164,7 @@ macro_rules! impl_matcher_service_tuple {
             #[allow(non_snake_case)]
             impl<State, $([<M_ $T>], $T),+, S, Request, Response, Error> Service<State, Request> for ($(([<M_ $T>], $T)),+, S)
             where
-                State: Send + Sync + 'static,
+                State: Clone + Send + Sync + 'static,
                 Request: Send + 'static,
                 Response: Send + 'static,
                 $(

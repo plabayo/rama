@@ -23,7 +23,7 @@
 //!
 //! async fn handle<S>(ctx: Context<S>, req: ()) -> Result<(), Infallible>
 //! where
-//!    S: Send + Sync + 'static,
+//!    S: Clone + Send + Sync + 'static,
 //! {
 //!     // Grab the state from the request extensions.
 //!     let state = ctx.get::<Arc<State>>().unwrap();
@@ -143,7 +143,7 @@ impl<S, T> AddExtension<S, T> {
 
 impl<State, Request, S, T> Service<State, Request> for AddExtension<S, T>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     S: Service<State, Request>,
     T: Clone + Send + Sync + 'static,

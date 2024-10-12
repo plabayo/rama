@@ -227,7 +227,7 @@ impl<S, F, State, Stream> Service<State, Stream> for NetworkMetricsService<S, F>
 where
     S: Service<State, Stream>,
     F: AttributesFactory<State>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Stream: crate::stream::Stream,
 {
     type Response = S::Response;

@@ -678,7 +678,7 @@ impl<State, Body> HttpMatcher<State, Body> {
 
 impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for HttpMatcher<State, Body>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
     fn matches(
@@ -698,7 +698,7 @@ where
 
 impl<State, Body> rama_core::matcher::Matcher<State, Request<Body>> for HttpMatcherKind<State, Body>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
     fn matches(

@@ -60,7 +60,7 @@ impl<S: Clone> Clone for HaProxyService<S> {
 
 impl<State, S, IO> Service<State, IO> for HaProxyService<S>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<
         State,
         tokio::io::Join<ChainReader<HeapReader, tokio::io::ReadHalf<IO>>, tokio::io::WriteHalf<IO>>,

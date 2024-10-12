@@ -233,7 +233,7 @@ impl<S, M> SetRequestId<S, M> {
 
 impl<State, S, M, ReqBody, ResBody> Service<State, Request<ReqBody>> for SetRequestId<S, M>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     M: MakeRequestId,
     ReqBody: Send + 'static,
@@ -337,7 +337,7 @@ impl<S: Clone> Clone for PropagateRequestId<S> {
 
 impl<State, S, ReqBody, ResBody> Service<State, Request<ReqBody>> for PropagateRequestId<S>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,

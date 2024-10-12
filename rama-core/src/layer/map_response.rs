@@ -78,7 +78,7 @@ impl<S, F, State, Request, Response> Service<State, Request> for MapResponse<S, 
 where
     S: Service<State, Request>,
     F: FnOnce(S::Response) -> Response + Clone + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     Response: Send + 'static,
 {

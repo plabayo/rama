@@ -22,7 +22,7 @@ impl<H: Clone> Clone for TypedHeader<H> {
 
 impl<S, H> FromRequestContextRefPair<S> for TypedHeader<H>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     H: Header + Send + Sync + 'static,
 {
     type Rejection = TypedHeaderRejection;

@@ -26,12 +26,9 @@ pub trait HyperConnServer: Send + Sync + private::Sealed + 'static {
     ) -> impl std::future::Future<Output = HttpServeResult> + Send + '_
     where
         IO: Stream,
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         S: Service<R::Output, Request, Response = Response, Error = Infallible>,
-        R: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
-            + Send
-            + Sync
-            + 'static,
+        R: StateTransformer<State, Error = Infallible> + Send + Sync + 'static,
         Response: IntoResponse + Send + 'static;
 }
 
@@ -46,12 +43,9 @@ impl HyperConnServer for Http1Builder {
     ) -> HttpServeResult
     where
         IO: Stream,
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         S: Service<R::Output, Request, Response = Response, Error = Infallible>,
-        R: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
-            + Send
-            + Sync
-            + 'static,
+        R: StateTransformer<State, Error = Infallible> + Send + Sync + 'static,
         Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
@@ -94,12 +88,9 @@ impl HyperConnServer for Http2Builder<HyperExecutor> {
     ) -> HttpServeResult
     where
         IO: Stream,
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         S: Service<R::Output, Request, Response = Response, Error = Infallible>,
-        R: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
-            + Send
-            + Sync
-            + 'static,
+        R: StateTransformer<State, Error = Infallible> + Send + Sync + 'static,
         Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
@@ -142,12 +133,9 @@ impl HyperConnServer for AutoBuilder<HyperExecutor> {
     ) -> HttpServeResult
     where
         IO: Stream,
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         S: Service<R::Output, Request, Response = Response, Error = Infallible>,
-        R: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
-            + Send
-            + Sync
-            + 'static,
+        R: StateTransformer<State, Error = Infallible> + Send + Sync + 'static,
         Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));

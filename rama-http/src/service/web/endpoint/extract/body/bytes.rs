@@ -2,7 +2,6 @@ use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::define_http_rejection;
 use crate::Request;
-use rama_core::Context;
 use rama_utils::macros::impl_deref;
 
 /// Extractor to get the response body, collected as [`Bytes`].
@@ -37,7 +36,7 @@ mod test {
     use super::*;
     use crate::service::web::WebService;
     use crate::{Method, Request, StatusCode};
-    use rama_core::Service;
+    use rama_core::{Context, Service};
 
     #[tokio::test]
     async fn test_bytes() {

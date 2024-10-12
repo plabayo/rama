@@ -252,16 +252,13 @@ impl<S, P> FollowRedirect<S, P> {
 
 impl<State, ReqBody, ResBody, S, P, T> Service<State, Request<ReqBody>> for FollowRedirect<S, P, T>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<T::Output, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
     ReqBody: Body + Default + Send + 'static,
     ResBody: Send + 'static,
     P: Policy<State, ReqBody, S::Error> + Clone,
-    T: StateTransformer<
-            State,
-            Output: Send + Sync + 'static,
-            Error: Into<BoxError> + Send + Sync + 'static,
-        > + Send
+    T: StateTransformer<State, Error: Into<BoxError> + Send + Sync + 'static>
+        + Send
         + Sync
         + 'static,
 {

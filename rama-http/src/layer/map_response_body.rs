@@ -145,7 +145,7 @@ impl<F, S, State, ReqBody, ResBody, NewResBody> Service<State, Request<ReqBody>>
     for MapResponseBody<S, F>
 where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + Sync + 'static,
     NewResBody: Send + Sync + 'static,

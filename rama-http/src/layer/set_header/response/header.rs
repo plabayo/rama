@@ -76,7 +76,7 @@ where
 
 impl<S, ReqBody, ResBody> MakeHeaderValueFactory<S, ReqBody, ResBody> for HeaderValue
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -93,7 +93,7 @@ where
 
 impl<S, ReqBody, ResBody> MakeHeaderValueFactory<S, ReqBody, ResBody> for Option<HeaderValue>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -122,7 +122,7 @@ pub trait MakeHeaderValueFactoryFn<S, ReqBody, ResBody, A>: Send + Sync + 'stati
 
 impl<F, Fut, S, ReqBody, ResBody, M> MakeHeaderValueFactoryFn<S, ReqBody, ResBody, ()> for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
     M: MakeHeaderValue<ResBody>,
@@ -145,7 +145,7 @@ where
 impl<F, Fut, S, ReqBody, ResBody, M>
     MakeHeaderValueFactoryFn<S, ReqBody, ResBody, ((), Request<ReqBody>)> for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
     M: MakeHeaderValue<ResBody>,
@@ -168,7 +168,7 @@ where
 impl<F, Fut, S, ReqBody, ResBody, M> MakeHeaderValueFactoryFn<S, ReqBody, ResBody, (Context<S>,)>
     for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
     M: MakeHeaderValue<ResBody>,
@@ -191,7 +191,7 @@ where
 impl<F, Fut, S, ReqBody, ResBody, M> MakeHeaderValueFactoryFn<S, ReqBody, ResBody, (Context<S>, M)>
     for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
     M: MakeHeaderValue<ResBody>,

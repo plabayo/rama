@@ -32,7 +32,7 @@ impl<T: Clone> Clone for Query<T> {
 impl<T, S> FromRequestContextRefPair<S> for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     type Rejection = FailedToDeserializeQueryString;
 

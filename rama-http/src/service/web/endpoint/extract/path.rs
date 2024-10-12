@@ -41,7 +41,7 @@ impl<T: Clone> Clone for Path<T> {
 
 impl<S, T> FromRequestContextRefPair<S> for Path<T>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     T: DeserializeOwned + Send + Sync + 'static,
 {
     type Rejection = PathRejection;

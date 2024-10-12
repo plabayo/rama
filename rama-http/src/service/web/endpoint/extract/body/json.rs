@@ -3,7 +3,6 @@ use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use crate::Request;
-use rama_core::Context;
 
 pub use crate::response::Json;
 
@@ -69,7 +68,7 @@ mod test {
     use super::*;
     use crate::service::web::WebService;
     use crate::StatusCode;
-    use rama_core::Service;
+    use rama_core::{Context, Service};
 
     #[tokio::test]
     async fn test_json() {

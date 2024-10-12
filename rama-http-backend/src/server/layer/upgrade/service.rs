@@ -75,7 +75,7 @@ where
 
 impl<S, State, O, E> Service<State, Request> for UpgradeService<S, State, O>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<State, Request, Response = O, Error = E>,
     O: Send + Sync + 'static,
     E: Send + Sync + 'static,

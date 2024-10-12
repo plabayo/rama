@@ -84,7 +84,7 @@ impl<T, S, State, Body, E> Service<State, Request<Body>> for HeaderOptionValueSe
 where
     S: Service<State, Request<Body>, Error = E>,
     T: Default + Clone + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
 {

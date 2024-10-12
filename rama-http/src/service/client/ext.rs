@@ -672,7 +672,7 @@ mod test {
         request: Request<Body>,
     ) -> Result<Response, Infallible>
     where
-        S: Send + Sync + 'static,
+        S: Clone + Send + Sync + 'static,
         Body: crate::dep::http_body::Body<Data: Send + 'static, Error: Send + 'static>
             + Send
             + 'static,

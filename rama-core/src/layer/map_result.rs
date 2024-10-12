@@ -98,7 +98,7 @@ where
         + Send
         + Sync
         + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     Response: Send + 'static,
     Error: Send + Sync + 'static,

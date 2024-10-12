@@ -254,7 +254,7 @@ macro_rules! get_forwarded_service_for_tuple {
             $( $ty: ForwardHeader + Send + Sync + 'static, )*
             S: Service<State, Request<Body>>,
             Body: Send + 'static,
-            State: Send + Sync + 'static,
+            State: Clone + Send + Sync + 'static,
         {
             type Response = S::Response;
             type Error = S::Error;
@@ -309,7 +309,7 @@ where
     H: ForwardHeader + Send + Sync + 'static,
     S: Service<State, Request<Body>>,
     Body: Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;

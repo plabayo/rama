@@ -231,6 +231,7 @@ tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 bytes = { workspace = true }
+derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
 itertools = { workspace = true }
@@ -243,7 +244,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-derive_more = { workspace = true, features = ["as_ref"] }
 
 [profile.dev.package."*"]
 opt-level = 3

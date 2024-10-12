@@ -91,7 +91,7 @@ impl<S, T> TcpListenerBuilder<S, T> {
 
 impl<S> TcpListenerBuilder<S>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     /// Create a new `TcpListenerBuilder` with the given state.
     pub fn with_state(state: S) -> Self {
@@ -105,7 +105,7 @@ where
 
 impl<S, T> TcpListenerBuilder<S, T>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     /// Creates a new TcpListener, which will be bound to the specified address.
     ///
@@ -162,7 +162,7 @@ impl TcpListener<(), ()> {
     /// which can be used to configure a `TcpListener`.
     pub fn build_with_state<S>(state: S) -> TcpListenerBuilder<S>
     where
-        S: Send + Sync + 'static,
+        S: Clone + Send + Sync + 'static,
     {
         TcpListenerBuilder::with_state(state)
     }
@@ -210,8 +210,8 @@ impl<S, T> TcpListener<S, T> {
 
 impl<State, T> TcpListener<State, T>
 where
-    State: Send + Sync + 'static,
-    T: StateTransformer<State, Output: Send + Sync + 'static, Error: std::error::Error + 'static>,
+    State: Clone + Send + Sync + 'static,
+    T: StateTransformer<State, Error: std::error::Error + 'static>,
 {
     /// Serve connections from this listener with the given service.
     ///

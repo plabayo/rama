@@ -294,7 +294,7 @@ async fn create_client<S>(
     mut cfg: CliCommandHttp,
 ) -> Result<impl Service<S, Request, Response = Response, Error = BoxError>, BoxError>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     let (request_writer_mode, response_writer_mode) = if cfg.offline {
         (Some(WriterMode::All), None)

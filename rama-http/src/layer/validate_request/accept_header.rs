@@ -52,7 +52,7 @@ impl<ResBody> fmt::Debug for AcceptHeader<ResBody> {
 
 impl<S, B, ResBody> ValidateRequest<S, B> for AcceptHeader<ResBody>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     B: Send + Sync + 'static,
     ResBody: Default + Send + 'static,
 {

@@ -73,7 +73,7 @@ where
     T: Service<State, Request, Error: Into<BoxError>>,
     P: policy::Policy<State, Request, Error: Into<BoxError>>,
     Request: Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = T::Response;
     type Error = BoxError;

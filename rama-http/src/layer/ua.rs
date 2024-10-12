@@ -113,7 +113,7 @@ where
 impl<S, State, Body> Service<State, Request<Body>> for UserAgentClassifier<S>
 where
     S: Service<State, Request<Body>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;

@@ -39,7 +39,7 @@ mod test {
     use crate::dep::http_body_util::BodyExt;
     use crate::service::web::WebService;
     use crate::{Method, Request, StatusCode};
-    use rama_core::Service;
+    use rama_core::{Context, Service};
 
     #[tokio::test]
     async fn test_body() {

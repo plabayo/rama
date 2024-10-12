@@ -55,7 +55,7 @@ where
 impl<S, State, Body> Service<State, Request<Body>> for HttpConnector<S>
 where
     S: ConnectorService<State, Request<Body>, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Response = EstablishedClientConnection<HttpClientService<Body>, State, Request<Body>>;

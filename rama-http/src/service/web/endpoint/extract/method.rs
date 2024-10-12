@@ -5,7 +5,7 @@ use std::convert::Infallible;
 
 impl<S> FromRequestContextRefPair<S> for Method
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     type Rejection = Infallible;
 
