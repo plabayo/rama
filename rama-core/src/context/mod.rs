@@ -517,3 +517,10 @@ impl<S> Context<S> {
         self.executor.guard()
     }
 }
+
+impl<S: Clone> Context<S> {
+    /// Get a cloned reference to the state.
+    pub fn state_clone(&self) -> S {
+        self.state.clone()
+    }
+}
