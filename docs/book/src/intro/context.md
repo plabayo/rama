@@ -79,6 +79,9 @@ you keep things separate and clean.
 
 One solution is to wrap your state.
 
+TODO: update documentation related to state wrapping,
+as now the way to do this is different.
+
 > See for reference: [/examples/http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
 
 The above example shows how can use the `#as_ref(wrap)` property within an `#[derive(AsRef)]` derived "state" struct,
