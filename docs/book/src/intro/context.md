@@ -79,18 +79,16 @@ you keep things separate and clean.
 
 One solution is to wrap your state.
 
-TODO: update documentation related to state wrapping,
-as now the way to do this is different.
-
 > See for reference: [/examples/http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
 
-The above example shows how can use the `#as_ref(wrap)` property within an `#[derive(AsRef)]` derived "state" struct,
-to wrap in a type-safe manner the "app-global" state within the "conn-specific" (tcp) state. This allows you to have
-state freshly created for each connection while still having ease of access to the global state.
+In that example we make use of:
 
-Note though that you do not need the `AsRef` macro or even trait implementation to get this kind of access in your
-own app-specific leaf services. It is however useful — and at times even a requirement — in case you want your
-middleware stack to also include generic middleware that expect `AsRef<T>` trait bounds for type-safe access to
-state from within a middleware. E.g. in case your middleware expects a data source for some specific data type,
-it is of no use to have that middleware compile without knowing for sure that data source is made available
-to that middleware.
+- [`MapStateLayer`](https://ramaproxy.org/docs/rama/layer/struct.MapStateLayer.html):
+  this generic layer allows you to map the state from one type to another,
+  which is great in cases like this where you want the Application layer (http)
+  to have a different type compared to the network layer (tpc).
+- the [`derive_more` third-party crate](https://docs.rs/derive_more/latest/derive_more/) is used
+  as an example how one can use such crates to make services or layers which do not
+  depend on a specific state type, but instead only require a reference (mutable or not)
+  to specific properties they need, which can be useful in case that service
+  is used in multiple branches, each with their own concrete _state_ type.

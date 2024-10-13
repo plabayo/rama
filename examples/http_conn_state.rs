@@ -136,7 +136,7 @@ async fn main() {
             .expect("bind TCP Listener")
             .serve_graceful(
                 guard,
-                MapStateLayer::new(move |app: AppState| {
+                MapStateLayer::new(|app: AppState| {
                     let index = app
                         .app_metrics
                         .connections

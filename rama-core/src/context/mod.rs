@@ -58,6 +58,37 @@
 //! ctx.insert(5i32);
 //! assert_eq!(ctx.get::<i32>(), Some(&5i32));
 //! ```
+//!
+//! ## State Wraps
+//!
+//! > 📖 [rustdoc link](https://ramaproxy.org/docs/rama/context/struct.Context.html#method.map_state)
+//!
+//! `rama` was built from the ground up to operate on and between different layers of the network stack.
+//! This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
+//!
+//! When creating a `TcpListener` with state the state will be owned by that `TcpListener`. By default
+//! it will clone the state and pass a clone to each incoming `tcp` connection. You can however also
+//! inject your own state provider to customise that behaviour. Pretty much the same goes for an `HttpServer`,
+//! where it will do the same for each incoming http request. This is great for stuff that is okay to share, but it is not desired
+//! for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus
+//! you do not wish to keep a global cache for this, as it would either be shared or get overly complicated to ensure
+//! you keep things separate and clean.
+//!
+//! One solution is to wrap your state.
+//!
+//! > See for reference: [/examples/http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
+//!
+//! In that example we make use of:
+//!
+//! - [`MapStateLayer`](https://ramaproxy.org/docs/rama/layer/struct.MapStateLayer.html):
+//!   this generic layer allows you to map the state from one type to another,
+//!   which is great in cases like this where you want the Application layer (http)
+//!   to have a different type compared to the network layer (tpc).
+//! - the [`derive_more` third-party crate](https://docs.rs/derive_more/latest/derive_more/) is used
+//!   as an example how one can use such crates to make services or layers which do not
+//!   depend on a specific state type, but instead only require a reference (mutable or not)
+//!   to specific properties they need, which can be useful in case that service
+//!   is used in multiple branches, each with their own concrete _state_ type.
 
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
