@@ -50,8 +50,6 @@ async fn test_http_mitm_proxy() {
 
     let executor = Executor::default();
 
-    // TODO: rethink stateTransformer... it is putting silly bounds...
-    // why did we introduce this in first place... Do we really need it?
     let tcp_service = TlsAcceptorLayer::new(tls_service_data).layer(
         HttpServer::auto(executor).service(service_fn(|req: Request| async move {
             Ok(Json(json!({

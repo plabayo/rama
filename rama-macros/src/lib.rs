@@ -2,7 +2,7 @@
 //!
 //! There are no more macros for Rama. We used to have an `AsRef` one,
 //! but it is recommended to either not use a macro for that anymore,
-//! write one yourself or use a thirdparty crate such as `derive-more`.
+//! write one yourself or use a thirdparty crate such as `derive_more`.
 //!
 //! [`rama`]: https://crates.io/crates/rama
 

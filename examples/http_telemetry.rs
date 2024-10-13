@@ -134,7 +134,6 @@ async fn main() {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).layer(
-                // TODO: figure out what I did wrong with the Context<S> impl :)
                 WebService::default().get("/", |ctx: Context<Arc<Metrics>>| async move {
                     ctx.state().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")

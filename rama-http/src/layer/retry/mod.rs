@@ -260,7 +260,7 @@ mod test {
             retried: bool,
             service: &impl Service<State, Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.state().clone();
+            let state = ctx.state_clone();
 
             let fut = service.serve(ctx, request(input));
             let res = fut.await.unwrap();
@@ -293,7 +293,7 @@ mod test {
             retried: bool,
             service: &impl Service<State, Request, Response = Response, Error = E>,
         ) {
-            let state = ctx.state().clone();
+            let state = ctx.state_clone();
 
             let fut = service.serve(ctx, request(input));
             let res = fut.await;
