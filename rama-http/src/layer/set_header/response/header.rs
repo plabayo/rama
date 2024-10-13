@@ -266,6 +266,134 @@ where
     }
 }
 
+/// Functional version of [`MakeHeaderValue`],
+/// to make it easier to create a (response) header maker
+/// directly from a response.
+pub trait MakeHeaderValueFn<B, A>: Send + Sync + 'static {
+    /// Try to create a header value from the request or response.
+    fn call(
+        self,
+        response: Response<B>,
+    ) -> impl Future<Output = (Response<B>, Option<HeaderValue>)> + Send;
+}
+
+impl<F, Fut, B> MakeHeaderValueFn<B, ()> for F
+where
+    B: Send + 'static,
+    F: FnOnce() -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Option<HeaderValue>> + Send + 'static,
+{
+    async fn call(self, response: Response<B>) -> (Response<B>, Option<HeaderValue>) {
+        let maybe_value = self().await;
+        (response, maybe_value)
+    }
+}
+
+impl<F, Fut, B> MakeHeaderValueFn<B, Response<B>> for F
+where
+    B: Send + 'static,
+    F: FnOnce(Response<B>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = (Response<B>, Option<HeaderValue>)> + Send + 'static,
+{
+    async fn call(self, response: Response<B>) -> (Response<B>, Option<HeaderValue>) {
+        let (response, maybe_value) = self(response).await;
+        (response, maybe_value)
+    }
+}
+
+/// The public wrapper type for [`MakeHeaderValueFn`].
+pub struct BoxMakeHeaderValueFn<F, A> {
+    f: F,
+    _marker: PhantomData<fn(A) -> ()>,
+}
+
+impl<F, A> BoxMakeHeaderValueFn<F, A> {
+    /// Create a new [`BoxMakeHeaderValueFn`].
+    pub const fn new(f: F) -> Self {
+        Self {
+            f,
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<F, A> Clone for BoxMakeHeaderValueFn<F, A>
+where
+    F: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            f: self.f.clone(),
+            _marker: PhantomData,
+        }
+    }
+}
+
+impl<F, A> std::fmt::Debug for BoxMakeHeaderValueFn<F, A>
+where
+    F: std::fmt::Debug,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BoxMakeHeaderValueFn")
+            .field("f", &self.f)
+            .finish()
+    }
+}
+
+impl<B, A, F> MakeHeaderValue<B> for BoxMakeHeaderValueFn<F, A>
+where
+    A: Send + 'static,
+    F: MakeHeaderValueFn<B, A>,
+{
+    fn make_header_value(
+        self,
+        response: Response<B>,
+    ) -> impl Future<Output = (Response<B>, Option<HeaderValue>)> + Send {
+        self.f.call(response)
+    }
+}
+
+impl<F, Fut, S, ReqBody, ResBody> MakeHeaderValueFactoryFn<S, ReqBody, ResBody, ((), (), ())> for F
+where
+    S: Clone + Send + Sync + 'static,
+    ReqBody: Send + 'static,
+    ResBody: Send + 'static,
+    F: FnOnce() -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = Option<HeaderValue>> + Send + 'static,
+{
+    type Maker = BoxMakeHeaderValueFn<F, ()>;
+
+    async fn call(
+        &self,
+        ctx: Context<S>,
+        request: Request<ReqBody>,
+    ) -> (Context<S>, Request<ReqBody>, Self::Maker) {
+        let maker = self.clone();
+        (ctx, request, BoxMakeHeaderValueFn::new(maker))
+    }
+}
+
+impl<F, Fut, S, ReqBody, ResBody>
+    MakeHeaderValueFactoryFn<S, ReqBody, ResBody, ((), (), Response<ResBody>)> for F
+where
+    S: Clone + Send + Sync + 'static,
+    ReqBody: Send + 'static,
+    ResBody: Send + 'static,
+    F: FnOnce(Response<ResBody>) -> Fut + Clone + Send + Sync + 'static,
+    Fut: Future<Output = (Response<ResBody>, Option<HeaderValue>)> + Send + 'static,
+{
+    type Maker = BoxMakeHeaderValueFn<F, Response<ResBody>>;
+
+    async fn call(
+        &self,
+        ctx: Context<S>,
+        request: Request<ReqBody>,
+    ) -> (Context<S>, Request<ReqBody>, Self::Maker) {
+        let maker = self.clone();
+        (ctx, request, BoxMakeHeaderValueFn::new(maker))
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(super) enum InsertHeaderMode {
     Override,

@@ -90,6 +90,10 @@
 //! # Ok(())
 //! # }
 //! ```
+//!
+//! Setting a header based on the incoming Context.
+//!
+//! TODO
 
 use crate::{
     header::HeaderName,
@@ -103,7 +107,9 @@ use std::fmt;
 mod header;
 use header::InsertHeaderMode;
 
-pub use header::{BoxMakeHeaderValueFactoryFn, MakeHeaderValue, MakeHeaderValueFactory};
+pub use header::{
+    BoxMakeHeaderValueFactoryFn, BoxMakeHeaderValueFn, MakeHeaderValue, MakeHeaderValueFactory,
+};
 
 /// Layer that applies [`SetResponseHeader`] which adds a response header.
 ///
@@ -179,8 +185,6 @@ impl<M> SetResponseHeaderLayer<M> {
         }
     }
 }
-
-// TODO: support override_fn with a response to make straight away a HeaderMaker????
 
 impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
