@@ -7,7 +7,7 @@
 //!
 //! ```rust
 //! use rama_http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
-//! use rama_http::service::web::{WebService, extract::Extension};
+//! use rama_http::service::web::{WebService};
 //! use rama_http::{Body, Request, StatusCode, HeaderName};
 //! use rama_core::{Context, Service, Layer};
 //! use serde::Deserialize;
@@ -24,7 +24,8 @@
 //! async fn main() {
 //!     let service = HeaderConfigLayer::<Config>::required(HeaderName::from_static("x-proxy-config"))
 //!         .layer(WebService::default()
-//!             .get("/", |Extension(cfg): Extension<Config>| async move {
+//!             .get("/", |ctx: Context<()>| async move {
+//!                 let cfg = ctx.get::<Config>().unwrap();
 //!                 assert_eq!(cfg.s, "E&G");
 //!                 assert_eq!(cfg.n, 1);
 //!                 assert!(cfg.m.is_none());

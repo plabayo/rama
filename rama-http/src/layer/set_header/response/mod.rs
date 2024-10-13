@@ -180,6 +180,8 @@ impl<M> SetResponseHeaderLayer<M> {
     }
 }
 
+// TODO: support override_fn with a response to make straight away a HeaderMaker????
+
 impl<F, A> SetResponseHeaderLayer<BoxMakeHeaderValueFactoryFn<F, A>> {
     /// Create a new [`SetResponseHeaderLayer`] from a [`super::MakeHeaderValueFn`].
     ///

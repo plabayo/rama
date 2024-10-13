@@ -103,7 +103,7 @@ pub mod policy;
 
 use crate::{dep::http_body::Body, header::LOCATION, Method, Request, Response, StatusCode, Uri};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
-use rama_core::{error::BoxError, Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, future::Future};
 
@@ -215,13 +215,13 @@ impl<S, P> FollowRedirect<S, P> {
 impl<State, ReqBody, ResBody, S, P> Service<State, Request<ReqBody>> for FollowRedirect<S, P>
 where
     State: Clone + Send + Sync + 'static,
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
+    S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Body + Default + Send + 'static,
     ResBody: Send + 'static,
     P: Policy<State, ReqBody, S::Error> + Clone,
 {
     type Response = Response<ResBody>;
-    type Error = BoxError;
+    type Error = S::Error;
 
     fn serve(
         &self,
@@ -243,7 +243,7 @@ where
 
         async move {
             loop {
-                let mut res = service.serve(ctx.clone(), req).await.map_err(Into::into)?;
+                let mut res = service.serve(ctx.clone(), req).await?;
                 res.extensions_mut().insert(RequestUri(uri.clone()));
 
                 match res.status() {

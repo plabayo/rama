@@ -30,35 +30,7 @@
 //!
 //! [`rama`]: crate
 //!
-//! ## State Wraps
-//!
-//! [`rama`] was built from the ground up to operate on and between different layers of the network stack.
-//! This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
-//!
-//! When creating a `TcpListener` with state the state will be owned by that `TcpListener`. By default
-//! it will clone the state and pass a clone to each incoming `tcp` connection. You can however also
-//! inject your own state provider to customise that behaviour. Pretty much the same goes for an `HttpServer`,
-//! where it will do the same for each incoming http request. This is great for stuff that is okay to share, but it is not desired
-//! for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus
-//! you do not wish to keep a global cache for this, as it would either be shared or get overly complicated to ensure
-//! you keep things separate and clean.
-//!
-//! One solution is to wrap your state.
-//!
-//! > Example: [http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
-//!
-//! The above example shows how can use the [`#as_ref(wrap)`] property within an `#[derive(AsRef)]` derived "state" struct,
-//! to wrap in a type-safe manner the "app-global" state within the "conn-specific" (tcp) state. This allows you to have
-//! state freshly created for each connection while still having ease of access to the global state.
-//!
-//! Note though that you do not need the `AsRef` macro or even trait implementation to get this kind of access in your
-//! own app-specific leaf services. It is however useful — and at times even a requirement — in case you want your
-//! middleware stack to also include generic middleware that expect `AsRef<T>` trait bounds for type-safe access to
-//! state from within a middleware. E.g. in case your middleware expects a data source for some specific data type,
-//! it is of no use to have that middleware compile without knowing for sure that data source is made available
-//! to that middleware.
-//!
-//! # Example
+//! # Examples
 //!
 //! ```
 //! use rama_core::Context;
@@ -85,29 +57,6 @@
 //! let mut ctx = Context::default();
 //! ctx.insert(5i32);
 //! assert_eq!(ctx.get::<i32>(), Some(&5i32));
-//! ```
-//!
-//! ## Example: State AsRef
-//!
-//! The state can be accessed as a reference using the [`AsRef`] trait.
-//!
-//! ```
-//! use rama_core::{Context, context};
-//! use std::sync::Arc;
-//! use std::convert::AsRef;
-//!
-//! #[derive(Debug)]
-//! struct ProxyDatabase;
-//!
-//! #[derive(Debug, context::AsRef)]
-//! struct ServiceState {
-//!     db: ProxyDatabase,
-//! }
-//!
-//! let state = Arc::new(ServiceState{ db: ProxyDatabase });
-//! let ctx = Context::with_state(state);
-//!
-//! let db: &ProxyDatabase = ctx.state().as_ref();
 //! ```
 
 use crate::graceful::ShutdownGuard;
