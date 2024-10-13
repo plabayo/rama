@@ -45,55 +45,111 @@
 //! Setting a header based on a value determined dynamically from the response:
 //!
 //! ```
-//! use rama_http::layer::set_header::SetResponseHeaderLayer;
-//! use rama_http::{Body, Request, Response, header::{self, HeaderValue}};
-//! use crate::rama_http::dep::http_body::Body as _;
-//! use rama_core::service::service_fn;
-//! use rama_core::{Context, Service, Layer};
 //! use rama_core::error::BoxError;
+//! use rama_core::service::service_fn;
+//! use rama_core::{Context, Layer, Service};
+//! use rama_http::dep::http_body::Body as _;
+//! use rama_http::layer::set_header::SetResponseHeaderLayer;
+//! use rama_http::{
+//!     header::{self, HeaderValue},
+//!     Body, Request, Response,
+//! };
 //!
-//! # #[tokio::main]
-//! # async fn main() -> Result<(), BoxError> {
-//! # let render_html = service_fn(|request: Request| async move {
-//! #     Ok::<_, std::convert::Infallible>(Response::new(Body::from("1234567890")))
-//! # });
-//! #
-//! let mut svc = (
-//!     // Layer that sets `Content-Length` if the body has a known size.
-//!     // Bodies with streaming responses wont have a known size.
-//!     //
-//!     // `overriding` will insert the header and override any previous values it
-//!     // may have.
-//!     SetResponseHeaderLayer::overriding_fn(
-//!         header::CONTENT_LENGTH,
-//!         |response: Response| async move {
-//!             let value = if let Some(size) = response.body().size_hint().exact() {
-//!                 // If the response body has a known size, returning `Some` will
-//!                 // set the `Content-Length` header to that value.
-//!                 Some(HeaderValue::from_str(&size.to_string()).unwrap())
-//!             } else {
-//!                 // If the response body doesn't have a known size, return `None`
-//!                 // to skip setting the header on this response.
-//!                 None
-//!             };
-//!             (response, value)
-//!         }
-//!     ),
-//! ).layer(render_html);
+//! #[tokio::main]
+//! async fn main() -> Result<(), BoxError> {
+//!     let render_html = service_fn(|_request: Request| async move {
+//!         Ok::<_, std::convert::Infallible>(Response::new(Body::from("1234567890")))
+//!     });
 //!
-//! let request = Request::new(Body::empty());
+//!     let svc = (
+//!         // Layer that sets `Content-Length` if the body has a known size.
+//!         // Bodies with streaming responses wont have a known size.
+//!         //
+//!         // `overriding` will insert the header and override any previous values it
+//!         // may have.
+//!         SetResponseHeaderLayer::overriding_fn(
+//!             header::CONTENT_LENGTH,
+//!             |response: Response| async move {
+//!                 let value = if let Some(size) = response.body().size_hint().exact() {
+//!                     // If the response body has a known size, returning `Some` will
+//!                     // set the `Content-Length` header to that value.
+//!                     Some(HeaderValue::from_str(&size.to_string()).unwrap())
+//!                 } else {
+//!                     // If the response body doesn't have a known size, return `None`
+//!                     // to skip setting the header on this response.
+//!                     None
+//!                 };
+//!                 (response, value)
+//!             },
+//!         ),
+//!     )
+//!         .layer(render_html);
 //!
-//! let response = svc.serve(Context::default(), request).await?;
+//!     let request = Request::new(Body::empty());
 //!
-//! assert_eq!(response.headers()["content-length"], "10");
-//! #
-//! # Ok(())
-//! # }
+//!     let response = svc.serve(Context::default(), request).await?;
+//!
+//!     assert_eq!(response.headers()["content-length"], "10");
+//!
+//!     Ok(())
+//! }
 //! ```
 //!
-//! Setting a header based on the incoming Context.
+//! Setting a header based on the incoming Context and response combined.
 //!
-//! TODO
+//! ```
+//! use rama_core::{service::service_fn, Context, Service};
+//! use rama_http::{
+//!     layer::set_header::{response::BoxMakeHeaderValueFn, SetResponseHeader},
+//!     Body, HeaderName, HeaderValue, IntoResponse, Request, Response,
+//! };
+//! use std::convert::Infallible;
+//!
+//! #[tokio::main]
+//! async fn main() {
+//!     #[derive(Debug, Clone)]
+//!     struct RequestID(String);
+//!
+//!     #[derive(Debug, Clone)]
+//!     struct Success;
+//!
+//!     let svc = SetResponseHeader::overriding_fn(
+//!         service_fn(|| async {
+//!             let mut res = ().into_response();
+//!             res.extensions_mut().insert(Success);
+//!             Ok::<_, Infallible>(res)
+//!         }),
+//!         HeaderName::from_static("x-used-request-id"),
+//!         |ctx: Context<()>| async move {
+//!             let id: Option<RequestID> = ctx.get().cloned();
+//!             (
+//!                 ctx,
+//!                 BoxMakeHeaderValueFn::new(move |res: Response| async move {
+//!                     let header_value = match (res.extensions().get::<Success>(), id) {
+//!                         (Some(_), Some(id)) => Some(HeaderValue::from_str(id.0.as_str()).unwrap()),
+//!                         _ => None,
+//!                     };
+//!                     (res, header_value)
+//!                 }),
+//!             )
+//!         },
+//!     );
+//!
+//!     const FAKE_USER_ID: &str = "abc123";
+//!
+//!     let mut ctx = Context::default();
+//!     ctx.insert(RequestID(FAKE_USER_ID.to_owned()));
+//!
+//!     let res = svc.serve(ctx, Request::new(Body::empty())).await.unwrap();
+//!
+//!     let mut values = res
+//!         .headers()
+//!         .get_all(HeaderName::from_static("x-used-request-id"))
+//!         .iter();
+//!     assert_eq!(values.next().unwrap(), FAKE_USER_ID);
+//!     assert_eq!(values.next(), None);
+//! }
+//! ```
 
 use crate::{
     header::HeaderName,
