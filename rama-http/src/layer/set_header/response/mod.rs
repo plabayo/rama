@@ -121,17 +121,15 @@
 //!         }),
 //!         HeaderName::from_static("x-used-request-id"),
 //!         |ctx: Context<()>| async move {
-//!             let id: Option<RequestID> = ctx.get().cloned();
-//!             (
-//!                 ctx,
+//!             let factory = ctx.get::<RequestID>().cloned().map(|id| {
 //!                 BoxMakeHeaderValueFn::new(move |res: Response| async move {
-//!                     let header_value = match (res.extensions().get::<Success>(), id) {
-//!                         (Some(_), Some(id)) => Some(HeaderValue::from_str(id.0.as_str()).unwrap()),
-//!                         _ => None,
-//!                     };
+//!                     let header_value = res.extensions().get::<Success>().map(|_| {
+//!                         HeaderValue::from_str(id.0.as_str()).unwrap()
+//!                     });
 //!                     (res, header_value)
-//!                 }),
-//!             )
+//!                 })
+//!             });
+//!             (ctx, factory)
 //!         },
 //!     );
 //!
