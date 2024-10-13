@@ -10,54 +10,49 @@ use std::{io, net::SocketAddr};
 use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
 
 /// Builder for `TcpListener`.
-pub struct TcpListenerBuilder<S, T = ()> {
+pub struct TcpListenerBuilder<S> {
     ttl: Option<u32>,
     state: S,
-    state_transformer: T,
 }
 
-impl<S, T> fmt::Debug for TcpListenerBuilder<S, T>
+impl<S> fmt::Debug for TcpListenerBuilder<S>
 where
     S: fmt::Debug,
-    T: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TcpListenerBuilder")
             .field("ttl", &self.ttl)
             .field("state", &self.state)
-            .field("state_transformer", &self.state_transformer)
             .finish()
     }
 }
 
-impl TcpListenerBuilder<(), ()> {
+impl TcpListenerBuilder<()> {
     /// Create a new `TcpListenerBuilder` without a state.
     pub fn new() -> Self {
         Self {
             ttl: None,
             state: (),
-            state_transformer: (),
         }
     }
 }
 
-impl Default for TcpListenerBuilder<(), ()> {
+impl Default for TcpListenerBuilder<()> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<S: Clone, T: Clone> Clone for TcpListenerBuilder<S, T> {
+impl<S: Clone> Clone for TcpListenerBuilder<S> {
     fn clone(&self) -> Self {
         Self {
             ttl: self.ttl,
             state: self.state.clone(),
-            state_transformer: self.state_transformer.clone(),
         }
     }
 }
 
-impl<S, T> TcpListenerBuilder<S, T> {
+impl<S> TcpListenerBuilder<S> {
     /// Sets the value for the `IP_TTL` option on this socket.
     ///
     /// This value sets the time-to-live field that is used in every packet sent
@@ -83,15 +78,11 @@ where
 {
     /// Create a new `TcpListenerBuilder` with the given state.
     pub fn with_state(state: S) -> Self {
-        Self {
-            ttl: None,
-            state,
-            state_transformer: (),
-        }
+        Self { ttl: None, state }
     }
 }
 
-impl<S, T> TcpListenerBuilder<S, T>
+impl<S> TcpListenerBuilder<S>
 where
     S: Clone + Send + Sync + 'static,
 {
@@ -102,7 +93,7 @@ where
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
-    pub async fn bind<A: ToSocketAddrs>(self, addr: A) -> io::Result<TcpListener<S, T>> {
+    pub async fn bind<A: ToSocketAddrs>(self, addr: A) -> io::Result<TcpListener<S>> {
         let inner = TokioTcpListener::bind(addr).await?;
 
         if let Some(ttl) = self.ttl {
@@ -112,34 +103,30 @@ where
         Ok(TcpListener {
             inner,
             state: self.state,
-            state_transformer: self.state_transformer,
         })
     }
 }
 
 /// A TCP socket server, listening for incoming connections once served
 /// using one of the `serve` methods such as [`TcpListener::serve`].
-pub struct TcpListener<S, T = ()> {
+pub struct TcpListener<S> {
     inner: TokioTcpListener,
     state: S,
-    state_transformer: T,
 }
 
-impl<S, T> fmt::Debug for TcpListener<S, T>
+impl<S> fmt::Debug for TcpListener<S>
 where
     S: fmt::Debug,
-    T: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TcpListener")
             .field("inner", &self.inner)
             .field("state", &self.state)
-            .field("state_transformer", &self.state_transformer)
             .finish()
     }
 }
 
-impl TcpListener<(), ()> {
+impl TcpListener<()> {
     /// Create a new `TcpListenerBuilder` without a state,
     /// which can be used to configure a `TcpListener`.
     pub fn build() -> TcpListenerBuilder<()> {
@@ -167,7 +154,7 @@ impl TcpListener<(), ()> {
     }
 }
 
-impl<S, T> TcpListener<S, T> {
+impl<S> TcpListener<S> {
     /// Returns the local address that this listener is bound to.
     ///
     /// This can be useful, for example, when binding to port 0 to figure out
@@ -196,7 +183,7 @@ impl<S, T> TcpListener<S, T> {
     }
 }
 
-impl<State, T> TcpListener<State, T>
+impl<State> TcpListener<State>
 where
     State: Clone + Send + Sync + 'static,
 {
