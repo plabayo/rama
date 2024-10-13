@@ -111,25 +111,15 @@ where
 }
 
 /// Utility internal trait to create service endpoints for the different checks
-pub trait ToK8sService<S>: private::Sealed {
-    /// create a boxed web service by consuming self
-    fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible>;
-}
+pub trait ToK8sService<S>: private::Sealed<S> {}
 
-impl<S: Clone + Send + Sync + 'static> ToK8sService<S> for () {
-    fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible> {
-        service_fn(|| async { Ok(StatusCode::OK.into_response()) }).boxed()
-    }
-}
+impl<S: Clone + Send + Sync + 'static> ToK8sService<S> for () {}
 
 impl<S, F> ToK8sService<S> for F
 where
     F: Fn() -> bool + Clone + Send + Sync + 'static,
     S: Clone + Send + Sync + 'static,
 {
-    fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible> {
-        K8sService::new(self).boxed()
-    }
 }
 
 struct K8sService<F> {
@@ -173,8 +163,24 @@ where
 }
 
 mod private {
-    pub trait Sealed {}
+    use super::*;
 
-    impl Sealed for () {}
-    impl<F: Fn() -> bool + Clone + Send + Sync + 'static> Sealed for F {}
+    pub trait Sealed<S> {
+        /// create a boxed web service by consuming self
+        fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible>;
+    }
+
+    impl<S> Sealed<S> for () {
+        fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible> {
+            service_fn(|| async { Ok(StatusCode::OK.into_response()) }).boxed()
+        }
+    }
+
+    impl<S: Clone + Send + Sync + 'static, F: Fn() -> bool + Clone + Send + Sync + 'static>
+        Sealed<S> for F
+    {
+        fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible> {
+            K8sService::new(self).boxed()
+        }
+    }
 }

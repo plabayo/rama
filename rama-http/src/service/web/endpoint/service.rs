@@ -5,13 +5,7 @@ use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::future::Future;
 
 /// [`rama_core::Service`] implemented for functions taking extractors.
-pub trait EndpointServiceFn<S, T>: private::Sealed<S, T> + Clone + Send + Sync + 'static {
-    /// Serve a response for the given request.
-    ///
-    /// It is expected to do so by extracting the desired data from the context and/or request,
-    /// and then calling the function with the extracted data.
-    fn call(&self, ctx: Context<S>, req: Request) -> impl Future<Output = Response> + Send + '_;
-}
+pub trait EndpointServiceFn<S, T>: private::Sealed<S, T> + Clone + Send + Sync + 'static {}
 
 impl<F, R, O, S> EndpointServiceFn<S, (F, R, O)> for F
 where
@@ -20,9 +14,6 @@ where
     O: IntoResponse + Send + Sync + 'static,
     S: Clone + Send + Sync + 'static,
 {
-    async fn call(&self, _ctx: Context<S>, _req: Request) -> Response {
-        self().await.into_response()
-    }
 }
 
 impl<F, R, O, S, I> EndpointServiceFn<S, (F, R, O, (), (), I)> for F
@@ -33,13 +24,6 @@ where
     S: Clone + Send + Sync + 'static,
     I: FromRequest,
 {
-    async fn call(&self, _ctx: Context<S>, req: Request) -> Response {
-        let param: I = match I::from_request(req).await {
-            Ok(v) => v,
-            Err(r) => return r.into_response(),
-        };
-        self(param).await.into_response()
-    }
 }
 
 impl<F, R, O, S> EndpointServiceFn<S, (F, R, O, (), Context<S>)> for F
@@ -49,9 +33,6 @@ where
     O: IntoResponse + Send + Sync + 'static,
     S: Clone + Send + Sync + 'static,
 {
-    async fn call(&self, ctx: Context<S>, _req: Request) -> Response {
-        self(ctx).await.into_response()
-    }
 }
 
 impl<F, R, O, S, I> EndpointServiceFn<S, (F, R, O, (), Context<S>, I)> for F
@@ -62,13 +43,6 @@ where
     S: Clone + Send + Sync + 'static,
     I: FromRequest,
 {
-    async fn call(&self, ctx: Context<S>, req: Request) -> Response {
-        let param: I = match I::from_request(req).await {
-            Ok(v) => v,
-            Err(r) => return r.into_response(),
-        };
-        self(ctx, param).await.into_response()
-    }
 }
 
 macro_rules! impl_endpoint_service_fn_tuple {
@@ -82,14 +56,6 @@ macro_rules! impl_endpoint_service_fn_tuple {
                 S: Clone + Send + Sync + 'static,
                 $($ty: FromRequestContextRefPair<S>),+,
         {
-            async fn call(&self, ctx: Context<S>, req: Request) -> Response {
-                let (parts, _body) = req.into_parts();
-                $(let $ty = match $ty::from_request_context_ref_pair(&ctx, &parts).await {
-                    Ok(v) => v,
-                    Err(r) => return r.into_response(),
-                });+;
-                self($($ty),+).await.into_response()
-            }
         }
     };
 }
@@ -108,19 +74,6 @@ macro_rules! impl_endpoint_service_fn_tuple_with_from_request {
                 $($ty: FromRequestContextRefPair<S>),+,
                 I: FromRequest,
         {
-            async fn call(&self, ctx: Context<S>, req: Request) -> Response {
-                let (parts, body) = req.into_parts();
-                $(let $ty = match $ty::from_request_context_ref_pair(&ctx, &parts).await {
-                    Ok(v) => v,
-                    Err(r) => return r.into_response(),
-                });+;
-                let req = Request::from_parts(parts, body);
-                let last: I = match I::from_request(req).await {
-                    Ok(v) => v,
-                    Err(r) => return r.into_response(),
-                };
-                self($($ty),+, last).await.into_response()
-            }
         }
     };
 }
@@ -138,14 +91,6 @@ macro_rules! impl_endpoint_service_fn_tuple_with_context {
                 S: Clone + Send + Sync + 'static,
                 $($ty: FromRequestContextRefPair<S>),+,
         {
-            async fn call(&self, ctx: Context<S>, req: Request) -> Response {
-                let (parts, _body) = req.into_parts();
-                $(let $ty = match $ty::from_request_context_ref_pair(&ctx, &parts).await {
-                    Ok(v) => v,
-                    Err(r) => return r.into_response(),
-                });+;
-                self($($ty),+, ctx).await.into_response()
-            }
         }
     };
 }
@@ -164,19 +109,6 @@ macro_rules! impl_endpoint_service_fn_tuple_with_context_and_from_request {
                 $($ty: FromRequestContextRefPair<S>),+,
                 I: FromRequest,
         {
-            async fn call(&self, ctx: Context<S>, req: Request) -> Response {
-                let (parts, body) = req.into_parts();
-                $(let $ty = match $ty::from_request_context_ref_pair(&ctx, &parts).await {
-                    Ok(v) => v,
-                    Err(r) => return r.into_response(),
-                });+;
-                let req = Request::from_parts(parts, body);
-                let last: I = match I::from_request(req).await {
-                    Ok(v) => v,
-                    Err(r) => return r.into_response(),
-                };
-                self($($ty),+, ctx, last).await.into_response()
-            }
         }
     };
 }
@@ -186,7 +118,14 @@ all_the_tuples_no_last_special_case!(impl_endpoint_service_fn_tuple_with_context
 mod private {
     use super::*;
 
-    pub trait Sealed<S, T> {}
+    pub trait Sealed<S, T> {
+        /// Serve a response for the given request.
+        ///
+        /// It is expected to do so by extracting the desired data from the context and/or request,
+        /// and then calling the function with the extracted data.
+        fn call(&self, ctx: Context<S>, req: Request)
+            -> impl Future<Output = Response> + Send + '_;
+    }
 
     impl<F, R, O, S> Sealed<S, (F, R, O)> for F
     where
@@ -195,6 +134,9 @@ mod private {
         O: IntoResponse + Send + Sync + 'static,
         S: Clone + Send + Sync + 'static,
     {
+        async fn call(&self, _ctx: Context<S>, _req: Request) -> Response {
+            self().await.into_response()
+        }
     }
 
     impl<F, R, O, S, I> Sealed<S, (F, R, O, (), (), I)> for F
@@ -205,6 +147,13 @@ mod private {
         S: Clone + Send + Sync + 'static,
         I: FromRequest,
     {
+        async fn call(&self, _ctx: Context<S>, req: Request) -> Response {
+            let param: I = match I::from_request(req).await {
+                Ok(v) => v,
+                Err(r) => return r.into_response(),
+            };
+            self(param).await.into_response()
+        }
     }
 
     impl<F, R, O, S> Sealed<S, (F, R, O, (), Context<S>)> for F
@@ -214,6 +163,9 @@ mod private {
         O: IntoResponse + Send + Sync + 'static,
         S: Clone + Send + Sync + 'static,
     {
+        async fn call(&self, ctx: Context<S>, _req: Request) -> Response {
+            self(ctx).await.into_response()
+        }
     }
 
     impl<F, R, O, S, I> Sealed<S, (F, R, O, (), Context<S>, I)> for F
@@ -224,6 +176,13 @@ mod private {
         S: Clone + Send + Sync + 'static,
         I: FromRequest,
     {
+        async fn call(&self, ctx: Context<S>, req: Request) -> Response {
+            let param: I = match I::from_request(req).await {
+                Ok(v) => v,
+                Err(r) => return r.into_response(),
+            };
+            self(ctx, param).await.into_response()
+        }
     }
 
     macro_rules! impl_endpoint_service_fn_sealed_tuple {
@@ -236,7 +195,17 @@ mod private {
                     O: IntoResponse + Send + Sync + 'static,
                     S: Clone + Send + Sync + 'static,
                     $($ty: FromRequestContextRefPair<S>),+,
-            {}
+            {
+
+                async fn call(&self, ctx: Context<S>, req: Request) -> Response {
+                        let (parts, _body) = req.into_parts();
+                        $(let $ty = match $ty::from_request_context_ref_pair(&ctx, &parts).await {
+                            Ok(v) => v,
+                            Err(r) => return r.into_response(),
+                        });+;
+                        self($($ty),+).await.into_response()
+                    }
+            }
         };
     }
 
@@ -253,7 +222,22 @@ mod private {
                     S: Clone + Send + Sync + 'static,
                     I: FromRequest,
                     $($ty: FromRequestContextRefPair<S>),+,
-            {}
+            {
+
+                async fn call(&self, ctx: Context<S>, req: Request) -> Response {
+                        let (parts, body) = req.into_parts();
+                        $(let $ty = match $ty::from_request_context_ref_pair(&ctx, &parts).await {
+                            Ok(v) => v,
+                            Err(r) => return r.into_response(),
+                        });+;
+                        let req = Request::from_parts(parts, body);
+                        let last: I = match I::from_request(req).await {
+                            Ok(v) => v,
+                            Err(r) => return r.into_response(),
+                        };
+                        self($($ty),+, last).await.into_response()
+                    }
+            }
         };
     }
 
@@ -269,7 +253,17 @@ mod private {
                     O: IntoResponse + Send + Sync + 'static,
                     S: Clone + Send + Sync + 'static,
                     $($ty: FromRequestContextRefPair<S>),+,
-            {}
+            {
+
+                async fn call(&self, ctx: Context<S>, req: Request) -> Response {
+                        let (parts, _body) = req.into_parts();
+                        $(let $ty = match $ty::from_request_context_ref_pair(&ctx, &parts).await {
+                            Ok(v) => v,
+                            Err(r) => return r.into_response(),
+                        });+;
+                        self($($ty),+, ctx).await.into_response()
+                    }
+            }
         };
     }
 
@@ -286,7 +280,22 @@ mod private {
                     S: Clone + Send + Sync + 'static,
                     I: FromRequest,
                     $($ty: FromRequestContextRefPair<S>),+,
-            {}
+            {
+
+                async fn call(&self, ctx: Context<S>, req: Request) -> Response {
+                        let (parts, body) = req.into_parts();
+                        $(let $ty = match $ty::from_request_context_ref_pair(&ctx, &parts).await {
+                            Ok(v) => v,
+                            Err(r) => return r.into_response(),
+                        });+;
+                        let req = Request::from_parts(parts, body);
+                        let last: I = match I::from_request(req).await {
+                            Ok(v) => v,
+                            Err(r) => return r.into_response(),
+                        };
+                        self($($ty),+, ctx, last).await.into_response()
+                    }
+            }
         };
     }
 
