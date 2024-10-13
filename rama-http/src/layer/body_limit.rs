@@ -82,7 +82,7 @@ impl<S> BodyLimitService<S> {
 impl<S, State, ReqBody> Service<State, Request<ReqBody>> for BodyLimitService<S>
 where
     S: Service<State, Request<Limited<ReqBody>>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
     type Response = S::Response;

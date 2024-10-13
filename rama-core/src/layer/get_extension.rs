@@ -122,7 +122,7 @@ impl<S, T, Fut, F> GetExtension<S, T, Fut, F> {
 
 impl<State, Request, S, T, Fut, F> Service<State, Request> for GetExtension<S, T, Fut, F>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     S: Service<State, Request>,
     T: Clone + Send + Sync + 'static,

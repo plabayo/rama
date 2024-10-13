@@ -1,4 +1,4 @@
-use super::FromRequestParts;
+use super::FromRequestContextRefPair;
 use crate::dep::http::request::Parts;
 use crate::matcher::{UriParams, UriParamsDeserializeError};
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
@@ -39,14 +39,17 @@ impl<T: Clone> Clone for Path<T> {
     }
 }
 
-impl<S, T> FromRequestParts<S> for Path<T>
+impl<S, T> FromRequestContextRefPair<S> for Path<T>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     T: DeserializeOwned + Send + Sync + 'static,
 {
     type Rejection = PathRejection;
 
-    async fn from_request_parts(ctx: &Context<S>, _parts: &Parts) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(
+        ctx: &Context<S>,
+        _parts: &Parts,
+    ) -> Result<Self, Self::Rejection> {
         match ctx.get::<UriParams>() {
             Some(params) => {
                 let params = params.deserialize::<T>()?;

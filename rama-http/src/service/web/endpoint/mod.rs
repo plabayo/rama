@@ -20,7 +20,7 @@ pub trait IntoEndpointService<State, T>: private::Sealed<T> {
 
 impl<State, S, R> IntoEndpointService<State, (State, R)> for S
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<State, Request, Response = R, Error = Infallible>,
     R: IntoResponse + Send + Sync + 'static,
 {
@@ -31,43 +31,9 @@ where
     }
 }
 
-impl<State, F, Fut, R> IntoEndpointService<State, (State, F, Context<State>, Fut, R)> for F
-where
-    State: Send + Sync + 'static,
-    F: Fn(Context<State>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse + Send + Sync + 'static,
-{
-    fn into_endpoint_service(
-        self,
-    ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
-        InfallibleServiceFn {
-            inner: self,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
-impl<State, F, Fut, R> IntoEndpointService<State, (State, F, Context<State>, Request, Fut, R)> for F
-where
-    State: Send + Sync + 'static,
-    F: Fn(Context<State>, Request) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse + Send + Sync + 'static,
-{
-    fn into_endpoint_service(
-        self,
-    ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
-        InfallibleServiceFn {
-            inner: self,
-            _marker: std::marker::PhantomData,
-        }
-    }
-}
-
 impl<State, R> IntoEndpointService<State, ()> for R
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     R: IntoResponse + Clone + Send + Sync + 'static,
 {
     fn into_endpoint_service(
@@ -100,7 +66,7 @@ where
 impl<R, State> Service<State, Request> for StaticService<R>
 where
     R: IntoResponse + Clone + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = Infallible;
@@ -110,60 +76,6 @@ where
     }
 }
 
-struct InfallibleServiceFn<F, A> {
-    inner: F,
-    _marker: std::marker::PhantomData<fn(A) -> ()>,
-}
-
-impl<F, A> fmt::Debug for InfallibleServiceFn<F, A>
-where
-    F: fmt::Debug,
-{
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("InfallibleServiceFn")
-            .field("inner", &self.inner)
-            .field(
-                "_marker",
-                &format_args!("{}", std::any::type_name::<fn(A) -> ()>()),
-            )
-            .finish()
-    }
-}
-
-impl<F, Fut, R, State> Service<State, Request> for InfallibleServiceFn<F, (Context<State>, Fut, R)>
-where
-    State: Send + Sync + 'static,
-    F: Fn(Context<State>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse + Send + Sync + 'static,
-{
-    type Response = Response;
-    type Error = Infallible;
-
-    async fn serve(&self, ctx: Context<State>, _: Request) -> Result<Self::Response, Self::Error> {
-        Ok((self.inner)(ctx).await.into_response())
-    }
-}
-
-impl<F, Fut, R, State> Service<State, Request>
-    for InfallibleServiceFn<F, (Context<State>, Request, Fut, R)>
-where
-    State: Send + Sync + 'static,
-    F: Fn(Context<State>, Request) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse + Send + Sync + 'static,
-{
-    type Response = Response;
-    type Error = Infallible;
-
-    async fn serve(
-        &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        Ok((self.inner)(ctx, req).await.into_response())
-    }
-}
 mod service;
 #[doc(inline)]
 pub use service::EndpointServiceFn;
@@ -200,7 +112,7 @@ where
 impl<F, S, T> Service<S, Request> for EndpointServiceFnWrapper<F, S, T>
 where
     F: EndpointServiceFn<S, T>,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     T: Send + 'static,
 {
     type Response = Response;
@@ -214,7 +126,7 @@ where
 impl<F, S, T> IntoEndpointService<S, (F, S, T)> for F
 where
     F: EndpointServiceFn<S, T>,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     T: Send + 'static,
 {
     fn into_endpoint_service(
@@ -234,7 +146,7 @@ mod private {
 
     impl<State, S, R> Sealed<(State, R)> for S
     where
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         S: Service<State, Request, Response = R, Error = Infallible>,
         R: IntoResponse + Send + Sync + 'static,
     {
@@ -242,7 +154,7 @@ mod private {
 
     impl<State, F, Fut, R> Sealed<(State, F, Context<State>, Fut, R)> for F
     where
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         F: Fn(Context<State>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = R> + Send + 'static,
         R: IntoResponse + Send + Sync + 'static,
@@ -251,7 +163,7 @@ mod private {
 
     impl<State, F, Fut, R> Sealed<(State, F, Context<State>, Request, Fut, R)> for F
     where
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         F: Fn(Context<State>, Request) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = R> + Send + 'static,
         R: IntoResponse + Send + Sync + 'static,
@@ -289,7 +201,7 @@ mod tests {
 
         impl<State> Service<State, Request> for OkService
         where
-            State: Send + Sync + 'static,
+            State: Clone + Send + Sync + 'static,
         {
             type Response = StatusCode;
             type Error = Infallible;
@@ -425,8 +337,6 @@ mod tests {
         assert_into_endpoint_service(|Query(query): Query<Params>| async move { query.foo });
         assert_into_endpoint_service(|method: Method| async move { method.to_string() });
         assert_into_endpoint_service(|req: Request| async move { req.uri().to_string() });
-        assert_into_endpoint_service(|State(_state): State<()>| async { StatusCode::OK });
-        assert_into_endpoint_service(|Extension(ext): Extension<Params>| async { ext.foo });
         assert_into_endpoint_service(|_host: Host| async { StatusCode::OK });
         assert_into_endpoint_service(|Host(_host): Host| async { StatusCode::OK });
     }

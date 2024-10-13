@@ -26,7 +26,7 @@ impl<S, T> HyperService<S, T> {
 
 impl<S, T, Response> hyper::service::Service<HyperRequest> for HyperService<S, T>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     T: Service<S, Request, Response = Response, Error = Infallible>,
     Response: IntoResponse + Send + 'static,
 {

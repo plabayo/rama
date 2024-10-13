@@ -313,7 +313,7 @@ impl<
     for Trace<S, M, MakeSpanT, OnRequestT, OnResponseT, OnBodyChunkT, OnEosT, OnFailureT>
 where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: fmt::Display>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     ReqBody: HttpBody + Send + 'static,
     ResBody: HttpBody<Error: fmt::Display> + Send + Sync + 'static,
     M: MakeClassifier<Classifier: Clone>,

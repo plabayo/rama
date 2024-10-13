@@ -44,7 +44,7 @@ where
 
 impl<State, S, IO> Service<State, IO> for IncomingBytesTrackerService<S>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<State, BytesRWTracker<IO>>,
     IO: Stream,
 {

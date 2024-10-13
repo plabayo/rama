@@ -70,7 +70,7 @@ impl<S> HttpProxyConnector<S> {
 impl<S, State, Request> Service<State, Request> for HttpProxyConnector<S>
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
         + Send
         + 'static,

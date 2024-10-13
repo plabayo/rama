@@ -87,7 +87,7 @@ impl<S, F, State, Request> Service<State, Request> for ConsumeErr<S, F, DefaulRe
 where
     S: Service<State, Request, Response: Default>,
     F: FnOnce(S::Error) + Clone + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -113,7 +113,7 @@ where
     S: Service<State, Request>,
     F: FnOnce(S::Error) + Clone + Send + Sync + 'static,
     R: Into<S::Response> + Clone + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -137,7 +137,7 @@ where
 impl<S, State, Request> Service<State, Request> for ConsumeErr<S, Trace, DefaulResponse>
 where
     S: Service<State, Request, Response: Default, Error: Into<BoxError>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;
@@ -179,7 +179,7 @@ impl<S, State, Request, R> Service<State, Request> for ConsumeErr<S, Trace, Stat
 where
     S: Service<State, Request, Error: Into<BoxError>>,
     R: Into<S::Response> + Clone + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;

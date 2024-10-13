@@ -3,7 +3,6 @@ use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use crate::Request;
-use rama_core::Context;
 use rama_utils::macros::impl_deref;
 
 /// Extractor to get the response body, collected as [`String`].
@@ -41,13 +40,10 @@ composite_http_rejection! {
     }
 }
 
-impl<S> FromRequest<S> for Text
-where
-    S: Send + Sync + 'static,
-{
+impl FromRequest for Text {
     type Rejection = TextRejection;
 
-    async fn from_request(_ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
+    async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         if !crate::service::web::extract::has_any_content_type(req.headers(), &[&mime::TEXT_PLAIN])
         {
             return Err(InvalidTextContentType.into());
@@ -69,7 +65,7 @@ mod test {
     use super::*;
     use crate::service::web::WebService;
     use crate::{header, Method, Request, StatusCode};
-    use rama_core::Service;
+    use rama_core::{Context, Service};
 
     #[tokio::test]
     async fn test_text() {

@@ -46,7 +46,7 @@ impl<S> CollectBody<S> {
 impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for CollectBody<S>
 where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody:
         Body<Data: Send, Error: std::error::Error + Send + Sync + 'static> + Send + Sync + 'static,

@@ -168,7 +168,7 @@ impl<ReqBody, ResBody, State, S> Service<State, Request<ReqBody>> for AddRequire
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
 {
     type Response = S::Response;

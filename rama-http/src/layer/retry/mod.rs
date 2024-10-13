@@ -112,7 +112,7 @@ impl<P, S, State, Body> Service<State, Request<Body>> for Retry<P, S>
 where
     P: Policy<State, S::Response, S::Error>,
     S: Service<State, Request<RetryBody>, Error: Into<BoxError>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Body: HttpBody<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static,
 {
     type Response = S::Response;
@@ -190,9 +190,9 @@ mod test {
         )
         .unwrap();
 
-        #[derive(Debug)]
+        #[derive(Debug, Clone)]
         struct State {
-            retry_counter: AtomicUsize,
+            retry_counter: Arc<AtomicUsize>,
         }
 
         async fn retry<E>(
@@ -241,9 +241,9 @@ mod test {
         }
 
         fn ctx() -> Context<State> {
-            Context::with_state(Arc::new(State {
-                retry_counter: AtomicUsize::new(0),
-            }))
+            Context::with_state(State {
+                retry_counter: Arc::new(AtomicUsize::new(0)),
+            })
         }
 
         fn ctx_do_not_retry() -> Context<State> {

@@ -1,6 +1,6 @@
 use crate::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{future::Future, sync::Arc};
+use std::future::Future;
 
 /// Middleware that can be used to map the state,
 /// and pass it as the new state for the inner service.
@@ -43,9 +43,9 @@ impl<S, F> MapState<S, F> {
 impl<S, F, W, State, Request> Service<State, Request> for MapState<S, F>
 where
     S: Service<W, Request>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     W: Send + Sync + 'static,
-    F: FnOnce(Arc<State>) -> Arc<W> + Clone + Send + Sync + 'static,
+    F: FnOnce(State) -> W + Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;

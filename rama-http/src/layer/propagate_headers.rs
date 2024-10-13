@@ -92,7 +92,7 @@ impl<S> PropagateHeader<S> {
 impl<ReqBody, ResBody, S, State> Service<State, Request<ReqBody>> for PropagateHeader<S>
 where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {

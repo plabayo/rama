@@ -117,7 +117,7 @@ impl<S> BodyLimitService<S> {
 impl<S, State, IO> Service<State, IO> for BodyLimitService<S>
 where
     S: Service<State, IO>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     IO: Stream,
 {
     type Response = S::Response;

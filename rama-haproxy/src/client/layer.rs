@@ -210,7 +210,7 @@ impl<S, P, State, Request> Service<State, Request> for HaProxyService<S, P, vers
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
     P: Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = EstablishedClientConnection<S::Connection, State, Request>;
@@ -273,7 +273,7 @@ where
         Error: Into<BoxError>,
     >,
     P: protocol::Protocol + Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     T: Stream + Unpin,
 {

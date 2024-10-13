@@ -30,14 +30,11 @@ use rama::{
         matcher::HttpMatcher,
         response::{Html, Redirect},
         server::HttpServer,
-        service::web::{
-            extract::{Extension, State},
-            WebService,
-        },
+        service::web::WebService,
     },
     net::stream::{matcher::SocketMatcher, SocketInfo},
     rt::Executor,
-    Layer,
+    Context, Layer,
 };
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
@@ -70,48 +67,41 @@ async fn main() {
     let exec = Executor::default();
     HttpServer::auto(exec)
         .listen_with_state(
-            AppState::default(),
+            Arc::new(AppState::default()),
             addr,
-            (
-                TraceLayer::new_for_http(),
-                CompressionLayer::new(),
-            ).layer(
-                    WebService::default()
-                        .not_found(Redirect::temporary("/error.html"))
-                        .get(
-                            "/coin",
-                            |Extension(addr): Extension<SocketInfo>,
-                             State(state): State<AppState>| async move {
-                                coin_page(state, addr)
-                            },
-                        )
-                        .post(
-                            "/coin",
-                            |Extension(addr): Extension<SocketInfo>,
-                             State(state): State<AppState>| async move {
-                                state.counter.fetch_add(1, Ordering::AcqRel);
-                                coin_page(state, addr)
-                            },
-                        )
-                        .on(
-                            HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
-                            Html("Home Sweet Home!".to_owned()),
-                        )
-                        .dir("/", "test-files/examples/webservice"),
-                ),
+            (TraceLayer::new_for_http(), CompressionLayer::new()).layer(
+                WebService::default()
+                    .not_found(Redirect::temporary("/error.html"))
+                    .get("/coin", coin_page)
+                    .post("/coin", |ctx: Context<Arc<AppState>>| async move {
+                        ctx.state().counter.fetch_add(1, Ordering::AcqRel);
+                        coin_page(ctx).await
+                    })
+                    .on(
+                        HttpMatcher::get("/home").and_socket(SocketMatcher::loopback()),
+                        Html("Home Sweet Home!".to_owned()),
+                    )
+                    .dir("/", "test-files/examples/webservice"),
+            ),
         )
         .await
         .unwrap();
 }
 
-fn coin_page(state: Arc<AppState>, addr: SocketInfo) -> Html<String> {
-    let emoji = if addr.peer_addr().ip().is_loopback() {
+async fn coin_page(ctx: Context<Arc<AppState>>) -> Html<String> {
+    let emoji = if ctx
+        .get::<SocketInfo>()
+        .unwrap()
+        .peer_addr()
+        .ip()
+        .is_loopback()
+    {
         r#"<a href="/home">🏠</a>"#
     } else {
         "🌍"
     };
 
-    let count = state.counter.load(Ordering::Acquire);
+    let count = ctx.state().counter.load(Ordering::Acquire);
     Html(format!(
         r#"
 <!DOCTYPE html>

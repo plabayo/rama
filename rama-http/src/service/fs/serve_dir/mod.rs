@@ -458,7 +458,7 @@ impl<F> ServeDir<F> {
     ///     request: Request,
     /// ) -> Result<Response<Body>, Infallible>
     /// where
-    ///     State: Send + Sync + 'static,
+    ///     State: Clone + Send + Sync + 'static,
     /// {
     ///     let service = ServeDir::new("assets");
     ///
@@ -481,7 +481,7 @@ impl<F> ServeDir<F> {
         req: Request<ReqBody>,
     ) -> Result<Response, std::io::Error>
     where
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible>
             + Clone,
         FResBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
@@ -560,7 +560,7 @@ impl<F> ServeDir<F> {
 
 impl<State, ReqBody, F, FResBody> Service<State, Request<ReqBody>> for ServeDir<F>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     F: Service<State, Request<ReqBody>, Response = Response<FResBody>, Error = Infallible> + Clone,
     FResBody: HttpBody<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
@@ -642,7 +642,7 @@ pub struct DefaultServeDirFallback(Infallible);
 
 impl<State, ReqBody> Service<State, Request<ReqBody>> for DefaultServeDirFallback
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
 {
     type Response = Response;

@@ -21,7 +21,7 @@ pub trait ValidateRequestFn<S, B, A>: Send + Sync + 'static {
 
 impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, ()> for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     ResBody: Send + 'static,
     F: Fn() -> Fut + Send + Sync + 'static,
@@ -43,7 +43,7 @@ where
 
 impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, ((), Request<B>)> for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     ResBody: Send + 'static,
     F: Fn(Request<B>) -> Fut + Send + Sync + 'static,
@@ -65,7 +65,7 @@ where
 
 impl<S, B, F, Fut, ResBody> ValidateRequestFn<S, B, (Context<S>,)> for F
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     B: Send + 'static,
     ResBody: Send + 'static,
     F: Fn(Context<S>) -> Fut + Send + Sync + 'static,

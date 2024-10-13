@@ -1,5 +1,0 @@
-error: `#[derive(AsRef)]` doesn't support generics
- --> tests/as_ref/fail/generics.rs:4:16
-  |
-4 | struct AppState<T> {
-  |                ^^^

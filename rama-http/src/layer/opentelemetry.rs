@@ -287,7 +287,7 @@ impl<S, F, State, Body> Service<State, Request<Body>> for RequestMetricsService<
 where
     S: Service<State, Request<Body>, Response: IntoResponse>,
     F: AttributesFactory<State>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Body: Send + 'static,
 {
     type Response = Response;

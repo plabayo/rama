@@ -650,7 +650,7 @@ where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Default + Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;

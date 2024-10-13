@@ -18,7 +18,7 @@
 //!
 //! impl<S, B> AsyncAuthorizeRequest<S, B> for MyAuth
 //! where
-//!     S: Send + Sync + 'static,
+//!     S: Clone + Send + Sync + 'static,
 //!     B: Send + Sync + 'static,
 //! {
 //!     type RequestBody = B;
@@ -179,7 +179,7 @@ where
     S: Service<State, Request<Auth::RequestBody>, Response = Response<ResBody>>,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = Response<ResBody>;
     type Error = S::Error;
@@ -226,7 +226,7 @@ where
     Fut:
         Future<Output = Result<(Context<S>, Request<ReqBody>), Response<ResBody>>> + Send + 'static,
     B: Send + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {
@@ -256,7 +256,7 @@ mod tests {
 
     impl<S, B> AsyncAuthorizeRequest<S, B> for MyAuth
     where
-        S: Send + Sync + 'static,
+        S: Clone + Send + Sync + 'static,
         B: Send + 'static,
     {
         type RequestBody = B;

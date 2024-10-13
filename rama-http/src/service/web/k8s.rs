@@ -17,7 +17,7 @@ pub fn k8s_health_builder<S>() -> K8sHealthServiceBuilder<(), (), S> {
 /// create a default k8s web health service
 pub fn k8s_health<S>() -> impl Service<S, Request, Response = Response, Error = Infallible> + Clone
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     k8s_health_builder().build()
 }
@@ -96,7 +96,7 @@ impl<A, R, S> K8sHealthServiceBuilder<A, R, S>
 where
     A: ToK8sService<S>,
     R: ToK8sService<S>,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     /// build the k8s health web server
     pub fn build(
@@ -116,7 +116,7 @@ pub trait ToK8sService<S>: private::Sealed {
     fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible>;
 }
 
-impl<S: Send + Sync + 'static> ToK8sService<S> for () {
+impl<S: Clone + Send + Sync + 'static> ToK8sService<S> for () {
     fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible> {
         service_fn(|| async { Ok(StatusCode::OK.into_response()) }).boxed()
     }
@@ -125,7 +125,7 @@ impl<S: Send + Sync + 'static> ToK8sService<S> for () {
 impl<S, F> ToK8sService<S> for F
 where
     F: Fn() -> bool + Clone + Send + Sync + 'static,
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible> {
         K8sService::new(self).boxed()
@@ -157,7 +157,7 @@ impl<F> K8sService<F> {
 impl<F, State> Service<State, Request> for K8sService<F>
 where
     F: Fn() -> bool + Send + Sync + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = Infallible;

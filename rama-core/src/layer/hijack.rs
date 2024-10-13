@@ -63,7 +63,7 @@ where
     S: Service<State, Request>,
     H: Service<State, Request, Response: Into<S::Response>, Error: Into<S::Error>>,
     M: Matcher<State, Request>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = S::Response;

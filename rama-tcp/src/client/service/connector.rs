@@ -69,7 +69,7 @@ impl Default for TcpConnector {
 
 impl<State, Request, Dns, Connector> Service<State, Request> for TcpConnector<Dns, Connector>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State> + Send + 'static,
     Request::Error: Into<BoxError> + Send + Sync + 'static,
     Dns: DnsResolver<Error: Into<BoxError>> + Clone,

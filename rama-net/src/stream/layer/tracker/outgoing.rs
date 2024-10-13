@@ -48,7 +48,7 @@ where
 impl<S, State, Request> Service<State, Request> for OutgoingBytesTrackerService<S>
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Send + Sync + 'static>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = EstablishedClientConnection<BytesRWTracker<S::Connection>, State, Request>;

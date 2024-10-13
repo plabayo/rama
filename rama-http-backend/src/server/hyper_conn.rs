@@ -24,7 +24,7 @@ pub trait HyperConnServer: Send + Sync + private::Sealed + 'static {
     ) -> impl std::future::Future<Output = HttpServeResult> + Send + '_
     where
         IO: Stream,
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static;
 }
@@ -39,7 +39,7 @@ impl HyperConnServer for Http1Builder {
     ) -> HttpServeResult
     where
         IO: Stream,
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {
@@ -82,7 +82,7 @@ impl HyperConnServer for Http2Builder<HyperExecutor> {
     ) -> HttpServeResult
     where
         IO: Stream,
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {
@@ -125,7 +125,7 @@ impl HyperConnServer for AutoBuilder<HyperExecutor> {
     ) -> HttpServeResult
     where
         IO: Stream,
-        State: Send + Sync + 'static,
+        State: Clone + Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {

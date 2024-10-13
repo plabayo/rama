@@ -59,7 +59,7 @@ where
         Response = Response<ResBody>,
         Error: Into<BoxError>,
     >,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     ReqBody: Body + Send + 'static,
     ResBody: Body<Data = D, Error: Into<BoxError>> + Send + 'static,
     D: Buf + 'static,

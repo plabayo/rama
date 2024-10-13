@@ -3,7 +3,6 @@ use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use crate::{Method, Request};
-use rama_core::Context;
 
 pub use crate::response::Form;
 
@@ -36,14 +35,13 @@ composite_http_rejection! {
     }
 }
 
-impl<S, T> FromRequest<S> for Form<T>
+impl<T> FromRequest for Form<T>
 where
-    S: Send + Sync + 'static,
     T: serde::de::DeserializeOwned + Send + Sync + 'static,
 {
     type Rejection = FormRejection;
 
-    async fn from_request(_ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
+    async fn from_request(req: Request) -> Result<Self, Self::Rejection> {
         if req.method() == Method::GET {
             let query = req.uri().query().unwrap_or_default();
             let value = match serde_html_form::from_bytes(query.as_bytes()) {
@@ -79,7 +77,7 @@ mod test {
     use super::*;
     use crate::service::web::WebService;
     use crate::{Body, Method, Request, StatusCode};
-    use rama_core::Service;
+    use rama_core::{Context, Service};
 
     #[tokio::test]
     async fn test_form_post_form_urlencoded() {

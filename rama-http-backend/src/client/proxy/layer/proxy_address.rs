@@ -177,7 +177,7 @@ impl<S> HttpProxyAddressService<S> {
 impl<S, State, Request> Service<State, Request> for HttpProxyAddressService<S>
 where
     S: Service<State, Request>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;

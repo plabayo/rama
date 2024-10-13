@@ -46,7 +46,7 @@ impl<S: Clone> Clone for DnsResolveModeService<S> {
 
 impl<State, Body, S> Service<State, Request<Body>> for DnsResolveModeService<S>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
     S: Service<
         State,

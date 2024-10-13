@@ -155,7 +155,10 @@ where
     type Service = FollowRedirect<S, P>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        FollowRedirect::with_policy(inner, self.policy.clone())
+        FollowRedirect {
+            inner,
+            policy: self.policy.clone(),
+        }
     }
 }
 
@@ -211,7 +214,7 @@ impl<S, P> FollowRedirect<S, P> {
 
 impl<State, ReqBody, ResBody, S, P> Service<State, Request<ReqBody>> for FollowRedirect<S, P>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
     ReqBody: Body + Default + Send + 'static,
     ResBody: Send + 'static,
@@ -284,7 +287,7 @@ where
                     location: &location,
                     previous: &uri,
                 };
-                match policy.redirect(&ctx, &attempt)? {
+                match policy.redirect(&ctx, &attempt).map_err(Into::into)? {
                     Action::Follow => {
                         uri = location;
                         body.try_clone_from(&ctx, &mut policy, &taken_body);

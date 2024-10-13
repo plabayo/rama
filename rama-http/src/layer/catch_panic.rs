@@ -214,7 +214,7 @@ where
     T: ResponseForPanic + Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = S::Error;

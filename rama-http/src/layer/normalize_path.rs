@@ -115,7 +115,7 @@ impl<S> NormalizePath<S> {
 impl<S, State, ReqBody, ResBody> Service<State, Request<ReqBody>> for NormalizePath<S>
 where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
 {

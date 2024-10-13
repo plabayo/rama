@@ -15,7 +15,7 @@ pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(
     fallback_and_request: Option<(&F, Context<State>, Request<ReqBody>)>,
 ) -> Result<Response, std::io::Error>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     F: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
     ResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
     ResBody::Error: Into<Box<dyn std::error::Error + Send + Sync>>,

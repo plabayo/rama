@@ -292,7 +292,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             })
         );
 
-        let tcp_listener = TcpListener::build_with_state(State::new(acme_data))
+        let tcp_listener = TcpListener::build_with_state(Arc::new(State::new(acme_data)))
             .bind(&address)
             .await
             .expect("bind TCP Listener");

@@ -109,7 +109,7 @@ pub async fn tcp_connect<State, Dns, Connector>(
     connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Dns: DnsResolver<Error: Into<BoxError>> + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
@@ -158,7 +158,7 @@ async fn tcp_connect_inner<State, Dns, Connector>(
     connector: Connector,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Dns: DnsResolver<Error: Into<BoxError>> + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {

@@ -84,6 +84,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
     "aws_lc_rs",
 ] }
+derive_more = "1.0.0"
 rustls-native-certs = "0.8.0"
 rustls-pemfile = "2.1"
 rustversion = "1.0.9"
@@ -217,7 +218,6 @@ rama-dns = { version = "0.2.0-alpha.4", path = "rama-dns", optional = true }
 rama-haproxy = { version = "0.2.0-alpha.4", path = "rama-haproxy", optional = true }
 rama-http = { version = "0.2.0-alpha.4", path = "rama-http", optional = true }
 rama-http-backend = { version = "0.2.0-alpha.4", path = "rama-http-backend", optional = true }
-rama-macros = { version = "0.2.0-alpha.4", path = "rama-macros" }
 rama-net = { version = "0.2.0-alpha.4", path = "rama-net", optional = true }
 rama-proxy = { version = "0.2.0-alpha.4", path = "rama-proxy", optional = true }
 rama-tcp = { version = "0.2.0-alpha.4", path = "rama-tcp", optional = true }
@@ -231,6 +231,7 @@ tracing = { workspace = true, optional = true }
 
 [dev-dependencies]
 bytes = { workspace = true }
+derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
 itertools = { workspace = true }

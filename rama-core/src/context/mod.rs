@@ -30,45 +30,17 @@
 //!
 //! [`rama`]: crate
 //!
-//! ## State Wraps
-//!
-//! [`rama`] was built from the ground up to operate on and between different layers of the network stack.
-//! This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
-//!
-//! When creating a `TcpListener` with state you are essentially creating and injecting state, which will remain
-//! as "read-only" for the enire life cycle of that `TcpListener` and to be made available for every incoming _tcp_ connection,
-//! as well as the application requests (Http requests). This is great for stuff that is okay to share, but it is not desired
-//! for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus
-//! you do not wish to keep a global cache for this, as it would either be shared or get overly complicated to ensure
-//! you keep things separate and clean.
-//!
-//! The solution is to wrap your state.
-//!
-//! > Example: [http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
-//!
-//! The above example shows how can use the [`#as_ref(wrap)`] property within an `#[derive(AsRef)]` derived "state" struct,
-//! to wrap in a type-safe manner the "app-global" state within the "conn-specific" (tcp) state. This allows you to have
-//! state freshly created for each connection while still having ease of access to the global state.
-//!
-//! Note though that you do not need the `AsRef` macro or even trait implementation to get this kind of access in your
-//! own app-specific leaf services. It is however useful — and at times even a requirement — in case you want your
-//! middleware stack to also include generic middleware that expect `AsRef<T>` trait bounds for type-safe access to
-//! state from within a middleware. E.g. in case your middleware expects a data source for some specific data type,
-//! it is of no use to have that middleware compile without knowing for sure that data source is made available
-//! to that middleware.
-//!
-//! # Example
+//! # Examples
 //!
 //! ```
 //! use rama_core::Context;
-//! use std::sync::Arc;
 //!
 //! #[derive(Debug)]
 //! struct ServiceState {
 //!     value: i32,
 //! }
 //!
-//! let state = Arc::new(ServiceState{ value: 5 });
+//! let state = ServiceState{ value: 5 };
 //! let ctx = Context::with_state(state);
 //! ```
 //!
@@ -87,47 +59,51 @@
 //! assert_eq!(ctx.get::<i32>(), Some(&5i32));
 //! ```
 //!
-//! ## Example: State AsRef
+//! ## State Wraps
 //!
-//! The state can be accessed as a reference using the [`AsRef`] trait.
+//! > 📖 [rustdoc link](https://ramaproxy.org/docs/rama/context/struct.Context.html#method.map_state)
 //!
-//! ```
-//! use rama_core::{Context, context};
-//! use std::sync::Arc;
-//! use std::convert::AsRef;
+//! `rama` was built from the ground up to operate on and between different layers of the network stack.
+//! This has also an impact on state. Because sure, typed state is nice, but state leakage is not. What do I mean with that?
 //!
-//! #[derive(Debug)]
-//! struct ProxyDatabase;
+//! When creating a `TcpListener` with state the state will be owned by that `TcpListener`. By default
+//! it will clone the state and pass a clone to each incoming `tcp` connection. You can however also
+//! inject your own state provider to customise that behaviour. Pretty much the same goes for an `HttpServer`,
+//! where it will do the same for each incoming http request. This is great for stuff that is okay to share, but it is not desired
+//! for state that you wish to have a narrower scope. Examples are state that are tied to a single _tcp_ connection and thus
+//! you do not wish to keep a global cache for this, as it would either be shared or get overly complicated to ensure
+//! you keep things separate and clean.
 //!
-//! #[derive(Debug, context::AsRef)]
-//! struct ServiceState {
-//!     db: ProxyDatabase,
-//! }
+//! One solution is to wrap your state.
 //!
-//! let state = Arc::new(ServiceState{ db: ProxyDatabase });
-//! let ctx = Context::with_state(state);
+//! > See for reference: [/examples/http_conn_state.rs](https://github.com/plabayo/rama/tree/main/examples/http_conn_state.rs)
 //!
-//! let db: &ProxyDatabase = ctx.state().as_ref();
-//! ```
+//! In that example we make use of:
+//!
+//! - [`MapStateLayer`](https://ramaproxy.org/docs/rama/layer/struct.MapStateLayer.html):
+//!   this generic layer allows you to map the state from one type to another,
+//!   which is great in cases like this where you want the Application layer (http)
+//!   to have a different type compared to the network layer (tpc).
+//! - the [`derive_more` third-party crate](https://docs.rs/derive_more/latest/derive_more/) is used
+//!   as an example how one can use such crates to make services or layers which do not
+//!   depend on a specific state type, but instead only require a reference (mutable or not)
+//!   to specific properties they need, which can be useful in case that service
+//!   is used in multiple branches, each with their own concrete _state_ type.
 
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
-use std::{fmt, future::Future, sync::Arc};
+use std::{fmt, future::Future};
 use tokio::task::JoinHandle;
-
-pub use ::rama_macros::AsRef;
 
 mod extensions;
 #[doc(inline)]
 pub use extensions::Extensions;
 
-mod state;
-
 /// Context passed to and between services as input.
 ///
 /// See [`crate::context`] for more information.
 pub struct Context<S> {
-    state: Arc<S>,
+    state: S,
     executor: Executor,
     extensions: Extensions,
 }
@@ -144,11 +120,11 @@ impl<S: fmt::Debug> fmt::Debug for Context<S> {
 
 impl Default for Context<()> {
     fn default() -> Self {
-        Self::new(Arc::new(()), Executor::default())
+        Self::new((), Executor::default())
     }
 }
 
-impl<S> Clone for Context<S> {
+impl<S: Clone> Clone for Context<S> {
     fn clone(&self) -> Self {
         Self {
             state: self.state.clone(),
@@ -160,7 +136,7 @@ impl<S> Clone for Context<S> {
 
 impl<S> Context<S> {
     /// Create a new [`Context`] with the given state.
-    pub fn new(state: Arc<S>, executor: Executor) -> Self {
+    pub fn new(state: S, executor: Executor) -> Self {
         Self {
             state,
             executor,
@@ -169,7 +145,7 @@ impl<S> Context<S> {
     }
 
     /// Create a new [`Context`] with the given state and default extension.
-    pub fn with_state(state: Arc<S>) -> Self {
+    pub fn with_state(state: S) -> Self {
         Self::new(state, Executor::default())
     }
 
@@ -178,20 +154,59 @@ impl<S> Context<S> {
         &self.state
     }
 
-    /// Get a cloned reference to the state.
-    pub fn state_clone(&self) -> Arc<S> {
-        self.state.clone()
+    /// Get an exclusive reference to the state.
+    pub fn state_mut(&mut self) -> &mut S {
+        &mut self.state
     }
 
     /// Map the state from one type to another.
     pub fn map_state<F, W>(self, f: F) -> Context<W>
     where
-        F: FnOnce(Arc<S>) -> Arc<W>,
+        F: FnOnce(S) -> W,
     {
         Context {
             state: f(self.state),
             executor: self.executor,
             extensions: self.extensions,
+        }
+    }
+
+    /// Swap the state from one type to another,
+    /// returning the new object as well as the previously defined state.
+    pub fn swap_state<W>(self, state: W) -> (Context<W>, S) {
+        (
+            Context {
+                state,
+                executor: self.executor,
+                extensions: self.extensions,
+            },
+            self.state,
+        )
+    }
+
+    /// Clones the internals of this [`Context`]
+    /// to provide a new context, but while mapping the state
+    /// into a new state.
+    pub fn clone_map_state<F, W>(&self, f: F) -> Context<W>
+    where
+        S: Clone,
+        F: FnOnce(S) -> W,
+    {
+        Context {
+            state: f(self.state.clone()),
+            executor: self.executor.clone(),
+            extensions: self.extensions.clone(),
+        }
+    }
+
+    /// Clones the internals of this [`Context`]
+    /// to provide a new context, but using the given state, instead of
+    /// the one defined in the current [`Context`].
+    pub fn clone_with_state<W>(&self, state: W) -> Context<W> {
+        Context {
+            state,
+            executor: self.executor.clone(),
+            extensions: self.extensions.clone(),
         }
     }
 
@@ -500,5 +515,12 @@ impl<S> Context<S> {
     /// if and only if the context was created within a graceful environment.
     pub fn guard(&self) -> Option<&ShutdownGuard> {
         self.executor.guard()
+    }
+}
+
+impl<S: Clone> Context<S> {
+    /// Get a cloned reference to the state.
+    pub fn state_clone(&self) -> S {
+        self.state.clone()
     }
 }

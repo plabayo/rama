@@ -218,7 +218,7 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
 impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindAuto>
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
         + Send
         + 'static,
@@ -298,7 +298,7 @@ where
 impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindSecure>
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
         + Send
         + 'static,
@@ -348,7 +348,7 @@ where
 impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindTunnel>
 where
     S: ConnectorService<State, Request, Connection: Stream + Unpin, Error: Into<BoxError>>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
 {
     type Response = EstablishedClientConnection<AutoTlsStream<S::Connection>, State, Request>;

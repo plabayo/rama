@@ -12,7 +12,7 @@ use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
 /// Builder for `TcpListener`.
 pub struct TcpListenerBuilder<S> {
     ttl: Option<u32>,
-    state: Arc<S>,
+    state: S,
 }
 
 impl<S> fmt::Debug for TcpListenerBuilder<S>
@@ -32,7 +32,7 @@ impl TcpListenerBuilder<()> {
     pub fn new() -> Self {
         Self {
             ttl: None,
-            state: Arc::new(()),
+            state: (),
         }
     }
 }
@@ -43,7 +43,7 @@ impl Default for TcpListenerBuilder<()> {
     }
 }
 
-impl<S> Clone for TcpListenerBuilder<S> {
+impl<S: Clone> Clone for TcpListenerBuilder<S> {
     fn clone(&self) -> Self {
         Self {
             ttl: self.ttl,
@@ -57,7 +57,16 @@ impl<S> TcpListenerBuilder<S> {
     ///
     /// This value sets the time-to-live field that is used in every packet sent
     /// from this socket.
-    pub fn ttl(&mut self, ttl: u32) -> &mut Self {
+    pub fn ttl(mut self, ttl: u32) -> Self {
+        self.ttl = Some(ttl);
+        self
+    }
+
+    /// Sets the value for the `IP_TTL` option on this socket.
+    ///
+    /// This value sets the time-to-live field that is used in every packet sent
+    /// from this socket.
+    pub fn set_ttl(&mut self, ttl: u32) -> &mut Self {
         self.ttl = Some(ttl);
         self
     }
@@ -65,16 +74,18 @@ impl<S> TcpListenerBuilder<S> {
 
 impl<S> TcpListenerBuilder<S>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     /// Create a new `TcpListenerBuilder` with the given state.
     pub fn with_state(state: S) -> Self {
-        Self {
-            ttl: None,
-            state: Arc::new(state),
-        }
+        Self { ttl: None, state }
     }
+}
 
+impl<S> TcpListenerBuilder<S>
+where
+    S: Clone + Send + Sync + 'static,
+{
     /// Creates a new TcpListener, which will be bound to the specified address.
     ///
     /// The returned listener is ready for accepting connections.
@@ -82,7 +93,7 @@ where
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
-    pub async fn bind<A: ToSocketAddrs>(&self, addr: A) -> io::Result<TcpListener<S>> {
+    pub async fn bind<A: ToSocketAddrs>(self, addr: A) -> io::Result<TcpListener<S>> {
         let inner = TokioTcpListener::bind(addr).await?;
 
         if let Some(ttl) = self.ttl {
@@ -91,7 +102,7 @@ where
 
         Ok(TcpListener {
             inner,
-            state: self.state.clone(),
+            state: self.state,
         })
     }
 }
@@ -100,7 +111,7 @@ where
 /// using one of the `serve` methods such as [`TcpListener::serve`].
 pub struct TcpListener<S> {
     inner: TokioTcpListener,
-    state: Arc<S>,
+    state: S,
 }
 
 impl<S> fmt::Debug for TcpListener<S>
@@ -126,7 +137,7 @@ impl TcpListener<()> {
     /// which can be used to configure a `TcpListener`.
     pub fn build_with_state<S>(state: S) -> TcpListenerBuilder<S>
     where
-        S: Send + Sync + 'static,
+        S: Clone + Send + Sync + 'static,
     {
         TcpListenerBuilder::with_state(state)
     }
@@ -165,11 +176,16 @@ impl<S> TcpListener<S> {
     pub fn state(&self) -> &S {
         &self.state
     }
+
+    /// Gets an exclusive reference to the listener's state.
+    pub fn state_mut(&mut self) -> &mut S {
+        &mut self.state
+    }
 }
 
 impl<State> TcpListener<State>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     /// Serve connections from this listener with the given service.
     ///

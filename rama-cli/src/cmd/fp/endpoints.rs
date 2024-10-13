@@ -1,5 +1,3 @@
-use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
-
 use super::{
     data::{
         get_http_info, get_request_info, get_tls_display_info, get_user_agent_info, DataSource,
@@ -7,16 +5,17 @@ use super::{
     },
     State,
 };
+use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
 use rama::{
     http::{
-        response::Json,
-        service::web::extract::{self, FromRequestParts, Path},
-        Body, IntoResponse, Request, Response, StatusCode,
+        response::Json, service::web::extract::Path, Body, IntoResponse, Request, Response,
+        StatusCode,
     },
     Context,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::Arc;
 
 type Html = rama::http::response::Html<String>;
 
@@ -76,7 +75,10 @@ pub(super) async fn get_consent() -> impl IntoResponse {
     ))
 }
 
-pub(super) async fn get_report(mut ctx: Context<State>, req: Request) -> Result<Html, Response> {
+pub(super) async fn get_report(
+    mut ctx: Context<Arc<State>>,
+    req: Request,
+) -> Result<Html, Response> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -129,10 +131,10 @@ pub(super) struct AcmeChallengeParams {
 }
 
 pub(super) async fn get_acme_challenge(
-    extract::State(state): extract::State<State>,
     Path(params): Path<AcmeChallengeParams>,
+    ctx: Context<Arc<State>>,
 ) -> Response {
-    match state.acme.get_challenge(params.token) {
+    match ctx.state().acme.get_challenge(params.token) {
         Some(challenge) => Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "text/plain")
@@ -155,7 +157,7 @@ pub(super) struct APINumberParams {
 }
 
 pub(super) async fn get_api_fetch_number(
-    mut ctx: Context<State>,
+    mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
@@ -188,20 +190,13 @@ pub(super) async fn get_api_fetch_number(
 }
 
 pub(super) async fn post_api_fetch_number(
-    mut ctx: Context<State>,
+    Path(params): Path<APINumberParams>,
+    mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
-
-    let number = match Path::<APINumberParams>::from_request_parts(&ctx, &parts).await {
-        Ok(params) => params.number,
-        Err(e) => {
-            tracing::error!("Failed to parse number: {:?}", e);
-            0
-        }
-    };
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -218,7 +213,7 @@ pub(super) async fn post_api_fetch_number(
     let tls_info = get_tls_display_info(&ctx);
 
     Ok(Json(json!({
-        "number": number,
+        "number": params.number,
         "fp": {
             "user_agent_info": user_agent_info,
             "request_info": request_info,
@@ -229,7 +224,7 @@ pub(super) async fn post_api_fetch_number(
 }
 
 pub(super) async fn get_api_xml_http_request_number(
-    mut ctx: Context<State>,
+    mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
@@ -259,20 +254,13 @@ pub(super) async fn get_api_xml_http_request_number(
 }
 
 pub(super) async fn post_api_xml_http_request_number(
-    mut ctx: Context<State>,
+    Path(params): Path<APINumberParams>,
+    mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
-
-    let number = match Path::<APINumberParams>::from_request_parts(&ctx, &parts).await {
-        Ok(params) => params.number,
-        Err(e) => {
-            tracing::error!("Failed to parse number: {:?}", e);
-            0
-        }
-    };
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -289,7 +277,7 @@ pub(super) async fn post_api_xml_http_request_number(
     let tls_info = get_tls_display_info(&ctx);
 
     Ok(Json(json!({
-        "number": number,
+        "number": params.number,
         "fp": {
             "user_agent_info": user_agent_info,
             "request_info": request_info,
@@ -303,7 +291,7 @@ pub(super) async fn post_api_xml_http_request_number(
 // endpoints: form
 //------------------------------------------
 
-pub(super) async fn form(mut ctx: Context<State>, req: Request) -> Result<Html, Response> {
+pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<Html, Response> {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
 

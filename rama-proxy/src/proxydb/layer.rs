@@ -179,7 +179,7 @@ where
     D: ProxyDB<Error: Into<BoxError> + Send + Sync + 'static>,
     P: ProxyQueryPredicate,
     F: UsernameFormatter<State>,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: TryRefIntoTransportContext<State, Error: Into<BoxError> + Send + Sync + 'static>
         + Send
         + 'static,

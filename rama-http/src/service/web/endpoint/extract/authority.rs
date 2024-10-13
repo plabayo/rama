@@ -1,4 +1,4 @@
-use super::FromRequestParts;
+use super::FromRequestContextRefPair;
 use crate::dep::http::request::Parts;
 use crate::utils::macros::define_http_rejection;
 use rama_core::Context;
@@ -20,13 +20,16 @@ define_http_rejection! {
     pub struct MissingAuthority;
 }
 
-impl<S> FromRequestParts<S> for Authority
+impl<S> FromRequestContextRefPair<S> for Authority
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     type Rejection = MissingAuthority;
 
-    async fn from_request_parts(ctx: &Context<S>, parts: &Parts) -> Result<Self, Self::Rejection> {
+    async fn from_request_context_ref_pair(
+        ctx: &Context<S>,
+        parts: &Parts,
+    ) -> Result<Self, Self::Rejection> {
         Ok(Authority(match ctx.get::<RequestContext>() {
             Some(ctx) => ctx.authority.clone(),
             None => RequestContext::try_from((ctx, parts))

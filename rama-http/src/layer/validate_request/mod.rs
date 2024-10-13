@@ -61,7 +61,7 @@
 //!
 //! impl<S, B> ValidateRequest<S, B> for MyHeader
 //!     where
-//!         S: Send + Sync + 'static,
+//!         S: Clone + Send + Sync + 'static,
 //!         B: Send + 'static,
 //! {
 //!     type ResponseBody = Body;

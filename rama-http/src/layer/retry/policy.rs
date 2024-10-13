@@ -18,7 +18,7 @@ use std::future::Future;
 ///
 /// impl<S, R, E> Policy<S, R, E> for Attempts
 ///     where
-///         S: Send + Sync + 'static,
+///         S: Clone + Send + Sync + 'static,
 ///         R: Send + 'static,
 ///         E: Send + Sync + 'static,
 /// {
@@ -184,7 +184,7 @@ macro_rules! impl_retry_policy_either {
         impl<$($param),+, State, Response, Error> Policy<State, Response, Error> for rama_core::combinators::$id<$($param),+>
         where
             $($param: Policy<State, Response, Error>),+,
-            State: Send + Sync + 'static,
+            State: Clone + Send + Sync + 'static,
             Response: Send + 'static,
             Error: Send + Sync + 'static,
         {

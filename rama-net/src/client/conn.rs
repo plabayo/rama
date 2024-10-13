@@ -26,7 +26,9 @@ impl<S: fmt::Debug, State: fmt::Debug, Request: fmt::Debug> fmt::Debug
     }
 }
 
-impl<S: Clone, State, Request: Clone> Clone for EstablishedClientConnection<S, State, Request> {
+impl<S: Clone, State: Clone, Request: Clone> Clone
+    for EstablishedClientConnection<S, State, Request>
+{
     fn clone(&self) -> Self {
         Self {
             ctx: self.ctx.clone(),

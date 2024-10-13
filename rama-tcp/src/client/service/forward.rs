@@ -134,7 +134,7 @@ impl<C> Forwarder<C, ()> {
 
 impl<S, T, C, L> Service<S, T> for Forwarder<C, L>
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
     T: Stream + Unpin,
     C: ConnectorService<
         S,
@@ -184,7 +184,7 @@ pub struct ForwarderService<S>(Mutex<S>);
 
 impl<State, I, S> Service<State, I> for ForwarderService<S>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     I: Stream + Unpin,
     S: Stream + Unpin,
 {

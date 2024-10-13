@@ -1,15 +1,18 @@
-use super::FromRequest;
-use crate::{Method, Request};
+use super::FromRequestContextRefPair;
+use crate::{dep::http::request::Parts, Method};
 use rama_core::Context;
 use std::convert::Infallible;
 
-impl<S> FromRequest<S> for Method
+impl<S> FromRequestContextRefPair<S> for Method
 where
-    S: Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
 {
     type Rejection = Infallible;
 
-    async fn from_request(_ctx: Context<S>, req: Request) -> Result<Self, Self::Rejection> {
-        Ok(req.method().clone())
+    async fn from_request_context_ref_pair(
+        _ctx: &Context<S>,
+        parts: &Parts,
+    ) -> Result<Self, Self::Rejection> {
+        Ok(parts.method.clone())
     }
 }

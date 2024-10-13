@@ -104,7 +104,7 @@ impl<B> ConcurrentPolicy<B, ConcurrentCounter> {
 impl<B, C, State, Request> Policy<State, Request> for ConcurrentPolicy<B, C>
 where
     B: Backoff,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
     C: ConcurrentTracker,
 {

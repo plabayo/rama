@@ -161,7 +161,7 @@ impl<ReqBody, ResBody, State, S, V> Service<State, Request<ReqBody>> for Validat
 where
     ReqBody: Send + 'static,
     ResBody: Send + 'static,
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
     V: ValidateRequest<State, ReqBody, ResponseBody = ResBody>,
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>>,
 {
