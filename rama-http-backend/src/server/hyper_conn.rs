@@ -3,7 +3,6 @@ use crate::executor::HyperExecutor;
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::{rt::TokioIo, server::conn::auto::Builder as AutoBuilder};
-use rama_core::context::StateTransformer;
 use rama_core::{Context, Service};
 use rama_http_types::{IntoResponse, Request};
 use rama_net::stream::Stream;
@@ -17,46 +16,36 @@ use tokio::select;
 /// A utility trait to allow any of the hyper server builders to be used
 /// in the same way to (http) serve a connection.
 pub trait HyperConnServer: Send + Sync + private::Sealed + 'static {
-    fn hyper_serve_connection<IO, State, S, R, Response>(
+    fn hyper_serve_connection<IO, State, S, Response>(
         &self,
         ctx: Context<State>,
         io: IO,
         service: S,
-        state_transformer: R,
     ) -> impl std::future::Future<Output = HttpServeResult> + Send + '_
     where
         IO: Stream,
-        State: Send + Sync + 'static,
-        S: Service<R::Output, Request, Response = Response, Error = Infallible>,
-        R: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
-            + Send
-            + Sync
-            + 'static,
+        State: Clone + Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static;
 }
 
 impl HyperConnServer for Http1Builder {
     #[inline]
-    async fn hyper_serve_connection<IO, State, S, R, Response>(
+    async fn hyper_serve_connection<IO, State, S, Response>(
         &self,
         ctx: Context<State>,
         io: IO,
         service: S,
-        state_transformer: R,
     ) -> HttpServeResult
     where
         IO: Stream,
-        State: Send + Sync + 'static,
-        S: Service<R::Output, Request, Response = Response, Error = Infallible>,
-        R: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
-            + Send
-            + Sync
-            + 'static,
+        State: Clone + Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
         let guard = ctx.guard().cloned();
-        let service = HyperService::new(ctx, service, state_transformer);
+        let service = HyperService::new(ctx, service);
 
         let mut conn = pin!(self.serve_connection(stream, service).with_upgrades());
 
@@ -85,26 +74,21 @@ impl HyperConnServer for Http1Builder {
 
 impl HyperConnServer for Http2Builder<HyperExecutor> {
     #[inline]
-    async fn hyper_serve_connection<IO, State, S, R, Response>(
+    async fn hyper_serve_connection<IO, State, S, Response>(
         &self,
         ctx: Context<State>,
         io: IO,
         service: S,
-        state_transformer: R,
     ) -> HttpServeResult
     where
         IO: Stream,
-        State: Send + Sync + 'static,
-        S: Service<R::Output, Request, Response = Response, Error = Infallible>,
-        R: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
-            + Send
-            + Sync
-            + 'static,
+        State: Clone + Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
         let guard = ctx.guard().cloned();
-        let service = HyperService::new(ctx, service, state_transformer);
+        let service = HyperService::new(ctx, service);
 
         let mut conn = pin!(self.serve_connection(stream, service));
 
@@ -133,26 +117,21 @@ impl HyperConnServer for Http2Builder<HyperExecutor> {
 
 impl HyperConnServer for AutoBuilder<HyperExecutor> {
     #[inline]
-    async fn hyper_serve_connection<IO, State, S, R, Response>(
+    async fn hyper_serve_connection<IO, State, S, Response>(
         &self,
         ctx: Context<State>,
         io: IO,
         service: S,
-        state_transformer: R,
     ) -> HttpServeResult
     where
         IO: Stream,
-        State: Send + Sync + 'static,
-        S: Service<R::Output, Request, Response = Response, Error = Infallible>,
-        R: StateTransformer<State, Output: Send + Sync + 'static, Error = Infallible>
-            + Send
-            + Sync
-            + 'static,
+        State: Clone + Send + Sync + 'static,
+        S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
     {
         let stream = TokioIo::new(Box::pin(io));
         let guard = ctx.guard().cloned();
-        let service = HyperService::new(ctx, service, state_transformer);
+        let service = HyperService::new(ctx, service);
 
         let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
 

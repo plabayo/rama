@@ -119,10 +119,6 @@ mod extensions;
 #[doc(inline)]
 pub use extensions::Extensions;
 
-mod state;
-#[doc(inline)]
-pub use state::StateTransformer;
-
 /// Context passed to and between services as input.
 ///
 /// See [`crate::context`] for more information.

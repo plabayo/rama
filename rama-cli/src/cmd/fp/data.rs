@@ -11,7 +11,7 @@ use rama::{
     Context,
 };
 use serde::Serialize;
-use std::str::FromStr;
+use std::{str::FromStr, sync::Arc};
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[allow(dead_code)]
@@ -128,7 +128,7 @@ pub(super) struct RequestInfo {
     pub(super) peer_addr: Option<String>,
 }
 
-pub(super) async fn get_user_agent_info(ctx: &Context<State>) -> UserAgentInfo {
+pub(super) async fn get_user_agent_info(ctx: &Context<Arc<State>>) -> UserAgentInfo {
     ctx.get()
         .map(|ua: &UserAgent| UserAgentInfo {
             user_agent: ua.header_str().to_owned(),
@@ -143,7 +143,7 @@ pub(super) async fn get_request_info(
     fetch_mode: FetchMode,
     resource_type: ResourceType,
     initiator: Initiator,
-    ctx: &mut Context<State>,
+    ctx: &mut Context<Arc<State>>,
     parts: &Parts,
 ) -> Result<RequestInfo, BoxError> {
     let request_context = ctx
@@ -221,7 +221,7 @@ pub(super) enum TlsDisplayInfoExtensionData {
     Multi(Vec<String>),
 }
 
-pub(super) fn get_tls_display_info(ctx: &Context<State>) -> Option<TlsDisplayInfo> {
+pub(super) fn get_tls_display_info(ctx: &Context<Arc<State>>) -> Option<TlsDisplayInfo> {
     let hello: &ClientHello = ctx
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())?;

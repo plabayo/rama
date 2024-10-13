@@ -1,4 +1,3 @@
-use rama_core::context::StateTransformer;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::Context;
@@ -38,17 +37,6 @@ impl TcpListenerBuilder<(), ()> {
             ttl: None,
             state: (),
             state_transformer: (),
-        }
-    }
-}
-
-impl<S> TcpListenerBuilder<S> {
-    /// Attach a new [`StateTransformer`] to this [`TcpListenerBuilder`].
-    pub fn with_state_transformer<T>(self, transformer: T) -> TcpListenerBuilder<S, T> {
-        TcpListenerBuilder {
-            ttl: self.ttl,
-            state: self.state,
-            state_transformer: transformer,
         }
     }
 }
@@ -211,7 +199,6 @@ impl<S, T> TcpListener<S, T> {
 impl<State, T> TcpListener<State, T>
 where
     State: Clone + Send + Sync + 'static,
-    T: StateTransformer<State, Output: Send + Sync + 'static, Error: std::error::Error + 'static>,
 {
     /// Serve connections from this listener with the given service.
     ///
@@ -219,7 +206,7 @@ where
     /// the underlying service can choose to spawn a task to handle the accepted stream.
     pub async fn serve<S>(self, service: S)
     where
-        S: Service<T::Output, TcpStream>,
+        S: Service<State, TcpStream>,
     {
         let ctx = Context::new(self.state, Executor::new());
         let service = Arc::new(service);
@@ -234,18 +221,7 @@ where
             };
 
             let service = service.clone();
-
-            let state = match self.state_transformer.transform_state(&ctx) {
-                Ok(state) => state,
-                Err(err) => {
-                    tracing::error!(
-                        error = &err as &dyn std::error::Error,
-                        "TCP accept error: state transformer failed"
-                    );
-                    continue;
-                }
-            };
-            let mut ctx = ctx.clone_with_state(state);
+            let mut ctx = ctx.clone();
 
             tokio::spawn(async move {
                 let local_addr = socket.local_addr().ok();
@@ -263,7 +239,7 @@ where
     /// it to the service.
     pub async fn serve_graceful<S>(self, guard: ShutdownGuard, service: S)
     where
-        S: Service<T::Output, TcpStream>,
+        S: Service<State, TcpStream>,
     {
         let ctx: Context<State> = Context::new(self.state, Executor::graceful(guard.clone()));
         let service = Arc::new(service);
@@ -279,18 +255,7 @@ where
                     match result {
                         Ok((socket, peer_addr)) => {
                             let service = service.clone();
-
-                            let state = match self.state_transformer.transform_state(&ctx) {
-                                Ok(state) => state,
-                                Err(err) => {
-                                    tracing::error!(
-                                        error = &err as &dyn std::error::Error,
-                                        "TCP accept error: state transformer failed"
-                                    );
-                                    continue;
-                                }
-                            };
-                            let mut ctx = ctx.clone_with_state(state);
+                            let mut ctx = ctx.clone();
 
                             guard.spawn_task(async move {
                                 let local_addr = socket.local_addr().ok();

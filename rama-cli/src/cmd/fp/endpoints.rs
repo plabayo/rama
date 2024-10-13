@@ -1,5 +1,3 @@
-use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
-
 use super::{
     data::{
         get_http_info, get_request_info, get_tls_display_info, get_user_agent_info, DataSource,
@@ -7,6 +5,7 @@ use super::{
     },
     State,
 };
+use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
 use rama::{
     http::{
         response::Json, service::web::extract::Path, Body, IntoResponse, Request, Response,
@@ -16,6 +15,7 @@ use rama::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::sync::Arc;
 
 type Html = rama::http::response::Html<String>;
 
@@ -75,7 +75,10 @@ pub(super) async fn get_consent() -> impl IntoResponse {
     ))
 }
 
-pub(super) async fn get_report(mut ctx: Context<State>, req: Request) -> Result<Html, Response> {
+pub(super) async fn get_report(
+    mut ctx: Context<Arc<State>>,
+    req: Request,
+) -> Result<Html, Response> {
     let http_info = get_http_info(&req);
 
     let (parts, _) = req.into_parts();
@@ -129,7 +132,7 @@ pub(super) struct AcmeChallengeParams {
 
 pub(super) async fn get_acme_challenge(
     Path(params): Path<AcmeChallengeParams>,
-    ctx: Context<State>,
+    ctx: Context<Arc<State>>,
 ) -> Response {
     match ctx.state().acme.get_challenge(params.token) {
         Some(challenge) => Response::builder()
@@ -154,7 +157,7 @@ pub(super) struct APINumberParams {
 }
 
 pub(super) async fn get_api_fetch_number(
-    mut ctx: Context<State>,
+    mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
@@ -188,7 +191,7 @@ pub(super) async fn get_api_fetch_number(
 
 pub(super) async fn post_api_fetch_number(
     Path(params): Path<APINumberParams>,
-    mut ctx: Context<State>,
+    mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
@@ -221,7 +224,7 @@ pub(super) async fn post_api_fetch_number(
 }
 
 pub(super) async fn get_api_xml_http_request_number(
-    mut ctx: Context<State>,
+    mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
@@ -252,7 +255,7 @@ pub(super) async fn get_api_xml_http_request_number(
 
 pub(super) async fn post_api_xml_http_request_number(
     Path(params): Path<APINumberParams>,
-    mut ctx: Context<State>,
+    mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
     let http_info = get_http_info(&req);
@@ -288,7 +291,7 @@ pub(super) async fn post_api_xml_http_request_number(
 // endpoints: form
 //------------------------------------------
 
-pub(super) async fn form(mut ctx: Context<State>, req: Request) -> Result<Html, Response> {
+pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<Html, Response> {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
 
