@@ -178,10 +178,13 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         .try_into()
         .expect("tls_crt_pem_raw => NonEmptyStr (RAMA_TLS_CRT)");
         ServerConfig {
-            application_layer_protocol_negotiation: Some(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
-            ]),
+            application_layer_protocol_negotiation: Some(match cfg.http_version {
+                HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+                HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+                HttpVersion::Auto => {
+                    vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                }
+            }),
             ..ServerConfig::new(ServerAuth::Single(ServerAuthData {
                 private_key: DataEncoding::Pem(tls_key_pem_raw),
                 cert_chain: DataEncoding::Pem(tls_crt_pem_raw),
