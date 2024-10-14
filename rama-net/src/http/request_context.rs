@@ -10,6 +10,31 @@ use rama_http_types::Method;
 use rama_http_types::{dep::http::request::Parts, Request, Uri, Version};
 use tracing::{trace, warn};
 
+#[cfg(feature = "tls")]
+use crate::tls::SecureTransport;
+
+#[cfg(feature = "tls")]
+fn try_get_host_from_secure_transport(t: &SecureTransport) -> Option<Host> {
+    use crate::tls::client::ClientHelloExtension;
+
+    t.client_hello().and_then(|h| {
+        h.extensions().iter().find_map(|e| match e {
+            ClientHelloExtension::ServerName(maybe_host) => maybe_host.clone(),
+            _ => None,
+        })
+    })
+}
+
+#[cfg(not(feature = "tls"))]
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+struct SecureTransport;
+
+#[cfg(not(feature = "tls"))]
+fn try_get_host_from_secure_transport(_: &SecureTransport) -> Option<Host> {
+    None
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context of the [`Request`].
 pub struct RequestContext {
@@ -43,37 +68,43 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
         let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let authority = uri
-            .host()
-            .and_then(|h| Host::try_from(h).ok().map(|h| {
-                tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
+        let authority = match ctx.get().and_then(try_get_host_from_secure_transport) {
+            Some(h) => {
+                tracing::trace!(uri = %uri, host = %h, "request context: detected host from SNI");
                 (h, default_port).into()
-            }))
-            .or_else(|| {
-                ctx.get::<Forwarded>().and_then(|f| {
-                    f.client_host().map(|fauth| {
-                        let (host, port) = fauth.clone().into_parts();
-                        let port = port.unwrap_or(default_port);
-                        tracing::trace!(uri = %uri, host = %host, "request context: detected host from forwarded info");
-                        (host, port).into()
+            },
+            None => uri
+                .host()
+                .and_then(|h| Host::try_from(h).ok().map(|h| {
+                    tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
+                    (h, default_port).into()
+                }))
+                .or_else(|| {
+                    ctx.get::<Forwarded>().and_then(|f| {
+                        f.client_host().map(|fauth| {
+                            let (host, port) = fauth.clone().into_parts();
+                            let port = port.unwrap_or(default_port);
+                            tracing::trace!(uri = %uri, host = %host, "request context: detected host from forwarded info");
+                            (host, port).into()
+                        })
                     })
                 })
-            })
-            .or_else(|| {
-                req.headers()
-                    .get(rama_http_types::header::HOST)
-                    .and_then(|host| {
-                        host.try_into() // try to consume as Authority, otherwise as Host
-                            .or_else(|_| Host::try_from(host).map(|h| {
-                                tracing::trace!(uri = %uri, host = %h, "request context: detected host from host header");
-                                (h, default_port).into()
-                            }))
-                            .ok()
-                    })
-            })
-            .ok_or_else(|| {
-                OpaqueError::from_display("RequestContext: no authourity found in http::Request")
-            })?;
+                .or_else(|| {
+                    req.headers()
+                        .get(rama_http_types::header::HOST)
+                        .and_then(|host| {
+                            host.try_into() // try to consume as Authority, otherwise as Host
+                                .or_else(|_| Host::try_from(host).map(|h| {
+                                    tracing::trace!(uri = %uri, host = %h, "request context: detected host from host header");
+                                    (h, default_port).into()
+                                }))
+                                .ok()
+                        })
+                })
+                .ok_or_else(|| {
+                    OpaqueError::from_display("RequestContext: no authourity found in http::Request")
+                })?
+        };
 
         tracing::trace!(uri = %uri, "request context: detected authority: {authority}");
 
@@ -114,40 +145,48 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
         let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
-        let authority = uri
-            .host()
-            .and_then(|h| Host::try_from(h).ok().map(|h| {
-                tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
+        let authority = match ctx.get().and_then(try_get_host_from_secure_transport) {
+            Some(h) => {
+                tracing::trace!(uri = %uri, host = %h, "request context: detected host from SNI");
                 (h, default_port).into()
-            }))
-            .or_else(|| {
-                ctx.get::<Forwarded>().and_then(|f| {
-                    f.client_host().map(|fauth| {
-                        let (host, port) = fauth.clone().into_parts();
-                        let port = port.unwrap_or(default_port);
-                        tracing::trace!(uri = %uri, host = %host, "request context: detected host from forwarded info");
-                        (host, port).into()
+            }
+            None => {
+                uri
+                    .host()
+                    .and_then(|h| Host::try_from(h).ok().map(|h| {
+                        tracing::trace!(uri = %uri, host = %h, "request context: detected host from (abs) uri");
+                        (h, default_port).into()
+                    }))
+                    .or_else(|| {
+                        ctx.get::<Forwarded>().and_then(|f| {
+                            f.client_host().map(|fauth| {
+                                let (host, port) = fauth.clone().into_parts();
+                                let port = port.unwrap_or(default_port);
+                                tracing::trace!(uri = %uri, host = %host, "request context: detected host from forwarded info");
+                                (host, port).into()
+                            })
+                        })
                     })
-                })
-            })
-            .or_else(|| {
-                parts
-                    .headers
-                    .get(rama_http_types::header::HOST)
-                    .and_then(|host| {
-                        host.try_into() // try to consume as Authority, otherwise as Host
-                            .or_else(|_| Host::try_from(host).map(|h| {
-                                tracing::trace!(uri = %uri, host = %h, "request context: detected host from host header");
-                                (h, default_port).into()
-                            }))
-                            .ok()
+                    .or_else(|| {
+                        parts
+                            .headers
+                            .get(rama_http_types::header::HOST)
+                            .and_then(|host| {
+                                host.try_into() // try to consume as Authority, otherwise as Host
+                                    .or_else(|_| Host::try_from(host).map(|h| {
+                                        tracing::trace!(uri = %uri, host = %h, "request context: detected host from host header");
+                                        (h, default_port).into()
+                                    }))
+                                    .ok()
+                            })
                     })
-            })
-            .ok_or_else(|| {
-                OpaqueError::from_display(
-                    "RequestContext: no authourity found in http::request::Parts",
-                )
-            })?;
+                    .ok_or_else(|| {
+                        OpaqueError::from_display(
+                            "RequestContext: no authourity found in http::request::Parts",
+                        )
+                    })?
+            }
+        };
 
         tracing::trace!(uri = %uri, "request context: detected authority: {authority}");
 

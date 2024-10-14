@@ -68,3 +68,23 @@ like logic that a [reverse proxy](./reverse.md) would also do among one of its m
 
 See the official RFCs for more information regarding HTTP semantics and
 protocol specifications.
+
+## SNI Proxies
+
+In case an http proxy Man-In-The-Middle's (MITM) TLS encrypted traffic (e.g. https),
+it becomes essentially a SNI proxy, where SNI stands for "Server Name Indication".
+
+It is a proxy which terminates incoming tls connections and makes use of that connection's
+Client Hello "Server Name" extension to establish the connection on the other side. In case
+that host is a domain it will also have to resolve (using DNS) it into an IPv4/IPv6 address.
+
+Within Rama we usually refers to SNI Proxies as MITM proxies, given we usually
+focus on the web. It is however important to note that a SNI Proxy is just a specific
+example of a MITM proxy and not 1-to-1 connected.
+
+These DNS Queries can also be cached in the (SNI) proxy as to make sure
+"hot" targets are not overly queried.
+
+In case you want to intercept both https and http traffic, you'll want your
+http proxy to act as a SNI proxy, which you do by terminating the TLS Connection
+right after you processed the http CONNECT request.
