@@ -88,3 +88,16 @@ These DNS Queries can also be cached in the (SNI) proxy as to make sure
 In case you want to intercept both https and http traffic, you'll want your
 http proxy to act as a SNI proxy, which you do by terminating the TLS Connection
 right after you processed the http CONNECT request.
+
+### SNI Proxies as invisible proxies
+
+A SNI Proxy can be send tls-encrypted traffic without it first going
+via a CONNECT request. This is great for environments that might not
+support proxies.
+
+This can work by allowing your firewall, ip table, router or some other "box" in the middle,
+to override the DNS resolution for specific domain names
+to the IP of the (SNI) proxy. The proxy on its turn will establish a connection
+based on the Server Name as discussed previously and onwards it goes.
+
+A proxy without a proxy protocol. That is also what a SNI proxy can be.
