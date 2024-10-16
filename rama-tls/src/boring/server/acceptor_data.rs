@@ -10,6 +10,7 @@ use crate::boring::dep::boring::{
         X509NameBuilder, X509,
     },
 };
+use boring::x509::extension::AuthorityKeyIdentifier;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::tls::{
     server::{ClientVerifyMode, SelfSignedData, ServerAuth},
@@ -128,6 +129,17 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
 fn self_signed_server_auth(
     data: SelfSignedData,
 ) -> Result<(Vec<X509>, PKey<Private>), OpaqueError> {
+    let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(&data).context("self-signed CA")?;
+    let (cert, privkey) = self_signed_server_auth_gen_cert(&data, &ca_cert, &ca_privkey)
+        .context("self-signed cert using self-signed CA")?;
+    Ok((vec![cert, ca_cert], privkey))
+}
+
+fn self_signed_server_auth_gen_cert(
+    data: &SelfSignedData,
+    ca_cert: &X509,
+    ca_privkey: &PKey<Private>,
+) -> Result<(X509, PKey<Private>), OpaqueError> {
     let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
     let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
 
@@ -168,6 +180,12 @@ fn self_signed_server_auth(
         .set_serial_number(&serial_number)
         .context("x509 cert builder: set serial number")?;
     cert_builder
+        .set_issuer_name(ca_cert.subject_name())
+        .context("x509 cert builder: set issuer name")?;
+    cert_builder
+        .set_pubkey(&privkey)
+        .context("x509 cert builder: set pub key")?;
+    cert_builder
         .set_subject_name(&x509_name)
         .context("x509 cert builder: set subject name")?;
     cert_builder
@@ -190,8 +208,6 @@ fn self_signed_server_auth(
     cert_builder
         .append_extension(
             BasicConstraints::new()
-                .critical()
-                .ca()
                 .build()
                 .context("x509 cert builder: build basic constraints")?,
         )
@@ -200,8 +216,9 @@ fn self_signed_server_auth(
         .append_extension(
             KeyUsage::new()
                 .critical()
-                .key_cert_sign()
-                .crl_sign()
+                .non_repudiation()
+                .digital_signature()
+                .key_encipherment()
                 .build()
                 .context("x509 cert builder: create key usage")?,
         )
@@ -214,10 +231,118 @@ fn self_signed_server_auth(
         .append_extension(subject_key_identifier)
         .context("x509 cert builder: add subject key id x509 extension")?;
 
+    let auth_key_identifier = AuthorityKeyIdentifier::new()
+        .keyid(false)
+        .issuer(false)
+        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+        .context("x509 cert builder: build auth key id")?;
     cert_builder
-        .sign(&privkey, MessageDigest::sha256())
+        .append_extension(auth_key_identifier)
+        .context("x509 cert builder: set auth key id extension")?;
+
+    cert_builder
+        .sign(ca_privkey, MessageDigest::sha256())
         .context("x509 cert builder: sign cert")?;
+
     let cert = cert_builder.build();
 
-    Ok((vec![cert], privkey))
+    Ok((cert, privkey))
+}
+
+fn self_signed_server_auth_gen_ca(
+    data: &SelfSignedData,
+) -> Result<(X509, PKey<Private>), OpaqueError> {
+    let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
+    let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
+
+    let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
+    x509_name
+        .append_entry_by_nid(
+            Nid::ORGANIZATIONNAME,
+            data.organisation_name.as_deref().unwrap_or("Anonymous"),
+        )
+        .context("append organisation name to x509 name builder")?;
+    for subject_alt_name in data.subject_alternative_names.iter().flatten() {
+        x509_name
+            .append_entry_by_nid(Nid::SUBJECT_ALT_NAME, subject_alt_name.as_ref())
+            .context("append subject alt name to x509 name builder")?;
+    }
+    x509_name
+        .append_entry_by_nid(
+            Nid::COMMONNAME,
+            data.common_name.as_deref().unwrap_or("localhost"),
+        )
+        .context("append common name to x509 name builder")?;
+    let x509_name = x509_name.build();
+
+    let mut ca_cert_builder = X509::builder().context("create x509 (cert) builder")?;
+    ca_cert_builder
+        .set_version(2)
+        .context("x509 cert builder: set version = 2")?;
+    let serial_number = {
+        let mut serial = BigNum::new().context("x509 cert builder: create big num (serial")?;
+        serial
+            .rand(159, MsbOption::MAYBE_ZERO, false)
+            .context("x509 cert builder: randomise serial number (big num)")?;
+        serial
+            .to_asn1_integer()
+            .context("x509 cert builder: convert serial to ASN1 integer")?
+    };
+    ca_cert_builder
+        .set_serial_number(&serial_number)
+        .context("x509 cert builder: set serial number")?;
+    ca_cert_builder
+        .set_subject_name(&x509_name)
+        .context("x509 cert builder: set subject name")?;
+    ca_cert_builder
+        .set_issuer_name(&x509_name)
+        .context("x509 cert builder: set issuer (self-signed")?;
+    ca_cert_builder
+        .set_pubkey(&privkey)
+        .context("x509 cert builder: set public key using private key (ref)")?;
+    let not_before =
+        Asn1Time::days_from_now(0).context("x509 cert builder: create ASN1Time for today")?;
+    ca_cert_builder
+        .set_not_before(&not_before)
+        .context("x509 cert builder: set not before to today")?;
+    let not_after = Asn1Time::days_from_now(90)
+        .context("x509 cert builder: create ASN1Time for 90 days in future")?;
+    ca_cert_builder
+        .set_not_after(&not_after)
+        .context("x509 cert builder: set not after to 90 days in future")?;
+
+    ca_cert_builder
+        .append_extension(
+            BasicConstraints::new()
+                .critical()
+                .ca()
+                .build()
+                .context("x509 cert builder: build basic constraints")?,
+        )
+        .context("x509 cert builder: add basic constraints as x509 extension")?;
+    ca_cert_builder
+        .append_extension(
+            KeyUsage::new()
+                .critical()
+                .key_cert_sign()
+                .crl_sign()
+                .build()
+                .context("x509 cert builder: create key usage")?,
+        )
+        .context("x509 cert builder: add key usage x509 extension")?;
+
+    let subject_key_identifier = SubjectKeyIdentifier::new()
+        .build(&ca_cert_builder.x509v3_context(None, None))
+        .context("x509 cert builder: build subject key id")?;
+    ca_cert_builder
+        .append_extension(subject_key_identifier)
+        .context("x509 cert builder: add subject key id x509 extension")?;
+
+    ca_cert_builder
+        .sign(&privkey, MessageDigest::sha256())
+        .context("x509 cert builder: sign cert")?;
+
+    let cert = ca_cert_builder.build();
+
+    Ok((cert, privkey))
 }

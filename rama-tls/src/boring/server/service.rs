@@ -206,7 +206,10 @@ where
             .map_err(|err| match err.as_io_error() {
                 Some(err) => OpaqueError::from_display(err.to_string())
                     .context("boring ssl acceptor: accept"),
-                None => OpaqueError::from_display("boring ssl acceptor: accept"),
+                None => OpaqueError::from_display(format!(
+                    "boring ssl acceptor: accept ({:?})",
+                    err.code()
+                )),
             })?;
 
         match stream.ssl().session() {
