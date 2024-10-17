@@ -46,6 +46,23 @@ pub enum ServerAuth {
     SelfSigned(SelfSignedData),
     /// Single data provided by the configurator
     Single(ServerAuthData),
+    /// Issuer which provides certs on the fly
+    CertIssuer {
+        data: ServerCertIssuer,
+        // TODO: support options
+    },
+}
+
+#[derive(Debug, Clone)]
+/// A type of [`ServerAuth`] which can be used to generate
+/// server certs on the fly using the given issuer
+pub enum ServerCertIssuer {
+    /// Request the tls implementation to generate self-signed single data
+    SelfSigned(SelfSignedData),
+    /// Single data provided by the configurator
+    Single(ServerAuthData),
+    // TODO: support a client somehow, so that it can also
+    // work with an external cert provider
 }
 
 #[derive(Debug, Clone, Default)]

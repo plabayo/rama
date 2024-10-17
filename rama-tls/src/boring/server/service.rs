@@ -13,6 +13,7 @@ use rama_core::{
     Context, Service,
 };
 use rama_net::{
+    http::RequestContext,
     stream::Stream,
     tls::{client::NegotiatedTlsParameters, ApplicationProtocol},
 };
@@ -87,23 +88,16 @@ where
             .set_default_verify_paths()
             .context("build boring ssl acceptor: set default verify paths")?;
 
-        for (i, ca_cert) in tls_config.cert_chain.iter().enumerate() {
-            if i == 0 {
-                acceptor_builder
-                    .set_certificate(ca_cert.as_ref())
-                    .context("build boring ssl acceptor: set Leaf CA certificate (x509)")?;
-            } else {
-                acceptor_builder
-                    .add_extra_chain_cert(ca_cert.clone())
-                    .context("build boring ssl acceptor: add extra chain certificate (x509)")?;
-            }
-        }
-        acceptor_builder
-            .set_private_key(tls_config.private_key.as_ref())
-            .context("build boring ssl acceptor: set private key")?;
-        acceptor_builder
-            .check_private_key()
-            .context("build boring ssl acceptor: check private key")?;
+        // issueing certs on fly is only possible for http stacks for now
+        // TODO: also support other possibilities
+        let server_host = ctx
+            .get::<RequestContext>()
+            .map(|ctx| ctx.authority.host().clone());
+
+        let mut acceptor_builder = tls_config
+            .cert_source
+            .issue_certs(acceptor_builder, server_host)
+            .await?;
 
         if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
             acceptor_builder
@@ -185,6 +179,7 @@ where
 
         if let Some(keylog_filename) = tls_config.keylog_intent.file_path() {
             trace!(path = ?keylog_filename, "boring acceptor service: open keylog file for debug purposes");
+            // TODO: do not open a file each time, just use 1 global one
             // open file in append mode and write keylog to it with callback
             let file = std::fs::OpenOptions::new()
                 .append(true)

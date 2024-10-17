@@ -184,6 +184,10 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                 }
                 .context("rustls/TlsAcceptorData: build base rustls ServerConfig")?
             }
+
+            ServerAuth::CertIssuer { .. } => {
+                return Err(OpaqueError::from_display("CertIssuer not supported for Rustls (open an PR with a patch to add support for it if you want this or use boring instead)"));
+            }
         };
 
         // set key logger if one is requested

@@ -2,4 +2,6 @@
 
 mod config;
 #[doc(inline)]
-pub use config::{ClientVerifyMode, SelfSignedData, ServerAuth, ServerAuthData, ServerConfig};
+pub use config::{
+    ClientVerifyMode, SelfSignedData, ServerAuth, ServerAuthData, ServerCertIssuer, ServerConfig,
+};
