@@ -7,7 +7,7 @@ use rama::{
     http::{matcher::HttpMatcher, IntoResponse, Request, Response},
     layer::HijackLayer,
     net::tls::{
-        server::{ServerAuth, ServerAuthData, ServerConfig},
+        server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
         ApplicationProtocol, DataEncoding,
     },
     rt::Executor,
@@ -76,7 +76,18 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .init();
 
     let maybe_tls_server_config = cfg.secure.then(|| {
-        let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
+        let tls_key_pem_raw = match std::env::var("RAMA_TLS_KEY") {
+            Ok(raw) => raw,
+            Err(_) => {
+                return ServerConfig {
+                    application_layer_protocol_negotiation: Some(vec![
+                        ApplicationProtocol::HTTP_2,
+                        ApplicationProtocol::HTTP_11,
+                    ]),
+                    ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
+                }
+            }
+        };
         let tls_key_pem_raw = std::str::from_utf8(
             &ENGINE
                 .decode(tls_key_pem_raw)
