@@ -16,9 +16,10 @@ use rama_net::{
     http::RequestContext,
     stream::Stream,
     tls::{client::NegotiatedTlsParameters, ApplicationProtocol},
+    transport::TransportContext,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::{io::ErrorKind, sync::Arc};
+use std::{borrow::Cow, io::ErrorKind, sync::Arc};
 use tracing::{debug, trace};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
@@ -88,10 +89,13 @@ where
             .set_default_verify_paths()
             .context("build boring ssl acceptor: set default verify paths")?;
 
-        // issueing certs on fly is only possible for http stacks for now
-        // TODO: also support other possibilities
         let server_host = ctx
-            .get::<RequestContext>()
+            .get::<TransportContext>()
+            .map(Cow::Borrowed)
+            .or_else(|| {
+                ctx.get::<RequestContext>()
+                    .map(|ctx| Cow::Owned(ctx.into()))
+            })
             .map(|ctx| ctx.authority.host().clone());
 
         let mut acceptor_builder = tls_config

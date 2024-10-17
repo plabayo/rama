@@ -4,6 +4,7 @@ use crate::rustls::dep::rcgen::{self, KeyPair};
 use crate::rustls::dep::rustls::{self, server::WebPkiClientVerifier, RootCertStore};
 use crate::rustls::key_log::KeyLogFile;
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_net::address::{Domain, Host};
 use rama_net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth};
 use rama_net::tls::DataEncoding;
 use std::io::BufReader;
@@ -219,6 +220,11 @@ fn self_signed_server_auth(
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
     let ca_key_pair = KeyPair::generate_for(alg).context("self-signed: generate ca key pair")?;
 
+    let common_name = data
+        .common_name
+        .clone()
+        .unwrap_or(Host::Name(Domain::from_static("localhost")));
+
     let mut ca_params =
         rcgen::CertificateParams::new(Vec::new()).context("self-signed: create ca params")?;
     ca_params.distinguished_name.push(
@@ -226,10 +232,9 @@ fn self_signed_server_auth(
         data.organisation_name
             .unwrap_or_else(|| "Anonymous".to_owned()),
     );
-    ca_params.distinguished_name.push(
-        rcgen::DnType::CommonName,
-        data.common_name.unwrap_or_else(|| "localhost".to_owned()),
-    );
+    ca_params
+        .distinguished_name
+        .push(rcgen::DnType::CommonName, common_name.to_string().as_str());
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     ca_params.key_usages = vec![
         rcgen::KeyUsagePurpose::KeyCertSign,

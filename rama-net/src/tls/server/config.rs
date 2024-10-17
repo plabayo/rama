@@ -1,4 +1,7 @@
-use crate::tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion};
+use crate::{
+    address::Host,
+    tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion},
+};
 
 #[derive(Debug, Clone)]
 /// Common API to configure a TLS Server
@@ -73,7 +76,7 @@ pub struct SelfSignedData {
     /// common name (CN): server name protected by the SSL certificate
     ///
     /// (usually the host domain name)
-    pub common_name: Option<String>,
+    pub common_name: Option<Host>,
     /// Subject Alternative Names (SAN) can be defined
     /// to create a cert which allows multiple hostnames or domains to be secured under one certificate.
     pub subject_alternative_names: Option<Vec<String>>,

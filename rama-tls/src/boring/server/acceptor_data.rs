@@ -10,10 +10,13 @@ use crate::boring::dep::boring::{
         X509NameBuilder, X509,
     },
 };
-use boring::{ssl::SslAcceptorBuilder, x509::extension::AuthorityKeyIdentifier};
+use boring::{
+    ssl::SslAcceptorBuilder,
+    x509::extension::{AuthorityKeyIdentifier, SubjectAlternativeName},
+};
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::{
-    address::Host,
+    address::{Domain, Host},
     tls::{
         server::{ClientVerifyMode, SelfSignedData, ServerAuth, ServerCertIssuer},
         ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion,
@@ -100,7 +103,7 @@ impl TlsCertSource {
                                 .map(|s| s.to_string())
                                 .unwrap_or_else(|| "Anonymous".to_owned()),
                         ),
-                        common_name: server_name.as_ref().map(|h| h.to_string()),
+                        common_name: server_name.clone(),
                         subject_alternative_names: None,
                     },
                     ca_cert,
@@ -292,6 +295,11 @@ fn self_signed_server_auth_gen_cert(
     let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
     let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
 
+    let common_name = data
+        .common_name
+        .clone()
+        .unwrap_or(Host::Name(Domain::from_static("localhost")));
+
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
     x509_name
         .append_entry_by_nid(
@@ -305,10 +313,7 @@ fn self_signed_server_auth_gen_cert(
             .context("append subject alt name to x509 name builder")?;
     }
     x509_name
-        .append_entry_by_nid(
-            Nid::COMMONNAME,
-            data.common_name.as_deref().unwrap_or("localhost"),
-        )
+        .append_entry_by_nid(Nid::COMMONNAME, common_name.to_string().as_str())
         .context("append common name to x509 name builder")?;
     let x509_name = x509_name.build();
 
@@ -337,9 +342,6 @@ fn self_signed_server_auth_gen_cert(
     cert_builder
         .set_subject_name(&x509_name)
         .context("x509 cert builder: set subject name")?;
-    cert_builder
-        .set_issuer_name(&x509_name)
-        .context("x509 cert builder: set issuer (self-signed")?;
     cert_builder
         .set_pubkey(&privkey)
         .context("x509 cert builder: set public key using private key (ref)")?;
@@ -373,8 +375,25 @@ fn self_signed_server_auth_gen_cert(
         )
         .context("x509 cert builder: add key usage x509 extension")?;
 
+    let mut subject_alt_name = SubjectAlternativeName::new();
+    match common_name {
+        Host::Name(domain) => {
+            subject_alt_name.dns(domain.as_str());
+        }
+        Host::Address(addr) => {
+            subject_alt_name.ip(addr.to_string().as_str());
+        }
+    }
+    let subject_alt_name = subject_alt_name
+        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
+        .context("x509 cert builder: build subject alt name")?;
+
+    cert_builder
+        .append_extension(subject_alt_name)
+        .context("x509 cert builder: add subject alt name")?;
+
     let subject_key_identifier = SubjectKeyIdentifier::new()
-        .build(&cert_builder.x509v3_context(None, None))
+        .build(&cert_builder.x509v3_context(Some(ca_cert), None))
         .context("x509 cert builder: build subject key id")?;
     cert_builder
         .append_extension(subject_key_identifier)
@@ -404,6 +423,11 @@ fn self_signed_server_auth_gen_ca(
     let rsa = Rsa::generate(4096).context("generate 4096 RSA key")?;
     let privkey = PKey::from_rsa(rsa).context("create private key from 4096 RSA key")?;
 
+    let common_name = data
+        .common_name
+        .clone()
+        .unwrap_or(Host::Name(Domain::from_static("localhost")));
+
     let mut x509_name = X509NameBuilder::new().context("create x509 name builder")?;
     x509_name
         .append_entry_by_nid(
@@ -417,10 +441,7 @@ fn self_signed_server_auth_gen_ca(
             .context("append subject alt name to x509 name builder")?;
     }
     x509_name
-        .append_entry_by_nid(
-            Nid::COMMONNAME,
-            data.common_name.as_deref().unwrap_or("localhost"),
-        )
+        .append_entry_by_nid(Nid::COMMONNAME, common_name.to_string().as_str())
         .context("append common name to x509 name builder")?;
     let x509_name = x509_name.build();
 
