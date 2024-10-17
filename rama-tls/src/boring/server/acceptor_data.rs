@@ -109,66 +109,31 @@ impl TlsCertSource {
                 cert_cache,
                 ca_key,
                 ca_cert,
-            } => {
-                if let Some(host) = &server_name {
-                    if let Some(issued_cert) = cert_cache.get(host) {
-                        tracing::trace!(%host, "use cached issued cert");
-                        builder.set_certificate(issued_cert.cert.as_ref()).context(
-                            "build boring ssl acceptor: issued in-mem: set certificate (x509)",
-                        )?;
-                        builder.add_extra_chain_cert(ca_cert.clone()).context(
-                            "build boring ssl acceptor: issued in-mem: add extra chain certificate (x509)",
-                        )?;
-                        builder
-                            .set_private_key(issued_cert.key.as_ref())
-                            .context("build boring ssl acceptor: issued in-mem: set private key")?;
-                        builder.check_private_key().context(
-                            "build boring ssl acceptor: issued in-mem: check private key",
-                        )?;
-                    }
+            } => match server_name.clone() {
+                Some(host) => {
+                    tracing::trace!(%host, "try to use cached issued cert or generate new one");
+                    let issued_cert = cert_cache
+                        .try_get_with(host, || {
+                            issue_cert_for_ca(server_name.clone(), ca_cert, ca_key)
+                        })
+                        .context("fresh issue of cert + insert")?;
+                    add_issued_cert_to_cert_builder(
+                        server_name,
+                        issued_cert,
+                        ca_cert.clone(),
+                        &mut builder,
+                    )?;
                 }
-
-                tracing::trace!(
-                    host = ?server_name,
-                    "generate certs for optional host using in-memory ca cert"
-                );
-                let (cert, key) = self_signed_server_auth_gen_cert(
-                    &SelfSignedData {
-                        organisation_name: Some(
-                            ca_cert
-                                .subject_name()
-                                .entries_by_nid(Nid::ORGANIZATIONNAME)
-                                .next()
-                                .and_then(|entry| entry.data().as_utf8().ok())
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| "Anonymous".to_owned()),
-                        ),
-                        common_name: server_name.clone(),
-                        subject_alternative_names: None,
-                    },
-                    ca_cert,
-                    ca_key,
-                )
-                .with_context(|| format!("issue certs in memory for: {server_name:?}"))?;
-
-                builder
-                    .set_certificate(cert.as_ref())
-                    .context("build boring ssl acceptor: issued in-mem: set certificate (x509)")?;
-                builder.add_extra_chain_cert(ca_cert.clone()).context(
-                    "build boring ssl acceptor: issued in-mem: add extra chain certificate (x509)",
-                )?;
-                builder
-                    .set_private_key(key.as_ref())
-                    .context("build boring ssl acceptor: issued in-mem: set private key")?;
-                builder
-                    .check_private_key()
-                    .context("build boring ssl acceptor: issued in-mem: check private key")?;
-
-                if let Some(host) = server_name {
-                    tracing::trace!(%host, "insert freshly issued cert into cache");
-                    cert_cache.insert(host, IssuedCert { cert, key });
+                None => {
+                    let issued_cert = issue_cert_for_ca(server_name.clone(), ca_cert, ca_key)?;
+                    add_issued_cert_to_cert_builder(
+                        server_name,
+                        issued_cert,
+                        ca_cert.clone(),
+                        &mut builder,
+                    )?;
                 }
-            }
+            },
         }
 
         Ok(builder)
@@ -340,6 +305,63 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
             }),
         })
     }
+}
+
+fn issue_cert_for_ca(
+    server_name: Option<Host>,
+    ca_cert: &X509,
+    ca_key: &PKey<Private>,
+) -> Result<IssuedCert, OpaqueError> {
+    tracing::trace!(
+        host = ?server_name,
+        "generate certs for host using in-memory ca cert"
+    );
+    let (cert, key) = self_signed_server_auth_gen_cert(
+        &SelfSignedData {
+            organisation_name: Some(
+                ca_cert
+                    .subject_name()
+                    .entries_by_nid(Nid::ORGANIZATIONNAME)
+                    .next()
+                    .and_then(|entry| entry.data().as_utf8().ok())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "Anonymous".to_owned()),
+            ),
+            common_name: server_name.clone(),
+            subject_alternative_names: None,
+        },
+        ca_cert,
+        ca_key,
+    )
+    .with_context(|| format!("issue certs in memory for: {server_name:?}"))?;
+
+    Ok(IssuedCert { cert, key })
+}
+
+fn add_issued_cert_to_cert_builder(
+    server_name: Option<Host>,
+    issued_cert: IssuedCert,
+    ca_cert: X509,
+    builder: &mut SslAcceptorBuilder,
+) -> Result<(), OpaqueError> {
+    tracing::trace!(
+        host = ?server_name,
+        "add issued cert for host to (boring) SslAcceptorBuilder"
+    );
+    builder
+        .set_certificate(issued_cert.cert.as_ref())
+        .context("build boring ssl acceptor: issued in-mem: set certificate (x509)")?;
+    builder
+        .add_extra_chain_cert(ca_cert.clone())
+        .context("build boring ssl acceptor: issued in-mem: add extra chain certificate (x509)")?;
+    builder
+        .set_private_key(issued_cert.key.as_ref())
+        .context("build boring ssl acceptor: issued in-mem: set private key")?;
+    builder
+        .check_private_key()
+        .context("build boring ssl acceptor: issued in-mem: check private key")?;
+
+    Ok(())
 }
 
 fn self_signed_server_auth(

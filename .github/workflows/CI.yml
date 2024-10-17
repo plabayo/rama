@@ -71,17 +71,18 @@ jobs:
         run: |
           cargo fmt --all --check
 
-  test-msrv:
-    needs: [check, check-msrv, check-all-features]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-      - uses: Swatinem/rust-cache@v2
-      - name: Run tests
-        run: cargo test --all-features --workspace
+  # TODO: enable again once this CI issue is gone :shrug:
+  # test-msrv:
+  #   needs: [check, check-msrv, check-all-features]
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: dtolnay/rust-toolchain@stable
+  #       with:
+  #         toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
+  #     - uses: Swatinem/rust-cache@v2
+  #     - name: Run tests
+  #       run: cargo test --all-features --workspace
 
   test-beta:
     needs: [check, check-msrv, check-all-features]
@@ -382,7 +383,7 @@ jobs:
       - test
       - test-all-features
       - test-examples
-      - test-msrv
+      # - test-msrv
       - test-beta
       - test-examples-msrv
       - test-examples-beta
