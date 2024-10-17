@@ -3,5 +3,6 @@
 mod config;
 #[doc(inline)]
 pub use config::{
-    ClientVerifyMode, SelfSignedData, ServerAuth, ServerAuthData, ServerCertIssuer, ServerConfig,
+    ClientVerifyMode, SelfSignedData, ServerAuth, ServerAuthData, ServerCertIssuerData,
+    ServerCertIssuerKind, ServerConfig,
 };

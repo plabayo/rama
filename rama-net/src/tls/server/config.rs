@@ -50,22 +50,40 @@ pub enum ServerAuth {
     /// Single data provided by the configurator
     Single(ServerAuthData),
     /// Issuer which provides certs on the fly
-    CertIssuer {
-        data: ServerCertIssuer,
-        // TODO: support options
-    },
+    CertIssuer(ServerCertIssuerData),
+}
+
+impl Default for ServerAuth {
+    fn default() -> Self {
+        ServerAuth::SelfSigned(SelfSignedData::default())
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ServerCertIssuerData {
+    /// The kind of server cert issuer
+    pub kind: ServerCertIssuerKind,
+    /// The max amount of certs to cache,
+    /// a default value of 8096 is used if 0.
+    pub max_cache_size: u64,
 }
 
 #[derive(Debug, Clone)]
 /// A type of [`ServerAuth`] which can be used to generate
 /// server certs on the fly using the given issuer
-pub enum ServerCertIssuer {
+pub enum ServerCertIssuerKind {
     /// Request the tls implementation to generate self-signed single data
     SelfSigned(SelfSignedData),
     /// Single data provided by the configurator
     Single(ServerAuthData),
     // TODO: support a client somehow, so that it can also
     // work with an external cert provider
+}
+
+impl Default for ServerCertIssuerKind {
+    fn default() -> Self {
+        ServerCertIssuerKind::SelfSigned(SelfSignedData::default())
+    }
 }
 
 #[derive(Debug, Clone, Default)]
