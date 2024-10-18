@@ -19,7 +19,7 @@ use rama_net::{
     transport::TransportContext,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::{borrow::Cow, io::ErrorKind, sync::Arc};
+use std::{io::ErrorKind, sync::Arc};
 use tracing::{debug, trace};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
@@ -90,17 +90,19 @@ where
             .context("build boring ssl acceptor: set default verify paths")?;
 
         let server_host = ctx
-            .get::<TransportContext>()
-            .map(Cow::Borrowed)
+            .get::<SecureTransport>()
+            .and_then(|t| t.client_hello())
+            .and_then(|c| c.ext_server_name())
             .or_else(|| {
-                ctx.get::<RequestContext>()
-                    .map(|ctx| Cow::Owned(ctx.into()))
+                ctx.get::<TransportContext>()
+                    .map(|ctx| ctx.authority.host())
             })
-            .map(|ctx| ctx.authority.host().clone());
+            .or_else(|| ctx.get::<RequestContext>().map(|ctx| ctx.authority.host()));
 
         let mut acceptor_builder = tls_config
             .cert_source
-            .issue_certs(acceptor_builder, server_host)
+            .clone()
+            .issue_certs(acceptor_builder, server_host.cloned())
             .await?;
 
         if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {

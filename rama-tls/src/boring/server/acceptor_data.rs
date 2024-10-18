@@ -11,7 +11,7 @@ use crate::boring::dep::boring::{
     },
 };
 use boring::{
-    ssl::SslAcceptorBuilder,
+    ssl::{NameType, SniError, SslAcceptorBuilder, SslRef},
     x509::extension::{AuthorityKeyIdentifier, SubjectAlternativeName},
 };
 use moka::sync::Cache;
@@ -78,11 +78,11 @@ struct IssuedCert {
 
 impl TlsCertSource {
     pub(super) async fn issue_certs(
-        &self,
+        self,
         mut builder: SslAcceptorBuilder,
         server_name: Option<Host>,
     ) -> Result<SslAcceptorBuilder, OpaqueError> {
-        match &self.kind {
+        match self.kind {
             TlsCertSourceKind::InMemory {
                 private_key,
                 cert_chain,
@@ -109,31 +109,49 @@ impl TlsCertSource {
                 cert_cache,
                 ca_key,
                 ca_cert,
-            } => match server_name.clone() {
-                Some(host) => {
+            } => {
+                builder.set_servername_callback(move |ssl_ref, _ssl_alert| {
+                    let host = match (ssl_ref.servername(NameType::HOST_NAME), &server_name) {
+                        (Some(sni), _) => {
+                            tracing::trace!(host = %sni, "boring: servername callback: use client SNI");
+                            sni.parse().map_err(|err| {
+                                tracing::warn!(error = %err, "boring: invalid servername received in callback");
+                                SniError::ALERT_FATAL
+                            })? // from client (e.g. only possibility for SNI proxy)
+                        },
+                       (_, Some(host)) => {
+                           tracing::trace!(%host, "boring: servername callback: use context");
+                           host.clone()  // from context (lower prio)
+                       },
+                       (None, None) => {
+                           tracing::warn!("boring: no host found in servername callback: defaulting to 'localhost'");
+                           Host::Name(Domain::from_static("localhost")) // fallback
+                       },
+                    };
+
                     tracing::trace!(%host, "try to use cached issued cert or generate new one");
                     let issued_cert = cert_cache
-                        .try_get_with(host, || {
-                            issue_cert_for_ca(server_name.clone(), ca_cert, ca_key)
+                        .try_get_with(host.clone(), || {
+                            issue_cert_for_ca(host.clone(), &ca_cert, &ca_key)
                         })
-                        .context("fresh issue of cert + insert")?;
-                    add_issued_cert_to_cert_builder(
-                        server_name,
+                        .context("fresh issue of cert + insert").map_err(|err| {
+                            tracing::error!(error = %err, "boring: servername callback: issue failed");
+                            SniError::ALERT_FATAL
+                        })?;
+
+                    add_issued_cert_to_ssl_ref(
+                        host,
                         issued_cert,
                         ca_cert.clone(),
-                        &mut builder,
-                    )?;
-                }
-                None => {
-                    let issued_cert = issue_cert_for_ca(server_name.clone(), ca_cert, ca_key)?;
-                    add_issued_cert_to_cert_builder(
-                        server_name,
-                        issued_cert,
-                        ca_cert.clone(),
-                        &mut builder,
-                    )?;
-                }
-            },
+                        ssl_ref,
+                    ).map_err(|err| {
+                        tracing::error!(error = %err, "boring: servername callback: add certs to ssl ref");
+                        SniError::ALERT_FATAL
+                    })?;
+
+                    Ok(())
+                });
+            }
         }
 
         Ok(builder)
@@ -308,12 +326,12 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
 }
 
 fn issue_cert_for_ca(
-    server_name: Option<Host>,
+    host: Host,
     ca_cert: &X509,
     ca_key: &PKey<Private>,
 ) -> Result<IssuedCert, OpaqueError> {
     tracing::trace!(
-        host = ?server_name,
+        %host,
         "generate certs for host using in-memory ca cert"
     );
     let (cert, key) = self_signed_server_auth_gen_cert(
@@ -327,39 +345,39 @@ fn issue_cert_for_ca(
                     .map(|s| s.to_string())
                     .unwrap_or_else(|| "Anonymous".to_owned()),
             ),
-            common_name: server_name.clone(),
+            common_name: Some(host.clone()),
             subject_alternative_names: None,
         },
         ca_cert,
         ca_key,
     )
-    .with_context(|| format!("issue certs in memory for: {server_name:?}"))?;
+    .with_context(|| format!("issue certs in memory for: {host:?}"))?;
 
     Ok(IssuedCert { cert, key })
 }
 
-fn add_issued_cert_to_cert_builder(
-    server_name: Option<Host>,
+fn add_issued_cert_to_ssl_ref(
+    host: Host,
     issued_cert: IssuedCert,
     ca_cert: X509,
-    builder: &mut SslAcceptorBuilder,
+    builder: &mut SslRef,
 ) -> Result<(), OpaqueError> {
     tracing::trace!(
-        host = ?server_name,
+        %host,
         "add issued cert for host to (boring) SslAcceptorBuilder"
     );
     builder
         .set_certificate(issued_cert.cert.as_ref())
         .context("build boring ssl acceptor: issued in-mem: set certificate (x509)")?;
     builder
-        .add_extra_chain_cert(ca_cert.clone())
+        .add_chain_cert(&ca_cert)
         .context("build boring ssl acceptor: issued in-mem: add extra chain certificate (x509)")?;
     builder
         .set_private_key(issued_cert.key.as_ref())
         .context("build boring ssl acceptor: issued in-mem: set private key")?;
-    builder
-        .check_private_key()
-        .context("build boring ssl acceptor: issued in-mem: check private key")?;
+    // builder
+    //     .check()
+    //     .context("build boring ssl acceptor: issued in-mem: check private key")?;
 
     Ok(())
 }
