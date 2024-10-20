@@ -1,3 +1,5 @@
+use serde::{Deserialize, Serialize};
+
 use crate::{
     address::Host,
     tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion},
@@ -86,7 +88,7 @@ impl Default for ServerCertIssuerKind {
     }
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 /// Data that can be used to configure the self-signed single data
 pub struct SelfSignedData {
     /// name of the organisation
