@@ -69,7 +69,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
     /// Creates a new [`TlsConnectorLayer`] which will establish
     /// a secure connection if the request demands it,
     /// otherwise it will forward the pre-established inner connection.
-    pub fn http_auto() -> Self {
+    pub fn auto() -> Self {
         Self {
             connector_data: None,
             kind: ConnectorKindAuto,
@@ -80,7 +80,7 @@ impl TlsConnectorLayer<ConnectorKindAuto> {
 impl TlsConnectorLayer<ConnectorKindSecure> {
     /// Creates a new [`TlsConnectorLayer`] which will always
     /// establish a secure connection regardless of the request it is for.
-    pub fn https() -> Self {
+    pub fn secure() -> Self {
         Self {
             connector_data: None,
             kind: ConnectorKindSecure,
@@ -113,7 +113,7 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
 
 impl Default for TlsConnectorLayer<ConnectorKindAuto> {
     fn default() -> Self {
-        Self::http_auto()
+        Self::auto()
     }
 }
 
@@ -192,7 +192,7 @@ impl<S> TlsConnector<S, ConnectorKindAuto> {
     /// Creates a new [`TlsConnector`] which will establish
     /// a secure connection if the request demands it,
     /// otherwise it will forward the pre-established inner connection.
-    pub fn http_auto(inner: S) -> Self {
+    pub fn auto(inner: S) -> Self {
         Self::new(inner, ConnectorKindAuto)
     }
 }
@@ -200,7 +200,7 @@ impl<S> TlsConnector<S, ConnectorKindAuto> {
 impl<S> TlsConnector<S, ConnectorKindSecure> {
     /// Creates a new [`TlsConnector`] which will always
     /// establish a secure connection regardless of the request it is for.
-    pub fn https(inner: S) -> Self {
+    pub fn secure(inner: S) -> Self {
         Self::new(inner, ConnectorKindSecure)
     }
 }

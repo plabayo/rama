@@ -153,8 +153,7 @@ where
                 }
             };
             HttpConnector::new(
-                TlsConnector::http_auto(transport_connector)
-                    .with_connector_data(tls_connector_data),
+                TlsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
             )
         };
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
