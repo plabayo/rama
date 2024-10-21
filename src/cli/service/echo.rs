@@ -20,7 +20,7 @@ use crate::{
         },
         response::Json,
         server::HttpServer,
-        IntoResponse, Request, Response,
+        IntoResponse, Request, Response, Version,
     },
     layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
     net::forwarded::Forwarded,
@@ -37,7 +37,6 @@ use tokio::net::TcpStream;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
-    http::Version,
     net::tls::server::ServerConfig,
     tls::std::server::TlsAcceptorLayer,
     tls::types::{client::ClientHelloExtension, SecureTransport},
