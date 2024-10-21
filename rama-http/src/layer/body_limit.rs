@@ -31,7 +31,9 @@
 
 use crate::dep::http_body_util::Limited;
 use crate::Request;
-use rama_core::{Context, Layer, Service};
+use bytes::Bytes;
+use rama_core::{error::BoxError, Context, Layer, Service};
+use rama_http_types::Body;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -81,9 +83,9 @@ impl<S> BodyLimitService<S> {
 
 impl<S, State, ReqBody> Service<State, Request<ReqBody>> for BodyLimitService<S>
 where
-    S: Service<State, Request<Limited<ReqBody>>>,
+    S: Service<State, Request<Body>>,
     State: Clone + Send + Sync + 'static,
-    ReqBody: Send + 'static,
+    ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;
@@ -93,7 +95,13 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let req = req.map(|body| Limited::new(body, self.size));
+        let req = req.map(|body| {
+            if self.size == 0 {
+                Body::new(body)
+            } else {
+                Body::new(Limited::new(body, self.size))
+            }
+        });
         self.inner.serve(ctx, req).await
     }
 }
