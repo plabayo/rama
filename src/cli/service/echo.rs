@@ -30,12 +30,14 @@ use crate::{
     rt::Executor,
     Context, Layer, Service,
 };
+use rama_core::{combinators::Either3, error::OpaqueError};
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
+    http::Version,
     net::tls::server::ServerConfig,
     tls::std::server::TlsAcceptorLayer,
     tls::types::{client::ClientHelloExtension, SecureTransport},
@@ -52,6 +54,8 @@ pub struct EchoServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_server_config: Option<ServerConfig>,
 
+    http_version: Option<Version>,
+
     http_service_builder: H,
 }
 
@@ -64,6 +68,8 @@ impl Default for EchoServiceBuilder<()> {
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_server_config: None,
+
+            http_version: None,
 
             http_service_builder: (),
         }
@@ -165,6 +171,24 @@ impl<H> EchoServiceBuilder<H> {
         self
     }
 
+    /// set the http version to use for the http server (auto by default)
+    pub fn http_version(mut self, version: Version) -> Self {
+        self.http_version = Some(version);
+        self
+    }
+
+    /// maybe set the http version to use for the http server (auto by default)
+    pub fn maybe_http_version(mut self, version: Option<Version>) -> Self {
+        self.http_version = version;
+        self
+    }
+
+    /// set the http version to use for the http server (auto by default)
+    pub fn set_http_version(&mut self, version: Version) -> &mut Self {
+        self.http_version = Some(version);
+        self
+    }
+
     /// add a custom http layer which will be applied to the existing http layers
     pub fn http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<(H, H2)> {
         EchoServiceBuilder {
@@ -174,6 +198,8 @@ impl<H> EchoServiceBuilder<H> {
 
             #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_server_config: self.tls_server_config,
+
+            http_version: self.http_version,
 
             http_service_builder: (self.http_service_builder, layer),
         }
@@ -250,7 +276,16 @@ where
         )
             .layer(self.http_service_builder.layer(EchoService));
 
-        let http_transport_service = HttpServer::auto(executor).service(http_service);
+        let http_transport_service = match self.http_version {
+            Some(Version::HTTP_2) => Either3::A(HttpServer::h2(executor).service(http_service)),
+            Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
+                Either3::B(HttpServer::http1().service(http_service))
+            }
+            Some(_) => {
+                return Err(OpaqueError::from_display("unsupported http version").into_boxed())
+            }
+            None => Either3::C(HttpServer::auto(executor).service(http_service)),
+        };
 
         Ok(tcp_service_builder.layer(http_transport_service))
     }
