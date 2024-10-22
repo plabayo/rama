@@ -6,8 +6,7 @@
         Proxy — An intermediary program which acts as both a server and a client
          for the purpose of making requests on behalf of other clients.
          Requests are serviced internally or by passing them on, with
-         possible translation, to other servers. A proxy MUST implement
-         both the client and server requirements of this specification.
+         possible translation, to other servers.
         <p>— <a href="https://www.rfc-editor.org/rfc/pdfrfc/rfc3507.txt.pdf">RFC 3507 (ICAP)</a></p>
     </div>
 </div>
