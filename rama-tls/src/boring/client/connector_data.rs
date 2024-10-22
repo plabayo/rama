@@ -147,7 +147,6 @@ impl TlsConnectorData {
             ServerVerifyMode::Disable => {
                 trace!("boring connector: server verify mode: disable");
                 cfg_builder.set_custom_verify_callback(SslVerifyMode::NONE, |_| Ok(()));
-                cfg_builder.set_verify(SslVerifyMode::NONE);
             }
         }
 
