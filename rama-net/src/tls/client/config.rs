@@ -1,4 +1,4 @@
-use super::ClientHelloExtension;
+use super::{merge_client_hello_lists, ClientHelloExtension};
 use crate::tls::{CipherSuite, CompressionAlgorithm, DataEncoding, KeyLogIntent};
 
 #[derive(Debug, Clone, Default)]
@@ -21,6 +21,37 @@ pub struct ClientConfig {
     pub client_auth: Option<ClientAuth>,
     /// key log intent
     pub key_logger: Option<KeyLogIntent>,
+}
+
+impl ClientConfig {
+    /// Merge this [`ClientConfig`] with aother one.
+    pub fn merge(&mut self, other: ClientConfig) {
+        if let Some(cipher_suites) = other.cipher_suites {
+            self.cipher_suites = Some(cipher_suites);
+        }
+
+        if let Some(compression_algorithms) = other.compression_algorithms {
+            self.compression_algorithms = Some(compression_algorithms);
+        }
+
+        self.extensions = match (self.extensions.take(), other.extensions) {
+            (Some(our_ext), Some(other_ext)) => Some(merge_client_hello_lists(our_ext, other_ext)),
+            (None, Some(other_ext)) => Some(other_ext),
+            (maybe_our_ext, None) => maybe_our_ext,
+        };
+
+        if let Some(server_verify_mode) = other.server_verify_mode {
+            self.server_verify_mode = Some(server_verify_mode);
+        }
+
+        if let Some(client_auth) = other.client_auth {
+            self.client_auth = Some(client_auth);
+        }
+
+        if let Some(key_logger) = other.key_logger {
+            self.key_logger = Some(key_logger);
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
