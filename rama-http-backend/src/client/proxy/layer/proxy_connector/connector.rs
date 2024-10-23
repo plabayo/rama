@@ -2,6 +2,8 @@
 //!
 //! As defined in <https://www.ietf.org/rfc/rfc2068.txt>.
 
+use std::borrow::Cow;
+
 use rama_http_types::{
     headers::{Header, HeaderMapExt},
     HeaderMap, HeaderName, HeaderValue,
@@ -120,9 +122,17 @@ impl InnerHttpProxyConnector {
                     "http conn handshake proxy auth required",
                 ));
             } else {
+                let input = String::from_utf8_lossy(recvd);
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
-                    "invalid http conn handshake start",
+                    format!(
+                        "invalid http conn handshake start: [{}]",
+                        if let Some((line, _)) = input.split_once("\r\n") {
+                            Cow::Borrowed(line)
+                        } else {
+                            input
+                        }
+                    ),
                 ));
             }
         }
