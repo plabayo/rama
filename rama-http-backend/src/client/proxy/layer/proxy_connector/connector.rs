@@ -11,6 +11,8 @@ use rama_http_types::{
 use rama_net::{address::Authority, stream::Stream};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use super::HttpProxyError;
+
 #[derive(Debug, Clone)]
 /// Connector for HTTP proxies.
 ///
@@ -64,7 +66,7 @@ impl InnerHttpProxyConnector {
     pub(super) async fn handshake<S: Stream + Unpin>(
         &self,
         mut stream: S,
-    ) -> Result<S, std::io::Error> {
+    ) -> Result<S, HttpProxyError> {
         // TODO: handle user-agent and host better
         // TODO: use h1 protocol from embedded hyper directly here!
         let mut request = format!(
@@ -100,7 +102,8 @@ impl InnerHttpProxyConnector {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::UnexpectedEof,
                     "http conn handshake read incomplete",
-                ));
+                )
+                .into());
             }
             pos += n;
 
@@ -113,27 +116,24 @@ impl InnerHttpProxyConnector {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "http conn handshake response too large",
-                    ));
+                    )
+                    .into());
                 }
             // else read more
             } else if recvd.starts_with(b"HTTP/1.1 407") {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::PermissionDenied,
-                    "http conn handshake proxy auth required",
-                ));
+                return Err(HttpProxyError::AuthRequired);
+            } else if recvd.starts_with(b"HTTP/1.1 503") {
+                return Err(HttpProxyError::Unavailable);
             } else {
                 let input = String::from_utf8_lossy(recvd);
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    format!(
-                        "invalid http conn handshake start: [{}]",
-                        if let Some((line, _)) = input.split_once("\r\n") {
-                            Cow::Borrowed(line)
-                        } else {
-                            input
-                        }
-                    ),
-                ));
+                return Err(HttpProxyError::Other(format!(
+                    "invalid http conn handshake start: [{}]",
+                    if let Some((line, _)) = input.split_once("\r\n") {
+                        Cow::Borrowed(line)
+                    } else {
+                        input
+                    }
+                )));
             }
         }
     }
