@@ -28,7 +28,7 @@ pub struct TlsConnectorData {
 struct ClientConfigInput {
     protocol_versions: Option<Vec<&'static SupportedProtocolVersion>>,
     client_auth: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    key_logger: Option<Arc<KeyLogFile>>,
+    key_logger: Option<String>,
     alpn_protos: Option<Vec<Vec<u8>>>,
     cert_verifier: Option<Arc<dyn ServerCertVerifier>>,
 }
@@ -114,7 +114,8 @@ impl TlsConnectorData {
         };
 
         if let Some(key_logger) = self.client_config_input.key_logger.clone() {
-            client_config.key_log = key_logger;
+            let key_log = KeyLogFile::new(key_logger)?;
+            client_config.key_log = Arc::new(key_log);
         }
 
         if let Some(alpn_protos) = self.client_config_input.alpn_protos.clone() {
@@ -273,15 +274,6 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                 }
             };
 
-        // set key logger if one is requested
-        let key_logger = match value.key_logger.clone().unwrap_or_default().file_path() {
-            Some(path) => {
-                let key_logger = KeyLogFile::new(path).context("rustls/TlsConnectorData")?;
-                Some(Arc::new(key_logger))
-            }
-            None => None,
-        };
-
         let mut alpn_protos = None;
         let mut server_name = None;
 
@@ -305,7 +297,11 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
             client_config_input: Arc::new(ClientConfigInput {
                 protocol_versions,
                 client_auth,
-                key_logger,
+                key_logger: value
+                    .key_logger
+                    .clone()
+                    .unwrap_or_default()
+                    .into_file_path(),
                 alpn_protos,
                 cert_verifier,
             }),

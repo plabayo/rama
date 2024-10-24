@@ -1,97 +1,53 @@
+use std::fmt;
+
+use crate::keylog::{new_key_log_file_handle, KeyLogFileHandle};
 use crate::rustls::dep::rustls::KeyLog;
-use rama_core::error::{ErrorContext, OpaqueError};
-use std::fmt::{Debug, Formatter};
-use std::fs::{File, OpenOptions};
-use std::io;
-use std::io::Write;
-use std::path::Path;
-use std::sync::Mutex;
-use tracing::{trace, warn};
+use rama_core::error::OpaqueError;
 
-// Internal mutable state for KeyLogFile
-struct KeyLogFileInner {
-    file: File,
-    buf: Vec<u8>,
-}
-
-impl KeyLogFileInner {
-    fn new(path: impl AsRef<Path>) -> Result<Self, OpaqueError> {
-        let path_pref = path.as_ref();
-        let file = OpenOptions::new()
-            .append(true)
-            .create(true)
-            .open(path_pref)
-            .with_context(|| format!("create key log file {path_pref:?}"))?;
-        Ok(Self {
-            file,
-            buf: Vec::new(),
-        })
-    }
-
-    fn try_write(&mut self, label: &str, client_random: &[u8], secret: &[u8]) -> io::Result<()> {
-        self.buf.truncate(0);
-        write!(self.buf, "{} ", label)?;
-        for b in client_random.iter() {
-            write!(self.buf, "{:02x}", b)?;
-        }
-        write!(self.buf, " ")?;
-        for b in secret.iter() {
-            write!(self.buf, "{:02x}", b)?;
-        }
-        writeln!(self.buf)?;
-        self.file.write_all(&self.buf)
-    }
-}
-
-impl Debug for KeyLogFileInner {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("KeyLogFileInner")
-            // Note: we omit self.buf deliberately as it may contain key data.
-            .field("file", &self.file)
-            .finish()
-    }
-}
-
-/// [`KeyLog`] implementation that opens a file whose name is
-/// given by the `SSLKEYLOGFILE` environment variable, and writes
-/// keys into it.
-///
-/// If `SSLKEYLOGFILE` is not set, this does nothing.
-///
-/// If such a file cannot be opened, or cannot be written then
-/// this does nothing but logs errors at warning-level.
-pub(super) struct KeyLogFile(Mutex<KeyLogFileInner>);
+#[derive(Debug, Clone)]
+/// [`KeyLog`] implementation that opens a file for the given path.
+pub(super) struct KeyLogFile(KeyLogFileHandle);
 
 impl KeyLogFile {
-    /// Makes a new `KeyLogFile`.
-    pub(super) fn new(path: impl AsRef<Path>) -> Result<Self, OpaqueError> {
-        let path = path.as_ref();
-        trace!(?path, "rustls: open keylog file for debug purposes");
-        Ok(Self(Mutex::new(KeyLogFileInner::new(path)?)))
+    /// Makes a new [`KeyLogFile`].
+    pub(super) fn new(path: String) -> Result<Self, OpaqueError> {
+        let handle = new_key_log_file_handle(path)?;
+        Ok(KeyLogFile(handle))
     }
 }
 
 impl KeyLog for KeyLogFile {
+    #[inline]
     fn log(&self, label: &str, client_random: &[u8], secret: &[u8]) {
-        match self
-            .0
-            .lock()
-            .unwrap()
-            .try_write(label, client_random, secret)
-        {
-            Ok(()) => {}
-            Err(e) => {
-                warn!("error writing to key log file: {}", e);
-            }
-        }
+        let line = format!(
+            "{} {:02x} {:02x}\n",
+            label,
+            PlainHex {
+                slice: client_random
+            },
+            PlainHex { slice: secret },
+        );
+        self.0.write_log_line(line);
     }
 }
 
-impl Debug for KeyLogFile {
-    fn fmt(&self, f: &mut Formatter<'_>) -> core::fmt::Result {
-        match self.0.try_lock() {
-            Ok(key_log_file) => write!(f, "{:?}", key_log_file),
-            Err(_) => write!(f, "KeyLogFile {{ <locked> }}"),
-        }
+struct PlainHex<'a, T: 'a> {
+    slice: &'a [T],
+}
+
+impl<'a, T: fmt::LowerHex> fmt::LowerHex for PlainHex<'a, T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        fmt_inner_hex(self.slice, f, fmt::LowerHex::fmt)
     }
+}
+
+fn fmt_inner_hex<T, F: Fn(&T, &mut fmt::Formatter) -> fmt::Result>(
+    slice: &[T],
+    f: &mut fmt::Formatter,
+    fmt_fn: F,
+) -> fmt::Result {
+    for val in slice.iter() {
+        fmt_fn(val, f)?;
+    }
+    Ok(())
 }

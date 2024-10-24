@@ -20,6 +20,8 @@ use rama_net::{address::Host, tls::client::ServerVerifyMode};
 use std::{fmt, sync::Arc};
 use tracing::trace;
 
+use crate::keylog::new_key_log_file_handle;
+
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::HttpsConnector`].
 ///
@@ -74,20 +76,11 @@ impl TlsConnectorData {
             .clone()
             .unwrap_or_default()
             .file_path()
-            .as_deref()
         {
-            // open file in append mode and write keylog to it with callback
-            trace!(path = ?keylog_filename, "boring connector: open keylog file for debug purposes");
-            let file = std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(keylog_filename)
-                .context("build (boring) ssl connector: set keylog: open file")?;
+            let handle = new_key_log_file_handle(keylog_filename)?;
             cfg_builder.set_keylog_callback(move |_, line| {
-                use std::io::Write;
                 let line = format!("{}\n", line);
-                let mut file = &file;
-                let _ = file.write_all(line.as_bytes());
+                handle.write_log_line(line);
             });
         }
 

@@ -29,6 +29,8 @@ pub use rustls as std;
 #[cfg(feature = "boring")]
 pub use boring as std;
 
+pub mod keylog;
+
 pub mod types {
     //! common tls types
     #[doc(inline)]

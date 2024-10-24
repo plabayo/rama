@@ -90,6 +90,7 @@ where
             .run()
             .unwrap()
             .command()
+            .env("SSLKEYLOGFILE", "./target/test_ssl_key_log.txt")
             .spawn()
             .unwrap();
 

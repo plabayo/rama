@@ -1,11 +1,6 @@
 //! rama common tls types
 //!
 
-use std::{
-    borrow::Cow,
-    path::{Path, PathBuf},
-};
-
 use rama_utils::str::NonEmptyString;
 
 mod enums;
@@ -66,18 +61,25 @@ pub enum KeyLogIntent {
     /// You can choose to disable the key logging explicitly
     Disabled,
     /// Request a keys to be logged to the given file path.
-    File(std::path::PathBuf),
+    File(String),
 }
 
 impl KeyLogIntent {
     /// get the file path if intended
-    pub fn file_path(&self) -> Option<Cow<'_, Path>> {
+    pub fn file_path(&self) -> Option<String> {
         match self {
             KeyLogIntent::Disabled => None,
-            KeyLogIntent::Environment => std::env::var("SSLKEYLOGFILE")
-                .ok()
-                .map(|s| Cow::Owned(PathBuf::from(s))),
-            KeyLogIntent::File(keylog_filename) => Some(Cow::Borrowed(keylog_filename.as_path())),
+            KeyLogIntent::Environment => std::env::var("SSLKEYLOGFILE").ok().clone(),
+            KeyLogIntent::File(keylog_filename) => Some(keylog_filename.clone()),
+        }
+    }
+
+    /// consume itself into the file path if intended
+    pub fn into_file_path(self) -> Option<String> {
+        match self {
+            KeyLogIntent::Disabled => None,
+            KeyLogIntent::Environment => std::env::var("SSLKEYLOGFILE").ok().clone(),
+            KeyLogIntent::File(keylog_filename) => Some(keylog_filename),
         }
     }
 }
