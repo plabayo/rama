@@ -4,8 +4,8 @@ use crate::{
         boring::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
         tokio_boring::SslStream,
     },
-    types::client::ClientHello,
-    types::SecureTransport,
+    keylog::new_key_log_file_handle,
+    types::{client::ClientHello, SecureTransport},
 };
 use parking_lot::Mutex;
 use rama_core::{
@@ -184,19 +184,10 @@ where
         }
 
         if let Some(keylog_filename) = tls_config.keylog_intent.file_path() {
-            trace!(path = ?keylog_filename, "boring acceptor service: open keylog file for debug purposes");
-            // TODO: do not open a file each time, just use 1 global one
-            // open file in append mode and write keylog to it with callback
-            let file = std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(keylog_filename)
-                .context("build boring ssl acceptor: set keylog: open file")?;
+            let handle = new_key_log_file_handle(keylog_filename)?;
             acceptor_builder.set_keylog_callback(move |_, line| {
-                use std::io::Write;
                 let line = format!("{}\n", line);
-                let mut file = &file;
-                let _ = file.write_all(line.as_bytes());
+                handle.write_log_line(line);
             });
         }
 
