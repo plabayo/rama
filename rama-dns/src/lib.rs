@@ -125,3 +125,7 @@ pub use hickory::HickoryDns;
 mod in_memory;
 #[doc(inline)]
 pub use in_memory::{DnsOverwrite, DomainNotMappedErr, InMemoryDns};
+
+mod deny_all;
+#[doc(inline)]
+pub use deny_all::{DenyAllDns, DnsDeniedError};
