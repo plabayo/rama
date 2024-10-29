@@ -79,6 +79,89 @@ impl<R: DnsResolver<Error: Into<BoxError>>> DnsResolver for Option<R> {
     }
 }
 
+#[derive(Debug)]
+pub struct DnsChainDomainResolveErr<E: 'static> {
+    errors: Vec<E>,
+}
+
+impl<E: std::fmt::Debug> std::fmt::Display for DnsChainDomainResolveErr<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        write!(
+            f,
+            "domain resolver chain resulted in errors: {:?}",
+            self.errors
+        )
+    }
+}
+
+impl<E: std::fmt::Debug + Send + std::error::Error> std::error::Error
+    for DnsChainDomainResolveErr<E>
+{
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        self.errors.last().map(|e| e as &dyn std::error::Error)
+    }
+}
+
+impl<R, E> DnsResolver for Vec<R>
+where
+    R: DnsResolver<Error = E> + Send,
+    E: Send + 'static,
+{
+    type Error = DnsChainDomainResolveErr<E>;
+
+    async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
+        let mut errors = Vec::new();
+        for resolver in self {
+            match resolver.ipv4_lookup(domain.clone()).await {
+                Ok(ipv4s) => return Ok(ipv4s),
+                Err(err) => errors.push(err),
+            }
+        }
+        Err(DnsChainDomainResolveErr { errors })
+    }
+
+    async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
+        let mut errors = Vec::new();
+        for resolver in self {
+            match resolver.ipv6_lookup(domain.clone()).await {
+                Ok(ipv6s) => return Ok(ipv6s),
+                Err(err) => errors.push(err),
+            }
+        }
+        Err(DnsChainDomainResolveErr { errors })
+    }
+}
+
+impl<R, E, const N: usize> DnsResolver for [R; N]
+where
+    R: DnsResolver<Error = E> + Send,
+    E: Send + 'static,
+{
+    type Error = DnsChainDomainResolveErr<E>;
+
+    async fn ipv4_lookup(&self, domain: Domain) -> Result<Vec<Ipv4Addr>, Self::Error> {
+        let mut errors = Vec::new();
+        for resolver in self {
+            match resolver.ipv4_lookup(domain.clone()).await {
+                Ok(ipv4s) => return Ok(ipv4s),
+                Err(err) => errors.push(err),
+            }
+        }
+        Err(DnsChainDomainResolveErr { errors })
+    }
+
+    async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
+        let mut errors = Vec::new();
+        for resolver in self {
+            match resolver.ipv6_lookup(domain.clone()).await {
+                Ok(ipv6s) => return Ok(ipv6s),
+                Err(err) => errors.push(err),
+            }
+        }
+        Err(DnsChainDomainResolveErr { errors })
+    }
+}
+
 macro_rules! impl_dns_resolver_either_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
         impl<$($param),+> DnsResolver for ::rama_core::combinators::$id<$($param),+>
