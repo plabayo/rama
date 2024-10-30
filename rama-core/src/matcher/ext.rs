@@ -2,77 +2,135 @@ use crate::{
     matcher::{Extensions, Matcher},
     Context,
 };
-use std::any::Any;
 
-pub struct ExtensionMatcher<T: Send + Sync> {
-    marker: T,
+use std::marker::PhantomData;
+/// A matcher which allows you to match based on an extension,
+/// either by comparing with an extension ([`ExtensionMatcher::with_const`]),
+/// or using a custom predicate ([`ExtensionMatcher::with_fn`]).
+pub struct ExtensionMatcher<P, T> {
+    predicate: P,
+    _marker: PhantomData<fn() -> T>,
 }
 
-struct Const<T: Send + Sync>(T);
-struct FnBox(Box<dyn Fn(&dyn Any) -> bool + Send + Sync>);
-
-impl ExtensionMatcher<FnBox> {
-    pub fn with<T: Send + Sync + 'static, F: Fn(&T) -> bool + Send + Sync + 'static>(f: F) -> Self {
-        let wrapped_fn = move |v: &dyn Any| {
-            if let Some(concrete) = v.downcast_ref::<T>() {
-                f(concrete)
-            } else {
-                false
-            }
-        };
+impl<F, T> ExtensionMatcher<private::PredicateFn<F, T>, T>
+where
+    F: Fn(&T) -> bool + Send + Sync + 'static,
+    T: Clone + Eq + Send + Sync + 'static,
+{
+    /// Create a new [`ExtensionMatcher`] with a predicate `F`,
+    /// that will be called using the found `T` (if one is present),
+    /// to let it decide whether or not the extension value is a match or not.
+    pub fn with_fn(predicate: F) -> Self {
         Self {
-            marker: FnBox(Box::new(wrapped_fn)),
+            predicate: private::PredicateFn(predicate, PhantomData),
+            _marker: PhantomData,
         }
     }
 }
 
-impl<T: Send + Sync + Sync + std::cmp::PartialEq> ExtensionMatcher<Const<T>> {
-    pub fn constant(value: T) -> Self {
+impl<T> ExtensionMatcher<private::PredicateConst<T>, T>
+where
+    T: Clone + Eq + Send + Sync + 'static,
+{
+    /// Create a new [`ExtensionMatcher`] with a const value `T`,
+    /// that will be [`Eq`]-checked to find a match.
+    pub fn with_const(value: T) -> Self {
         Self {
-            marker: Const(value),
+            predicate: private::PredicateConst(value),
+            _marker: PhantomData,
         }
     }
 }
 
-impl<T: Send + Sync + std::cmp::PartialEq + 'static, State, Request> Matcher<State, Request>
-    for ExtensionMatcher<Const<T>>
+impl<State, Request, P, T> Matcher<State, Request> for ExtensionMatcher<P, T>
+where
+    State: Clone + Send + Sync + 'static,
+    Request: Send + 'static,
+    T: Clone + Send + Sync + 'static,
+    P: private::ExtensionPredicate<T>,
 {
     fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context<State>, _req: &Request) -> bool {
         ctx.get::<T>()
-            .map(|v| v == &self.marker.0)
+            .map(|v| self.predicate.call(v))
             .unwrap_or_default()
     }
 }
 
-impl<State, Request> Matcher<State, Request> for ExtensionMatcher<FnBox> {
-    fn matches(&self, _ext: Option<&mut Extensions>, ctx: &Context<State>, _req: &Request) -> bool {
-        ctx.get::<FnBox>()
-            .map(|v| (self.marker.0)(v))
-            .unwrap_or_default()
+mod private {
+    use std::marker::PhantomData;
+
+    pub(super) trait ExtensionPredicate<T>: Send + Sync + 'static {
+        fn call(&self, value: &T) -> bool;
+    }
+
+    pub(super) struct PredicateConst<T>(pub(super) T);
+
+    impl<T> ExtensionPredicate<T> for PredicateConst<T>
+    where
+        T: Clone + Eq + Send + Sync + 'static,
+    {
+        #[inline]
+        fn call(&self, value: &T) -> bool {
+            self.0.eq(value)
+        }
+    }
+
+    pub(super) struct PredicateFn<F, T>(pub(super) F, pub(super) PhantomData<fn() -> T>);
+
+    impl<F, T> ExtensionPredicate<T> for PredicateFn<F, T>
+    where
+        F: Fn(&T) -> bool + Send + Sync + 'static,
+        T: Clone + Eq + Send + Sync + 'static,
+    {
+        #[inline]
+        fn call(&self, value: &T) -> bool {
+            self.0(value)
+        }
     }
 }
 
 #[cfg(test)]
+#[cfg(test)]
 mod test {
     use super::*;
-    use crate::context::Extensions;
 
-    #[derive(Clone, PartialEq)]
+    #[derive(Debug, Clone, PartialEq, Eq)]
     struct MyMarker(i32);
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct MyOtherMarker(i32);
 
     #[test]
     fn test_extension_matcher() {
-        let mut ext = Extensions::new();
-        ext.insert(MyMarker(10));
-        let matcher = ExtensionMatcher::constant(MyMarker(10));
-        assert!(matcher.matches(Some(&mut ext), &Context::default(), &10));
+        let matcher = ExtensionMatcher::with_const(MyMarker(10));
+        let mut ctx = Context::default();
+
+        assert!(!matcher.matches(None, &ctx, &()));
+
+        ctx.insert(MyMarker(20));
+        assert!(!matcher.matches(None, &ctx, &()));
+
+        ctx.insert(MyOtherMarker(10));
+        assert!(!matcher.matches(None, &ctx, &()));
+
+        ctx.insert(MyMarker(10));
+        assert!(matcher.matches(None, &ctx, &()));
     }
 
     #[test]
     fn test_fn_extension_matcher() {
-        let mut ext = Extensions::new();
-        ext.insert(MyMarker(10));
-        let matcher = ExtensionMatcher::with(|v: &MyMarker| v.0.eq(&10));
-        assert!(matcher.matches(Some(&mut ext), &Context::default(), &10));
+        let matcher = ExtensionMatcher::with_fn(|v: &MyMarker| v.0 % 2 == 0);
+        let mut ctx = Context::default();
+
+        assert!(!matcher.matches(None, &ctx, &()));
+
+        ctx.insert(MyMarker(4));
+        assert!(matcher.matches(None, &ctx, &()));
+
+        ctx.insert(MyMarker(5));
+        assert!(!matcher.matches(None, &ctx, &()));
+
+        ctx.insert(MyOtherMarker(4));
+        assert!(!matcher.matches(None, &ctx, &()));
     }
 }
