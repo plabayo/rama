@@ -39,6 +39,10 @@ mod iter;
 #[doc(inline)]
 pub use iter::IteratorMatcherExt;
 
+mod ext;
+#[doc(inline)]
+pub use ext::ExtensionMatcher;
+
 /// A condition to decide whether `Request` within the given [`Context`] matches for
 /// router or other middleware purposes.
 pub trait Matcher<State, Request>: Send + Sync + 'static {
