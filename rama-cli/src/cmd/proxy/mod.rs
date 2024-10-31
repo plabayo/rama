@@ -19,7 +19,7 @@ use rama::{
     net::stream::layer::http::BodyLimitLayer,
     rt::Executor,
     service::service_fn,
-    tcp::{server::TcpListener, utils::is_connection_error},
+    tcp::{client::default_tcp_connect, server::TcpListener, utils::is_connection_error},
     Context, Layer, Service,
 };
 use std::{convert::Infallible, time::Duration};
@@ -128,9 +128,9 @@ where
         .get::<RequestContext>()
         .unwrap()
         .authority
-        .to_string();
-    tracing::info!("CONNECT to {}", authority);
-    let mut stream = match tokio::net::TcpStream::connect(authority).await {
+        .clone();
+    tracing::info!("CONNECT to {authority}");
+    let (mut stream, _) = match default_tcp_connect(&ctx, authority).await {
         Ok(stream) => stream,
         Err(err) => {
             tracing::error!(error = %err, "error connecting to host");

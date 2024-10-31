@@ -3,7 +3,7 @@ use rama_core::{
     error::{BoxError, ErrorContext, OpaqueError},
     Context,
 };
-use rama_dns::{DnsOverwrite, DnsResolver};
+use rama_dns::{DnsOverwrite, DnsResolver, HickoryDns};
 use rama_net::address::{Authority, Domain, Host};
 use std::{
     future::Future,
@@ -99,6 +99,22 @@ macro_rules! impl_stream_connector_either {
 }
 
 ::rama_core::combinators::impl_either!(impl_stream_connector_either);
+
+#[inline]
+/// Establish a [`TcpStream`] connection for the given [`Authority`],
+/// using the default settings and no custom state.
+///
+/// Use [`tcp_connect`] in case you want to customise any of these settings,
+/// or use a [`rama_net::client::ConnectorService`] for even more advanced possibilities.
+pub async fn default_tcp_connect<State>(
+    ctx: &Context<State>,
+    authority: Authority,
+) -> Result<(TcpStream, SocketAddr), OpaqueError>
+where
+    State: Clone + Send + Sync + 'static,
+{
+    tcp_connect(ctx, authority, true, HickoryDns::default(), ()).await
+}
 
 /// Establish a [`TcpStream`] connection for the given [`Authority`].
 pub async fn tcp_connect<State, Dns, Connector>(

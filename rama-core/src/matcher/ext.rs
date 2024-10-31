@@ -90,7 +90,6 @@ mod private {
 }
 
 #[cfg(test)]
-#[cfg(test)]
 mod test {
     use super::*;
 

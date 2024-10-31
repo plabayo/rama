@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use rama::{
-    error::{BoxError, OpaqueError},
+    error::BoxError,
     http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::{
@@ -15,7 +15,6 @@ use rama::{
         Request, Response,
     },
     layer::MapResultLayer,
-    net::stream::Stream,
     service::BoxService,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
     Layer, Service,
@@ -25,7 +24,6 @@ use std::{
     sync::Once,
     time::Duration,
 };
-use tokio::net::ToSocketAddrs;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
@@ -200,16 +198,6 @@ impl ExampleRunner<()> {
         })
         .await
         .unwrap()
-    }
-
-    /// Establish an async R/W to the TCP server behind this [`ExampleRunner`].
-    pub(super) async fn connect_tcp(
-        &self,
-        addr: impl ToSocketAddrs,
-    ) -> Result<impl Stream, OpaqueError> {
-        tokio::net::TcpStream::connect(addr)
-            .await
-            .map_err(OpaqueError::from_std)
     }
 }
 

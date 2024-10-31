@@ -1,4 +1,5 @@
 use super::utils;
+use rama::{tcp::client::default_tcp_connect, Context};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
@@ -6,12 +7,13 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 async fn test_tcp_listener_layers() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("tcp_listener_layers", None);
+    let _runner = utils::ExampleRunner::<()>::interactive("tcp_listener_layers", None);
 
     let mut stream = None;
+    let ctx = Context::default();
     for i in 0..5 {
-        match runner.connect_tcp("127.0.0.1:62501").await {
-            Ok(s) => stream = Some(s),
+        match default_tcp_connect(&ctx, ([127, 0, 0, 1], 62501).into()).await {
+            Ok((s, _)) => stream = Some(s),
             Err(e) => {
                 eprintln!("connect_tcp error: {}", e);
                 tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
