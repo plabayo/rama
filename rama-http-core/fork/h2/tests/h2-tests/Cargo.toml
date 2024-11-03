@@ -1,0 +1,14 @@
+[package]
+name = "h2-tests"
+version = "0.1.0"
+authors = ["Carl Lerche <me@carllerche.com>"]
+publish = false
+edition = "2018"
+
+[dependencies]
+
+[dev-dependencies]
+h2-support = { path = "../h2-support" }
+tracing = "0.1.13"
+futures = { version = "0.3", default-features = false, features = ["alloc"] }
+tokio = { version = "1", features = ["macros", "net", "rt", "io-util", "rt-multi-thread"] }
