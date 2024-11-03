@@ -9,6 +9,7 @@ members = [
     "rama-haproxy",
     "rama-http",
     "rama-http-backend",
+    "rama-http-core",
     "rama-http-types",
     "rama-macros",
     "rama-net",
@@ -201,7 +202,7 @@ net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
 http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-tcp/http"]
-http-full = ["http", "tcp", "dep:rama-http-backend"]
+http-full = ["http", "tcp", "dep:rama-http-backend", "dep:rama-http-core"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 ua = ["dep:rama-ua"]
@@ -222,6 +223,7 @@ rama-dns = { version = "0.2.0-alpha.4", path = "rama-dns", optional = true }
 rama-haproxy = { version = "0.2.0-alpha.4", path = "rama-haproxy", optional = true }
 rama-http = { version = "0.2.0-alpha.4", path = "rama-http", optional = true }
 rama-http-backend = { version = "0.2.0-alpha.4", path = "rama-http-backend", optional = true }
+rama-http-core = { version = "0.2.0-alpha.4", path = "rama-http-core", optional = true }
 rama-net = { version = "0.2.0-alpha.4", path = "rama-net", optional = true }
 rama-proxy = { version = "0.2.0-alpha.4", path = "rama-proxy", optional = true }
 rama-tcp = { version = "0.2.0-alpha.4", path = "rama-tcp", optional = true }

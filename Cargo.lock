@@ -1838,6 +1838,7 @@ dependencies = [
  "rama-haproxy",
  "rama-http",
  "rama-http-backend",
+ "rama-http-core",
  "rama-net",
  "rama-proxy",
  "rama-tcp",
@@ -1990,6 +1991,10 @@ dependencies = [
  "tokio",
  "tracing",
 ]
+
+[[package]]
+name = "rama-http-core"
+version = "0.2.0-alpha.4"
 
 [[package]]
 name = "rama-http-types"
