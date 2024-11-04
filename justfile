@@ -30,6 +30,11 @@ hack:
 test:
 	cargo test --all-features --workspace
 
+test-spec-h2 *ARGS:
+    bash rama-http-core/ci/h2spec.sh {{ARGS}}
+
+test-spec: test-spec-h2
+
 test-ignored:
 	cargo test --features=cli,telemetry,compression,http-full,proxy-full,tcp,rustls --workspace -- --ignored
 
@@ -126,6 +131,7 @@ publish:
     cargo publish -p rama-dns
     cargo publish -p rama-tcp
     cargo publish -p rama-tls
+    cargo publish -p rama-http-core
     cargo publish -p rama-http-backend
     cargo publish -p rama-http
     cargo publish -p rama-haproxy

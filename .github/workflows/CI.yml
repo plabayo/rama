@@ -364,6 +364,18 @@ jobs:
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
 
+  test-spec-h2:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - name: h2spec
+        run: |
+          bash rama-http-core/ci/h2spec.sh -F
+
   # action is not being updated atm
   # TODO: enable once it works again, for now not that useful anyway
   # semver-checks:
@@ -393,6 +405,7 @@ jobs:
       - test-docs
       - cargo-hack
       - cargo-deny
+      - test-spec-h2
       - cargo-fuzz
       - dependencies-are-sorted
       # - semver-checks

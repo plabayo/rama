@@ -2042,7 +2042,7 @@ dependencies = [
  "http",
  "indexmap 2.6.0",
  "quickcheck",
- "rama-core",
+ "rama-error",
  "rand",
  "serde",
  "serde_json",

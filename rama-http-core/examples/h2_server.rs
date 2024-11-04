@@ -28,7 +28,7 @@
 //! ~~~~~~~~~~~ H2 connection CLOSE !!!!!! ~~~~~~~~~~~
 //! ```
 
-use rama_core::error::BoxError;
+use rama_error::BoxError;
 use rama_http_core::h2::server::{self, SendResponse};
 use rama_http_core::h2::RecvStream;
 

@@ -55,7 +55,7 @@ walkdir = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
-rama-core = { path = "../rama-core" }
+rama-error = { path = "../rama-error" }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

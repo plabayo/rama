@@ -18,12 +18,11 @@
 //! You should see an HTTP Status 200 OK with a HTML payload containing the
 //! connection index and count of requests within that connection.
 
-use rama_core::error::BoxError;
+use rama_error::BoxError;
 use rama_http_core::h2::client;
 
 use http::{Method, Request};
 use tokio::net::TcpStream;
-use tokio_rustls::rustls::version::TLS12;
 use tokio_rustls::rustls::{pki_types::ServerName, RootCertStore};
 use tokio_rustls::TlsConnector;
 
@@ -37,7 +36,7 @@ pub async fn main() -> Result<(), BoxError> {
 
     let tls_client_config = std::sync::Arc::new({
         let root_store = RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-        let mut c = tokio_rustls::rustls::ClientConfig::builder_with_protocol_versions(&[&TLS12])
+        let mut c = tokio_rustls::rustls::ClientConfig::builder()
             .with_root_certificates(root_store)
             .with_no_client_auth();
         c.alpn_protocols.push(ALPN_H2.as_bytes().to_owned());

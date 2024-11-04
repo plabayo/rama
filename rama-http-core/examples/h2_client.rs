@@ -25,7 +25,7 @@
 //! You should see an HTTP Status 200 OK with a HTML payload containing the
 //! connection index and count of requests within that connection.
 
-use rama_core::error::BoxError;
+use rama_error::BoxError;
 use rama_http_core::h2::client;
 
 use http::{HeaderMap, Request};
