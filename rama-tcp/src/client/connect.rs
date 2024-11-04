@@ -23,6 +23,49 @@ use tokio::{
     },
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IPModes {
+    Dual,
+    SingleIpV4,
+    SingleIpV6,
+    DualPreferIpV4
+}
+
+impl Default for IPModes {
+    fn default() -> Self {
+        Self::Dual
+    }
+}
+
+//DNS Resolver
+#[derive(Clone)]
+struct DnsResolveIpMode<D>{
+    resolver: D,
+    mode: IPModes
+}
+
+impl<D> DnsResolveIpMode<D>{
+    fn new(resolver:D, mode: IPModes) -> Self {
+        Self { resolver, mode}
+    }
+}
+
+struct ConnectIpMode<C>{
+    connector: C,
+    ip_mode: IPModes
+}
+
+impl<C>ConnectIpMode<C>{
+    fn new(connector: C, ip_mode: IPModes) -> Self {
+        Self {connector, ip_mode}
+    }
+}
+
+/*
+TODO - Using the wrapper types
+in the tcp_connect fn, update the dns type to use the DnsResolveIpMode
+*/
+
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
 /// to actually establish the [`TcpStream`.]
 pub trait TcpStreamConnector: Send + Sync + 'static {
@@ -231,6 +274,10 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     Dns: DnsResolver<Error: Into<BoxError>> + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
+    /*TODO
+    modify the match to use dns.ip_mode and match for 
+    SingleIpv4 or DualPreferIpv4 or Dual
+     */
     let ip_it = match ip_kind {
         IpKind::Ipv4 => match dns.ipv4_lookup(domain).await {
             Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
@@ -240,6 +287,10 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                 return;
             }
         },
+         /*TODO
+    modify the match to use dns.ip_mode and match for 
+    SingleIpv6  or Dual
+     */
         IpKind::Ipv6 => match dns.ipv6_lookup(domain).await {
             Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
@@ -249,6 +300,12 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
             }
         },
     };
+
+    /*
+    TODO
+    Not sure here, we need to get the matched ip type and
+    use it
+     */
 
     for (index, ip) in ip_it.enumerate() {
         let addr = (ip, port).into();
