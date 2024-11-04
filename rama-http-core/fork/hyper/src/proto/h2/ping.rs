@@ -25,7 +25,7 @@ use std::sync::{Arc, Mutex};
 use std::task::{self, Poll};
 use std::time::{Duration, Instant};
 
-use h2::{Ping, PingPong};
+use rama_http_core::h2::{Ping, PingPong};
 
 use crate::common::time::Time;
 use crate::rt::Sleep;

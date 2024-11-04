@@ -7,10 +7,10 @@ use std::task::{Context, Poll};
 
 use bytes::{Buf, Bytes};
 use futures_util::ready;
-use h2::{Reason, RecvStream, SendStream};
 use http::header::{HeaderName, CONNECTION, TE, TRANSFER_ENCODING, UPGRADE};
 use http::HeaderMap;
 use pin_project_lite::pin_project;
+use rama_http_core::h2::{Reason, RecvStream, SendStream};
 
 use crate::body::Body;
 use crate::proto::h2::ping::Recorder;
@@ -145,7 +145,9 @@ where
                 .map_err(crate::Error::new_body_write)?
             {
                 debug!("stream received RST_STREAM: {:?}", reason);
-                return Poll::Ready(Err(crate::Error::new_body_write(::h2::Error::from(reason))));
+                return Poll::Ready(Err(crate::Error::new_body_write(
+                    ::rama_http_core::h2::Error::from(reason),
+                )));
             }
 
             match ready!(me.stream.as_mut().poll_frame(cx)) {
@@ -376,7 +378,7 @@ where
     }
 }
 
-fn h2_to_io_error(e: h2::Error) -> std::io::Error {
+fn h2_to_io_error(e: rama_http_core::h2::Error) -> std::io::Error {
     if e.is_io() {
         e.into_io().unwrap()
     } else {
@@ -399,11 +401,17 @@ where
         unsafe { self.as_inner_unchecked().reserve_capacity(cnt) }
     }
 
-    fn poll_capacity(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<usize, h2::Error>>> {
+    fn poll_capacity(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Option<Result<usize, rama_http_core::h2::Error>>> {
         unsafe { self.as_inner_unchecked().poll_capacity(cx) }
     }
 
-    fn poll_reset(&mut self, cx: &mut Context<'_>) -> Poll<Result<h2::Reason, h2::Error>> {
+    fn poll_reset(
+        &mut self,
+        cx: &mut Context<'_>,
+    ) -> Poll<Result<h2::Reason, rama_http_core::h2::Error>> {
         unsafe { self.as_inner_unchecked().poll_reset(cx) }
     }
 

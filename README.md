@@ -321,7 +321,8 @@ let info: Info = client
 
 ## ⛨ | Safety
 
-This crate uses `#![forbid(unsafe_code)]` to ensure everything is implemented in 100% safe Rust.
+The rama crates avoid `unsafe_code`, but do make use of it for some low level primitives (e.g. http core)
+or indirectly because of bindgens to C (e.g. boring).
 
 We also make use of [`cargo vet`](https://github.com/mozilla/cargo-vet) to [audit our supply chain](./supply-chain/).
 

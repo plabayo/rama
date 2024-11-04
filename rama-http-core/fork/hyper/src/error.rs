@@ -276,7 +276,7 @@ impl Error {
     pub(super) fn h2_reason(&self) -> h2::Reason {
         // Find an h2::Reason somewhere in the cause stack, if it exists,
         // otherwise assume an INTERNAL_ERROR.
-        self.find_source::<h2::Error>()
+        self.find_source::<rama_http_core::h2::Error>()
             .and_then(|h2_err| h2_err.reason())
             .unwrap_or(h2::Reason::INTERNAL_ERROR)
     }
@@ -407,9 +407,9 @@ impl Error {
     }
 
     #[cfg(all(any(feature = "client", feature = "server"), feature = "http2"))]
-    pub(super) fn new_h2(cause: ::h2::Error) -> Error {
+    pub(super) fn new_h2(cause: ::rama_http_core::h2::Error) -> Error {
         if cause.is_io() {
-            Error::new_io(cause.into_io().expect("h2::Error::is_io"))
+            Error::new_io(cause.into_io().expect("rama_http_core::h2::Error::is_io"))
         } else {
             Error::new(Kind::Http2).with(cause)
         }
@@ -639,14 +639,18 @@ mod tests {
     #[cfg(feature = "http2")]
     #[test]
     fn h2_reason_one_level() {
-        let body_err = Error::new_user_body(h2::Error::from(h2::Reason::ENHANCE_YOUR_CALM));
+        let body_err = Error::new_user_body(rama_http_core::h2::Error::from(
+            h2::Reason::ENHANCE_YOUR_CALM,
+        ));
         assert_eq!(body_err.h2_reason(), h2::Reason::ENHANCE_YOUR_CALM);
     }
 
     #[cfg(feature = "http2")]
     #[test]
     fn h2_reason_nested() {
-        let recvd = Error::new_h2(h2::Error::from(h2::Reason::HTTP_1_1_REQUIRED));
+        let recvd = Error::new_h2(rama_http_core::h2::Error::from(
+            h2::Reason::HTTP_1_1_REQUIRED,
+        ));
         // Suppose a user were proxying the received error
         let svc_err = Error::new_user_service(recvd);
         assert_eq!(svc_err.h2_reason(), h2::Reason::HTTP_1_1_REQUIRED);

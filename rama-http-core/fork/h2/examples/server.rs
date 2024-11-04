@@ -1,9 +1,9 @@
 use std::error::Error;
 
 use bytes::Bytes;
-use h2::server::{self, SendResponse};
-use h2::RecvStream;
 use http::Request;
+use rama_http_core::h2::server::{self, SendResponse};
+use rama_http_core::h2::RecvStream;
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]

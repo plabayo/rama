@@ -126,11 +126,19 @@ hickory-resolver = { version = "0.24.1", default-features = false, features = [
 ] }
 arc-swap = "1.7.1"
 flume = "0.11.1"
+atomic-waker = "1.0.0"
+futures-sink = "0.3"
+fnv = "1.0.5"
+slab = "0.4.2"
+indexmap = "2"
+rand = "0.8.4"
+walkdir = "2.3.2"
+env_logger = "0.10"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
 elided_lifetimes_in_paths = "allow"
-unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

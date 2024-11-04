@@ -14,10 +14,10 @@ use futures_channel::{mpsc, oneshot};
 use futures_util::future::{Either, FusedFuture, FutureExt as _};
 use futures_util::ready;
 use futures_util::stream::{StreamExt as _, StreamFuture};
-use h2::client::{Builder, Connection, SendRequest};
-use h2::SendStream;
 use http::{Method, StatusCode};
 use pin_project_lite::pin_project;
+use rama_http_core::h2::client::{Builder, Connection, SendRequest};
+use rama_http_core::h2::SendStream;
 
 use super::ping::{Ponger, Recorder};
 use super::{ping, H2Upgraded, PipeToSendStream, SendBuf};
@@ -32,7 +32,7 @@ use crate::proto::Dispatched;
 use crate::rt::bounds::Http2ClientConnExec;
 use crate::upgrade::Upgraded;
 use crate::{Request, Response};
-use h2::client::ResponseFuture;
+use rama_http_core::h2::client::ResponseFuture;
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
 
@@ -228,7 +228,7 @@ where
     B: Body,
     T: Read + Write + Unpin,
 {
-    type Output = Result<(), h2::Error>;
+    type Output = Result<(), rama_http_core::h2::Error>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let mut this = self.project();

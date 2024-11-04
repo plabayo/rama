@@ -1,5 +1,5 @@
-use h2::client;
 use http::{Method, Request};
+use rama_http_core::h2::client;
 use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 
@@ -24,16 +24,12 @@ pub async fn main() -> Result<(), Box<dyn Error>> {
     });
 
     // Sync DNS resolution.
-    let addr = "http2.akamai.com:443"
-        .to_socket_addrs()
-        .unwrap()
-        .next()
-        .unwrap();
+    let addr = "example.com:443".to_socket_addrs().unwrap().next().unwrap();
 
     println!("ADDR: {:?}", addr);
 
     let tcp = TcpStream::connect(&addr).await?;
-    let dns_name = ServerName::try_from("http2.akamai.com").unwrap();
+    let dns_name = ServerName::try_from("example.com").unwrap();
     let connector = TlsConnector::from(tls_client_config);
     let res = connector.connect(dns_name, tcp).await;
     let tls = res.unwrap();

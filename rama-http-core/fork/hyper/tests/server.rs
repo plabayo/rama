@@ -16,12 +16,12 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_channel::oneshot;
 use futures_util::future::{self, Either, FutureExt};
-use h2::client::SendRequest;
-use h2::{RecvStream, SendStream};
 use http::header::{HeaderMap, HeaderName, HeaderValue};
 use http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
 use hyper::rt::Timer;
 use hyper::rt::{Read as AsyncRead, Write as AsyncWrite};
+use rama_http_core::h2::client::SendRequest;
+use rama_http_core::h2::{RecvStream, SendStream};
 use support::{TokioExecutor, TokioIo, TokioTimer};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpStream};
@@ -2065,7 +2065,7 @@ async fn h2_connect_multiplex() {
                 assert_eq!(
                     err.get_ref()
                         .unwrap()
-                        .downcast_ref::<h2::Error>()
+                        .downcast_ref::<rama_http_core::h2::Error>()
                         .unwrap()
                         .reason(),
                     Some(h2::Reason::CANCEL),
@@ -2416,9 +2416,9 @@ async fn http2_service_error_sends_reset_reason() {
     let server = serve_opts().http2().serve();
     let addr_str = format!("http://{}", server.addr());
 
-    server
-        .reply()
-        .error(h2::Error::from(h2::Reason::INADEQUATE_SECURITY));
+    server.reply().error(rama_http_core::h2::Error::from(
+        h2::Reason::INADEQUATE_SECURITY,
+    ));
 
     let uri = addr_str.parse().expect("server addr should parse");
     dbg!("start");
@@ -2431,7 +2431,7 @@ async fn http2_service_error_sends_reset_reason() {
     let h2_err = err
         .source()
         .expect("err.source")
-        .downcast_ref::<h2::Error>()
+        .downcast_ref::<rama_http_core::h2::Error>()
         .expect("downcast");
 
     assert_eq!(h2_err.reason(), Some(h2::Reason::INADEQUATE_SECURITY));
@@ -2443,9 +2443,9 @@ fn http2_body_user_error_sends_reset_reason() {
     let server = serve_opts().http2().serve();
     let addr_str = format!("http://{}", server.addr());
 
-    let b = futures_util::stream::once(future::err::<Bytes, BoxError>(Box::new(h2::Error::from(
-        h2::Reason::INADEQUATE_SECURITY,
-    ))));
+    let b = futures_util::stream::once(future::err::<Bytes, BoxError>(Box::new(
+        rama_http_core::h2::Error::from(h2::Reason::INADEQUATE_SECURITY),
+    )));
     server.reply().body_stream(b);
 
     let rt = support::runtime();
@@ -2465,7 +2465,11 @@ fn http2_body_user_error_sends_reset_reason() {
         })
         .unwrap_err();
 
-    let h2_err = err.source().unwrap().downcast_ref::<h2::Error>().unwrap();
+    let h2_err = err
+        .source()
+        .unwrap()
+        .downcast_ref::<rama_http_core::h2::Error>()
+        .unwrap();
 
     assert_eq!(h2_err.reason(), Some(h2::Reason::INADEQUATE_SECURITY));
 }

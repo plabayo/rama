@@ -1,5 +1,5 @@
-use h2::client;
 use http::{HeaderMap, Request};
+use rama_http_core::h2::client;
 
 use std::error::Error;
 

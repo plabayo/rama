@@ -16,9 +16,46 @@ workspace = true
 [features]
 default = []
 
+# Enables `futures::Stream` implementations for various types.
+stream = []
+
+# Enables **unstable** APIs. Any API exposed by this feature has no backwards
+# compatibility guarantees. In other words, you should not use this feature for
+# anything besides experimentation. Definitely **do not** publish a crate that
+# depends on this feature.
+unstable = []
+
 [dependencies]
+atomic-waker = { workspace = true }
+bytes = { workspace = true }
+fnv = { workspace = true }
+futures-core = { workspace = true }
+futures-sink = { workspace = true }
+http = { workspace = true }
+indexmap = { workspace = true, features = ["std"] }
+slab = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+tokio-util = { workspace = true, features = ["codec", "io"] }
+tracing = { workspace = true, features = ["std"] }
 
 [dev-dependencies]
+env_logger = { workspace = true }
+
+# Fuzzing
+quickcheck = { workspace = true }
+rand = { workspace = true }
+
+# HPACK fixtures
+hex = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+walkdir = { workspace = true }
+
+# Examples
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+rama-core = { path = "../rama-core" }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

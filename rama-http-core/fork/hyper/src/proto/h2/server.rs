@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use futures_util::ready;
-use h2::server::{Connection, Handshake, SendResponse};
-use h2::{Reason, RecvStream};
+use rama_http_core::h2::server::{Connection, Handshake, SendResponse};
+use rama_http_core::h2::{Reason, RecvStream};
 use http::{Method, Request};
 use pin_project_lite::pin_project;
 

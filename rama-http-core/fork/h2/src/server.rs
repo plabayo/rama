@@ -64,7 +64,7 @@
 //! will use the HTTP/2 protocol without prior negotiation.
 //!
 //! ```no_run
-//! use h2::server;
+//! use rama_http_core::h2::server;
 //! use http::{Response, StatusCode};
 //! use tokio::net::TcpListener;
 //!
@@ -176,8 +176,8 @@ pub struct Handshake<T, B: Buf = Bytes> {
 ///
 /// ```
 /// # use tokio::io::{AsyncRead, AsyncWrite};
-/// # use h2::server;
-/// # use h2::server::*;
+/// # use rama_http_core::h2::server;
+/// # use rama_http_core::h2::server::*;
 /// #
 /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T) {
 /// let mut server = server::handshake(my_io).await.unwrap();
@@ -216,7 +216,7 @@ pub struct Connection<T, B: Buf> {
 ///
 /// ```
 /// # use tokio::io::{AsyncRead, AsyncWrite};
-/// # use h2::server::*;
+/// # use rama_http_core::h2::server::*;
 /// #
 /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
 /// # -> Handshake<T>
@@ -350,8 +350,8 @@ const PREFACE: [u8; 24] = *b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 ///
 /// ```
 /// # use tokio::io::{AsyncRead, AsyncWrite};
-/// # use h2::server;
-/// # use h2::server::*;
+/// # use rama_http_core::h2::server;
+/// # use rama_http_core::h2::server::*;
 /// #
 /// # async fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
 /// # {
@@ -626,7 +626,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T>
@@ -669,7 +669,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T>
@@ -703,7 +703,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T>
@@ -736,7 +736,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T>
@@ -775,7 +775,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T>
@@ -823,7 +823,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T>
@@ -869,7 +869,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T>
@@ -930,7 +930,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T>
@@ -994,7 +994,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// # use std::time::Duration;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
@@ -1045,7 +1045,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T>
@@ -1065,7 +1065,7 @@ impl Builder {
     ///
     /// ```
     /// # use tokio::io::{AsyncRead, AsyncWrite};
-    /// # use h2::server::*;
+    /// # use rama_http_core::h2::server::*;
     /// #
     /// # fn doc<T: AsyncRead + AsyncWrite + Unpin>(my_io: T)
     /// # -> Handshake<T, &'static [u8]>
