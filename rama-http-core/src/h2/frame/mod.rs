@@ -11,7 +11,7 @@ use std::fmt;
 ///
 /// # Examples
 ///
-/// ```
+/// ```text
 /// # // We ignore this doctest because the macro is not exported.
 /// let buf: [u8; 4] = [0, 0, 0, 1];
 /// assert_eq!(1u32, unpack_octets_4!(buf, 0, u32));

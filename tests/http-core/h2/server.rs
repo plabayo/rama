@@ -1539,7 +1539,7 @@ async fn client_drop_connection_without_close_notify() {
         // Step the conn state forward and hitting the EOF
         // But we have no outstanding request from client to be satisfied, so we should not return
         // an error
-        let _ = poll_fn(|cx| srv.poll_closed(cx)).await.unwrap();
+        poll_fn(|cx| srv.poll_closed(cx)).await.unwrap();
     };
 
     join(client, h2).await;
@@ -1585,7 +1585,7 @@ async fn init_window_size_smaller_than_default_should_use_default_before_ack() {
         stream.send_response(rsp, true).unwrap();
 
         // Drive the state forward
-        let _ = poll_fn(|cx| srv.poll_closed(cx)).await.unwrap();
+        poll_fn(|cx| srv.poll_closed(cx)).await.unwrap();
     };
 
     join(client, h2).await;

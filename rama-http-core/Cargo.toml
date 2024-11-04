@@ -47,6 +47,7 @@ rand = { workspace = true }
 
 # HPACK fixtures
 hex = { workspace = true }
+rama-error = { path = "../rama-error" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 walkdir = { workspace = true }
@@ -55,7 +56,6 @@ walkdir = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
 tokio-rustls = { workspace = true }
 webpki-roots = { workspace = true }
-rama-error = { path = "../rama-error" }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

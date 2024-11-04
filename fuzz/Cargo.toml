@@ -11,20 +11,20 @@ workspace = true
 cargo-fuzz = true
 
 [dependencies]
+futures = { workspace = true }
+http = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
-http.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-futures.workspace = true
 
-[dependencies.rama-ua]
-path = "../rama-ua"
+[dependencies.h2-support]
+path = "../rama-http-core/tests/h2-support"
 
 [dependencies.rama-http-core]
 path = "../rama-http-core"
 features = ["unstable"]
 
-[dependencies.h2-support]
-path = "../rama-http-core/tests/h2-support"
+[dependencies.rama-ua]
+path = "../rama-ua"
 
 [[bin]]
 name = "ua_parse"

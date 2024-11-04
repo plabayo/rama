@@ -102,12 +102,14 @@ fuzz-h2-hpack:
 fuzz-h2-e2e:
 	cargo +nightly fuzz run h2_e2e
 
-fuzz-h2-60s: fuzz-h2-main
+fuzz-h2-60s:
 	cargo +nightly fuzz run h2_client -- -max_total_time=60
 	cargo +nightly fuzz run h2_hpack -- -max_total_time=60
 	cargo +nightly fuzz run h2_e2e -- -max_total_time=60
 
 fuzz-60s: fuzz-ua-60s fuzz-h2-60s
+
+fuzz-full: fuzz-60s fuzz-h2-main
 
 bench:
 	cargo bench --features=http-full

@@ -41,7 +41,7 @@ impl<'a> AsyncRead for MockIo<'a> {
         if self.input.is_empty() {
             Poll::Ready(Ok(()))
         } else if len == 0 {
-            cx.waker().clone().wake();
+            cx.waker().wake_by_ref();
             Poll::Pending
         } else {
             if len > self.input.len() {
@@ -69,7 +69,7 @@ impl<'a> AsyncWrite for MockIo<'a> {
             if self.input.is_empty() {
                 Poll::Ready(Err(io::ErrorKind::BrokenPipe.into()))
             } else {
-                cx.waker().clone().wake();
+                cx.waker().wake_by_ref();
                 Poll::Pending
             }
         } else {
@@ -110,7 +110,7 @@ async fn run(script: &[u8]) -> Result<(), rama_http_core::h2::Error> {
         loop {
             match Pin::new(&mut futs).poll_next(cx) {
                 Poll::Pending | Poll::Ready(None) => break,
-                r @ Poll::Ready(Some(Ok(_))) | r @ Poll::Ready(Some(Err(_))) => {
+                r @ Poll::Ready(Some(Ok(_) | Err(_))) => {
                     eprintln!("{:?}", r);
                 }
             }

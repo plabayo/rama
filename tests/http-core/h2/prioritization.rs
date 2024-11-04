@@ -378,6 +378,7 @@ async fn send_data_receive_window_update() {
 
         // keep `stream` from being dropped in order to prevent
         // it from sending an RST_STREAM frame.
+        #[allow(clippy::mem_forget)]
         std::mem::forget(stream);
         h2.await.unwrap();
     };

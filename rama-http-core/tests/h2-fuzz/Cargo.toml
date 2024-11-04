@@ -6,10 +6,10 @@ license = "MIT"
 edition = "2018"
 
 [dependencies]
+futures = { workspace = true }
+honggfuzz = { workspace = true }
+http = { workspace = true }
 rama-http-core = { path = "../.." }
+tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-futures.workspace = true
-honggfuzz.workspace = true
-http.workspace = true
-tokio = { workspace = true, features = ["full"] }

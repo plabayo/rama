@@ -2,8 +2,6 @@
 members = [
     ".",
     "fuzz",
-    "rama-http-core/tests/h2-fuzz",
-    "rama-http-core/tests/h2-support",
     "rama-cli",
     "rama-core",
     "rama-dns",
@@ -12,6 +10,8 @@ members = [
     "rama-http",
     "rama-http-backend",
     "rama-http-core",
+    "rama-http-core/tests/h2-fuzz",
+    "rama-http-core/tests/h2-support",
     "rama-http-types",
     "rama-macros",
     "rama-net",
@@ -255,6 +255,9 @@ bytes = { workspace = true }
 derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
+futures = { workspace = true }
+h2-support = { path = "rama-http-core/tests/h2-support" }
+http = { workspace = true }
 itertools = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
@@ -265,9 +268,6 @@ serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
-futures.workspace = true
-h2-support.path = "rama-http-core/tests/h2-support"
-http.workspace = true
 
 [profile.dev.package."*"]
 opt-level = 3
