@@ -1,5 +1,5 @@
 // Re-export H2 crate
-pub use h2;
+pub use rama_http_core::h2;
 
 pub use rama_http_core::h2::client;
 pub use rama_http_core::h2::ext::Protocol;

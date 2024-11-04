@@ -7,9 +7,9 @@ edition = "2018"
 
 [dependencies]
 rama-http-core = { path = "../.." }
-
-env_logger = { version = "0.9", default-features = false }
-futures = { version = "0.3", default-features = false, features = ["std"] }
-honggfuzz = "0.5"
-http = "1"
-tokio = { version = "1", features = ["full"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+futures.workspace = true
+honggfuzz.workspace = true
+http.workspace = true
+tokio = { workspace = true, features = ["full"] }

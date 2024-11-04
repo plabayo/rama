@@ -1,16 +1,14 @@
-use futures::future;
+#![no_main]
 use futures::stream::FuturesUnordered;
-use futures::Stream;
+use futures::{future, Stream};
+use libfuzzer_sys::fuzz_target;
+
 use http::{Method, Request};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tracing::level_filters::LevelFilter;
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
 
 struct MockIo<'a> {
     input: &'a [u8],
@@ -51,7 +49,7 @@ impl<'a> AsyncRead for MockIo<'a> {
             if len > buf.remaining() {
                 len = buf.remaining();
             }
-            buf.put_slice(&self.input[len..]);
+            buf.put_slice(&self.input[..len]);
             self.input = &self.input[len..];
             Poll::Ready(Ok(()))
         }
@@ -121,20 +119,7 @@ async fn run(script: &[u8]) -> Result<(), rama_http_core::h2::Error> {
     Ok(())
 }
 
-fn main() {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::TRACE.into())
-                .from_env_lossy(),
-        )
-        .init();
-
+fuzz_target!(|data: &[u8]| {
     let rt = tokio::runtime::Runtime::new().unwrap();
-    loop {
-        honggfuzz::fuzz!(|data: &[u8]| {
-            eprintln!("{:?}", rt.block_on(run(data)));
-        });
-    }
-}
+    let _res = rt.block_on(run(data));
+});

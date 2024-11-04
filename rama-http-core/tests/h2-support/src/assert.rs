@@ -11,7 +11,7 @@ macro_rules! assert_closed {
 macro_rules! assert_headers {
     ($frame:expr) => {{
         match $frame {
-            h2::frame::Frame::Headers(v) => v,
+            rama_http_core::h2::frame::Frame::Headers(v) => v,
             f => panic!("expected HEADERS; actual={:?}", f),
         }
     }};
@@ -21,7 +21,7 @@ macro_rules! assert_headers {
 macro_rules! assert_data {
     ($frame:expr) => {{
         match $frame {
-            h2::frame::Frame::Data(v) => v,
+            rama_http_core::h2::frame::Frame::Data(v) => v,
             f => panic!("expected DATA; actual={:?}", f),
         }
     }};
@@ -31,7 +31,7 @@ macro_rules! assert_data {
 macro_rules! assert_ping {
     ($frame:expr) => {{
         match $frame {
-            h2::frame::Frame::Ping(v) => v,
+            rama_http_core::h2::frame::Frame::Ping(v) => v,
             f => panic!("expected PING; actual={:?}", f),
         }
     }};
@@ -41,7 +41,7 @@ macro_rules! assert_ping {
 macro_rules! assert_settings {
     ($frame:expr) => {{
         match $frame {
-            h2::frame::Frame::Settings(v) => v,
+            rama_http_core::h2::frame::Frame::Settings(v) => v,
             f => panic!("expected SETTINGS; actual={:?}", f),
         }
     }};
@@ -51,7 +51,7 @@ macro_rules! assert_settings {
 macro_rules! assert_go_away {
     ($frame:expr) => {{
         match $frame {
-            h2::frame::Frame::GoAway(v) => v,
+            rama_http_core::h2::frame::Frame::GoAway(v) => v,
             f => panic!("expected GO_AWAY; actual={:?}", f),
         }
     }};

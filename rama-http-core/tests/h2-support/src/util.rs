@@ -4,11 +4,13 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-pub fn byte_str(s: &str) -> h2::frame::BytesStr {
-    h2::frame::BytesStr::try_from(Bytes::copy_from_slice(s.as_bytes())).unwrap()
+pub fn byte_str(s: &str) -> rama_http_core::h2::frame::BytesStr {
+    rama_http_core::h2::frame::BytesStr::try_from(Bytes::copy_from_slice(s.as_bytes())).unwrap()
 }
 
-pub async fn concat(mut body: h2::RecvStream) -> Result<Bytes, rama_http_core::h2::Error> {
+pub async fn concat(
+    mut body: rama_http_core::h2::RecvStream,
+) -> Result<Bytes, rama_http_core::h2::Error> {
     let mut vec = Vec::new();
     while let Some(chunk) = body.data().await {
         vec.put(chunk?);
@@ -31,7 +33,10 @@ pub async fn yield_once() {
 }
 
 /// Should only be called after a non-0 capacity was requested for the stream.
-pub fn wait_for_capacity(stream: h2::SendStream<Bytes>, target: usize) -> WaitForCapacity {
+pub fn wait_for_capacity(
+    stream: rama_http_core::h2::SendStream<Bytes>,
+    target: usize,
+) -> WaitForCapacity {
     WaitForCapacity {
         stream: Some(stream),
         target,
@@ -39,18 +44,18 @@ pub fn wait_for_capacity(stream: h2::SendStream<Bytes>, target: usize) -> WaitFo
 }
 
 pub struct WaitForCapacity {
-    stream: Option<h2::SendStream<Bytes>>,
+    stream: Option<rama_http_core::h2::SendStream<Bytes>>,
     target: usize,
 }
 
 impl WaitForCapacity {
-    fn stream(&mut self) -> &mut h2::SendStream<Bytes> {
+    fn stream(&mut self) -> &mut rama_http_core::h2::SendStream<Bytes> {
         self.stream.as_mut().unwrap()
     }
 }
 
 impl Future for WaitForCapacity {
-    type Output = h2::SendStream<Bytes>;
+    type Output = rama_http_core::h2::SendStream<Bytes>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         loop {

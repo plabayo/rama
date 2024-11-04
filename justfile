@@ -82,14 +82,35 @@ report-code-lines:
 		| grep -v target | tr -d ' ' | grep -v '^$' | grep -v '^//' \
 		| wc -l
 
-fuzz:
+fuzz-ua:
 	cargo +nightly fuzz run ua_parse -- -max_len=131072
 
-fuzz-60s:
+fuzz-ua-60s:
 	cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=60
 
+fuzz-h2-main:
+    # cargo install honggfuzz
+    cd rama-http-core/tests/h2-fuzz && \
+        HFUZZ_RUN_ARGS="-t 1" cargo hfuzz run h2-fuzz
+
+fuzz-h2-client:
+	cargo +nightly fuzz run h2_client
+
+fuzz-h2-hpack:
+	cargo +nightly fuzz run h2_hpack
+
+fuzz-h2-e2e:
+	cargo +nightly fuzz run h2_e2e
+
+fuzz-h2-60s: fuzz-h2-main
+	cargo +nightly fuzz run h2_client -- -max_total_time=60
+	cargo +nightly fuzz run h2_hpack -- -max_total_time=60
+	cargo +nightly fuzz run h2_e2e -- -max_total_time=60
+
+fuzz-60s: fuzz-ua-60s fuzz-h2-60s
+
 bench:
-	cargo bench
+	cargo bench --features=http-full
 
 vet:
 	cargo vet

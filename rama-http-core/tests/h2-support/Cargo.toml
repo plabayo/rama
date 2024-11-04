@@ -8,12 +8,12 @@ edition = "2018"
 [dependencies]
 rama-http-core = { path = "../..", features = ["stream", "unstable"] }
 
-atty = "0.2"
-bytes = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt"] }
-tracing-tree = "0.2"
-futures = { version = "0.3", default-features = false }
-http = "1"
-tokio = { version = "1", features = ["time"] }
-tokio-test = "0.4"
+atty.workspace = true
+bytes.workspace = true
+tracing.workspace = true
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+tracing-tree.workspace = true
+futures.workspace = true
+http.workspace = true
+tokio = { workspace = true, features = ["time"] }
+tokio-test.workspace = true

@@ -86,7 +86,7 @@ pub fn new_with_write_capacity(cap: usize) -> (Mock, Handle) {
     };
 
     let handle = Handle {
-        codec: h2::Codec::new(Pipe { inner }),
+        codec: rama_http_core::h2::Codec::new(Pipe { inner }),
     };
 
     (mock, handle)
