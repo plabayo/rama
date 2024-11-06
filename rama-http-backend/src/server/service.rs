@@ -699,11 +699,12 @@ where
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
-        TcpListener::build_with_state(state)
-            .bind(addr)
-            .await?
-            .serve(self.service(service))
-            .await;
+        let tcp = TcpListener::build_with_state(state).bind(addr).await?;
+        let service = HttpService::new(self.builder, service);
+        match self.guard {
+            Some(guard) => tcp.serve_graceful(guard, service).await,
+            None => tcp.serve(service).await,
+        };
         Ok(())
     }
 }
