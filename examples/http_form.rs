@@ -68,10 +68,9 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     graceful.spawn_task_fn(|guard| async move {
-        let exec = Executor::graceful(guard.clone());
+        let exec = Executor::graceful(guard);
         HttpServer::auto(exec)
-            .listen_graceful(
-                guard,
+            .listen(
                 "127.0.0.1:62002",
                 TraceLayer::new_for_http().
                     layer(

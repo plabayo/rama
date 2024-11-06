@@ -28,6 +28,7 @@ use tokio::net::ToSocketAddrs;
 /// [`Service`]: rama_core::Service
 pub struct HttpServer<B> {
     builder: B,
+    guard: Option<ShutdownGuard>,
 }
 
 impl<B> fmt::Debug for HttpServer<B>
@@ -48,6 +49,7 @@ where
     fn clone(&self) -> Self {
         Self {
             builder: self.builder.clone(),
+            guard: self.guard.clone(),
         }
     }
 }
@@ -57,7 +59,29 @@ impl HttpServer<Http1ConnBuilder> {
     pub fn http1() -> Self {
         Self {
             builder: Http1ConnBuilder::new(),
+            guard: None,
         }
+    }
+
+    /// Set the guard that can be used by the [`HttpServer`]
+    /// in case it is turned into an http1 listener.
+    pub fn with_guard(mut self, guard: ShutdownGuard) -> Self {
+        self.guard = Some(guard);
+        self
+    }
+
+    /// Maybe set the guard that can be used by the [`HttpServer`]
+    /// in case it is turned into an http1 listener.
+    pub fn maybe_with_guard(mut self, guard: Option<ShutdownGuard>) -> Self {
+        self.guard = guard;
+        self
+    }
+
+    /// Set the guard that can be used by the [`HttpServer`]
+    /// in case it is turned into an http1 listener.
+    pub fn set_guard(&mut self, guard: ShutdownGuard) -> &mut Self {
+        self.guard = Some(guard);
+        self
     }
 }
 
@@ -188,8 +212,10 @@ impl<'a> Http1Config<'a> {
 impl HttpServer<H2ConnBuilder<HyperExecutor>> {
     /// Create a new h2 `Builder` with default settings.
     pub fn h2(exec: Executor) -> Self {
+        let guard = exec.guard().cloned();
         Self {
             builder: H2ConnBuilder::new(HyperExecutor(exec)),
+            guard,
         }
     }
 }
@@ -333,8 +359,10 @@ impl<'a, E> H2Config<'a, E> {
 impl HttpServer<AutoConnBuilder<HyperExecutor>> {
     /// Create a new dual http/1.1 + h2 `Builder` with default settings.
     pub fn auto(exec: Executor) -> Self {
+        let guard = exec.guard().cloned();
         Self {
             builder: AutoConnBuilder::new(HyperExecutor(exec)),
+            guard,
         }
     }
 }
@@ -644,34 +672,12 @@ where
         Response: IntoResponse + Send + 'static,
         A: ToSocketAddrs,
     {
-        TcpListener::bind(addr)
-            .await?
-            .serve(self.service(service))
-            .await;
-        Ok(())
-    }
-
-    /// Listen gracefully for connections on the given address, serving HTTP connections.
-    ///
-    /// Same as [`Self::listen`], but it will respect the given [`ShutdownGuard`],
-    /// and also pass it to the service.
-    ///
-    /// [`ShutdownGuard`]: rama_core::graceful::ShutdownGuard
-    pub async fn listen_graceful<S, Response, A>(
-        self,
-        guard: ShutdownGuard,
-        addr: A,
-        service: S,
-    ) -> HttpServeResult
-    where
-        S: Service<(), Request, Response = Response, Error = Infallible>,
-        Response: IntoResponse + Send + 'static,
-        A: ToSocketAddrs,
-    {
-        TcpListener::bind(addr)
-            .await?
-            .serve_graceful(guard, self.service(service))
-            .await;
+        let tcp = TcpListener::bind(addr).await?;
+        let service = HttpService::new(self.builder, service);
+        match self.guard {
+            Some(guard) => tcp.serve_graceful(guard, service).await,
+            None => tcp.serve(service).await,
+        };
         Ok(())
     }
 
@@ -697,33 +703,6 @@ where
             .bind(addr)
             .await?
             .serve(self.service(service))
-            .await;
-        Ok(())
-    }
-
-    /// Listen gracefully for connections on the given address, serving HTTP connections.
-    ///
-    /// Same as [`Self::listen_graceful`], but including the given state in the [`Service`]'s [`Context`].
-    ///
-    /// [`Service`]: rama_core::Service
-    /// [`Context`]: rama_core::Context
-    pub async fn listen_graceful_with_state<State, S, Response, A>(
-        self,
-        guard: ShutdownGuard,
-        state: State,
-        addr: A,
-        service: S,
-    ) -> HttpServeResult
-    where
-        State: Clone + Send + Sync + 'static,
-        S: Service<State, Request, Response = Response, Error = Infallible>,
-        Response: IntoResponse + Send + 'static,
-        A: ToSocketAddrs,
-    {
-        TcpListener::build_with_state(state)
-            .bind(addr)
-            .await?
-            .serve_graceful(guard, self.service(service))
             .await;
         Ok(())
     }

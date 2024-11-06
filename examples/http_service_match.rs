@@ -35,6 +35,7 @@ use rama::{
 
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use serde_json::json;
+use std::time::Duration;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -51,26 +52,35 @@ async fn main() {
         )
         .init();
 
-    let addr = "127.0.0.1:62011";
-    tracing::info!("running service at: {addr}");
-    let exec = Executor::default();
-    HttpServer::auto(exec)
-        .listen(
-            addr,
-            TraceLayer::new_for_http()
-            .layer(
-                    match_service!{
-                        HttpMatcher::get("/") => Html(r##"<h1>Home</h1><a href="/echo">Echo Request</a>"##.to_owned()),
-                        PathMatcher::new("/echo") => |req: Request| async move {
-                            Json(json!({
-                                "method": req.method().as_str(),
-                                "path": req.uri().path(),
-                            }))
-                        },
-                        _ => Redirect::temporary("/"),
-                    }
-                ),
-        )
+    let graceful = rama::graceful::Shutdown::default();
+
+    graceful.spawn_task_fn(|guard| async move {
+        let addr = "127.0.0.1:62011";
+        tracing::info!("running service at: {addr}");
+        let exec = Executor::graceful(guard);
+        HttpServer::auto(exec)
+            .listen(
+                addr,
+                TraceLayer::new_for_http()
+                .layer(
+                        match_service!{
+                            HttpMatcher::get("/") => Html(r##"<h1>Home</h1><a href="/echo">Echo Request</a>"##.to_owned()),
+                            PathMatcher::new("/echo") => |req: Request| async move {
+                                Json(json!({
+                                    "method": req.method().as_str(),
+                                    "path": req.uri().path(),
+                                }))
+                            },
+                            _ => Redirect::temporary("/"),
+                        }
+                    ),
+            )
+            .await
+            .unwrap();
+    });
+
+    graceful
+        .shutdown_with_limit(Duration::from_secs(30))
         .await
-        .unwrap();
+        .expect("graceful shutdown");
 }

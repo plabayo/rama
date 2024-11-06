@@ -31,12 +31,10 @@ impl Executor {
             None => tokio::spawn(future),
         }
     }
-}
 
-impl Executor {
     /// Get a reference to the shutdown guard,
     /// if and only if the executor was created with [`Self::graceful`].
-    pub(crate) fn guard(&self) -> Option<&ShutdownGuard> {
+    pub fn guard(&self) -> Option<&ShutdownGuard> {
         self.guard.as_ref()
     }
 }
