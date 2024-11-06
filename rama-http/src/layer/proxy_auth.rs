@@ -5,7 +5,7 @@
 use crate::header::PROXY_AUTHENTICATE;
 use crate::headers::{authorization::Credentials, HeaderMapExt, ProxyAuthorization};
 use crate::{Request, Response, StatusCode};
-use rama_core::{context::Extensions, Context, Layer, Service};
+use rama_core::{Context, Layer, Service};
 use rama_net::user::{auth::Authority, UserId};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -197,9 +197,7 @@ where
                     .unwrap())
             }
         } else if self.allow_anonymous {
-            let mut user_ext = Extensions::new();
-            user_ext.insert(UserId::Anonymous);
-            ctx.extend(user_ext);
+            ctx.insert(UserId::Anonymous);
 
             self.inner.serve(ctx, req).await
         } else {
