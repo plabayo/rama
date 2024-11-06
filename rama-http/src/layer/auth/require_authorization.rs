@@ -53,7 +53,7 @@
 //! Custom validation can be made by implementing [`ValidateRequest`].
 
 use base64::Engine as _;
-use std::{fmt, marker::PhantomData};
+use std::{fmt, marker::PhantomData, ops::Deref};
 
 use crate::layer::validate_request::{
     ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer,
@@ -66,7 +66,7 @@ use rama_core::Context;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
-impl<S, ResBody> ValidateRequestHeader<S, Basic<ResBody>> {
+impl<S, ResBody> ValidateRequestHeader<S, AuthorizeContext<Basic<ResBody>>> {
     /// Authorize requests using a username and password pair.
     ///
     /// The `Authorization` header is required to be `Basic {credentials}` where `credentials` is
@@ -78,11 +78,11 @@ impl<S, ResBody> ValidateRequestHeader<S, Basic<ResBody>> {
     where
         ResBody: Default,
     {
-        Self::custom(inner, Basic::new(username, value))
+        Self::custom(inner, AuthorizeContext::new(Basic::new(username, value)))
     }
 }
 
-impl<ResBody> ValidateRequestHeaderLayer<Basic<ResBody>> {
+impl<ResBody> ValidateRequestHeaderLayer<AuthorizeContext<Basic<ResBody>>> {
     /// Authorize requests using a username and password pair.
     ///
     /// The `Authorization` header is required to be `Basic {credentials}` where `credentials` is
@@ -94,11 +94,11 @@ impl<ResBody> ValidateRequestHeaderLayer<Basic<ResBody>> {
     where
         ResBody: Default,
     {
-        Self::custom(Basic::new(username, password))
+        Self::custom(AuthorizeContext::new(Basic::new(username, password)))
     }
 }
 
-impl<S, ResBody> ValidateRequestHeader<S, Bearer<ResBody>> {
+impl<S, ResBody> ValidateRequestHeader<S, AuthorizeContext<Bearer<ResBody>>> {
     /// Authorize requests using a "bearer token". Commonly used for OAuth 2.
     ///
     /// The `Authorization` header is required to be `Bearer {token}`.
@@ -110,11 +110,11 @@ impl<S, ResBody> ValidateRequestHeader<S, Bearer<ResBody>> {
     where
         ResBody: Default,
     {
-        Self::custom(inner, Bearer::new(token))
+        Self::custom(inner, AuthorizeContext::new(Bearer::new(token)))
     }
 }
 
-impl<ResBody> ValidateRequestHeaderLayer<Bearer<ResBody>> {
+impl<ResBody> ValidateRequestHeaderLayer<AuthorizeContext<Bearer<ResBody>>> {
     /// Authorize requests using a "bearer token". Commonly used for OAuth 2.
     ///
     /// The `Authorization` header is required to be `Bearer {token}`.
@@ -126,7 +126,7 @@ impl<ResBody> ValidateRequestHeaderLayer<Bearer<ResBody>> {
     where
         ResBody: Default,
     {
-        Self::custom(Bearer::new(token))
+        Self::custom(AuthorizeContext::new(Bearer::new(token)))
     }
 }
 
@@ -254,6 +254,53 @@ where
                     .insert(header::WWW_AUTHENTICATE, "Basic".parse().unwrap());
                 Err(res)
             }
+        }
+    }
+}
+
+pub(crate) struct AuthorizeContext<C> {
+    credential: C,
+    allow_anonymous: bool,
+}
+
+impl<C> AuthorizeContext<C> {
+    pub(crate) fn new(credential: C) -> Self {
+        Self {
+            credential,
+            allow_anonymous: false,
+        }
+    }
+}
+
+impl<S, B, C: ValidateRequest<S, B>> ValidateRequest<S, B> for AuthorizeContext<C>
+where
+    S: Clone + Send + Sync + 'static,
+    B: Send + 'static,
+{
+    type ResponseBody = C::ResponseBody;
+
+    async fn validate(
+        &self,
+        ctx: Context<S>,
+        req: Request<B>,
+    ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
+        self.credential.validate(ctx, req).await
+    }
+}
+
+impl<C> Deref for AuthorizeContext<C> {
+    type Target = C;
+
+    fn deref(&self) -> &Self::Target {
+        &self.credential
+    }
+}
+
+impl<C: Clone> Clone for AuthorizeContext<C> {
+    fn clone(&self) -> Self {
+        Self {
+            credential: self.credential.clone(),
+            allow_anonymous: self.allow_anonymous,
         }
     }
 }
