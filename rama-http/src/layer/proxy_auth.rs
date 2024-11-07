@@ -198,7 +198,6 @@ where
             }
         } else if self.allow_anonymous {
             ctx.insert(UserId::Anonymous);
-
             self.inner.serve(ctx, req).await
         } else {
             Ok(Response::builder()
