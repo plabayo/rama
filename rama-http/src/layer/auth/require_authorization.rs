@@ -214,13 +214,12 @@ where
     ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
         match request.headers().get(header::AUTHORIZATION) {
             Some(actual) if actual == self.credential.header_value => Ok((ctx, request)),
+            None if self.allow_anonymous => {
+                let mut ctx = ctx;
+                ctx.insert(UserId::Anonymous);
+                Ok((ctx, request))
+            }
             _ => {
-                if self.allow_anonymous {
-                    let mut ctx = ctx;
-                    ctx.insert(UserId::Anonymous);
-
-                    return Ok((ctx, request));
-                }
                 let mut res = Response::new(ResBody::default());
                 *res.status_mut() = StatusCode::UNAUTHORIZED;
                 Err(res)
@@ -283,13 +282,12 @@ where
     ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
         match request.headers().get(header::AUTHORIZATION) {
             Some(actual) if actual == self.credential.header_value => Ok((ctx, request)),
+            None if self.allow_anonymous => {
+                let mut ctx = ctx;
+                ctx.insert(UserId::Anonymous);
+                Ok((ctx, request))
+            }
             _ => {
-                if self.allow_anonymous {
-                    let mut ctx = ctx;
-                    ctx.insert(UserId::Anonymous);
-
-                    return Ok((ctx, request));
-                }
                 let mut res = Response::new(ResBody::default());
                 *res.status_mut() = StatusCode::UNAUTHORIZED;
                 res.headers_mut()
@@ -488,6 +486,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn basic_fails_if_allow_anonymous_and_credentials_are_invalid() {
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar")
+            .with_allow_anonymous(true)
+            .layer(service_fn(echo));
+
+        let request = Request::get("/")
+            .header(
+                header::AUTHORIZATION,
+                format!("Basic {}", BASE64.encode("wrong:credentials")),
+            )
+            .body(Body::empty())
+            .unwrap();
+
+        let res = service.serve(Context::default(), request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
     async fn bearer_allows_anonymous_if_header_is_missing() {
         let service = ValidateRequestHeaderLayer::bearer("foobar")
             .with_allow_anonymous(true)
@@ -498,5 +515,21 @@ mod tests {
         let res = service.serve(Context::default(), request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn bearer_fails_if_allow_anonymous_and_credentials_are_invalid() {
+        let service = ValidateRequestHeaderLayer::bearer("foobar")
+            .with_allow_anonymous(true)
+            .layer(service_fn(echo));
+
+        let request = Request::get("/")
+            .header(header::AUTHORIZATION, "Bearer wrong")
+            .body(Body::empty())
+            .unwrap();
+
+        let res = service.serve(Context::default(), request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }
