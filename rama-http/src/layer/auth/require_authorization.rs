@@ -53,7 +53,7 @@
 //! Custom validation can be made by implementing [`ValidateRequest`].
 
 use base64::Engine as _;
-use std::{fmt, marker::PhantomData, ops::Deref};
+use std::{fmt, marker::PhantomData};
 
 use crate::layer::validate_request::{
     ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer,
@@ -63,6 +63,8 @@ use crate::{
     Request, Response, StatusCode,
 };
 use rama_core::Context;
+
+use rama_net::user::UserId;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -284,15 +286,15 @@ where
         ctx: Context<S>,
         req: Request<B>,
     ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
-        self.credential.validate(ctx, req).await
-    }
-}
+        match req.headers().get(header::AUTHORIZATION) {
+            Some(_) => self.credential.validate(ctx, req).await,
+            None if self.allow_anonymous => {
+                ctx.insert(UserId::anonymous());
 
-impl<C> Deref for AuthorizeContext<C> {
-    type Target = C;
-
-    fn deref(&self) -> &Self::Target {
-        &self.credential
+                Ok((ctx, req))
+            }
+            None => self.credential.validate(ctx, req).await,
+        }
     }
 }
 
