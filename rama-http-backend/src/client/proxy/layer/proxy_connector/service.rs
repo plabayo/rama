@@ -119,8 +119,10 @@ where
                 .connect(ctx, req)
                 .await
                 .map_err(|err| match address.as_ref() {
-                    Some(address) => OpaqueError::from_boxed(err.into())
-                        .context(format!("establish connection to proxy {}", address)),
+                    Some(address) => OpaqueError::from_boxed(err.into()).context(format!(
+                        "establish connection to proxy {} (protocol: {:?})",
+                        address.authority, address.protocol
+                    )),
                     None => {
                         OpaqueError::from_boxed(err.into()).context("establish connection target")
                     }
