@@ -68,6 +68,34 @@ use rama_net::user::UserId;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
+impl<C> ValidateRequestHeaderLayer<AuthorizeContext<C>> {
+    /// Allow anonymous requests.
+    pub fn set_allow_anonymous(&mut self, allow_anonymous: bool) -> &mut Self {
+        self.validate.allow_anonymous = allow_anonymous;
+        self
+    }
+
+    /// Allow anonymous requests.
+    pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
+        self.validate.allow_anonymous = allow_anonymous;
+        self
+    }
+}
+
+impl<S, C> ValidateRequestHeader<S, AuthorizeContext<C>> {
+    /// Allow anonymous requests.
+    pub fn set_allow_anonymous(&mut self, allow_anonymous: bool) -> &mut Self {
+        self.validate.allow_anonymous = allow_anonymous;
+        self
+    }
+
+    /// Allow anonymous requests.
+    pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
+        self.validate.allow_anonymous = allow_anonymous;
+        self
+    }
+}
+
 impl<S, ResBody> ValidateRequestHeader<S, AuthorizeContext<Basic<ResBody>>> {
     /// Authorize requests using a username and password pair.
     ///
@@ -171,7 +199,7 @@ impl<ResBody> fmt::Debug for Bearer<ResBody> {
     }
 }
 
-impl<S, B, ResBody> ValidateRequest<S, B> for Bearer<ResBody>
+impl<S, B, ResBody> ValidateRequest<S, B> for AuthorizeContext<Bearer<ResBody>>
 where
     ResBody: Default + Send + 'static,
     B: Send + 'static,
@@ -185,8 +213,14 @@ where
         request: Request<B>,
     ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
         match request.headers().get(header::AUTHORIZATION) {
-            Some(actual) if actual == self.header_value => Ok((ctx, request)),
+            Some(actual) if actual == self.credential.header_value => Ok((ctx, request)),
             _ => {
+                if self.allow_anonymous {
+                    let mut ctx = ctx;
+                    ctx.insert(UserId::Anonymous);
+
+                    return Ok((ctx, request));
+                }
                 let mut res = Response::new(ResBody::default());
                 *res.status_mut() = StatusCode::UNAUTHORIZED;
                 Err(res)
@@ -234,7 +268,7 @@ impl<ResBody> fmt::Debug for Basic<ResBody> {
     }
 }
 
-impl<S, B, ResBody> ValidateRequest<S, B> for Basic<ResBody>
+impl<S, B, ResBody> ValidateRequest<S, B> for AuthorizeContext<Basic<ResBody>>
 where
     ResBody: Default + Send + 'static,
     B: Send + 'static,
@@ -248,8 +282,14 @@ where
         request: Request<B>,
     ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
         match request.headers().get(header::AUTHORIZATION) {
-            Some(actual) if actual == self.header_value => Ok((ctx, request)),
+            Some(actual) if actual == self.credential.header_value => Ok((ctx, request)),
             _ => {
+                if self.allow_anonymous {
+                    let mut ctx = ctx;
+                    ctx.insert(UserId::Anonymous);
+
+                    return Ok((ctx, request));
+                }
                 let mut res = Response::new(ResBody::default());
                 *res.status_mut() = StatusCode::UNAUTHORIZED;
                 res.headers_mut()
@@ -260,7 +300,7 @@ where
     }
 }
 
-pub(crate) struct AuthorizeContext<C> {
+pub struct AuthorizeContext<C> {
     credential: C,
     allow_anonymous: bool,
 }
@@ -274,36 +314,21 @@ impl<C> AuthorizeContext<C> {
     }
 }
 
-impl<S, B, C: ValidateRequest<S, B>> ValidateRequest<S, B> for AuthorizeContext<C>
-where
-    S: Clone + Send + Sync + 'static,
-    B: Send + 'static,
-{
-    type ResponseBody = C::ResponseBody;
-
-    async fn validate(
-        &self,
-        ctx: Context<S>,
-        req: Request<B>,
-    ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
-        match req.headers().get(header::AUTHORIZATION) {
-            Some(_) => self.credential.validate(ctx, req).await,
-            None if self.allow_anonymous => {
-                ctx.insert(UserId::anonymous());
-
-                Ok((ctx, req))
-            }
-            None => self.credential.validate(ctx, req).await,
-        }
-    }
-}
-
 impl<C: Clone> Clone for AuthorizeContext<C> {
     fn clone(&self) -> Self {
         Self {
             credential: self.credential.clone(),
             allow_anonymous: self.allow_anonymous,
         }
+    }
+}
+
+impl<C: fmt::Debug> fmt::Debug for AuthorizeContext<C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AuthorizeContext")
+            .field("credential", &self.credential)
+            .field("allow_anonymous", &self.allow_anonymous)
+            .finish()
     }
 }
 
@@ -447,5 +472,31 @@ mod tests {
 
     async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, BoxError> {
         Ok(Response::new(req.into_body()))
+    }
+
+    #[tokio::test]
+    async fn basic_allows_anonymous_if_header_is_missing() {
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar")
+            .with_allow_anonymous(true)
+            .layer(service_fn(echo));
+
+        let request = Request::get("/").body(Body::empty()).unwrap();
+
+        let res = service.serve(Context::default(), request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn bearer_allows_anonymous_if_header_is_missing() {
+        let service = ValidateRequestHeaderLayer::bearer("foobar")
+            .with_allow_anonymous(true)
+            .layer(service_fn(echo));
+
+        let request = Request::get("/").body(Body::empty()).unwrap();
+
+        let res = service.serve(Context::default(), request).await.unwrap();
+
+        assert_eq!(res.status(), StatusCode::OK);
     }
 }
