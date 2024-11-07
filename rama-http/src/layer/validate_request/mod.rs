@@ -149,4 +149,6 @@ pub use validate::ValidateRequest;
 #[doc(inline)]
 pub use validate_fn::{BoxValidateRequestFn, ValidateRequestFn};
 #[doc(inline)]
-pub use validate_request_header::{ValidateRequestHeader, ValidateRequestHeaderLayer};
+pub use validate_request_header::{
+    AllowAnonymous, ValidateRequestHeader, ValidateRequestHeaderLayer,
+};

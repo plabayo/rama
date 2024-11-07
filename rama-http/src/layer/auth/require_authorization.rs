@@ -56,13 +56,15 @@ use base64::Engine as _;
 use std::{fmt, marker::PhantomData};
 
 use crate::layer::validate_request::{
-    ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer,
+    AllowAnonymous, ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer,
 };
 use crate::{
     header::{self, HeaderValue},
     Request, Response, StatusCode,
 };
 use rama_core::Context;
+
+use rama_net::user::UserId;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -135,6 +137,7 @@ impl<ResBody> ValidateRequestHeaderLayer<Bearer<ResBody>> {
 /// See [`ValidateRequestHeader::bearer`] for more details.
 pub struct Bearer<ResBody> {
     header_value: HeaderValue,
+    allow_anonymous: bool,
     _ty: PhantomData<fn() -> ResBody>,
 }
 
@@ -147,6 +150,7 @@ impl<ResBody> Bearer<ResBody> {
             header_value: format!("Bearer {}", token)
                 .parse()
                 .expect("token is not a valid header value"),
+            allow_anonymous: false,
             _ty: PhantomData,
         }
     }
@@ -156,6 +160,7 @@ impl<ResBody> Clone for Bearer<ResBody> {
     fn clone(&self) -> Self {
         Self {
             header_value: self.header_value.clone(),
+            allow_anonymous: self.allow_anonymous,
             _ty: PhantomData,
         }
     }
@@ -165,7 +170,14 @@ impl<ResBody> fmt::Debug for Bearer<ResBody> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Bearer")
             .field("header_value", &self.header_value)
+            .field("allow_anonymous", &self.allow_anonymous)
             .finish()
+    }
+}
+
+impl AllowAnonymous for Bearer<()> {
+    fn allow_anonymous(&mut self, allow_anonymous: bool) {
+        self.allow_anonymous = allow_anonymous;
     }
 }
 
@@ -185,6 +197,12 @@ where
         match request.headers().get(header::AUTHORIZATION) {
             Some(actual) if actual == self.header_value => Ok((ctx, request)),
             _ => {
+                if self.allow_anonymous {
+                    let mut ctx = ctx.clone();
+                    ctx.insert(UserId::Anonymous);
+
+                    return Ok((ctx, request));
+                }
                 let mut res = Response::new(ResBody::default());
                 *res.status_mut() = StatusCode::UNAUTHORIZED;
                 Err(res)
@@ -198,6 +216,7 @@ where
 /// See [`ValidateRequestHeader::basic`] for more details.
 pub struct Basic<ResBody> {
     header_value: HeaderValue,
+    allow_anonymous: bool,
     _ty: PhantomData<fn() -> ResBody>,
 }
 
@@ -210,6 +229,7 @@ impl<ResBody> Basic<ResBody> {
         let header_value = format!("Basic {}", encoded).parse().unwrap();
         Self {
             header_value,
+            allow_anonymous: false,
             _ty: PhantomData,
         }
     }
@@ -219,6 +239,7 @@ impl<ResBody> Clone for Basic<ResBody> {
     fn clone(&self) -> Self {
         Self {
             header_value: self.header_value.clone(),
+            allow_anonymous: self.allow_anonymous,
             _ty: PhantomData,
         }
     }
@@ -228,7 +249,14 @@ impl<ResBody> fmt::Debug for Basic<ResBody> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Basic")
             .field("header_value", &self.header_value)
+            .field("allow_anonymous", &self.allow_anonymous)
             .finish()
+    }
+}
+
+impl AllowAnonymous for Basic<()> {
+    fn allow_anonymous(&mut self, allow_anonymous: bool) {
+        self.allow_anonymous = allow_anonymous;
     }
 }
 
@@ -248,6 +276,13 @@ where
         match request.headers().get(header::AUTHORIZATION) {
             Some(actual) if actual == self.header_value => Ok((ctx, request)),
             _ => {
+                if self.allow_anonymous {
+                    let mut ctx = ctx.clone();
+                    ctx.insert(UserId::Anonymous);
+
+                    return Ok((ctx, request));
+                }
+
                 let mut res = Response::new(ResBody::default());
                 *res.status_mut() = StatusCode::UNAUTHORIZED;
                 res.headers_mut()

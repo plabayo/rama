@@ -4,6 +4,10 @@ use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
+pub trait AllowAnonymous {
+    fn allow_anonymous(&mut self, allow_anonymous: bool);
+}
+
 /// Layer that applies [`ValidateRequestHeader`] which validates all requests.
 ///
 /// See the [module docs](crate::layer::validate_request) for an example.
@@ -85,6 +89,22 @@ where
     }
 }
 
+impl<T> ValidateRequestHeaderLayer<T>
+where
+    T: AllowAnonymous,
+{
+    pub fn set_allow_anonymous(&mut self, allow_anonymous: bool) -> &mut Self {
+        self.validate.allow_anonymous(allow_anonymous);
+        self
+    }
+
+    /// Allow anonymous requests.
+    pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
+        self.validate.allow_anonymous(allow_anonymous);
+        self
+    }
+}
+
 /// Middleware that validates requests.
 ///
 /// See the [module docs](crate::layer::validate_request) for an example.
@@ -154,6 +174,22 @@ impl<S, F, A> ValidateRequestHeader<S, BoxValidateRequestFn<F, A>> {
             inner,
             validate: BoxValidateRequestFn::new(validate),
         }
+    }
+}
+
+impl<S, T> ValidateRequestHeader<S, T>
+where
+    T: AllowAnonymous,
+{
+    pub fn set_allow_anonymous(&mut self, allow_anonymous: bool) -> &mut Self {
+        self.validate.allow_anonymous(allow_anonymous);
+        self
+    }
+
+    /// Allow anonymous requests.
+    pub fn with_allow_anonymous(mut self, allow_anonymous: bool) -> Self {
+        self.validate.allow_anonymous(allow_anonymous);
+        self
     }
 }
 
