@@ -105,7 +105,7 @@ macro_rules! define_either {
 
         impl<$($param),+, Output> std::future::Future for $id<$($param),+>
         where
-            $($param: std::future::Future<Output = Output> + Unpin),+
+            $($param: std::future::Future<Output = Output>),+
         {
             type Output = Output;
 
