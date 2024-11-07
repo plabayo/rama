@@ -11,6 +11,10 @@ pub enum UserId {
     ///
     /// E.g. the token of a Bearer Auth user.
     Token(Vec<u8>),
+    /// User remains anonymous.
+    ///
+    /// E.g. the user is not authenticated via any credentials.
+    Anonymous,
 }
 
 impl PartialEq<str> for UserId {
@@ -21,6 +25,7 @@ impl PartialEq<str> for UserId {
                 let other = other.as_bytes();
                 token == other
             }
+            UserId::Anonymous => false,
         }
     }
 }
@@ -39,6 +44,7 @@ impl PartialEq<[u8]> for UserId {
                 username_bytes == other
             }
             UserId::Token(token) => token == other,
+            UserId::Anonymous => false,
         }
     }
 }
@@ -57,6 +63,7 @@ impl PartialEq<String> for UserId {
                 let other = other.as_bytes();
                 token == other
             }
+            UserId::Anonymous => false,
         }
     }
 }
@@ -75,6 +82,7 @@ impl PartialEq<Vec<u8>> for UserId {
                 username_bytes == other
             }
             UserId::Token(token) => token == other,
+            UserId::Anonymous => false,
         }
     }
 }

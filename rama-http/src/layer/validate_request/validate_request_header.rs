@@ -8,7 +8,7 @@ use std::fmt;
 ///
 /// See the [module docs](crate::layer::validate_request) for an example.
 pub struct ValidateRequestHeaderLayer<T> {
-    validate: T,
+    pub(crate) validate: T,
 }
 
 impl<T: fmt::Debug> fmt::Debug for ValidateRequestHeaderLayer<T> {
@@ -90,7 +90,7 @@ where
 /// See the [module docs](crate::layer::validate_request) for an example.
 pub struct ValidateRequestHeader<S, T> {
     inner: S,
-    validate: T,
+    pub(crate) validate: T,
 }
 
 impl<S: fmt::Debug, T: fmt::Debug> fmt::Debug for ValidateRequestHeader<S, T> {
