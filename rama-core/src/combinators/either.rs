@@ -79,6 +79,44 @@ macro_rules! define_either {
                 }
             }
         }
+
+
+        impl<$($param),+, Output> $id<$($param),+>
+        where
+            $($param: std::future::Future<Output = Output>),+
+        {
+            /// Convert `Pin<&mut Either<A, B>>` to `Either<Pin<&mut A>, Pin<&mut B>>`,
+            /// pinned projections of the inner variants.
+            fn as_pin_mut(self: Pin<&mut Self>) -> $id<$(Pin<&mut $param>),+> {
+                // SAFETY: `get_unchecked_mut` is fine because we don't move anything.
+                // We can use `new_unchecked` because the `inner` parts are guaranteed
+                // to be pinned, as they come from `self` which is pinned, and we never
+                // offer an unpinned `&mut A` or `&mut B` through `Pin<&mut Self>`. We
+                // also don't have an implementation of `Drop`, nor manual `Unpin`.
+                unsafe {
+                    match self.get_unchecked_mut() {
+                        $(
+                            Self::$param(inner) => $id::$param(Pin::new_unchecked(inner)),
+                        )+
+                    }
+                }
+            }
+        }
+
+        impl<$($param),+, Output> std::future::Future for $id<$($param),+>
+        where
+            $($param: std::future::Future<Output = Output> + Unpin),+
+        {
+            type Output = Output;
+
+            fn poll(self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+                match self.as_pin_mut() {
+                    $(
+                        $id::$param(fut) => fut.poll(cx),
+                    )+
+                }
+            }
+        }
     };
 }
 

@@ -129,7 +129,6 @@ flume = "0.11.1"
 [workspace.lints.rust]
 unreachable_pub = "deny"
 elided_lifetimes_in_paths = "allow"
-unsafe_code = "forbid"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
