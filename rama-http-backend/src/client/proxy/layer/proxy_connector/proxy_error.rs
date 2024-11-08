@@ -49,8 +49,21 @@ impl From<std::io::Error> for HttpProxyError {
     }
 }
 
-// [`HttProxyError`] is acting as the real source,
-// as otherwise generic I/O (transport) errors would
-// be returned instead of the fact that it's really
-// an http proxy error
-impl std::error::Error for HttpProxyError {}
+impl std::error::Error for HttpProxyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            HttpProxyError::AuthRequired => None,
+            HttpProxyError::Unavailable => None,
+            HttpProxyError::Transport(err) => err.source().and_then(|err| {
+                // filter out generic io errors,
+                // but do allow custom errors (e.g. because IP is blocked)
+                if err.is::<std::io::Error>() {
+                    None
+                } else {
+                    Some(err)
+                }
+            }),
+            HttpProxyError::Other(_) => None,
+        }
+    }
+}
