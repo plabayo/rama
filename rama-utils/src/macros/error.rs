@@ -25,7 +25,11 @@ macro_rules! __static_str_error {
             }
         }
 
-        impl std::error::Error for $name {}
+        impl std::error::Error for $name {
+            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+                Some(self)
+            }
+        }
     }
 }
 #[doc(inline)]
