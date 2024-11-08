@@ -1,5 +1,7 @@
 use std::fmt;
 
+use rama_core::error::BoxError;
+
 #[derive(Debug)]
 /// error that can be returned in case a http proxy
 /// did not manage to establish a connection
@@ -15,7 +17,7 @@ pub enum HttpProxyError {
     /// I/O error happened as part of HTTP Proxy Connection Establishment
     ///
     /// (e.g. some kind of TCP error)
-    Transport(std::io::Error),
+    Transport(BoxError),
     /// Something went wrong, but classification did not happen.
     ///
     /// (First header line of http response is included in error)
@@ -43,17 +45,12 @@ impl fmt::Display for HttpProxyError {
 
 impl From<std::io::Error> for HttpProxyError {
     fn from(value: std::io::Error) -> Self {
-        Self::Transport(value)
+        Self::Transport(value.into())
     }
 }
 
-impl std::error::Error for HttpProxyError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            HttpProxyError::AuthRequired => None,
-            HttpProxyError::Unavailable => None,
-            HttpProxyError::Transport(err) => Some(err),
-            HttpProxyError::Other(_) => None,
-        }
-    }
-}
+// [`HttProxyError`] is acting as the real source,
+// as otherwise generic I/O (transport) errors would
+// be returned instead of the fact that it's really
+// an http proxy error
+impl std::error::Error for HttpProxyError {}

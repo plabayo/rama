@@ -1,3 +1,5 @@
+use crate::client::proxy::layer::HttpProxyError;
+
 use super::InnerHttpProxyConnector;
 use rama_core::{
     error::{BoxError, ErrorExt, OpaqueError},
@@ -119,9 +121,14 @@ where
                 .connect(ctx, req)
                 .await
                 .map_err(|err| match address.as_ref() {
-                    Some(address) => OpaqueError::from_boxed(err.into()).context(format!(
-                        "establish connection to proxy {} (protocol: {:?})",
-                        address.authority, address.protocol
+                    Some(address) => OpaqueError::from_std(HttpProxyError::Transport(
+                        OpaqueError::from_display(format!(
+                            "establish connection to proxy {} (protocol: {:?}): {}",
+                            address.authority,
+                            address.protocol,
+                            err.into(),
+                        ))
+                        .into_boxed(),
                     )),
                     None => {
                         OpaqueError::from_boxed(err.into()).context("establish connection target")
