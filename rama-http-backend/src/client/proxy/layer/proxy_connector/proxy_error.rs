@@ -59,7 +59,7 @@ impl std::error::Error for HttpProxyError {
                 // but do allow custom errors (e.g. because IP is blocked)
                 let err_ref = err.source().unwrap_or_else(|| err.as_ref());
                 if err_ref.is::<std::io::Error>() {
-                    None
+                    Some(self)
                 } else {
                     Some(err_ref)
                 }
