@@ -54,15 +54,16 @@ impl std::error::Error for HttpProxyError {
         match self {
             HttpProxyError::AuthRequired => None,
             HttpProxyError::Unavailable => None,
-            HttpProxyError::Transport(err) => err.source().and_then(|err| {
+            HttpProxyError::Transport(err) => {
                 // filter out generic io errors,
                 // but do allow custom errors (e.g. because IP is blocked)
-                if err.is::<std::io::Error>() {
+                let err_ref = err.source().unwrap_or_else(|| err.as_ref());
+                if err_ref.is::<std::io::Error>() {
                     None
                 } else {
-                    Some(err)
+                    Some(err_ref)
                 }
-            }),
+            }
             HttpProxyError::Other(_) => None,
         }
     }
