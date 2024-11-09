@@ -49,7 +49,7 @@ where
 
         let resp = match &self.0 {
             SendRequest::Http1(sender) => sender.lock().await.send_request(req).await,
-            SendRequest::Http2(sender) => sender.lock().await().send_request(req).await,
+            SendRequest::Http2(sender) => sender.lock().await.send_request(req).await,
         }?;
 
         Ok(resp.map(rama_http_types::Body::new))
