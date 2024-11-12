@@ -12,7 +12,7 @@ use rama_core::telemetry::opentelemetry::semantic_conventions::trace::{
 use rama_core::telemetry::opentelemetry::{
     global,
     metrics::{Counter, Histogram, Meter},
-    semantic_conventions, KeyValue,
+    semantic_conventions, InstrumentationScope, KeyValue,
 };
 use rama_core::telemetry::opentelemetry::{AttributesFactory, MeterOptions, ServiceInfo};
 use rama_core::{Context, Layer, Service};
@@ -41,7 +41,7 @@ impl Metrics {
             })
             .with_description("Measures the duration of inbound network connections.")
             .with_unit("s")
-            .init();
+            .build();
 
         let network_total_connections = meter
             .u64_counter(match &prefix {
@@ -51,7 +51,7 @@ impl Metrics {
             .with_description(
                 "measures the number of total network connections that have been established so far",
             )
-            .init();
+            .build();
 
         Metrics {
             network_connection_duration,
@@ -134,11 +134,14 @@ impl Default for NetworkMetricsLayer {
 }
 
 fn get_versioned_meter() -> Meter {
-    global::meter_with_version(
-        const_format::formatcp!("{}-network-transport", rama_utils::info::NAME),
-        Some(rama_utils::info::VERSION),
-        Some(semantic_conventions::SCHEMA_URL),
-        None,
+    global::meter_with_scope(
+        InstrumentationScope::builder(const_format::formatcp!(
+            "{}-network-transport",
+            rama_utils::info::NAME
+        ))
+        .with_version(rama_utils::info::VERSION)
+        .with_schema_url(semantic_conventions::SCHEMA_URL)
+        .build(),
     )
 }
 

@@ -13,7 +13,7 @@ use rama_core::telemetry::opentelemetry::{
         self,
         resource::{SERVICE_NAME, SERVICE_VERSION},
     },
-    AttributesFactory, KeyValue, MeterOptions, ServiceInfo,
+    AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, ServiceInfo,
 };
 use rama_core::{Context, Layer, Service};
 use rama_net::http::RequestContext;
@@ -58,7 +58,7 @@ impl Metrics {
             })
             .with_description("Measures the duration of inbound HTTP requests.")
             .with_unit("s")
-            .init();
+            .build();
 
         let http_server_total_requests = meter
             .u64_counter(match &prefix {
@@ -66,7 +66,7 @@ impl Metrics {
                 None => Cow::Borrowed(HTTP_SERVER_TOTAL_REQUESTS),
             })
             .with_description("Measures the total number of HTTP requests have been seen.")
-            .init();
+            .build();
 
         let http_server_total_responses = meter
             .u64_counter(match &prefix {
@@ -74,7 +74,7 @@ impl Metrics {
                 None => Cow::Borrowed(HTTP_SERVER_TOTAL_RESPONSES),
             })
             .with_description("Measures the total number of HTTP responses have been seen.")
-            .init();
+            .build();
 
         let http_server_total_failures = meter
             .u64_counter(match &prefix {
@@ -84,7 +84,7 @@ impl Metrics {
             .with_description(
                 "Measures the total number of failed HTTP requests that have been seen.",
             )
-            .init();
+            .build();
 
         Metrics {
             http_server_total_requests,
@@ -169,11 +169,14 @@ impl Default for RequestMetricsLayer {
 }
 
 fn get_versioned_meter() -> Meter {
-    global::meter_with_version(
-        const_format::formatcp!("{}-network-http", rama_utils::info::NAME),
-        Some(rama_utils::info::VERSION),
-        Some(semantic_conventions::SCHEMA_URL),
-        None,
+    global::meter_with_scope(
+        InstrumentationScope::builder(const_format::formatcp!(
+            "{}-network-http",
+            rama_utils::info::NAME
+        ))
+        .with_version(rama_utils::info::VERSION)
+        .with_schema_url(semantic_conventions::SCHEMA_URL)
+        .build(),
     )
 }
 
