@@ -22,7 +22,17 @@ use std::{
 /// Paths are case-sensitive by default for rama, as utf-8 compatible.
 /// Normalize yourself prior to passing a path to this function if you're concerned.
 pub fn new_key_log_file_handle(path: String) -> Result<KeyLogFileHandle, OpaqueError> {
-    let path = std::fs::canonicalize(path).context("canonicalize keylog path")?;
+    let path: PathBuf = path
+        .parse()
+        .with_context(|| format!("parse path str as Path: {path}"))?;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("create parent dir(s) at {parent:?} for key log file"))?;
+    }
+
+    let path = std::fs::canonicalize(&path)
+        .with_context(|| format!("canonicalize keylog path: {path:?}"))?;
 
     let mapping = GLOBAL_KEY_LOG_FILE_MAPPING.get_or_init(Default::default);
     if let Some(handle) = mapping.read().get(&path).cloned() {
