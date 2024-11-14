@@ -20,7 +20,7 @@
 //! This won't work as the client is not authorized. You can use `curl` to interact with the service:
 //!
 //! ```sh
-//! curl -v http://127.0.0.1:62014/hello
+//! curl -v http://127.0.0.1:62114/hello
 //! ```
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a body with `Hello, authorized client!`.

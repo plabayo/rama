@@ -22,7 +22,7 @@ async fn test_http_mitm_proxy() {
     tokio::spawn(async {
         HttpServer::auto(Executor::default())
             .listen(
-                "127.0.0.1:63003",
+                "127.0.0.1:63103",
                 service_fn(|req: Request| async move {
                     Ok(Json(json!({
                         "method": req.method().as_str(),
@@ -74,7 +74,7 @@ async fn test_http_mitm_proxy() {
 
     // test http request proxy flow
     let result = runner
-        .get("http://127.0.0.1:63003/foo/bar")
+        .get("http://127.0.0.1:61003/foo/bar")
         .send(ctx.clone())
         .await
         .unwrap()

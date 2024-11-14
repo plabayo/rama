@@ -21,7 +21,7 @@ async fn test_https_connect_proxy() {
     tokio::spawn(async {
         HttpServer::auto(Executor::default())
             .listen(
-                "127.0.0.1:63002",
+                "127.0.0.1:63102",
                 (
                     #[cfg(feature = "compression")]
                     CompressionLayer::new(),
@@ -46,7 +46,7 @@ async fn test_https_connect_proxy() {
 
     // test regular proxy flow
     let result = runner
-        .get("http://127.0.0.1:63002/foo/bar")
+        .get("http://127.0.0.1:63102/foo/bar")
         .typed_header(Accept::json())
         .send(ctx.clone())
         .await

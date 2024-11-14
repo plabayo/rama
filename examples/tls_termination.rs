@@ -21,7 +21,7 @@
 //!
 //! # Expected output
 //!
-//! The server will start and listen on `:63800`. You can use `curl` to interact with the service:
+//! The server will start and listen on `:63850`. You can use `curl` to interact with the service:
 //!
 //! ```sh
 //! curl -v https://127.0.0.1:62800
@@ -32,7 +32,7 @@
 //! This one will work however:
 //!
 //! ```sh
-//! curl -k -v https://127.0.0.1:63800
+//! curl -k -v https://127.0.0.1:63850
 //! ```
 //!
 //! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
@@ -92,7 +92,7 @@ async fn main() {
             ),
         );
 
-        TcpListener::bind("127.0.0.1:63800")
+        TcpListener::bind("127.0.0.1:63850")
             .await
             .expect("bind TCP Listener: tls")
             .serve_graceful(guard, tcp_service)
