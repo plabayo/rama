@@ -10,7 +10,7 @@ use std::{
     collections::{hash_map::Entry, HashMap},
     fs::OpenOptions,
     io::Write,
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
     sync::OnceLock,
 };
 
@@ -31,8 +31,7 @@ pub fn new_key_log_file_handle(path: String) -> Result<KeyLogFileHandle, OpaqueE
             .with_context(|| format!("create parent dir(s) at {parent:?} for key log file"))?;
     }
 
-    let path = std::fs::canonicalize(&path)
-        .with_context(|| format!("canonicalize keylog path: {path:?}"))?;
+    let path = normalize_path(&path);
 
     let mapping = GLOBAL_KEY_LOG_FILE_MAPPING.get_or_init(Default::default);
     if let Some(handle) = mapping.read().get(&path).cloned() {
@@ -47,6 +46,35 @@ pub fn new_key_log_file_handle(path: String) -> Result<KeyLogFileHandle, OpaqueE
             Ok(handle)
         }
     }
+}
+
+// copied from
+// <https://github.com/rust-lang/cargo/blob/fede83ccf973457de319ba6fa0e36ead454d2e20/src/cargo/util/paths.rs#L61>
+pub fn normalize_path(path: &Path) -> PathBuf {
+    let mut components = path.components().peekable();
+    let mut ret = if let Some(c @ Component::Prefix(..)) = components.peek().cloned() {
+        components.next();
+        PathBuf::from(c.as_os_str())
+    } else {
+        PathBuf::new()
+    };
+
+    for component in components {
+        match component {
+            Component::Prefix(..) => unreachable!(),
+            Component::RootDir => {
+                ret.push(component.as_os_str());
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                ret.pop();
+            }
+            Component::Normal(c) => {
+                ret.push(c);
+            }
+        }
+    }
+    ret
 }
 
 fn try_init_key_log_file_handle(path: PathBuf) -> Result<KeyLogFileHandle, OpaqueError> {
