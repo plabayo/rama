@@ -25,7 +25,7 @@ use tokio::{
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
 /// to actually establish the [`TcpStream`.]
-pub trait TcpStreamConnector: Send + Sync + 'static {
+pub trait TcpStreamConnector: Clone + Send + Sync + 'static {
     /// Type of error that can occurr when establishing the connection failed.
     type Error;
 
@@ -60,7 +60,7 @@ impl<T: TcpStreamConnector> TcpStreamConnector for Arc<T> {
 
 impl<ConnectFn, ConnectFnFut, ConnectFnErr> TcpStreamConnector for ConnectFn
 where
-    ConnectFn: Fn(SocketAddr) -> ConnectFnFut + Send + Sync + 'static,
+    ConnectFn: FnOnce(SocketAddr) -> ConnectFnFut + Clone + Send + Sync + 'static,
     ConnectFnFut: Future<Output = Result<TcpStream, ConnectFnErr>> + Send + 'static,
     ConnectFnErr: Into<BoxError> + Send + 'static,
 {
@@ -70,7 +70,7 @@ where
         &self,
         addr: SocketAddr,
     ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_ {
-        (self)(addr)
+        (self.clone())(addr)
     }
 }
 
