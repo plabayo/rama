@@ -14,10 +14,10 @@ use tokio::sync::Mutex;
 
 #[derive(Debug)]
 // TODO: once we have hyper as `rama_core` we can
-// drop the cloning / mutex / something approach as we can operate on reference layer
+// drop this mutex as there is no inherint reason for `sender` to be mutable...
 pub(super) enum SendRequest<Body> {
     Http1(Mutex<hyper::client::conn::http1::SendRequest<Body>>),
-    Http2(hyper::client::conn::http2::SendRequest<Body>),
+    Http2(Mutex<hyper::client::conn::http2::SendRequest<Body>>),
 }
 
 #[derive(Debug)]
@@ -49,7 +49,7 @@ where
 
         let resp = match &self.0 {
             SendRequest::Http1(sender) => sender.lock().await.send_request(req).await,
-            SendRequest::Http2(sender) => sender.clone().send_request(req).await,
+            SendRequest::Http2(sender) => sender.lock().await.send_request(req).await,
         }?;
 
         Ok(resp.map(rama_http_types::Body::new))

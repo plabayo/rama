@@ -5,12 +5,12 @@ use rama_net::{
     transport::{TransportContext, TransportProtocol},
 };
 use rama_utils::str::NonEmptyString;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[cfg(feature = "memory-db")]
 use venndb::VennDB;
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "memory-db", derive(VennDB))]
 #[cfg_attr(feature = "memory-db", venndb(validator = proxydb_insert_validator))]
 /// The selected proxy to use to connect to the proxy.

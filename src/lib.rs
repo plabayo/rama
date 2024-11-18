@@ -144,8 +144,10 @@
 //! - [`rama-net`](https://crates.io/crates/rama-net): rama network types and utilities
 //! - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 //! - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
+//! - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
 //! - [`rama-tls`](https://crates.io/crates/rama-tls): TLS support for rama (types, `rustls` and `boring`)
 //! - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
+//! - [`rama-socks5`](https://crates.io/crates/rama-socks5): SOCKS5 support for rama
 //! - [`rama-haproxy`](https://crates.io/crates/rama-haproxy): rama HaProxy support
 //! - [`rama-ua`](https://crates.io/crates/rama-ua): User-Agent (UA) support for `rama`
 //! - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
