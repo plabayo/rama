@@ -1,33 +1,41 @@
-/*
-/// Trait used internally by [`tcp_connect`] and the `TcpConnector`
-/// to actually establish the [`TcpStream`.]
-pub trait TcpStreamConnector: Send + Sync + 'static {
-    /// Type of error that can occurr when establishing the connection failed.
-    type Error;
-
-    /// Connect to the target via the given [`SocketAddr`]ess to establish a [`TcpStream`].
-    fn connect(
-        &self,
-        addr: SocketAddr,
-    ) -> impl Future<Output = Result<TcpStream, Self::Error>> + Send + '_;
-}
-*/
-
 use rama_core::error::BoxError;
 use rama_core::Context;
 use std::{convert::Infallible, future::Future, sync::Arc};
 
 use crate::client::TcpStreamConnector;
 
+/// Contains a `Connector` created by a [`TcpStreamConnectorFactory`],
+/// together with the [`Context`] used to create it in relation to.
 pub struct CreatedTcpStreamConnector<State, Connector> {
     pub ctx: Context<State>,
     pub connector: Connector,
 }
 
+/// Factory to create a [`TcpStreamConnector`]. This is used by the TCP
+/// stream service to create a stream within a specific [`Context`].
+///
+/// In the most simplest case you use a [`TcpStreamConnectorCloneFactory`]
+/// to use a [`Clone`]able [`TcpStreamConnectorCloneFactory`], but in more
+/// advanced cases you can use variants of [`TcpStreamConnector`] specific
+/// to the given contexts.
+///
+/// Examples why you might variants:
+///
+/// - you might have specific needs for your sockets (e.g. bind to a specific interface)
+///   that you do not have for all your egress traffic. A crate such as [`socket2`]
+///   can help you with this;
+/// - it is possible that you have specific filter or firewall needs for some of your
+///   egress traffic but not all of it.
+///
+/// [`socket`]: https://docs.rs/socket2
 pub trait TcpStreamConnectorFactory<State>: Send + Sync + 'static {
+    /// `TcpStreamConnector` created by this [`TcpStreamConnectorFactory`]
     type Connector: TcpStreamConnector;
+    /// Error returned in case [`TcpStreamConnectorFactory`] was
+    /// not able to create a [`TcpStreamConnector`].
     type Error;
 
+    /// Try to create a [`TcpStreamConnector`], and return an error or otherwise.
     fn make_connector(
         &self,
         ctx: Context<State>,
@@ -50,6 +58,12 @@ impl<State: Send + Sync + 'static> TcpStreamConnectorFactory<State> for () {
     }
 }
 
+/// Utility implementation of a [`TcpStreamConnectorFactory`] which is implemented
+/// to allow one to use a [`Clone`]able [`TcpStreamConnector`] as a [`TcpStreamConnectorFactory`]
+/// by cloning itself.
+///
+/// This struct cannot be created by third party crates
+/// and instead is to be used via other API's provided by this crate.
 pub struct TcpStreamConnectorCloneFactory<C>(pub(super) C);
 
 impl<State, C> TcpStreamConnectorFactory<State> for TcpStreamConnectorCloneFactory<C>
