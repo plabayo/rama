@@ -1,8 +1,8 @@
 use super::Header;
 
 use fnv::FnvHasher;
-use http::header;
-use http::method::Method;
+use rama_http_types::dep::http::method::Method;
+use rama_http_types::header;
 
 use std::collections::VecDeque;
 use std::hash::{Hash, Hasher};

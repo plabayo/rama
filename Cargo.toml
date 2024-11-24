@@ -141,6 +141,12 @@ indexmap = "2"
 rand = "0.8.4"
 walkdir = "2.3.2"
 env_logger = "0.10"
+httparse = "1.8"
+smallvec = { version = "1.12", features = ["const_generics", "const_new"] }
+itoa = "1"
+want = "0.3"
+futures-util = "0.3"
+futures-channel = "0.3"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"

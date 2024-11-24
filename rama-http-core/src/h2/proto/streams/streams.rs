@@ -8,7 +8,7 @@ use crate::h2::proto::{peer, Error, Initiator, Open, Peer, WindowSize};
 use crate::h2::{client, proto, server};
 
 use bytes::{Buf, Bytes};
-use http::{HeaderMap, Request, Response};
+use rama_http_types::{HeaderMap, Request, Response};
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
@@ -225,7 +225,7 @@ where
         pending: Option<&OpaqueStreamRef>,
     ) -> Result<(StreamRef<B>, bool), SendError> {
         use super::stream::ContentLength;
-        use http::Method;
+        use rama_http_types::Method;
 
         let protocol = request.extensions_mut().remove::<Protocol>();
 

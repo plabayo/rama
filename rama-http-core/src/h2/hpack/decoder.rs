@@ -2,9 +2,11 @@ use super::{header::BytesStr, huffman, Header};
 use crate::h2::frame;
 
 use bytes::{Buf, Bytes, BytesMut};
-use http::header;
-use http::method::{self, Method};
-use http::status::{self, StatusCode};
+use rama_http_types::dep::http::{
+    header,
+    method::{self, Method},
+    status::{self, StatusCode},
+};
 
 use std::cmp;
 use std::collections::VecDeque;
@@ -615,7 +617,7 @@ impl From<DecoderError> for frame::Error {
 
 /// Get an entry from the static table
 fn get_static(idx: usize) -> Header {
-    use http::header::HeaderValue;
+    use rama_http_types::dep::http::header::HeaderValue;
 
     match idx {
         1 => Header::Authority(BytesStr::from_static("")),

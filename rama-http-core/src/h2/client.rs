@@ -142,7 +142,8 @@ use crate::h2::proto::{self, Error};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use bytes::{Buf, Bytes};
-use http::{uri, HeaderMap, Method, Request, Response, Version};
+use rama_http_types::dep::http::{request, uri};
+use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
@@ -1528,7 +1529,6 @@ impl PushPromises {
     }
 }
 
-#[cfg(feature = "stream")]
 impl futures_core::Stream for PushPromises {
     type Item = Result<PushPromise, crate::h2::Error>;
 
@@ -1587,7 +1587,7 @@ impl Peer {
         protocol: Option<Protocol>,
         end_of_stream: bool,
     ) -> Result<Headers, SendError> {
-        use http::request::Parts;
+        use request::Parts;
 
         let (
             Parts {

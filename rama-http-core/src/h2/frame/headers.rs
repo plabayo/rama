@@ -3,8 +3,10 @@ use crate::h2::ext::Protocol;
 use crate::h2::frame::{Error, Frame, Head, Kind};
 use crate::h2::hpack::{self, BytesStr};
 
-use http::header::{self, HeaderName, HeaderValue};
-use http::{uri, HeaderMap, Method, Request, StatusCode, Uri};
+use rama_http_types::dep::http::uri;
+use rama_http_types::{
+    header, HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri,
+};
 
 use bytes::{BufMut, Bytes, BytesMut};
 

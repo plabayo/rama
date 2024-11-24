@@ -6,7 +6,7 @@ publish = false
 edition = "2018"
 
 [dependencies]
-rama-http-core = { path = "../..", features = ["stream", "unstable"] }
+rama-http-core = { path = "../..", features = ["unstable"] }
 
 atty = { workspace = true }
 bytes = { workspace = true }

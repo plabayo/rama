@@ -121,7 +121,7 @@ use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use bytes::{Buf, Bytes};
-use http::{HeaderMap, Method, Request, Response};
+use rama_http_types::{HeaderMap, Method, Request, Response};
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -589,7 +589,6 @@ where
     }
 }
 
-#[cfg(feature = "stream")]
 impl<T, B> futures_core::Stream for Connection<T, B>
 where
     T: AsyncRead + AsyncWrite + Unpin,
@@ -1420,7 +1419,7 @@ impl Peer {
         response: Response<()>,
         end_of_stream: bool,
     ) -> frame::Headers {
-        use http::response::Parts;
+        use rama_http_types::dep::http::response::Parts;
 
         // Extract the components of the HTTP request
         let (
@@ -1449,7 +1448,7 @@ impl Peer {
         promised_id: StreamId,
         request: Request<()>,
     ) -> Result<frame::PushPromise, UserError> {
-        use http::request::Parts;
+        use rama_http_types::dep::http::request::Parts;
 
         if let Err(e) = frame::PushPromise::validate_request(&request) {
             match e {
@@ -1509,7 +1508,7 @@ impl proto::Peer for Peer {
         fields: HeaderMap,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error> {
-        use http::{uri, Version};
+        use rama_http_types::{dep::http::uri, Version};
 
         let mut b = Request::builder();
 

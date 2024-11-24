@@ -118,7 +118,7 @@ pub mod header {
     static_header!["x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",];
 
     // standard
-    static_header!["keep-alive", "proxy-connection", "via",];
+    static_header!["keep-alive", "proxy-connection"];
 
     // non-std client ip forward headers
     static_header![

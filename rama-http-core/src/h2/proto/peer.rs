@@ -2,7 +2,7 @@ use crate::h2::error::Reason;
 use crate::h2::frame::{Pseudo, StreamId};
 use crate::h2::proto::{Error, Open};
 
-use http::{HeaderMap, Request, Response};
+use rama_http_types::{HeaderMap, Request, Response};
 
 use std::fmt;
 

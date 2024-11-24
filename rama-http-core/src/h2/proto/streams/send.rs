@@ -77,17 +77,17 @@ impl Send {
         Ok(stream_id)
     }
 
-    fn check_headers(fields: &http::HeaderMap) -> Result<(), UserError> {
+    fn check_headers(fields: &rama_http_types::HeaderMap) -> Result<(), UserError> {
         // 8.1.2.2. Connection-Specific Header Fields
-        if fields.contains_key(http::header::CONNECTION)
-            || fields.contains_key(http::header::TRANSFER_ENCODING)
-            || fields.contains_key(http::header::UPGRADE)
+        if fields.contains_key(rama_http_types::header::CONNECTION)
+            || fields.contains_key(rama_http_types::header::TRANSFER_ENCODING)
+            || fields.contains_key(rama_http_types::header::UPGRADE)
             || fields.contains_key("keep-alive")
             || fields.contains_key("proxy-connection")
         {
             tracing::debug!("illegal connection-specific headers found");
             return Err(UserError::MalformedHeaders);
-        } else if let Some(te) = fields.get(http::header::TE) {
+        } else if let Some(te) = fields.get(rama_http_types::header::TE) {
             if te != "trailers" {
                 tracing::debug!("illegal connection-specific headers found");
                 return Err(UserError::MalformedHeaders);

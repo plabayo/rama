@@ -1,6 +1,6 @@
 use crate::h2::hpack::{Decoder, Encoder, Header};
 
-use http::header::{HeaderName, HeaderValue};
+use rama_http_types::{HeaderName, HeaderValue};
 
 use bytes::BytesMut;
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
@@ -185,7 +185,7 @@ impl Arbitrary for FuzzHpack {
 }
 
 fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
-    use http::{Method, StatusCode};
+    use rama_http_types::{Method, StatusCode};
 
     if g.gen_ratio(1, 10) {
         match g.gen_range(0u32..5) {
@@ -255,7 +255,7 @@ fn gen_header(g: &mut StdRng) -> Header<Option<HeaderName>> {
 }
 
 fn gen_header_name(g: &mut StdRng) -> HeaderName {
-    use http::header;
+    use rama_http_types::header;
 
     if g.gen_ratio(1, 2) {
         g.sample(

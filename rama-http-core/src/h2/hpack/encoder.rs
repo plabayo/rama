@@ -2,7 +2,7 @@ use super::table::{Index, Table};
 use super::{huffman, Header};
 
 use bytes::{BufMut, BytesMut};
-use http::header::{HeaderName, HeaderValue};
+use rama_http_types::dep::http::header::{HeaderName, HeaderValue};
 
 #[derive(Debug)]
 pub struct Encoder {
@@ -299,7 +299,7 @@ fn position(buf: &BytesMut) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
-    use http::*;
+    use rama_http_types::{HeaderValue, Method};
 
     #[test]
     fn test_encode_method_get() {
@@ -437,8 +437,6 @@ mod test {
 
     #[test]
     fn test_sensitive_headers_are_never_indexed() {
-        use http::header::HeaderValue;
-
         let name = "my-password".parse().unwrap();
         let mut value = HeaderValue::from_bytes(b"12345").unwrap();
         value.set_sensitive(true);

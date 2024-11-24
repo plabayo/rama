@@ -3,7 +3,7 @@ use crate::h2::codec::UserError;
 use crate::h2::frame::{PushPromiseHeaderError, Reason, DEFAULT_INITIAL_WINDOW_SIZE};
 use crate::h2::proto;
 
-use http::{HeaderMap, Request, Response};
+use rama_http_types::{HeaderMap, Request, Response};
 
 use std::cmp::Ordering;
 use std::io;
@@ -173,7 +173,7 @@ impl Recv {
 
         if !stream.content_length.is_head() {
             use super::stream::ContentLength;
-            use http::header;
+            use rama_http_types::header;
 
             if let Some(content_length) = frame.fields().get(header::CONTENT_LENGTH) {
                 let content_length = match frame::parse_u64(content_length.as_bytes()) {
@@ -208,7 +208,9 @@ impl Recv {
             return if counts.peer().is_server() && is_initial {
                 let mut res = frame::Headers::new(
                     stream.id,
-                    frame::Pseudo::response(::http::StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE),
+                    frame::Pseudo::response(
+                        rama_http_types::StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
+                    ),
                     HeaderMap::new(),
                 );
                 res.set_end_stream();

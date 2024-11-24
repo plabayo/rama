@@ -2,8 +2,7 @@ use super::{DecoderError, NeedMore};
 use crate::h2::ext::Protocol;
 
 use bytes::Bytes;
-use http::header::{HeaderName, HeaderValue};
-use http::{Method, StatusCode};
+use rama_http_types::{HeaderName, HeaderValue, Method, StatusCode};
 use std::fmt;
 
 /// HTTP/2 Header
@@ -185,7 +184,7 @@ impl Header {
     }
 
     pub fn skip_value_index(&self) -> bool {
-        use http::header;
+        use rama_http_types::header;
 
         match *self {
             Header::Field { ref name, .. } => matches!(

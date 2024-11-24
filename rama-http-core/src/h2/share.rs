@@ -3,10 +3,9 @@ use crate::h2::frame::Reason;
 use crate::h2::proto::{self, WindowSize};
 
 use bytes::{Buf, Bytes};
-use http::HeaderMap;
+use rama_http_types::HeaderMap;
 
 use std::fmt;
-#[cfg(feature = "stream")]
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
@@ -466,7 +465,6 @@ impl RecvStream {
     }
 }
 
-#[cfg(feature = "stream")]
 impl futures_core::Stream for RecvStream {
     type Item = Result<Bytes, crate::h2::Error>;
 
