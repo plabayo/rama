@@ -44,8 +44,9 @@ pub(crate) trait Dispatch {
 
 use crate::service::HttpService;
 
-pub(crate) struct Server<S: HttpService<B>, B> {
-    in_flight: Pin<Box<Option<S::Future>>>,
+pub(crate) struct Server<State, S: HttpService<State, B>, B> {
+    in_flight: Option<Pin<Box<dyn Future<Output = Result<Response<S::ResBody>, S::Error>>>>>,
+    ctx: Option<rama_core::Context<State>>,
     pub(crate) service: S,
 }
 
@@ -493,28 +494,31 @@ impl<'a, T> Drop for OptGuard<'a, T> {
 
 // ===== impl Server =====
 
-impl<S, B> Server<S, B>
-where
-    S: HttpService<B>,
-{
-    pub(crate) fn new(service: S) -> Server<S, B> {
+impl<S, B: Send + 'static> Server<(), S, B> {
+    pub(crate) fn new(service: S) -> Server<(), S, B> {
         Server {
-            in_flight: Box::pin(None),
+            in_flight: None,
+            ctx: None,
             service,
         }
     }
 
-    pub(crate) fn into_service(self) -> S {
-        self.service
+    pub(crate) fn with_context<State>(self, ctx: rama_core::Context<State>) -> Server<State, S, B> {
+        Server {
+            in_flight: self.in_flight,
+            ctx,
+            service: self.service,
+        }
     }
 }
 
 // Service is never pinned
-impl<S: HttpService<B>, B> Unpin for Server<S, B> {}
+impl<State, S: HttpService<State, B>, B> Unpin for Server<State, S, B> {}
 
-impl<S, Bs> Dispatch for Server<S, IncomingBody>
+impl<State, S, Bs> Dispatch for Server<State, S, IncomingBody>
 where
-    S: HttpService<IncomingBody, ResBody = Bs>,
+    State: Send + Sync + 'static + Clone,
+    S: HttpService<State, IncomingBody, ResBody = Bs>,
     S::Error: Into<BoxError>,
     Bs: Body,
 {
@@ -528,7 +532,7 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<(Self::PollItem, Self::PollBody), Self::PollError>>> {
         let mut this = self.as_mut();
-        let ret = if let Some(ref mut fut) = this.in_flight.as_mut().as_pin_mut() {
+        let ret = if let Some(ref mut fut) = this.in_flight.as_mut() {
             let resp = ready!(fut.as_mut().poll(cx)?);
             let (parts, body) = resp.into_parts();
             let head = MessageHead {
@@ -543,7 +547,7 @@ where
         };
 
         // Since in_flight finished, remove it
-        this.in_flight.set(None);
+        this.in_flight = None;
         ret
     }
 
@@ -558,8 +562,10 @@ where
         *req.headers_mut() = msg.headers;
         *req.version_mut() = msg.version;
         *req.extensions_mut() = msg.extensions;
-        let fut = self.service.call(req);
-        self.in_flight.set(Some(fut));
+        let fut = self
+            .service
+            .serve_http(self.ctx.clone().unwrap_or_default(), req);
+        self.in_flight = Some(Box::pin(fut));
         Ok(())
     }
 

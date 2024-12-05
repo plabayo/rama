@@ -40,8 +40,9 @@ pub mod h2;
 
 pub mod ext;
 
-pub mod rt;
 pub mod service;
+
+pub mod rt;
 pub mod upgrade;
 
 mod headers;
