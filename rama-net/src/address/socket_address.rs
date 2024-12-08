@@ -1,9 +1,9 @@
 use rama_core::error::{ErrorContext, OpaqueError};
+#[cfg(feature = "http")]
+use rama_http_types::HeaderValue;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
-#[cfg(feature = "http")]
-use rama_http_types::HeaderValue;
 
 /// An [`IpAddr`] with an associated port
 pub struct SocketAddress {
@@ -70,7 +70,7 @@ impl fmt::Display for SocketAddress {
     }
 }
 
-impl std::str::FromStr for SocketAddress {
+impl FromStr for SocketAddress {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
@@ -161,7 +161,12 @@ mod tests {
     use super::*;
 
     fn assert_eq(s: &str, sock_address: SocketAddress, ip_addr: &str, port: u16) {
-        assert_eq!(sock_address.ip_addr().to_string(), ip_addr, "parsing: {}", s);
+        assert_eq!(
+            sock_address.ip_addr().to_string(),
+            ip_addr,
+            "parsing: {}",
+            s
+        );
         assert_eq!(sock_address.port(), port, "parsing: {}", s);
     }
 
@@ -178,7 +183,12 @@ mod tests {
             let msg = format!("parsing '{}'", s);
 
             assert_eq(s, s.parse().expect(&msg), expected_ip_addr, expected_port);
-            assert_eq(s, s.try_into().expect(&msg), expected_ip_addr, expected_port);
+            assert_eq(
+                s,
+                s.try_into().expect(&msg),
+                expected_ip_addr,
+                expected_port,
+            );
             assert_eq(
                 s,
                 s.to_owned().try_into().expect(&msg),
@@ -238,10 +248,7 @@ mod tests {
 
     #[test]
     fn test_parse_display() {
-        for (s, expected) in [
-            ("[::1]:80", "[::1]:80"),
-            ("127.0.0.1:80", "127.0.0.1:80"),
-        ] {
+        for (s, expected) in [("[::1]:80", "[::1]:80"), ("127.0.0.1:80", "127.0.0.1:80")] {
             let msg = format!("parsing '{}'", s);
             let socket_address: SocketAddress = s.parse().expect(&msg);
             assert_eq!(socket_address.to_string(), expected, "{}", msg);
