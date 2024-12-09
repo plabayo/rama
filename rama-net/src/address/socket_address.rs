@@ -4,6 +4,7 @@ use rama_http_types::HeaderValue;
 use std::fmt;
 use std::net::{IpAddr, SocketAddr};
 use std::str::FromStr;
+use crate::address::host::try_to_parse_str_to_ip;
 
 /// An [`IpAddr`] with an associated port
 pub struct SocketAddress {
@@ -91,7 +92,7 @@ impl TryFrom<&str> for SocketAddress {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (ip_addr, port) = crate::address::authority::split_port_from_str(s)?;
-        let ip_addr = IpAddr::from_str(ip_addr).context("parse ip address from socket address")?;
+        let ip_addr = try_to_parse_str_to_ip(ip_addr).context("parse ip address from socket address")?;
         match ip_addr {
             IpAddr::V6(_) if !s.starts_with('[') => Err(OpaqueError::from_display(
                 "missing brackets for IPv6 address with port",
@@ -160,9 +161,9 @@ impl<'de> serde::Deserialize<'de> for SocketAddress {
 mod tests {
     use super::*;
 
-    fn assert_eq(s: &str, sock_address: SocketAddress, ip_addr: &str, port: u16) {
+    fn assert_eq(s: &str, sock_address: SocketAddress, ip_addr: &IpAddr, port: u16) {
         assert_eq!(
-            sock_address.ip_addr().to_string(),
+            sock_address.ip_addr(),
             ip_addr,
             "parsing: {}",
             s
@@ -172,40 +173,40 @@ mod tests {
 
     #[test]
     fn test_parse_valid() {
-        for (s, (expected_ip_addr, expected_port)) in [
-            ("[::1]:80", ("::1", 80)),
-            ("127.0.0.1:80", ("127.0.0.1", 80)),
+        for (s, expected_socket_address) in [
+            ("[::1]:80", SocketAddress::new("::1".parse().unwrap(), 80)),
+            ("127.0.0.1:80", SocketAddress::new("127.0.0.1".parse().unwrap(), 80)),
             (
                 "[2001:db8:3333:4444:5555:6666:7777:8888]:80",
-                ("2001:db8:3333:4444:5555:6666:7777:8888", 80),
+                SocketAddress::new("2001:db8:3333:4444:5555:6666:7777:8888".parse().unwrap(), 80),
             ),
         ] {
             let msg = format!("parsing '{}'", s);
 
-            assert_eq(s, s.parse().expect(&msg), expected_ip_addr, expected_port);
+            assert_eq(s, s.parse().expect(&msg), expected_socket_address.ip_addr(), expected_socket_address.port());
             assert_eq(
                 s,
                 s.try_into().expect(&msg),
-                expected_ip_addr,
-                expected_port,
+                expected_socket_address.ip_addr(),
+                expected_socket_address.port(),
             );
             assert_eq(
                 s,
                 s.to_owned().try_into().expect(&msg),
-                expected_ip_addr,
-                expected_port,
+                expected_socket_address.ip_addr(),
+                expected_socket_address.port(),
             );
             assert_eq(
                 s,
                 s.as_bytes().try_into().expect(&msg),
-                expected_ip_addr,
-                expected_port,
+                expected_socket_address.ip_addr(),
+                expected_socket_address.port(),
             );
             assert_eq(
                 s,
                 s.as_bytes().to_vec().try_into().expect(&msg),
-                expected_ip_addr,
-                expected_port,
+                expected_socket_address.ip_addr(),
+                expected_socket_address.port(),
             );
         }
     }
@@ -229,6 +230,7 @@ mod tests {
             "example.com:",
             "example.com:-1",
             "example.com:999999",
+            "example.com:80",
             "example:com",
             "[127.0.0.1]:80",
             "2001:db8:3333:4444:5555:6666:7777:8888:80",
