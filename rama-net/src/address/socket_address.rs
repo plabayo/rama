@@ -168,7 +168,7 @@ impl TryFrom<&[u8]> for SocketAddress {
     type Error = OpaqueError;
 
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let s = std::str::from_utf8(bytes).context("parse authority from bytes")?;
+        let s = std::str::from_utf8(bytes).context("parse sock address from bytes")?;
         s.try_into()
     }
 }
