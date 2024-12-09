@@ -128,7 +128,8 @@ impl TryFrom<&str> for SocketAddress {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (ip_addr, port) = crate::address::authority::split_port_from_str(s)?;
-        let ip_addr = try_to_parse_str_to_ip(ip_addr).context("parse ip address from socket address")?;
+        let ip_addr =
+            try_to_parse_str_to_ip(ip_addr).context("parse ip address from socket address")?;
         match ip_addr {
             IpAddr::V6(_) if !s.starts_with('[') => Err(OpaqueError::from_display(
                 "missing brackets for IPv6 address with port",
@@ -197,52 +198,48 @@ impl<'de> serde::Deserialize<'de> for SocketAddress {
 mod tests {
     use super::*;
 
-    fn assert_eq(s: &str, sock_address: SocketAddress, ip_addr: &IpAddr, port: u16) {
-        assert_eq!(
-            sock_address.ip_addr(),
-            ip_addr,
-            "parsing: {}",
-            s
-        );
-        assert_eq!(sock_address.port(), port, "parsing: {}", s);
-    }
-
     #[test]
     fn test_parse_valid() {
         for (s, expected_socket_address) in [
             ("[::1]:80", SocketAddress::new("::1".parse().unwrap(), 80)),
-            ("127.0.0.1:80", SocketAddress::new("127.0.0.1".parse().unwrap(), 80)),
+            (
+                "127.0.0.1:80",
+                SocketAddress::new("127.0.0.1".parse().unwrap(), 80),
+            ),
             (
                 "[2001:db8:3333:4444:5555:6666:7777:8888]:80",
-                SocketAddress::new("2001:db8:3333:4444:5555:6666:7777:8888".parse().unwrap(), 80),
+                SocketAddress::new(
+                    "2001:db8:3333:4444:5555:6666:7777:8888".parse().unwrap(),
+                    80,
+                ),
             ),
         ] {
             let msg = format!("parsing '{}'", s);
 
-            assert_eq(s, s.parse().expect(&msg), expected_socket_address.ip_addr(), expected_socket_address.port());
-            assert_eq(
-                s,
+            assert_eq!(expected_socket_address, s.parse().expect(&msg), "{}", msg);
+            assert_eq!(
+                expected_socket_address,
                 s.try_into().expect(&msg),
-                expected_socket_address.ip_addr(),
-                expected_socket_address.port(),
+                "{}",
+                msg
             );
-            assert_eq(
-                s,
+            assert_eq!(
+                expected_socket_address,
                 s.to_owned().try_into().expect(&msg),
-                expected_socket_address.ip_addr(),
-                expected_socket_address.port(),
+                "{}",
+                msg
             );
-            assert_eq(
-                s,
+            assert_eq!(
+                expected_socket_address,
                 s.as_bytes().try_into().expect(&msg),
-                expected_socket_address.ip_addr(),
-                expected_socket_address.port(),
+                "{}",
+                msg
             );
-            assert_eq(
-                s,
+            assert_eq!(
+                expected_socket_address,
                 s.as_bytes().to_vec().try_into().expect(&msg),
-                expected_socket_address.ip_addr(),
-                expected_socket_address.port(),
+                "{}",
+                msg
             );
         }
     }
