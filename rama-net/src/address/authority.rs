@@ -1,5 +1,5 @@
 use super::{parse_utils, Domain, Host};
-use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{
     fmt,
@@ -116,12 +116,12 @@ impl From<&SocketAddr> for Authority {
 }
 
 impl fmt::Display for Authority {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.host {
             Host::Name(domain) => write!(f, "{}:{}", domain, self.port),
             Host::Address(ip) => match ip {
-                std::net::IpAddr::V4(ip) => write!(f, "{}:{}", ip, self.port),
-                std::net::IpAddr::V6(ip) => write!(f, "[{}]:{}", ip, self.port),
+                IpAddr::V4(ip) => write!(f, "{}:{}", ip, self.port),
+                IpAddr::V6(ip) => write!(f, "[{}]:{}", ip, self.port),
             },
         }
     }
@@ -218,43 +218,47 @@ impl<'de> serde::Deserialize<'de> for Authority {
 mod tests {
     use super::*;
 
-    fn assert_eq(s: &str, authority: Authority, host: &str, port: u16) {
-        assert_eq!(authority.host(), &host, "parsing: {}", s);
-        assert_eq!(authority.port(), port, "parsing: {}", s);
-    }
-
     #[test]
     fn test_parse_valid() {
-        for (s, (expected_host, expected_port)) in [
-            ("example.com:80", ("example.com", 80)),
-            ("[::1]:80", ("::1", 80)),
-            ("127.0.0.1:80", ("127.0.0.1", 80)),
+        for (s, expected_authority) in [
+            (
+                "example.com:80",
+                Authority::new("example.com".parse().unwrap(), 80),
+            ),
+            ("[::1]:80", Authority::new("::1".parse().unwrap(), 80)),
+            (
+                "127.0.0.1:80",
+                Authority::new("127.0.0.1".parse().unwrap(), 80),
+            ),
             (
                 "[2001:db8:3333:4444:5555:6666:7777:8888]:80",
-                ("2001:db8:3333:4444:5555:6666:7777:8888", 80),
+                Authority::new(
+                    "2001:db8:3333:4444:5555:6666:7777:8888".parse().unwrap(),
+                    80,
+                ),
             ),
         ] {
             let msg = format!("parsing '{}'", s);
 
-            assert_eq(s, s.parse().expect(&msg), expected_host, expected_port);
-            assert_eq(s, s.try_into().expect(&msg), expected_host, expected_port);
-            assert_eq(
-                s,
+            assert_eq!(expected_authority, s.parse().expect(&msg), "{}", msg);
+            assert_eq!(expected_authority, s.try_into().expect(&msg), "{}", msg);
+            assert_eq!(
+                expected_authority,
                 s.to_owned().try_into().expect(&msg),
-                expected_host,
-                expected_port,
+                "{}",
+                msg
             );
-            assert_eq(
-                s,
+            assert_eq!(
+                expected_authority,
                 s.as_bytes().try_into().expect(&msg),
-                expected_host,
-                expected_port,
+                "{}",
+                msg
             );
-            assert_eq(
-                s,
+            assert_eq!(
+                expected_authority,
                 s.as_bytes().to_vec().try_into().expect(&msg),
-                expected_host,
-                expected_port,
+                "{}",
+                msg
             );
         }
     }
