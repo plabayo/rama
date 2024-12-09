@@ -1,4 +1,4 @@
-use crate::address::host::try_to_parse_str_to_ip;
+use crate::address::parse_utils::try_to_parse_str_to_ip;
 use rama_core::error::{ErrorContext, OpaqueError};
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
@@ -127,7 +127,7 @@ impl TryFrom<&str> for SocketAddress {
     type Error = OpaqueError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let (ip_addr, port) = crate::address::authority::split_port_from_str(s)?;
+        let (ip_addr, port) = crate::address::parse_utils::split_port_from_str(s)?;
         let ip_addr =
             try_to_parse_str_to_ip(ip_addr).context("parse ip address from socket address")?;
         match ip_addr {
