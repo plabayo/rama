@@ -1,10 +1,10 @@
+use crate::address::host::try_to_parse_str_to_ip;
 use rama_core::error::{ErrorContext, OpaqueError};
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
 use std::fmt;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::str::FromStr;
-use crate::address::host::try_to_parse_str_to_ip;
 
 /// An [`IpAddr`] with an associated port
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -60,6 +60,41 @@ impl From<&SocketAddr> for SocketAddress {
 impl From<SocketAddress> for SocketAddr {
     fn from(addr: SocketAddress) -> Self {
         SocketAddr::new(addr.ip_addr, addr.port)
+    }
+}
+
+impl From<(IpAddr, u16)> for SocketAddress {
+    #[inline]
+    fn from((ip, port): (IpAddr, u16)) -> Self {
+        (ip, port).into()
+    }
+}
+
+impl From<(Ipv4Addr, u16)> for SocketAddress {
+    #[inline]
+    fn from((ip, port): (Ipv4Addr, u16)) -> Self {
+        (ip, port).into()
+    }
+}
+
+impl From<([u8; 4], u16)> for SocketAddress {
+    #[inline]
+    fn from((ip, port): ([u8; 4], u16)) -> Self {
+        (ip.into(), port).into()
+    }
+}
+
+impl From<(Ipv6Addr, u16)> for SocketAddress {
+    #[inline]
+    fn from((ip, port): (Ipv6Addr, u16)) -> Self {
+        (ip, port).into()
+    }
+}
+
+impl From<([u8; 16], u16)> for SocketAddress {
+    #[inline]
+    fn from((ip, port): ([u8; 16], u16)) -> Self {
+        (ip.into(), port).into()
     }
 }
 
