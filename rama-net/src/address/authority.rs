@@ -194,7 +194,7 @@ impl TryFrom<&[u8]> for Authority {
     }
 }
 
-pub(crate) fn split_port_from_str(s: &str) -> Result<(&str, u16), OpaqueError> {
+pub(super) fn split_port_from_str(s: &str) -> Result<(&str, u16), OpaqueError> {
     if let Some(colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
         match s[colon + 1..].parse() {
             Ok(port) => Ok((&s[..colon], port)),

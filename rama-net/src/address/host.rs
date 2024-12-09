@@ -295,7 +295,7 @@ impl<'de> serde::Deserialize<'de> for Host {
     }
 }
 
-fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
+pub(super) fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
     if value.starts_with('[') || value.ends_with(']') {
         let value = value
             .strip_prefix('[')
