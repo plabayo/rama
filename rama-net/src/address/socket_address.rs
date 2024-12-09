@@ -7,6 +7,7 @@ use std::str::FromStr;
 use crate::address::host::try_to_parse_str_to_ip;
 
 /// An [`IpAddr`] with an associated port
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SocketAddress {
     ip_addr: IpAddr,
     port: u16,
