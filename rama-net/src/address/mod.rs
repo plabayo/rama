@@ -19,6 +19,13 @@ mod authority;
 #[doc(inline)]
 pub use authority::Authority;
 
+mod socket_address;
+#[doc(inline)]
+pub use socket_address::SocketAddress;
+
 mod proxy;
+
+mod parse_utils;
+
 #[doc(inline)]
 pub use proxy::ProxyAddress;
