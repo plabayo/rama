@@ -356,7 +356,7 @@ pub struct RequestBuilder<'a, S, State, Response> {
     _phantom: std::marker::PhantomData<fn(State, Response) -> ()>,
 }
 
-impl<'a, S, State, Response> std::fmt::Debug for RequestBuilder<'a, S, State, Response>
+impl<S, State, Response> std::fmt::Debug for RequestBuilder<'_, S, State, Response>
 where
     S: std::fmt::Debug,
 {

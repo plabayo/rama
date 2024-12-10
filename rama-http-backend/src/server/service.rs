@@ -100,7 +100,7 @@ pub struct Http1Config<'a> {
     inner: &'a mut Http1ConnBuilder,
 }
 
-impl<'a> Http1Config<'a> {
+impl Http1Config<'_> {
     /// Set whether HTTP/1 connections should support half-closures.
     ///
     /// Clients can chose to shutdown their write-side while waiting
@@ -235,7 +235,7 @@ pub struct H2Config<'a, E> {
     inner: &'a mut H2ConnBuilder<E>,
 }
 
-impl<'a, E> H2Config<'a, E> {
+impl<E> H2Config<'_, E> {
     /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
     /// stream-level flow control.
     ///
@@ -394,7 +394,7 @@ impl std::fmt::Debug for AutoHttp1Config<'_, ()> {
     }
 }
 
-impl<'a, E> AutoHttp1Config<'a, E> {
+impl<E> AutoHttp1Config<'_, E> {
     /// Set whether HTTP/1 connections should support half-closures.
     ///
     /// Clients can chose to shutdown their write-side while waiting
@@ -514,7 +514,7 @@ impl std::fmt::Debug for AutoH2Config<'_, ()> {
     }
 }
 
-impl<'a, E> AutoH2Config<'a, E> {
+impl<E> AutoH2Config<'_, E> {
     /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
     /// stream-level flow control.
     ///

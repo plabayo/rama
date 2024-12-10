@@ -108,7 +108,7 @@ impl Proxy {
             }
         }
 
-        return filter
+        filter
             .continent
             .as_ref()
             .map(|c| {
@@ -172,7 +172,7 @@ impl Proxy {
                 .residential
                 .map(|r| r == self.residential)
                 .unwrap_or(true)
-            && filter.mobile.map(|m| m == self.mobile).unwrap_or(true);
+            && filter.mobile.map(|m| m == self.mobile).unwrap_or(true)
     }
 }
 

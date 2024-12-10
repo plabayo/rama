@@ -102,7 +102,7 @@ impl<'a> From<Result<v2::Header<'a>, v2::ParseError>> for HeaderResult<'a> {
     }
 }
 
-impl<'a> PartialResult for HeaderResult<'a> {
+impl PartialResult for HeaderResult<'_> {
     fn is_incomplete(&self) -> bool {
         match self {
             Self::V1(result) => result.is_incomplete(),

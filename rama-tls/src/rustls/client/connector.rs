@@ -213,7 +213,7 @@ impl<S> TlsConnector<S, ConnectorKindTunnel> {
     }
 }
 
-/// this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
+// this way we do not need a hacky macro... however is there a way to do this without needing to hacK?!?!
 
 impl<S, State, Request> Service<State, Request> for TlsConnector<S, ConnectorKindAuto>
 where

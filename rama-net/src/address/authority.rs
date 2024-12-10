@@ -1,5 +1,5 @@
-use super::{Domain, Host};
-use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
+use super::{parse_utils, Domain, Host};
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{
     fmt,
@@ -116,12 +116,12 @@ impl From<&SocketAddr> for Authority {
 }
 
 impl fmt::Display for Authority {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self.host {
             Host::Name(domain) => write!(f, "{}:{}", domain, self.port),
             Host::Address(ip) => match ip {
-                std::net::IpAddr::V4(ip) => write!(f, "{}:{}", ip, self.port),
-                std::net::IpAddr::V6(ip) => write!(f, "[{}]:{}", ip, self.port),
+                IpAddr::V4(ip) => write!(f, "{}:{}", ip, self.port),
+                IpAddr::V6(ip) => write!(f, "[{}]:{}", ip, self.port),
             },
         }
     }
@@ -147,7 +147,7 @@ impl TryFrom<&str> for Authority {
     type Error = OpaqueError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-        let (host, port) = split_port_from_str(s)?;
+        let (host, port) = parse_utils::split_port_from_str(s)?;
         let host = Host::try_from(host).context("parse host from authority")?;
         match host {
             Host::Address(IpAddr::V6(_)) if !s.starts_with('[') => Err(OpaqueError::from_display(
@@ -191,17 +191,6 @@ impl TryFrom<&[u8]> for Authority {
     fn try_from(bytes: &[u8]) -> Result<Self, Self::Error> {
         let s = std::str::from_utf8(bytes).context("parse authority from bytes")?;
         s.try_into()
-    }
-}
-
-fn split_port_from_str(s: &str) -> Result<(&str, u16), OpaqueError> {
-    if let Some(colon) = s.as_bytes().iter().rposition(|c| *c == b':') {
-        match s[colon + 1..].parse() {
-            Ok(port) => Ok((&s[..colon], port)),
-            Err(err) => Err(err.context("parse port as u16")),
-        }
-    } else {
-        Err(OpaqueError::from_display("missing port"))
     }
 }
 
