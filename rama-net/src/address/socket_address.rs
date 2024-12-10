@@ -95,7 +95,7 @@ impl From<(Ipv6Addr, u16)> for SocketAddress {
 impl From<([u8; 16], u16)> for SocketAddress {
     #[inline]
     fn from((ip, port): ([u8; 16], u16)) -> Self {
-        (let ip: IpAddr = ip.into();
+        let ip: IpAddr = ip.into();
         (ip, port).into()
     }
 }
