@@ -1,4 +1,4 @@
-use super::Domain;
+use super::{parse_utils, Domain};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{
     fmt,
@@ -153,7 +153,7 @@ impl TryFrom<String> for Host {
     type Error = OpaqueError;
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
-        try_to_parse_str_to_ip(name.as_str())
+        parse_utils::try_to_parse_str_to_ip(name.as_str())
             .map(Host::Address)
             .or_else(|| Domain::try_from(name).ok().map(Host::Name))
             .context("parse host from string")
@@ -164,7 +164,7 @@ impl TryFrom<&str> for Host {
     type Error = OpaqueError;
 
     fn try_from(name: &str) -> Result<Self, Self::Error> {
-        try_to_parse_str_to_ip(name)
+        parse_utils::try_to_parse_str_to_ip(name)
             .map(Host::Address)
             .or_else(|| Domain::try_from(name.to_owned()).ok().map(Host::Name))
             .context("parse host from string")
@@ -295,21 +295,10 @@ impl<'de> serde::Deserialize<'de> for Host {
     }
 }
 
-fn try_to_parse_str_to_ip(value: &str) -> Option<IpAddr> {
-    if value.starts_with('[') || value.ends_with(']') {
-        let value = value
-            .strip_prefix('[')
-            .and_then(|value| value.strip_suffix(']'))?;
-        Some(IpAddr::V6(value.parse::<Ipv6Addr>().ok()?))
-    } else {
-        value.parse::<IpAddr>().ok()
-    }
-}
-
 fn try_to_parse_bytes_to_ip(value: &[u8]) -> Option<IpAddr> {
     if let Some(ip) = std::str::from_utf8(value)
         .ok()
-        .and_then(try_to_parse_str_to_ip)
+        .and_then(parse_utils::try_to_parse_str_to_ip)
     {
         return Some(ip);
     }
