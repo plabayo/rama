@@ -198,48 +198,52 @@ impl<'de> serde::Deserialize<'de> for SocketAddress {
 mod tests {
     use super::*;
 
+    fn assert_eq(s: &str, sock_address: SocketAddress, ip_addr: &str, port: u16) {
+        assert_eq!(
+            sock_address.ip_addr().to_string(),
+            ip_addr,
+            "parsing: {}",
+            s
+        );
+        assert_eq!(sock_address.port(), port, "parsing: {}", s);
+    }
+
     #[test]
     fn test_parse_valid() {
-        for (s, expected_socket_address) in [
-            ("[::1]:80", SocketAddress::new("::1".parse().unwrap(), 80)),
-            (
-                "127.0.0.1:80",
-                SocketAddress::new("127.0.0.1".parse().unwrap(), 80),
-            ),
+        for (s, (expected_ip_addr, expected_port)) in [
+            ("[::1]:80", ("::1", 80)),
+            ("127.0.0.1:80", ("127.0.0.1", 80)),
             (
                 "[2001:db8:3333:4444:5555:6666:7777:8888]:80",
-                SocketAddress::new(
-                    "2001:db8:3333:4444:5555:6666:7777:8888".parse().unwrap(),
-                    80,
-                ),
+                ("2001:db8:3333:4444:5555:6666:7777:8888", 80),
             ),
         ] {
             let msg = format!("parsing '{}'", s);
 
-            assert_eq!(expected_socket_address, s.parse().expect(&msg), "{}", msg);
-            assert_eq!(
-                expected_socket_address,
+            assert_eq(s, s.parse().expect(&msg), expected_ip_addr, expected_port);
+            assert_eq(
+                s,
                 s.try_into().expect(&msg),
-                "{}",
-                msg
+                expected_ip_addr,
+                expected_port,
             );
-            assert_eq!(
-                expected_socket_address,
+            assert_eq(
+                s,
                 s.to_owned().try_into().expect(&msg),
-                "{}",
-                msg
+                expected_ip_addr,
+                expected_port,
             );
-            assert_eq!(
-                expected_socket_address,
+            assert_eq(
+                s,
                 s.as_bytes().try_into().expect(&msg),
-                "{}",
-                msg
+                expected_ip_addr,
+                expected_port,
             );
-            assert_eq!(
-                expected_socket_address,
+            assert_eq(
+                s,
                 s.as_bytes().to_vec().try_into().expect(&msg),
-                "{}",
-                msg
+                expected_ip_addr,
+                expected_port,
             );
         }
     }
