@@ -132,7 +132,7 @@ impl WriteToHeader for Addresses {
     }
 }
 
-impl<'a> WriteToHeader for TypeLengthValue<'a> {
+impl WriteToHeader for TypeLengthValue<'_> {
     fn write_to(&self, writer: &mut Writer) -> io::Result<usize> {
         if self.value.len() > u16::MAX as usize {
             return Err(io::ErrorKind::WriteZero.into());
@@ -146,7 +146,7 @@ impl<'a> WriteToHeader for TypeLengthValue<'a> {
     }
 }
 
-impl<'a, T: Copy + Into<u8>> WriteToHeader for (T, &'a [u8]) {
+impl<T: Copy + Into<u8>> WriteToHeader for (T, &[u8]) {
     fn write_to(&self, writer: &mut Writer) -> io::Result<usize> {
         let kind = self.0.into();
         let value = self.1;
@@ -163,7 +163,7 @@ impl<'a, T: Copy + Into<u8>> WriteToHeader for (T, &'a [u8]) {
     }
 }
 
-impl<'a> WriteToHeader for TypeLengthValues<'a> {
+impl WriteToHeader for TypeLengthValues<'_> {
     fn write_to(&self, writer: &mut Writer) -> io::Result<usize> {
         let bytes = self.as_bytes();
 

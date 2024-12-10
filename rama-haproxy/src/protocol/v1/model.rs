@@ -282,7 +282,7 @@ impl From<IPv6> for Addresses {
     }
 }
 
-impl<'a> fmt::Display for Header<'a> {
+impl fmt::Display for Header<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.header.as_ref())
     }

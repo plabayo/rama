@@ -173,7 +173,7 @@ pub enum Type {
     NetworkNamespace = 0x30,
 }
 
-impl<'a> fmt::Display for Header<'a> {
+impl fmt::Display for Header<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -186,7 +186,7 @@ impl<'a> fmt::Display for Header<'a> {
     }
 }
 
-impl<'a> Header<'a> {
+impl Header<'_> {
     /// Creates an owned clone of this [`Header`].
     pub fn to_owned(&self) -> Header<'static> {
         Header {
@@ -250,7 +250,7 @@ impl<'a> Header<'a> {
     }
 }
 
-impl<'a> TypeLengthValues<'a> {
+impl TypeLengthValues<'_> {
     /// The underlying byte slice of the `TypeLengthValue`s portion of the `Header` payload.
     pub fn as_bytes(&self) -> &[u8] {
         self.bytes
@@ -296,7 +296,7 @@ impl<'a> Iterator for TypeLengthValues<'a> {
     }
 }
 
-impl<'a> TypeLengthValues<'a> {
+impl TypeLengthValues<'_> {
     /// The number of bytes in the `TypeLengthValue` portion of the `Header`.
     pub fn len(&self) -> u16 {
         self.bytes.len() as u16

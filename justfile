@@ -12,8 +12,8 @@ check:
 clippy:
 	cargo clippy --workspace --all-targets --all-features
 
-clippy-fix:
-	cargo clippy --fix
+clippy-fix *ARGS:
+	cargo clippy --workspace --all-targets --all-features --fix {{ARGS}}
 
 typos:
 	typos -w

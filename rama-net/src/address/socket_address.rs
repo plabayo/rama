@@ -65,15 +65,18 @@ impl From<SocketAddress> for SocketAddr {
 
 impl From<(IpAddr, u16)> for SocketAddress {
     #[inline]
-    fn from((ip, port): (IpAddr, u16)) -> Self {
-        (ip, port).into()
+    fn from((ip_addr, port): (IpAddr, u16)) -> Self {
+        Self { ip_addr, port }
     }
 }
 
 impl From<(Ipv4Addr, u16)> for SocketAddress {
     #[inline]
     fn from((ip, port): (Ipv4Addr, u16)) -> Self {
-        (ip, port).into()
+        Self {
+            ip_addr: ip.into(),
+            port,
+        }
     }
 }
 
@@ -88,7 +91,10 @@ impl From<([u8; 4], u16)> for SocketAddress {
 impl From<(Ipv6Addr, u16)> for SocketAddress {
     #[inline]
     fn from((ip, port): (Ipv6Addr, u16)) -> Self {
-        (ip, port).into()
+        Self {
+            ip_addr: ip.into(),
+            port,
+        }
     }
 }
 

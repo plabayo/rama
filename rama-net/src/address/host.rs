@@ -207,7 +207,7 @@ impl<'a> TryFrom<rustls::pki_types::ServerName<'a>> for Host {
 }
 
 #[cfg(feature = "rustls")]
-impl<'a> TryFrom<Host> for rustls::pki_types::ServerName<'a> {
+impl TryFrom<Host> for rustls::pki_types::ServerName<'_> {
     type Error = OpaqueError;
 
     fn try_from(value: Host) -> Result<Self, Self::Error> {

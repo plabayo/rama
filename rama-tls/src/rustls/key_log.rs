@@ -35,7 +35,7 @@ struct PlainHex<'a, T: 'a> {
     slice: &'a [T],
 }
 
-impl<'a, T: fmt::LowerHex> fmt::LowerHex for PlainHex<'a, T> {
+impl<T: fmt::LowerHex> fmt::LowerHex for PlainHex<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         fmt_inner_hex(self.slice, f, fmt::LowerHex::fmt)
     }
