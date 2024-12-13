@@ -21,6 +21,8 @@ pub struct ClientConfig {
     pub client_auth: Option<ClientAuth>,
     /// key log intent
     pub key_logger: Option<KeyLogIntent>,
+    /// if enabled server certificates will be stored in [`NegotiatedTlsParameters`]
+    pub store_server_certificate_chain: bool,
 }
 
 impl ClientConfig {

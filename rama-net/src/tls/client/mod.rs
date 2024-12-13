@@ -19,7 +19,7 @@ mod config;
 #[doc(inline)]
 pub use config::{ClientAuth, ClientAuthData, ClientConfig, ServerVerifyMode};
 
-use super::{ApplicationProtocol, ProtocolVersion};
+use super::{ApplicationProtocol, DataEncoding, ProtocolVersion};
 
 #[derive(Debug, Clone)]
 /// Indicate (some) of the negotiated tls parameters that
@@ -35,6 +35,8 @@ pub struct NegotiatedTlsParameters {
     ///
     /// e.g. [`ApplicationProtocol::HTTP_2`]
     pub application_layer_protocol: Option<ApplicationProtocol>,
+    /// Certificate chain provided the peer (only stored if config requested this)
+    pub peer_certificate_chain: Option<DataEncoding>,
 }
 
 /// Merge extension lists A and B, with

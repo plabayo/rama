@@ -45,6 +45,8 @@ pub(super) struct TlsConfig {
     pub(super) protocol_versions: Option<Vec<ProtocolVersion>>,
     /// optionally define client certificates in case client auth is enabled
     pub(super) client_cert_chain: Option<Vec<X509>>,
+    /// store client certificate chain if true and client provided this
+    pub store_client_certificate_chain: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -320,6 +322,7 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                 keylog_intent: value.key_logger,
                 protocol_versions: value.protocol_versions.clone(),
                 client_cert_chain,
+                store_client_certificate_chain: value.store_client_certificate_chain,
             }),
         })
     }
