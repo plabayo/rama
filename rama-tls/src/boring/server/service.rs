@@ -221,13 +221,20 @@ where
                     .flatten()
                 {
                     // peer_cert_chain doesn't contain the leaf certificate in a server ctx
-                    let mut chain = stream.ssl().peer_cert_chain().map_or(vec![], |chain| {
+                    let mut chain = stream.ssl().peer_cert_chain().map_or(Ok(vec![]), |chain| {
                         chain
                             .into_iter()
-                            .map(|cert| cert.to_der().unwrap())
-                            .collect()
-                    });
-                    chain.insert(0, certificate.to_der().unwrap());
+                            .map(|cert| {
+                                cert.to_der()
+                                    .context("boring ssl session: failed to convert peer certificates to der")
+                            })
+                            .collect::<Result<Vec<Vec<u8>>, _>>()
+                    })?;
+
+                    let certificate = certificate
+                        .to_der()
+                        .context("boring ssl session: failed to convert peer certificate to der")?;
+                    chain.insert(0, certificate);
                     Some(DataEncoding::DerStack(chain))
                 } else {
                     None
