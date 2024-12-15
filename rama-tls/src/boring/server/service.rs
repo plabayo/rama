@@ -19,7 +19,7 @@ use rama_net::{
     transport::TransportContext,
 };
 use rama_utils::macros::define_inner_service_accessors;
-use std::{io::ErrorKind, sync::Arc, vec};
+use std::{io::ErrorKind, sync::Arc};
 use tracing::{debug, trace};
 
 /// A [`Service`] which accepts TLS connections and delegates the underlying transport
