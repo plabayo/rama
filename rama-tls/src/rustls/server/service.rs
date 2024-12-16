@@ -95,6 +95,8 @@ where
             application_layer_protocol: conn_data_ref
                 .alpn_protocol()
                 .map(ApplicationProtocol::from),
+            // Currently not supported as this would mean we need to wrap rustls config
+            peer_certificate_chain: None,
         });
 
         ctx.insert(secure_transport);

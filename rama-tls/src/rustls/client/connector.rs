@@ -414,7 +414,8 @@ impl<S, K> TlsConnector<S, K> {
     where
         T: Stream + Unpin,
     {
-        let client_config_data = match connector_data.as_ref().or(self.connector_data.as_ref()) {
+        let connector_data = connector_data.as_ref().or(self.connector_data.as_ref());
+        let client_config_data = match connector_data {
             Some(connector_data) => connector_data.try_to_build_config()?,
             None => TlsConnectorData::new_http_auto()?.try_to_build_config()?,
         };
@@ -428,6 +429,15 @@ impl<S, K> TlsConnector<S, K> {
 
         let (_, conn_data_ref) = stream.get_ref();
 
+        let store_server_cert_chain = connector_data
+            .is_some_and(|data| data.client_config_input.store_server_certificate_chain);
+
+        let server_certificate_chain = if store_server_cert_chain {
+            conn_data_ref.peer_certificates().map(Into::into)
+        } else {
+            None
+        };
+
         let params = NegotiatedTlsParameters {
             protocol_version: conn_data_ref
                 .protocol_version()
@@ -436,6 +446,7 @@ impl<S, K> TlsConnector<S, K> {
             application_layer_protocol: conn_data_ref
                 .alpn_protocol()
                 .map(ApplicationProtocol::from),
+            peer_certificate_chain: server_certificate_chain,
         };
 
         Ok((stream, params))

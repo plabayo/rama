@@ -28,6 +28,9 @@ pub struct ServerConfig {
 
     /// key log intent
     pub key_logger: KeyLogIntent,
+
+    /// store client certificate chain
+    pub store_client_certificate_chain: bool,
 }
 
 impl ServerConfig {
@@ -40,6 +43,7 @@ impl ServerConfig {
             application_layer_protocol_negotiation: None,
             client_verify_mode: ClientVerifyMode::default(),
             key_logger: KeyLogIntent::default(),
+            store_client_certificate_chain: false,
         }
     }
 }

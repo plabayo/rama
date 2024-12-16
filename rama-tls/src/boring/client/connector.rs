@@ -406,7 +406,8 @@ impl<S, K> TlsConnector<S, K> {
     where
         T: Stream + Unpin,
     {
-        let client_config_data = match connector_data.as_ref().or(self.connector_data.as_ref()) {
+        let connector_data = connector_data.as_ref().or(self.connector_data.as_ref());
+        let client_config_data = match connector_data {
             Some(connector_data) => connector_data.try_to_build_config()?,
             None => TlsConnectorData::new_http_auto()?.try_to_build_config()?,
         };
@@ -437,9 +438,22 @@ impl<S, K> TlsConnector<S, K> {
                 if let Some(ref proto) = application_layer_protocol {
                     tracing::trace!(%proto, "boring client (connector) has selected ALPN");
                 }
+
+                let store_server_cert_chain = connector_data
+                    .is_some_and(|data| data.connect_config_input.store_server_certificate_chain);
+
+                let server_certificate_chain = match store_server_cert_chain
+                    .then(|| stream.ssl().peer_cert_chain())
+                    .flatten()
+                {
+                    Some(chain) => Some(chain.try_into()?),
+                    None => None,
+                };
+
                 NegotiatedTlsParameters {
                     protocol_version,
                     application_layer_protocol,
+                    peer_certificate_chain: server_certificate_chain,
                 }
             }
             None => {

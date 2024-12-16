@@ -42,6 +42,7 @@ pub(super) struct ConnectConfigurationInput {
     pub(super) verify_algorithm_prefs: Option<Vec<SslSignatureAlgorithm>>,
     pub(super) server_verify_mode: Option<ServerVerifyMode>,
     pub(super) client_auth: Option<ConnectorConfigClientAuth>,
+    pub(super) store_server_certificate_chain: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +234,9 @@ impl TlsConnectorData {
                     .client_auth
                     .clone()
                     .or_else(|| self.connect_config_input.client_auth.clone()),
+                store_server_certificate_chain: other
+                    .connect_config_input
+                    .store_server_certificate_chain,
             }),
             server_name: other
                 .server_name
@@ -491,6 +495,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                 verify_algorithm_prefs,
                 server_verify_mode: value.server_verify_mode,
                 client_auth,
+                store_server_certificate_chain: value.store_server_certificate_chain,
             }),
             server_name,
         })
