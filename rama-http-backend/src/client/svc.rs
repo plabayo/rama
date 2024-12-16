@@ -47,12 +47,11 @@ where
         // directly instead of here...
         let req = sanitize_client_req_header(&mut ctx, req)?;
 
-        let mut resp = match &self.0 {
+        let resp = match &self.0 {
             SendRequest::Http1(sender) => sender.lock().await.send_request(req).await,
             SendRequest::Http2(sender) => sender.lock().await.send_request(req).await,
         }?;
 
-        resp.extensions_mut().insert(ctx);
         Ok(resp.map(rama_http_types::Body::new))
     }
 }
