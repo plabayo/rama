@@ -10,7 +10,7 @@ use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::stream::Stream;
 use rama_net::tls::client::NegotiatedTlsParameters;
-use rama_net::tls::{ApplicationProtocol, DataEncoding};
+use rama_net::tls::ApplicationProtocol;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
 use std::sync::Arc;
@@ -433,7 +433,7 @@ impl<S, K> TlsConnector<S, K> {
             .is_some_and(|data| data.client_config_input.store_server_certificate_chain);
 
         let server_certificate_chain = if store_server_cert_chain {
-            conn_data_ref.peer_certificates().map(DataEncoding::from)
+            conn_data_ref.peer_certificates().map(Into::into)
         } else {
             None
         };
