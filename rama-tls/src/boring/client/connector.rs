@@ -442,13 +442,12 @@ impl<S, K> TlsConnector<S, K> {
                 let store_server_cert_chain = connector_data
                     .is_some_and(|data| data.connect_config_input.store_server_certificate_chain);
 
-                let server_certificate_chain = if let Some(chain) = store_server_cert_chain
+                let server_certificate_chain = match store_server_cert_chain
                     .then(|| stream.ssl().peer_cert_chain())
                     .flatten()
                 {
-                    Some(chain.try_into()?)
-                } else {
-                    None
+                    Some(chain) => Some(chain.try_into()?),
+                    None => None,
                 };
 
                 NegotiatedTlsParameters {
