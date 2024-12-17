@@ -398,7 +398,7 @@ fn server_auth_data_to_private_key_and_ca_chain(
             .context("boring/TlsAcceptorData: parse x509 server cert chain from PEM content")?,
     };
 
-    Ok({IssuedCert { cert_chain, key: private_key }})
+    Ok(IssuedCert { cert_chain, key: private_key })
 }
 
 fn issue_cert_for_ca(
