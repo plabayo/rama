@@ -1,9 +1,10 @@
-use serde::{Deserialize, Serialize};
-
 use crate::{
     address::Host,
-    tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion},
+    tls::{client::ClientHello, ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion},
 };
+use rama_core::error::OpaqueError;
+use serde::{Deserialize, Serialize};
+use std::{future::Future, pin::Pin, sync::Arc};
 
 #[derive(Debug, Clone)]
 /// Common API to configure a TLS Server
@@ -72,6 +73,9 @@ pub struct ServerCertIssuerData {
     /// The max amount of certs to cache,
     /// a default value of 8096 is used if 0.
     pub max_cache_size: u64,
+    /// If cache should be disabled when
+    /// using a dynamic issuer.
+    pub disable_cache_for_dynamic_issuer: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -82,13 +86,19 @@ pub enum ServerCertIssuerKind {
     SelfSigned(SelfSignedData),
     /// Single data provided by the configurator
     Single(ServerAuthData),
-    // TODO: support a client somehow, so that it can also
-    // work with an external cert provider
+    /// A dynamic data provider which can decide depending on client hello msg
+    Dynamic(DynamicIssuer),
 }
 
 impl Default for ServerCertIssuerKind {
     fn default() -> Self {
         ServerCertIssuerKind::SelfSigned(SelfSignedData::default())
+    }
+}
+
+impl ServerCertIssuerKind {
+    pub fn from_dynamic_issuer<T: DynamicCertIssuer + Send + Sync + 'static>(issuer: T) -> Self {
+        Self::Dynamic(DynamicIssuer::new(issuer))
     }
 }
 
@@ -116,6 +126,69 @@ pub struct ServerAuthData {
 
     /// `ocsp` is a DER-encoded OCSP response
     pub ocsp: Option<Vec<u8>>,
+}
+
+#[derive(Clone)]
+/// Dynamic issuer which internally contains the dyn issuer
+pub struct DynamicIssuer {
+    /// Issuer not public in case we want to migrate away from dyn approach to alternative (eg channels)
+    issuer: Arc<dyn DynDynamicCertIssuer + Send + Sync>,
+}
+
+impl DynamicIssuer {
+    pub fn new<T: DynamicCertIssuer + Send + Sync + 'static>(issuer: T) -> Self {
+        return Self {
+            issuer: Arc::new(issuer),
+        };
+    }
+
+    pub async fn issue_cert(
+        &self,
+        client_hello: ClientHello,
+        server_name: Option<Host>,
+    ) -> Result<ServerAuthData, OpaqueError> {
+        self.issuer.issue_cert(client_hello, server_name).await
+    }
+}
+
+impl std::fmt::Debug for DynamicIssuer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DynamicIssuer").finish()
+    }
+}
+
+/// Trait that needs to be implemented by cert issuers to support dynamically
+/// issueing (external) certs based on client_hello input.
+pub trait DynamicCertIssuer {
+    fn issue_cert(
+        &self,
+        client_hello: ClientHello,
+        server_name: Option<Host>,
+    ) -> impl Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_;
+}
+
+/// Internal trait to support dynamic dispatch of trait with async fn.
+/// See trait DynService<S, Request> for more info about this pattern.
+trait DynDynamicCertIssuer {
+    fn issue_cert(
+        &self,
+        client_hello: ClientHello,
+        server_name: Option<Host>,
+    ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_>>;
+}
+
+impl<T> DynDynamicCertIssuer for T
+where
+    T: DynamicCertIssuer,
+{
+    fn issue_cert(
+        &self,
+
+        client_hello: ClientHello,
+        server_name: Option<Host>,
+    ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_>> {
+        Box::pin(self.issue_cert(client_hello, server_name))
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
