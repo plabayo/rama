@@ -143,7 +143,7 @@ impl TlsCertSource {
                         };
                         *cb_maybe_client_hello.lock() = maybe_client_hello;
                     }
-        
+
                     let mut client_hello = client_hello;
                     let ssl_ref = client_hello.ssl_mut();
 
@@ -184,7 +184,7 @@ impl TlsCertSource {
                             tracing::error!(error = %err, "boring: failed converting to rama client hello");
                             AsyncSelectCertError{}
                         })?;
-                
+
                     if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
                         *cb_maybe_client_hello.lock() = Some(rama_client_hello.clone());
                     }
@@ -194,12 +194,12 @@ impl TlsCertSource {
                         tracing::error!(error = %err, "boring: failed getting host");
                         AsyncSelectCertError{}
                     })?;
-            
-    
+
+
                     let issuer = issuer.clone();
                     let cert_cache = cert_cache.clone();
                     let server_name = server_name.clone();
-    
+
                     Ok(Box::pin(async move {
                         let issued_cert = if let Some(cached_cert) = cert_cache.as_ref().and_then(|cert_cache| cert_cache.get(&host)) {
                             cached_cert
