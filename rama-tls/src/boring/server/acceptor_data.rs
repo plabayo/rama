@@ -1,29 +1,37 @@
 use crate::boring::dep::boring::{
-    asn1::Asn1Time,
-    bn::{BigNum, MsbOption},
-    hash::MessageDigest,
-    nid::Nid,
-    pkey::{PKey, Private},
-    rsa::Rsa,
-    x509::{
-        extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
-        X509NameBuilder, X509,
-    },
-};
+        asn1::Asn1Time,
+        bn::{BigNum, MsbOption},
+        hash::MessageDigest,
+        nid::Nid,
+        pkey::{PKey, Private},
+        rsa::Rsa,
+        x509::{
+            extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
+            X509NameBuilder, X509,
+        },
+    };
 use boring::{
-    ssl::{NameType, SniError, SslAcceptorBuilder, SslRef},
+    ssl::{ClientHello, NameType, SelectCertError, SslAcceptorBuilder, SslRef},
     x509::extension::{AuthorityKeyIdentifier, SubjectAlternativeName},
 };
 use moka::sync::Cache;
+use parking_lot::Mutex;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::{
     address::{Domain, Host},
     tls::{
-        server::{ClientVerifyMode, SelfSignedData, ServerAuth, ServerCertIssuerKind},
+        client::ClientHello as RamaClientHello,
+        server::{
+            ClientVerifyMode, DynamicIssuer, SelfSignedData, ServerAuth,
+            ServerAuthData, ServerCertIssuerKind,
+        },
         ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion,
     },
 };
 use std::{sync::Arc, time::Duration};
+use tokio_boring::{
+    AsyncSelectCertError, BoxSelectCertFinish
+};
 
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
@@ -56,12 +64,7 @@ pub(super) struct TlsCertSource {
 
 #[derive(Debug, Clone)]
 enum TlsCertSourceKind {
-    InMemory {
-        /// Private Key of the server
-        private_key: PKey<Private>,
-        /// Cert Chain of the server
-        cert_chain: Vec<X509>,
-    },
+    InMemory(IssuedCert),
     InMemoryIssuer {
         /// Cache for certs already issued
         cert_cache: Cache<Host, IssuedCert>,
@@ -70,11 +73,16 @@ enum TlsCertSourceKind {
         /// CA Cert to be used for issueing
         ca_cert: X509,
     },
+    DynamicIssuer {
+        issuer: DynamicIssuer,
+        /// Cache for certs already issued
+        cert_cache: Option<Cache<Host, IssuedCert>>,
+    },
 }
 
 #[derive(Debug, Clone)]
 struct IssuedCert {
-    cert: X509,
+    cert_chain: Vec<X509>,
     key: PKey<Private>,
 }
 
@@ -83,13 +91,11 @@ impl TlsCertSource {
         self,
         mut builder: SslAcceptorBuilder,
         server_name: Option<Host>,
+        maybe_client_hello: &Option<Arc<Mutex<Option<RamaClientHello>>>>,
     ) -> Result<SslAcceptorBuilder, OpaqueError> {
         match self.kind {
-            TlsCertSourceKind::InMemory {
-                private_key,
-                cert_chain,
-            } => {
-                for (i, ca_cert) in cert_chain.iter().enumerate() {
+            TlsCertSourceKind::InMemory(issued_cert) => {
+                for (i, ca_cert) in issued_cert.cert_chain.iter().enumerate() {
                     if i == 0 {
                         builder
                             .set_certificate(ca_cert.as_ref())
@@ -101,35 +107,52 @@ impl TlsCertSource {
                     }
                 }
                 builder
-                    .set_private_key(private_key.as_ref())
+                    .set_private_key(issued_cert.key.as_ref())
                     .context("build boring ssl acceptor: set private key")?;
                 builder
                     .check_private_key()
                     .context("build boring ssl acceptor: check private key")?;
+
+                if let Some(maybe_client_hello) = maybe_client_hello {
+                    let cb_maybe_client_hello = maybe_client_hello.clone();
+                    builder.set_select_certificate_callback(move |boring_client_hello| {
+                        let maybe_client_hello = match RamaClientHello::try_from(boring_client_hello) {
+                            Ok(ch) => Some(ch),
+                            Err(err) => {
+                                tracing::warn!(err = %err, "failed to extract boringssl client hello");
+                                None
+                            }
+                        };
+                        *cb_maybe_client_hello.lock() = maybe_client_hello;
+                        Ok(())
+                    });
+                }
             }
             TlsCertSourceKind::InMemoryIssuer {
                 cert_cache,
                 ca_key,
                 ca_cert,
             } => {
-                builder.set_servername_callback(move |ssl_ref, _ssl_alert| {
-                    let host = match (ssl_ref.servername(NameType::HOST_NAME), &server_name) {
-                        (Some(sni), _) => {
-                            tracing::trace!(host = %sni, "boring: servername callback: use client SNI");
-                            sni.parse().map_err(|err| {
-                                tracing::warn!(error = %err, "boring: invalid servername received in callback");
-                                SniError::ALERT_FATAL
-                            })? // from client (e.g. only possibility for SNI proxy)
-                        },
-                       (_, Some(host)) => {
-                           tracing::trace!(%host, "boring: servername callback: use context");
-                           host.clone()  // from context (lower prio)
-                       },
-                       (None, None) => {
-                           tracing::warn!("boring: no host found in servername callback: defaulting to 'localhost'");
-                           Host::Name(Domain::from_static("localhost")) // fallback
-                       },
-                    };
+                let cb_maybe_client_hello = maybe_client_hello.clone();
+                builder.set_select_certificate_callback(move |client_hello| {
+                    if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
+                        let maybe_client_hello = match RamaClientHello::try_from(&client_hello) {
+                            Ok(ch) => Some(ch),
+                            Err(err) => {
+                                tracing::warn!(err = %err, "failed to extract boringssl client hello");
+                                None
+                            }
+                        };
+                        *cb_maybe_client_hello.lock() = maybe_client_hello;
+                    }
+        
+                    let mut client_hello = client_hello;
+                    let ssl_ref = client_hello.ssl_mut();
+
+                    let host = to_host(&ssl_ref, &server_name).map_err(|err| {
+                        tracing::error!(error = %err, "boring: failed getting host");
+                        SelectCertError::ERROR
+                    })?;
 
                     tracing::trace!(%host, "try to use cached issued cert or generate new one");
                     let issued_cert = cert_cache
@@ -138,20 +161,82 @@ impl TlsCertSource {
                         })
                         .context("fresh issue of cert + insert").map_err(|err| {
                             tracing::error!(error = %err, "boring: servername callback: issue failed");
-                            SniError::ALERT_FATAL
+                            SelectCertError::ERROR
                         })?;
 
                     add_issued_cert_to_ssl_ref(
                         host,
                         issued_cert,
-                        ca_cert.clone(),
                         ssl_ref,
                     ).map_err(|err| {
                         tracing::error!(error = %err, "boring: servername callback: add certs to ssl ref");
-                        SniError::ALERT_FATAL
+                        SelectCertError::ERROR
                     })?;
 
                     Ok(())
+                });
+            }
+            TlsCertSourceKind::DynamicIssuer { issuer, cert_cache } => {
+                let cb_maybe_client_hello = maybe_client_hello.clone();
+                let cert_cache = cert_cache.clone();
+
+                builder.set_async_select_certificate_callback(move |client_hello| {
+                    let rama_client_hello =
+                        RamaClientHello::try_from(&*client_hello).map_err(|err| {
+                            tracing::error!(error = %err, "boring: failed converting to rama client hello");
+                            AsyncSelectCertError{}
+                        })?;
+                
+                    if let Some(cb_maybe_client_hello) = &cb_maybe_client_hello {
+                        *cb_maybe_client_hello.lock() = Some(rama_client_hello.clone());
+                    }
+
+                    let ssl_ref = client_hello.ssl_mut();
+                    let host = to_host(&ssl_ref, &server_name).map_err(|err| {
+                        tracing::error!(error = %err, "boring: failed getting host");
+                        AsyncSelectCertError{}
+                    })?;
+            
+    
+                    let issuer = issuer.clone();
+                    let cert_cache = cert_cache.clone();
+                    let server_name = server_name.clone();
+    
+                    Ok(Box::pin(async move {
+                        let issued_cert = if let Some(cached_cert) = cert_cache.as_ref().and_then(|cert_cache| cert_cache.get(&host)) {
+                            cached_cert
+                        } else {
+                            let auth_data = issuer.issue_cert(rama_client_hello, server_name).await.map_err(|err| {
+                                tracing::error!(error = %err, "boring: dynamic cert issuer failed");
+                                AsyncSelectCertError{}
+                            })?;
+                            server_auth_data_to_private_key_and_ca_chain(&auth_data).map_err(|err| {
+                                tracing::error!(error = %err, "boring: server_auth_data to key and ca chain failed");
+                                AsyncSelectCertError{}
+                            })?
+                        };
+
+                        if let Some(cert_cache) = cert_cache {
+                            cert_cache.insert(host.clone(), issued_cert.clone());
+                        }
+
+                        let apply_cert = Box::new(move |client_hello: ClientHello<'_>| {
+                            let mut client_hello = client_hello;
+                            let ssl_ref = client_hello.ssl_mut();
+
+                            add_issued_cert_to_ssl_ref(
+                                host,
+                                issued_cert,
+                                ssl_ref,
+                            ).map_err(|err| {
+                                tracing::error!(error = %err, "boring: servername callback: add certs to ssl ref");
+                                AsyncSelectCertError{}
+                            })?;
+                            Ok(())
+                        }) as BoxSelectCertFinish;
+
+                        Ok(apply_cert)
+                    }))
                 });
             }
         }
@@ -190,51 +275,16 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
 
         let cert_source_kind = match value.server_auth {
             ServerAuth::SelfSigned(data) => {
-                let (cert_chain, private_key) =
+                let issued_cert =
                     self_signed_server_auth(data).context("boring/TlsAcceptorData")?;
-                TlsCertSourceKind::InMemory {
-                    private_key,
-                    cert_chain,
-                }
+                TlsCertSourceKind::InMemory(issued_cert)
             }
             ServerAuth::Single(data) => {
                 // server TLS Certs
-                let cert_chain = match data.cert_chain {
-                    DataEncoding::Der(raw_data) => vec![X509::from_der(&raw_data[..]).context(
-                        "boring/TlsAcceptorData: parse x509 server cert from DER content",
-                    )?],
-                    DataEncoding::DerStack(raw_data_list) => raw_data_list
-                        .into_iter()
-                        .map(|raw_data| {
-                            X509::from_der(&raw_data[..]).context(
-                                "boring/TlsAcceptorData: parse x509 server cert from DER content",
-                            )
-                        })
-                        .collect::<Result<Vec<_>, _>>()?,
-                    DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
-                        .context(
-                            "boring/TlsAcceptorData: parse x509 server cert chain from PEM content",
-                        )?,
-                };
+                let issued_cert =
+                    server_auth_data_to_private_key_and_ca_chain(&data)?;
 
-                // server TLS key
-                let private_key = match data.private_key {
-                    DataEncoding::Der(raw_data) => PKey::private_key_from_der(&raw_data[..])
-                        .context("boring/TlsAcceptorData: parse private key from DER content")?,
-                    DataEncoding::DerStack(raw_data_list) => PKey::private_key_from_der(
-                        &raw_data_list
-                            .first()
-                            .context("boring/TlsAcceptorData: get first private key raw data")?[..],
-                    )
-                    .context("boring/TlsAcceptorData: parse private key from DER content")?,
-                    DataEncoding::Pem(raw_data) => PKey::private_key_from_pem(raw_data.as_bytes())
-                        .context("boring/TlsAcceptorData: parse private key from PEM content")?,
-                };
-
-                TlsCertSourceKind::InMemory {
-                    private_key,
-                    cert_chain,
-                }
+                TlsCertSourceKind::InMemory(issued_cert)
             }
 
             ServerAuth::CertIssuer(data) => {
@@ -258,55 +308,23 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                         }
                     }
                     ServerCertIssuerKind::Single(data) => {
-                        // server TLS Certs
-                        let mut cert_chain = match data.cert_chain {
-                        DataEncoding::Der(raw_data) => vec![X509::from_der(&raw_data[..]).context(
-                            "boring/TlsAcceptorData: CA: parse x509 server cert from DER content",
-                        )?],
-                        DataEncoding::DerStack(raw_data_list) => raw_data_list
-                            .into_iter()
-                            .map(|raw_data| {
-                                X509::from_der(&raw_data[..]).context(
-                                    "boring/TlsAcceptorData: CA: parse x509 server cert from DER content",
-                                )
-                            })
-                            .collect::<Result<Vec<_>, _>>()?,
-                        DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
-                            .context(
-                                "boring/TlsAcceptorData: CA: parse x509 server cert chain from PEM content",
-                            )?,
-                    };
-                        let ca_cert = cert_chain.pop().context("pop CA Cert (last) from stack")?;
-
-                        // server TLS key
-                        let ca_key = match data.private_key {
-                            DataEncoding::Der(raw_data) => PKey::private_key_from_der(
-                                &raw_data[..],
-                            )
-                            .context(
-                                "boring/TlsAcceptorData: CA: parse private key from DER content",
-                            )?,
-                            DataEncoding::DerStack(raw_data_list) => PKey::private_key_from_der(
-                                &raw_data_list.first().context(
-                                    "boring/TlsAcceptorData: CA: get first private key raw data",
-                                )?[..],
-                            )
-                            .context(
-                                "boring/TlsAcceptorData: CA: parse private key from DER content",
-                            )?,
-                            DataEncoding::Pem(raw_data) => PKey::private_key_from_pem(
-                                raw_data.as_bytes(),
-                            )
-                            .context(
-                                "boring/TlsAcceptorData: CA: parse private key from PEM content",
-                            )?,
-                        };
+                        let mut issued_cert =
+                            server_auth_data_to_private_key_and_ca_chain(&data)?;
+                        let ca_cert = issued_cert.cert_chain.pop().context("pop CA Cert (last) from stack")?;
 
                         TlsCertSourceKind::InMemoryIssuer {
                             cert_cache,
-                            ca_key,
+                            ca_key: issued_cert.key,
                             ca_cert,
                         }
+                    }
+                    ServerCertIssuerKind::Dynamic(issuer) => {
+                        let cert_cache = if data.disable_cache_for_dynamic_issuer {
+                            None
+                        } else {
+                            Some(cert_cache)
+                        };
+                        TlsCertSourceKind::DynamicIssuer { issuer, cert_cache }
                     }
                 }
             }
@@ -326,6 +344,61 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
             }),
         })
     }
+}
+
+fn to_host(ssl_ref: &SslRef, server_name: &Option<Host>) -> Result<Host, OpaqueError> {
+    let host = match (ssl_ref.servername(NameType::HOST_NAME), &server_name) {
+        (Some(sni), _) => {
+            tracing::trace!(host = %sni, "boring: servername callback: use client SNI");
+            sni.parse().map_err(|err| {
+                tracing::warn!(error = %err, "boring: invalid servername received in callback");
+                OpaqueError::from_display("sni parse failed")
+            })? // from client (e.g. only possibility for SNI proxy)
+        },
+       (_, Some(host)) => {
+           tracing::trace!(%host, "boring: servername callback: use context");
+           host.clone()  // from context (lower prio)
+       },
+       (None, None) => {
+           tracing::warn!("boring: no host found in servername callback: defaulting to 'localhost'");
+           Host::Name(Domain::from_static("localhost")) // fallback
+       },
+    };
+    Ok(host)
+}
+
+fn server_auth_data_to_private_key_and_ca_chain(
+    data: &ServerAuthData,
+) -> Result<IssuedCert, OpaqueError> {
+    // server TLS key
+    let private_key = match &data.private_key {
+        DataEncoding::Der(raw_data) => PKey::private_key_from_der(&raw_data[..])
+            .context("boring/TlsAcceptorData: parse private key from DER content")?,
+        DataEncoding::DerStack(raw_data_list) => PKey::private_key_from_der(
+            &raw_data_list
+                .first()
+                .context("boring/TlsAcceptorData: get first private key raw data")?[..],
+        )
+        .context("boring/TlsAcceptorData: parse private key from DER content")?,
+        DataEncoding::Pem(raw_data) => PKey::private_key_from_pem(raw_data.as_bytes())
+            .context("boring/TlsAcceptorData: parse private key from PEM content")?,
+    };
+
+    let cert_chain = match &data.cert_chain {
+        DataEncoding::Der(raw_data) => vec![X509::from_der(&raw_data[..])
+            .context("boring/TlsAcceptorData: parse x509 server cert from DER content")?],
+        DataEncoding::DerStack(raw_data_list) => raw_data_list
+            .into_iter()
+            .map(|raw_data| {
+                X509::from_der(&raw_data[..])
+                    .context("boring/TlsAcceptorData: parse x509 server cert from DER content")
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+        DataEncoding::Pem(raw_data) => X509::stack_from_pem(raw_data.as_bytes())
+            .context("boring/TlsAcceptorData: parse x509 server cert chain from PEM content")?,
+    };
+
+    Ok({IssuedCert { cert_chain, key: private_key }})
 }
 
 fn issue_cert_for_ca(
@@ -356,28 +429,37 @@ fn issue_cert_for_ca(
     )
     .with_context(|| format!("issue certs in memory for: {host:?}"))?;
 
-    Ok(IssuedCert { cert, key })
+    Ok(IssuedCert {
+        cert_chain: vec![cert, ca_cert.clone()],
+        key,
+    })
 }
 
 fn add_issued_cert_to_ssl_ref(
     host: Host,
     issued_cert: IssuedCert,
-    ca_cert: X509,
     builder: &mut SslRef,
 ) -> Result<(), OpaqueError> {
     tracing::trace!(
         %host,
         "add issued cert for host to (boring) SslAcceptorBuilder"
     );
-    builder
-        .set_certificate(issued_cert.cert.as_ref())
-        .context("build boring ssl acceptor: issued in-mem: set certificate (x509)")?;
-    builder
-        .add_chain_cert(&ca_cert)
-        .context("build boring ssl acceptor: issued in-mem: add extra chain certificate (x509)")?;
+
+    for (i, ca_cert) in issued_cert.cert_chain.iter().enumerate() {
+        if i == 0 {
+            builder
+                .set_certificate(ca_cert.as_ref())
+                .context("boring add issue cert to ssl ref: set certificate")?;
+        } else {
+            builder.add_chain_cert(&ca_cert).context(
+                "boring add issue cert to ssl ref: add chain certificate",
+            )?;
+        }
+    }
+
     builder
         .set_private_key(issued_cert.key.as_ref())
-        .context("build boring ssl acceptor: issued in-mem: set private key")?;
+        .context("boring add issue cert to ssl ref: set private key")?;
     // builder
     //     .check()
     //     .context("build boring ssl acceptor: issued in-mem: check private key")?;
@@ -387,11 +469,11 @@ fn add_issued_cert_to_ssl_ref(
 
 fn self_signed_server_auth(
     data: SelfSignedData,
-) -> Result<(Vec<X509>, PKey<Private>), OpaqueError> {
+) -> Result<IssuedCert, OpaqueError> {
     let (ca_cert, ca_privkey) = self_signed_server_auth_gen_ca(&data).context("self-signed CA")?;
     let (cert, privkey) = self_signed_server_auth_gen_cert(&data, &ca_cert, &ca_privkey)
         .context("self-signed cert using self-signed CA")?;
-    Ok((vec![cert, ca_cert], privkey))
+    Ok(IssuedCert{cert_chain: vec![cert, ca_cert], key: privkey})
 }
 
 #[inline]
