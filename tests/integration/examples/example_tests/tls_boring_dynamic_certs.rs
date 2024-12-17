@@ -54,11 +54,12 @@ async fn test_tls_boring_dynamic_certs() {
         .collect(),
     );
 
+    let default_chain = chain.clone();
+
     let tests: Vec<(DataEncoding, Option<&'static str>)> = vec![
-        (chain.clone(), Some("example")),
+        (chain, Some("example")),
         (second_chain, Some("second.example")),
-        (chain, None),
-        // (chain, Some("google.com")),
+        (default_chain, None),
     ];
 
     for (chain, host) in tests.into_iter() {
