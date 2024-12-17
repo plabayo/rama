@@ -61,7 +61,6 @@ async fn test_tls_boring_dynamic_certs() {
         // (chain, Some("google.com")),
     ];
 
-    println!("spawning example");
     for (chain, host) in tests.into_iter() {
         let mut runner =
             utils::ExampleRunner::interactive("tls_boring_dynamic_certs", Some("boring"));
@@ -69,13 +68,11 @@ async fn test_tls_boring_dynamic_certs() {
         let client = http_client(&host);
         runner.set_client(client);
 
-        println!("repsonse");
         let response = runner
             .get("https://127.0.0.1:64801")
             .send(Context::default())
             .await
             .unwrap();
-        println!("certs");
 
         let certificates = response
             .extensions()
@@ -183,7 +180,7 @@ where
         );
 
         let EstablishedClientConnection { ctx, req, conn, .. } =
-            connector.connect(ctx, req).await.unwrap();
+            connector.connect(ctx, req).await?;
 
         // Extra logic to extract certificates
         let params = ctx.get::<NegotiatedTlsParameters>().unwrap();
