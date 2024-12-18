@@ -143,7 +143,7 @@ mod rustls {
         fn from(value: &[CertificateDer<'static>]) -> Self {
             DataEncoding::DerStack(
                 value
-                    .into_iter()
+                    .iter()
                     .map(|cert| Into::<Vec<u8>>::into(cert.as_ref()))
                     .collect(),
             )
