@@ -46,8 +46,8 @@ mod tcp_listener_layers;
 // Running example manually does work via curl,
 // but automated test fails and not important enough for now
 // :shrug:
-// #[cfg(all(feature = "boring", feature = "haproxy", feature ="http-full"))]
-// mod tls_boring_termination;
+#[cfg(all(feature = "boring", feature = "haproxy", feature = "http-full"))]
+mod tls_boring_termination;
 
 #[cfg(all(feature = "rustls", feature = "haproxy", feature = "http-full"))]
 mod tls_termination;

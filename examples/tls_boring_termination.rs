@@ -35,14 +35,17 @@
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
     graceful::Shutdown,
+    http::{server::HttpServer, Request, Response},
     layer::{ConsumeErrLayer, GetExtensionLayer},
-    net::forwarded::Forwarded,
-    net::stream::{SocketInfo, Stream},
-    net::tls::server::SelfSignedData,
-    net::tls::server::{ServerAuth, ServerConfig},
+    net::{
+        forwarded::Forwarded,
+        stream::SocketInfo,
+        tls::server::{SelfSignedData, ServerAuth, ServerConfig},
+    },
     proxy::haproxy::{
         client::HaProxyLayer as HaProxyClientLayer, server::HaProxyLayer as HaProxyServerLayer,
     },
+    rt::Executor,
     service::service_fn,
     tcp::{
         client::service::{Forwarder, TcpConnector},
@@ -57,7 +60,6 @@ use rama::{
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
-use tokio::io::AsyncWriteExt;
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{fmt, prelude::*, EnvFilter};
 
@@ -101,8 +103,11 @@ async fn main() {
 
     // create http server
     shutdown.spawn_task_fn(|guard| async {
-        let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
-            .layer(service_fn(internal_tcp_service_fn));
+        let exec = Executor::graceful(guard.clone());
+        let http_service = HttpServer::auto(exec).service(service_fn(http_service));
+
+        let tcp_service =
+            (ConsumeErrLayer::default(), HaProxyServerLayer::new()).layer(http_service);
 
         TcpListener::bind("127.0.0.1:62801")
             .await
@@ -117,10 +122,7 @@ async fn main() {
         .expect("graceful shutdown");
 }
 
-async fn internal_tcp_service_fn<S>(ctx: Context<()>, mut stream: S) -> Result<(), Infallible>
-where
-    S: Stream + Unpin,
-{
+async fn http_service<S>(ctx: Context<S>, _request: Request) -> Result<Response, Infallible> {
     // REMARK: builds on the assumption that we are using the haproxy protocol
     let client_addr = ctx
         .get::<Forwarded>()
@@ -130,24 +132,10 @@ where
     // REMARK: builds on the assumption that rama's TCP service sets this for you :)
     let proxy_addr = ctx.get::<SocketInfo>().unwrap().peer_addr();
 
-    // create the minimal http response
-    let payload = format!(
-        "hello client {client_addr}, you were served by tls terminator proxy {proxy_addr}\r\n"
-    );
-    let response = format!(
-        "HTTP/1.0 200 ok\r\n\
-                            Connection: close\r\n\
-                            Content-length: {}\r\n\
-                            \r\n\
-                            {}",
-        payload.len(),
-        payload
-    );
-
-    stream
-        .write_all(response.as_bytes())
-        .await
-        .expect("write to stream");
-
-    Ok(())
+    Ok(Response::new(
+        format!(
+            "hello client {client_addr}, you were served by tls terminator proxy {proxy_addr}\r\n"
+        )
+        .into(),
+    ))
 }

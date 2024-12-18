@@ -20,17 +20,18 @@ use tracing::trace;
 /// Created by converting a [`rustls::ClientConfig`] into it directly,
 /// or by trying to turn the _rama_ opiniated [`rama_net::tls::client::ClientConfig`] into it.
 pub struct TlsConnectorData {
-    client_config_input: Arc<ClientConfigInput>,
-    server_name: Option<Host>,
+    pub(super) client_config_input: Arc<ClientConfigInput>,
+    pub(super) server_name: Option<Host>,
 }
 
 #[derive(Debug, Default)]
-struct ClientConfigInput {
-    protocol_versions: Option<Vec<&'static SupportedProtocolVersion>>,
-    client_auth: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    key_logger: Option<String>,
-    alpn_protos: Option<Vec<Vec<u8>>>,
-    cert_verifier: Option<Arc<dyn ServerCertVerifier>>,
+pub(super) struct ClientConfigInput {
+    pub(super) protocol_versions: Option<Vec<&'static SupportedProtocolVersion>>,
+    pub(super) client_auth: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+    pub(super) key_logger: Option<String>,
+    pub(super) alpn_protos: Option<Vec<Vec<u8>>>,
+    pub(super) cert_verifier: Option<Arc<dyn ServerCertVerifier>>,
+    pub(super) store_server_certificate_chain: bool,
 }
 
 impl TlsConnectorData {
@@ -171,6 +172,9 @@ impl TlsConnectorData {
                     .cert_verifier
                     .clone()
                     .or_else(|| self.client_config_input.cert_verifier.clone()),
+                store_server_certificate_chain: other
+                    .client_config_input
+                    .store_server_certificate_chain,
             }),
             server_name: other
                 .server_name
@@ -304,6 +308,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                     .into_file_path(),
                 alpn_protos,
                 cert_verifier,
+                store_server_certificate_chain: value.store_server_certificate_chain,
             }),
             server_name,
         })
