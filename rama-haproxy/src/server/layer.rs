@@ -83,6 +83,7 @@ where
         let mut read = 0;
         let header = loop {
             let n = stream.read(&mut buffer[read..]).await?;
+            read += n;
 
             let header = HeaderResult::parse(&buffer[..read]);
             if header.is_complete() {
@@ -95,7 +96,6 @@ where
                     .into_boxed());
             }
 
-            read += n;
             tracing::debug!("Incomplete header. Read {} bytes so far.", read);
         };
 
