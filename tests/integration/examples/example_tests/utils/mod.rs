@@ -53,14 +53,14 @@ static INIT_TRACING_ONCE: Once = Once::new();
 /// Initialize tracing for example tests
 pub(super) fn init_tracing() {
     INIT_TRACING_ONCE.call_once(|| {
-        tracing_subscriber::registry()
+        let _ = tracing_subscriber::registry()
             .with(fmt::layer())
             .with(
                 EnvFilter::builder()
                     .with_default_directive(LevelFilter::TRACE.into())
                     .from_env_lossy(),
             )
-            .init();
+            .try_init();
     });
 }
 

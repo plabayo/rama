@@ -7,6 +7,14 @@ as a distant relative.
 
 ## Sync Forks
 
+### hyperium
+
+- <https://github.com/hyperium/h2/tree/v0.4.6>
+- <https://github.com/hyperium/hyper/tree/v1.5.0>
+- <https://github.com/hyperium/hyper-util/tree/v0.1.10>
+
+### tower-r
+
 - <https://github.com/tower-rs/tower/tree/71551010acff922c5b51c280e49a15ad2d33df61>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
