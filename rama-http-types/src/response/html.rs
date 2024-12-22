@@ -1,6 +1,9 @@
-use crate::{header, Body, HeaderValue, IntoResponse, Response};
+use crate::{Body, IntoResponse, Response};
+use headers::ContentType;
 use rama_utils::macros::impl_deref;
 use std::fmt;
+
+use super::Headers;
 
 /// An HTML response.
 ///
@@ -26,14 +29,7 @@ where
     T: Into<Body>,
 {
     fn into_response(self) -> Response {
-        (
-            [(
-                header::CONTENT_TYPE,
-                HeaderValue::from_static(mime::TEXT_HTML_UTF_8.as_ref()),
-            )],
-            self.0.into(),
-        )
-            .into_response()
+        (Headers::single(ContentType::html()), self.0.into()).into_response()
     }
 }
 

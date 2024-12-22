@@ -1,13 +1,14 @@
 use std::fmt;
 
-use crate::dep::http::header::CONTENT_TYPE;
 use crate::dep::http::StatusCode;
-use crate::dep::mime;
 use crate::response::{IntoResponse, Response};
 use crate::Body;
+use headers::ContentType;
 use rama_error::OpaqueError;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;
+
+use super::Headers;
 
 /// Wrapper used to create Form Http [`Response`]s,
 /// as well as to extract Form from Http [`Request`] bodies.
@@ -89,11 +90,7 @@ where
 {
     fn into_response(self) -> Response {
         match serde_html_form::to_string(&self.0) {
-            Ok(body) => (
-                [(CONTENT_TYPE, mime::APPLICATION_WWW_FORM_URLENCODED.as_ref())],
-                body,
-            )
-                .into_response(),
+            Ok(body) => (Headers::single(ContentType::form_url_encoded()), body).into_response(),
             Err(err) => {
                 tracing::error!(error = %err, "response error");
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
