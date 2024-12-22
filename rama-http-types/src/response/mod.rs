@@ -5,12 +5,14 @@
 use crate::Body;
 
 mod append_headers;
+mod headers;
 mod into_response;
 mod into_response_parts;
 
 #[doc(inline)]
 pub use self::{
     append_headers::AppendHeaders,
+    headers::Headers,
     into_response::{IntoResponse, StaticResponseFactory},
     into_response_parts::{IntoResponseParts, ResponseParts, TryIntoHeaderError},
 };

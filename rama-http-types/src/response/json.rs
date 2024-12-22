@@ -1,16 +1,13 @@
 use crate::response::{IntoResponse, Response};
-use crate::{
-    dep::http::{
-        header::{self, HeaderValue},
-        StatusCode,
-    },
-    Body,
-};
+use crate::{dep::http::StatusCode, Body};
 use bytes::{BufMut, BytesMut};
+use headers::ContentType;
 use rama_error::OpaqueError;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;
 use std::fmt;
+
+use super::Headers;
 
 /// Wrapper used to create Json Http [`Response`]s,
 /// as well as to extract Json from Http [`Request`] bodies.
@@ -88,19 +85,13 @@ where
         let mut buf = BytesMut::with_capacity(128).writer();
         match serde_json::to_writer(&mut buf, &self.0) {
             Ok(()) => (
-                [(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static(mime::APPLICATION_JSON.as_ref()),
-                )],
+                Headers::single(ContentType::json()),
                 buf.into_inner().freeze(),
             )
                 .into_response(),
             Err(err) => (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                [(
-                    header::CONTENT_TYPE,
-                    HeaderValue::from_static(mime::TEXT_PLAIN_UTF_8.as_ref()),
-                )],
+                Headers::single(ContentType::text_utf8()),
                 err.to_string(),
             )
                 .into_response(),
