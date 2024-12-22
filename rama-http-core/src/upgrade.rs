@@ -48,8 +48,8 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-use crate::rt::{Read, ReadBufCursor, Write};
 use bytes::Bytes;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::oneshot;
 use tracing::trace;
 
@@ -126,7 +126,7 @@ pub(super) fn pending() -> (Pending, OnUpgrade) {
 impl Upgraded {
     pub(super) fn new<T>(io: T, read_buf: Bytes) -> Self
     where
-        T: Read + Write + Unpin + Send + 'static,
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
     {
         Upgraded {
             io: Rewind::new_buffered(Box::new(io), read_buf),
@@ -137,7 +137,7 @@ impl Upgraded {
     ///
     /// On success, returns the downcasted parts. On error, returns the
     /// `Upgraded` back.
-    pub fn downcast<T: Read + Write + Unpin + 'static>(self) -> Result<Parts<T>, Self> {
+    pub fn downcast<T: AsyncRead + AsyncWrite + Unpin + 'static>(self) -> Result<Parts<T>, Self> {
         let (io, buf) = self.io.into_inner();
         match io.__hyper_downcast() {
             Ok(t) => Ok(Parts {
@@ -151,17 +151,17 @@ impl Upgraded {
     }
 }
 
-impl Read for Upgraded {
+impl AsyncRead for Upgraded {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: ReadBufCursor<'_>,
+        buf: &mut ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         Pin::new(&mut self.io).poll_read(cx, buf)
     }
 }
 
-impl Write for Upgraded {
+impl AsyncWrite for Upgraded {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -269,13 +269,13 @@ impl StdError for UpgradeExpected {}
 
 // ===== impl Io =====
 
-pub(super) trait Io: Read + Write + Unpin + 'static {
+pub(super) trait Io: AsyncRead + AsyncWrite + Unpin + 'static {
     fn __hyper_type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
 }
 
-impl<T: Read + Write + Unpin + 'static> Io for T {}
+impl<T: AsyncRead + AsyncWrite + Unpin + 'static> Io for T {}
 
 impl dyn Io + Send {
     fn __hyper_is<T: Io>(&self) -> bool {
@@ -340,48 +340,14 @@ mod sealed {
 
 #[cfg(test)]
 mod tests {
+    use tokio_test::io::{Builder, Mock};
+
     use super::*;
 
     #[test]
     fn upgraded_downcast() {
-        let upgraded = Upgraded::new(Mock, Bytes::new());
-
-        let upgraded = upgraded
-            .downcast::<crate::common::io::Compat<std::io::Cursor<Vec<u8>>>>()
-            .unwrap_err();
-
+        let upgraded = Upgraded::new(Builder::default().build(), Bytes::new());
+        let upgraded = upgraded.downcast::<std::io::Cursor<Vec<u8>>>().unwrap_err();
         upgraded.downcast::<Mock>().unwrap();
-    }
-
-    // TODO: replace with tokio_test::io when it can test write_buf
-    struct Mock;
-
-    impl Read for Mock {
-        fn poll_read(
-            self: Pin<&mut Self>,
-            _cx: &mut Context<'_>,
-            _buf: ReadBufCursor<'_>,
-        ) -> Poll<io::Result<()>> {
-            unreachable!("Mock::poll_read")
-        }
-    }
-
-    impl Write for Mock {
-        fn poll_write(
-            self: Pin<&mut Self>,
-            _: &mut Context<'_>,
-            buf: &[u8],
-        ) -> Poll<io::Result<usize>> {
-            // panic!("poll_write shouldn't be called");
-            Poll::Ready(Ok(buf.len()))
-        }
-
-        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            unreachable!("Mock::poll_flush")
-        }
-
-        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<()>> {
-            unreachable!("Mock::poll_shutdown")
-        }
     }
 }

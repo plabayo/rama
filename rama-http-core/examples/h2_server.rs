@@ -31,9 +31,9 @@
 use rama_error::BoxError;
 use rama_http_core::h2::server::{self, SendResponse};
 use rama_http_core::h2::RecvStream;
+use rama_http_types::Request;
 
 use bytes::Bytes;
-use http::Request;
 use tokio::net::{TcpListener, TcpStream};
 
 #[tokio::main]
@@ -85,7 +85,7 @@ async fn handle_request(
         let _ = body.flow_control().release_capacity(data.len());
     }
 
-    let response = http::Response::new(());
+    let response = rama_http_types::Response::new(());
     let mut send = respond.send_response(response, false)?;
     println!(">>>> send");
     send.send_data(Bytes::from_static(b"hello "), false)?;

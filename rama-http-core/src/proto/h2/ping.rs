@@ -29,16 +29,13 @@ use tracing::{debug, trace};
 
 use crate::h2::{Ping, PingPong};
 
-use crate::common::time::Time;
-use crate::rt::Sleep;
-
 type WindowSize = u32;
 
 pub(super) fn disabled() -> Recorder {
     Recorder { shared: None }
 }
 
-pub(super) fn channel(ping_pong: PingPong, config: Config, __timer: Time) -> (Recorder, Ponger) {
+pub(super) fn channel(ping_pong: PingPong, config: Config) -> (Recorder, Ponger) {
     debug_assert!(
         config.is_enabled(),
         "ping channel requires bdp or keep-alive config",
@@ -62,9 +59,8 @@ pub(super) fn channel(ping_pong: PingPong, config: Config, __timer: Time) -> (Re
         interval,
         timeout: config.keep_alive_timeout,
         while_idle: config.keep_alive_while_idle,
-        sleep: __timer.sleep(interval),
+        sleep: Box::pin(tokio::time::sleep(interval)),
         state: KeepAliveState::Init,
-        timer: __timer,
     });
 
     let last_read_at = keep_alive.as_ref().map(|_| Instant::now());
@@ -157,8 +153,7 @@ struct KeepAlive {
     /// If true, sends pings even when there are no active streams.
     while_idle: bool,
     state: KeepAliveState,
-    sleep: Pin<Box<dyn Sleep>>,
-    timer: Time,
+    sleep: Pin<Box<tokio::time::Sleep>>,
 }
 
 enum KeepAliveState {
@@ -446,7 +441,6 @@ impl KeepAlive {
     fn schedule(&mut self, shared: &Shared) {
         let interval = shared.last_read_at() + self.interval;
         self.state = KeepAliveState::Scheduled(interval);
-        self.timer.reset(&mut self.sleep, interval);
     }
 
     fn maybe_ping(&mut self, cx: &mut task::Context<'_>, is_idle: bool, shared: &mut Shared) {
@@ -468,8 +462,6 @@ impl KeepAlive {
                 trace!("keep-alive interval ({:?}) reached", self.interval);
                 shared.send_ping();
                 self.state = KeepAliveState::PingSent;
-                let timeout = Instant::now() + self.timeout;
-                self.timer.reset(&mut self.sleep, timeout);
             }
             KeepAliveState::Init | KeepAliveState::PingSent => (),
         }

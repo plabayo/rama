@@ -3,20 +3,18 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::rt::{Read, Write};
 use futures_util::ready;
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::proto;
 use crate::service::HttpService;
-use crate::{common::time::Time, rt::Timer};
 
 pin_project! {
     /// A [`Future`](core::future::Future) representing an HTTP/2 connection, bound to a
@@ -41,7 +39,6 @@ pin_project! {
 #[derive(Clone, Debug)]
 pub struct Builder {
     exec: Executor,
-    timer: Time,
     h2_builder: proto::h2::server::Config,
 }
 
@@ -60,9 +57,8 @@ impl<I, B, S> Connection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
     S::Error: Into<BoxError>,
-    I: Read + Write + Unpin,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    I: AsyncRead + AsyncWrite + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -83,9 +79,8 @@ impl<I, B, S> Future for Connection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
     S::Error: Into<BoxError>,
-    I: Read + Write + Unpin,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    I: AsyncRead + AsyncWrite + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
 
@@ -108,7 +103,6 @@ impl Builder {
     pub fn new(exec: Executor) -> Self {
         Self {
             exec,
-            timer: Time::Empty,
             h2_builder: Default::default(),
         }
     }
@@ -259,15 +253,6 @@ impl Builder {
         self
     }
 
-    /// Set the timer used in background tasks.
-    pub fn timer<M>(&mut self, timer: M) -> &mut Self
-    where
-        M: Timer + Send + Sync + 'static,
-    {
-        self.timer = Time::Timer(Arc::new(timer));
-        self
-    }
-
     /// Set whether the `date` header should be included in HTTP responses.
     ///
     /// Note that including the `date` header is recommended by RFC 7231.
@@ -286,17 +271,10 @@ impl Builder {
     where
         S: HttpService<IncomingBody, ResBody = Bd>,
         S::Error: Into<BoxError>,
-        Bd: Body + 'static,
-        Bd::Error: Into<BoxError>,
-        I: Read + Write + Unpin,
+        Bd: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+        I: AsyncRead + AsyncWrite + Unpin,
     {
-        let proto = proto::h2::Server::new(
-            io,
-            service,
-            &self.h2_builder,
-            self.exec.clone(),
-            self.timer.clone(),
-        );
+        let proto = proto::h2::Server::new(io, service, &self.h2_builder, self.exec.clone());
         Connection { conn: proto }
     }
 }

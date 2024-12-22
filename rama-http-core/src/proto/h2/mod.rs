@@ -9,13 +9,15 @@ use bytes::{Buf, Bytes};
 use futures_util::ready;
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
-use rama_http_types::header::{CONNECTION, TE, TRANSFER_ENCODING, UPGRADE};
+use rama_http_types::header::{
+    CONNECTION, KEEP_ALIVE, PROXY_CONNECTION, TE, TRANSFER_ENCODING, UPGRADE,
+};
 use rama_http_types::{HeaderMap, HeaderName};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tracing::{debug, trace, warn};
 
 use crate::body::Body;
 use crate::proto::h2::ping::Recorder;
-use crate::rt::{Read, ReadBufCursor, Write};
 
 pub(crate) mod ping;
 
@@ -32,15 +34,11 @@ pub(crate) const SPEC_WINDOW_SIZE: u32 = 65_535;
 //
 // TE headers are allowed in HTTP/2 requests as long as the value is "trailers", so they're
 // tested separately.
-static CONNECTION_HEADERS: [HeaderName; 4] = [
-    HeaderName::from_static("keep-alive"),
-    HeaderName::from_static("proxy-connection"),
-    TRANSFER_ENCODING,
-    UPGRADE,
-];
+static CONNECTION_HEADERS: [&HeaderName; 4] =
+    [&KEEP_ALIVE, &PROXY_CONNECTION, &TRANSFER_ENCODING, &UPGRADE];
 
 fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
-    for header in &CONNECTION_HEADERS {
+    for header in CONNECTION_HEADERS {
         if headers.remove(header).is_some() {
             warn!("Connection header illegal in HTTP/2: {}", header.as_str());
         }
@@ -269,14 +267,14 @@ where
     buf: Bytes,
 }
 
-impl<B> Read for H2Upgraded<B>
+impl<B> AsyncRead for H2Upgraded<B>
 where
     B: Buf,
 {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        mut read_buf: ReadBufCursor<'_>,
+        buf: &mut ReadBuf<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         if self.buf.is_empty() {
             self.buf = loop {
@@ -301,15 +299,15 @@ where
                 }
             };
         }
-        let cnt = std::cmp::min(self.buf.len(), read_buf.remaining());
-        read_buf.put_slice(&self.buf[..cnt]);
+        let cnt = std::cmp::min(self.buf.len(), buf.remaining());
+        buf.put_slice(&self.buf[..cnt]);
         self.buf.advance(cnt);
         let _ = self.recv_stream.flow_control().release_capacity(cnt);
         Poll::Ready(Ok(()))
     }
 }
 
-impl<B> Write for H2Upgraded<B>
+impl<B> AsyncWrite for H2Upgraded<B>
 where
     B: Buf,
 {

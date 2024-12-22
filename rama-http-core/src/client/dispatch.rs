@@ -2,6 +2,7 @@ use std::task::{Context, Poll};
 use std::{future::Future, pin::Pin};
 
 use pin_project_lite::pin_project;
+use rama_core::error::BoxError;
 use rama_http_types::dep::http_body::Body;
 use rama_http_types::{Request, Response};
 use tokio::sync::{mpsc, oneshot};
@@ -295,7 +296,12 @@ pin_project! {
     pub struct SendWhen<B>
     where
         B: Body,
+        B: Send,
         B: 'static,
+        B: Unpin,
+        B::Data: Send,
+        B::Data: 'static,
+        B::Error: Into<BoxError>,
     {
         #[pin]
         pub(crate) when: ResponseFutMap<B>,
@@ -306,7 +312,7 @@ pin_project! {
 
 impl<B> Future for SendWhen<B>
 where
-    B: Body + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = ();
 

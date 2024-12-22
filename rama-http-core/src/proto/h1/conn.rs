@@ -4,23 +4,22 @@ use std::io;
 use std::marker::{PhantomData, Unpin};
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::rt::{Read, Write};
 use bytes::{Buf, Bytes};
 use httparse::ParserConfig;
 use rama_http_types::dep::http_body::Frame;
 use rama_http_types::header::{CONNECTION, TE};
 use rama_http_types::{HeaderMap, HeaderValue, Method, Version};
+use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::time::{Instant, Sleep};
 use tracing::{debug, error, trace, warn};
 
 use super::io::Buffered;
 use super::{Decoder, Encode, EncodedBuf, Encoder, Http1Transaction, ParseContext, Wants};
 use crate::body::DecodedLength;
-use crate::common::time::Time;
 use crate::headers;
 use crate::proto::{BodyLength, MessageHead};
-use crate::rt::Sleep;
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -39,7 +38,7 @@ pub(crate) struct Conn<I, B, T> {
 
 impl<I, B, T> Conn<I, B, T>
 where
-    I: Read + Write + Unpin,
+    I: AsyncRead + AsyncWrite + Unpin,
     B: Buf,
     T: Http1Transaction,
 {
@@ -58,7 +57,6 @@ where
                 h1_header_read_timeout_fut: None,
                 h1_header_read_timeout_running: false,
                 date_header: true,
-                timer: Time::Empty,
                 preserve_header_case: false,
                 preserve_header_order: false,
                 title_case_headers: false,
@@ -74,10 +72,6 @@ where
             },
             _marker: PhantomData,
         }
-    }
-
-    pub(crate) fn set_timer(&mut self, timer: Time) {
-        self.state.timer = timer;
     }
 
     pub(crate) fn set_flush_pipeline(&mut self, enabled: bool) {
@@ -201,12 +195,12 @@ where
                 match self.state.h1_header_read_timeout_fut {
                     Some(ref mut h1_header_read_timeout_fut) => {
                         trace!("resetting h1 header read timeout timer");
-                        self.state.timer.reset(h1_header_read_timeout_fut, deadline);
+                        *h1_header_read_timeout_fut = Box::pin(tokio::time::sleep_until(deadline));
                     }
                     None => {
                         trace!("setting h1 header read timeout timer");
                         self.state.h1_header_read_timeout_fut =
-                            Some(self.state.timer.sleep_until(deadline));
+                            Some(Box::pin(tokio::time::sleep_until(deadline)));
                     }
                 }
             }
@@ -881,10 +875,9 @@ struct State {
     h1_parser_config: ParserConfig,
     h1_max_headers: Option<usize>,
     h1_header_read_timeout: Option<Duration>,
-    h1_header_read_timeout_fut: Option<Pin<Box<dyn Sleep>>>,
+    h1_header_read_timeout_fut: Option<Pin<Box<Sleep>>>,
     h1_header_read_timeout_running: bool,
     date_header: bool,
-    timer: Time,
     preserve_header_case: bool,
     preserve_header_order: bool,
     title_case_headers: bool,

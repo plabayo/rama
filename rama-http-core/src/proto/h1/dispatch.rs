@@ -5,11 +5,11 @@ use std::{
     task::{Context, Poll},
 };
 
-use crate::rt::{Read, Write};
 use bytes::{Buf, Bytes};
 use rama_core::error::BoxError;
 use rama_http_types::{Request, Response, StatusCode};
 use std::task::ready;
+use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, error, trace};
 
 use super::{Http1Transaction, Wants};
@@ -44,9 +44,8 @@ pub(crate) trait Dispatch {
 
 use crate::service::HttpService;
 
-pub(crate) struct Server<State, S: HttpService<State, B>, B> {
+pub(crate) struct Server<S: HttpService<B>, B> {
     in_flight: Option<Pin<Box<dyn Future<Output = Result<Response<S::ResBody>, S::Error>>>>>,
-    ctx: Option<rama_core::Context<State>>,
     pub(crate) service: S,
 }
 
@@ -69,10 +68,9 @@ where
             RecvItem = MessageHead<T::Incoming>,
         > + Unpin,
     D::PollError: Into<BoxError>,
-    I: Read + Write + Unpin,
+    I: AsyncRead + AsyncWrite + Unpin,
     T: Http1Transaction + Unpin,
-    Bs: Body + 'static,
-    Bs::Error: Into<BoxError>,
+    Bs: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     pub(crate) fn new(dispatch: D, conn: Conn<I, Bs::Data, T>) -> Self {
         Dispatcher {
@@ -455,10 +453,9 @@ where
             RecvItem = MessageHead<T::Incoming>,
         > + Unpin,
     D::PollError: Into<BoxError>,
-    I: Read + Write + Unpin,
+    I: AsyncRead + AsyncWrite + Unpin,
     T: Http1Transaction + Unpin,
-    Bs: Body + 'static,
-    Bs::Error: Into<BoxError>,
+    Bs: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<Dispatched>;
 
@@ -494,33 +491,35 @@ impl<'a, T> Drop for OptGuard<'a, T> {
 
 // ===== impl Server =====
 
-impl<S, B: Send + 'static> Server<(), S, B> {
-    pub(crate) fn new(service: S) -> Server<(), S, B> {
+impl<
+        S: HttpService<B>,
+        B: Body<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
+    > Server<S, B>
+{
+    pub(crate) fn new(service: S) -> Server<S, B> {
         Server {
             in_flight: None,
-            ctx: None,
             service,
         }
     }
 
-    pub(crate) fn with_context<State>(self, ctx: rama_core::Context<State>) -> Server<State, S, B> {
-        Server {
-            in_flight: self.in_flight,
-            ctx,
-            service: self.service,
-        }
+    pub(crate) fn into_service(self) -> S {
+        self.service
     }
 }
 
 // Service is never pinned
-impl<State, S: HttpService<State, B>, B> Unpin for Server<State, S, B> {}
+impl<
+        S: HttpService<B>,
+        B: Body<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
+    > Unpin for Server<S, B>
+{
+}
 
-impl<State, S, Bs> Dispatch for Server<State, S, IncomingBody>
+impl<S, Bs> Dispatch for Server<S, IncomingBody>
 where
-    State: Send + Sync + 'static + Clone,
-    S: HttpService<State, IncomingBody, ResBody = Bs>,
-    S::Error: Into<BoxError>,
-    Bs: Body,
+    S: HttpService<IncomingBody, ResBody = Bs, Error: Into<BoxError>>,
+    Bs: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type PollItem = MessageHead<StatusCode>;
     type PollBody = Bs;
@@ -562,9 +561,7 @@ where
         *req.headers_mut() = msg.headers;
         *req.version_mut() = msg.version;
         *req.extensions_mut() = msg.extensions;
-        let fut = self
-            .service
-            .serve_http(self.ctx.clone().unwrap_or_default(), req);
+        let fut = self.service.serve_http(req);
         self.in_flight = Some(Box::pin(fut));
         Ok(())
     }
@@ -598,7 +595,7 @@ impl<B> Client<B> {
 
 impl<B> Dispatch for Client<B>
 where
-    B: Body,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type PollItem = RequestHead;
     type PollBody = B;
@@ -708,7 +705,6 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::io::Compat;
     use crate::proto::h1::ClientTransaction;
     use std::time::Duration;
 
@@ -720,7 +716,7 @@ mod tests {
             // Block at 0 for now, but we will release this response before
             // the request is ready to write later...
             let (mut tx, rx) = crate::client::dispatch::channel();
-            let conn = Conn::<_, bytes::Bytes, ClientTransaction>::new(Compat::new(io));
+            let conn = Conn::<_, bytes::Bytes, ClientTransaction>::new(io);
             let mut dispatcher = Dispatcher::new(Client::new(rx), conn);
 
             // First poll is needed to allow tx to send...
@@ -753,7 +749,7 @@ mod tests {
             .build_with_handle();
 
         let (mut tx, rx) = crate::client::dispatch::channel();
-        let mut conn = Conn::<_, bytes::Bytes, ClientTransaction>::new(Compat::new(io));
+        let mut conn = Conn::<_, bytes::Bytes, ClientTransaction>::new(io);
         conn.set_write_strategy_queue();
 
         let dispatcher = Dispatcher::new(Client::new(rx), conn);
@@ -782,7 +778,7 @@ mod tests {
             .build();
 
         let (mut tx, rx) = crate::client::dispatch::channel();
-        let conn = Conn::<_, bytes::Bytes, ClientTransaction>::new(Compat::new(io));
+        let conn = Conn::<_, bytes::Bytes, ClientTransaction>::new(io);
         let mut dispatcher = tokio_test::task::spawn(Dispatcher::new(Client::new(rx), conn));
 
         // First poll is needed to allow tx to send...

@@ -4,22 +4,19 @@ use std::fmt;
 use std::future::Future;
 use std::marker::PhantomData;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::rt::{Read, Write};
 use futures_util::ready;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_http_types::{Request, Response};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, trace};
 
 use super::super::dispatch::{self, TrySendError};
 use crate::body::{Body, Incoming as IncomingBody};
-use crate::common::time::Time;
 use crate::proto;
-use crate::rt::Timer;
 
 /// The sender side of an established connection.
 pub struct SendRequest<B> {
@@ -43,9 +40,8 @@ impl<B> Clone for SendRequest<B> {
 #[must_use = "futures do nothing unless polled"]
 pub struct Connection<T, B>
 where
-    T: Read + Write + Unpin,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     inner: (PhantomData<T>, proto::h2::ClientTask<B, T>),
 }
@@ -59,7 +55,6 @@ where
 #[derive(Clone, Debug)]
 pub struct Builder {
     pub(super) exec: Executor,
-    pub(super) timer: Time,
     h2_builder: proto::h2::client::Config,
 }
 
@@ -72,10 +67,8 @@ pub async fn handshake<T, B>(
     io: T,
 ) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
 where
-    T: Read + Write + Send + Unpin + 'static,
-    B: Body + Send + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     Builder::new(exec).handshake(io).await
 }
@@ -120,7 +113,7 @@ impl<B> SendRequest<B> {
 
 impl<B> SendRequest<B>
 where
-    B: Body + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Sends a `Request` on the associated connection.
     ///
@@ -196,10 +189,8 @@ impl<B> fmt::Debug for SendRequest<B> {
 
 impl<T, B> Connection<T, B>
 where
-    T: Read + Write + Unpin + 'static,
-    B: Body + Unpin + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Returns whether the [extended CONNECT protocol][1] is enabled or not.
     ///
@@ -217,9 +208,8 @@ where
 
 impl<T, B> fmt::Debug for Connection<T, B>
 where
-    T: Read + Write + fmt::Debug + 'static + Unpin,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + fmt::Debug + Send + 'static + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Connection").finish()
@@ -228,10 +218,8 @@ where
 
 impl<T, B> Future for Connection<T, B>
 where
-    T: Read + Write + Unpin + 'static,
-    B: Body + 'static + Unpin,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
 
@@ -251,18 +239,8 @@ impl Builder {
     pub fn new(exec: Executor) -> Builder {
         Builder {
             exec,
-            timer: Time::Empty,
             h2_builder: Default::default(),
         }
-    }
-
-    /// Provide a timer to execute background HTTP2 tasks.
-    pub fn timer<M>(&mut self, timer: M) -> &mut Builder
-    where
-        M: Timer + Send + Sync + 'static,
-    {
-        self.timer = Time::Timer(Arc::new(timer));
-        self
     }
 
     /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
@@ -465,10 +443,8 @@ impl Builder {
         io: T,
     ) -> impl Future<Output = crate::Result<(SendRequest<B>, Connection<T, B>)>>
     where
-        T: Read + Write + Send + Unpin + 'static,
-        B: Body + Send + 'static,
-        B::Data: Send,
-        B::Error: Into<BoxError>,
+        T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let opts = self.clone();
 
@@ -476,8 +452,7 @@ impl Builder {
             trace!("client handshake HTTP/2");
 
             let (tx, rx) = dispatch::channel();
-            let h2 = proto::h2::client::handshake(io, rx, &opts.h2_builder, opts.exec, opts.timer)
-                .await?;
+            let h2 = proto::h2::client::handshake(io, rx, &opts.h2_builder, opts.exec).await?;
             Ok((
                 SendRequest {
                     dispatch: tx.unbound(),
@@ -494,12 +469,13 @@ impl Builder {
 mod tests {
     use rama_core::rt::Executor;
     use rama_http_types::dep::http_body_util;
+    use tokio::io::{AsyncRead, AsyncWrite};
 
     #[tokio::test]
     #[ignore] // only compilation is checked
     async fn send_sync_executor_of_send_futures() {
         #[allow(unused)]
-        async fn run(io: impl crate::rt::Read + crate::rt::Write + Send + Unpin + 'static) {
+        async fn run(io: impl AsyncRead + AsyncWrite + Send + Unpin + 'static) {
             let (_sender, conn) = crate::client::conn::http2::handshake::<
                 _,
                 http_body_util::Empty<bytes::Bytes>,

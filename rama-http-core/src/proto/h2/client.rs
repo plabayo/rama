@@ -7,7 +7,6 @@ use std::{
     time::Duration,
 };
 
-use crate::rt::{Read, Write};
 use bytes::Bytes;
 use futures_channel::mpsc::{Receiver, Sender};
 use futures_channel::{mpsc, oneshot};
@@ -18,14 +17,13 @@ use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_http_types::{dep::http_body, Method, Request, Response, StatusCode};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, trace, warn};
 
 use super::ping::{Ponger, Recorder};
 use super::{ping, H2Upgraded, PipeToSendStream, SendBuf};
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::client::dispatch::{Callback, SendWhen, TrySendError};
-use crate::common::io::Compat;
-use crate::common::time::Time;
 use crate::ext::Protocol;
 use crate::h2::client::ResponseFuture;
 use crate::h2::client::{Builder, Connection, SendRequest};
@@ -147,16 +145,13 @@ pub(crate) async fn handshake<T, B>(
     req_rx: ClientRx<B>,
     config: &Config,
     exec: Executor,
-    timer: Time,
 ) -> crate::Result<ClientTask<B, T>>
 where
-    T: Read + Write + Send + Unpin + 'static,
-    B: Body + Send + 'static,
-    B::Data: Send + 'static,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     let (h2_tx, mut conn) = new_builder(config)
-        .handshake::<_, SendBuf<B::Data>>(Compat::new(io))
+        .handshake::<_, SendBuf<B::Data>>(io)
         .await
         .map_err(crate::Error::new_h2)?;
 
@@ -173,7 +168,7 @@ where
 
     let (conn, ping) = if ping_config.is_enabled() {
         let pp = conn.ping_pong().expect("conn.ping_pong");
-        let (recorder, ponger) = ping::channel(pp, ping_config, timer);
+        let (recorder, ponger) = ping::channel(pp, ping_config);
 
         let conn: Conn<_, B> = Conn::new(ponger, conn);
         (Either::Left(conn), recorder)
@@ -204,29 +199,35 @@ where
 pin_project! {
     struct Conn<T, B>
     where
-        B: Body,
+        B: http_body::Body,
+        B: Send,
+        B: 'static,
+        B: Unpin,
+        B::Data: Send,
+        B::Data: 'static,
+        B::Error: Into<BoxError>,
     {
         #[pin]
         ponger: Ponger,
         #[pin]
-        conn: Connection<Compat<T>, SendBuf<<B as Body>::Data>>,
+        conn: Connection<T, SendBuf<<B as Body>::Data>>,
     }
 }
 
 impl<T, B> Conn<T, B>
 where
-    B: Body,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
-    fn new(ponger: Ponger, conn: Connection<Compat<T>, SendBuf<<B as Body>::Data>>) -> Self {
+    fn new(ponger: Ponger, conn: Connection<T, SendBuf<<B as Body>::Data>>) -> Self {
         Conn { ponger, conn }
     }
 }
 
 impl<T, B> Future for Conn<T, B>
 where
-    B: Body,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     type Output = Result<(), crate::h2::Error>;
 
@@ -252,12 +253,20 @@ pin_project! {
     struct ConnMapErr<T, B>
     where
         B: Body,
-        T: Read,
-        T: Write,
+        B: Send,
+        B: 'static,
+        B: Unpin,
+        B::Data: Send,
+        B::Data: 'static,
+        B::Error: Into<BoxError>,
+        T: AsyncRead,
+        T: AsyncWrite,
         T: Unpin,
+        T: Send,
+        T: 'static,
     {
         #[pin]
-        conn: Either<Conn<T, B>, Connection<Compat<T>, SendBuf<<B as Body>::Data>>>,
+        conn: Either<Conn<T, B>, Connection<T, SendBuf<<B as Body>::Data>>>,
         #[pin]
         is_terminated: bool,
     }
@@ -265,8 +274,8 @@ pin_project! {
 
 impl<T, B> Future for ConnMapErr<T, B>
 where
-    B: Body,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send,
 {
     type Output = Result<(), ()>;
 
@@ -288,8 +297,8 @@ where
 
 impl<T, B> FusedFuture for ConnMapErr<T, B>
 where
-    B: Body,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     fn is_terminated(&self) -> bool {
         self.is_terminated
@@ -300,9 +309,17 @@ pin_project! {
     pub struct ConnTask<T, B>
     where
         B: Body,
-        T: Read,
-        T: Write,
+        B: Send,
+        B: 'static,
+        B: Unpin,
+        B::Data: Send,
+        B::Data: 'static,
+        B::Error: Into<BoxError>,
+        T: AsyncRead,
+        T: AsyncWrite,
         T: Unpin,
+        T: Send,
+        T: 'static,
     {
         #[pin]
         drop_rx: StreamFuture<Receiver<Infallible>>,
@@ -315,8 +332,8 @@ pin_project! {
 
 impl<T, B> ConnTask<T, B>
 where
-    B: Body,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     fn new(
         conn: ConnMapErr<T, B>,
@@ -333,8 +350,8 @@ where
 
 impl<T, B> Future for ConnTask<T, B>
 where
-    B: Body,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     type Output = ();
 
@@ -362,12 +379,18 @@ pin_project! {
     #[project = H2ClientFutureProject]
     pub enum H2ClientFuture<B, T>
     where
-        B: http_body::Body,
+        B: Body,
+        B: Send,
         B: 'static,
+        B: Unpin,
+        B::Data: Send,
+        B::Data: 'static,
         B::Error: Into<BoxError>,
-        T: Read,
-        T: Write,
+        T: AsyncRead,
+        T: AsyncWrite,
         T: Unpin,
+        T: Send,
+        T: 'static,
     {
         Pipe {
             #[pin]
@@ -386,9 +409,8 @@ pin_project! {
 
 impl<B, T> Future for H2ClientFuture<B, T>
 where
-    B: http_body::Body + 'static,
-    B::Error: Into<BoxError>,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     type Output = ();
 
@@ -405,7 +427,7 @@ where
 
 struct FutCtx<B>
 where
-    B: Body,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     is_connect: bool,
     eos: bool,
@@ -415,11 +437,15 @@ where
     cb: Callback<Request<B>, Response<IncomingBody>>,
 }
 
-impl<B: Body> Unpin for FutCtx<B> {}
+impl<B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin> Unpin
+    for FutCtx<B>
+{
+}
 
 pub(crate) struct ClientTask<B, T>
 where
-    B: Body,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     ping: ping::Recorder,
     conn_drop_ref: ConnDropRef,
@@ -433,9 +459,8 @@ where
 
 impl<B, T> ClientTask<B, T>
 where
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     pub(crate) fn is_extended_connect_protocol_enabled(&self) -> bool {
         self.h2_tx.is_extended_connect_protocol_enabled()
@@ -458,8 +483,7 @@ pin_project! {
 
 impl<B> Future for PipeMap<B>
 where
-    B: http_body::Body,
-    B::Error: Into<BoxError>,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = ();
 
@@ -483,10 +507,8 @@ where
 
 impl<B, T> ClientTask<B, T>
 where
-    B: Body + Send + 'static + Unpin,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Send + Unpin,
 {
     fn poll_pipe(&mut self, f: FutCtx<B>, cx: &mut Context<'_>) {
         let ping = self.ping.clone();
@@ -512,7 +534,8 @@ where
                             ping: Some(ping),
                         };
                         // Clear send task
-                        self.executor.spawn_task(H2ClientFuture::Pipe { pipe });
+                        let fut: H2ClientFuture<_, T> = H2ClientFuture::Pipe { pipe };
+                        self.executor.spawn_task(fut);
                     }
                 }
             }
@@ -522,7 +545,7 @@ where
             Some(f.body_tx)
         };
 
-        self.executor.spawn_task(H2ClientFuture::Send {
+        let fut: H2ClientFuture<_, T> = H2ClientFuture::Send {
             send_when: SendWhen {
                 when: ResponseFutMap {
                     fut: f.fut,
@@ -531,7 +554,8 @@ where
                 },
                 call_back: Some(f.cb),
             },
-        });
+        };
+        self.executor.spawn_task(fut);
     }
 }
 
@@ -539,7 +563,12 @@ pin_project! {
     pub(crate) struct ResponseFutMap<B>
     where
         B: Body,
+        B: Send,
         B: 'static,
+        B: Unpin,
+        B::Data: Send,
+        B::Data: 'static,
+        B::Error: Into<BoxError>,
     {
         #[pin]
         fut: ResponseFuture,
@@ -552,7 +581,7 @@ pin_project! {
 
 impl<B> Future for ResponseFutMap<B>
 where
-    B: Body + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = Result<Response<crate::body::Incoming>, (crate::Error, Option<Request<B>>)>;
 
@@ -616,10 +645,8 @@ where
 
 impl<B, T> Future for ClientTask<B, T>
 where
-    B: Body + 'static + Unpin,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
-    T: Read + Write + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send,
 {
     type Output = crate::Result<Dispatched>;
 

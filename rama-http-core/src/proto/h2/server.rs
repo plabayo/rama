@@ -10,19 +10,17 @@ use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_http_types::{header, Method, Request, Response};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, trace, warn};
 
 use super::{ping, PipeToSendStream, SendBuf};
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::common::date;
-use crate::common::io::Compat;
-use crate::common::time::Time;
 use crate::ext::Protocol;
 use crate::headers;
 use crate::proto::h2::ping::Recorder;
 use crate::proto::h2::{H2Upgraded, UpgradedSendStream};
 use crate::proto::Dispatched;
-use crate::rt::{Read, Write};
 use crate::service::HttpService;
 
 use crate::upgrade::{OnUpgrade, Pending, Upgraded};
@@ -82,9 +80,14 @@ pin_project! {
     where
         S: HttpService<IncomingBody>,
         B: Body,
+        B: Send,
+        B: 'static,
+        B: Unpin,
+        B::Data: Send,
+        B::Data: 'static,
+        B::Error: Into<BoxError>,
     {
         exec: Executor,
-        timer: Time,
         service: S,
         state: State<T, B>,
         date_header: bool,
@@ -93,11 +96,11 @@ pin_project! {
 
 enum State<T, B>
 where
-    B: Body,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     Handshaking {
         ping_config: ping::Config,
-        hs: Handshake<Compat<T>, SendBuf<B::Data>>,
+        hs: Handshake<T, SendBuf<B::Data>>,
     },
     Serving(Serving<T, B>),
     Closed,
@@ -105,28 +108,21 @@ where
 
 struct Serving<T, B>
 where
-    B: Body,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     ping: Option<(ping::Recorder, ping::Ponger)>,
-    conn: Connection<Compat<T>, SendBuf<B::Data>>,
+    conn: Connection<T, SendBuf<B::Data>>,
     closing: Option<crate::Error>,
     date_header: bool,
 }
 
 impl<T, S, B> Server<T, S, B>
 where
-    T: Read + Write + Unpin,
-    S: HttpService<IncomingBody, ResBody = B>,
-    S::Error: Into<BoxError>,
-    B: Body + 'static,
+    T: AsyncRead + AsyncWrite + Unpin,
+    S: HttpService<IncomingBody, ResBody = B, Error: Into<BoxError>>,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
-    pub(crate) fn new(
-        io: T,
-        service: S,
-        config: &Config,
-        exec: Executor,
-        timer: Time,
-    ) -> Server<T, S, B> {
+    pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Server<T, S, B> {
         let mut builder = crate::h2::server::Builder::default();
         builder
             .initial_window_size(config.initial_stream_window_size)
@@ -144,7 +140,7 @@ where
         if config.enable_connect_protocol {
             builder.enable_connect_protocol();
         }
-        let handshake = builder.handshake(Compat::new(io));
+        let handshake = builder.handshake(io);
 
         let bdp = if config.adaptive_window {
             Some(config.initial_stream_window_size)
@@ -163,7 +159,6 @@ where
 
         Server {
             exec,
-            timer,
             state: State::Handshaking {
                 ping_config,
                 hs: handshake,
@@ -195,10 +190,9 @@ where
 
 impl<T, S, B> Future for Server<T, S, B>
 where
-    T: Read + Write + Unpin,
-    S: HttpService<IncomingBody, ResBody = B>,
-    S::Error: Into<BoxError>,
-    B: Body + 'static,
+    T: AsyncRead + AsyncWrite + Unpin,
+    S: HttpService<IncomingBody, ResBody = B, Error: Into<BoxError>>,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<Dispatched>;
 
@@ -213,7 +207,7 @@ where
                     let mut conn = ready!(Pin::new(hs).poll(cx).map_err(crate::Error::new_h2))?;
                     let ping = if ping_config.is_enabled() {
                         let pp = conn.ping_pong().expect("conn.ping_pong");
-                        Some(ping::channel(pp, ping_config.clone(), me.timer.clone()))
+                        Some(ping::channel(pp, ping_config.clone()))
                     } else {
                         None
                     };
@@ -241,8 +235,8 @@ where
 
 impl<T, B> Serving<T, B>
 where
-    T: Read + Write + Unpin,
-    B: Body + Send + 'static,
+    T: AsyncRead + AsyncWrite + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     fn poll_server<S>(
         &mut self,
@@ -307,7 +301,7 @@ where
                         }
 
                         let fut = H2Stream::new(
-                            service.call(req),
+                            service.serve_http(req),
                             connect_parts,
                             respond,
                             self.date_header,
@@ -363,6 +357,12 @@ pin_project! {
     pub struct H2Stream<F, B>
     where
         B: Body,
+        B: Send,
+        B: 'static,
+        B: Unpin,
+        B::Data: Send,
+        B::Data: 'static,
+        B::Error: Into<BoxError>,
     {
         reply: SendResponse<SendBuf<B::Data>>,
         #[pin]
@@ -376,6 +376,12 @@ pin_project! {
     enum H2StreamState<F, B>
     where
         B: Body,
+        B: Send,
+        B: 'static,
+        B: Unpin,
+        B::Data: Send,
+        B::Data: 'static,
+        B::Error: Into<BoxError>,
     {
         Service {
             #[pin]
@@ -397,9 +403,7 @@ struct ConnectParts {
 
 impl<F, B> H2Stream<F, B>
 where
-    B: Body + Send + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     fn new(
         fut: F,
@@ -431,9 +435,7 @@ macro_rules! reply {
 impl<F, B, E> H2Stream<F, B>
 where
     F: Future<Output = Result<Response<B>, E>>,
-    B: Body + Send + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     E: Into<BoxError>,
 {
     fn poll2(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<crate::Result<()>> {
@@ -529,9 +531,7 @@ where
 impl<F, B, E> Future for H2Stream<F, B>
 where
     F: Future<Output = Result<Response<B>, E>>,
-    B: Body,
-    B::Data: 'static,
-    B::Error: Into<BoxError>,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     E: Into<BoxError>,
 {
     type Output = ();

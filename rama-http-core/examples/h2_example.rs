@@ -20,8 +20,8 @@
 
 use rama_error::BoxError;
 use rama_http_core::h2::client;
+use rama_http_types::{Method, Request};
 
-use http::{Method, Request};
 use tokio::net::TcpStream;
 use tokio_rustls::rustls::{pki_types::ServerName, RootCertStore};
 use tokio_rustls::TlsConnector;

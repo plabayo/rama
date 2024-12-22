@@ -3,23 +3,18 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
 use std::task::{Context, Poll};
 use std::time::Duration;
 
-use crate::rt::{Read, Write};
 use crate::upgrade::Upgraded;
 use bytes::Bytes;
 use futures_util::ready;
 use rama_core::error::BoxError;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::proto;
 use crate::service::HttpService;
-use crate::{
-    common::time::{Dur, Time},
-    rt::Timer,
-};
 
 type Http1Dispatcher<T, B, S> = proto::h1::Dispatcher<
     proto::h1::dispatch::Server<S, IncomingBody>,
@@ -69,13 +64,12 @@ pin_project_lite::pin_project! {
 /// to bind the built connection to a service.
 #[derive(Clone, Debug)]
 pub struct Builder {
-    timer: Time,
     h1_half_close: bool,
     h1_keep_alive: bool,
     h1_title_case_headers: bool,
     h1_preserve_header_case: bool,
     h1_max_headers: Option<usize>,
-    h1_header_read_timeout: Dur,
+    h1_header_read_timeout: Duration,
     h1_writev: Option<bool>,
     max_buf_size: Option<usize>,
     pipeline_flush: bool,
@@ -117,11 +111,9 @@ where
 
 impl<I, B, S> Connection<I, S>
 where
-    S: HttpService<IncomingBody, ResBody = B>,
-    S::Error: Into<BoxError>,
-    I: Read + Write + Unpin,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    S: HttpService<IncomingBody, ResBody = B, Error: Into<BoxError>>,
+    I: AsyncRead + AsyncWrite + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -165,7 +157,6 @@ where
     pub fn poll_without_shutdown(&mut self, cx: &mut Context<'_>) -> Poll<crate::Result<()>>
     where
         S: Unpin,
-        S::Future: Unpin,
     {
         self.conn.poll_without_shutdown(cx)
     }
@@ -199,9 +190,8 @@ impl<I, B, S> Future for Connection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
     S::Error: Into<BoxError>,
-    I: Read + Write + Unpin,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    I: AsyncRead + AsyncWrite + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
 
@@ -231,13 +221,12 @@ impl Builder {
     /// Create a new connection builder.
     pub fn new() -> Self {
         Self {
-            timer: Time::Empty,
             h1_half_close: false,
             h1_keep_alive: true,
             h1_title_case_headers: false,
             h1_preserve_header_case: false,
             h1_max_headers: None,
-            h1_header_read_timeout: Dur::Default(Some(Duration::from_secs(30))),
+            h1_header_read_timeout: Duration::from_secs(30),
             h1_writev: None,
             max_buf_size: None,
             pipeline_flush: false,
@@ -317,8 +306,8 @@ impl Builder {
     /// Pass `None` to disable.
     ///
     /// Default is 30 seconds.
-    pub fn header_read_timeout(&mut self, read_timeout: impl Into<Option<Duration>>) -> &mut Self {
-        self.h1_header_read_timeout = Dur::Configured(read_timeout.into());
+    pub fn header_read_timeout(&mut self, read_timeout: Duration) -> &mut Self {
+        self.h1_header_read_timeout = read_timeout;
         self
     }
 
@@ -375,15 +364,6 @@ impl Builder {
         self
     }
 
-    /// Set the timer used in background tasks.
-    pub fn timer<M>(&mut self, timer: M) -> &mut Self
-    where
-        M: Timer + Send + Sync + 'static,
-    {
-        self.timer = Time::Timer(Arc::new(timer));
-        self
-    }
-
     /// Bind a connection together with a [`Service`](crate::service::Service).
     ///
     /// This returns a Future that must be polled in order for HTTP to be
@@ -420,13 +400,9 @@ impl Builder {
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<I, S>
     where
         S: HttpService<IncomingBody>,
-        S::Error: Into<BoxError>,
-        S::ResBody: 'static,
-        <S::ResBody as Body>::Error: Into<BoxError>,
-        I: Read + Write + Unpin,
+        I: AsyncRead + AsyncWrite + Unpin,
     {
         let mut conn = proto::Conn::new(io);
-        conn.set_timer(self.timer.clone());
         if !self.h1_keep_alive {
             conn.disable_keep_alive();
         }
@@ -442,12 +418,7 @@ impl Builder {
         if let Some(max_headers) = self.h1_max_headers {
             conn.set_http1_max_headers(max_headers);
         }
-        if let Some(dur) = self
-            .timer
-            .check(self.h1_header_read_timeout, "header_read_timeout")
-        {
-            conn.set_http1_header_read_timeout(dur);
-        };
+        conn.set_http1_header_read_timeout(self.h1_header_read_timeout);
         if let Some(writev) = self.h1_writev {
             if writev {
                 conn.set_write_strategy_queue();
@@ -482,9 +453,8 @@ impl<I, B, S> UpgradeableConnection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
     S::Error: Into<BoxError>,
-    I: Read + Write + Unpin,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    I: AsyncRead + AsyncWrite + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -503,9 +473,8 @@ impl<I, B, S> Future for UpgradeableConnection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
     S::Error: Into<BoxError>,
-    I: Read + Write + Unpin + Send + 'static,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
 

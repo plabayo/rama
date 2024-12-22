@@ -691,9 +691,9 @@ impl StdError for IncompleteBody {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::rt::{Read, ReadBuf};
     use std::pin::Pin;
     use std::time::Duration;
+    use tokio::io::{AsyncRead, ReadBuf};
 
     impl<'a> MemRead for &'a [u8] {
         fn read_mem(&mut self, _: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
@@ -709,11 +709,12 @@ mod tests {
         }
     }
 
-    impl<'a> MemRead for &'a mut (dyn Read + Unpin) {
+    impl<'a> MemRead for &'a mut (dyn AsyncRead + Unpin) {
         fn read_mem(&mut self, cx: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
             let mut v = vec![0; len];
             let mut buf = ReadBuf::new(&mut v);
-            ready!(Pin::new(self).poll_read(cx, buf.unfilled())?);
+            let mut unfilled_buf = ReadBuf::uninit(unsafe { buf.unfilled_mut() });
+            ready!(Pin::new(self).poll_read(cx, &mut unfilled_buf)?);
             Poll::Ready(Ok(Bytes::copy_from_slice(&buf.filled())))
         }
     }
@@ -1006,7 +1007,7 @@ mod tests {
     async fn read_async(mut decoder: Decoder, content: &[u8], block_at: usize) -> String {
         let mut outs = Vec::new();
 
-        let mut ins = crate::common::io::Compat::new(if block_at == 0 {
+        let mut ins = if block_at == 0 {
             tokio_test::io::Builder::new()
                 .wait(Duration::from_millis(10))
                 .read(content)
@@ -1017,9 +1018,9 @@ mod tests {
                 .wait(Duration::from_millis(10))
                 .read(&content[block_at..])
                 .build()
-        });
+        };
 
-        let mut ins = &mut ins as &mut (dyn Read + Unpin);
+        let mut ins = &mut ins as &mut (dyn AsyncRead + Unpin);
 
         loop {
             let buf = decoder

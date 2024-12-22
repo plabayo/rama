@@ -42,7 +42,6 @@ pub mod ext;
 
 pub mod service;
 
-pub mod rt;
 pub mod upgrade;
 
 mod headers;

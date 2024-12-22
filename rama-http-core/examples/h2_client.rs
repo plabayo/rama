@@ -27,8 +27,8 @@
 
 use rama_error::BoxError;
 use rama_http_core::h2::client;
+use rama_http_types::{HeaderMap, Request};
 
-use http::{HeaderMap, Request};
 use tokio::net::TcpStream;
 
 #[tokio::main]

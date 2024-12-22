@@ -4,9 +4,11 @@ use std::io::{self, IoSlice};
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
-use crate::rt::{Read, ReadBuf, Write};
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use std::task::ready;
+use tokio::io::AsyncRead;
+use tokio::io::AsyncWrite;
+use tokio::io::ReadBuf;
 use tracing::debug;
 use tracing::trace;
 
@@ -55,7 +57,7 @@ where
 
 impl<T, B> Buffered<T, B>
 where
-    T: Read + Write + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin,
     B: Buf,
 {
     pub(crate) fn new(io: T) -> Buffered<T, B> {
@@ -218,7 +220,8 @@ where
         // bytes onto `dst`.
         let dst = unsafe { self.read_buf.chunk_mut().as_uninit_slice_mut() };
         let mut buf = ReadBuf::uninit(dst);
-        match Pin::new(&mut self.io).poll_read(cx, buf.unfilled()) {
+        let mut unfilled_buf = ReadBuf::uninit(unsafe { buf.unfilled_mut() });
+        match Pin::new(&mut self.io).poll_read(cx, &mut unfilled_buf) {
             Poll::Ready(Ok(_)) => {
                 let n = buf.filled().len();
                 trace!("received {} bytes", n);
@@ -326,7 +329,7 @@ pub(crate) trait MemRead {
 
 impl<T, B> MemRead for Buffered<T, B>
 where
-    T: Read + Write + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin,
     B: Buf,
 {
     fn read_mem(&mut self, cx: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
@@ -626,7 +629,6 @@ enum WriteStrategy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::common::io::Compat;
     use std::time::Duration;
 
     use tokio_test::io::Builder as Mock;
@@ -678,7 +680,7 @@ mod tests {
             .wait(Duration::from_secs(1))
             .build();
 
-        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(Compat::new(mock));
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
 
         // We expect a `parse` to be not ready, and so can't await it directly.
         // Rather, this `poll_fn` will wrap the `Poll` result.
@@ -817,7 +819,7 @@ mod tests {
     #[cfg(debug_assertions)] // needs to trigger a debug_assert
     fn write_buf_requires_non_empty_bufs() {
         let mock = Mock::new().build();
-        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(Compat::new(mock));
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
 
         buffered.buffer(Cursor::new(Vec::new()));
     }
@@ -850,7 +852,7 @@ mod tests {
     async fn write_buf_flatten() {
         let mock = Mock::new().write(b"hello world, it's hyper!").build();
 
-        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(Compat::new(mock));
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
         buffered.write_buf.set_strategy(WriteStrategy::Flatten);
 
         buffered.headers_buf().extend(b"hello ");
@@ -905,7 +907,7 @@ mod tests {
             .write(b"hyper!")
             .build();
 
-        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(Compat::new(mock));
+        let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
         buffered.write_buf.set_strategy(WriteStrategy::Queue);
 
         // we have 4 buffers, and vec IO disabled, but explicitly said

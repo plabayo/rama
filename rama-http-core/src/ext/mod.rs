@@ -104,6 +104,7 @@ impl HeaderCaseMap {
         Self(Default::default())
     }
 
+    #[allow(dead_code)]
     pub(crate) fn insert(&mut self, name: HeaderName, orig: Bytes) {
         self.0.insert(name, orig);
     }
@@ -138,6 +139,7 @@ impl OriginalHeaderOrder {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn insert(&mut self, name: HeaderName) {
         if !self.num_entries.contains_key(&name) {
             let idx = 0;
@@ -205,6 +207,7 @@ impl OriginalHeaderOrder {
     /// let (name, idx) = iter.next();
     /// assert_eq!(b"c=d", h_map.get_all(name).nth(idx).unwrap());
     /// ```
+    #[allow(dead_code)]
     pub(crate) fn get_in_order(&self) -> impl Iterator<Item = &(HeaderName, usize)> {
         self.entry_order.iter()
     }

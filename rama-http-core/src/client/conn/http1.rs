@@ -5,11 +5,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::task::{ready, Context, Poll};
 
-use crate::rt::{Read, Write};
 use bytes::Bytes;
 use httparse::ParserConfig;
 use rama_core::error::BoxError;
 use rama_http_types::{Request, Response};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, trace};
 
 use super::super::dispatch::{self, TrySendError};
@@ -53,17 +53,16 @@ pub struct Parts<T> {
 #[must_use = "futures do nothing unless polled"]
 pub struct Connection<T, B>
 where
-    T: Read + Write,
-    B: Body + 'static,
+    T: AsyncRead + AsyncWrite,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     inner: Dispatcher<T, B>,
 }
 
 impl<T, B> Connection<T, B>
 where
-    T: Read + Write + Unpin,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Return the inner IO object, and additional information.
     ///
@@ -125,10 +124,8 @@ pub struct Builder {
 /// See [`client::conn`](crate::client::conn) for more.
 pub async fn handshake<T, B>(io: T) -> crate::Result<(SendRequest<B>, Connection<T, B>)>
 where
-    T: Read + Write + Unpin,
-    B: Body + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     Builder::new().handshake(io).await
 }
@@ -169,7 +166,7 @@ impl<B> SendRequest<B> {
 
 impl<B> SendRequest<B>
 where
-    B: Body + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Sends a `Request` on the associated connection.
     ///
@@ -253,9 +250,8 @@ impl<B> fmt::Debug for SendRequest<B> {
 
 impl<T, B> Connection<T, B>
 where
-    T: Read + Write + Unpin + Send,
-    B: Body + 'static,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Unpin + Send,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Enable this connection to support higher-level HTTP upgrades.
     ///
@@ -267,8 +263,8 @@ where
 
 impl<T, B> fmt::Debug for Connection<T, B>
 where
-    T: Read + Write + fmt::Debug,
-    B: Body + 'static,
+    T: AsyncRead + AsyncWrite + fmt::Debug,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Connection").finish()
@@ -277,10 +273,8 @@ where
 
 impl<T, B> Future for Connection<T, B>
 where
-    T: Read + Write + Unpin,
-    B: Body + 'static,
-    B::Data: Send,
-    B::Error: Into<BoxError>,
+    T: AsyncRead + AsyncWrite + Unpin,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
 
@@ -513,10 +507,8 @@ impl Builder {
         io: T,
     ) -> impl Future<Output = crate::Result<(SendRequest<B>, Connection<T, B>)>>
     where
-        T: Read + Write + Unpin,
-        B: Body + 'static,
-        B::Data: Send,
-        B::Error: Into<BoxError>,
+        T: AsyncRead + AsyncWrite + Unpin,
+        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let opts = self.clone();
 
@@ -576,19 +568,16 @@ mod upgrades {
     #[allow(missing_debug_implementations)]
     pub struct UpgradeableConnection<T, B>
     where
-        T: Read + Write + Unpin + Send + 'static,
-        B: Body + 'static,
-        B::Error: Into<BoxError>,
+        T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         pub(super) inner: Option<Connection<T, B>>,
     }
 
     impl<I, B> Future for UpgradeableConnection<I, B>
     where
-        I: Read + Write + Unpin + Send + 'static,
-        B: Body + 'static,
-        B::Data: Send,
-        B::Error: Into<BoxError>,
+        I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         type Output = crate::Result<()>;
 
