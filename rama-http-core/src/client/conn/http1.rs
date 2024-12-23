@@ -295,6 +295,12 @@ where
 
 // ===== impl Builder
 
+impl Default for Builder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Builder {
     /// Creates a new connection builder.
     #[inline]

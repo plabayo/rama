@@ -406,6 +406,7 @@ mod tests {
 
     #[cfg(not(miri))]
     #[tokio::test]
+    #[allow(clippy::let_underscore_future)]
     async fn sender_checks_for_want_on_send() {
         let (mut tx, mut rx) = channel::<Custom, ()>();
 
@@ -425,6 +426,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::let_underscore_future)]
     fn unbounded_sender_doesnt_bound_on_want() {
         let (tx, rx) = channel::<Custom, ()>();
         let mut tx = tx.unbound();

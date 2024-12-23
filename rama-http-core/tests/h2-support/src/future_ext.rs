@@ -165,7 +165,7 @@ pub struct Drive<'a, T, U> {
     future: Wakened<U>,
 }
 
-impl<'a, T, U> Future for Drive<'a, T, U>
+impl<T, U> Future for Drive<'_, T, U>
 where
     T: Future + Unpin,
     U: Future,

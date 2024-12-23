@@ -223,7 +223,7 @@ impl From<Header> for Header<Option<HeaderName>> {
     }
 }
 
-impl<'a> Name<'a> {
+impl Name<'_> {
     pub fn into_entry(self, value: Bytes) -> Result<Header, DecoderError> {
         match self {
             Name::Field(name) => Ok(Header::Field {

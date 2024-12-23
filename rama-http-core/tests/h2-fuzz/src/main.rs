@@ -16,7 +16,7 @@ struct MockIo<'a> {
     input: &'a [u8],
 }
 
-impl<'a> MockIo<'a> {
+impl MockIo<'_> {
     fn next_byte(&mut self) -> Option<u8> {
         if let Some(&c) = self.input.first() {
             self.input = &self.input[1..];
@@ -31,7 +31,7 @@ impl<'a> MockIo<'a> {
     }
 }
 
-impl<'a> AsyncRead for MockIo<'a> {
+impl AsyncRead for MockIo<'_> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -58,7 +58,7 @@ impl<'a> AsyncRead for MockIo<'a> {
     }
 }
 
-impl<'a> AsyncWrite for MockIo<'a> {
+impl AsyncWrite for MockIo<'_> {
     fn poll_write(
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,

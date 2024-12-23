@@ -314,7 +314,7 @@ where
     }
 
     #[cfg(test)]
-    fn flush<'a>(&'a mut self) -> impl std::future::Future<Output = io::Result<()>> + 'a {
+    fn flush(&mut self) -> impl std::future::Future<Output = io::Result<()>> + '_ {
         std::future::poll_fn(move |cx| self.poll_flush(cx))
     }
 }
@@ -807,7 +807,7 @@ mod tests {
         }
 
         let mut max = 8192;
-        while max < std::usize::MAX {
+        while max < usize::MAX {
             fuzz(max);
             max = (max / 2).saturating_mul(3);
         }

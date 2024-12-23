@@ -33,13 +33,13 @@ impl Chunk for u8 {
     }
 }
 
-impl<'a> Chunk for &'a [u8] {
+impl Chunk for &[u8] {
     fn push(&self, dst: &mut Vec<u8>) {
         dst.extend(*self)
     }
 }
 
-impl<'a> Chunk for &'a str {
+impl Chunk for &str {
     fn push(&self, dst: &mut Vec<u8>) {
         dst.extend(self.as_bytes())
     }

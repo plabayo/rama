@@ -100,10 +100,7 @@ impl Encoder {
     }
 
     pub(crate) fn is_close_delimited(&self) -> bool {
-        match self.kind {
-            Kind::CloseDelimited => true,
-            _ => false,
-        }
+        matches!(self.kind, Kind::CloseDelimited)
     }
 
     pub(crate) fn is_chunked(&self) -> bool {
@@ -281,7 +278,7 @@ fn allowed_trailer_field_map(allowed_trailer_fields: &Vec<HeaderValue>) -> HashM
             let items: Vec<&str> = header_str.split(',').map(|item| item.trim()).collect();
 
             for item in items {
-                trailer_map.entry(item.to_string()).or_insert(());
+                trailer_map.entry(item.to_owned()).or_insert(());
             }
         }
     }
@@ -528,19 +525,16 @@ mod tests {
         let trailers = vec![HeaderValue::from_static("chunky-trailer")];
         let encoder = encoder.into_chunked_with_trailing_fields(trailers);
 
-        let headers = HeaderMap::from_iter(
-            vec![
-                (
-                    HeaderName::from_static("chunky-trailer"),
-                    HeaderValue::from_static("header data"),
-                ),
-                (
-                    HeaderName::from_static("should-not-be-included"),
-                    HeaderValue::from_static("oops"),
-                ),
-            ]
-            .into_iter(),
-        );
+        let headers = HeaderMap::from_iter([
+            (
+                HeaderName::from_static("chunky-trailer"),
+                HeaderValue::from_static("header data"),
+            ),
+            (
+                HeaderName::from_static("should-not-be-included"),
+                HeaderValue::from_static("oops"),
+            ),
+        ]);
 
         let buf1 = encoder.encode_trailers::<&[u8]>(headers, false).unwrap();
 
@@ -558,19 +552,16 @@ mod tests {
         ];
         let encoder = encoder.into_chunked_with_trailing_fields(trailers);
 
-        let headers = HeaderMap::from_iter(
-            vec![
-                (
-                    HeaderName::from_static("chunky-trailer"),
-                    HeaderValue::from_static("header data"),
-                ),
-                (
-                    HeaderName::from_static("chunky-trailer-2"),
-                    HeaderValue::from_static("more header data"),
-                ),
-            ]
-            .into_iter(),
-        );
+        let headers = HeaderMap::from_iter([
+            (
+                HeaderName::from_static("chunky-trailer"),
+                HeaderValue::from_static("header data"),
+            ),
+            (
+                HeaderName::from_static("chunky-trailer-2"),
+                HeaderValue::from_static("more header data"),
+            ),
+        ]);
 
         let buf1 = encoder.encode_trailers::<&[u8]>(headers, false).unwrap();
 
@@ -586,13 +577,10 @@ mod tests {
     fn chunked_with_no_trailer_header() {
         let encoder = Encoder::chunked();
 
-        let headers = HeaderMap::from_iter(
-            vec![(
-                HeaderName::from_static("chunky-trailer"),
-                HeaderValue::from_static("header data"),
-            )]
-            .into_iter(),
-        );
+        let headers = HeaderMap::from_iter([(
+            HeaderName::from_static("chunky-trailer"),
+            HeaderValue::from_static("header data"),
+        )]);
 
         assert!(encoder
             .encode_trailers::<&[u8]>(headers.clone(), false)
@@ -649,13 +637,10 @@ mod tests {
         let trailers = vec![HeaderValue::from_static("chunky-trailer")];
         let encoder = encoder.into_chunked_with_trailing_fields(trailers);
 
-        let headers = HeaderMap::from_iter(
-            vec![(
-                HeaderName::from_static("chunky-trailer"),
-                HeaderValue::from_static("header data"),
-            )]
-            .into_iter(),
-        );
+        let headers = HeaderMap::from_iter([(
+            HeaderName::from_static("chunky-trailer"),
+            HeaderValue::from_static("header data"),
+        )]);
         let buf1 = encoder.encode_trailers::<&[u8]>(headers, true).unwrap();
 
         let mut dst = Vec::new();

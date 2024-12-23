@@ -378,7 +378,7 @@ where
 
 // ===== impl Ptr =====
 
-impl<'a> Ptr<'a> {
+impl Ptr<'_> {
     /// Returns the Key associated with the stream
     pub(super) fn key(&self) -> Key {
         self.key
@@ -409,7 +409,7 @@ impl<'a> Ptr<'a> {
     }
 }
 
-impl<'a> Resolve for Ptr<'a> {
+impl Resolve for Ptr<'_> {
     fn resolve(&mut self, key: Key) -> Ptr {
         Ptr {
             key,
@@ -418,7 +418,7 @@ impl<'a> Resolve for Ptr<'a> {
     }
 }
 
-impl<'a> ops::Deref for Ptr<'a> {
+impl ops::Deref for Ptr<'_> {
     type Target = Stream;
 
     fn deref(&self) -> &Stream {
@@ -426,13 +426,13 @@ impl<'a> ops::Deref for Ptr<'a> {
     }
 }
 
-impl<'a> ops::DerefMut for Ptr<'a> {
+impl ops::DerefMut for Ptr<'_> {
     fn deref_mut(&mut self) -> &mut Stream {
         &mut self.store[self.key]
     }
 }
 
-impl<'a> fmt::Debug for Ptr<'a> {
+impl fmt::Debug for Ptr<'_> {
     fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
         (**self).fmt(fmt)
     }
@@ -440,7 +440,7 @@ impl<'a> fmt::Debug for Ptr<'a> {
 
 // ===== impl OccupiedEntry =====
 
-impl<'a> OccupiedEntry<'a> {
+impl OccupiedEntry<'_> {
     pub(super) fn key(&self) -> Key {
         let stream_id = *self.ids.key();
         let index = *self.ids.get();
@@ -450,7 +450,7 @@ impl<'a> OccupiedEntry<'a> {
 
 // ===== impl VacantEntry =====
 
-impl<'a> VacantEntry<'a> {
+impl VacantEntry<'_> {
     pub(super) fn insert(self, value: Stream) -> Key {
         // Insert the value in the slab
         let stream_id = value.id;

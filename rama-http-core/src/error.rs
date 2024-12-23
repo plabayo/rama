@@ -130,7 +130,7 @@ impl Error {
     pub fn is_parse_too_large(&self) -> bool {
         matches!(
             self.inner.kind,
-            Kind::Parse(Parse::TooLarge) | Kind::Parse(Parse::UriTooLong)
+            Kind::Parse(Parse::TooLarge | Parse::UriTooLong)
         )
     }
 

@@ -219,7 +219,7 @@ where
                     })
                 }
                 State::Serving(ref mut srv) => {
-                    ready!(srv.poll_server(cx, &mut me.service, &mut me.exec))?;
+                    ready!(srv.poll_server(cx, &mut me.service, &me.exec))?;
                     return Poll::Ready(Ok(Dispatched::Shutdown));
                 }
                 State::Closed => {

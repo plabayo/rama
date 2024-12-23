@@ -297,6 +297,9 @@ impl ChunkedState {
     fn new() -> ChunkedState {
         ChunkedState::Start
     }
+
+    // TODO: in future see if we can avoid this many arguments
+    #[allow(clippy::too_many_arguments)]
     fn step<R: MemRead>(
         &self,
         cx: &mut Context<'_>,
@@ -309,18 +312,19 @@ impl ChunkedState {
         h1_max_headers: usize,
         h1_max_header_size: usize,
     ) -> Poll<Result<ChunkedState, io::Error>> {
-        use self::ChunkedState::*;
         match *self {
-            Start => ChunkedState::read_start(cx, body, size),
-            Size => ChunkedState::read_size(cx, body, size),
-            SizeLws => ChunkedState::read_size_lws(cx, body),
-            Extension => ChunkedState::read_extension(cx, body, extensions_cnt),
-            SizeLf => ChunkedState::read_size_lf(cx, body, *size),
-            Body => ChunkedState::read_body(cx, body, size, buf),
-            BodyCr => ChunkedState::read_body_cr(cx, body),
-            BodyLf => ChunkedState::read_body_lf(cx, body),
-            Trailer => ChunkedState::read_trailer(cx, body, trailers_buf, h1_max_header_size),
-            TrailerLf => ChunkedState::read_trailer_lf(
+            self::ChunkedState::Start => ChunkedState::read_start(cx, body, size),
+            self::ChunkedState::Size => ChunkedState::read_size(cx, body, size),
+            self::ChunkedState::SizeLws => ChunkedState::read_size_lws(cx, body),
+            self::ChunkedState::Extension => ChunkedState::read_extension(cx, body, extensions_cnt),
+            self::ChunkedState::SizeLf => ChunkedState::read_size_lf(cx, body, *size),
+            self::ChunkedState::Body => ChunkedState::read_body(cx, body, size, buf),
+            self::ChunkedState::BodyCr => ChunkedState::read_body_cr(cx, body),
+            self::ChunkedState::BodyLf => ChunkedState::read_body_lf(cx, body),
+            self::ChunkedState::Trailer => {
+                ChunkedState::read_trailer(cx, body, trailers_buf, h1_max_header_size)
+            }
+            self::ChunkedState::TrailerLf => ChunkedState::read_trailer_lf(
                 cx,
                 body,
                 trailers_buf,
@@ -328,9 +332,13 @@ impl ChunkedState {
                 h1_max_headers,
                 h1_max_header_size,
             ),
-            EndCr => ChunkedState::read_end_cr(cx, body, trailers_buf, h1_max_header_size),
-            EndLf => ChunkedState::read_end_lf(cx, body, trailers_buf, h1_max_header_size),
-            End => Poll::Ready(Ok(ChunkedState::End)),
+            self::ChunkedState::EndCr => {
+                ChunkedState::read_end_cr(cx, body, trailers_buf, h1_max_header_size)
+            }
+            self::ChunkedState::EndLf => {
+                ChunkedState::read_end_lf(cx, body, trailers_buf, h1_max_header_size)
+            }
+            self::ChunkedState::End => Poll::Ready(Ok(ChunkedState::End)),
         }
     }
 
@@ -695,7 +703,7 @@ mod tests {
     use std::time::Duration;
     use tokio::io::{AsyncRead, ReadBuf};
 
-    impl<'a> MemRead for &'a [u8] {
+    impl MemRead for &[u8] {
         fn read_mem(&mut self, _: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
             let n = std::cmp::min(len, self.len());
             if n > 0 {
@@ -709,13 +717,13 @@ mod tests {
         }
     }
 
-    impl<'a> MemRead for &'a mut (dyn AsyncRead + Unpin) {
+    impl MemRead for &mut (dyn AsyncRead + Unpin) {
         fn read_mem(&mut self, cx: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
             let mut v = vec![0; len];
             let mut buf = ReadBuf::new(&mut v);
             let mut unfilled_buf = ReadBuf::uninit(unsafe { buf.unfilled_mut() });
             ready!(Pin::new(self).poll_read(cx, &mut unfilled_buf)?);
-            Poll::Ready(Ok(Bytes::copy_from_slice(&buf.filled())))
+            Poll::Ready(Ok(Bytes::copy_from_slice(buf.filled())))
         }
     }
 
@@ -764,7 +772,7 @@ mod tests {
                 })
                 .await;
                 let desc = format!("read_size failed for {:?}", s);
-                state = result.expect(desc.as_str());
+                state = result.unwrap_or_else(|_| panic!("{}", desc));
                 if state == ChunkedState::Body || state == ChunkedState::EndCr {
                     break;
                 }

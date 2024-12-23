@@ -481,7 +481,7 @@ impl<'a, T> OptGuard<'a, T> {
     }
 }
 
-impl<'a, T> Drop for OptGuard<'a, T> {
+impl<T> Drop for OptGuard<'_, T> {
     fn drop(&mut self) {
         if self.1 {
             self.0.set(None);
@@ -753,7 +753,7 @@ mod tests {
         conn.set_write_strategy_queue();
 
         let dispatcher = Dispatcher::new(Client::new(rx), conn);
-        let _dispatcher = tokio::spawn(async move { dispatcher.await });
+        let _dispatcher = tokio::spawn(dispatcher);
 
         let body = {
             let (mut tx, body) = IncomingBody::new_channel(DecodedLength::new(4), false);

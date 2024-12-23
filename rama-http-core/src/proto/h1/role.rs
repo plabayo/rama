@@ -95,10 +95,8 @@ fn is_complete_fast(bytes: &[u8], prev_len: usize) -> bool {
             if bytes[i + 1..].chunks(3).next() == Some(&b"\n\r\n"[..]) {
                 return true;
             }
-        } else if b == b'\n' {
-            if bytes.get(i + 1) == Some(&b'\n') {
-                return true;
-            }
+        } else if b == b'\n' && bytes.get(i + 1) == Some(&b'\n') {
+            return true;
         }
     }
 
@@ -453,10 +451,9 @@ impl Http1Transaction for Server {
     fn on_error(err: &crate::Error) -> Option<MessageHead<Self::Outgoing>> {
         use crate::error::Kind;
         let status = match *err.kind() {
-            Kind::Parse(Parse::Method)
-            | Kind::Parse(Parse::Header(_))
-            | Kind::Parse(Parse::Uri)
-            | Kind::Parse(Parse::Version) => StatusCode::BAD_REQUEST,
+            Kind::Parse(Parse::Method | Parse::Header(_) | Parse::Uri | Parse::Version) => {
+                StatusCode::BAD_REQUEST
+            }
             Kind::Parse(Parse::TooLarge) => StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
             Kind::Parse(Parse::UriTooLong) => StatusCode::URI_TOO_LONG,
             _ => return None,
@@ -1589,7 +1586,7 @@ fn write_headers_original_case(
 
 struct FastWrite<'a>(&'a mut Vec<u8>);
 
-impl<'a> fmt::Write for FastWrite<'a> {
+impl fmt::Write for FastWrite<'_> {
     #[inline]
     fn write_str(&mut self, s: &str) -> fmt::Result {
         extend(self.0, s.as_bytes());
@@ -1675,7 +1672,7 @@ mod tests {
         Server::parse(&mut raw, ctx).unwrap_err();
     }
 
-    const H09_RESPONSE: &'static str = "Baguettes are super delicious, don't you agree?";
+    const H09_RESPONSE: &str = "Baguettes are super delicious, don't you agree?";
 
     #[test]
     fn test_parse_response_h09_allowed() {
@@ -1712,7 +1709,7 @@ mod tests {
         assert_eq!(raw, H09_RESPONSE);
     }
 
-    const RESPONSE_WITH_WHITESPACE_BETWEEN_HEADER_NAME_AND_COLON: &'static str =
+    const RESPONSE_WITH_WHITESPACE_BETWEEN_HEADER_NAME_AND_COLON: &str =
         "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Credentials : true\r\n\r\n";
 
     #[test]
@@ -1776,14 +1773,12 @@ mod tests {
         assert_eq!(
             orig_headers
                 .get_all_internal(&HeaderName::from_static("host"))
-                .into_iter()
                 .collect::<Vec<_>>(),
             vec![&Bytes::from("Host")]
         );
         assert_eq!(
             orig_headers
                 .get_all_internal(&HeaderName::from_static("x-bread"))
-                .into_iter()
                 .collect::<Vec<_>>(),
             vec![&Bytes::from("X-BREAD")]
         );
