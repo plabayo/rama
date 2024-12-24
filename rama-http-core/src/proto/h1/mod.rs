@@ -67,8 +67,6 @@ pub(crate) struct ParseContext<'a> {
     req_method: &'a mut Option<Method>,
     h1_parser_config: ParserConfig,
     h1_max_headers: Option<usize>,
-    preserve_header_case: bool,
-    preserve_header_order: bool,
     h09_responses: bool,
 }
 

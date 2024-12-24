@@ -57,8 +57,6 @@ where
                 h1_header_read_timeout_fut: None,
                 h1_header_read_timeout_running: false,
                 date_header: true,
-                preserve_header_case: false,
-                preserve_header_order: false,
                 title_case_headers: false,
                 h09_responses: false,
                 notify_read: false,
@@ -100,14 +98,6 @@ where
 
     pub(crate) fn set_title_case_headers(&mut self) {
         self.state.title_case_headers = true;
-    }
-
-    pub(crate) fn set_preserve_header_case(&mut self) {
-        self.state.preserve_header_case = true;
-    }
-
-    pub(crate) fn set_preserve_header_order(&mut self) {
-        self.state.preserve_header_order = true;
     }
 
     pub(crate) fn set_h09_responses(&mut self) {
@@ -213,8 +203,6 @@ where
                 req_method: &mut self.state.method,
                 h1_parser_config: self.state.h1_parser_config.clone(),
                 h1_max_headers: self.state.h1_max_headers,
-                preserve_header_case: self.state.preserve_header_case,
-                preserve_header_order: self.state.preserve_header_order,
                 h09_responses: self.state.h09_responses,
             },
         ) {
@@ -878,8 +866,6 @@ struct State {
     h1_header_read_timeout_fut: Option<Pin<Box<Sleep>>>,
     h1_header_read_timeout_running: bool,
     date_header: bool,
-    preserve_header_case: bool,
-    preserve_header_order: bool,
     title_case_headers: bool,
     h09_responses: bool,
     /// Set to true when the Dispatcher should poll read operations

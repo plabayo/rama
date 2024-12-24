@@ -111,9 +111,8 @@ pub struct Builder {
     h1_parser_config: ParserConfig,
     h1_writev: Option<bool>,
     h1_title_case_headers: bool,
-    h1_preserve_header_case: bool,
     h1_max_headers: Option<usize>,
-    h1_preserve_header_order: bool,
+
     h1_read_buf_exact_size: Option<usize>,
     h1_max_buf_size: Option<usize>,
 }
@@ -310,9 +309,7 @@ impl Builder {
             h1_read_buf_exact_size: None,
             h1_parser_config: Default::default(),
             h1_title_case_headers: false,
-            h1_preserve_header_case: false,
             h1_max_headers: None,
-            h1_preserve_header_order: false,
             h1_max_buf_size: None,
         }
     }
@@ -425,22 +422,6 @@ impl Builder {
         self
     }
 
-    /// Set whether to support preserving original header cases.
-    ///
-    /// Currently, this will record the original cases received, and store them
-    /// in a private extension on the `Response`. It will also look for and use
-    /// such an extension in any provided `Request`.
-    ///
-    /// Since the relevant extension is still private, there is no way to
-    /// interact with the original cases. The only effect this can have now is
-    /// to forward the cases in a proxy-like fashion.
-    ///
-    /// Default is false.
-    pub fn preserve_header_case(&mut self, enabled: bool) -> &mut Builder {
-        self.h1_preserve_header_case = enabled;
-        self
-    }
-
     /// Set the maximum number of headers.
     ///
     /// When a response is received, the parser will reserve a buffer to store headers for optimal
@@ -456,18 +437,6 @@ impl Builder {
     /// Default is 100.
     pub fn max_headers(&mut self, val: usize) -> &mut Self {
         self.h1_max_headers = Some(val);
-        self
-    }
-
-    /// Set whether to support preserving original header order.
-    ///
-    /// Currently, this will record the order in which headers are received, and store this
-    /// ordering in a private extension on the `Response`. It will also look for and use
-    /// such an extension in any provided `Request`.
-    ///
-    /// Default is false.
-    pub fn preserve_header_order(&mut self, enabled: bool) -> &mut Builder {
-        self.h1_preserve_header_order = enabled;
         self
     }
 
@@ -533,14 +502,8 @@ impl Builder {
             if opts.h1_title_case_headers {
                 conn.set_title_case_headers();
             }
-            if opts.h1_preserve_header_case {
-                conn.set_preserve_header_case();
-            }
             if let Some(max_headers) = opts.h1_max_headers {
                 conn.set_http1_max_headers(max_headers);
-            }
-            if opts.h1_preserve_header_order {
-                conn.set_preserve_header_order();
             }
 
             if opts.h09_responses {

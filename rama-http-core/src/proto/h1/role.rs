@@ -220,17 +220,8 @@ impl Http1Transaction for Server {
         let mut is_te_chunked = false;
         let mut wants_upgrade = subject.0 == Method::CONNECT;
 
-        let mut header_case_map = if ctx.preserve_header_case {
-            Some(HeaderCaseMap::default())
-        } else {
-            None
-        };
-
-        let mut header_order = if ctx.preserve_header_order {
-            Some(OriginalHeaderOrder::default())
-        } else {
-            None
-        };
+        let mut header_case_map = HeaderCaseMap::default();
+        let mut header_order = OriginalHeaderOrder::default();
 
         let mut headers = ctx.cached_headers.take().unwrap_or_default();
 
@@ -304,13 +295,8 @@ impl Http1Transaction for Server {
                 _ => (),
             }
 
-            if let Some(ref mut header_case_map) = header_case_map {
-                header_case_map.append(&name, slice.slice(header.name.0..header.name.1));
-            }
-
-            if let Some(ref mut header_order) = header_order {
-                header_order.append(&name);
-            }
+            header_case_map.append(&name, slice.slice(header.name.0..header.name.1));
+            header_order.append(&name);
 
             headers.append(name, value);
         }
@@ -322,13 +308,8 @@ impl Http1Transaction for Server {
 
         let mut extensions = http::Extensions::default();
 
-        if let Some(header_case_map) = header_case_map {
-            extensions.insert(header_case_map);
-        }
-
-        if let Some(header_order) = header_order {
-            extensions.insert(header_order);
-        }
+        extensions.insert(header_case_map);
+        extensions.insert(header_order);
 
         *ctx.req_method = Some(subject.0.clone());
 
@@ -1055,17 +1036,8 @@ impl Http1Transaction for Client {
 
             let mut keep_alive = version == Version::HTTP_11;
 
-            let mut header_case_map = if ctx.preserve_header_case {
-                Some(HeaderCaseMap::default())
-            } else {
-                None
-            };
-
-            let mut header_order = if ctx.preserve_header_order {
-                Some(OriginalHeaderOrder::default())
-            } else {
-                None
-            };
+            let mut header_case_map = HeaderCaseMap::default();
+            let mut header_order = OriginalHeaderOrder::default();
 
             headers.reserve(headers_len);
             for header in &headers_indices[..headers_len] {
@@ -1085,26 +1057,16 @@ impl Http1Transaction for Client {
                     }
                 }
 
-                if let Some(ref mut header_case_map) = header_case_map {
-                    header_case_map.append(&name, slice.slice(header.name.0..header.name.1));
-                }
-
-                if let Some(ref mut header_order) = header_order {
-                    header_order.append(&name);
-                }
+                header_case_map.append(&name, slice.slice(header.name.0..header.name.1));
+                header_order.append(&name);
 
                 headers.append(name, value);
             }
 
             let mut extensions = http::Extensions::default();
 
-            if let Some(header_case_map) = header_case_map {
-                extensions.insert(header_case_map);
-            }
-
-            if let Some(header_order) = header_order {
-                extensions.insert(header_order);
-            }
+            extensions.insert(header_case_map);
+            extensions.insert(header_order);
 
             if let Some(reason) = reason {
                 // Safety: httparse ensures that only valid reason phrase bytes are present in this
@@ -1621,8 +1583,6 @@ mod tests {
                 req_method: &mut method,
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
-                preserve_header_case: false,
-                preserve_header_order: false,
                 h09_responses: false,
             },
         )
@@ -1645,8 +1605,6 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
-            preserve_header_case: false,
-            preserve_header_order: false,
             h09_responses: false,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
@@ -1665,8 +1623,6 @@ mod tests {
             req_method: &mut None,
             h1_parser_config: Default::default(),
             h1_max_headers: None,
-            preserve_header_case: false,
-            preserve_header_order: false,
             h09_responses: false,
         };
         Server::parse(&mut raw, ctx).unwrap_err();
@@ -1682,8 +1638,6 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
-            preserve_header_case: false,
-            preserve_header_order: false,
             h09_responses: true,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
@@ -1701,8 +1655,6 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
-            preserve_header_case: false,
-            preserve_header_order: false,
             h09_responses: false,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
@@ -1724,8 +1676,6 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config,
             h1_max_headers: None,
-            preserve_header_case: false,
-            preserve_header_order: false,
             h09_responses: false,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
@@ -1744,8 +1694,6 @@ mod tests {
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
-            preserve_header_case: false,
-            preserve_header_order: false,
             h09_responses: false,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
@@ -1760,8 +1708,6 @@ mod tests {
             req_method: &mut None,
             h1_parser_config: Default::default(),
             h1_max_headers: None,
-            preserve_header_case: true,
-            preserve_header_order: false,
             h09_responses: false,
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
@@ -1795,8 +1741,6 @@ mod tests {
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
-                    preserve_header_case: false,
-                    preserve_header_order: false,
                     h09_responses: false,
                 },
             )
@@ -1813,8 +1757,6 @@ mod tests {
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
-                    preserve_header_case: false,
-                    preserve_header_order: false,
                     h09_responses: false,
                 },
             )
@@ -2040,8 +1982,6 @@ mod tests {
                     req_method: &mut Some(Method::GET),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
-                    preserve_header_case: false,
-                    preserve_header_order: false,
                     h09_responses: false,
                 }
             )
@@ -2058,8 +1998,6 @@ mod tests {
                     req_method: &mut Some(m),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
-                    preserve_header_case: false,
-                    preserve_header_order: false,
                     h09_responses: false,
                 },
             )
@@ -2076,8 +2014,6 @@ mod tests {
                     req_method: &mut Some(Method::GET),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
-                    preserve_header_case: false,
-                    preserve_header_order: false,
                     h09_responses: false,
                 },
             )
@@ -2631,8 +2567,6 @@ mod tests {
                 req_method: &mut Some(Method::GET),
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
-                preserve_header_case: false,
-                preserve_header_order: false,
                 h09_responses: false,
             },
         )
@@ -2671,8 +2605,6 @@ mod tests {
                         req_method: &mut None,
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
-                        preserve_header_case: false,
-                        preserve_header_order: false,
                         h09_responses: false,
                     },
                 );
@@ -2692,8 +2624,6 @@ mod tests {
                         req_method: &mut None,
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
-                        preserve_header_case: false,
-                        preserve_header_order: false,
                         h09_responses: false,
                     },
                 );

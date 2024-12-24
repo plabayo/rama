@@ -67,7 +67,6 @@ pub struct Builder {
     h1_half_close: bool,
     h1_keep_alive: bool,
     h1_title_case_headers: bool,
-    h1_preserve_header_case: bool,
     h1_max_headers: Option<usize>,
     h1_header_read_timeout: Duration,
     h1_writev: Option<bool>,
@@ -230,7 +229,6 @@ impl Builder {
             h1_half_close: false,
             h1_keep_alive: true,
             h1_title_case_headers: false,
-            h1_preserve_header_case: false,
             h1_max_headers: None,
             h1_header_read_timeout: Duration::from_secs(30),
             h1_writev: None,
@@ -266,22 +264,6 @@ impl Builder {
     /// Default is false.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_title_case_headers = enabled;
-        self
-    }
-
-    /// Set whether to support preserving original header cases.
-    ///
-    /// Currently, this will record the original cases received, and store them
-    /// in a private extension on the `Request`. It will also look for and use
-    /// such an extension in any provided `Response`.
-    ///
-    /// Since the relevant extension is still private, there is no way to
-    /// interact with the original cases. The only effect this can have now is
-    /// to forward the cases in a proxy-like fashion.
-    ///
-    /// Default is false.
-    pub fn preserve_header_case(&mut self, enabled: bool) -> &mut Self {
-        self.h1_preserve_header_case = enabled;
         self
     }
 
@@ -393,9 +375,6 @@ impl Builder {
         }
         if self.h1_title_case_headers {
             conn.set_title_case_headers();
-        }
-        if self.h1_preserve_header_case {
-            conn.set_preserve_header_case();
         }
         if let Some(max_headers) = self.h1_max_headers {
             conn.set_http1_max_headers(max_headers);
