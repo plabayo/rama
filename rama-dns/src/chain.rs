@@ -2,7 +2,7 @@ use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_net::address::Domain;
 
-use crate::DnsResolver;
+use crate::{DenyAllDns, DnsResolver, InMemoryDns};
 
 #[derive(Debug)]
 pub struct DnsChainDomainResolveErr<E: 'static> {
@@ -21,7 +21,9 @@ impl<E: std::fmt::Debug> std::fmt::Display for DnsChainDomainResolveErr<E> {
 
 impl<E: std::error::Error + 'static> std::error::Error for DnsChainDomainResolveErr<E> {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.errors.last()
+        self.errors
+            .last()
+            .map(|e| -> &(dyn std::error::Error + 'static) { e })
     }
 }
 
@@ -70,10 +72,43 @@ where
     dns_resolver_chain_impl!();
 }
 
+#[derive(Debug)]
+enum DnsResolverType {
+    InMemory(InMemoryDns),
+    DenyAll(DenyAllDns),
+}
+
+impl DnsResolver for DnsResolverType {
+    type Error = Box<dyn std::error::Error + Send + Sync>;
+
+    fn ipv4_lookup(
+        &self,
+        domain: Domain,
+    ) -> impl std::future::Future<Output = Result<Vec<Ipv4Addr>, Self::Error>> + Send + '_ {
+        async move {
+            match self {
+                DnsResolverType::InMemory(dns) => dns.ipv4_lookup(domain).await.map_err(Into::into),
+                DnsResolverType::DenyAll(dns) => dns.ipv4_lookup(domain).await.map_err(Into::into),
+            }
+        }
+    }
+
+    fn ipv6_lookup(
+        &self,
+        domain: Domain,
+    ) -> impl std::future::Future<Output = Result<Vec<Ipv6Addr>, Self::Error>> + Send + '_ {
+        async move {
+            match self {
+                DnsResolverType::InMemory(dns) => dns.ipv6_lookup(domain).await.map_err(Into::into),
+                DnsResolverType::DenyAll(dns) => dns.ipv6_lookup(domain).await.map_err(Into::into),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use crate::{DenyAllDns, DnsOverwrite, InMemoryDns};
-    use rama_core::combinators::Either;
+    use crate::{DenyAllDns, InMemoryDns};
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     use super::*;
@@ -104,24 +139,98 @@ mod tests {
             .is_err());
     }
 
-    // #[tokio::test]
-    // async fn test_chain_ok_err_ipv4() {
-    //     let v: Vec<Either<_, DenyAllDns>> = vec![
-    //         Either::A(serde_html_form::from_str("example.com=127.0.0.1").unwrap()),
-    //         Either::B(DenyAllDns::new()),
-    //     ];
-    //     assert_eq!(
-    //         v.ipv4_lookup(Domain::from_static("example.com"))
-    //             .await
-    //             .unwrap()
-    //             .into_iter()
-    //             .next()
-    //             .unwrap(),
-    //         Ipv4Addr::new(127, 0, 0, 1)
-    //     );
-    //     assert!(v
-    //         .ipv6_lookup(Domain::from_static("example.com"))
-    //         .await
-    //         .is_err());
-    // }
+    #[tokio::test]
+    async fn test_chain_ok_err_ipv4() {
+        let mut dns = InMemoryDns::new();
+        dns.insert_ipv4(
+            Domain::from_static("example.com"),
+            Ipv4Addr::new(127, 0, 0, 1),
+        );
+        let v = vec![
+            DnsResolverType::InMemory(dns),
+            DnsResolverType::DenyAll(DenyAllDns::new()),
+        ];
+
+        let result = v
+            .ipv4_lookup(Domain::from_static("example.com"))
+            .await
+            .unwrap();
+        assert_eq!(result[0], Ipv4Addr::new(127, 0, 0, 1));
+    }
+
+    #[tokio::test]
+    async fn test_chain_err_ok_ipv6() {
+        let mut dns = InMemoryDns::new();
+        dns.insert_ipv6(
+            Domain::from_static("example.com"),
+            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+        );
+        let v = vec![
+            DnsResolverType::DenyAll(DenyAllDns::new()),
+            DnsResolverType::InMemory(dns),
+        ];
+
+        let result = v
+            .ipv6_lookup(Domain::from_static("example.com"))
+            .await
+            .unwrap();
+        assert_eq!(result[0], Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
+    }
+
+    #[tokio::test]
+    async fn test_chain_ok_ok_ipv6() {
+        let mut dns1 = InMemoryDns::new();
+        let mut dns2 = InMemoryDns::new();
+        dns1.insert_ipv6(
+            Domain::from_static("example.com"),
+            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
+        );
+        dns2.insert_ipv6(
+            Domain::from_static("example.com"),
+            Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2),
+        );
+
+        let v = vec![
+            DnsResolverType::InMemory(dns1),
+            DnsResolverType::InMemory(dns2),
+        ];
+        let result = v
+            .ipv6_lookup(Domain::from_static("example.com"))
+            .await
+            .unwrap();
+        // Should return the first successful result
+        assert_eq!(result[0], Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1));
+    }
+
+    #[tokio::test]
+    async fn test_chain_err_err_ok_ipv4() {
+        let mut dns = InMemoryDns::new();
+        dns.insert_ipv4(
+            Domain::from_static("example.com"),
+            Ipv4Addr::new(127, 0, 0, 1),
+        );
+
+        let v = vec![
+            DnsResolverType::DenyAll(DenyAllDns::new()),
+            DnsResolverType::DenyAll(DenyAllDns::new()),
+            DnsResolverType::InMemory(dns),
+        ];
+        let result = v
+            .ipv4_lookup(Domain::from_static("example.com"))
+            .await
+            .unwrap();
+        assert_eq!(result[0], Ipv4Addr::new(127, 0, 0, 1));
+    }
+
+    #[tokio::test]
+    async fn test_chain_err_err_ipv4() {
+        let v = vec![
+            DnsResolverType::DenyAll(DenyAllDns::new()),
+            DnsResolverType::DenyAll(DenyAllDns::new()),
+        ];
+        assert!(v
+            .ipv4_lookup(Domain::from_static("example.com"))
+            .await
+            .is_err());
+    }
 }
