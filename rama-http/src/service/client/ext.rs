@@ -205,8 +205,7 @@ impl IntoHeaderValue for &String {}
 impl IntoHeaderValue for &[u8] {}
 
 mod private {
-    use http::HeaderName;
-
+    use rama_http_types::HeaderName;
     use rama_net::Protocol;
 
     use super::*;
@@ -649,7 +648,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use http::StatusCode;
+    use rama_http_types::StatusCode;
 
     use super::*;
     use crate::{

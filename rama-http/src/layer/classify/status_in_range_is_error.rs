@@ -1,5 +1,5 @@
 use super::{ClassifiedResponse, ClassifyResponse, NeverClassifyEos, SharedClassifier};
-use http::StatusCode;
+use rama_http_types::StatusCode;
 use std::{fmt, ops::RangeInclusive};
 
 /// Response classifier that considers responses with a status code within some range to be
@@ -93,7 +93,7 @@ impl fmt::Display for StatusInRangeFailureClass {
 mod tests {
     #[allow(unused_imports)]
     use super::*;
-    use http::Response;
+    use rama_http_types::Response;
 
     #[test]
     fn basic() {
