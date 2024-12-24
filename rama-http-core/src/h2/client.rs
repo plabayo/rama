@@ -67,8 +67,7 @@
 //! ```rust, no_run
 //!
 //! use rama_http_core::h2::client;
-//!
-//! use http::{Request, Method};
+//! use rama_http_types::{Request, Method};
 //! use std::error::Error;
 //! use tokio::net::TcpStream;
 //!
@@ -384,7 +383,7 @@ where
     ///
     /// ```rust
     /// # use rama_http_core::h2::client::*;
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// # async fn doc(send_request: SendRequest<&'static [u8]>)
     /// # {
     /// // First, wait until the `send_request` handle is ready to send a new
@@ -443,7 +442,7 @@ where
     ///
     /// ```rust
     /// # use rama_http_core::h2::client::*;
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// # async fn doc(send_request: SendRequest<&'static [u8]>)
     /// # {
     /// // First, wait until the `send_request` handle is ready to send a new
@@ -467,7 +466,7 @@ where
     ///
     /// ```rust
     /// # use rama_http_core::h2::client::*;
-    /// # use http::*;
+    /// # use rama_http_types::*;
     /// # async fn doc(send_request: SendRequest<&'static [u8]>)
     /// # {
     /// // First, wait until the `send_request` handle is ready to send a new

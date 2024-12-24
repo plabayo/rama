@@ -3,13 +3,13 @@ name = "h2-fuzz"
 version = "0.0.0"
 publish = false
 license = "MIT"
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 futures = { workspace = true }
 honggfuzz = { workspace = true }
-http = { workspace = true }
-rama-http-core = { path = "../.." }
+rama-http-core = { path = "../../../rama-http-core" }
+rama-http-types = { path = "../../../rama-http-types" }
 tokio = { workspace = true, features = ["full"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

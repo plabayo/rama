@@ -1056,8 +1056,8 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "honggfuzz",
- "http",
  "rama-http-core",
+ "rama-http-types",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1072,6 +1072,7 @@ dependencies = [
  "futures",
  "http",
  "rama-http-core",
+ "rama-http-types",
  "tokio",
  "tokio-test",
  "tracing",
@@ -2179,8 +2180,8 @@ version = "0.0.0"
 dependencies = [
  "futures",
  "h2-support",
- "http",
  "libfuzzer-sys",
+ "rama",
  "rama-http-core",
  "rama-ua",
  "tokio",

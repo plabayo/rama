@@ -721,8 +721,7 @@ mod tests {
         fn read_mem(&mut self, cx: &mut Context<'_>, len: usize) -> Poll<io::Result<Bytes>> {
             let mut v = vec![0; len];
             let mut buf = ReadBuf::new(&mut v);
-            let mut unfilled_buf = ReadBuf::uninit(unsafe { buf.unfilled_mut() });
-            ready!(Pin::new(self).poll_read(cx, &mut unfilled_buf)?);
+            ready!(Pin::new(self).poll_read(cx, &mut buf)?);
             Poll::Ready(Ok(Bytes::copy_from_slice(buf.filled())))
         }
     }

@@ -29,7 +29,7 @@ type Cause = BoxError;
 ///
 /// # Source
 ///
-/// A `hyper::Error` may be caused by another error. To aid in debugging,
+/// A `rama_http_core::Error` may be caused by another error. To aid in debugging,
 /// those are exposed in `Error::source()` as erased types. While it is
 /// possible to check the exact type of the sources, they **can not be depended
 /// on**. They may come from private internal dependencies, and are subject to
@@ -314,7 +314,7 @@ impl Error {
             Kind::Parse(Parse::TooLarge) => "message head is too large",
             Kind::Parse(Parse::Status) => "invalid HTTP status-code parsed",
             Kind::Parse(Parse::Internal) => {
-                "internal error inside Hyper and/or its dependencies, please report"
+                "internal error inside rama_http_core and/or its dependencies, please report"
             }
             Kind::IncompleteMessage => "connection closed before message completed",
             Kind::UnexpectedMessage => "received unexpected message from connection",
@@ -342,7 +342,7 @@ impl Error {
 
 impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut f = f.debug_tuple("hyper::Error");
+        let mut f = f.debug_tuple("rama_http_core::Error");
         f.field(&self.inner.kind);
         if let Some(ref cause) = self.inner.cause {
             f.field(cause);

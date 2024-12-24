@@ -1,6 +1,6 @@
 //! HTTP Upgrades
 //!
-//! This module deals with managing [HTTP Upgrades][mdn] in hyper. Since
+//! This module deals with managing [HTTP Upgrades][mdn] in rama_http_core. Since
 //! several concepts in HTTP allow for first talking HTTP, and then converting
 //! to a different protocol, this module conflates them into a single API.
 //! Those include:
@@ -28,7 +28,7 @@
 //!
 //! Receiving upgrade requests in a server requires you to check the relevant
 //! headers in a `Request`, and if an upgrade should be done, you then send the
-//! corresponding headers in a response. To then wait for hyper to finish the
+//! corresponding headers in a response. To then wait for rama_http_core to finish the
 //! upgrade, you call `on()` with the `Request`, and then can spawn a task
 //! awaiting it.
 //!
@@ -139,7 +139,7 @@ impl Upgraded {
     /// `Upgraded` back.
     pub fn downcast<T: AsyncRead + AsyncWrite + Unpin + 'static>(self) -> Result<Parts<T>, Self> {
         let (io, buf) = self.io.into_inner();
-        match io.__hyper_downcast() {
+        match io.__rama_downcast() {
             Ok(t) => Ok(Parts {
                 io: *t,
                 read_buf: buf,
@@ -270,7 +270,7 @@ impl StdError for UpgradeExpected {}
 // ===== impl Io =====
 
 pub(super) trait Io: AsyncRead + AsyncWrite + Unpin + 'static {
-    fn __hyper_type_id(&self) -> TypeId {
+    fn __rama_type_id(&self) -> TypeId {
         TypeId::of::<Self>()
     }
 }
@@ -278,13 +278,13 @@ pub(super) trait Io: AsyncRead + AsyncWrite + Unpin + 'static {
 impl<T: AsyncRead + AsyncWrite + Unpin + 'static> Io for T {}
 
 impl dyn Io + Send {
-    fn __hyper_is<T: Io>(&self) -> bool {
+    fn __rama_is<T: Io>(&self) -> bool {
         let t = TypeId::of::<T>();
-        self.__hyper_type_id() == t
+        self.__rama_type_id() == t
     }
 
-    fn __hyper_downcast<T: Io>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
-        if self.__hyper_is::<T>() {
+    fn __rama_downcast<T: Io>(self: Box<Self>) -> Result<Box<T>, Box<Self>> {
+        if self.__rama_is::<T>() {
             // Taken from `std::error::Error::downcast()`.
             unsafe {
                 let raw: *mut dyn Io = Box::into_raw(self);

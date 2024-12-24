@@ -220,8 +220,7 @@ where
         // bytes onto `dst`.
         let dst = unsafe { self.read_buf.chunk_mut().as_uninit_slice_mut() };
         let mut buf = ReadBuf::uninit(dst);
-        let mut unfilled_buf = ReadBuf::uninit(unsafe { buf.unfilled_mut() });
-        match Pin::new(&mut self.io).poll_read(cx, &mut unfilled_buf) {
+        match Pin::new(&mut self.io).poll_read(cx, &mut buf) {
             Poll::Ready(Ok(_)) => {
                 let n = buf.filled().len();
                 trace!("received {} bytes", n);
@@ -675,7 +674,7 @@ mod tests {
         let mock = Mock::new()
             // Split over multiple reads will read all of it
             .read(b"HTTP/1.1 200 OK\r\n")
-            .read(b"Server: hyper\r\n")
+            .read(b"Server: rama\r\n")
             // missing last line ending
             .wait(Duration::from_secs(1))
             .build();
@@ -703,7 +702,7 @@ mod tests {
 
         assert_eq!(
             buffered.read_buf,
-            b"HTTP/1.1 200 OK\r\nServer: hyper\r\n"[..]
+            b"HTTP/1.1 200 OK\r\nServer: rama\r\n"[..]
         );
     }
 
@@ -837,11 +836,11 @@ mod tests {
         buffered.headers_buf().extend(b"hello ");
         buffered.buffer(Cursor::new(b"world, ".to_vec()));
         buffered.buffer(Cursor::new(b"it's ".to_vec()));
-        buffered.buffer(Cursor::new(b"hyper!".to_vec()));
+        buffered.buffer(Cursor::new(b"rama!".to_vec()));
         assert_eq!(buffered.write_buf.queue.bufs_cnt(), 3);
         buffered.flush().unwrap();
 
-        assert_eq!(buffered.io, b"hello world, it's hyper!");
+        assert_eq!(buffered.io, b"hello world, it's rama!");
         assert_eq!(buffered.io.num_writes(), 1);
         assert_eq!(buffered.write_buf.queue.bufs_cnt(), 0);
     }
@@ -850,7 +849,7 @@ mod tests {
     #[cfg(not(miri))]
     #[tokio::test]
     async fn write_buf_flatten() {
-        let mock = Mock::new().write(b"hello world, it's hyper!").build();
+        let mock = Mock::new().write(b"hello world, it's rama!").build();
 
         let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
         buffered.write_buf.set_strategy(WriteStrategy::Flatten);
@@ -858,7 +857,7 @@ mod tests {
         buffered.headers_buf().extend(b"hello ");
         buffered.buffer(Cursor::new(b"world, ".to_vec()));
         buffered.buffer(Cursor::new(b"it's ".to_vec()));
-        buffered.buffer(Cursor::new(b"hyper!".to_vec()));
+        buffered.buffer(Cursor::new(b"rama!".to_vec()));
         assert_eq!(buffered.write_buf.queue.bufs_cnt(), 0);
 
         buffered.flush().await.expect("flush");
@@ -883,9 +882,9 @@ mod tests {
         assert_eq!(write_buf.headers.bytes.capacity(), INIT_BUFFER_SIZE);
 
         // there's still room in the headers buffer, so just push on the end
-        write_buf.buffer(b("it's hyper!"));
+        write_buf.buffer(b("it's rama!"));
 
-        assert_eq!(write_buf.chunk(), b", it's hyper!");
+        assert_eq!(write_buf.chunk(), b", it's rama!");
         assert_eq!(write_buf.headers.pos, 11);
 
         let rem1 = write_buf.remaining();
@@ -904,7 +903,7 @@ mod tests {
             .write(b"hello ")
             .write(b"world, ")
             .write(b"it's ")
-            .write(b"hyper!")
+            .write(b"rama!")
             .build();
 
         let mut buffered = Buffered::<_, Cursor<Vec<u8>>>::new(mock);
@@ -916,7 +915,7 @@ mod tests {
         buffered.headers_buf().extend(b"hello ");
         buffered.buffer(Cursor::new(b"world, ".to_vec()));
         buffered.buffer(Cursor::new(b"it's ".to_vec()));
-        buffered.buffer(Cursor::new(b"hyper!".to_vec()));
+        buffered.buffer(Cursor::new(b"rama!".to_vec()));
         assert_eq!(buffered.write_buf.queue.bufs_cnt(), 3);
 
         buffered.flush().await.expect("flush");

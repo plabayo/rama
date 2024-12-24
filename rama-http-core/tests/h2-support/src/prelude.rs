@@ -41,9 +41,10 @@ pub use super::future_ext::{join, join3, join4, join_all, select, try_join, Test
 pub use super::client_ext::SendRequestExt;
 
 // Re-export HTTP types
-pub use http::{uri, HeaderMap, Method, Request, Response, StatusCode, Version};
-
 pub use bytes::{Buf, BufMut, Bytes, BytesMut};
+pub use rama_http_types::{
+    dep::http::uri, HeaderMap, Method, Request, Response, StatusCode, Version,
+};
 
 pub use tokio::io::{AsyncRead, AsyncWrite};
 

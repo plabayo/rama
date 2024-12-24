@@ -1,6 +1,6 @@
 use bytes::Buf;
-use http::Request;
 use rama_http_core::h2::client::{ResponseFuture, SendRequest};
+use rama_http_types::Request;
 
 /// Extend the `h2::client::SendRequest` type with convenience methods.
 pub trait SendRequestExt {

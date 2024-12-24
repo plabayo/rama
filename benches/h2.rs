@@ -3,9 +3,9 @@ use rama::http::core::h2::{
     server::{self, SendResponse},
     RecvStream,
 };
+use rama::http::Request;
 
 use bytes::Bytes;
-use http::Request;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};

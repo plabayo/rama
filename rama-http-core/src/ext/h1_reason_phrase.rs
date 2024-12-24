@@ -10,22 +10,6 @@ use bytes::Bytes;
 /// `ReasonPhrase` will be present and contain `Awesome`, but if a server returns `HTTP/1.1 200 OK`,
 /// the response will not contain a `ReasonPhrase`.
 ///
-/// ```no_run
-/// # #[cfg(all(feature = "tcp", feature = "client", feature = "http1"))]
-/// # async fn fake_fetch() -> hyper::Result<()> {
-/// use hyper::{Client, Uri};
-/// use hyper::ext::ReasonPhrase;
-///
-/// let res = Client::new().get(Uri::from_static("http://example.com/non_canonical_reason")).await?;
-///
-/// // Print out the non-canonical reason phrase, if it has one...
-/// if let Some(reason) = res.extensions().get::<ReasonPhrase>() {
-///     println!("non-canonical reason: {}", std::str::from_utf8(reason.as_bytes()).unwrap());
-/// }
-/// # Ok(())
-/// # }
-/// ```
-///
 /// # Servers
 ///
 /// When a `ReasonPhrase` is present in the extensions of the `http::Response` written by a server,

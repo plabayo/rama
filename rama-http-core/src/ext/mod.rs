@@ -117,9 +117,9 @@ impl HeaderCaseMap {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 /// Hashmap<Headername, numheaders with that name>
-pub(crate) struct OriginalHeaderOrder {
+pub struct OriginalHeaderOrder {
     /// Stores how many entries a Headername maps to. This is used
     /// for accounting.
     num_entries: HashMap<HeaderName, usize>,
@@ -132,15 +132,7 @@ pub(crate) struct OriginalHeaderOrder {
 }
 
 impl OriginalHeaderOrder {
-    pub(crate) fn default() -> Self {
-        OriginalHeaderOrder {
-            num_entries: HashMap::new(),
-            entry_order: Vec::new(),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn insert(&mut self, name: HeaderName) {
+    pub fn insert(&mut self, name: HeaderName) {
         if !self.num_entries.contains_key(&name) {
             let idx = 0;
             self.num_entries.insert(name.clone(), 1);
@@ -151,7 +143,7 @@ impl OriginalHeaderOrder {
         // header name encountered
     }
 
-    pub(crate) fn append<N>(&mut self, name: N)
+    pub fn append<N>(&mut self, name: N)
     where
         N: IntoHeaderName + Into<HeaderName> + Clone,
     {
@@ -167,48 +159,45 @@ impl OriginalHeaderOrder {
         self.entry_order.push((name, idx));
     }
 
-    // No doc test is run here because `RUSTFLAGS='--cfg hyper_unstable_ffi'`
-    // is needed to compile. Once ffi is stabilized `no_run` should be removed
-    // here.
     /// This returns an iterator that provides header names and indexes
     /// in the original order received.
     ///
     /// # Examples
-    /// ```no_run
-    /// use hyper::ext::OriginalHeaderOrder;
-    /// use hyper::header::{HeaderName, HeaderValue, HeaderMap};
+    ///
+    /// ```
+    /// use rama_http_core::ext::OriginalHeaderOrder;
+    /// use rama_http_types::header::{HeaderName, HeaderValue, HeaderMap};
     ///
     /// let mut h_order = OriginalHeaderOrder::default();
-    /// let mut h_map = Headermap::new();
+    /// let mut h_map = HeaderMap::new();
     ///
-    /// let name1 = b"Set-CookiE";
-    /// let value1 = b"a=b";
-    /// h_map.append(name1);
+    /// let name1 = HeaderName::try_from("Set-CookiE").expect("valid Set-CookiE header name");
+    /// let value1 = HeaderValue::from_static("a=b");
+    /// h_map.append(name1.clone(), value1);
     /// h_order.append(name1);
     ///
-    /// let name2 = b"Content-Encoding";
-    /// let value2 = b"gzip";
-    /// h_map.append(name2, value2);
+    /// let name2 = HeaderName::try_from("Content-Encoding").expect("valid Content-Encoding header name");
+    /// let value2 = HeaderValue::from_static("gzip");
+    /// h_map.append(name2.clone(), value2);
     /// h_order.append(name2);
     ///
-    /// let name3 = b"SET-COOKIE";
-    /// let value3 = b"c=d";
-    /// h_map.append(name3, value3);
-    /// h_order.append(name3)
+    /// let name3 = HeaderName::try_from("SET-COOKIE").expect("valid SET-COOKIE header name");
+    /// let value3 = HeaderValue::from_static("c=d");
+    /// h_map.append(name3.clone(), value3);
+    /// h_order.append(name3);
     ///
-    /// let mut iter = h_order.get_in_order()
+    /// let mut iter = h_order.get_in_order();
     ///
-    /// let (name, idx) = iter.next();
-    /// assert_eq!(b"a=b", h_map.get_all(name).nth(idx).unwrap());
+    /// let (name, idx) = iter.next().unwrap();
+    /// assert_eq!("a=b", h_map.get_all(name).iter().nth(*idx).expect("get set-cookie header value"));
     ///
-    /// let (name, idx) = iter.next();
-    /// assert_eq!(b"gzip", h_map.get_all(name).nth(idx).unwrap());
+    /// let (name, idx) = iter.next().unwrap();
+    /// assert_eq!("gzip", h_map.get_all(name).iter().nth(*idx).expect("get content-encoding header value"));
     ///
-    /// let (name, idx) = iter.next();
-    /// assert_eq!(b"c=d", h_map.get_all(name).nth(idx).unwrap());
+    /// let (name, idx) = iter.next().unwrap();
+    /// assert_eq!("c=d", h_map.get_all(name).iter().nth(*idx).expect("get SET-COOKIE header value"));
     /// ```
-    #[allow(dead_code)]
-    pub(crate) fn get_in_order(&self) -> impl Iterator<Item = &(HeaderName, usize)> {
+    pub fn get_in_order(&self) -> impl Iterator<Item = &(HeaderName, usize)> {
         self.entry_order.iter()
     }
 }

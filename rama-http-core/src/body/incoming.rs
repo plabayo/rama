@@ -20,16 +20,16 @@ type TrailersSender = oneshot::Sender<HeaderMap>;
 
 /// A stream of `Bytes`, used when receiving bodies from the network.
 ///
-/// Note that Users should not instantiate this struct directly. When working with the hyper client,
-/// `Incoming` is returned to you in responses. Similarly, when operating with the hyper server,
+/// Note that Users should not instantiate this struct directly. When working with the client,
+/// `Incoming` is returned to you in responses. Similarly, when operating with the server,
 /// it is provided within requests.
 ///
 /// # Examples
 ///
 /// ```rust,ignore
 /// async fn echo(
-///    req: Request<hyper::body::Incoming>,
-/// ) -> Result<Response<BoxBody<Bytes, hyper::Error>>, hyper::Error> {
+///    req: Request<rama:http::core::body::Incoming>,
+/// ) -> Result<Response<BoxBody<Bytes, rama_http_core::Error>>, rama_http_core::Error> {
 ///    //Here, you can process `Incoming`
 /// }
 /// ```

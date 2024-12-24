@@ -2,7 +2,7 @@
 pub mod fuzz_logic {
     use crate::h2::hpack;
     use bytes::BytesMut;
-    use http::header::HeaderName;
+    use rama_http_types::header::HeaderName;
     use std::io::Cursor;
 
     pub fn fuzz_hpack(data_: &[u8]) {

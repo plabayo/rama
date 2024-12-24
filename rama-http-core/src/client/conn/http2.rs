@@ -248,7 +248,7 @@ impl Builder {
     ///
     /// Passing `None` will do nothing.
     ///
-    /// If not set, hyper will use a default.
+    /// If not set, rama_http_core will use a default.
     ///
     /// [spec]: https://httpwg.org/specs/rfc9113.html#SETTINGS_INITIAL_WINDOW_SIZE
     pub fn initial_stream_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
@@ -263,7 +263,7 @@ impl Builder {
     ///
     /// Passing `None` will do nothing.
     ///
-    /// If not set, hyper will use a default.
+    /// If not set, rama_http_core will use a default.
     pub fn initial_connection_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
         if let Some(sz) = sz.into() {
             self.h2_builder.adaptive_window = false;
@@ -279,7 +279,7 @@ impl Builder {
     ///
     /// Passing `None` will do nothing.
     ///
-    /// If not set, hyper will use a default.
+    /// If not set, rama_http_core will use a default.
     ///
     /// [connection preface]: https://httpwg.org/specs/rfc9113.html#preface
     pub fn initial_max_send_streams(&mut self, initial: impl Into<Option<usize>>) -> &mut Self {
@@ -424,10 +424,7 @@ impl Builder {
 
     /// Configures the maximum number of pending reset streams allowed before a GOAWAY will be sent.
     ///
-    /// This will default to the default value set by the [`h2` crate](https://crates.io/crates/h2).
-    /// As of v0.4.0, it is 20.
-    ///
-    /// See <https://github.com/hyperium/hyper/issues/2877> for more information.
+    /// This will default to the default value set by the `h2` module. For now this is `20`.
     pub fn max_pending_accept_reset_streams(&mut self, max: impl Into<Option<usize>>) -> &mut Self {
         self.h2_builder.max_pending_accept_reset_streams = max.into();
         self

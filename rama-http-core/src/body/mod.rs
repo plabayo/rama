@@ -5,17 +5,17 @@
 //! allows applications to not use memory they don't need, and allows exerting
 //! back-pressure on connections by only reading when asked.
 //!
-//! There are two pieces to this in hyper:
+//! There are two pieces to this in rama_http_core:
 //!
 //! - **The [`Body`] trait** describes all possible bodies.
-//!   hyper allows any body type that implements `Body`, allowing
+//!   rama_http_core allows any body type that implements `Body`, allowing
 //!   applications to have fine-grained control over their streaming.
 //! - **The [`Incoming`] concrete type**, which is an implementation
-//!   of `Body`, and returned by hyper as a "receive stream" (so, for server
+//!   of `Body`, and returned by rama_http_core as a "receive stream" (so, for server
 //!   requests and client responses).
 //!
 //! There are additional implementations available in [`http-body-util`][],
-//! such as a `Full` or `Empty` body.
+//! such as a `Full` or `Empty` body. These are also exposed under `rama::http::dep::http_body_util`.
 //!
 //! [`http-body-util`]: https://docs.rs/http-body-util
 

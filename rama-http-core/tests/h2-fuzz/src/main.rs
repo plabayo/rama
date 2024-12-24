@@ -1,7 +1,7 @@
 use futures::future;
 use futures::stream::FuturesUnordered;
 use futures::Stream;
-use http::{Method, Request};
+use rama_http_types::{Method, Request};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;

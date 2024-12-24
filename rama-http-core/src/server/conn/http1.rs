@@ -48,7 +48,7 @@ pin_project_lite::pin_project! {
 ///
 /// ```
 /// # use std::time::Duration;
-/// # use hyper::server::conn::http1::Builder;
+/// # use rama_http_core::server::conn::http1::Builder;
 /// # fn main() {
 /// let mut http = Builder::new();
 /// // Set options one at a time
@@ -324,10 +324,10 @@ impl Builder {
     /// but may also improve performance when an IO transport doesn't
     /// support vectored writes well, such as most TLS implementations.
     ///
-    /// Setting this to true will force hyper to use queued strategy
+    /// Setting this to true will force rama_http_core to use queued strategy
     /// which may eliminate unnecessary cloning on some TLS backends
     ///
-    /// Default is `auto`. In this mode hyper will try to guess which
+    /// Default is `auto`. In this mode rama_http_core will try to guess which
     /// mode to use
     pub fn writev(&mut self, val: bool) -> &mut Self {
         self.h1_writev = Some(val);
@@ -379,30 +379,6 @@ impl Builder {
     ///
     /// If a timeout option has been configured, but a `timer` has not been
     /// provided, calling `serve_connection` will panic.
-    ///
-    /// # Example
-    ///
-    /// ```
-    /// # use hyper::{body::Incoming, Request, Response};
-    /// # use hyper::service::Service;
-    /// # use hyper::server::conn::http1::Builder;
-    /// # use hyper::rt::{Read, Write};
-    /// # async fn run<I, S>(some_io: I, some_service: S)
-    /// # where
-    /// #     I: Read + Write + Unpin + Send + 'static,
-    /// #     S: Service<hyper::Request<Incoming>, Response=hyper::Response<Incoming>> + Send + 'static,
-    /// #     S::Error: Into<BoxError>,
-    /// #     S::Future: Send,
-    /// # {
-    /// let http = Builder::new();
-    /// let conn = http.serve_connection(some_io, some_service);
-    ///
-    /// if let Err(e) = conn.await {
-    ///     eprintln!("server connection error: {}", e);
-    /// }
-    /// # }
-    /// # fn main() {}
-    /// ```
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<I, S>
     where
         S: HttpService<IncomingBody>,

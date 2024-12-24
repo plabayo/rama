@@ -12,8 +12,8 @@ cargo-fuzz = true
 
 [dependencies]
 futures = { workspace = true }
-http = { workspace = true }
 libfuzzer-sys = { workspace = true, features = ["arbitrary-derive"] }
+rama = { path = "../" }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [dependencies.h2-support]

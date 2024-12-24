@@ -1,9 +1,10 @@
 #![no_main]
+use rama::http::{Method, Request};
+
 use futures::stream::FuturesUnordered;
 use futures::{future, Stream};
 use libfuzzer_sys::fuzz_target;
 
-use http::{Method, Request};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;

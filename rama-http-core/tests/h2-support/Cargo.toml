@@ -3,10 +3,11 @@ name = "h2-support"
 version = "0.1.0"
 authors = ["Carl Lerche <me@carllerche.com>"]
 publish = false
-edition = "2018"
+edition = "2021"
 
 [dependencies]
 rama-http-core = { path = "../..", features = ["unstable"] }
+rama-http-types = { path = "../../../rama-http-types" }
 
 atty = { workspace = true }
 bytes = { workspace = true }

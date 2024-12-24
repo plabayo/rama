@@ -120,9 +120,9 @@ impl Builder {
 
     /// Configures the maximum number of local reset streams allowed before a GOAWAY will be sent.
     ///
-    /// If not set, hyper will use a default, currently of 1024.
+    /// If not set, rama_http_core will use a default, currently of 1024.
     ///
-    /// If `None` is supplied, hyper will not apply any limit.
+    /// If `None` is supplied, rama_http_core will not apply any limit.
     /// This is not advised, as it can potentially expose servers to DOS vulnerabilities.
     ///
     /// See <https://rustsec.org/advisories/RUSTSEC-2024-0003.html> for more information.
@@ -136,7 +136,7 @@ impl Builder {
     ///
     /// Passing `None` will do nothing.
     ///
-    /// If not set, hyper will use a default.
+    /// If not set, rama_http_core will use a default.
     ///
     /// [spec]: https://httpwg.org/specs/rfc9113.html#SETTINGS_INITIAL_WINDOW_SIZE
     pub fn initial_stream_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
@@ -151,7 +151,7 @@ impl Builder {
     ///
     /// Passing `None` will do nothing.
     ///
-    /// If not set, hyper will use a default.
+    /// If not set, rama_http_core will use a default.
     pub fn initial_connection_window_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
         if let Some(sz) = sz.into() {
             self.h2_builder.adaptive_window = false;
@@ -180,7 +180,7 @@ impl Builder {
     ///
     /// Passing `None` will do nothing.
     ///
-    /// If not set, hyper will use a default.
+    /// If not set, rama_http_core will use a default.
     pub fn max_frame_size(&mut self, sz: impl Into<Option<u32>>) -> &mut Self {
         if let Some(sz) = sz.into() {
             self.h2_builder.max_frame_size = sz;
@@ -191,7 +191,7 @@ impl Builder {
     /// Sets the [`SETTINGS_MAX_CONCURRENT_STREAMS`][spec] option for HTTP2
     /// connections.
     ///
-    /// Default is 200, but not part of the stability of hyper. It could change
+    /// Default is 200, but not part of the stability of rama_http_core. It could change
     /// in a future release. You are encouraged to set your own limit.
     ///
     /// Passing `None` will remove any limit.

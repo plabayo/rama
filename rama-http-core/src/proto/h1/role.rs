@@ -53,7 +53,7 @@ macro_rules! maybe_panic {
         if cfg!(debug_assertions) {
             panic!("{:?}", _err);
         } else {
-            error!("Internal Hyper error, please report {:?}", _err);
+            error!("Internal rama_http_core error, please report {:?}", _err);
             return Err(Parse::Internal)
         }
     })
@@ -1612,7 +1612,7 @@ mod tests {
 
     #[test]
     fn test_parse_request() {
-        let mut raw = BytesMut::from("GET /echo HTTP/1.1\r\nHost: hyper.rs\r\n\r\n");
+        let mut raw = BytesMut::from("GET /echo HTTP/1.1\r\nHost: ramaproxy.org\r\n\r\n");
         let mut method = None;
         let msg = Server::parse(
             &mut raw,
@@ -1633,7 +1633,7 @@ mod tests {
         assert_eq!(msg.head.subject.1, "/echo");
         assert_eq!(msg.head.version, Version::HTTP_11);
         assert_eq!(msg.head.headers.len(), 1);
-        assert_eq!(msg.head.headers["Host"], "hyper.rs");
+        assert_eq!(msg.head.headers["Host"], "ramaproxy.org");
         assert_eq!(method, Some(Method::GET));
     }
 
@@ -1659,7 +1659,7 @@ mod tests {
 
     #[test]
     fn test_parse_request_errors() {
-        let mut raw = BytesMut::from("GET htt:p// HTTP/1.1\r\nHost: hyper.rs\r\n\r\n");
+        let mut raw = BytesMut::from("GET htt:p// HTTP/1.1\r\nHost: ramaproxy.org\r\n\r\n");
         let ctx = ParseContext {
             cached_headers: &mut None,
             req_method: &mut None,
@@ -1754,7 +1754,7 @@ mod tests {
     #[test]
     fn test_parse_preserve_header_case_in_request() {
         let mut raw =
-            BytesMut::from("GET / HTTP/1.1\r\nHost: hyper.rs\r\nX-BREAD: baguette\r\n\r\n");
+            BytesMut::from("GET / HTTP/1.1\r\nHost: ramaproxy.org\r\nX-PASTA: noodles\r\n\r\n");
         let ctx = ParseContext {
             cached_headers: &mut None,
             req_method: &mut None,
@@ -1778,9 +1778,9 @@ mod tests {
         );
         assert_eq!(
             orig_headers
-                .get_all_internal(&HeaderName::from_static("x-bread"))
+                .get_all_internal(&HeaderName::from_static("x-pasta"))
                 .collect::<Vec<_>>(),
-            vec![&Bytes::from("X-BREAD")]
+            vec![&Bytes::from("X-PASTA")]
         );
     }
 
@@ -2364,7 +2364,7 @@ mod tests {
     #[test]
     fn test_client_request_encode_title_case() {
         use crate::proto::BodyLength;
-        use http::header::HeaderValue;
+        use rama_http_types::header::HeaderValue;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2393,7 +2393,7 @@ mod tests {
     #[test]
     fn test_client_request_encode_orig_case() {
         use crate::proto::BodyLength;
-        use http::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
 
         let mut head = MessageHead::default();
         head.headers
@@ -2428,7 +2428,7 @@ mod tests {
     #[test]
     fn test_client_request_encode_orig_and_title_case() {
         use crate::proto::BodyLength;
-        use http::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
 
         let mut head = MessageHead::default();
         head.headers
@@ -2485,7 +2485,7 @@ mod tests {
     #[test]
     fn test_server_response_encode_title_case() {
         use crate::proto::BodyLength;
-        use http::header::HeaderValue;
+        use rama_http_types::header::HeaderValue;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2518,7 +2518,7 @@ mod tests {
     #[test]
     fn test_server_response_encode_orig_case() {
         use crate::proto::BodyLength;
-        use http::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
 
         let mut head = MessageHead::default();
         head.headers
@@ -2553,7 +2553,7 @@ mod tests {
     #[test]
     fn test_server_response_encode_orig_and_title_case() {
         use crate::proto::BodyLength;
-        use http::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
 
         let mut head = MessageHead::default();
         head.headers
@@ -2589,7 +2589,7 @@ mod tests {
     #[test]
     fn test_disabled_date_header() {
         use crate::proto::BodyLength;
-        use http::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
 
         let mut head = MessageHead::default();
         head.headers

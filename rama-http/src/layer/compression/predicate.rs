@@ -6,8 +6,8 @@
 //! [`Compression::compress_when`]: super::Compression::compress_when
 //! [`CompressionLayer::compress_when`]: super::CompressionLayer::compress_when
 
-use http::{header, Extensions, HeaderMap, StatusCode, Version};
-use http_body::Body;
+use crate::dep::http_body::Body;
+use rama_http_types::{dep::http::Extensions, header, HeaderMap, StatusCode, Version};
 use std::{fmt, sync::Arc};
 
 /// Predicate used to determine if a response should be compressed or not.

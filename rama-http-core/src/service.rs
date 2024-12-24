@@ -8,7 +8,7 @@ pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
 
     /// The error type that can occur within this `Service`.
     ///
-    /// Note: Returning an `Error` to a hyper server will cause the connection
+    /// Note: Returning an `Error` to a rama_http_core server will cause the connection
     /// to be abruptly aborted. In most cases, it is better to return a `Response`
     /// with a 4xx or 5xx status code.
     type Error: Into<BoxError>;

@@ -65,7 +65,7 @@
 //!
 //! ```no_run
 //! use rama_http_core::h2::server;
-//! use http::{Response, StatusCode};
+//! use rama_http_types::{Response, StatusCode};
 //! use tokio::net::TcpListener;
 //!
 //! #[tokio::main]
