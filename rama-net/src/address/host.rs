@@ -23,7 +23,8 @@ impl Host {
     pub const LOCALHOST_IPV4: Self = Self::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
 
     /// Local loopback address (IPv6)
-    pub const LOCALHOST_IPV6: Self = Self::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)));
+    pub const LOCALHOST_IPV6: Self =
+        Self::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)));
 
     /// Local loopback name
     pub const LOCALHOST_NAME: Self = Self::Name(Domain::from_static("localhost"));
@@ -31,10 +32,13 @@ impl Host {
     /// Default address, not routable
     pub const DEFAULT_IPV4: Self = Self::Address(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)));
 
+    /// Default address, not routable (IPv6)
+    pub const DEFAULT_IPV6: Self = Self::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0)));
+
     /// Broadcast address (IPv4)
     pub const BROADCAST_IPV4: Self = Self::Address(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)));
 
-    pub const EXAMPLE: Self = Self::Name(Domain::from_static("example.com"));
+    pub const EXAMPLE_NAME: Self = Self::Name(Domain::from_static("example.com"));
 }
 
 impl PartialEq<str> for Host {
