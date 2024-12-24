@@ -38,6 +38,7 @@ impl Host {
     /// Broadcast address (IPv4)
     pub const BROADCAST_IPV4: Self = Self::Address(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)));
 
+    /// `example.com` domain name
     pub const EXAMPLE_NAME: Self = Self::Name(Domain::from_static("example.com"));
 }
 
