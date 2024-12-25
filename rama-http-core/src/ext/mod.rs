@@ -66,7 +66,7 @@ impl fmt::Debug for Protocol {
 /// [`preserve_header_case`] was set to true and the response included
 /// the following headers:
 ///
-/// ```ignore
+/// ```text
 /// x-Bread: Baguette
 /// X-BREAD: Pain
 /// x-bread: Ficelle
@@ -74,7 +74,7 @@ impl fmt::Debug for Protocol {
 ///
 /// Then `res.extensions().get::<HeaderCaseMap>()` will return a map with:
 ///
-/// ```ignore
+/// ```text
 /// HeaderCaseMap({
 ///     "x-bread": ["x-Bread", "X-BREAD", "x-bread"],
 /// })

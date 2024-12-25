@@ -23,16 +23,6 @@ type TrailersSender = oneshot::Sender<HeaderMap>;
 /// Note that Users should not instantiate this struct directly. When working with the client,
 /// `Incoming` is returned to you in responses. Similarly, when operating with the server,
 /// it is provided within requests.
-///
-/// # Examples
-///
-/// ```rust,ignore
-/// async fn echo(
-///    req: Request<rama:http::core::body::Incoming>,
-/// ) -> Result<Response<BoxBody<Bytes, rama_http_core::Error>>, rama_http_core::Error> {
-///    //Here, you can process `Incoming`
-/// }
-/// ```
 #[must_use = "streams do nothing unless polled"]
 pub struct Incoming {
     kind: Kind,
