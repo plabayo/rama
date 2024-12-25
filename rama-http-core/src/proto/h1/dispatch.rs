@@ -45,7 +45,9 @@ pub(crate) trait Dispatch {
 use crate::service::HttpService;
 
 pub(crate) struct Server<S: HttpService<B>, B> {
-    in_flight: Option<Pin<Box<dyn Future<Output = Result<Response<S::ResBody>, S::Error>>>>>,
+    in_flight: Option<
+        Pin<Box<dyn Future<Output = Result<Response<S::ResBody>, S::Error>> + Send + 'static>>,
+    >,
     pub(crate) service: S,
 }
 

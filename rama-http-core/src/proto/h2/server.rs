@@ -246,7 +246,6 @@ where
     ) -> Poll<crate::Result<()>>
     where
         S: HttpService<IncomingBody, ResBody = B>,
-        S::Error: Into<BoxError>,
     {
         if self.closing.is_none() {
             loop {

@@ -110,8 +110,8 @@ where
 
 impl<I, B, S> Connection<I, S>
 where
-    S: HttpService<IncomingBody, ResBody = B, Error: Into<BoxError>>,
-    I: AsyncRead + AsyncWrite + Unpin,
+    S: HttpService<IncomingBody, ResBody = B>,
+    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
@@ -188,8 +188,7 @@ where
 impl<I, B, S> Future for Connection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
-    S::Error: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
@@ -364,7 +363,7 @@ impl Builder {
     pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<I, S>
     where
         S: HttpService<IncomingBody>,
-        I: AsyncRead + AsyncWrite + Unpin,
+        I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let mut conn = proto::Conn::new(io);
         if !self.h1_keep_alive {
@@ -413,8 +412,7 @@ where
 impl<I, B, S> UpgradeableConnection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
-    S::Error: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
@@ -433,8 +431,7 @@ where
 impl<I, B, S> Future for UpgradeableConnection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
-    S::Error: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
     B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
@@ -454,5 +451,20 @@ where
             // inner is `None`, meaning the connection was upgraded, thus it's `Poll::Ready(Ok(()))`
             Poll::Ready(Ok(()))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::service::VoidHttpService;
+    use tokio::net::TcpStream;
+
+    use super::*;
+
+    #[test]
+    fn test_assert_send_static() {
+        fn g<T: Send + 'static>() {}
+        g::<Connection<TcpStream, VoidHttpService>>();
+        g::<UpgradeableConnection<TcpStream, VoidHttpService>>();
     }
 }

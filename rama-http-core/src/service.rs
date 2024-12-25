@@ -1,6 +1,6 @@
 use rama_core::{error::BoxError, Context, Service};
 use rama_http_types::{dep::http_body::Body, Request, Response};
-use std::{fmt, future::Future};
+use std::{convert::Infallible, fmt, future::Future};
 
 pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
     /// The `Body` body of the `http::Response`.
@@ -20,9 +20,15 @@ pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
     ) -> impl Future<Output = Result<Response<Self::ResBody>, Self::Error>> + Send + 'static;
 }
 
-struct RamaHttpService<S, State> {
+pub struct RamaHttpService<S, State> {
     svc: S,
     ctx: Context<State>,
+}
+
+impl<S, State> RamaHttpService<S, State> {
+    pub fn new(ctx: Context<State>, svc: S) -> Self {
+        Self { svc, ctx }
+    }
 }
 
 impl<S, State> fmt::Debug for RamaHttpService<S, State>
@@ -72,6 +78,27 @@ where
     }
 }
 
+#[derive(Debug, Default)]
+#[allow(dead_code)]
+pub(crate) struct VoidHttpService;
+
+impl<ReqBody> HttpService<ReqBody> for VoidHttpService
+where
+    ReqBody: Send + 'static,
+{
+    type ResBody = rama_http_types::Body;
+    type Error = Infallible;
+
+    #[allow(clippy::manual_async_fn)]
+    fn serve_http(
+        &self,
+        _req: Request<ReqBody>,
+    ) -> impl std::future::Future<Output = Result<Response<Self::ResBody>, Self::Error>> + Send + 'static
+    {
+        async move { Ok(Response::new(rama_http_types::Body::empty())) }
+    }
+}
+
 mod sealed {
     use super::*;
 
@@ -85,4 +112,6 @@ mod sealed {
         ResBody: Body + Send + 'static,
     {
     }
+
+    impl<ReqBody> Sealed<ReqBody> for VoidHttpService where ReqBody: Send + 'static {}
 }

@@ -56,8 +56,7 @@ where
 impl<I, B, S> Connection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
-    S::Error: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
@@ -78,8 +77,7 @@ where
 impl<I, B, S> Future for Connection<I, S>
 where
     S: HttpService<IncomingBody, ResBody = B>,
-    S::Error: Into<BoxError>,
-    I: AsyncRead + AsyncWrite + Unpin,
+    I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
@@ -270,11 +268,24 @@ impl Builder {
     pub fn serve_connection<S, I, Bd>(&self, io: I, service: S) -> Connection<I, S>
     where
         S: HttpService<IncomingBody, ResBody = Bd>,
-        S::Error: Into<BoxError>,
         Bd: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-        I: AsyncRead + AsyncWrite + Unpin,
+        I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let proto = proto::h2::Server::new(io, service, &self.h2_builder, self.exec.clone());
         Connection { conn: proto }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::service::VoidHttpService;
+    use tokio::net::TcpStream;
+
+    use super::*;
+
+    #[test]
+    fn test_assert_send_static() {
+        fn g<T: Send + 'static>() {}
+        g::<Connection<TcpStream, VoidHttpService>>();
     }
 }
