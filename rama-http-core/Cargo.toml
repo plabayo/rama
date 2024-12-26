@@ -47,6 +47,7 @@ want = { workspace = true }
 
 [dev-dependencies]
 env_logger = { workspace = true }
+spmc = { workspace = true }
 
 # Fuzzing
 quickcheck = { workspace = true }
