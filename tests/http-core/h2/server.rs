@@ -1334,8 +1334,9 @@ async fn extended_connect_protocol_enabled_during_handshake() {
         let (req, mut stream) = srv.next().await.unwrap().unwrap();
 
         assert_eq!(
-            req.extensions().get::<rama_http_core::h2::ext::Protocol>(),
-            Some(&rama_http_core::h2::ext::Protocol::from_static(
+            req.extensions()
+                .get::<rama::http::core::h2::ext::Protocol>(),
+            Some(&rama::http::core::h2::ext::Protocol::from_static(
                 "the-bread-protocol"
             ))
         );

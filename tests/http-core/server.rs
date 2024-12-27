@@ -15,20 +15,20 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_channel::oneshot;
 use futures_util::future::{self, Either, FutureExt};
+use rama::error::BoxError;
+use rama::http::core::h2::client::SendRequest;
+use rama::http::core::h2::{RecvStream, SendStream};
+use rama::http::core::service::RamaHttpService;
 use rama::http::dep::http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
-use rama_core::error::BoxError;
-use rama_core::rt::Executor;
-use rama_http_core::h2::client::SendRequest;
-use rama_http_core::h2::{RecvStream, SendStream};
-use rama_http_core::service::RamaHttpService;
+use rama::rt::Executor;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpStream};
 
+use rama::http::core::body::{Body, Incoming as IncomingBody};
+use rama::http::core::server::conn::{http1, http2};
 use rama::http::{Method, Request, Response, StatusCode, Uri, Version};
-use rama_core::service::{service_fn, Service};
-use rama_http_core::body::{Body, Incoming as IncomingBody};
-use rama_http_core::server::conn::{http1, http2};
+use rama::service::{service_fn, Service};
 use tokio::pin;
 
 use super::support;
@@ -1008,7 +1008,7 @@ async fn expect_continue_waits_for_body_poll() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama_core::Context::default(),
+                rama::Context::default(),
                 service_fn(|req: Request<IncomingBody>| {
                     assert_eq!(req.headers()["expect"], "100-continue");
                     // But! We're never going to poll the body!
@@ -1192,7 +1192,7 @@ async fn disable_keep_alive_mid_request() {
     let (socket, _) = listener.accept().await.unwrap();
     let srv = http1::Builder::new().serve_connection(
         socket,
-        RamaHttpService::new(rama_core::Context::default(), HelloWorld),
+        RamaHttpService::new(rama::Context::default(), HelloWorld),
     );
     future::try_select(srv, rx1)
         .then(|r| match r {
@@ -1245,7 +1245,7 @@ async fn disable_keep_alive_post_request() {
     };
     let server = http1::Builder::new().serve_connection(
         transport,
-        RamaHttpService::new(rama_core::Context::default(), HelloWorld),
+        RamaHttpService::new(rama::Context::default(), HelloWorld),
     );
     let fut = future::try_select(server, rx1).then(|r| match r {
         Ok(Either::Left(_)) => panic!("expected rx first"),
@@ -1291,11 +1291,11 @@ async fn http1_graceful_shutdown_after_upgrade() {
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
     let svc = RamaHttpService::new(
-        rama_core::Context::default(),
+        rama::Context::default(),
         service_fn(move |req: Request<IncomingBody>| {
-            let on_upgrade = rama_http_core::upgrade::on(req);
+            let on_upgrade = rama::http::core::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
-            future::ok::<_, rama_http_core::Error>(
+            future::ok::<_, rama::http::core::Error>(
                 Response::builder()
                     .status(101)
                     .header("upgrade", "foobar")
@@ -1337,7 +1337,7 @@ async fn empty_parse_eof_does_not_return_error() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(rama_core::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::Context::default(), HelloWorld),
         )
         .await
         .expect("empty parse eof is ok");
@@ -1356,7 +1356,7 @@ async fn nonempty_parse_eof_returns_error() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(rama_core::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::Context::default(), HelloWorld),
         )
         .await
         .expect_err("partial parse eof is error");
@@ -1383,10 +1383,10 @@ async fn http1_allow_half_close() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama_core::Context::default(),
+                rama::Context::default(),
                 service_fn(|_| {
                     tokio::time::sleep(Duration::from_millis(500)).map(|_| {
-                        Ok::<_, rama_http_core::Error>(Response::new(Empty::<Bytes>::new()))
+                        Ok::<_, rama::http::core::Error>(Response::new(Empty::<Bytes>::new()))
                     })
                 }),
             ),
@@ -1412,10 +1412,10 @@ async fn disconnect_after_reading_request_before_responding() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama_core::Context::default(),
+                rama::Context::default(),
                 service_fn(|_| {
                     tokio::time::sleep(Duration::from_secs(2)).map(
-                        |_| -> Result<Response<IncomingBody>, rama_http_core::Error> {
+                        |_| -> Result<Response<IncomingBody>, rama::http::core::Error> {
                             panic!("response future should have been dropped");
                         },
                     )
@@ -1445,9 +1445,9 @@ async fn returning_1xx_response_is_error() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama_core::Context::default(),
+                rama::Context::default(),
                 service_fn(|_| async move {
-                    Ok::<_, rama_http_core::Error>(
+                    Ok::<_, rama::http::core::Error>(
                         Response::builder()
                             .status(StatusCode::CONTINUE)
                             .body(Empty::<Bytes>::new())
@@ -1511,13 +1511,13 @@ async fn header_read_timeout_slow_writes() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama_core::Context::default(),
+                rama::Context::default(),
                 service_fn(|_| {
                     let res = Response::builder()
                         .status(200)
                         .body(Empty::<Bytes>::new())
                         .unwrap();
-                    future::ready(Ok::<_, rama_http_core::Error>(res))
+                    future::ready(Ok::<_, rama::http::core::Error>(res))
                 }),
             ),
         );
@@ -1541,7 +1541,7 @@ async fn header_read_timeout_starts_immediately() {
         .header_read_timeout(Duration::from_secs(2))
         .serve_connection(
             socket,
-            RamaHttpService::new(rama_core::Context::default(), unreachable_service()),
+            RamaHttpService::new(rama::Context::default(), unreachable_service()),
         );
     conn.await.expect_err("header timeout");
 }
@@ -1610,13 +1610,13 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
         .serve_connection(
             socket,
             RamaHttpService::new(
-                rama_core::Context::default(),
+                rama::Context::default(),
                 service_fn(|_| {
                     let res = Response::builder()
                         .status(200)
                         .body(Empty::<Bytes>::new())
                         .unwrap();
-                    future::ready(Ok::<_, rama_http_core::Error>(res))
+                    future::ready(Ok::<_, rama::http::core::Error>(res))
                 }),
             ),
         );
@@ -1656,14 +1656,14 @@ async fn upgrades() {
     let conn = http1::Builder::new().serve_connection(
         socket,
         RamaHttpService::new(
-            rama_core::Context::default(),
+            rama::Context::default(),
             service_fn(|_| {
                 let res = Response::builder()
                     .status(101)
                     .header("upgrade", "foobar")
                     .body(Empty::<Bytes>::new())
                     .unwrap();
-                future::ready(Ok::<_, rama_http_core::Error>(res))
+                future::ready(Ok::<_, rama::http::core::Error>(res))
             }),
         ),
     );
@@ -1712,13 +1712,13 @@ async fn http_connect() {
     let conn = http1::Builder::new().serve_connection(
         socket,
         RamaHttpService::new(
-            rama_core::Context::default(),
+            rama::Context::default(),
             service_fn(|_| {
                 let res = Response::builder()
                     .status(200)
                     .body(Empty::<Bytes>::new())
                     .unwrap();
-                future::ready(Ok::<_, rama_http_core::Error>(res))
+                future::ready(Ok::<_, rama::http::core::Error>(res))
             }),
         ),
     );
@@ -1770,11 +1770,11 @@ async fn upgrades_new() {
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
     let svc = RamaHttpService::new(
-        rama_core::Context::default(),
+        rama::Context::default(),
         service_fn(move |req: Request<IncomingBody>| {
-            let on_upgrade = rama_http_core::upgrade::on(req);
+            let on_upgrade = rama::http::core::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
-            future::ok::<_, rama_http_core::Error>(
+            future::ok::<_, rama::http::core::Error>(
                 Response::builder()
                     .status(101)
                     .header("upgrade", "foobar")
@@ -1814,10 +1814,10 @@ async fn upgrades_ignored() {
     tokio::spawn(async move {
         loop {
             let svc = RamaHttpService::new(
-                rama_core::Context::default(),
+                rama::Context::default(),
                 service_fn(move |req: Request<IncomingBody>| {
                     assert_eq!(req.headers()["upgrade"], "yolo");
-                    future::ok::<_, rama_http_core::Error>(Response::new(Empty::<Bytes>::new()))
+                    future::ok::<_, rama::http::core::Error>(Response::new(Empty::<Bytes>::new()))
                 }),
             );
             let (socket, _) = listener.accept().await.unwrap();
@@ -1880,11 +1880,11 @@ async fn http_connect_new() {
 
     let (upgrades_tx, upgrades_rx) = mpsc::channel();
     let svc = RamaHttpService::new(
-        rama_core::Context::default(),
+        rama::Context::default(),
         service_fn(move |req: Request<IncomingBody>| {
-            let on_upgrade = rama_http_core::upgrade::on(req);
+            let on_upgrade = rama::http::core::upgrade::on(req);
             let _ = upgrades_tx.send(on_upgrade);
-            future::ok::<_, rama_http_core::Error>(
+            future::ok::<_, rama::http::core::Error>(
                 Response::builder()
                     .status(200)
                     .body(Empty::<Bytes>::new())
@@ -1921,7 +1921,7 @@ async fn h2_connect() {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
-    let (h2, connection) = rama_http_core::h2::client::handshake(conn).await.unwrap();
+    let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
     tokio::spawn(async move {
         connection.await.unwrap();
     });
@@ -1952,9 +1952,9 @@ async fn h2_connect() {
     });
 
     let svc = RamaHttpService::new(
-        rama_core::Context::default(),
+        rama::Context::default(),
         service_fn(move |req: Request<IncomingBody>| {
-            let on_upgrade = rama_http_core::upgrade::on(req);
+            let on_upgrade = rama::http::core::upgrade::on(req);
 
             tokio::spawn(async move {
                 let mut upgraded = on_upgrade.await.expect("on_upgrade");
@@ -1967,7 +1967,7 @@ async fn h2_connect() {
                 upgraded.shutdown().await.unwrap();
             });
 
-            future::ok::<_, rama_http_core::Error>(
+            future::ok::<_, rama::http::core::Error>(
                 Response::builder()
                     .status(200)
                     .body(Empty::<Bytes>::new())
@@ -1992,7 +1992,7 @@ async fn h2_connect_multiplex() {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
-    let (h2, connection) = rama_http_core::h2::client::handshake(conn).await.unwrap();
+    let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
     tokio::spawn(async move {
         connection.await.unwrap();
     });
@@ -2041,10 +2041,10 @@ async fn h2_connect_multiplex() {
     });
 
     let svc = RamaHttpService::new(
-        rama_core::Context::default(),
+        rama::Context::default(),
         service_fn(move |req: Request<IncomingBody>| {
             let authority = req.uri().authority().unwrap().to_string();
-            let on_upgrade = rama_http_core::upgrade::on(req);
+            let on_upgrade = rama::http::core::upgrade::on(req);
 
             tokio::spawn(async move {
                 let upgrade_res = on_upgrade.await;
@@ -2065,10 +2065,10 @@ async fn h2_connect_multiplex() {
                     assert_eq!(
                         err.get_ref()
                             .unwrap()
-                            .downcast_ref::<rama_http_core::h2::Error>()
+                            .downcast_ref::<rama::http::core::h2::Error>()
                             .unwrap()
                             .reason(),
-                        Some(rama_http_core::h2::Reason::CANCEL),
+                        Some(rama::http::core::h2::Reason::CANCEL),
                     );
                     return;
                 }
@@ -2079,7 +2079,7 @@ async fn h2_connect_multiplex() {
                 upgraded.shutdown().await.unwrap();
             });
 
-            future::ok::<_, rama_http_core::Error>(
+            future::ok::<_, rama::http::core::Error>(
                 Response::builder()
                     .status(200)
                     .body(Empty::<Bytes>::new())
@@ -2101,7 +2101,7 @@ async fn h2_connect_large_body() {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
-    let (h2, connection) = rama_http_core::h2::client::handshake(conn).await.unwrap();
+    let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
     tokio::spawn(async move {
         connection.await.unwrap();
     });
@@ -2137,9 +2137,9 @@ async fn h2_connect_large_body() {
     });
 
     let svc = RamaHttpService::new(
-        rama_core::Context::default(),
+        rama::Context::default(),
         service_fn(move |req: Request<IncomingBody>| {
-            let on_upgrade = rama_http_core::upgrade::on(req);
+            let on_upgrade = rama::http::core::upgrade::on(req);
 
             tokio::spawn(async move {
                 let mut upgraded = on_upgrade.await.expect("on_upgrade");
@@ -2154,7 +2154,7 @@ async fn h2_connect_large_body() {
                 upgraded.shutdown().await.unwrap();
             });
 
-            future::ok::<_, rama_http_core::Error>(
+            future::ok::<_, rama::http::core::Error>(
                 Response::builder()
                     .status(200)
                     .body(Empty::<Bytes>::new())
@@ -2176,7 +2176,7 @@ async fn h2_connect_empty_frames() {
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
 
-    let (h2, connection) = rama_http_core::h2::client::handshake(conn).await.unwrap();
+    let (h2, connection) = rama::http::core::h2::client::handshake(conn).await.unwrap();
     tokio::spawn(async move {
         connection.await.unwrap();
     });
@@ -2211,9 +2211,9 @@ async fn h2_connect_empty_frames() {
     });
 
     let svc = RamaHttpService::new(
-        rama_core::Context::default(),
+        rama::Context::default(),
         service_fn(move |req: Request<IncomingBody>| {
-            let on_upgrade = rama_http_core::upgrade::on(req);
+            let on_upgrade = rama::http::core::upgrade::on(req);
 
             tokio::spawn(async move {
                 let mut upgraded = on_upgrade.await.expect("on_upgrade");
@@ -2226,7 +2226,7 @@ async fn h2_connect_empty_frames() {
                 upgraded.shutdown().await.unwrap();
             });
 
-            future::ok::<_, rama_http_core::Error>(
+            future::ok::<_, rama::http::core::Error>(
                 Response::builder()
                     .status(200)
                     .body(Empty::<Bytes>::new())
@@ -2261,7 +2261,7 @@ async fn parse_errors_send_4xx_response() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(rama_core::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::Context::default(), HelloWorld),
         )
         .await
         .expect_err("HTTP parse error");
@@ -2286,7 +2286,7 @@ async fn illegal_request_length_returns_400_response() {
     http1::Builder::new()
         .serve_connection(
             socket,
-            RamaHttpService::new(rama_core::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::Context::default(), HelloWorld),
         )
         .await
         .expect_err("illegal Content-Length should error");
@@ -2327,7 +2327,7 @@ async fn max_buf_size() {
         .max_buf_size(MAX)
         .serve_connection(
             socket,
-            RamaHttpService::new(rama_core::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::Context::default(), HelloWorld),
         )
         .await
         .expect_err("should TooLarge error");
@@ -2342,7 +2342,7 @@ async fn graceful_shutdown_before_first_request_no_block() {
 
         let future = http1::Builder::new().serve_connection(
             socket,
-            RamaHttpService::new(rama_core::Context::default(), HelloWorld),
+            RamaHttpService::new(rama::Context::default(), HelloWorld),
         );
         pin!(future);
         future.as_mut().graceful_shutdown();
@@ -2423,8 +2423,8 @@ async fn http2_service_error_sends_reset_reason() {
     let server = serve_opts().http2().serve();
     let addr_str = format!("http://{}", server.addr());
 
-    server.reply().error(rama_http_core::h2::Error::from(
-        rama_http_core::h2::Reason::INADEQUATE_SECURITY,
+    server.reply().error(rama::http::core::h2::Error::from(
+        rama::http::core::h2::Reason::INADEQUATE_SECURITY,
     ));
 
     let uri = addr_str.parse().expect("server addr should parse");
@@ -2438,12 +2438,12 @@ async fn http2_service_error_sends_reset_reason() {
     let h2_err = err
         .source()
         .expect("err.source")
-        .downcast_ref::<rama_http_core::h2::Error>()
+        .downcast_ref::<rama::http::core::h2::Error>()
         .expect("downcast");
 
     assert_eq!(
         h2_err.reason(),
-        Some(rama_http_core::h2::Reason::INADEQUATE_SECURITY)
+        Some(rama::http::core::h2::Reason::INADEQUATE_SECURITY)
     );
 }
 
@@ -2454,13 +2454,13 @@ fn http2_body_user_error_sends_reset_reason() {
     let addr_str = format!("http://{}", server.addr());
 
     let b = futures_util::stream::once(future::err::<Bytes, BoxError>(Box::new(
-        rama_http_core::h2::Error::from(rama_http_core::h2::Reason::INADEQUATE_SECURITY),
+        rama::http::core::h2::Error::from(rama::http::core::h2::Reason::INADEQUATE_SECURITY),
     )));
     server.reply().body_stream(b);
 
     let rt = support::runtime();
 
-    let err: rama_http_core::Error = rt
+    let err: rama::http::core::Error = rt
         .block_on(async move {
             let client = TestClient::new().http2_only();
 
@@ -2478,12 +2478,12 @@ fn http2_body_user_error_sends_reset_reason() {
     let h2_err = err
         .source()
         .unwrap()
-        .downcast_ref::<rama_http_core::h2::Error>()
+        .downcast_ref::<rama::http::core::h2::Error>()
         .unwrap();
 
     assert_eq!(
         h2_err.reason(),
-        Some(rama_http_core::h2::Reason::INADEQUATE_SECURITY)
+        Some(rama::http::core::h2::Reason::INADEQUATE_SECURITY)
     );
 }
 
@@ -2599,7 +2599,7 @@ async fn http2_keep_alive_detects_unresponsive_client() {
         .auto_date_header(true)
         .serve_connection(
             socket,
-            RamaHttpService::new(rama_core::Context::default(), unreachable_service()),
+            RamaHttpService::new(rama::Context::default(), unreachable_service()),
         )
         .await
         .expect_err("serve_connection should error");
@@ -2607,78 +2607,76 @@ async fn http2_keep_alive_detects_unresponsive_client() {
     assert!(err.is_timeout());
 }
 
-// #[tokio::test]
-// TODO: fix
-// async fn http2_keep_alive_with_responsive_client() {
-//     let (listener, addr) = setup_tcp_listener();
+#[tokio::test]
+async fn http2_keep_alive_with_responsive_client() {
+    let (listener, addr) = setup_tcp_listener();
 
-//     tokio::spawn(async move {
-//         let (socket, _) = listener.accept().await.expect("accept");
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("accept");
 
-//         http2::Builder::new(Executor::new())
-//             .keep_alive_interval(Duration::from_secs(1))
-//             .keep_alive_timeout(Duration::from_secs(1))
-//             .serve_connection(
-//                 socket,
-//                 RamaHttpService::new(rama_core::Context::default(), HelloWorld),
-//             )
-//             .await
-//             .expect("serve_connection");
-//     });
+        http2::Builder::new(Executor::new())
+            .keep_alive_interval(Duration::from_secs(1))
+            .keep_alive_timeout(Duration::from_secs(1))
+            .serve_connection(
+                socket,
+                RamaHttpService::new(rama::Context::default(), HelloWorld),
+            )
+            .await
+            .expect("serve_connection");
+    });
 
-//     let tcp = connect_async(addr).await;
-//     let (mut client, conn) = rama_http_core::client::conn::http2::Builder::new(Executor::new())
-//         .handshake(tcp)
-//         .await
-//         .expect("http handshake");
+    let tcp = connect_async(addr).await;
+    let (mut client, conn) = rama::http::core::client::conn::http2::Builder::new(Executor::new())
+        .handshake(tcp)
+        .await
+        .expect("http handshake");
 
-//     tokio::spawn(async move {
-//         conn.await.expect("client conn");
-//     });
+    tokio::spawn(async move {
+        conn.await.expect("client conn");
+    });
 
-//     tokio::time::sleep(Duration::from_secs(4)).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
 
-//     let req = rama::http::Request::new(Empty::<Bytes>::new());
-//     client.send_request(req).await.expect("client.send_request");
-// }
+    let req = rama::http::Request::new(Empty::<Bytes>::new());
+    client.send_request(req).await.expect("client.send_request");
+}
 
-// #[tokio::test]
-// TODO: fix
-// async fn http2_check_date_header_disabled() {
-//     let (listener, addr) = setup_tcp_listener();
+#[tokio::test]
+async fn http2_check_date_header_disabled() {
+    let (listener, addr) = setup_tcp_listener();
 
-//     tokio::spawn(async move {
-//         let (socket, _) = listener.accept().await.expect("accept");
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("accept");
 
-//         http2::Builder::new(Executor::new())
-//             .keep_alive_interval(Duration::from_secs(1))
-//             .auto_date_header(false)
-//             .keep_alive_timeout(Duration::from_secs(1))
-//             .serve_connection(
-//                 socket,
-//                 RamaHttpService::new(rama_core::Context::default(), HelloWorld),
-//             )
-//             .await
-//             .expect("serve_connection");
-//     });
+        http2::Builder::new(Executor::new())
+            .keep_alive_interval(Duration::from_secs(1))
+            .auto_date_header(false)
+            .keep_alive_timeout(Duration::from_secs(1))
+            .serve_connection(
+                socket,
+                RamaHttpService::new(rama::Context::default(), HelloWorld),
+            )
+            .await
+            .expect("serve_connection");
+    });
 
-//     let tcp = connect_async(addr).await;
-//     let (mut client, conn) = rama_http_core::client::conn::http2::Builder::new(Executor::new())
-//         .handshake(tcp)
-//         .await
-//         .expect("http handshake");
+    let tcp = connect_async(addr).await;
+    let (mut client, conn) = rama::http::core::client::conn::http2::Builder::new(Executor::new())
+        .handshake(tcp)
+        .await
+        .expect("http handshake");
 
-//     tokio::spawn(async move {
-//         conn.await.expect("client conn");
-//     });
+    tokio::spawn(async move {
+        conn.await.expect("client conn");
+    });
 
-//     tokio::time::sleep(Duration::from_secs(4)).await;
+    tokio::time::sleep(Duration::from_secs(4)).await;
 
-//     let req = rama::http::Request::new(Empty::<Bytes>::new());
-//     let resp = client.send_request(req).await.expect("client.send_request");
+    let req = rama::http::Request::new(Empty::<Bytes>::new());
+    let resp = client.send_request(req).await.expect("client.send_request");
 
-//     assert!(resp.headers().get("Date").is_none());
-// }
+    assert!(resp.headers().get("Date").is_none());
+}
 
 fn is_ping_frame(buf: &[u8]) -> bool {
     buf[3] == 6
@@ -2711,62 +2709,61 @@ async fn write_pong_frame(conn: &mut TkTcpStream) {
     .expect("client pong");
 }
 
-// #[tokio::test]
-// TODO: fix
-// async fn http2_keep_alive_count_server_pings() {
-//     let (listener, addr) = setup_tcp_listener();
+#[tokio::test]
+async fn http2_keep_alive_count_server_pings() {
+    let (listener, addr) = setup_tcp_listener();
 
-//     tokio::spawn(async move {
-//         let (socket, _) = listener.accept().await.expect("accept");
+    tokio::spawn(async move {
+        let (socket, _) = listener.accept().await.expect("accept");
 
-//         http2::Builder::new(Executor::new())
-//             .keep_alive_interval(Duration::from_secs(1))
-//             .keep_alive_timeout(Duration::from_secs(1))
-//             .serve_connection(
-//                 socket,
-//                 RamaHttpService::new(rama_core::Context::default(), unreachable_service()),
-//             )
-//             .await
-//             .expect("serve_connection");
-//     });
+        http2::Builder::new(Executor::new())
+            .keep_alive_interval(Duration::from_secs(1))
+            .keep_alive_timeout(Duration::from_secs(1))
+            .serve_connection(
+                socket,
+                RamaHttpService::new(rama::Context::default(), unreachable_service()),
+            )
+            .await
+            .expect("serve_connection");
+    });
 
-//     // Spawn a "client" conn that only reads until EOF
-//     let mut conn = connect_async(addr).await;
+    // Spawn a "client" conn that only reads until EOF
+    let mut conn = connect_async(addr).await;
 
-//     // write h2 magic preface and settings frame
-//     conn.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
-//         .await
-//         .expect("client preface");
-//     conn.write_all(&[
-//         0, 0, 0, // len
-//         4, // kind
-//         0, // flag
-//         0, 0, 0, 0, // stream id
-//     ])
-//     .await
-//     .expect("client settings");
+    // write h2 magic preface and settings frame
+    conn.write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+        .await
+        .expect("client preface");
+    conn.write_all(&[
+        0, 0, 0, // len
+        4, // kind
+        0, // flag
+        0, 0, 0, 0, // stream id
+    ])
+    .await
+    .expect("client settings");
 
-//     let read_pings = async {
-//         // read until 3 pings are received
-//         let mut pings = 0;
-//         let mut buf = [0u8; 1024];
-//         while pings < 3 {
-//             let n = conn.read(&mut buf).await.expect("client.read");
-//             assert!(n != 0);
+    let read_pings = async {
+        // read until 3 pings are received
+        let mut pings = 0;
+        let mut buf = [0u8; 1024];
+        while pings < 3 {
+            let n = conn.read(&mut buf).await.expect("client.read");
+            assert!(n != 0);
 
-//             if is_ping_frame(&buf) {
-//                 assert_ping_frame(&buf, n);
-//                 write_pong_frame(&mut conn).await;
-//                 pings += 1;
-//             }
-//         }
-//     };
+            if is_ping_frame(&buf) {
+                assert_ping_frame(&buf, n);
+                write_pong_frame(&mut conn).await;
+                pings += 1;
+            }
+        }
+    };
 
-//     // Expect all pings to occurs under 5 seconds
-//     tokio::time::timeout(Duration::from_secs(5), read_pings)
-//         .await
-//         .expect("timed out waiting for pings");
-// }
+    // Expect all pings to occurs under 5 seconds
+    tokio::time::timeout(Duration::from_secs(5), read_pings)
+        .await
+        .expect("timed out waiting for pings");
+}
 
 #[test]
 fn http1_trailer_send_fields() {
@@ -2907,11 +2904,11 @@ impl Serve {
         self.try_body().expect("body")
     }
 
-    fn body_err(&self) -> rama_http_core::Error {
+    fn body_err(&self) -> rama::http::core::Error {
         self.try_body().expect_err("body_err")
     }
 
-    fn try_body(&self) -> Result<Vec<u8>, rama_http_core::Error> {
+    fn try_body(&self) -> Result<Vec<u8>, rama::http::core::Error> {
         let mut buf = vec![];
         loop {
             match self.msg_rx.recv() {
@@ -2989,7 +2986,7 @@ impl ReplyBuilder<'_> {
         S: futures_util::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
     {
         use futures_util::TryStreamExt;
-        use rama_http_core::body::Frame;
+        use rama::http::core::body::Frame;
         let body = BodyExt::boxed(StreamBody::new(stream.map_ok(Frame::data)));
         self.tx.lock().unwrap().send(Reply::Body(body)).unwrap();
     }
@@ -2999,7 +2996,7 @@ impl ReplyBuilder<'_> {
         S: futures_util::Stream<Item = Result<Bytes, BoxError>> + Send + Sync + 'static,
     {
         use futures_util::TryStreamExt;
-        use rama_http_core::body::Frame;
+        use rama::http::core::body::Frame;
         use support::trailers::StreamBodyWithTrailers;
         let mut stream_body = StreamBodyWithTrailers::new(stream.map_ok(Frame::data));
         stream_body.set_trailers(trailers);
@@ -3051,7 +3048,7 @@ type ReplyBody = BoxBody<Bytes, BoxError>;
 #[derive(Debug)]
 enum Reply {
     Status(rama::http::StatusCode),
-    ReasonPhrase(rama_http_core::ext::ReasonPhrase),
+    ReasonPhrase(rama::http::core::ext::ReasonPhrase),
     Version(rama::http::Version),
     Header(HeaderName, HeaderValue),
     Body(ReplyBody),
@@ -3062,7 +3059,7 @@ enum Reply {
 #[derive(Debug)]
 enum Msg {
     Chunk(Vec<u8>),
-    Error(rama_http_core::Error),
+    Error(rama::http::core::Error),
     End,
 }
 
@@ -3072,7 +3069,7 @@ impl Service<(), Request<IncomingBody>> for TestService {
 
     fn serve(
         &self,
-        _ctx: rama_core::Context<()>,
+        _ctx: rama::Context<()>,
         mut req: Request<IncomingBody>,
     ) -> impl std::future::Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let tx = self.tx.clone();
@@ -3143,11 +3140,11 @@ struct HelloWorld;
 
 impl Service<(), Request<IncomingBody>> for HelloWorld {
     type Response = Response<Full<Bytes>>;
-    type Error = rama_http_core::Error;
+    type Error = rama::http::core::Error;
 
     fn serve(
         &self,
-        _ctx: rama_core::Context<()>,
+        _ctx: rama::Context<()>,
         _req: Request<IncomingBody>,
     ) -> impl std::future::Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let response = Response::new(Full::new(HELLO.into()));
@@ -3255,7 +3252,7 @@ impl ServeOptions {
                                 tokio::task::spawn(async move {
                                     let msg_tx = msg_tx.clone();
                                     let reply_rx = reply_rx.clone();
-                                    let service = RamaHttpService::new(rama_core::Context::default(), TestService {
+                                    let service = RamaHttpService::new(rama::Context::default(), TestService {
                                         tx: msg_tx,
                                         trailers_tx,
                                         reply: reply_rx,
@@ -3422,7 +3419,7 @@ impl TestClient {
         self
     }
 
-    async fn get(&self, uri: Uri) -> Result<Response<IncomingBody>, rama_http_core::Error> {
+    async fn get(&self, uri: Uri) -> Result<Response<IncomingBody>, rama::http::core::Error> {
         self.request(
             Request::builder()
                 .uri(uri)
@@ -3436,7 +3433,7 @@ impl TestClient {
     async fn request(
         &self,
         req: Request<Empty<Bytes>>,
-    ) -> Result<Response<IncomingBody>, rama_http_core::Error> {
+    ) -> Result<Response<IncomingBody>, rama::http::core::Error> {
         let host = req.uri().host().expect("uri has no host");
         let port = req.uri().port_u16().expect("uri has no port");
 
@@ -3446,7 +3443,7 @@ impl TestClient {
 
         if self.http2_only {
             let (mut sender, conn) =
-                rama_http_core::client::conn::http2::Builder::new(Executor::new())
+                rama::http::core::client::conn::http2::Builder::new(Executor::new())
                     .handshake(stream)
                     .await
                     .unwrap();
@@ -3456,7 +3453,7 @@ impl TestClient {
 
             sender.send_request(req).await
         } else {
-            let (mut sender, conn) = rama_http_core::client::conn::http1::Builder::new()
+            let (mut sender, conn) = rama::http::core::client::conn::http1::Builder::new()
                 .handshake(stream)
                 .await
                 .unwrap();

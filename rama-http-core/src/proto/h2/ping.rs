@@ -23,7 +23,8 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{self, Poll};
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use tokio::time::Instant;
 
 use tracing::{debug, trace};
 
@@ -441,6 +442,7 @@ impl KeepAlive {
     fn schedule(&mut self, shared: &Shared) {
         let interval = shared.last_read_at() + self.interval;
         self.state = KeepAliveState::Scheduled(interval);
+        self.sleep.as_mut().reset(interval);
     }
 
     fn maybe_ping(&mut self, cx: &mut task::Context<'_>, is_idle: bool, shared: &mut Shared) {
@@ -462,6 +464,8 @@ impl KeepAlive {
                 trace!("keep-alive interval ({:?}) reached", self.interval);
                 shared.send_ping();
                 self.state = KeepAliveState::PingSent;
+                let timeout = Instant::now() + self.timeout;
+                self.sleep.as_mut().reset(timeout);
             }
             KeepAliveState::Init | KeepAliveState::PingSent => (),
         }

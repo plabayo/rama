@@ -7,16 +7,16 @@ use std::sync::{
 };
 
 use bytes::Bytes;
+use rama::http::core::server;
+use rama::http::core::service::RamaHttpService;
 use rama::http::dep::http_body_util::{BodyExt, Full};
-use rama_core::rt::Executor;
-use rama_core::Context;
-use rama_http_core::server;
-use rama_http_core::service::RamaHttpService;
+use rama::rt::Executor;
+use rama::Context;
 use tokio::net::{TcpListener, TcpStream};
 
+use rama::http::core::body::Incoming as IncomingBody;
 use rama::http::{Request, Response, Version};
-use rama_core::service::service_fn;
-use rama_http_core::body::Incoming as IncomingBody;
+use rama::service::service_fn;
 
 #[allow(unused_imports)]
 pub(crate) use futures_util::{
@@ -438,7 +438,7 @@ async fn async_test(cfg: __TestConfig) {
 
             let res = if http2_only {
                 let (mut sender, conn) =
-                    rama_http_core::client::conn::http2::Builder::new(Executor::new())
+                    rama::http::core::client::conn::http2::Builder::new(Executor::new())
                         .handshake(stream)
                         .await
                         .unwrap();
@@ -450,7 +450,7 @@ async fn async_test(cfg: __TestConfig) {
                 });
                 sender.send_request(req).await.unwrap()
             } else {
-                let (mut sender, conn) = rama_http_core::client::conn::http1::Builder::new()
+                let (mut sender, conn) = rama::http::core::client::conn::http1::Builder::new()
                     .handshake(stream)
                     .await
                     .unwrap();
@@ -539,7 +539,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                             let resp = if http2_only {
                                 let (mut sender, conn) =
-                                    rama_http_core::client::conn::http2::Builder::new(
+                                    rama::http::core::client::conn::http2::Builder::new(
                                         Executor::new(),
                                     )
                                     .handshake(stream)
@@ -554,7 +554,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                                 sender.send_request(req).await?
                             } else {
-                                let builder = rama_http_core::client::conn::http1::Builder::new();
+                                let builder = rama::http::core::client::conn::http1::Builder::new();
                                 let (mut sender, conn) = builder.handshake(stream).await.unwrap();
 
                                 tokio::task::spawn(async move {
@@ -576,9 +576,10 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                             let mut builder = Response::builder().status(parts.status);
                             *builder.headers_mut().unwrap() = parts.headers;
 
-                            Result::<Response<rama_http_core::body::Incoming>, rama_http_core::Error>::Ok(
-                            builder.body(body).unwrap(),
-                        )
+                            Result::<
+                                Response<rama::http::core::body::Incoming>,
+                                rama::http::core::Error,
+                            >::Ok(builder.body(body).unwrap())
                         }
                     }),
                 );
