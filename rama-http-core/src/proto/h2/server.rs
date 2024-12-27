@@ -91,6 +91,7 @@ pin_project! {
         service: S,
         state: State<T, B>,
         date_header: bool,
+        close_pending: bool,
     }
 }
 
@@ -103,7 +104,6 @@ where
         hs: Handshake<T, SendBuf<B::Data>>,
     },
     Serving(Serving<T, B>),
-    Closed,
 }
 
 struct Serving<T, B>
@@ -129,7 +129,7 @@ where
             .initial_connection_window_size(config.initial_conn_window_size)
             .max_frame_size(config.max_frame_size)
             .max_header_list_size(config.max_header_list_size)
-            .max_local_error_reset_streams(config.max_pending_accept_reset_streams)
+            .max_local_error_reset_streams(config.max_local_error_reset_streams)
             .max_send_buffer_size(config.max_send_buffer_size);
         if let Some(max) = config.max_concurrent_streams {
             builder.max_concurrent_streams(max);
@@ -165,6 +165,7 @@ where
             },
             service,
             date_header: config.date_header,
+            close_pending: false,
         }
     }
 
@@ -172,19 +173,14 @@ where
         trace!("graceful_shutdown");
         match self.state {
             State::Handshaking { .. } => {
-                // fall-through, to replace state with Closed
+                self.close_pending = true;
             }
             State::Serving(ref mut srv) => {
                 if srv.closing.is_none() {
                     srv.conn.graceful_shutdown();
                 }
-                return;
-            }
-            State::Closed => {
-                return;
             }
         }
-        self.state = State::Closed;
     }
 }
 
@@ -219,12 +215,11 @@ where
                     })
                 }
                 State::Serving(ref mut srv) => {
-                    ready!(srv.poll_server(cx, &mut me.service, &me.exec))?;
-                    return Poll::Ready(Ok(Dispatched::Shutdown));
-                }
-                State::Closed => {
                     // graceful_shutdown was called before handshaking finished,
-                    // nothing to do here...
+                    if me.close_pending && srv.closing.is_none() {
+                        srv.conn.graceful_shutdown();
+                    }
+                    ready!(srv.poll_server(cx, &mut me.service, &me.exec))?;
                     return Poll::Ready(Ok(Dispatched::Shutdown));
                 }
             };

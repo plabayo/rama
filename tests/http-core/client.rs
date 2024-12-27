@@ -2035,22 +2035,20 @@ mod conn {
     #[tokio::test]
     async fn test_try_send_request() {
         use std::future::Future;
-        let (listener, addr) = setup_tk_test_server().await;
         let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
+        let (io_srv, io_cli) = tokio_test::io::Builder::new()
+            .write(b"GET / HTTP/1.1\r\n\r\n")
+            .read(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+            .build_with_handle();
 
         tokio::spawn(async move {
-            let mut sock = listener.accept().await.unwrap().0;
-            let mut buf = [0u8; 8192];
-            let _ = sock.read(&mut buf).await.expect("read 1");
-            sock.write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
-                .await
-                .expect("write 1");
+            let _io = io_cli;
             let _ = done_rx.await;
         });
 
         // make polling fair by putting both in spawns
         tokio::spawn(async move {
-            let io = tcp_connect(&addr).await.expect("tcp connect");
+            let io = io_srv;
             let (mut client, mut conn) = conn::http1::Builder::new()
                 .handshake::<_, Empty<Bytes>>(io)
                 .await
@@ -2095,7 +2093,7 @@ mod conn {
             let mut conn_opt = Some(conn);
             // wasn't a known error, req is in queue, and now the next poll, the
             // conn will be noticed as errored
-            let _err = future::poll_fn(|cx| {
+            let mut err = future::poll_fn(|cx| {
                 loop {
                     if let Poll::Ready(res) = fut2.as_mut().poll(cx) {
                         return Poll::Ready(res);
@@ -2113,19 +2111,11 @@ mod conn {
             .await
             .expect_err("resp 2");
 
-            // NOTE: original hyper test had this assert, but it seems to fail when testing
-            // all tests at once, because we have an error deeper in the stack (as that `take_message` does warn for):
-            // ```
-            // request was returned: TrySendError { error: rama_http_core::Error(IncompleteMessage), message: None }
-            // ```
-            // so not sure if an issue on our end or just perhaps a wrong assumption. Leaving this note here
-            // in case it was pointing out a bug after all
-
-            // assert!(
-            //     err.take_message().is_some(),
-            //     "request was returned: {:?}",
-            //     err
-            // );
+            assert!(
+                err.take_message().is_some(),
+                "request was returned: {:?}",
+                err
+            );
         })
         .await
         .unwrap();

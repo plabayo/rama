@@ -277,6 +277,7 @@ serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
+tokio-test = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
