@@ -9,7 +9,7 @@ as a distant relative.
 
 ### hyperium
 
-- <https://github.com/hyperium/h2/tree/v0.4.6>
+- <https://github.com/hyperium/h2/tree/v0.4.7>
 - <https://github.com/hyperium/hyper/tree/v1.5.0>
 - <https://github.com/hyperium/hyper-util/tree/v0.1.10>
 
