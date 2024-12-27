@@ -1467,7 +1467,7 @@ fn header_name_too_long() {
     let mut req = connect(server.addr());
     let mut write = Vec::with_capacity(1024 * 66);
     write.extend_from_slice(b"GET / HTTP/1.1\r\n");
-    write.resize(1024 * 65 - 1, b'x');
+    write.extend_from_slice(vec![b'x'; 1024 * 64].as_slice());
     write.extend_from_slice(b": foo\r\n\r\n");
     req.write_all(&write).unwrap();
 

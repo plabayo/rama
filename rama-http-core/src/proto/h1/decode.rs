@@ -771,7 +771,7 @@ mod tests {
                 })
                 .await;
                 let desc = format!("read_size failed for {:?}", s);
-                state = result.unwrap_or_else(|_| panic!("{}", desc));
+                state = result.expect(&desc);
                 if state == ChunkedState::Body || state == ChunkedState::EndCr {
                     break;
                 }
