@@ -31,6 +31,7 @@ use crate::{
     Context, Layer, Service,
 };
 use rama_core::{combinators::Either3, error::OpaqueError};
+use rama_http_core::ext::OriginalHeaderOrder;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
@@ -325,16 +326,34 @@ impl Service<(), Request> for EchoService {
         // TODO: get in correct case
         // TODO: get also pseudo headers (or separate?!)
 
-        let headers: Vec<_> = req
-            .headers()
-            .iter()
-            .map(|(name, value)| {
-                (
-                    name.as_str().to_owned(),
-                    value.to_str().map(|v| v.to_owned()).unwrap_or_default(),
-                )
-            })
-            .collect();
+        // TODO: get cleaner API + also original casing
+        let headers: Vec<_> = match req.extensions().get::<OriginalHeaderOrder>() {
+            Some(original) => original
+                .get_in_order()
+                .map(|(name, idx)| {
+                    let value = req
+                        .headers()
+                        .get_all(name)
+                        .iter()
+                        .nth(*idx)
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or_default()
+                        .to_owned();
+                    let name = name.as_str().to_owned();
+                    (name, value)
+                })
+                .collect(),
+            None => req
+                .headers()
+                .iter()
+                .map(|(name, value)| {
+                    (
+                        name.as_str().to_owned(),
+                        value.to_str().map(|v| v.to_owned()).unwrap_or_default(),
+                    )
+                })
+                .collect(),
+        };
 
         let (parts, body) = req.into_parts();
 
