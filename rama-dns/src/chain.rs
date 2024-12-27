@@ -1,33 +1,9 @@
+use std::error::Error;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
 use rama_net::address::Domain;
 
 use crate::DnsResolver;
-use rama_core::combinators::Either;
-
-/// An error that occurs when a DNS resolver chain fails to resolve a domain.
-#[derive(Debug)]
-pub struct DnsChainDomainResolveErr<E: 'static> {
-    errors: Vec<E>,
-}
-
-impl<E: std::fmt::Debug> std::fmt::Display for DnsChainDomainResolveErr<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(
-            f,
-            "domain resolver chain resulted in errors: {:?}",
-            self.errors
-        )
-    }
-}
-
-impl<E: std::error::Error + 'static> std::error::Error for DnsChainDomainResolveErr<E> {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        self.errors
-            .last()
-            .map(|e| -> &(dyn std::error::Error + 'static) { e })
-    }
-}
 
 macro_rules! dns_resolver_chain_impl {
     () => {
@@ -36,10 +12,10 @@ macro_rules! dns_resolver_chain_impl {
             for resolver in self {
                 match resolver.ipv4_lookup(domain.clone()).await {
                     Ok(ipv4s) => return Ok(ipv4s),
-                    Err(err) => errors.push(err),
+                    Err(err) => errors.push(err.into()),
                 }
             }
-            Err(DnsChainDomainResolveErr { errors })
+            Err(errors)
         }
 
         async fn ipv6_lookup(&self, domain: Domain) -> Result<Vec<Ipv6Addr>, Self::Error> {
@@ -47,39 +23,40 @@ macro_rules! dns_resolver_chain_impl {
             for resolver in self {
                 match resolver.ipv6_lookup(domain.clone()).await {
                     Ok(ipv6s) => return Ok(ipv6s),
-                    Err(err) => errors.push(err),
+                    Err(err) => errors.push(err.into()),
                 }
             }
-            Err(DnsChainDomainResolveErr { errors })
+            Err(errors)
         }
     };
 }
 
-impl<R, E> DnsResolver for Vec<R>
+impl<R> DnsResolver for Vec<R>
 where
-    R: DnsResolver<Error = E> + Send,
-    E: Send + 'static,
+    R: DnsResolver + Send,
+    R::Error: Into<Box<dyn Error + Send + Sync>>,
 {
-    type Error = DnsChainDomainResolveErr<E>;
+    type Error = Vec<Box<dyn Error + Send + Sync>>;
 
     dns_resolver_chain_impl!();
 }
 
-impl<R, E, const N: usize> DnsResolver for [R; N]
+impl<R, const N: usize> DnsResolver for [R; N]
 where
-    R: DnsResolver<Error = E> + Send,
-    E: Send + 'static,
+    R: DnsResolver + Send,
+    R::Error: Into<Box<dyn Error + Send + Sync>>,
 {
-    type Error = DnsChainDomainResolveErr<E>;
+    type Error = Vec<Box<dyn Error + Send + Sync>>;
+
     dns_resolver_chain_impl!();
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::{DenyAllDns, InMemoryDns};
-    use std::net::{Ipv4Addr, Ipv6Addr};
-
     use super::*;
+    use crate::{DenyAllDns, InMemoryDns};
+    use rama_core::combinators::Either;
+    use std::net::{Ipv4Addr, Ipv6Addr};
 
     #[tokio::test]
     async fn test_empty_chain_vec() {

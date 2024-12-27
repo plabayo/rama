@@ -1,6 +1,7 @@
 use crate::DnsResolver;
 use rama_net::address::Domain;
 use std::net::{Ipv4Addr, Ipv6Addr};
+
 macro_rules! impl_dns_resolver_either_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
         impl<$($param),+> DnsResolver for ::rama_core::combinators::$id<$($param),+>
