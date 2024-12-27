@@ -123,8 +123,15 @@ pin_project! {
         // rust-analyser thinks this field is private if its `pub(crate)` but works fine when its
         // `pub`
         pub read: M::Output,
+        // A buffer to temporarily store the data read from the underlying body.
+        // Reused as much as possible to optimize allocations.
+        buf: BytesMut,
         read_all_data: bool,
     }
+}
+
+impl<M: DecorateAsyncRead> WrapBody<M> {
+    const INTERNAL_BUF_CAPACITY: usize = 4096;
 }
 
 impl<M: DecorateAsyncRead> WrapBody<M> {
@@ -149,6 +156,7 @@ impl<M: DecorateAsyncRead> WrapBody<M> {
 
         Self {
             read,
+            buf: BytesMut::with_capacity(Self::INTERNAL_BUF_CAPACITY),
             read_all_data: false,
         }
     }
@@ -167,16 +175,21 @@ where
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<Frame<Self::Data>, Self::Error>>> {
         let mut this = self.project();
-        let mut buf = BytesMut::new();
+
         if !*this.read_all_data {
-            let result = tokio_util::io::poll_read_buf(this.read.as_mut(), cx, &mut buf);
+            if this.buf.capacity() == 0 {
+                this.buf.reserve(Self::INTERNAL_BUF_CAPACITY);
+            }
+
+            let result = tokio_util::io::poll_read_buf(this.read.as_mut(), cx, &mut this.buf);
 
             match ready!(result) {
                 Ok(0) => {
                     *this.read_all_data = true;
                 }
                 Ok(_) => {
-                    return Poll::Ready(Some(Ok(Frame::data(buf.freeze()))));
+                    let chunk = this.buf.split().freeze();
+                    return Poll::Ready(Some(Ok(Frame::data(chunk))));
                 }
                 Err(err) => {
                     let body_error: Option<B::Error> = M::get_pin_mut(this.read)
