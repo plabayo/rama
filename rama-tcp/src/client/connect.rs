@@ -22,46 +22,7 @@ use tokio::{
         Semaphore,
     },
 };
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IPModes {
-    Dual,
-    SingleIpV4,
-    SingleIpV6,
-    DualPreferIpV4
-}
-
-impl Default for IPModes {
-    fn default() -> Self {
-        Self::Dual
-    }
-}
-
-//DNS Resolver
-#[derive(Clone)]
-struct DnsResolveIpMode<D>{
-    resolver: D,
-    mode: IPModes
-}
-
-impl<D> DnsResolveIpMode<D>{
-    fn new(resolver:D, mode: IPModes) -> Self {
-        Self { resolver, mode}
-    }
-}
-
-struct ConnectIpMode<C>{
-    connector: C,
-    ip_mode: IPModes
-}
-
-impl<C>ConnectIpMode<C>{
-    fn new(connector: C, ip_mode: IPModes) -> Self {
-        Self {connector, ip_mode}
-    }
-}
-
-
+use rama_net::mode::{ConnectIpMode, DnsResolveIpMode, IPModes};
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
 /// to actually establish the [`TcpStream`.]
@@ -277,17 +238,23 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
 {
     
     let ip_it = match ip_kind {
-        IpKind::Ipv4 if matches!(dns.mode, DnsResolveIpMode::Dual |DnsResolveIpMode::SingleIpV4 |DnsResolveIpMode::DualPreferIpV4 ) =>{
-            match dns.ipv4_lookup(domain).await {
-            Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
-            Err(err) => {
-                let err = OpaqueError::from_boxed(err.into());
-                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
-                return;
-            }
+        IpKind::Ipv4 =>{
+            if dns.ipv4_supported(){
+                match dns.ipv4_lookup(domain).await {
+                    Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
+                    Err(err) => {
+                        let err = OpaqueError::from_boxed(err.into());
+                        tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
+                        return;
+                    }
+                }
+           
+        } else {
+            tracing::debug!("IPv4 not supported by the DNS mode: no connection can be established");
         }
     },
-        IpKind::Ipv6 if matches!(dns.mode, DnsResolveIpMode::Dual |DnsResolveIpMode::SingleIpV6)=> {
+    IpKind::Ipv6 => {
+        if dns.ipv6_supported() {
             match dns.ipv6_lookup(domain).await {
             Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
@@ -296,8 +263,11 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                 return;
             }
         }
-    },
-        _ => return,
+    }
+    else {
+        tracing::debug!("IPv4 not supported by the DNS mode: no connection can be established");
+    }
+    }
     };
 
     for (index, ip) in ip_it.enumerate() {

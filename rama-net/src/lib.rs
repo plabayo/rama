@@ -22,6 +22,7 @@ pub mod client;
 pub mod forwarded;
 pub mod stream;
 pub mod user;
+pub mod mode;
 
 pub(crate) mod proto;
 #[doc(inline)]
