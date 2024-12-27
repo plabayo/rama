@@ -1,23 +1,14 @@
+use bytes::Bytes;
 use rama_core::{error::BoxError, Context, Service};
-use rama_http_types::{dep::http_body::Body, Request, Response};
+use rama_http_types::{Request, Response};
 use std::{convert::Infallible, fmt, future::Future};
 
 pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
-    /// The `Body` body of the `http::Response`.
-    type ResBody: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin;
-
-    /// The error type that can occur within this `Service`.
-    ///
-    /// Note: Returning an `Error` to a rama_http_core server will cause the connection
-    /// to be abruptly aborted. In most cases, it is better to return a `Response`
-    /// with a 4xx or 5xx status code.
-    type Error: Into<BoxError>;
-
     #[doc(hidden)]
     fn serve_http(
         &self,
         req: Request<ReqBody>,
-    ) -> impl Future<Output = Result<Response<Self::ResBody>, Self::Error>> + Send + 'static;
+    ) -> impl Future<Output = Result<Response, Infallible>> + Send + 'static;
 }
 
 pub struct RamaHttpService<S, State> {
@@ -57,24 +48,25 @@ where
     }
 }
 
-impl<S, State, ReqBody, ResBody> HttpService<ReqBody> for RamaHttpService<S, State>
+impl<S, State, ReqBody, R> HttpService<ReqBody> for RamaHttpService<S, State>
 where
-    S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>
-        + Clone,
+    S: Service<State, Request, Response = R, Error = Infallible> + Clone,
     State: Clone + Send + Sync + 'static,
-    ReqBody: Send + 'static,
-    ResBody: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
+        + Send
+        + Sync
+        + 'static,
+    R: rama_http_types::IntoResponse + Send + 'static,
 {
-    type ResBody = ResBody;
-    type Error = S::Error;
-
     fn serve_http(
         &self,
         req: Request<ReqBody>,
-    ) -> impl std::future::Future<Output = Result<Response<Self::ResBody>, Self::Error>> + Send + 'static
-    {
+    ) -> impl Future<Output = Result<Response, Infallible>> + Send + 'static {
         let RamaHttpService { svc, ctx } = self.clone();
-        async move { svc.serve(ctx, req).await }
+        async move {
+            let req = req.map(rama_http_types::Body::new);
+            Ok(svc.serve(ctx, req).await?.into_response())
+        }
     }
 }
 
@@ -84,17 +76,16 @@ pub(crate) struct VoidHttpService;
 
 impl<ReqBody> HttpService<ReqBody> for VoidHttpService
 where
-    ReqBody: Send + 'static,
+    ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
+        + Send
+        + Sync
+        + 'static,
 {
-    type ResBody = rama_http_types::Body;
-    type Error = Infallible;
-
     #[allow(clippy::manual_async_fn)]
     fn serve_http(
         &self,
         _req: Request<ReqBody>,
-    ) -> impl std::future::Future<Output = Result<Response<Self::ResBody>, Self::Error>> + Send + 'static
-    {
+    ) -> impl Future<Output = Result<Response, Infallible>> + Send + 'static {
         async move { Ok(Response::new(rama_http_types::Body::empty())) }
     }
 }
@@ -104,14 +95,23 @@ mod sealed {
 
     pub trait Sealed<T>: Send + Sync + 'static {}
 
-    impl<S, State, ReqBody, ResBody> Sealed<ReqBody> for RamaHttpService<S, State>
+    impl<S, State, ReqBody, R> Sealed<ReqBody> for RamaHttpService<S, State>
     where
-        S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: Into<BoxError>>,
+        S: Service<State, Request, Response = R, Error = Infallible> + Clone,
         State: Clone + Send + Sync + 'static,
-        ReqBody: Send + 'static,
-        ResBody: Body + Send + 'static,
+        ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
+            + Send
+            + Sync
+            + 'static,
+        R: rama_http_types::IntoResponse + Send + 'static,
     {
     }
 
-    impl<ReqBody> Sealed<ReqBody> for VoidHttpService where ReqBody: Send + 'static {}
+    impl<ReqBody> Sealed<ReqBody> for VoidHttpService where
+        ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
+            + Send
+            + Sync
+            + 'static
+    {
+    }
 }

@@ -1,6 +1,6 @@
 use std::{
     future::Future,
-    marker::Unpin,
+    marker::{PhantomData, Unpin},
     pin::Pin,
     task::{Context, Poll},
 };
@@ -44,11 +44,13 @@ pub(crate) trait Dispatch {
 
 use crate::service::HttpService;
 
-pub(crate) struct Server<S: HttpService<B>, B> {
-    in_flight: Option<
-        Pin<Box<dyn Future<Output = Result<Response<S::ResBody>, S::Error>> + Send + 'static>>,
-    >,
+pub(crate) struct Server<S, B>
+where
+    S: HttpService<B>,
+{
+    in_flight: Option<Pin<Box<dyn Future<Output = Result<Response, Infallible>> + Send + 'static>>>,
     pub(crate) service: S,
+    _phantom: PhantomData<fn() -> B>,
 }
 
 pin_project_lite::pin_project! {
@@ -502,6 +504,7 @@ impl<
         Server {
             in_flight: None,
             service,
+            _phantom: PhantomData,
         }
     }
 
@@ -518,14 +521,13 @@ impl<
 {
 }
 
-impl<S, Bs> Dispatch for Server<S, IncomingBody>
+impl<S> Dispatch for Server<S, IncomingBody>
 where
-    S: HttpService<IncomingBody, ResBody = Bs, Error: Into<BoxError>>,
-    Bs: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    S: HttpService<IncomingBody>,
 {
     type PollItem = MessageHead<StatusCode>;
-    type PollBody = Bs;
-    type PollError = S::Error;
+    type PollBody = rama_http_types::Body;
+    type PollError = Infallible;
     type RecvItem = RequestHead;
 
     fn poll_msg(

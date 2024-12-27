@@ -5,12 +5,8 @@ use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::mpsc;
 use std::time::Duration;
 
-use bytes::Bytes;
-use futures_util::{stream, StreamExt};
-use rama::http::dep::http_body_util::{BodyExt, Full, StreamBody};
 use tokio::sync::oneshot;
 
-use rama::http::core::body::Frame;
 use rama::http::core::server::conn::http1;
 use rama::http::Response;
 use rama::service::service_fn;
@@ -43,24 +39,13 @@ macro_rules! bench_server {
                     loop {
                         let (stream, _) = listener.accept().await.expect("accept");
 
-                        async fn f() -> rama::http::core::Result<
-                            Response<
-                                impl rama::http::dep::http_body::Body<
-                                        Data: Send + 'static,
-                                        Error: Into<rama::error::BoxError>,
-                                    > + Send
-                                    + Sync
-                                    + 'static,
-                            >,
-                        > {
+                        async fn f() -> Result<Response, std::convert::Infallible> {
                             let body = $body;
-                            Ok::<_, rama::http::core::Error>(
-                                Response::builder()
-                                    .header($header.0, $header.1)
-                                    .header("content-type", "text/plain")
-                                    .body(body)
-                                    .unwrap(),
-                            )
+                            Ok(Response::builder()
+                                .header($header.0, $header.1)
+                                .header("content-type", "text/plain")
+                                .body(body)
+                                .unwrap())
                         }
 
                         let svc = service_fn(f);
@@ -111,8 +96,8 @@ macro_rules! bench_server {
     }};
 }
 
-fn body(b: &'static [u8]) -> Full<Bytes> {
-    Full::new(b.into())
+fn body(b: &'static [u8]) -> rama::http::Body {
+    rama::http::Body::from(b)
 }
 
 #[divan::bench]
@@ -127,15 +112,16 @@ fn throughput_fixedsize_large_payload(b: divan::Bencher) {
     })
 }
 
-#[divan::bench]
-fn throughput_fixedsize_many_chunks(b: divan::Bencher) {
-    bench_server!(b, ("content-length", "1000000"), {
-        static S: &[&[u8]] = &[&[b'x'; 1_000] as &[u8]; 1_000] as _;
-        BodyExt::boxed(StreamBody::new(
-            stream::iter(S.iter()).map(|&s| Ok::<_, String>(Frame::data(s))),
-        ))
-    })
-}
+// TODO: find a way to make this work if ever interested
+// #[divan::bench]
+// fn throughput_fixedsize_many_chunks(b: divan::Bencher) {
+//     bench_server!(b, ("content-length", "1000000"), {
+//         static S: &[&[u8]] = &[&[b'x'; 1_000] as &[u8]; 1_000] as _;
+//         rama::http::Body::new(BodyExt::boxed(StreamBody::new(
+//             stream::iter(S.iter()).map(|&s| Ok::<_, String>(Frame::data(s))),
+//         ))
+//     })
+// }
 
 #[divan::bench]
 fn throughput_chunked_small_payload(b: divan::Bencher) {
@@ -151,15 +137,16 @@ fn throughput_chunked_large_payload(b: divan::Bencher) {
     })
 }
 
-#[divan::bench]
-fn throughput_chunked_many_chunks(b: divan::Bencher) {
-    bench_server!(b, ("transfer-encoding", "chunked"), {
-        static S: &[&[u8]] = &[&[b'x'; 1_000] as &[u8]; 1_000] as _;
-        BodyExt::boxed(StreamBody::new(
-            stream::iter(S.iter()).map(|&s| Ok::<_, String>(Frame::data(s))),
-        ))
-    })
-}
+// TODO: find a way to make this work if ever interested
+// #[divan::bench]
+// fn throughput_chunked_many_chunks(b: divan::Bencher) {
+//     bench_server!(b, ("transfer-encoding", "chunked"), {
+//         static S: &[&[u8]] = &[&[b'x'; 1_000] as &[u8]; 1_000] as _;
+//         BodyExt::boxed(StreamBody::new(
+//             stream::iter(S.iter()).map(|&s| Ok::<_, String>(Frame::data(s))),
+//         ))
+//     })
+// }
 
 #[divan::bench]
 fn raw_tcp_throughput_small_payload(b: divan::Bencher) {

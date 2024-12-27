@@ -19,7 +19,6 @@ use crate::common::io::Rewind;
 use crate::service::HttpService;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
-use rama_http_types::dep::http_body::Body;
 
 use super::{http1, http2};
 
@@ -74,11 +73,10 @@ impl Builder {
     }
 
     /// Bind a connection together with a [`Service`].
-    pub fn serve_connection<I, S, B>(&self, io: I, service: S) -> Connection<'_, I, S>
+    pub fn serve_connection<I, S>(&self, io: I, service: S) -> Connection<'_, I, S>
     where
-        S: HttpService<Incoming, ResBody = B>,
+        S: HttpService<Incoming>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         let state = match self.version {
             Some(Version::H1) => {
@@ -108,15 +106,14 @@ impl Builder {
     /// Note that if you ever want to use [`hyper::upgrade::Upgraded::downcast`]
     /// with this crate, you'll need to use [`hyper_util::server::conn::auto::upgrade::downcast`]
     /// instead. See the documentation of the latter to understand why.
-    pub fn serve_connection_with_upgrades<I, S, B>(
+    pub fn serve_connection_with_upgrades<I, S>(
         &self,
         io: I,
         service: S,
     ) -> UpgradeableConnection<'_, I, S>
     where
-        S: HttpService<Incoming, ResBody = B>,
+        S: HttpService<Incoming>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
     {
         UpgradeableConnection {
             state: UpgradeableConnState::ReadVersion {
@@ -261,11 +258,10 @@ pin_project! {
     }
 }
 
-impl<I, S, B> Connection<'_, I, S>
+impl<I, S> Connection<'_, I, S>
 where
-    S: HttpService<Incoming, ResBody = B>,
+    S: HttpService<Incoming>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -306,10 +302,9 @@ where
     }
 }
 
-impl<I, S, B> Future for Connection<'_, I, S>
+impl<I, S> Future for Connection<'_, I, S>
 where
-    S: HttpService<Incoming, ResBody = B>,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    S: HttpService<Incoming>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static + 'static,
 {
     type Output = Result<()>;
@@ -384,11 +379,10 @@ pin_project! {
     }
 }
 
-impl<I, S, B> UpgradeableConnection<'_, I, S>
+impl<I, S> UpgradeableConnection<'_, I, S>
 where
-    S: HttpService<Incoming, ResBody = B>,
+    S: HttpService<Incoming>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -429,10 +423,9 @@ where
     }
 }
 
-impl<I, S, B> Future for UpgradeableConnection<'_, I, S>
+impl<I, S> Future for UpgradeableConnection<'_, I, S>
 where
-    S: HttpService<Incoming, ResBody = B>,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    S: HttpService<Incoming>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
 {
     type Output = Result<()>;
@@ -583,10 +576,9 @@ impl Http1Builder<'_> {
     }
 
     /// Bind a connection together with a [`Service`].
-    pub async fn serve_connection<I, S, B>(&self, io: I, service: S) -> Result<()>
+    pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<()>
     where
-        S: HttpService<Incoming, ResBody = B>,
-        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+        S: HttpService<Incoming>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
     {
         self.inner.serve_connection(io, service).await
@@ -595,14 +587,13 @@ impl Http1Builder<'_> {
     /// Bind a connection together with a [`Service`], with the ability to
     /// handle HTTP upgrades. This requires that the IO object implements
     /// `Send`.
-    pub fn serve_connection_with_upgrades<I, S, B>(
+    pub fn serve_connection_with_upgrades<I, S>(
         &self,
         io: I,
         service: S,
     ) -> UpgradeableConnection<'_, I, S>
     where
-        S: HttpService<Incoming, ResBody = B>,
-        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+        S: HttpService<Incoming>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
     {
         self.inner.serve_connection_with_upgrades(io, service)
@@ -742,10 +733,9 @@ impl Http2Builder<'_> {
     }
 
     /// Bind a connection together with a [`Service`].
-    pub async fn serve_connection<I, S, B>(&self, io: I, service: S) -> Result<()>
+    pub async fn serve_connection<I, S>(&self, io: I, service: S) -> Result<()>
     where
-        S: HttpService<Incoming, ResBody = B>,
-        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+        S: HttpService<Incoming>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
     {
         self.inner.serve_connection(io, service).await
@@ -754,14 +744,13 @@ impl Http2Builder<'_> {
     /// Bind a connection together with a [`Service`], with the ability to
     /// handle HTTP upgrades. This requires that the IO object implements
     /// `Send`.
-    pub fn serve_connection_with_upgrades<I, S, B>(
+    pub fn serve_connection_with_upgrades<I, S>(
         &self,
         io: I,
         service: S,
     ) -> UpgradeableConnection<'_, I, S>
     where
-        S: HttpService<Incoming, ResBody = B>,
-        B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+        S: HttpService<Incoming>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
     {
         self.inner.serve_connection_with_upgrades(io, service)
@@ -773,13 +762,13 @@ mod tests {
     use crate::client::conn::http1;
     use crate::server::conn::auto;
     use crate::service::RamaHttpService;
-    use crate::{body, body::Bytes, client};
+    use crate::{body::Bytes, client};
     use rama_core::error::BoxError;
     use rama_core::rt::Executor;
     use rama_core::service::service_fn;
     use rama_core::Context;
     use rama_http_types::dep::http_body::Body;
-    use rama_http_types::dep::http_body_util::{BodyExt, Empty, Full};
+    use rama_http_types::dep::http_body_util::{BodyExt, Empty};
     use rama_http_types::{Request, Response};
     use std::{convert::Infallible, net::SocketAddr, time::Duration};
     use tokio::{
@@ -1007,7 +996,7 @@ mod tests {
         local_addr
     }
 
-    async fn hello(_req: Request<body::Incoming>) -> Result<Response<Full<Bytes>>, Infallible> {
-        Ok(Response::new(Full::new(Bytes::from(BODY))))
+    async fn hello(_req: Request) -> Result<Response, Infallible> {
+        Ok(Response::new(rama_http_types::Body::from(BODY)))
     }
 }

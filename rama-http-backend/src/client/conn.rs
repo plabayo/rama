@@ -1,6 +1,4 @@
 use super::{svc::SendRequest, HttpClientService};
-use crate::executor::HyperExecutor;
-use hyper_util::rt::TokioIo;
 use rama_core::{
     error::{BoxError, OpaqueError},
     Context, Layer, Service,
@@ -102,13 +100,14 @@ where
             *req.version_mut() = new_version;
         }
 
-        let io = TokioIo::new(Box::pin(conn));
+        let io = Box::pin(conn);
 
         match req.version() {
             Version::HTTP_2 => {
                 trace!(uri = %req.uri(), "create h2 client executor");
-                let executor = HyperExecutor(ctx.executor().clone());
-                let (sender, conn) = hyper::client::conn::http2::handshake(executor, io).await?;
+                let executor = ctx.executor().clone();
+                let (sender, conn) =
+                    rama_http_core::client::conn::http2::handshake(executor, io).await?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
@@ -127,7 +126,7 @@ where
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
                 trace!(uri = %req.uri(), "create ~h1 client executor");
-                let (sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+                let (sender, conn) = rama_http_core::client::conn::http1::handshake(io).await?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {

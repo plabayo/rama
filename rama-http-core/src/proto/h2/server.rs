@@ -76,53 +76,39 @@ impl Default for Config {
 }
 
 pin_project! {
-    pub(crate) struct Server<T, S, B>
+    pub(crate) struct Server<T, S>
     where
         S: HttpService<IncomingBody>,
-        B: Body,
-        B: Send,
-        B: 'static,
-        B: Unpin,
-        B::Data: Send,
-        B::Data: 'static,
-        B::Error: Into<BoxError>,
     {
         exec: Executor,
         service: S,
-        state: State<T, B>,
+        state: State<T>,
         date_header: bool,
         close_pending: bool,
     }
 }
 
-enum State<T, B>
-where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-{
+enum State<T> {
     Handshaking {
         ping_config: ping::Config,
-        hs: Handshake<T, SendBuf<B::Data>>,
+        hs: Handshake<T, SendBuf<Bytes>>,
     },
-    Serving(Serving<T, B>),
+    Serving(Serving<T>),
 }
 
-struct Serving<T, B>
-where
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
-{
+struct Serving<T> {
     ping: Option<(ping::Recorder, ping::Ponger)>,
-    conn: Connection<T, SendBuf<B::Data>>,
+    conn: Connection<T, SendBuf<Bytes>>,
     closing: Option<crate::Error>,
     date_header: bool,
 }
 
-impl<T, S, B> Server<T, S, B>
+impl<T, S> Server<T, S>
 where
     T: AsyncRead + AsyncWrite + Unpin,
-    S: HttpService<IncomingBody, ResBody = B, Error: Into<BoxError>>,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    S: HttpService<IncomingBody>,
 {
-    pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Server<T, S, B> {
+    pub(crate) fn new(io: T, service: S, config: &Config, exec: Executor) -> Server<T, S> {
         let mut builder = crate::h2::server::Builder::default();
         builder
             .initial_window_size(config.initial_stream_window_size)
@@ -184,11 +170,10 @@ where
     }
 }
 
-impl<T, S, B> Future for Server<T, S, B>
+impl<T, S> Future for Server<T, S>
 where
     T: AsyncRead + AsyncWrite + Unpin,
-    S: HttpService<IncomingBody, ResBody = B, Error: Into<BoxError>>,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+    S: HttpService<IncomingBody>,
 {
     type Output = crate::Result<Dispatched>;
 
@@ -228,10 +213,9 @@ where
     }
 }
 
-impl<T, B> Serving<T, B>
+impl<T> Serving<T>
 where
     T: AsyncRead + AsyncWrite + Unpin,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     fn poll_server<S>(
         &mut self,
@@ -240,7 +224,7 @@ where
         exec: &Executor,
     ) -> Poll<crate::Result<()>>
     where
-        S: HttpService<IncomingBody, ResBody = B>,
+        S: HttpService<IncomingBody>,
     {
         if self.closing.is_none() {
             loop {

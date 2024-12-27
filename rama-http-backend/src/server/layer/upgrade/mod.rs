@@ -10,6 +10,4 @@ mod layer;
 #[doc(inline)]
 pub use layer::UpgradeLayer;
 
-mod upgraded;
-#[doc(inline)]
-pub use upgraded::Upgraded;
+pub use rama_http_core::upgrade::Upgraded;

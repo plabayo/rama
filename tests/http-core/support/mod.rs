@@ -1,4 +1,5 @@
 #![allow(dead_code)]
+use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
@@ -7,6 +8,7 @@ use std::sync::{
 };
 
 use bytes::Bytes;
+use http::StatusCode;
 use rama::http::core::server;
 use rama::http::core::service::RamaHttpService;
 use rama::http::dep::http_body_util::{BodyExt, Full};
@@ -14,7 +16,6 @@ use rama::rt::Executor;
 use rama::Context;
 use tokio::net::{TcpListener, TcpStream};
 
-use rama::http::core::body::Incoming as IncomingBody;
 use rama::http::{Request, Response, Version};
 use rama::service::service_fn;
 
@@ -369,7 +370,7 @@ async fn async_test(cfg: __TestConfig) {
             let serve_handles = serve_handles.clone();
             let service = RamaHttpService::new(
                 Context::default(),
-                service_fn(move |req: Request<IncomingBody>| {
+                service_fn(move |req: Request| {
                     let (sreq, sres) = serve_handles.lock().unwrap().remove(0);
 
                     assert_eq!(req.uri().path(), sreq.uri, "client path");
@@ -379,16 +380,27 @@ async fn async_test(cfg: __TestConfig) {
                         func(req.headers());
                     }
                     let sbody = sreq.body;
-                    req.collect().map_ok(move |collected| {
-                        let body = collected.to_bytes();
-                        assert_eq!(body.as_ref(), sbody.as_slice(), "client body");
+                    req.collect().map(move |result| {
+                        Ok::<_, Infallible>(match result {
+                            Ok(collected) => {
+                                let body = collected.to_bytes();
+                                assert_eq!(body.as_ref(), sbody.as_slice(), "client body");
 
-                        let mut res = Response::builder()
-                            .status(sres.status)
-                            .body(Full::new(Bytes::from(sres.body)))
-                            .expect("Response::build");
-                        *res.headers_mut() = sres.headers;
-                        res
+                                let mut res = Response::builder()
+                                    .status(sres.status)
+                                    .body(rama::http::Body::from(sres.body))
+                                    .expect("Response::build");
+                                *res.headers_mut() = sres.headers;
+                                res
+                            }
+                            Err(err) => {
+                                tracing::error!(?err, "failed to collect result");
+                                Response::builder()
+                                    .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                    .body(rama::http::Body::empty())
+                                    .expect("Response::build")
+                            }
+                        })
                     })
                 }),
             );
@@ -522,7 +534,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
 
                 let service = RamaHttpService::new(
                     Context::default(),
-                    service_fn(move |mut req: Request<IncomingBody>| {
+                    service_fn(move |mut req: Request| {
                         async move {
                             let uri = format!("http://{}{}", dst_addr, req.uri().path())
                                 .parse()
@@ -537,7 +549,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                                 .await
                                 .unwrap();
 
-                            let resp = if http2_only {
+                            let result = if http2_only {
                                 let (mut sender, conn) =
                                     rama::http::core::client::conn::http2::Builder::new(
                                         Executor::new(),
@@ -552,7 +564,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                                     }
                                 });
 
-                                sender.send_request(req).await?
+                                sender.send_request(req).await
                             } else {
                                 let builder = rama::http::core::client::conn::http1::Builder::new();
                                 let (mut sender, conn) = builder.handshake(stream).await.unwrap();
@@ -563,7 +575,18 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                                     }
                                 });
 
-                                sender.send_request(req).await?
+                                sender.send_request(req).await
+                            };
+
+                            let resp = match result {
+                                Ok(resp) => resp.map(rama::http::Body::new),
+                                Err(err) => {
+                                    tracing::error!(?err, "failed to collect result");
+                                    Response::builder()
+                                        .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                        .body(rama::http::Body::empty())
+                                        .expect("Response::build")
+                                }
                             };
 
                             let (mut parts, body) = resp.into_parts();
@@ -576,10 +599,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                             let mut builder = Response::builder().status(parts.status);
                             *builder.headers_mut().unwrap() = parts.headers;
 
-                            Result::<
-                                Response<rama::http::core::body::Incoming>,
-                                rama::http::core::Error,
-                            >::Ok(builder.body(body).unwrap())
+                            Result::<Response, Infallible>::Ok(builder.body(body).unwrap())
                         }
                     }),
                 );

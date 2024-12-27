@@ -409,7 +409,6 @@ impl Opts {
 }
 
 fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
-    use rama::http::dep::http_body_util::Full;
     use rama::service::service_fn;
     use tokio::net::TcpListener;
     let addr = "127.0.0.1:0".parse::<std::net::SocketAddr>().unwrap();
@@ -430,33 +429,34 @@ fn spawn_server(rt: &tokio::runtime::Runtime, opts: &Opts) -> SocketAddr {
                         .adaptive_window(opts.http2_adaptive_window)
                         .serve_connection(
                             sock,
-                            rama::http::core::service::RamaHttpService::new(rama::Context::default(), service_fn(
-                                move |req: Request<rama::http::core::body::Incoming>| async move {
+                            rama::http::core::service::RamaHttpService::new(
+                                rama::Context::default(),
+                                service_fn(move |req: Request| async move {
                                     let mut req_body = req.into_body();
                                     while let Some(_chunk) = req_body.frame().await {}
-                                    Ok::<_, std::convert::Infallible>(Response::new(Full::<
-                                        bytes::Bytes,
-                                    >::from(
-                                        body
-                                    )))
-                                },
-                            )),
+                                    Ok::<_, std::convert::Infallible>(Response::new(
+                                        rama::http::Body::from(body),
+                                    ))
+                                }),
+                            ),
                         ),
                 );
             } else {
-                tokio::spawn(rama::http::core::server::conn::http1::Builder::new().serve_connection(
-                    sock,
-                    rama::http::core::service::RamaHttpService::new(
-                        rama::Context::default(),
-                        service_fn(move |req: Request<rama::http::core::body::Incoming>| async move {
-                            let mut req_body = req.into_body();
-                            while let Some(_chunk) = req_body.frame().await {}
-                            Ok::<_, std::convert::Infallible>(Response::new(
-                                Full::<bytes::Bytes>::from(body),
-                            ))
-                        }),
+                tokio::spawn(
+                    rama::http::core::server::conn::http1::Builder::new().serve_connection(
+                        sock,
+                        rama::http::core::service::RamaHttpService::new(
+                            rama::Context::default(),
+                            service_fn(move |req: Request| async move {
+                                let mut req_body = req.into_body();
+                                while let Some(_chunk) = req_body.frame().await {}
+                                Ok::<_, std::convert::Infallible>(Response::new(
+                                    rama::http::Body::from(body),
+                                ))
+                            }),
+                        ),
                     ),
-                ));
+                );
             }
         }
     });

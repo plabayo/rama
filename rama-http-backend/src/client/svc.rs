@@ -1,11 +1,10 @@
-use hyper::header::{CONNECTION, TRANSFER_ENCODING, UPGRADE};
 use rama_core::{
     error::{BoxError, ErrorContext, OpaqueError},
     Context, Service,
 };
 use rama_http_types::{
     dep::{http::uri::PathAndQuery, http_body},
-    header::{HOST, KEEP_ALIVE, PROXY_CONNECTION},
+    header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
     headers::HeaderMapExt,
     Method, Request, Response, Version,
 };
@@ -16,8 +15,8 @@ use tokio::sync::Mutex;
 // TODO: once we have hyper as `rama_core` we can
 // drop this mutex as there is no inherint reason for `sender` to be mutable...
 pub(super) enum SendRequest<Body> {
-    Http1(Mutex<hyper::client::conn::http1::SendRequest<Body>>),
-    Http2(Mutex<hyper::client::conn::http2::SendRequest<Body>>),
+    Http1(Mutex<rama_http_core::client::conn::http1::SendRequest<Body>>),
+    Http2(Mutex<rama_http_core::client::conn::http2::SendRequest<Body>>),
 }
 
 #[derive(Debug)]

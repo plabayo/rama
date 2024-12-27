@@ -8,11 +8,10 @@ use std::time::Duration;
 
 use futures_util::ready;
 use pin_project_lite::pin_project;
-use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::body::{Body, Incoming as IncomingBody};
+use crate::body::Incoming as IncomingBody;
 use crate::proto;
 use crate::service::HttpService;
 
@@ -28,7 +27,7 @@ pin_project! {
     where
         S: HttpService<IncomingBody>,
     {
-        conn: proto::h2::Server<T, S, S::ResBody>,
+        conn: proto::h2::Server<T, S>,
     }
 }
 
@@ -53,11 +52,10 @@ where
     }
 }
 
-impl<I, B, S> Connection<I, S>
+impl<I, S> Connection<I, S>
 where
-    S: HttpService<IncomingBody, ResBody = B>,
+    S: HttpService<IncomingBody>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -74,11 +72,10 @@ where
     }
 }
 
-impl<I, B, S> Future for Connection<I, S>
+impl<I, S> Future for Connection<I, S>
 where
-    S: HttpService<IncomingBody, ResBody = B>,
+    S: HttpService<IncomingBody>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
 
@@ -265,10 +262,9 @@ impl Builder {
     ///
     /// This returns a Future that must be polled in order for HTTP to be
     /// driven on the connection.
-    pub fn serve_connection<S, I, Bd>(&self, io: I, service: S) -> Connection<I, S>
+    pub fn serve_connection<S, I>(&self, io: I, service: S) -> Connection<I, S>
     where
-        S: HttpService<IncomingBody, ResBody = Bd>,
-        Bd: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+        S: HttpService<IncomingBody>,
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let proto = proto::h2::Server::new(io, service, &self.h2_builder, self.exec.clone());

@@ -1,29 +1,28 @@
 use super::HttpServeResult;
-use crate::executor::HyperExecutor;
-use hyper::server::conn::http1::Builder as Http1Builder;
-use hyper::server::conn::http2::Builder as Http2Builder;
-use hyper_util::server::conn::auto::Builder as AutoBuilder;
+use rama_http_core::server::conn::auto::Builder as AutoBuilder;
+use rama_http_core::server::conn::http1::Builder as Http1Builder;
+use rama_http_core::server::conn::http2::Builder as Http2Builder;
 use rama_tcp::utils::is_connection_error;
 use std::error::Error;
 
-/// A utility trait to allow any of the hyper server builders to be used
+/// A utility trait to allow any of the http-core server builders to be used
 /// in the same way to (http) serve a connection.
-pub trait HyperConnServer: Send + Sync + private::Sealed + 'static {}
+pub trait HttpCoreConnServer: Send + Sync + private::Sealed + 'static {}
 
-impl HyperConnServer for Http1Builder {}
+impl HttpCoreConnServer for Http1Builder {}
 
-impl HyperConnServer for Http2Builder<HyperExecutor> {}
+impl HttpCoreConnServer for Http2Builder {}
 
-impl HyperConnServer for AutoBuilder<HyperExecutor> {}
+impl HttpCoreConnServer for AutoBuilder {}
 
-/// A utility function to map boxed, potentially hyper errors, to our own error type.
-fn map_boxed_hyper_result(
+/// A utility function to map boxed, potentially http-core errors, to our own error type.
+fn map_boxed_http_core_result(
     result: Result<(), Box<dyn std::error::Error + Send + Sync>>,
 ) -> HttpServeResult {
     match result {
         Ok(_) => Ok(()),
-        Err(err) => match err.downcast::<hyper::Error>() {
-            Ok(err) => map_hyper_err_to_result(*err),
+        Err(err) => match err.downcast::<rama_http_core::Error>() {
+            Ok(err) => map_http_core_err_to_result(*err),
             Err(err) => match err.downcast::<std::io::Error>() {
                 Ok(err) => {
                     if is_connection_error(&err) {
@@ -38,16 +37,16 @@ fn map_boxed_hyper_result(
     }
 }
 
-/// A utility function to map hyper errors to our own error type.
-fn map_hyper_result(result: hyper::Result<()>) -> HttpServeResult {
+/// A utility function to map http-core errors to our own error type.
+fn map_http_core_result(result: rama_http_core::Result<()>) -> HttpServeResult {
     match result {
         Ok(_) => Ok(()),
-        Err(err) => map_hyper_err_to_result(err),
+        Err(err) => map_http_core_err_to_result(err),
     }
 }
 
-/// A utility function to map hyper errors to our own error type.
-fn map_hyper_err_to_result(err: hyper::Error) -> HttpServeResult {
+/// A utility function to map http-core errors to our own error type.
+fn map_http_core_err_to_result(err: rama_http_core::Error) -> HttpServeResult {
     if err.is_canceled() || err.is_closed() {
         return Ok(());
     }
@@ -68,11 +67,10 @@ fn map_hyper_err_to_result(err: hyper::Error) -> HttpServeResult {
 }
 
 mod private {
-    use crate::executor::HyperExecutor;
-    use crate::server::hyper_conn::{map_boxed_hyper_result, map_hyper_result};
-    use crate::server::{svc_hyper::HyperService, HttpServeResult};
-    use hyper_util::rt::TokioIo;
+    use crate::server::hyper_conn::{map_boxed_http_core_result, map_http_core_result};
+    use crate::server::HttpServeResult;
     use rama_core::{Context, Service};
+    use rama_http_core::service::RamaHttpService;
     use rama_http_types::{IntoResponse, Request};
     use rama_net::stream::Stream;
     use rama_utils::future::Fuse;
@@ -81,7 +79,7 @@ mod private {
     use tokio::select;
 
     pub trait Sealed {
-        fn hyper_serve_connection<IO, State, S, Response>(
+        fn http_core_serve_connection<IO, State, S, Response>(
             &self,
             ctx: Context<State>,
             io: IO,
@@ -90,13 +88,13 @@ mod private {
         where
             IO: Stream,
             State: Clone + Send + Sync + 'static,
-            S: Service<State, Request, Response = Response, Error = Infallible>,
+            S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static;
     }
 
     impl Sealed for super::Http1Builder {
         #[inline]
-        async fn hyper_serve_connection<IO, State, S, Response>(
+        async fn http_core_serve_connection<IO, State, S, Response>(
             &self,
             ctx: Context<State>,
             io: IO,
@@ -105,12 +103,13 @@ mod private {
         where
             IO: Stream,
             State: Clone + Send + Sync + 'static,
-            S: Service<State, Request, Response = Response, Error = Infallible>,
+            S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
-            let stream = TokioIo::new(Box::pin(io));
             let guard = ctx.guard().cloned();
-            let service = HyperService::new(ctx, service);
+            let service = RamaHttpService::new(ctx, service);
+
+            let stream = Box::pin(io);
 
             let mut conn = pin!(self.serve_connection(stream, service).with_upgrades());
 
@@ -124,22 +123,22 @@ mod private {
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
-                        return map_hyper_result(result);
+                        return map_http_core_result(result);
                     }
                 }
 
                 let result = conn.as_mut().await;
                 tracing::trace!("connection finished after graceful shutdown");
-                map_hyper_result(result)
+                map_http_core_result(result)
             } else {
-                map_hyper_result(conn.await)
+                map_http_core_result(conn.await)
             }
         }
     }
 
-    impl Sealed for super::Http2Builder<HyperExecutor> {
+    impl Sealed for super::Http2Builder {
         #[inline]
-        async fn hyper_serve_connection<IO, State, S, Response>(
+        async fn http_core_serve_connection<IO, State, S, Response>(
             &self,
             ctx: Context<State>,
             io: IO,
@@ -148,12 +147,12 @@ mod private {
         where
             IO: Stream,
             State: Clone + Send + Sync + 'static,
-            S: Service<State, Request, Response = Response, Error = Infallible>,
+            S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
-            let stream = TokioIo::new(Box::pin(io));
+            let stream = Box::pin(io);
             let guard = ctx.guard().cloned();
-            let service = HyperService::new(ctx, service);
+            let service = RamaHttpService::new(ctx, service);
 
             let mut conn = pin!(self.serve_connection(stream, service));
 
@@ -167,22 +166,22 @@ mod private {
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
-                        return map_hyper_result(result);
+                        return map_http_core_result(result);
                     }
                 }
 
                 let result = conn.as_mut().await;
                 tracing::trace!("connection finished after graceful shutdown");
-                map_hyper_result(result)
+                map_http_core_result(result)
             } else {
-                map_hyper_result(conn.await)
+                map_http_core_result(conn.await)
             }
         }
     }
 
-    impl Sealed for super::AutoBuilder<HyperExecutor> {
+    impl Sealed for super::AutoBuilder {
         #[inline]
-        async fn hyper_serve_connection<IO, State, S, Response>(
+        async fn http_core_serve_connection<IO, State, S, Response>(
             &self,
             ctx: Context<State>,
             io: IO,
@@ -191,12 +190,12 @@ mod private {
         where
             IO: Stream,
             State: Clone + Send + Sync + 'static,
-            S: Service<State, Request, Response = Response, Error = Infallible>,
+            S: Service<State, Request, Response = Response, Error = Infallible> + Clone,
             Response: IntoResponse + Send + 'static,
         {
-            let stream = TokioIo::new(Box::pin(io));
+            let stream = Box::pin(io);
             let guard = ctx.guard().cloned();
-            let service = HyperService::new(ctx, service);
+            let service = RamaHttpService::new(ctx, service);
 
             let mut conn = pin!(self.serve_connection_with_upgrades(stream, service));
 
@@ -210,15 +209,15 @@ mod private {
                     }
                     result = conn.as_mut() => {
                         tracing::trace!("connection finished");
-                        return map_boxed_hyper_result(result);
+                        return map_boxed_http_core_result(result);
                     }
                 }
 
                 let result = conn.as_mut().await;
                 tracing::trace!("connection finished after graceful shutdown");
-                map_boxed_hyper_result(result)
+                map_boxed_http_core_result(result)
             } else {
-                map_boxed_hyper_result(conn.await)
+                map_boxed_http_core_result(conn.await)
             }
         }
     }

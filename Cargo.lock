@@ -2255,10 +2255,9 @@ name = "rama-http-backend"
 version = "0.2.0-alpha.4"
 dependencies = [
  "h2",
- "hyper",
- "hyper-util",
  "pin-project-lite",
  "rama-core",
+ "rama-http-core",
  "rama-http-types",
  "rama-net",
  "rama-tcp",

@@ -9,10 +9,9 @@ use std::time::Duration;
 use crate::upgrade::Upgraded;
 use bytes::Bytes;
 use futures_util::ready;
-use rama_core::error::BoxError;
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::body::{Body, Incoming as IncomingBody};
+use crate::body::Incoming as IncomingBody;
 use crate::proto;
 use crate::service::HttpService;
 
@@ -35,7 +34,7 @@ pin_project_lite::pin_project! {
     where
         S: HttpService<IncomingBody>,
     {
-        conn: Http1Dispatcher<T, S::ResBody, S>,
+        conn: Http1Dispatcher<T, rama_http_types::Body, S>,
     }
 }
 
@@ -108,11 +107,10 @@ where
     }
 }
 
-impl<I, B, S> Connection<I, S>
+impl<I, S> Connection<I, S>
 where
-    S: HttpService<IncomingBody, ResBody = B>,
+    S: HttpService<IncomingBody>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -185,11 +183,10 @@ where
     }
 }
 
-impl<I, B, S> Future for Connection<I, S>
+impl<I, S> Future for Connection<I, S>
 where
-    S: HttpService<IncomingBody, ResBody = B>,
+    S: HttpService<IncomingBody>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
 
@@ -409,11 +406,10 @@ where
     pub(super) inner: Option<Connection<T, S>>,
 }
 
-impl<I, B, S> UpgradeableConnection<I, S>
+impl<I, S> UpgradeableConnection<I, S>
 where
-    S: HttpService<IncomingBody, ResBody = B>,
+    S: HttpService<IncomingBody>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     /// Start a graceful shutdown process for this connection.
     ///
@@ -428,11 +424,10 @@ where
     }
 }
 
-impl<I, B, S> Future for UpgradeableConnection<I, S>
+impl<I, S> Future for UpgradeableConnection<I, S>
 where
-    S: HttpService<IncomingBody, ResBody = B>,
+    S: HttpService<IncomingBody>,
     I: AsyncRead + AsyncWrite + Send + Unpin + 'static + Send + 'static,
-    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
     type Output = crate::Result<()>;
 

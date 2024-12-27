@@ -8,6 +8,5 @@ pub mod service;
 pub use service::HttpServer;
 
 mod hyper_conn;
-mod svc_hyper;
 
 pub mod layer;

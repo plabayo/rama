@@ -1483,6 +1483,7 @@ test! {
 }
 
 mod conn {
+    use std::convert::Infallible;
     use std::io::{self, Read, Write};
     use std::net::{SocketAddr, TcpListener};
     use std::pin::Pin;
@@ -1501,7 +1502,7 @@ mod conn {
     use rama::http::core::client::conn;
     use rama::http::core::service::RamaHttpService;
     use rama::http::core::upgrade::OnUpgrade;
-    use rama::http::dep::http_body_util::{BodyExt, Empty, Full, StreamBody};
+    use rama::http::dep::http_body_util::{BodyExt, Empty, StreamBody};
     use rama::http::{Method, Request, Response, StatusCode};
     use rama::rt::Executor;
 
@@ -2194,7 +2195,9 @@ mod conn {
                     res = listener.accept() => {
                         let (stream, _) = res.unwrap();
 
-                        let service = RamaHttpService::new(rama::Context::default(), service_fn(|_:Request<rama::http::core::body::Incoming>| future::ok::<_, rama::http::core::Error>(Response::new(Empty::<Bytes>::new()))));
+                        let service = RamaHttpService::new(
+                            rama::Context::default(),
+                            service_fn(|_:Request| future::ok::<_, Infallible>(Response::new(rama::http::Body::empty()))));
 
                         let mut shdn_rx = shdn_rx.clone();
                         tokio::task::spawn(async move {
@@ -2275,13 +2278,13 @@ mod conn {
 
             let service = RamaHttpService::new(
                 rama::Context::default(),
-                service_fn(move |req: Request<rama::http::core::body::Incoming>| {
+                service_fn(move |req: Request| {
                     tokio::task::spawn(async move {
                         let io = &mut rama::http::core::upgrade::on(req).await.unwrap();
                         io.write_all(b"hello\n").await.unwrap();
                     });
 
-                    future::ok::<_, rama::http::core::Error>(Response::new(Empty::<Bytes>::new()))
+                    future::ok::<_, Infallible>(Response::new(rama::http::Body::empty()))
                 }),
             );
 
@@ -2456,18 +2459,16 @@ mod conn {
                     sock,
                     RamaHttpService::new(
                         rama::Context::default(),
-                        service_fn(
-                            |req: Request<rama::http::core::body::Incoming>| async move {
-                                tokio::spawn(async move {
-                                    let _ = concat(req.into_body())
-                                        .await
-                                        .expect("server req body aggregate");
-                                });
-                                Ok::<_, rama::http::core::Error>(rama::http::Response::new(
-                                    Empty::<Bytes>::new(),
-                                ))
-                            },
-                        ),
+                        service_fn(|req: Request| async move {
+                            tokio::spawn(async move {
+                                let _ = concat(req.into_body())
+                                    .await
+                                    .expect("server req body aggregate");
+                            });
+                            Ok::<_, Infallible>(
+                                rama::http::Response::new(rama::http::Body::empty()),
+                            )
+                        }),
                     ),
                 )
                 .await
@@ -2518,9 +2519,9 @@ mod conn {
                     RamaHttpService::new(
                         rama::Context::default(),
                         service_fn(|_req| async move {
-                            Ok::<_, rama::http::core::Error>(Response::new(Full::new(Bytes::from(
+                            Ok::<_, Infallible>(Response::new(rama::http::Body::from(
                                 "No bread for you!",
-                            ))))
+                            )))
                         }),
                     ),
                 )
