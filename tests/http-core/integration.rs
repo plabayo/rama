@@ -1,7 +1,6 @@
 #![deny(warnings)]
-#[macro_use]
-mod support;
-use self::support::*;
+
+use super::support::*;
 
 t! {
     get_1,

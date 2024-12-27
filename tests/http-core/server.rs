@@ -15,25 +15,23 @@ use std::time::Duration;
 use bytes::Bytes;
 use futures_channel::oneshot;
 use futures_util::future::{self, Either, FutureExt};
+use rama::http::dep::http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
+use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
 use rama_http_core::h2::client::SendRequest;
 use rama_http_core::h2::{RecvStream, SendStream};
 use rama_http_core::service::RamaHttpService;
-use rama_http_types::dep::http_body_util::{
-    combinators::BoxBody, BodyExt, Empty, Full, StreamBody,
-};
-use rama_http_types::header::{HeaderMap, HeaderName, HeaderValue};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 use tokio::net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpStream};
 
+use rama::http::{Method, Request, Response, StatusCode, Uri, Version};
 use rama_core::service::{service_fn, Service};
 use rama_http_core::body::{Body, Incoming as IncomingBody};
 use rama_http_core::server::conn::{http1, http2};
-use rama_http_types::{Method, Request, Response, StatusCode, Uri, Version};
 use tokio::pin;
 
-mod support;
+use super::support;
 
 #[test]
 fn get_should_ignore_body() {
@@ -324,7 +322,7 @@ mod response_body_lengths {
 
         let client = TestClient::new().http2_only();
         let uri = addr_str
-            .parse::<rama_http_types::Uri>()
+            .parse::<rama::http::Uri>()
             .expect("server addr should parse");
 
         let res = client.get(uri).await.unwrap();
@@ -343,7 +341,7 @@ mod response_body_lengths {
 
         let client = TestClient::new().http2_only();
         let uri = addr_str
-            .parse::<rama_http_types::Uri>()
+            .parse::<rama::http::Uri>()
             .expect("server addr should parse");
 
         let res = client.get(uri).await.unwrap();
@@ -359,7 +357,7 @@ mod response_body_lengths {
 
         let client = TestClient::new().http2_only();
         let uri = addr_str
-            .parse::<rama_http_types::Uri>()
+            .parse::<rama::http::Uri>()
             .expect("server addr should parse");
 
         let res = client.get(uri).await.unwrap();
@@ -635,7 +633,7 @@ fn response_does_not_set_chunked_if_body_not_allowed() {
     let server = serve();
     server
         .reply()
-        .status(rama_http_types::StatusCode::NOT_MODIFIED)
+        .status(rama::http::StatusCode::NOT_MODIFIED)
         .header("transfer-encoding", "chunked");
     let mut req = connect(server.addr());
     req.write_all(
@@ -1837,7 +1835,7 @@ async fn upgrades_ignored() {
     let url = format!("http://{}/", addr);
 
     let make_req = || {
-        rama_http_types::Request::builder()
+        rama::http::Request::builder()
             .uri(&*url)
             .header("upgrade", "yolo")
             .header("connection", "upgrade")
@@ -2393,7 +2391,7 @@ fn http1_response_with_http2_version() {
 
     let rt = support::runtime();
 
-    server.reply().version(rama_http_types::Version::HTTP_2);
+    server.reply().version(rama::http::Version::HTTP_2);
 
     let client = TestClient::new();
     rt.block_on({
@@ -2494,7 +2492,7 @@ fn skips_content_length_for_304_responses() {
     let server = serve();
     server
         .reply()
-        .status(rama_http_types::StatusCode::NOT_MODIFIED)
+        .status(rama::http::StatusCode::NOT_MODIFIED)
         .body("foo");
     let mut req = connect(server.addr());
     req.write_all(
@@ -2517,7 +2515,7 @@ fn skips_content_length_and_body_for_304_responses() {
     let server = serve();
     server
         .reply()
-        .status(rama_http_types::StatusCode::NOT_MODIFIED)
+        .status(rama::http::StatusCode::NOT_MODIFIED)
         .body("foo");
     let mut req = connect(server.addr());
     req.write_all(
@@ -2544,10 +2542,7 @@ fn skips_content_length_and_body_for_304_responses() {
 #[test]
 fn no_implicit_zero_content_length_for_head_responses() {
     let server = serve();
-    server
-        .reply()
-        .status(rama_http_types::StatusCode::OK)
-        .body([]);
+    server.reply().status(rama::http::StatusCode::OK).body([]);
     let mut req = connect(server.addr());
     req.write_all(
         b"\
@@ -2643,7 +2638,7 @@ async fn http2_keep_alive_detects_unresponsive_client() {
 
 //     tokio::time::sleep(Duration::from_secs(4)).await;
 
-//     let req = rama_http_types::Request::new(Empty::<Bytes>::new());
+//     let req = rama::http::Request::new(Empty::<Bytes>::new());
 //     client.send_request(req).await.expect("client.send_request");
 // }
 
@@ -2679,7 +2674,7 @@ async fn http2_keep_alive_detects_unresponsive_client() {
 
 //     tokio::time::sleep(Duration::from_secs(4)).await;
 
-//     let req = rama_http_types::Request::new(Empty::<Bytes>::new());
+//     let req = rama::http::Request::new(Empty::<Bytes>::new());
 //     let resp = client.send_request(req).await.expect("client.send_request");
 
 //     assert!(resp.headers().get("Date").is_none());
@@ -2945,7 +2940,7 @@ struct ReplyBuilder<'a> {
 }
 
 impl ReplyBuilder<'_> {
-    fn status(self, status: rama_http_types::StatusCode) -> Self {
+    fn status(self, status: rama::http::StatusCode) -> Self {
         self.tx.lock().unwrap().send(Reply::Status(status)).unwrap();
         self
     }
@@ -2961,7 +2956,7 @@ impl ReplyBuilder<'_> {
         self
     }
 
-    fn version(self, version: rama_http_types::Version) -> Self {
+    fn version(self, version: rama::http::Version) -> Self {
         self.tx
             .lock()
             .unwrap()
@@ -2984,7 +2979,7 @@ impl ReplyBuilder<'_> {
     fn body<T: AsRef<[u8]>>(self, body: T) {
         let chunk = Bytes::copy_from_slice(body.as_ref());
         let body = BodyExt::boxed(
-            rama_http_types::dep::http_body_util::Full::new(chunk).map_err(|e| match e {}),
+            rama::http::dep::http_body_util::Full::new(chunk).map_err(|e| match e {}),
         );
         self.tx.lock().unwrap().send(Reply::Body(body)).unwrap();
     }
@@ -3055,9 +3050,9 @@ type ReplyBody = BoxBody<Bytes, BoxError>;
 
 #[derive(Debug)]
 enum Reply {
-    Status(rama_http_types::StatusCode),
+    Status(rama::http::StatusCode),
     ReasonPhrase(rama_http_core::ext::ReasonPhrase),
-    Version(rama_http_types::Version),
+    Version(rama::http::Version),
     Header(HeaderName, HeaderValue),
     Body(ReplyBody),
     Error(BoxError),
@@ -3113,8 +3108,7 @@ impl Service<(), Request<IncomingBody>> for TestService {
 impl TestService {
     fn build_reply(replies: spmc::Receiver<Reply>) -> Result<Response<ReplyBody>, BoxError> {
         let empty = BodyExt::boxed(
-            rama_http_types::dep::http_body_util::Empty::new()
-                .map_err(|e| -> BoxError { match e {} }),
+            rama::http::dep::http_body_util::Empty::new().map_err(|e| -> BoxError { match e {} }),
         );
         let mut res = Response::new(empty);
         while let Ok(reply) = replies.try_recv() {
@@ -3163,8 +3157,8 @@ impl Service<(), Request<IncomingBody>> for HelloWorld {
 
 fn unreachable_service() -> impl Service<
     (),
-    rama_http_types::Request<IncomingBody>,
-    Response = rama_http_types::Response<ReplyBody>,
+    rama::http::Request<IncomingBody>,
+    Response = rama::http::Response<ReplyBody>,
     Error = BoxError,
 > + Clone {
     service_fn(|_req| Box::pin(async { Err("request shouldn't be received".into()) }))

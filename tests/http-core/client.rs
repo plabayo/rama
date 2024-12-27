@@ -10,17 +10,18 @@ use std::pin::Pin;
 use std::thread;
 use std::time::Duration;
 
-use rama_http_core::body::Frame;
-use rama_http_types::dep::http::uri::PathAndQuery;
-use rama_http_types::dep::http_body_util::{BodyExt, StreamBody};
-use rama_http_types::header::{HeaderMap, HeaderName, HeaderValue};
-use rama_http_types::{Method, Request, StatusCode, Uri, Version};
+use rama::http::core::body::Frame;
+use rama::http::dep::http::uri::PathAndQuery;
+use rama::http::dep::http_body_util::{BodyExt, StreamBody};
+use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
+use rama::http::{Method, Request, StatusCode, Uri, Version};
+
+use super::support;
 
 use bytes::Bytes;
 use futures_channel::oneshot;
 use futures_util::future::{self, FutureExt, TryFuture, TryFutureExt};
 use tokio::net::TcpStream;
-mod support;
 
 fn s(buf: &[u8]) -> &str {
     std::str::from_utf8(buf).expect("from_utf8")
@@ -247,7 +248,7 @@ macro_rules! test {
         let rt = $runtime;
 
         #[allow(unused_assignments, unused_mut)]
-        let mut body = BodyExt::boxed(rama_http_types::dep::http_body_util::Empty::<bytes::Bytes>::new());
+        let mut body = BodyExt::boxed(rama::http::dep::http_body_util::Empty::<bytes::Bytes>::new());
         let mut req_builder = Request::builder();
         $(
             test!(@client_request; req_builder, body, addr, $c_req_prop: $c_req_val);
@@ -414,7 +415,7 @@ macro_rules! __client_req_prop {
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, version: $version:ident) => {{
-        $req_builder = $req_builder.version(rama_http_types::Version::$version);
+        $req_builder = $req_builder.version(rama::http::Version::$version);
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, url: $url:expr) => {{
@@ -422,7 +423,7 @@ macro_rules! __client_req_prop {
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, body: $body_e:expr) => {{
-        $body = BodyExt::boxed(rama_http_types::dep::http_body_util::Full::from($body_e));
+        $body = BodyExt::boxed(rama::http::dep::http_body_util::Full::from($body_e));
     }};
 
     ($req_builder:ident, $body:ident, $addr:ident, body_stream: $body_e:expr) => {{
@@ -1495,14 +1496,14 @@ mod conn {
     use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
     use tokio::net::{TcpListener as TkTcpListener, TcpStream};
 
+    use rama::http::dep::http_body_util::{BodyExt, Empty, Full, StreamBody};
+    use rama::http::{Method, Request, Response, StatusCode};
     use rama_core::error::BoxError;
     use rama_core::rt::Executor;
     use rama_http_core::body::{Body, Frame};
     use rama_http_core::client::conn;
     use rama_http_core::service::RamaHttpService;
     use rama_http_core::upgrade::OnUpgrade;
-    use rama_http_types::dep::http_body_util::{BodyExt, Empty, Full, StreamBody};
-    use rama_http_types::{Method, Request, Response, StatusCode};
 
     use super::{concat, s, support, tcp_connect, FutureHyperExt};
 
@@ -1553,7 +1554,7 @@ mod conn {
                 .body(Empty::<Bytes>::new())
                 .unwrap();
             let mut res = client.send_request(req).await.expect("send_request");
-            assert_eq!(res.status(), rama_http_types::StatusCode::OK);
+            assert_eq!(res.status(), rama::http::StatusCode::OK);
             assert!(res.body_mut().frame().await.is_none());
         };
 
@@ -1593,7 +1594,7 @@ mod conn {
                 .body(Empty::<Bytes>::new())
                 .unwrap();
             let mut res = client.send_request(req).await.expect("send_request");
-            assert_eq!(res.status(), rama_http_types::StatusCode::OK);
+            assert_eq!(res.status(), rama::http::StatusCode::OK);
             assert_eq!(
                 res.extensions()
                     .get::<rama_http_core::ext::ReasonPhrase>()
@@ -1604,7 +1605,7 @@ mod conn {
             assert_eq!(res.headers().len(), 1);
             assert_eq!(
                 res.headers()
-                    .get(rama_http_types::header::CONTENT_LENGTH)
+                    .get(rama::http::header::CONTENT_LENGTH)
                     .unwrap(),
                 "0"
             );
@@ -1648,7 +1649,7 @@ mod conn {
             .body(Empty::<Bytes>::new())
             .unwrap();
         let res = client.send_request(req).and_then(move |mut res| {
-            assert_eq!(res.status(), rama_http_types::StatusCode::OK);
+            assert_eq!(res.status(), rama::http::StatusCode::OK);
             assert_eq!(res.body().size_hint().exact(), Some(5));
             assert!(!res.body().is_end_stream());
             poll_fn(move |ctx| Pin::new(res.body_mut()).poll_frame(ctx)).map(Option::unwrap)
@@ -1751,7 +1752,7 @@ mod conn {
             .unwrap();
 
         let res = client.send_request(req).and_then(move |res| {
-            assert_eq!(res.status(), rama_http_types::StatusCode::OK);
+            assert_eq!(res.status(), rama::http::StatusCode::OK);
             concat(res)
         });
         let rx = rx1.expect("thread panicked");
@@ -1791,12 +1792,12 @@ mod conn {
 
         let req = Request::builder()
             .uri("/a")
-            .version(rama_http_types::Version::HTTP_2)
+            .version(rama::http::Version::HTTP_2)
             .body(Empty::<Bytes>::new())
             .unwrap();
 
         let res = client.send_request(req).and_then(move |res| {
-            assert_eq!(res.status(), rama_http_types::StatusCode::OK);
+            assert_eq!(res.status(), rama::http::StatusCode::OK);
             concat(res)
         });
         let rx = rx1.expect("thread panicked");
@@ -1835,7 +1836,7 @@ mod conn {
             .body(Empty::<Bytes>::new())
             .unwrap();
         let res1 = client.send_request(req).and_then(move |res| {
-            assert_eq!(res.status(), rama_http_types::StatusCode::OK);
+            assert_eq!(res.status(), rama::http::StatusCode::OK);
             concat(res)
         });
 
@@ -1903,10 +1904,7 @@ mod conn {
                 .body(Empty::<Bytes>::new())
                 .unwrap();
             let res = client.send_request(req).and_then(move |res| {
-                assert_eq!(
-                    res.status(),
-                    rama_http_types::StatusCode::SWITCHING_PROTOCOLS
-                );
+                assert_eq!(res.status(), rama::http::StatusCode::SWITCHING_PROTOCOLS);
                 assert_eq!(res.headers()["Upgrade"], "foobar");
                 concat(res)
             });
@@ -1993,7 +1991,7 @@ mod conn {
             let res = client
                 .send_request(req)
                 .and_then(move |res| {
-                    assert_eq!(res.status(), rama_http_types::StatusCode::OK);
+                    assert_eq!(res.status(), rama::http::StatusCode::OK);
                     concat(res)
                 })
                 .map_ok(|body| {
@@ -2069,7 +2067,7 @@ mod conn {
 
     //         // use the connection once
     //         let mut fut1 =
-    //             std::pin::pin!(client.send_request(rama_http_types::Request::new(Empty::new())));
+    //             std::pin::pin!(client.send_request(rama::http::Request::new(Empty::new())));
     //         #[allow(clippy::never_loop)]
     //         let _res1 = future::poll_fn(|cx| loop {
     //             if let Poll::Ready(res) = fut1.as_mut().poll(cx) {
@@ -2091,7 +2089,7 @@ mod conn {
     //         tokio::task::yield_now().await;
 
     //         let mut fut2 = std::pin::pin!(
-    //             client.try_send_request(rama_http_types::Request::new(Empty::new()))
+    //             client.try_send_request(rama::http::Request::new(Empty::new()))
     //         );
     //         let poll1 = future::poll_fn(|cx| Poll::Ready(fut2.as_mut().poll(cx))).await;
     //         assert!(poll1.is_pending(), "not already known to error");
@@ -2368,7 +2366,7 @@ mod conn {
             assert!(err.is_timeout());
         });
 
-        let req = rama_http_types::Request::new(Empty::<Bytes>::new());
+        let req = rama::http::Request::new(Empty::<Bytes>::new());
         let err = client
             .send_request(req)
             .await
@@ -2408,7 +2406,7 @@ mod conn {
     //                                 .await
     //                                 .expect("server req body aggregate");
     //                         });
-    //                         Ok::<_, rama_http_core::Error>(rama_http_types::Response::new(Empty::<
+    //                         Ok::<_, rama_http_core::Error>(rama::http::Response::new(Empty::<
     //                             Bytes,
     //                         >::new(
     //                         )))
@@ -2433,7 +2431,7 @@ mod conn {
 
     //     // Use a channel to keep request stream open
     //     let (_tx, recv) = mpsc::channel::<Result<Frame<Bytes>, BoxError>>(0);
-    //     let req = rama_http_types::Request::new(StreamBody::new(recv));
+    //     let req = rama::http::Request::new(StreamBody::new(recv));
 
     //     let _resp = client.send_request(req).await.expect("send_request");
 
@@ -2627,11 +2625,11 @@ mod conn {
         });
 
         let req = Request::post("/a")
-            .body(rama_http_types::dep::http_body_util::BodyExt::map_frame::<
+            .body(rama::http::dep::http_body_util::BodyExt::map_frame::<
                 _,
                 bytes::Bytes,
             >(
-                rama_http_types::dep::http_body_util::Full::<bytes::Bytes>::from("baguette"),
+                rama::http::dep::http_body_util::Full::<bytes::Bytes>::from("baguette"),
                 |_| panic!("oopsie"),
             ))
             .unwrap();

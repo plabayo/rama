@@ -7,22 +7,22 @@ use std::sync::{
 };
 
 use bytes::Bytes;
+use rama::http::dep::http_body_util::{BodyExt, Full};
 use rama_core::rt::Executor;
 use rama_core::Context;
 use rama_http_core::server;
 use rama_http_core::service::RamaHttpService;
-use rama_http_types::dep::http_body_util::{BodyExt, Full};
 use tokio::net::{TcpListener, TcpStream};
 
+use rama::http::{Request, Response, Version};
 use rama_core::service::service_fn;
 use rama_http_core::body::Incoming as IncomingBody;
-use rama_http_types::{Request, Response, Version};
 
 #[allow(unused_imports)]
 pub(crate) use futures_util::{
     future, FutureExt as _, StreamExt as _, TryFutureExt as _, TryStreamExt as _,
 };
-pub(crate) use rama_http_types::HeaderMap;
+pub(crate) use rama::http::HeaderMap;
 pub(crate) use std::net::SocketAddr;
 
 pub(crate) mod trailers;
@@ -192,7 +192,7 @@ macro_rules! __internal_eq_prop {
     (headers: $map:tt) => {{
         #[allow(unused_mut)]
         {
-            let mut headers = Vec::<std::sync::Arc<dyn Fn(&rama_http_types::HeaderMap) + Send + Sync>>::new();
+            let mut headers = Vec::<std::sync::Arc<dyn Fn(&rama::http::HeaderMap) + Send + Sync>>::new();
             __internal_headers_eq!(headers, $map);
             headers
         }
@@ -207,7 +207,7 @@ macro_rules! __internal_req_res_prop {
         $prop_val
     };
     (status: $prop_val:expr) => {
-        rama_http_types::StatusCode::from_u16($prop_val).expect("status code")
+        rama::http::StatusCode::from_u16($prop_val).expect("status code")
     };
     ($prop_name:ident: $prop_val:expr) => {
         From::from($prop_val)
@@ -224,12 +224,12 @@ macro_rules! __internal_headers_map {
 
 macro_rules! __internal_headers_eq {
     (@pat $name: expr, $pat:pat) => {
-        std::sync::Arc::new(move |__hdrs: &rama_http_types::HeaderMap| {
+        std::sync::Arc::new(move |__hdrs: &rama::http::HeaderMap| {
             match __hdrs.get($name) {
                 $pat => (),
                 other => panic!("headers[{}] was not {}: {:?}", stringify!($name), stringify!($pat), other),
             }
-        }) as std::sync::Arc<dyn Fn(&rama_http_types::HeaderMap) + Send + Sync>
+        }) as std::sync::Arc<dyn Fn(&rama::http::HeaderMap) + Send + Sync>
     };
     (@val $name: expr, NONE) => {{
         __internal_headers_eq!(@pat $name, None);
@@ -239,13 +239,13 @@ macro_rules! __internal_headers_eq {
     }};
     (@val $name: expr, $val:expr) => ({
         let __val = Option::from($val);
-        std::sync::Arc::new(move |__hdrs: &rama_http_types::HeaderMap| {
+        std::sync::Arc::new(move |__hdrs: &rama::http::HeaderMap| {
             if let Some(ref val) = __val {
                 assert_eq!(__hdrs.get($name).expect(stringify!($name)), val.to_string().as_str(), stringify!($name));
             } else {
                 assert_eq!(__hdrs.get($name), None, stringify!($name));
             }
-        }) as std::sync::Arc<dyn Fn(&rama_http_types::HeaderMap) + Send + Sync>
+        }) as std::sync::Arc<dyn Fn(&rama::http::HeaderMap) + Send + Sync>
     });
     ($headers:ident, { $($name:expr => $val:tt,)* }) => {{
         $(
@@ -275,7 +275,7 @@ impl Default for __CReq {
 
 #[derive(Clone, Default)]
 pub(crate) struct __CRes {
-    pub status: rama_http_types::StatusCode,
+    pub status: rama::http::StatusCode,
     pub body: Vec<u8>,
     pub headers: __HeadersEq,
 }
@@ -301,7 +301,7 @@ impl Default for __SReq {
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct __SRes {
-    pub status: rama_http_types::StatusCode,
+    pub status: rama::http::StatusCode,
     pub body: Vec<u8>,
     pub headers: HeaderMap,
 }

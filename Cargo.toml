@@ -270,10 +270,12 @@ http = { workspace = true }
 itertools = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
+pin-project-lite = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
+spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
