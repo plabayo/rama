@@ -2093,6 +2093,8 @@ dependencies = [
  "divan",
  "escargot",
  "futures",
+ "futures-channel",
+ "futures-util",
  "h2-support",
  "hex",
  "http",

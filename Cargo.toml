@@ -263,6 +263,8 @@ derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
 futures = { workspace = true }
+futures-channel = { workspace = true }
+futures-util = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
 http = { workspace = true }
 itertools = { workspace = true }
@@ -293,6 +295,36 @@ harness = false
 
 [[bench]]
 name = "h2"
+harness = false
+
+[[bench]]
+name = "http_core_body"
+path = "benches/http_core_body.rs"
+required-features = ["full"]
+harness = false
+
+[[bench]]
+name = "http_core_connect"
+path = "benches/http_core_connect.rs"
+required-features = ["full"]
+harness = false
+
+[[bench]]
+name = "http_core_end_to_end"
+path = "benches/http_core_end_to_end.rs"
+required-features = ["full"]
+harness = false
+
+[[bench]]
+name = "http_core_pipeline"
+path = "benches/http_core_pipeline.rs"
+required-features = ["full"]
+harness = false
+
+[[bench]]
+name = "http_core_server"
+path = "benches/http_core_server.rs"
+required-features = ["full"]
 harness = false
 
 [[example]]
@@ -382,3 +414,11 @@ required-features = ["boring", "haproxy", "http-full"]
 [[example]]
 name = "tls_termination"
 required-features = ["rustls", "haproxy", "http-full"]
+
+[profile.release]
+codegen-units = 1
+incremental = false
+
+[profile.bench]
+codegen-units = 1
+incremental = false

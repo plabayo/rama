@@ -112,7 +112,7 @@ fuzz-60s: fuzz-ua-60s fuzz-h2-60s
 fuzz-full: fuzz-60s fuzz-h2-main
 
 bench:
-	cargo bench --features=http-full
+	cargo bench --features=full
 
 vet:
 	cargo vet
