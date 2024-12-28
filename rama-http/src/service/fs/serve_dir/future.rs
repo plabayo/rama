@@ -18,7 +18,7 @@ where
     State: Clone + Send + Sync + 'static,
     F: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error = Infallible> + Clone,
     ResBody: http_body::Body<Data = Bytes> + Send + Sync + 'static,
-    ResBody::Error: Into<Box<dyn std::error::Error + Send + Sync>>,
+    ResBody::Error: Into<BoxError>,
 {
     match open_file_result {
         Ok(OpenFileOutput::FileOpened(file_output)) => Ok(build_response(*file_output)),

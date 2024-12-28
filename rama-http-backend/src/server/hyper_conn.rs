@@ -3,6 +3,7 @@ use crate::executor::HyperExecutor;
 use hyper::server::conn::http1::Builder as Http1Builder;
 use hyper::server::conn::http2::Builder as Http2Builder;
 use hyper_util::server::conn::auto::Builder as AutoBuilder;
+use rama_core::error::BoxError;
 use rama_tcp::utils::is_connection_error;
 use std::error::Error;
 
@@ -17,9 +18,7 @@ impl HyperConnServer for Http2Builder<HyperExecutor> {}
 impl HyperConnServer for AutoBuilder<HyperExecutor> {}
 
 /// A utility function to map boxed, potentially hyper errors, to our own error type.
-fn map_boxed_hyper_result(
-    result: Result<(), Box<dyn std::error::Error + Send + Sync>>,
-) -> HttpServeResult {
+fn map_boxed_hyper_result(result: Result<(), BoxError>) -> HttpServeResult {
     match result {
         Ok(_) => Ok(()),
         Err(err) => match err.downcast::<hyper::Error>() {

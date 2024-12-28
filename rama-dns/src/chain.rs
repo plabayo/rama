@@ -1,6 +1,6 @@
-use std::error::Error;
 use std::net::{Ipv4Addr, Ipv6Addr};
 
+use rama_core::error::BoxError;
 use rama_net::address::Domain;
 
 use crate::DnsResolver;
@@ -34,9 +34,9 @@ macro_rules! dns_resolver_chain_impl {
 impl<R> DnsResolver for Vec<R>
 where
     R: DnsResolver + Send,
-    R::Error: Into<Box<dyn Error + Send + Sync>>,
+    R::Error: Into<BoxError>,
 {
-    type Error = Vec<Box<dyn Error + Send + Sync>>;
+    type Error = Vec<BoxError>;
 
     dns_resolver_chain_impl!();
 }
@@ -44,9 +44,9 @@ where
 impl<R, const N: usize> DnsResolver for [R; N]
 where
     R: DnsResolver + Send,
-    R::Error: Into<Box<dyn Error + Send + Sync>>,
+    R::Error: Into<BoxError>,
 {
-    type Error = Vec<Box<dyn Error + Send + Sync>>;
+    type Error = Vec<BoxError>;
 
     dns_resolver_chain_impl!();
 }
@@ -87,7 +87,7 @@ mod tests {
     #[tokio::test]
     async fn test_chain_ok_err_ipv4() {
         let mut dns = InMemoryDns::new();
-        dns.insert_addr(
+        dns.insert_address(
             Domain::from_static("example.com"),
             Ipv4Addr::new(127, 0, 0, 1),
         );
@@ -103,7 +103,7 @@ mod tests {
     #[tokio::test]
     async fn test_chain_err_ok_ipv6() {
         let mut dns = InMemoryDns::new();
-        dns.insert_addr(
+        dns.insert_address(
             Domain::from_static("example.com"),
             Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
         );
@@ -120,11 +120,11 @@ mod tests {
     async fn test_chain_ok_ok_ipv6() {
         let mut dns1 = InMemoryDns::new();
         let mut dns2 = InMemoryDns::new();
-        dns1.insert_addr(
+        dns1.insert_address(
             Domain::from_static("example.com"),
             Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1),
         );
-        dns2.insert_addr(
+        dns2.insert_address(
             Domain::from_static("example.com"),
             Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 2),
         );
@@ -141,7 +141,7 @@ mod tests {
     #[tokio::test]
     async fn test_chain_err_err_ok_ipv4() {
         let mut dns = InMemoryDns::new();
-        dns.insert_addr(
+        dns.insert_address(
             Domain::from_static("example.com"),
             Ipv4Addr::new(127, 0, 0, 1),
         );

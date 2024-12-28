@@ -45,6 +45,7 @@ rama_core::combinators::impl_either!(impl_dns_resolver_either_either);
 mod tests {
     use crate::DnsResolver;
     use rama_core::combinators::Either;
+    use rama_core::error::BoxError;
     use rama_net::address::Domain;
     use std::future::Future;
     use std::net::{Ipv4Addr, Ipv6Addr};
@@ -54,7 +55,7 @@ mod tests {
     struct MockResolver2;
 
     impl DnsResolver for MockResolver1 {
-        type Error = Box<dyn std::error::Error + Send + Sync>;
+        type Error = BoxError;
 
         fn ipv4_lookup(
             &self,
@@ -72,7 +73,7 @@ mod tests {
     }
 
     impl DnsResolver for MockResolver2 {
-        type Error = Box<dyn std::error::Error + Send + Sync>;
+        type Error = BoxError;
 
         fn ipv4_lookup(
             &self,
