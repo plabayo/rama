@@ -49,6 +49,11 @@ pub struct InMemoryDns {
 }
 
 impl InMemoryDns {
+    /// Creates a new empty [`InMemoryDns`] instance.
+    pub fn new() -> Self {
+        Self { map: None }
+    }
+
     /// Inserts a domain to IP address mapping to the [`InMemoryDns`].
     ///
     /// Existing mappings will be overwritten.
@@ -57,6 +62,14 @@ impl InMemoryDns {
             .get_or_insert_with(HashMap::new)
             .insert(name, addresses);
         self
+    }
+
+    /// Insert an IP address for a domain.
+    ///
+    /// This method accepts any type that can be converted into an `IpAddr`,
+    /// such as `Ipv4Addr` or `Ipv6Addr`.
+    pub fn insert_addr<A: Into<IpAddr>>(&mut self, name: Domain, addr: A) -> &mut Self {
+        self.insert(name.into(), vec![addr.into()])
     }
 
     /// Extend the [`InMemoryDns`] with the given mappings.
