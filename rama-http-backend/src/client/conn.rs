@@ -134,7 +134,7 @@ where
                     }
                 });
 
-                let svc = HttpClientService(SendRequest::Http1(Mutex::new(sender)));
+                let svc = HttpClientService(SendRequest::Http1(sender));
 
                 Ok(EstablishedClientConnection {
                     ctx,

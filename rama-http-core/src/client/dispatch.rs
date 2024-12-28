@@ -1,3 +1,4 @@
+use std::sync::atomic::{self, AtomicBool};
 use std::task::{Context, Poll};
 use std::{future::Future, pin::Pin};
 
@@ -29,7 +30,7 @@ pub(crate) fn channel<T, U>() -> (Sender<T, U>, Receiver<T, U>) {
     let (tx, rx) = mpsc::unbounded_channel();
     let (giver, taker) = want::new();
     let tx = Sender {
-        buffered_once: false,
+        buffered_once: AtomicBool::new(false),
         giver,
         inner: tx,
     };
@@ -45,7 +46,7 @@ pub(crate) struct Sender<T, U> {
     /// One message is always allowed, even if the Receiver hasn't asked
     /// for it yet. This boolean keeps track of whether we've sent one
     /// without notice.
-    buffered_once: bool,
+    buffered_once: AtomicBool,
     /// The Giver helps watch that the Receiver side has been polled
     /// when the queue is empty. This helps us know when a request and
     /// response have been fully processed, and a connection is ready
@@ -80,17 +81,12 @@ impl<T, U> Sender<T, U> {
         self.giver.is_canceled()
     }
 
-    fn can_send(&mut self) -> bool {
-        if self.giver.give() || !self.buffered_once {
-            // If the receiver is ready *now*, then of course we can send.
-            //
-            // If the receiver isn't ready yet, but we don't have anything
-            // in the channel yet, then allow one message.
-            self.buffered_once = true;
-            true
-        } else {
-            false
-        }
+    fn can_send(&self) -> bool {
+        // If the receiver is ready *now*, then of course we can send.
+        //
+        // If the receiver isn't ready yet, but we don't have anything
+        // in the channel yet, then allow one message.
+        self.giver.give() || !self.buffered_once.swap(true, atomic::Ordering::AcqRel)
     }
 
     pub(crate) fn try_send(&mut self, val: T) -> Result<RetryPromise<T, U>, T> {
@@ -104,7 +100,7 @@ impl<T, U> Sender<T, U> {
             .map_err(|mut e| (e.0).0.take().expect("envelope not dropped").0)
     }
 
-    pub(crate) fn send(&mut self, val: T) -> Result<Promise<U>, T> {
+    pub(crate) fn send(&self, val: T) -> Result<Promise<U>, T> {
         if !self.can_send() {
             return Err(val);
         }

@@ -15,7 +15,7 @@ use tokio::sync::Mutex;
 // TODO: once we have hyper as `rama_core` we can
 // drop this mutex as there is no inherint reason for `sender` to be mutable...
 pub(super) enum SendRequest<Body> {
-    Http1(Mutex<rama_http_core::client::conn::http1::SendRequest<Body>>),
+    Http1(rama_http_core::client::conn::http1::SendRequest<Body>),
     Http2(Mutex<rama_http_core::client::conn::http2::SendRequest<Body>>),
 }
 
@@ -47,7 +47,7 @@ where
         let req = sanitize_client_req_header(&mut ctx, req)?;
 
         let resp = match &self.0 {
-            SendRequest::Http1(sender) => sender.lock().await.send_request(req).await,
+            SendRequest::Http1(sender) => sender.send_request(req).await,
             SendRequest::Http2(sender) => sender.lock().await.send_request(req).await,
         }?;
 

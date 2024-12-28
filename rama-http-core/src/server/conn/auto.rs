@@ -800,7 +800,7 @@ mod tests {
     #[tokio::test]
     async fn http1() {
         let addr = start_server(false, false).await;
-        let mut sender = connect_h1(addr).await;
+        let sender = connect_h1(addr).await;
 
         let response = sender
             .send_request(Request::new(Empty::<Bytes>::new()))
@@ -848,7 +848,7 @@ mod tests {
     #[tokio::test]
     async fn http2_only_fail_if_client_is_http1() {
         let addr = start_server(false, true).await;
-        let mut sender = connect_h1(addr).await;
+        let sender = connect_h1(addr).await;
 
         let _ = sender
             .send_request(Request::new(Empty::<Bytes>::new()))
@@ -860,7 +860,7 @@ mod tests {
     #[tokio::test]
     async fn http1_only() {
         let addr = start_server(true, false).await;
-        let mut sender = connect_h1(addr).await;
+        let sender = connect_h1(addr).await;
 
         let response = sender
             .send_request(Request::new(Empty::<Bytes>::new()))
