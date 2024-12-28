@@ -449,7 +449,7 @@ async fn async_test(cfg: __TestConfig) {
             let stream = TcpStream::connect(addr).await.unwrap();
 
             let res = if http2_only {
-                let (mut sender, conn) =
+                let (sender, conn) =
                     rama::http::core::client::conn::http2::Builder::new(Executor::new())
                         .handshake(stream)
                         .await
@@ -550,7 +550,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                                 .unwrap();
 
                             let result = if http2_only {
-                                let (mut sender, conn) =
+                                let (sender, conn) =
                                     rama::http::core::client::conn::http2::Builder::new(
                                         Executor::new(),
                                     )

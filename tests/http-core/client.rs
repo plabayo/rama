@@ -2315,7 +2315,7 @@ mod conn {
         let (tx2, rx2) = oneshot::channel::<()>();
         let mut rxs = vec![rx, rx2];
         for _i in 0..requests {
-            let mut client = clients.pop().unwrap();
+            let client = clients.pop().unwrap();
             let rx = rxs.pop().unwrap();
             let req = Request::builder()
                 .method(Method::CONNECT)
@@ -2530,7 +2530,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2585,7 +2585,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2635,7 +2635,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
-        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
+        let (client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake::<_, Empty<Bytes>>(io)
             .await
             .expect("http handshake");

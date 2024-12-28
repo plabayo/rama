@@ -136,7 +136,7 @@ impl<T, U> UnboundedSender<T, U> {
             .map_err(|mut e| (e.0).0.take().expect("envelope not dropped").0)
     }
 
-    pub(crate) fn send(&mut self, val: T) -> Result<Promise<U>, T> {
+    pub(crate) fn send(&self, val: T) -> Result<Promise<U>, T> {
         let (tx, rx) = oneshot::channel();
         self.inner
             .send(Envelope(Some((val, Callback::NoRetry(Some(tx))))))

@@ -11,7 +11,6 @@ use rama_net::{
 
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
-use tokio::sync::Mutex;
 use tracing::trace;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -115,7 +114,7 @@ where
                     }
                 });
 
-                let svc = HttpClientService(SendRequest::Http2(Mutex::new(sender)));
+                let svc = HttpClientService(SendRequest::Http2(sender));
 
                 Ok(EstablishedClientConnection {
                     ctx,

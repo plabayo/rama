@@ -9,14 +9,11 @@ use rama_http_types::{
     Method, Request, Response, Version,
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
-use tokio::sync::Mutex;
 
 #[derive(Debug)]
-// TODO: once we have hyper as `rama_core` we can
-// drop this mutex as there is no inherint reason for `sender` to be mutable...
 pub(super) enum SendRequest<Body> {
     Http1(rama_http_core::client::conn::http1::SendRequest<Body>),
-    Http2(Mutex<rama_http_core::client::conn::http2::SendRequest<Body>>),
+    Http2(rama_http_core::client::conn::http2::SendRequest<Body>),
 }
 
 #[derive(Debug)]
@@ -48,7 +45,7 @@ where
 
         let resp = match &self.0 {
             SendRequest::Http1(sender) => sender.send_request(req).await,
-            SendRequest::Http2(sender) => sender.lock().await.send_request(req).await,
+            SendRequest::Http2(sender) => sender.send_request(req).await,
         }?;
 
         Ok(resp.map(rama_http_types::Body::new))
