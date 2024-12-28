@@ -336,7 +336,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install cargo-sort
         run: |
-          cargo install cargo-sort
+          cargo install cargo-sort 2>/dev/null || true
       - name: Check dependency tables
         working-directory: .
         run: |
@@ -359,7 +359,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
       - name: Install cargo-fuzz
         run: |
-          cargo install cargo-fuzz
+          cargo install cargo-fuzz 2>/dev/null || true
       - name: cargo fuzz check
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
@@ -374,7 +374,7 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
       - name: Install cargo-fuzz
         run: |
-          cargo install cargo-fuzz
+          cargo install cargo-fuzz 2>/dev/null || true
       - name: cargo fuzz check
         run: |
           cargo +nightly fuzz run h2_client -- -max_total_time=30
