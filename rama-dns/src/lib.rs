@@ -93,4 +93,4 @@ pub use deny_all::{DenyAllDns, DnsDeniedError};
 
 pub mod chain;
 
-pub mod variant;
+mod variant;

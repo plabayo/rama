@@ -64,14 +64,12 @@ impl InMemoryDns {
         self
     }
 
-    /// Convenience method to insert an IPv4 address for a domain.
-    pub fn insert_ipv4(&mut self, name: impl Into<Domain>, addr: Ipv4Addr) -> &mut Self {
-        self.insert(name.into(), vec![IpAddr::V4(addr)])
-    }
-
-    /// Convenience method to insert an IPv6 address for a domain.
-    pub fn insert_ipv6(&mut self, name: impl Into<Domain>, addr: Ipv6Addr) -> &mut Self {
-        self.insert(name.into(), vec![IpAddr::V6(addr)])
+    /// Insert an IP address for a domain.
+    ///
+    /// This method accepts any type that can be converted into an `IpAddr`,
+    /// such as `Ipv4Addr` or `Ipv6Addr`.
+    pub fn insert_addr<A: Into<IpAddr>>(&mut self, name: Domain, addr: A) -> &mut Self {
+        self.insert(name.into(), vec![addr.into()])
     }
 
     /// Extend the [`InMemoryDns`] with the given mappings.
