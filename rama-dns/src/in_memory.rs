@@ -41,7 +41,7 @@ impl Serialize for DnsOverwrite {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 /// in-memory Dns that can be used as a simplistic cache,
 /// or wrapped in [`DnsOverwrite`] to indicate dns overwrites.
 pub struct InMemoryDns {
@@ -49,6 +49,11 @@ pub struct InMemoryDns {
 }
 
 impl InMemoryDns {
+    /// Creates a new empty [`InMemoryDns`] instance.
+    pub fn new() -> Self {
+        Default::default()
+    }
+
     /// Inserts a domain to IP address mapping to the [`InMemoryDns`].
     ///
     /// Existing mappings will be overwritten.
@@ -57,6 +62,26 @@ impl InMemoryDns {
             .get_or_insert_with(HashMap::new)
             .insert(name, addresses);
         self
+    }
+
+    /// Insert an IP address for a domain.
+    ///
+    /// This method accepts any type that can be converted into an `IpAddr`,
+    /// such as `Ipv4Addr` or `Ipv6Addr`.
+    pub fn insert_address<A: Into<IpAddr>>(&mut self, name: Domain, addr: A) -> &mut Self {
+        self.insert(name, vec![addr.into()])
+    }
+
+    /// Insert multiple IP addresses for a domain.
+    ///
+    /// This method accepts any iterator which item type can be converted into an `IpAddr`,
+    /// such as `Ipv4Addr` or `Ipv6Addr`.
+    pub fn insert_addresses<I: IntoIterator<Item: Into<IpAddr>>>(
+        &mut self,
+        name: Domain,
+        addresses: I,
+    ) -> &mut Self {
+        self.insert(name, addresses.into_iter().map(Into::into).collect())
     }
 
     /// Extend the [`InMemoryDns`] with the given mappings.

@@ -1,4 +1,5 @@
 use super::HttpServeResult;
+use rama_core::error::BoxError;
 use rama_http_core::server::conn::auto::Builder as AutoBuilder;
 use rama_http_core::server::conn::http1::Builder as Http1Builder;
 use rama_http_core::server::conn::http2::Builder as Http2Builder;
@@ -16,9 +17,7 @@ impl HttpCoreConnServer for Http2Builder {}
 impl HttpCoreConnServer for AutoBuilder {}
 
 /// A utility function to map boxed, potentially http-core errors, to our own error type.
-fn map_boxed_http_core_result(
-    result: Result<(), Box<dyn std::error::Error + Send + Sync>>,
-) -> HttpServeResult {
+fn map_boxed_http_core_result(result: Result<(), BoxError>) -> HttpServeResult {
     match result {
         Ok(_) => Ok(()),
         Err(err) => match err.downcast::<rama_http_core::Error>() {
