@@ -22,7 +22,7 @@ use tokio::{
         Semaphore,
     },
 };
-use rama_net::mode::{ConnectIpMode, DnsResolveIpMode, IPModes};
+use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
 /// to actually establish the [`TcpStream`.]
@@ -155,7 +155,7 @@ async fn tcp_connect_inner<State, Dns, Connector>(
     ctx: &Context<State>,
     domain: Domain,
     port: u16,
-    dns: DnsResolveIpMode<Dns>,
+    dns: DnsResolveIpMode,
     connector: ConnectIpMode<Connector>,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
@@ -168,9 +168,7 @@ where
     let connected = Arc::new(AtomicBool::new(false));
     let sem = Arc::new(Semaphore::new(3));
 
-    match dns.mode {
-        DnsResolveIpMode::SingleIpV4 | DnsResolveIpMode::DualPreferIpV4 | DnsResovleIpMode::Dual =>{
-            //IPV4
+    if dns.ipv4_supported() {
             ctx.spawn(tcp_connect_inner_branch(
                 dns.clone(),
                 connector.clone(),
@@ -182,13 +180,9 @@ where
                 sem.clone(),
             ));
         }
-        _ => {}
+       
 
-    }
-
-    match dns.mode {
-        DnsResolveIpMode::SingleIpV6 | DnsResovleIpMode::Dual =>{
-            //IPV6
+    if dns.ipv6_supported() {
             ctx.spawn(tcp_connect_inner_branch(
                 dns.clone(),
                 connector.clone(),
@@ -200,9 +194,6 @@ where
                 sem.clone(),
             ));
         }
-        _ => {}
-
-    }
 
     // wait for the first connection to succeed,
     // ignore the rest of the connections (sorry, but not sorry)
@@ -224,7 +215,7 @@ enum IpKind {
 
 #[allow(clippy::too_many_arguments)]
 async fn tcp_connect_inner_branch<Dns, Connector>(
-    dns: Dns,
+    dns: DnsResolveIpMode,
     connector: Connector,
     ip_kind: IpKind,
     domain: Domain,
