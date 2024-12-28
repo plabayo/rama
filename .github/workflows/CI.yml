@@ -349,7 +349,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v1
 
-  cargo-fuzz:
+  cargo-fuzz-ua:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
     steps:
@@ -363,6 +363,35 @@ jobs:
       - name: cargo fuzz check
         run: |
           cargo +nightly fuzz run ua_parse -- -max_len=131072 -max_total_time=30
+
+  cargo-fuzz-h2:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_NIGHTLY}}
+      - name: Install cargo-fuzz
+        run: |
+          cargo install cargo-fuzz 2>/dev/null || true
+      - name: cargo fuzz check
+        run: |
+          cargo +nightly fuzz run h2_client -- -max_total_time=30
+          cargo +nightly fuzz run h2_e2e -- -max_total_time=30
+          cargo +nightly fuzz run h2_hpack -- -max_total_time=30
+
+  test-spec-h2:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN}}
+      - name: h2spec
+        run: |
+          bash rama-http-core/ci/h2spec.sh -F
 
   # action is not being updated atm
   # TODO: enable once it works again, for now not that useful anyway
@@ -393,7 +422,9 @@ jobs:
       - test-docs
       - cargo-hack
       - cargo-deny
-      - cargo-fuzz
+      - test-spec-h2
+      - cargo-fuzz-ua
+      - cargo-fuzz-h2
       - dependencies-are-sorted
       # - semver-checks
     if: github.ref == 'refs/heads/main'

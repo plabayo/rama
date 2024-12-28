@@ -95,7 +95,7 @@ impl Iterator for XForwardedProtoIterator {
 mod tests {
     use super::*;
 
-    use http::HeaderValue;
+    use rama_http_types::HeaderValue;
 
     macro_rules! test_header {
         ($name: ident, $input: expr, $expected: expr) => {

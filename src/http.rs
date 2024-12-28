@@ -11,6 +11,10 @@ pub use ::rama_http::{
     Method, Request, Scheme, StatusCode, Uri, Version,
 };
 
+#[cfg(feature = "http-full")]
+#[doc(inline)]
+pub use ::rama_http_core as core;
+
 pub mod layer {
     //! Http [`Layer`][crate::Layer]s provided by Rama.
     //!

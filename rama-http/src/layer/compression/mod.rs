@@ -96,6 +96,7 @@ mod tests {
 
     use crate::layer::compression::predicate::SizeAbove;
 
+    use crate::dep::http_body::Body as _;
     use crate::dep::http_body_util::BodyExt;
     use crate::header::{
         ACCEPT_ENCODING, ACCEPT_RANGES, CONTENT_ENCODING, CONTENT_RANGE, CONTENT_TYPE, RANGE,
@@ -490,5 +491,17 @@ mod tests {
         assert!(!headers.contains_key(ACCEPT_RANGES));
         assert_eq!(headers[CONTENT_ENCODING], "gzip");
         assert_eq!(decompressed, "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn size_hint_identity() {
+        const MSG: &str = "Hello, world!";
+        let svc = service_fn(|_| async { Ok::<_, std::io::Error>(Response::new(Body::from(MSG))) });
+        let svc = Compression::new(svc);
+
+        let req = Request::new(Body::empty());
+        let res = svc.serve(Context::default(), req).await.unwrap();
+        let body = res.into_body();
+        assert_eq!(body.size_hint().exact().unwrap(), MSG.len() as u64);
     }
 }
