@@ -9,7 +9,6 @@ edition = "2021"
 rama-http-core = { path = "../..", features = ["unstable"] }
 rama-http-types = { path = "../../../rama-http-types" }
 
-atty = { workspace = true }
 bytes = { workspace = true }
 futures = { workspace = true }
 http = { workspace = true }
