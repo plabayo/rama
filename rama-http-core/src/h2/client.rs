@@ -1594,6 +1594,7 @@ impl Peer {
                 uri,
                 headers,
                 version,
+                mut extensions,
                 ..
             },
             _,
@@ -1604,6 +1605,11 @@ impl Peer {
         // Build the set pseudo header set. All requests will include `method`
         // and `path`.
         let mut pseudo = Pseudo::request(method, uri, protocol);
+
+        // reuse order if defined
+        if let Some(order) = extensions.remove() {
+            pseudo.order = order;
+        }
 
         if pseudo.scheme.is_none() {
             // If the scheme is not set, then there are a two options.
@@ -1680,6 +1686,8 @@ impl proto::Peer for Peer {
                 return Err(Error::library_reset(stream_id, Reason::PROTOCOL_ERROR));
             }
         };
+
+        response.extensions_mut().insert(pseudo.order.clone());
 
         *response.headers_mut() = fields;
 

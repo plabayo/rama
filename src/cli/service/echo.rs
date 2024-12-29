@@ -31,7 +31,7 @@ use crate::{
     Context, Layer, Service,
 };
 use rama_core::{combinators::Either3, error::OpaqueError};
-use rama_http_core::ext::OriginalHeaderOrder;
+use rama_http_core::{ext::OriginalHeaderOrder, h2::PseudoHeaderOrder};
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
@@ -324,7 +324,6 @@ impl Service<(), Request> for EchoService {
 
         // TODO: get in correct order
         // TODO: get in correct case
-        // TODO: get also pseudo headers (or separate?!)
 
         // TODO: get cleaner API + also original casing
         let headers: Vec<_> = match req.extensions().get::<OriginalHeaderOrder>() {
@@ -354,6 +353,11 @@ impl Service<(), Request> for EchoService {
                 })
                 .collect(),
         };
+
+        let pseudo_headers: Option<Vec<_>> = req
+            .extensions()
+            .get::<PseudoHeaderOrder>()
+            .map(|o| o.iter().collect());
 
         let (parts, body) = req.into_parts();
 
@@ -416,6 +420,7 @@ impl Service<(), Request> for EchoService {
                 "path": parts.uri.path().to_owned(),
                 "query": parts.uri.query().map(str::to_owned),
                 "headers": headers,
+                "pseudo_headers": pseudo_headers,
                 "payload": body,
             },
             "tls": tls_client_hello,

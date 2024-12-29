@@ -118,6 +118,9 @@ mod frame;
 #[allow(missing_docs)]
 pub mod frame;
 
+#[doc(inline)]
+pub use frame::{InvalidPseudoHeaderStr, PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
+
 pub mod client;
 pub mod ext;
 pub mod server;

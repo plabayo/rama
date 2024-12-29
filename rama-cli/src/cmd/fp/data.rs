@@ -1,7 +1,12 @@
 use super::State;
 use rama::{
     error::{BoxError, ErrorContext},
-    http::{dep::http::request::Parts, headers::Forwarded, Request},
+    http::{
+        core::h2::{PseudoHeader, PseudoHeaderOrder},
+        dep::http::request::Parts,
+        headers::Forwarded,
+        Request,
+    },
     net::{http::RequestContext, stream::SocketInfo},
     tls::types::{
         client::{ClientHello, ClientHelloExtension},
@@ -182,12 +187,12 @@ pub(super) async fn get_request_info(
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct HttpInfo {
     pub(super) headers: Vec<(String, String)>,
+    pub(super) pseudo_headers: Option<Vec<PseudoHeader>>,
 }
 
 pub(super) fn get_http_info(req: &Request) -> HttpInfo {
     // TODO: get in correct order
     // TODO: get in correct case
-    // TODO: get also pseudo headers (or separate?!)
     let headers = req
         .headers()
         .iter()
@@ -199,7 +204,15 @@ pub(super) fn get_http_info(req: &Request) -> HttpInfo {
         })
         .collect();
 
-    HttpInfo { headers }
+    let pseudo_headers: Option<Vec<_>> = req
+        .extensions()
+        .get::<PseudoHeaderOrder>()
+        .map(|o| o.iter().collect());
+
+    HttpInfo {
+        headers,
+        pseudo_headers,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

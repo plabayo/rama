@@ -9,9 +9,12 @@ use rama_http_types::{
 };
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
+use serde::{de::Error as _, Deserialize, Serialize};
+use smallvec::SmallVec;
 
 use std::fmt;
 use std::io::Cursor;
+use std::str::FromStr;
 
 type EncodeBuf<'a> = bytes::buf::Limit<&'a mut BytesMut>;
 
@@ -63,7 +66,7 @@ pub struct Continuation {
 }
 
 // TODO: These fields shouldn't be `pub`
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
 pub struct Pseudo {
     // Request
     pub method: Option<Method>,
@@ -74,12 +77,181 @@ pub struct Pseudo {
 
     // Response
     pub status: Option<StatusCode>,
+
+    // Order
+    pub order: PseudoHeaderOrder,
+}
+
+impl PartialEq for Pseudo {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            &self.method,
+            &self.scheme,
+            &self.authority,
+            &self.path,
+            &self.protocol,
+            &self.status,
+        ) == (
+            &other.method,
+            &other.scheme,
+            &other.authority,
+            &other.path,
+            &other.protocol,
+            &other.status,
+        )
+    }
+}
+
+impl Eq for Pseudo {}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, PartialOrd, Ord, Hash)]
+#[repr(u8)]
+/// Defined in function of being able to communicate the used or desired
+/// order in which the pseudo headers are in the h2 request.
+///
+/// Used mainly in [`PseudoHeaderOrder`].
+pub enum PseudoHeader {
+    Method = 0b1000_0000,
+    Scheme = 0b0100_0000,
+    Authority = 0b0010_0000,
+    Path = 0b0001_0000,
+    Protocol = 0b0000_1000,
+    Status = 0b0000_0100,
+}
+
+impl PseudoHeader {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PseudoHeader::Method => ":method",
+            PseudoHeader::Scheme => ":scheme",
+            PseudoHeader::Authority => ":authority",
+            PseudoHeader::Path => ":path",
+            PseudoHeader::Protocol => ":protocol",
+            PseudoHeader::Status => ":status",
+        }
+    }
+}
+
+impl fmt::Display for PseudoHeader {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+rama_utils::macros::error::static_str_error! {
+    #[doc = "pseudo header string is invalid"]
+    pub struct InvalidPseudoHeaderStr;
+}
+
+impl FromStr for PseudoHeader {
+    type Err = InvalidPseudoHeaderStr;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.trim();
+        let s = s.strip_prefix(':').unwrap_or(s);
+
+        if s.eq_ignore_ascii_case("method") {
+            Ok(Self::Method)
+        } else if s.eq_ignore_ascii_case("scheme") {
+            Ok(Self::Scheme)
+        } else if s.eq_ignore_ascii_case("authority") {
+            Ok(Self::Authority)
+        } else if s.eq_ignore_ascii_case("path") {
+            Ok(Self::Path)
+        } else if s.eq_ignore_ascii_case("protocol") {
+            Ok(Self::Protocol)
+        } else if s.eq_ignore_ascii_case("status") {
+            Ok(Self::Status)
+        } else {
+            Err(InvalidPseudoHeaderStr)
+        }
+    }
+}
+
+impl Serialize for PseudoHeader {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.as_str().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PseudoHeader {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let s = <&'de str>::deserialize(deserializer)?;
+        s.parse().map_err(D::Error::custom)
+    }
+}
+
+const PSEUDO_HEADERS_STACK_SIZE: usize = 5;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PseudoHeaderOrder {
+    headers: SmallVec<[PseudoHeader; PSEUDO_HEADERS_STACK_SIZE]>,
+    mask: u8,
+}
+
+impl PseudoHeaderOrder {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&mut self, header: PseudoHeader) {
+        if self.mask & (header as u8) == 0 {
+            self.mask |= header as u8;
+            self.headers.push(header);
+        } else {
+            tracing::trace!("ignore duplicate psuedo header: {header:?}")
+        }
+    }
+
+    pub fn extend(&mut self, iter: impl IntoIterator<Item = PseudoHeader>) {
+        for header in iter {
+            self.push(header);
+        }
+    }
+
+    pub fn iter(&self) -> PseudoHeaderOrderIter {
+        self.clone().into_iter()
+    }
+}
+
+impl IntoIterator for PseudoHeaderOrder {
+    type Item = PseudoHeader;
+    type IntoIter = PseudoHeaderOrderIter;
+
+    fn into_iter(self) -> Self::IntoIter {
+        let PseudoHeaderOrder { mut headers, .. } = self;
+        headers.reverse();
+        PseudoHeaderOrderIter { headers }
+    }
+}
+
+#[derive(Debug)]
+/// Iterator over a copy of [`PseudoHeaderOrder`].
+pub struct PseudoHeaderOrderIter {
+    headers: SmallVec<[PseudoHeader; PSEUDO_HEADERS_STACK_SIZE]>,
+}
+
+impl Iterator for PseudoHeaderOrderIter {
+    type Item = PseudoHeader;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.headers.pop()
+    }
 }
 
 #[derive(Debug)]
 struct Iter {
     /// Pseudo headers
     pseudo: Option<Pseudo>,
+
+    /// Desired Pseudo header order
+    pseudo_order: PseudoHeaderOrderIter,
 
     /// Header fields
     fields: header::IntoIter<HeaderValue>,
@@ -585,6 +757,7 @@ impl Pseudo {
             path,
             protocol,
             status: None,
+            order: PseudoHeaderOrder::default(),
         };
 
         // If the URI includes a scheme component, add it to the pseudo headers
@@ -609,6 +782,7 @@ impl Pseudo {
             path: None,
             protocol: None,
             status: Some(status),
+            order: PseudoHeaderOrder::default(),
         }
     }
 
@@ -701,6 +875,41 @@ impl Iterator for Iter {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(ref mut pseudo) = self.pseudo {
+            if let Some(order) = self.pseudo_order.next() {
+                match order {
+                    PseudoHeader::Method => {
+                        if let Some(method) = pseudo.method.take() {
+                            return Some(hpack::Header::Method(method));
+                        }
+                    }
+                    PseudoHeader::Scheme => {
+                        if let Some(scheme) = pseudo.scheme.take() {
+                            return Some(hpack::Header::Scheme(scheme));
+                        }
+                    }
+                    PseudoHeader::Authority => {
+                        if let Some(authority) = pseudo.authority.take() {
+                            return Some(hpack::Header::Authority(authority));
+                        }
+                    }
+                    PseudoHeader::Path => {
+                        if let Some(path) = pseudo.path.take() {
+                            return Some(hpack::Header::Path(path));
+                        }
+                    }
+                    PseudoHeader::Protocol => {
+                        if let Some(protocol) = pseudo.protocol.take() {
+                            return Some(hpack::Header::Protocol(protocol));
+                        }
+                    }
+                    PseudoHeader::Status => {
+                        if let Some(status) = pseudo.status.take() {
+                            return Some(hpack::Header::Status(status));
+                        }
+                    }
+                }
+            }
+
             if let Some(method) = pseudo.method.take() {
                 return Some(hpack::Header::Method(method));
             }
@@ -915,12 +1124,30 @@ impl HeaderBlock {
                         }
                     }
                 }
-                hpack::Header::Authority(v) => set_pseudo!(authority, v),
-                hpack::Header::Method(v) => set_pseudo!(method, v),
-                hpack::Header::Scheme(v) => set_pseudo!(scheme, v),
-                hpack::Header::Path(v) => set_pseudo!(path, v),
-                hpack::Header::Protocol(v) => set_pseudo!(protocol, v),
-                hpack::Header::Status(v) => set_pseudo!(status, v),
+                hpack::Header::Authority(v) => {
+                    self.pseudo.order.push(PseudoHeader::Authority);
+                    set_pseudo!(authority, v)
+                }
+                hpack::Header::Method(v) => {
+                    self.pseudo.order.push(PseudoHeader::Method);
+                    set_pseudo!(method, v)
+                }
+                hpack::Header::Scheme(v) => {
+                    self.pseudo.order.push(PseudoHeader::Scheme);
+                    set_pseudo!(scheme, v)
+                }
+                hpack::Header::Path(v) => {
+                    self.pseudo.order.push(PseudoHeader::Path);
+                    set_pseudo!(path, v)
+                }
+                hpack::Header::Protocol(v) => {
+                    self.pseudo.order.push(PseudoHeader::Protocol);
+                    set_pseudo!(protocol, v)
+                }
+                hpack::Header::Status(v) => {
+                    self.pseudo.order.push(PseudoHeader::Status);
+                    set_pseudo!(status, v)
+                }
             }
         });
 
@@ -940,6 +1167,7 @@ impl HeaderBlock {
     fn into_encoding(self, encoder: &mut hpack::Encoder) -> EncodingHeaderBlock {
         let mut hpack = BytesMut::new();
         let headers = Iter {
+            pseudo_order: self.pseudo.order.iter(),
             pseudo: Some(self.pseudo),
             fields: self.fields.into_iter(),
         };

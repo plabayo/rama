@@ -1424,14 +1424,22 @@ impl Peer {
         // Extract the components of the HTTP request
         let (
             Parts {
-                status, headers, ..
+                status,
+                headers,
+                mut extensions,
+                ..
             },
             _,
         ) = response.into_parts();
 
         // Build the set pseudo header set. All requests will include `method`
         // and `path`.
-        let pseudo = Pseudo::response(status);
+        let mut pseudo = Pseudo::response(status);
+
+        // reuse order if defined
+        if let Some(order) = extensions.remove() {
+            pseudo.order = order;
+        }
 
         // Create the HEADERS frame
         let mut frame = frame::Headers::new(id, pseudo, headers);
@@ -1472,12 +1480,18 @@ impl Peer {
                 method,
                 uri,
                 headers,
+                mut extensions,
                 ..
             },
             _,
         ) = request.into_parts();
 
-        let pseudo = Pseudo::request(method, uri, None);
+        let mut pseudo = Pseudo::request(method, uri, None);
+
+        // reuse order if defined
+        if let Some(order) = extensions.remove() {
+            pseudo.order = order;
+        }
 
         Ok(frame::PushPromise::new(
             stream_id,
@@ -1612,6 +1626,8 @@ impl proto::Peer for Peer {
                 return Err(Error::library_reset(stream_id, Reason::PROTOCOL_ERROR));
             }
         };
+
+        request.extensions_mut().insert(pseudo.order.clone());
 
         *request.headers_mut() = fields;
 

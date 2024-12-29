@@ -107,6 +107,20 @@ pub(super) async fn get_report(
         },
     ];
 
+    if let Some(pseudo) = http_info.pseudo_headers {
+        tables.push(Table {
+            title: "🚗 H2 Pseudo Headers".to_owned(),
+            rows: vec![(
+                "order".to_owned(),
+                pseudo
+                    .into_iter()
+                    .map(|h| h.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            )],
+        });
+    }
+
     let tls_info = get_tls_display_info(&ctx);
     if let Some(tls_info) = tls_info {
         let mut tls_tables = tls_info.into();

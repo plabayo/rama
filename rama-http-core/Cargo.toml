@@ -37,6 +37,8 @@ itoa = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.4", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.4", path = "../rama-http-types" }
+rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
+serde = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }
@@ -55,7 +57,6 @@ rand = { workspace = true }
 # HPACK fixtures
 hex = { workspace = true }
 rama-error = { path = "../rama-error" }
-serde = { workspace = true }
 serde_json = { workspace = true }
 walkdir = { workspace = true }
 

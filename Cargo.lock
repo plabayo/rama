@@ -2289,6 +2289,7 @@ dependencies = [
  "rama-core",
  "rama-error",
  "rama-http-types",
+ "rama-utils",
  "rand",
  "serde",
  "serde_json",
