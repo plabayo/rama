@@ -15,7 +15,7 @@
 [crates-badge]: https://img.shields.io/crates/v/rama-http-core-core.svg
 [crates-url]: https://crates.io/crates/rama-http-core
 [docs-badge]: https://img.shields.io/docsrs/rama-http-core/latest
-[docs-url]: https://docs.rs/rama-http-core/latest/rama_http/index.html
+[docs-url]: https://docs.rs/rama-http-core/latest/rama_http_core/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
