@@ -29,3 +29,7 @@ mod parse_utils;
 
 #[doc(inline)]
 pub use proxy::ProxyAddress;
+
+mod domain_address;
+#[doc(inline)]
+pub use domain_address::DomainAddress;
