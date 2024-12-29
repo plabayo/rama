@@ -2332,6 +2332,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-icap"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "http",
+ "rama-core",
+ "rama-error",
+ "rama-net",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
 name = "rama-macros"
 version = "0.2.0-alpha.4"
 
