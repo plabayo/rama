@@ -1,4 +1,4 @@
-use super::{parse_utils, Domain, Host};
+use super::{parse_utils, Domain, DomainAddress, Host};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{
@@ -112,6 +112,13 @@ impl From<&SocketAddr> for Authority {
             host: Host::Address(addr.ip()),
             port: addr.port(),
         }
+    }
+}
+
+impl From<DomainAddress> for Authority {
+    fn from(addr: DomainAddress) -> Self {
+        let (domain, port) = addr.into_parts();
+        Self::from((domain, port))
     }
 }
 
