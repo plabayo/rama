@@ -19,7 +19,7 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }
-rama = { version = "0.2.0-alpha.4", path = "..", features = ["full"] }
+rama = { version = "0.2.0-alpha.5", path = "..", features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 terminal-prompt = { workspace = true }

@@ -1,6 +1,6 @@
 # 📦 Rama Crate
 
-Rama is a modular service framework distributed as a Rust crate at <https://crates.io/crates/rama/0.2.0-alpha.3>. You can add it to your project as follows:
+Rama is a modular service framework distributed as a Rust crate at <https://crates.io/crates/rama/0.2.0-alpha.4>. You can add it to your project as follows:
 
 ```
 cargo add rama
@@ -8,7 +8,7 @@ cargo add rama
 
 ## Quick Links
 
-* Crates Page: <https://crates.io/crates/rama/0.2.0-alpha.3>
+* Crates Page: <https://crates.io/crates/rama/0.2.0-alpha.4>
 * Official Docs Page (for releases): <https://docs.rs/rama>
     * Edge (main branch): <https://ramaproxy.org/docs/rama/index.html>
 * Github repo: <https://github.com/plabayo/rama>

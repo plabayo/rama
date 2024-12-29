@@ -35,9 +35,9 @@ itertools = { workspace = true, optional = true }
 nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.4", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.4", path = "../rama-http-types", optional = true }
-rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.5", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.5", path = "../rama-http-types", optional = true }
+rama-utils = { version = "0.2.0-alpha.5", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net"] }

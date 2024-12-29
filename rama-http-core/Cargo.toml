@@ -35,9 +35,9 @@ httpdate = { workspace = true }
 indexmap = { workspace = true, features = ["std"] }
 itoa = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.4", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.4", path = "../rama-http-types" }
-rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.5", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.5", path = "../rama-http-types" }
+rama-utils = { version = "0.2.0-alpha.5", path = "../rama-utils" }
 serde = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
