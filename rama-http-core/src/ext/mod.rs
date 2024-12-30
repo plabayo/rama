@@ -9,6 +9,9 @@ use std::fmt;
 mod h1_reason_phrase;
 pub use h1_reason_phrase::ReasonPhrase;
 
+mod h1_header;
+pub use h1_header::H1HeaderDrainer;
+
 /// Represents the `:protocol` pseudo-header used by
 /// the [Extended CONNECT Protocol].
 ///
@@ -109,6 +112,11 @@ impl HeaderCaseMap {
         self.0.insert(name, orig);
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn remove(&mut self, name: &HeaderName) -> Option<Bytes> {
+        self.0.remove(name)
+    }
+
     pub(crate) fn append<N>(&mut self, name: N, orig: Bytes)
     where
         N: IntoHeaderName,
@@ -116,6 +124,11 @@ impl HeaderCaseMap {
         self.0.append(name, orig);
     }
 }
+
+#[derive(Clone, Debug, Default)]
+#[allow(dead_code)]
+/// Hashmap<Headername, numheaders with that name>
+pub struct OriginalHeaderOrderNew(Vec<HeaderName>);
 
 #[derive(Clone, Debug, Default)]
 /// Hashmap<Headername, numheaders with that name>
@@ -197,7 +210,18 @@ impl OriginalHeaderOrder {
     /// let (name, idx) = iter.next().unwrap();
     /// assert_eq!("c=d", h_map.get_all(name).iter().nth(*idx).expect("get SET-COOKIE header value"));
     /// ```
-    pub fn get_in_order(&self) -> impl Iterator<Item = &(HeaderName, usize)> {
-        self.entry_order.iter()
+    pub fn get_in_order(&self) -> OriginalHeaderOrderIter {
+        OriginalHeaderOrderIter(self.entry_order.iter())
+    }
+}
+
+pub struct OriginalHeaderOrderIter<'a>(std::slice::Iter<'a, (HeaderName, usize)>);
+
+impl<'a> Iterator for OriginalHeaderOrderIter<'a> {
+    type Item = &'a (HeaderName, usize);
+
+    #[inline]
+    fn next(&mut self) -> Option<Self::Item> {
+        self.0.next()
     }
 }

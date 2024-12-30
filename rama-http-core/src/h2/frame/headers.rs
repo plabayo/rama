@@ -251,6 +251,17 @@ impl Iterator for PseudoHeaderOrderIter {
     fn next(&mut self) -> Option<Self::Item> {
         self.headers.pop()
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (0, Some(self.headers.len()))
+    }
+
+    fn count(self) -> usize
+    where
+        Self: Sized,
+    {
+        self.headers.len()
+    }
 }
 
 #[derive(Debug)]
