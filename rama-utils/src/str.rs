@@ -163,8 +163,8 @@ impl<'de> serde::Deserialize<'de> for NonEmptyString {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        s.try_into().map_err(serde::de::Error::custom)
+        let s = <&'de str>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
