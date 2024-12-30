@@ -138,7 +138,7 @@ use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::ext::Protocol;
 use crate::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Error};
-use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
+use crate::h2::{FlowControl, PingPong, PseudoHeaderOrder, RecvStream, SendStream};
 
 use bytes::{Buf, Bytes};
 use rama_http_types::dep::http::{request, uri};
@@ -1607,8 +1607,10 @@ impl Peer {
         let mut pseudo = Pseudo::request(method, uri, protocol);
 
         // reuse order if defined
-        if let Some(order) = extensions.remove() {
-            pseudo.order = order;
+        if let Some(order) = extensions.remove::<PseudoHeaderOrder>() {
+            if !order.is_empty() {
+                pseudo.order = order;
+            }
         }
 
         if pseudo.scheme.is_none() {
@@ -1687,7 +1689,9 @@ impl proto::Peer for Peer {
             }
         };
 
-        response.extensions_mut().insert(pseudo.order.clone());
+        if !pseudo.order.is_empty() {
+            response.extensions_mut().insert(pseudo.order.clone());
+        }
 
         *response.headers_mut() = fields;
 

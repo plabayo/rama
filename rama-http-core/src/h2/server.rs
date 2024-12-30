@@ -118,7 +118,7 @@
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::frame::{self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Config, Error, Prioritized};
-use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
+use crate::h2::{FlowControl, PingPong, PseudoHeaderOrder, RecvStream, SendStream};
 
 use bytes::{Buf, Bytes};
 use rama_http_types::{HeaderMap, Method, Request, Response};
@@ -1437,8 +1437,10 @@ impl Peer {
         let mut pseudo = Pseudo::response(status);
 
         // reuse order if defined
-        if let Some(order) = extensions.remove() {
-            pseudo.order = order;
+        if let Some(order) = extensions.remove::<PseudoHeaderOrder>() {
+            if !order.is_empty() {
+                pseudo.order = order;
+            }
         }
 
         // Create the HEADERS frame
@@ -1489,8 +1491,10 @@ impl Peer {
         let mut pseudo = Pseudo::request(method, uri, None);
 
         // reuse order if defined
-        if let Some(order) = extensions.remove() {
-            pseudo.order = order;
+        if let Some(order) = extensions.remove::<PseudoHeaderOrder>() {
+            if !order.is_empty() {
+                pseudo.order = order;
+            }
         }
 
         Ok(frame::PushPromise::new(
@@ -1627,7 +1631,9 @@ impl proto::Peer for Peer {
             }
         };
 
-        request.extensions_mut().insert(pseudo.order.clone());
+        if !pseudo.order.is_empty() {
+            request.extensions_mut().insert(pseudo.order.clone());
+        }
 
         *request.headers_mut() = fields;
 

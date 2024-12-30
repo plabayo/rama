@@ -218,6 +218,14 @@ impl PseudoHeaderOrder {
     pub fn iter(&self) -> PseudoHeaderOrderIter {
         self.clone().into_iter()
     }
+
+    pub fn is_empty(&self) -> bool {
+        self.headers.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.headers.len()
+    }
 }
 
 impl IntoIterator for PseudoHeaderOrder {
