@@ -6,6 +6,8 @@ use rama_http_types::header::{HeaderMap, IntoHeaderName, ValueIter};
 use std::collections::HashMap;
 use std::fmt;
 
+pub use super::proto::{Http1HeaderMap, Http1HeaderName};
+
 mod h1_reason_phrase;
 pub use h1_reason_phrase::ReasonPhrase;
 

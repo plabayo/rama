@@ -5,6 +5,7 @@ use rama_http_types::HeaderMap;
 use rama_http_types::Version;
 
 pub(crate) mod h1;
+pub use h1::{Http1HeaderMap, Http1HeaderName};
 
 pub(crate) use self::h1::dispatch;
 pub(crate) use self::h1::Conn;
