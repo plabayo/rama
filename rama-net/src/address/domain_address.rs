@@ -1,7 +1,7 @@
+use crate::address::{parse_utils, Domain};
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::fmt;
 use std::str::FromStr;
-use rama_core::error::{ErrorContext, OpaqueError};
-use crate::address::{parse_utils, Domain};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DomainAddress {
@@ -10,7 +10,6 @@ pub struct DomainAddress {
 }
 
 impl DomainAddress {
-
     pub const fn new(domain: Domain, port: u16) -> Self {
         Self { domain, port }
     }
@@ -20,7 +19,7 @@ impl DomainAddress {
     }
 
     pub fn into_domain(self) -> Domain {
-       self.domain
+        self.domain
     }
 
     pub fn port(&self) -> u16 {
@@ -48,7 +47,7 @@ impl fmt::Display for DomainAddress {
 impl FromStr for DomainAddress {
     type Err = OpaqueError;
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-       DomainAddress::try_from(s)
+        Self::try_from(s)
     }
 }
 
@@ -56,9 +55,9 @@ impl TryFrom<&str> for DomainAddress {
     type Error = OpaqueError;
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
-       let (domain, port) = parse_utils::split_port_from_str(s)?;
-       let domain = Domain::from_str(domain)?;
-       Ok(Self::new(domain, port))
+        let (domain, port) = parse_utils::split_port_from_str(s)?;
+        let domain = Domain::from_str(domain)?;
+        Ok(Self::new(domain, port))
     }
 }
 
@@ -104,20 +103,96 @@ impl<'de> serde::Deserialize<'de> for DomainAddress {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        s.try_into().map_err(serde::de::Error::custom)
+        let s = <&'de str>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
-
-
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn assert_eq(s: &str, domain_address: DomainAddress, domain: &str, port: u16) {
+        assert_eq!(domain_address.domain().as_str(), domain, "parsing: {}", s);
+        assert_eq!(domain_address.port(), port, "parsing: {}", s);
+    }
+
     #[test]
-    fn test_domain_address() {
-        todo!()
+    fn test_valid_domain_address() {
+        for (s, (expected_domain, expected_port)) in [
+            ("example.com:80", ("example.com", 80)),
+            ("subdomain.example.com:443", ("subdomain.example.com", 443)),
+        ] {
+            let msg = format!("parsing '{}'", s);
+
+            assert_eq(s, s.parse().expect(&msg), expected_domain, expected_port);
+            assert_eq(s, s.try_into().expect(&msg), expected_domain, expected_port);
+            assert_eq(
+                s,
+                s.to_owned().try_into().expect(&msg),
+                expected_domain,
+                expected_port,
+            );
+            assert_eq(
+                s,
+                s.as_bytes().try_into().expect(&msg),
+                expected_domain,
+                expected_port,
+            );
+            assert_eq(
+                s,
+                s.as_bytes().to_vec().try_into().expect(&msg),
+                expected_domain,
+                expected_port,
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_invalid() {
+        for s in [
+            "",
+            "-",
+            ".",
+            ":",
+            ":80",
+            "-.",
+            ".-",
+            "::1",
+            "127.0.0.1",
+            "[::1]",
+            "2001:db8:3333:4444:5555:6666:7777:8888",
+            "[2001:db8:3333:4444:5555:6666:7777:8888]",
+            "example.com",
+            "example.com:",
+            "example.com:-1",
+            "example.com:999999",
+            "example:com",
+            "[127.0.0.1]:80",
+            "2001:db8:3333:4444:5555:6666:7777:8888:80",
+        ] {
+            let msg = format!("parsing '{}'", s);
+            assert!(s.parse::<DomainAddress>().is_err(), "{}", msg);
+            assert!(DomainAddress::try_from(s).is_err(), "{}", msg);
+            assert!(DomainAddress::try_from(s.to_owned()).is_err(), "{}", msg);
+            assert!(DomainAddress::try_from(s.as_bytes()).is_err(), "{}", msg);
+            assert!(
+                DomainAddress::try_from(s.as_bytes().to_vec()).is_err(),
+                "{}",
+                msg
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_display() {
+        for (s, expected) in [
+            ("example.com:80", "example.com:80"),
+            ("subdomain.example.com:443", "subdomain.example.com:443"),
+        ] {
+            let msg = format!("parsing '{}'", s);
+            let domain_address: DomainAddress = s.parse().expect(&msg);
+            assert_eq!(domain_address.to_string(), expected, "{}", msg);
+        }
     }
 }
-
