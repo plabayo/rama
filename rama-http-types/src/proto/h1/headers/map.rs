@@ -47,7 +47,7 @@ impl Http1HeaderMap {
 
     pub fn append(&mut self, name: impl IntoHttp1HeaderName, value: HeaderValue) {
         let original_header = name.into_http1_header_name();
-        let header_name = original_header.headername();
+        let header_name = original_header.header_name();
         self.headers.append(header_name, value);
         self.original_headers.push(original_header);
     }
@@ -58,7 +58,7 @@ impl Http1HeaderMap {
         value: HeaderValue,
     ) -> Result<(), InvalidHeaderName> {
         let original_header = name.try_into_http1_header_name()?;
-        let header_name = original_header.headername();
+        let header_name = original_header.header_name();
         self.headers.append(header_name, value);
         self.original_headers.push(original_header);
         Ok(())
@@ -138,7 +138,7 @@ impl Iterator for Http1HeaderMapIntoIter {
             } => loop {
                 match original_iter.next() {
                     Some(http1_header_name) => {
-                        if let Some(value) = headers.remove(http1_header_name.headername()) {
+                        if let Some(value) = headers.remove(http1_header_name.header_name()) {
                             let next = Some((http1_header_name, value));
                             self.state = Http1HeaderMapIntoIterState::Original {
                                 original_iter,

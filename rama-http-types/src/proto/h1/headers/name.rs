@@ -86,7 +86,7 @@ impl Http1HeaderName {
             .unwrap_or_else(|| self.name.as_str())
     }
 
-    pub fn headername(&self) -> &HeaderName {
+    pub fn header_name(&self) -> &HeaderName {
         &self.name
     }
 }

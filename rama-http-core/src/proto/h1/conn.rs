@@ -19,6 +19,7 @@ use super::io::Buffered;
 use super::{Decoder, Encode, EncodedBuf, Encoder, Http1Transaction, ParseContext, Wants};
 use crate::body::DecodedLength;
 use crate::headers;
+use crate::proto::h1::EncodeHead;
 use crate::proto::{BodyLength, MessageHead};
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -564,7 +565,12 @@ where
         let buf = self.io.headers_buf();
         match super::role::encode_headers::<T>(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body,
                 keep_alive: self.state.wants_keep_alive(),
                 req_method: &mut self.state.method,
@@ -573,10 +579,7 @@ where
             },
             buf,
         ) {
-            Ok(encoder) => {
-                debug_assert!(head.headers.is_empty());
-                Some(encoder)
-            }
+            Ok(encoder) => Some(encoder),
             Err(err) => {
                 self.state.error = Some(err);
                 self.state.writing = Writing::Closed;
