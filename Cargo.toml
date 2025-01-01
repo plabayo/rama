@@ -61,7 +61,7 @@ tokio-boring = "4.9.1"
 ipnet = "2.9.0"
 libfuzzer-sys = "0.4"
 honggfuzz = "0.5.56"
-itertools = "0.13.0"
+itertools = "0.14.0"
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 paste = "1.0"
