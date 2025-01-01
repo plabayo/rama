@@ -1,13 +1,22 @@
-use super::Http1HeaderName;
+//! Original order and case tracking for h1 tracking...
+//!
+//! If somebody reads this that designs protocols please
+//! ensure that your protocol in no way can have deterministic
+//! ordering or makes use of capitals... *sigh* what a painful design mistake
+
+use super::{Http1HeaderName, IntoHttp1HeaderName};
 
 #[derive(Debug, Clone)]
-pub(crate) struct OriginalHttp1Headers {
+// Keeps track of the order and casing
+// of the inserted header names, usually used in combination
+// with [`crate::proto::h1::Http1HeaderMap`].
+pub struct OriginalHttp1Headers {
     /// ordered by insert order
     ordered_headers: Vec<Http1HeaderName>,
 }
 
 impl OriginalHttp1Headers {
-    pub(super) fn push(&mut self, name: Http1HeaderName) {
+    pub fn push(&mut self, name: Http1HeaderName) {
         self.ordered_headers.push(name);
     }
 }
@@ -39,8 +48,19 @@ impl IntoIterator for OriginalHttp1Headers {
     }
 }
 
+impl<N: IntoHttp1HeaderName> FromIterator<N> for OriginalHttp1Headers {
+    fn from_iter<T: IntoIterator<Item = N>>(iter: T) -> Self {
+        OriginalHttp1Headers {
+            ordered_headers: iter
+                .into_iter()
+                .map(|it| it.into_http1_header_name())
+                .collect(),
+        }
+    }
+}
+
 #[derive(Debug)]
-pub(crate) struct IntoIter {
+pub struct IntoIter {
     headers_iter: std::vec::IntoIter<Http1HeaderName>,
 }
 

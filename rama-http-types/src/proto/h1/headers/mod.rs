@@ -1,4 +1,3 @@
-#![allow(unused)]
 //! types and functionality to preserve
 //! http1* header casing and order.
 //!
@@ -9,9 +8,8 @@
 
 mod name;
 pub use name::{Http1HeaderName, IntoHttp1HeaderName, TryIntoHttp1HeaderName};
-pub(crate) use name::{IntoSealed, TryIntoSealed};
 
-pub(crate) mod original;
+pub mod original;
 
 mod map;
 pub use map::Http1HeaderMap;

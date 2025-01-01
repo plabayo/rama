@@ -7,8 +7,8 @@
 
 use crate::{
     cli::ForwardKind,
-    combinators::Either7,
-    error::BoxError,
+    combinators::{Either3, Either7},
+    error::{BoxError, OpaqueError},
     http::{
         dep::http_body_util::BodyExt,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
@@ -18,6 +18,8 @@ use crate::{
             trace::TraceLayer,
             ua::{UserAgent, UserAgentClassifierLayer},
         },
+        proto::h1::Http1HeaderMap,
+        proto::h2::PseudoHeaderOrder,
         response::Json,
         server::HttpServer,
         IntoResponse, Request, Response, Version,
@@ -30,8 +32,6 @@ use crate::{
     rt::Executor,
     Context, Layer, Service,
 };
-use rama_core::{combinators::Either3, error::OpaqueError};
-use rama_http_core::{ext::Http1HeaderMap, h2::PseudoHeaderOrder};
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;

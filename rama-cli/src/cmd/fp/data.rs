@@ -2,9 +2,9 @@ use super::State;
 use rama::{
     error::{BoxError, ErrorContext},
     http::{
-        core::h2::{PseudoHeader, PseudoHeaderOrder},
         dep::http::request::Parts,
         headers::Forwarded,
+        proto::h2::{PseudoHeader, PseudoHeaderOrder},
         Request,
     },
     net::{http::RequestContext, stream::SocketInfo},

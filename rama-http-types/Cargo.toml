@@ -33,6 +33,7 @@ serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 sync_wrapper = { workspace = true }
 tracing = { workspace = true }
+smallvec = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["full"] }

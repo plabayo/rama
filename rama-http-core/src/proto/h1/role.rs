@@ -8,11 +8,11 @@ use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
 use rama_http_types::header::ValueIter;
 use rama_http_types::header::{self, HeaderMap, HeaderName, HeaderValue};
+use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
 use smallvec::{smallvec, smallvec_inline, SmallVec};
 use tracing::{debug, error, trace, trace_span, warn};
 
-use super::headers::{Http1HeaderMap, Http1HeaderName};
 use crate::body::DecodedLength;
 use crate::common::date;
 use crate::error::Parse;
@@ -213,7 +213,7 @@ impl Http1Transaction for Server {
                 .map_err(|_| crate::error::Parse::Internal)?;
             let value = header_value!(slice.slice(header.value.0..header.value.1));
 
-            match *name.as_headername() {
+            match *name.headername() {
                 header::TRANSFER_ENCODING => {
                     // https://tools.ietf.org/html/rfc7230#section-3.3.3
                     // If Transfer-Encoding header is present, and 'chunked' is
@@ -276,11 +276,8 @@ impl Http1Transaction for Server {
             }
 
             // TODO: delete these 2
-            header_case_map.append(
-                name.as_headername(),
-                slice.slice(header.name.0..header.name.1),
-            );
-            header_order.append(name.as_headername());
+            header_case_map.append(name.headername(), slice.slice(header.name.0..header.name.1));
+            header_order.append(name.headername());
 
             headers.append(name, value);
         }
@@ -1038,7 +1035,7 @@ impl Http1Transaction for Client {
                         .map_err(|_| crate::error::Parse::Internal)?;
                 let value = header_value!(slice.slice(header.value.0..header.value.1));
 
-                if header::CONNECTION == name.as_headername() {
+                if header::CONNECTION == name.headername() {
                     // keep_alive was previously set to default for Version
                     if keep_alive {
                         // HTTP/1.1
@@ -1050,11 +1047,9 @@ impl Http1Transaction for Client {
                 }
 
                 // TODO: delete once no longer needed
-                header_case_map.append(
-                    name.as_headername(),
-                    slice.slice(header.name.0..header.name.1),
-                );
-                header_order.append(name.as_headername());
+                header_case_map
+                    .append(name.headername(), slice.slice(header.name.0..header.name.1));
+                header_order.append(name.headername());
 
                 headers.append(name, value);
             }

@@ -36,6 +36,9 @@ where
         )
         .await?;
 
+        // TODO
+        // for (name, value) in Http1HeaderMap
+
         for (key, value) in parts.headers.iter() {
             w.write_all(format!("{}: {}\r\n", key, value.to_str()?).as_bytes())
                 .await?;

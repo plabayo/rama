@@ -138,10 +138,11 @@ use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::ext::Protocol;
 use crate::h2::frame::{Headers, Pseudo, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Error};
-use crate::h2::{FlowControl, PingPong, PseudoHeaderOrder, RecvStream, SendStream};
+use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use bytes::{Buf, Bytes};
 use rama_http_types::dep::http::{request, uri};
+use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use std::fmt;
 use std::future::Future;

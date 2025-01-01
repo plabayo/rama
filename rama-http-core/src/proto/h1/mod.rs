@@ -19,9 +19,6 @@ mod encode;
 mod io;
 mod role;
 
-mod headers;
-pub use headers::{Http1HeaderMap, Http1HeaderName};
-
 pub(crate) type ClientTransaction = role::Client;
 pub(crate) type ServerTransaction = role::Server;
 

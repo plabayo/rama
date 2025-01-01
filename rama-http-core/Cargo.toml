@@ -38,7 +38,6 @@ pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.5", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.5", path = "../rama-http-types" }
 rama-utils = { version = "0.2.0-alpha.5", path = "../rama-utils" }
-serde = { workspace = true }
 slab = { workspace = true }
 smallvec = { workspace = true }
 tokio = { workspace = true, features = ["io-util"] }

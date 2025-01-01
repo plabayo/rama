@@ -5,8 +5,8 @@ use super::{
     original::{self, OriginalHttp1Headers},
     Http1HeaderName,
 };
-use rama_core::telemetry::opentelemetry::trace::FutureExt;
-use rama_http_types::{
+
+use crate::{
     dep::http::Extensions,
     header::{self, InvalidHeaderName},
     HeaderMap, HeaderName, HeaderValue,
@@ -47,7 +47,7 @@ impl Http1HeaderMap {
 
     pub fn append(&mut self, name: impl IntoHttp1HeaderName, value: HeaderValue) {
         let original_header = name.into_http1_header_name();
-        let header_name = original_header.clone_as_headername();
+        let header_name = original_header.headername();
         self.headers.append(header_name, value);
         self.original_headers.push(original_header);
     }
@@ -58,7 +58,7 @@ impl Http1HeaderMap {
         value: HeaderValue,
     ) -> Result<(), InvalidHeaderName> {
         let original_header = name.try_into_http1_header_name()?;
-        let header_name = original_header.clone_as_headername();
+        let header_name = original_header.headername();
         self.headers.append(header_name, value);
         self.original_headers.push(original_header);
         Ok(())
@@ -115,7 +115,7 @@ impl Iterator for Http1HeaderMapIntoIter {
             } => loop {
                 match original_iter.next() {
                     Some(http1_header_name) => {
-                        if let Some(value) = headers.remove(http1_header_name.as_headername()) {
+                        if let Some(value) = headers.remove(http1_header_name.headername()) {
                             let next = Some((http1_header_name, value));
                             self.state = Http1HeaderMapIntoIterState::Original {
                                 original_iter,

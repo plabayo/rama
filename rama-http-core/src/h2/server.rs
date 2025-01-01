@@ -118,9 +118,10 @@
 use crate::h2::codec::{Codec, UserError};
 use crate::h2::frame::{self, Pseudo, PushPromiseHeaderError, Reason, Settings, StreamId};
 use crate::h2::proto::{self, Config, Error, Prioritized};
-use crate::h2::{FlowControl, PingPong, PseudoHeaderOrder, RecvStream, SendStream};
+use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use bytes::{Buf, Bytes};
+use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Method, Request, Response};
 use std::future::Future;
 use std::pin::Pin;

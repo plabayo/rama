@@ -33,6 +33,8 @@ pub type Request<T = Body> = http::Request<T>;
 pub mod response;
 pub use response::{IntoResponse, IntoResponseParts, Response};
 
+pub mod proto;
+
 pub mod headers;
 
 pub mod dep {

@@ -2,12 +2,25 @@ use bytes::Bytes;
 use serde::{de::Error, Deserialize, Serialize};
 use std::{fmt, str::FromStr};
 
-use rama_http_types::{header::InvalidHeaderName, HeaderName};
+use crate::{header::InvalidHeaderName, HeaderName};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Http1HeaderName {
     name: HeaderName,
     raw: Option<Bytes>,
+}
+
+impl From<HeaderName> for Http1HeaderName {
+    #[inline]
+    fn from(value: HeaderName) -> Self {
+        value.into_http1_header_name()
+    }
+}
+
+impl From<Http1HeaderName> for HeaderName {
+    fn from(value: Http1HeaderName) -> Self {
+        value.name
+    }
 }
 
 impl FromStr for Http1HeaderName {
@@ -48,13 +61,13 @@ impl fmt::Display for Http1HeaderName {
 
 impl Http1HeaderName {
     #[inline]
-    pub(crate) fn try_copy_from_slice(b: &[u8]) -> Result<Self, InvalidHeaderName> {
+    pub fn try_copy_from_slice(b: &[u8]) -> Result<Self, InvalidHeaderName> {
         let bytes = Bytes::copy_from_slice(b);
         bytes.try_into_http1_header_name()
     }
 
     #[inline]
-    pub(crate) fn try_copy_from_str(s: &str) -> Result<Self, InvalidHeaderName> {
+    pub fn try_copy_from_str(s: &str) -> Result<Self, InvalidHeaderName> {
         let bytes = Bytes::copy_from_slice(s.as_bytes());
         bytes.try_into_http1_header_name()
     }
@@ -73,11 +86,7 @@ impl Http1HeaderName {
             .unwrap_or_else(|| self.name.as_str())
     }
 
-    pub(super) fn clone_as_headername(&self) -> HeaderName {
-        self.name.clone()
-    }
-
-    pub(crate) fn as_headername(&self) -> &HeaderName {
+    pub fn headername(&self) -> &HeaderName {
         &self.name
     }
 }
