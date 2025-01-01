@@ -19,6 +19,7 @@ use super::io::Buffered;
 use super::{Decoder, Encode, EncodedBuf, Encoder, Http1Transaction, ParseContext, Wants};
 use crate::body::DecodedLength;
 use crate::headers;
+use crate::proto::h1::EncodeHead;
 use crate::proto::{BodyLength, MessageHead};
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -47,7 +48,6 @@ where
             io: Buffered::new(io),
             state: State {
                 allow_half_close: false,
-                cached_headers: None,
                 error: None,
                 keep_alive: KA::Busy,
                 method: None,
@@ -199,7 +199,6 @@ where
         let msg = match self.io.parse::<T>(
             cx,
             ParseContext {
-                cached_headers: &mut self.state.cached_headers,
                 req_method: &mut self.state.method,
                 h1_parser_config: self.state.h1_parser_config.clone(),
                 h1_max_headers: self.state.h1_max_headers,
@@ -566,7 +565,12 @@ where
         let buf = self.io.headers_buf();
         match super::role::encode_headers::<T>(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body,
                 keep_alive: self.state.wants_keep_alive(),
                 req_method: &mut self.state.method,
@@ -575,13 +579,7 @@ where
             },
             buf,
         ) {
-            Ok(encoder) => {
-                debug_assert!(self.state.cached_headers.is_none());
-                debug_assert!(head.headers.is_empty());
-                self.state.cached_headers = Some(head.headers);
-
-                Some(encoder)
-            }
+            Ok(encoder) => Some(encoder),
             Err(err) => {
                 self.state.error = Some(err);
                 self.state.writing = Writing::Closed;
@@ -750,9 +748,6 @@ where
                 return Err(crate::Error::new_version_h2());
             }
             if let Some(msg) = T::on_error(&err) {
-                // Drop the cached headers so as to not trigger a debug
-                // assert in `write_head`...
-                self.state.cached_headers.take();
                 self.write_head(msg, None);
                 self.state.error = Some(err);
                 return Ok(());
@@ -848,8 +843,6 @@ impl<I: Unpin, B, T> Unpin for Conn<I, B, T> {}
 
 struct State {
     allow_half_close: bool,
-    /// Re-usable HeaderMap to reduce allocating new ones.
-    cached_headers: Option<HeaderMap>,
     /// If an error occurs when there wasn't a direct way to return it
     /// back to the user, this is set.
     error: Option<crate::Error>,

@@ -7,8 +7,8 @@
 
 use crate::{
     cli::ForwardKind,
-    combinators::Either7,
-    error::BoxError,
+    combinators::{Either3, Either7},
+    error::{BoxError, OpaqueError},
     http::{
         dep::http_body_util::BodyExt,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
@@ -18,6 +18,8 @@ use crate::{
             trace::TraceLayer,
             ua::{UserAgent, UserAgentClassifierLayer},
         },
+        proto::h1::Http1HeaderMap,
+        proto::h2::PseudoHeaderOrder,
         response::Json,
         server::HttpServer,
         IntoResponse, Request, Response, Version,
@@ -30,8 +32,6 @@ use crate::{
     rt::Executor,
     Context, Layer, Service,
 };
-use rama_core::{combinators::Either3, error::OpaqueError};
-use rama_http_core::{ext::OriginalHeaderOrder, h2::PseudoHeaderOrder};
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
@@ -322,44 +322,24 @@ impl Service<(), Request> for EchoService {
         let authority = request_context.authority.to_string();
         let scheme = request_context.protocol.to_string();
 
-        // TODO: get in correct order
-        // TODO: get in correct case
-
-        // TODO: get cleaner API + also original casing
-        let headers: Vec<_> = match req.extensions().get::<OriginalHeaderOrder>() {
-            Some(original) => original
-                .get_in_order()
-                .map(|(name, idx)| {
-                    let value = req
-                        .headers()
-                        .get_all(name)
-                        .iter()
-                        .nth(*idx)
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or_default()
-                        .to_owned();
-                    let name = name.as_str().to_owned();
-                    (name, value)
-                })
-                .collect(),
-            None => req
-                .headers()
-                .iter()
-                .map(|(name, value)| {
-                    (
-                        name.as_str().to_owned(),
-                        value.to_str().map(|v| v.to_owned()).unwrap_or_default(),
-                    )
-                })
-                .collect(),
-        };
-
         let pseudo_headers: Option<Vec<_>> = req
             .extensions()
             .get::<PseudoHeaderOrder>()
             .map(|o| o.iter().collect());
 
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+
+        let headers: Vec<_> = Http1HeaderMap::new(parts.headers, Some(&mut parts.extensions))
+            .into_iter()
+            .map(|(name, value)| {
+                (
+                    name,
+                    std::str::from_utf8(value.as_bytes())
+                        .map(|s| s.to_owned())
+                        .unwrap_or_else(|_| format!("0x{:x?}", value.as_bytes())),
+                )
+            })
+            .collect();
 
         let body = body.collect().await.unwrap().to_bytes();
         let body = hex::encode(body.as_ref());

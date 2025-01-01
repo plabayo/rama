@@ -2,10 +2,10 @@ use super::State;
 use rama::{
     error::{BoxError, ErrorContext},
     http::{
-        core::h2::{PseudoHeader, PseudoHeaderOrder},
-        dep::http::request::Parts,
+        dep::http::{request::Parts, Extensions},
         headers::Forwarded,
-        Request,
+        proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
+        HeaderMap,
     },
     net::{http::RequestContext, stream::SocketInfo},
     tls::types::{
@@ -187,27 +187,24 @@ pub(super) async fn get_request_info(
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct HttpInfo {
     pub(super) headers: Vec<(String, String)>,
-    pub(super) pseudo_headers: Option<Vec<PseudoHeader>>,
+    pub(super) pseudo_headers: Option<Vec<String>>,
 }
 
-pub(super) fn get_http_info(req: &Request) -> HttpInfo {
-    // TODO: get in correct order
-    // TODO: get in correct case
-    let headers = req
-        .headers()
-        .iter()
+pub(super) fn get_http_info(headers: HeaderMap, ext: &mut Extensions) -> HttpInfo {
+    let headers: Vec<_> = Http1HeaderMap::new(headers, Some(ext))
+        .into_iter()
         .map(|(name, value)| {
             (
-                name.as_str().to_owned(),
-                value.to_str().map(|v| v.to_owned()).unwrap_or_default(),
+                name.to_string(),
+                std::str::from_utf8(value.as_bytes())
+                    .map(|s| s.to_owned())
+                    .unwrap_or_else(|_| format!("0x{:x?}", value.as_bytes())),
             )
         })
         .collect();
-
-    let pseudo_headers: Option<Vec<_>> = req
-        .extensions()
+    let pseudo_headers: Option<Vec<_>> = ext
         .get::<PseudoHeaderOrder>()
-        .map(|o| o.iter().collect());
+        .map(|o| o.iter().map(|p| p.to_string()).collect());
 
     HttpInfo {
         headers,
