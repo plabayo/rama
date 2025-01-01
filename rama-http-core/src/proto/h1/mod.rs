@@ -1,6 +1,6 @@
 use bytes::BytesMut;
 use httparse::ParserConfig;
-use rama_http_types::{HeaderMap, Method};
+use rama_http_types::Method;
 
 use crate::body::DecodedLength;
 use crate::proto::{BodyLength, MessageHead};
@@ -66,7 +66,6 @@ pub(crate) struct ParsedMessage<T> {
 }
 
 pub(crate) struct ParseContext<'a> {
-    cached_headers: &'a mut Option<HeaderMap>,
     req_method: &'a mut Option<Method>,
     h1_parser_config: ParserConfig,
     h1_max_headers: Option<usize>,

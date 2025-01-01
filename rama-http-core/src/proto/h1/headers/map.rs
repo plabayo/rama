@@ -5,6 +5,7 @@ use super::{
     original::{self, OriginalHttp1Headers},
     Http1HeaderName,
 };
+use rama_core::telemetry::opentelemetry::trace::FutureExt;
 use rama_http_types::{
     dep::http::Extensions,
     header::{self, InvalidHeaderName},
@@ -18,6 +19,13 @@ pub struct Http1HeaderMap {
 }
 
 impl Http1HeaderMap {
+    pub fn with_capacity(size: usize) -> Self {
+        Self {
+            headers: HeaderMap::with_capacity(size),
+            original_headers: OriginalHttp1Headers::with_capacity(size),
+        }
+    }
+
     pub fn new(headers: HeaderMap, ext: Option<&mut Extensions>) -> Self {
         let original_headers = ext.and_then(|ext| ext.remove()).unwrap_or_default();
         Self {
@@ -213,7 +221,9 @@ impl Iterator for HeaderMapValueRemoverIntoIter {
                         return Some((name.into_http1_header_name(), value));
                     }
                     None => {
-                        debug_assert!(false, "no http header name found for multi-value header");
+                        if cfg!(debug_assertions) {
+                            panic!("no http header name found for multi-value header");
+                        }
                     }
                 }
             }
@@ -240,7 +250,9 @@ impl Iterator for HeaderMapValueRemoverIntoIter {
                         return Some((name.into_http1_header_name(), header.1));
                     }
                     (None, None) => {
-                        debug_assert!(false, "no http header name found for multi-value header");
+                        if cfg!(debug_assertions) {
+                            panic!("no http header name found for multi-value header");
+                        }
                     }
                 },
                 None => return None,

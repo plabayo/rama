@@ -12,6 +12,7 @@ use rama_http_types::{Method, StatusCode, Version};
 use smallvec::{smallvec, smallvec_inline, SmallVec};
 use tracing::{debug, error, trace, trace_span, warn};
 
+use super::headers::{Http1HeaderMap, Http1HeaderName};
 use crate::body::DecodedLength;
 use crate::common::date;
 use crate::error::Parse;
@@ -28,35 +29,12 @@ pub(crate) const DEFAULT_MAX_HEADERS: usize = 100;
 const AVERAGE_HEADER_SIZE: usize = 30; // totally scientific
 const MAX_URI_LEN: usize = (u16::MAX - 1) as usize;
 
-macro_rules! header_name {
-    ($bytes:expr) => {{
-        {
-            match HeaderName::from_bytes($bytes) {
-                Ok(name) => name,
-                Err(e) => maybe_panic!(e),
-            }
-        }
-    }};
-}
-
 macro_rules! header_value {
     ($bytes:expr) => {{
         {
             unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) }
         }
     }};
-}
-
-macro_rules! maybe_panic {
-    ($($arg:tt)*) => ({
-        let _err = ($($arg)*);
-        if cfg!(debug_assertions) {
-            panic!("{:?}", _err);
-        } else {
-            error!("Internal rama_http_core error, please report {:?}", _err);
-            return Err(Parse::Internal)
-        }
-    })
 }
 
 pub(super) fn parse_headers<T>(
@@ -223,17 +201,19 @@ impl Http1Transaction for Server {
         let mut header_case_map = HeaderCaseMap::default();
         let mut header_order = OriginalHeaderOrder::default();
 
-        let mut headers = ctx.cached_headers.take().unwrap_or_default();
-
-        headers.reserve(headers_len);
+        let mut headers = Http1HeaderMap::with_capacity(headers_len);
 
         for header in &headers_indices[..headers_len] {
             // SAFETY: array is valid up to `headers_len`
             let header = unsafe { header.assume_init_ref() };
-            let name = header_name!(&slice[header.name.0..header.name.1]);
+            let name = Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
+                .inspect_err(|err| {
+                    tracing::debug!("invalid http1 header: {err:?}");
+                })
+                .map_err(|_| crate::error::Parse::Internal)?;
             let value = header_value!(slice.slice(header.value.0..header.value.1));
 
-            match name {
+            match *name.as_headername() {
                 header::TRANSFER_ENCODING => {
                     // https://tools.ietf.org/html/rfc7230#section-3.3.3
                     // If Transfer-Encoding header is present, and 'chunked' is
@@ -295,8 +275,12 @@ impl Http1Transaction for Server {
                 _ => (),
             }
 
-            header_case_map.append(&name, slice.slice(header.name.0..header.name.1));
-            header_order.append(&name);
+            // TODO: delete these 2
+            header_case_map.append(
+                name.as_headername(),
+                slice.slice(header.name.0..header.name.1),
+            );
+            header_order.append(name.as_headername());
 
             headers.append(name, value);
         }
@@ -310,6 +294,8 @@ impl Http1Transaction for Server {
 
         extensions.insert(header_case_map);
         extensions.insert(header_order);
+
+        let headers = headers.consume(&mut extensions);
 
         *ctx.req_method = Some(subject.0.clone());
 
@@ -1034,21 +1020,25 @@ impl Http1Transaction for Client {
 
             let slice = slice.freeze();
 
-            let mut headers = ctx.cached_headers.take().unwrap_or_default();
-
             let mut keep_alive = version == Version::HTTP_11;
 
             let mut header_case_map = HeaderCaseMap::default();
             let mut header_order = OriginalHeaderOrder::default();
 
-            headers.reserve(headers_len);
+            let mut headers = Http1HeaderMap::with_capacity(headers_len);
+
             for header in &headers_indices[..headers_len] {
                 // SAFETY: array is valid up to `headers_len`
                 let header = unsafe { header.assume_init_ref() };
-                let name = header_name!(&slice[header.name.0..header.name.1]);
+                let name =
+                    Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
+                        .inspect_err(|err| {
+                            tracing::debug!("invalid http1 header: {err:?}");
+                        })
+                        .map_err(|_| crate::error::Parse::Internal)?;
                 let value = header_value!(slice.slice(header.value.0..header.value.1));
 
-                if let header::CONNECTION = name {
+                if header::CONNECTION == name.as_headername() {
                     // keep_alive was previously set to default for Version
                     if keep_alive {
                         // HTTP/1.1
@@ -1059,8 +1049,12 @@ impl Http1Transaction for Client {
                     }
                 }
 
-                header_case_map.append(&name, slice.slice(header.name.0..header.name.1));
-                header_order.append(&name);
+                // TODO: delete once no longer needed
+                header_case_map.append(
+                    name.as_headername(),
+                    slice.slice(header.name.0..header.name.1),
+                );
+                header_order.append(name.as_headername());
 
                 headers.append(name, value);
             }
@@ -1069,6 +1063,8 @@ impl Http1Transaction for Client {
 
             extensions.insert(header_case_map);
             extensions.insert(header_order);
+
+            let headers = headers.consume(&mut extensions);
 
             if let Some(reason) = reason {
                 // Safety: httparse ensures that only valid reason phrase bytes are present in this
@@ -1581,7 +1577,6 @@ mod tests {
         let msg = Server::parse(
             &mut raw,
             ParseContext {
-                cached_headers: &mut None,
                 req_method: &mut method,
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
@@ -1603,7 +1598,6 @@ mod tests {
     fn test_parse_response() {
         let mut raw = BytesMut::from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
@@ -1621,7 +1615,6 @@ mod tests {
     fn test_parse_request_errors() {
         let mut raw = BytesMut::from("GET htt:p// HTTP/1.1\r\nHost: ramaproxy.org\r\n\r\n");
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut None,
             h1_parser_config: Default::default(),
             h1_max_headers: None,
@@ -1636,7 +1629,6 @@ mod tests {
     fn test_parse_response_h09_allowed() {
         let mut raw = BytesMut::from(H09_RESPONSE);
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
@@ -1653,7 +1645,6 @@ mod tests {
     fn test_parse_response_h09_rejected() {
         let mut raw = BytesMut::from(H09_RESPONSE);
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
@@ -1674,7 +1665,6 @@ mod tests {
         let mut h1_parser_config = ParserConfig::default();
         h1_parser_config.allow_spaces_after_header_name_in_responses(true);
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config,
             h1_max_headers: None,
@@ -1692,7 +1682,6 @@ mod tests {
     fn test_parse_reject_response_with_spaces_before_colons() {
         let mut raw = BytesMut::from(RESPONSE_WITH_WHITESPACE_BETWEEN_HEADER_NAME_AND_COLON);
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
@@ -1706,7 +1695,6 @@ mod tests {
         let mut raw =
             BytesMut::from("GET / HTTP/1.1\r\nHost: ramaproxy.org\r\nX-PASTA: noodles\r\n\r\n");
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut None,
             h1_parser_config: Default::default(),
             h1_max_headers: None,
@@ -1739,7 +1727,6 @@ mod tests {
             Server::parse(
                 &mut bytes,
                 ParseContext {
-                    cached_headers: &mut None,
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
@@ -1755,7 +1742,6 @@ mod tests {
             Server::parse(
                 &mut bytes,
                 ParseContext {
-                    cached_headers: &mut None,
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
@@ -1980,7 +1966,6 @@ mod tests {
             assert!(Client::parse(
                 &mut bytes,
                 ParseContext {
-                    cached_headers: &mut None,
                     req_method: &mut Some(Method::GET),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
@@ -1996,7 +1981,6 @@ mod tests {
             Client::parse(
                 &mut bytes,
                 ParseContext {
-                    cached_headers: &mut None,
                     req_method: &mut Some(m),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
@@ -2012,7 +1996,6 @@ mod tests {
             Client::parse(
                 &mut bytes,
                 ParseContext {
-                    cached_headers: &mut None,
                     req_method: &mut Some(Method::GET),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
@@ -2565,7 +2548,6 @@ mod tests {
         let parsed = Client::parse(
             &mut bytes,
             ParseContext {
-                cached_headers: &mut None,
                 req_method: &mut Some(Method::GET),
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
@@ -2603,7 +2585,6 @@ mod tests {
                 let result = Server::parse(
                     &mut bytes,
                     ParseContext {
-                        cached_headers: &mut None,
                         req_method: &mut None,
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
@@ -2622,7 +2603,6 @@ mod tests {
                 let result = Client::parse(
                     &mut bytes,
                     ParseContext {
-                        cached_headers: &mut None,
                         req_method: &mut None,
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,

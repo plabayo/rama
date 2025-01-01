@@ -48,7 +48,13 @@ impl fmt::Display for Http1HeaderName {
 
 impl Http1HeaderName {
     #[inline]
-    pub(super) fn try_copy_from_str(s: &str) -> Result<Self, InvalidHeaderName> {
+    pub(crate) fn try_copy_from_slice(b: &[u8]) -> Result<Self, InvalidHeaderName> {
+        let bytes = Bytes::copy_from_slice(b);
+        bytes.try_into_http1_header_name()
+    }
+
+    #[inline]
+    pub(crate) fn try_copy_from_str(s: &str) -> Result<Self, InvalidHeaderName> {
         let bytes = Bytes::copy_from_slice(s.as_bytes());
         bytes.try_into_http1_header_name()
     }
@@ -71,7 +77,7 @@ impl Http1HeaderName {
         self.name.clone()
     }
 
-    pub(super) fn as_headername(&self) -> &HeaderName {
+    pub(crate) fn as_headername(&self) -> &HeaderName {
         &self.name
     }
 }
@@ -128,7 +134,7 @@ mod try_into {
 }
 
 #[allow(unused)]
-pub(super) use try_into::Sealed as TryIntoSealed;
+pub(crate) use try_into::Sealed as TryIntoSealed;
 
 pub trait IntoHttp1HeaderName: into::Sealed {}
 
@@ -159,4 +165,4 @@ mod into {
 }
 
 #[allow(unused)]
-pub(super) use into::Sealed as IntoSealed;
+pub(crate) use into::Sealed as IntoSealed;

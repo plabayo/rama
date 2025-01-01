@@ -1,3 +1,4 @@
+#![allow(unused)]
 //! types and functionality to preserve
 //! http1* header casing and order.
 //!
@@ -7,7 +8,8 @@
 //! of that what you want, but they do and we have to deal with it.
 
 mod name;
-pub use name::Http1HeaderName;
+pub use name::{Http1HeaderName, IntoHttp1HeaderName, TryIntoHttp1HeaderName};
+pub(crate) use name::{IntoSealed, TryIntoSealed};
 
 pub(crate) mod original;
 
