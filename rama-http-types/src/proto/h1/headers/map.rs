@@ -65,6 +65,21 @@ impl Http1HeaderMap {
     }
 }
 
+impl From<HeaderMap> for Http1HeaderMap {
+    fn from(value: HeaderMap) -> Self {
+        Self {
+            headers: value,
+            ..Default::default()
+        }
+    }
+}
+
+impl From<Http1HeaderMap> for HeaderMap {
+    fn from(value: Http1HeaderMap) -> Self {
+        value.headers
+    }
+}
+
 impl<N: IntoHttp1HeaderName> FromIterator<(N, HeaderValue)> for Http1HeaderMap {
     fn from_iter<T: IntoIterator<Item = (N, HeaderValue)>>(iter: T) -> Self {
         let mut map: Self = Default::default();
@@ -80,6 +95,14 @@ impl IntoIterator for Http1HeaderMap {
     type IntoIter = Http1HeaderMapIntoIter;
 
     fn into_iter(self) -> Self::IntoIter {
+        if self.original_headers.is_empty() {
+            return Http1HeaderMapIntoIter {
+                state: Http1HeaderMapIntoIterState::Rem(
+                    HeaderMapValueRemover::from(self.headers).into_iter(),
+                ),
+            };
+        }
+
         Http1HeaderMapIntoIter {
             state: Http1HeaderMapIntoIterState::Original {
                 original_iter: self.original_headers.into_iter(),
@@ -132,7 +155,11 @@ impl Iterator for Http1HeaderMapIntoIter {
                     }
                 }
             },
-            Http1HeaderMapIntoIterState::Rem(ref mut it) => it.next(),
+            Http1HeaderMapIntoIterState::Rem(mut it) => {
+                let next = it.next()?;
+                self.state = Http1HeaderMapIntoIterState::Rem(it);
+                Some(next)
+            }
             Http1HeaderMapIntoIterState::Empty => None,
         }
     }
@@ -148,7 +175,7 @@ impl From<HeaderMap> for HeaderMapValueRemover {
     fn from(value: HeaderMap) -> Self {
         Self {
             header_map: value,
-            removed_values: Default::default(),
+            removed_values: None,
         }
     }
 }
@@ -212,12 +239,12 @@ impl Iterator for HeaderMapValueRemoverIntoIter {
         if let Some(mut it) = self.cached_headers.take() {
             if let Some(value) = it.next() {
                 match if it.peek().is_some() {
+                    self.cached_headers = Some(it);
                     self.cached_header_name.clone()
                 } else {
                     self.cached_header_name.take()
                 } {
                     Some(name) => {
-                        self.cached_headers = Some(it);
                         return Some((name.into_http1_header_name(), value));
                     }
                     None => {
@@ -229,33 +256,36 @@ impl Iterator for HeaderMapValueRemoverIntoIter {
             }
         }
 
-        if let Some(removed_header) = self.removed_headers.as_mut().and_then(|it| it.next()) {
-            self.cached_header_name = Some(removed_header.0);
-            self.cached_headers = Some(removed_header.1.peekable());
-            return self.next();
+        if let Some(removed_headers) = self.removed_headers.as_mut() {
+            for removed_header in removed_headers {
+                let mut cached_headers = removed_header.1.peekable();
+                if cached_headers.peek().is_some() {
+                    self.cached_header_name = Some(removed_header.0);
+                    self.cached_headers = Some(cached_headers);
+                    return self.next();
+                }
+            }
         }
 
         loop {
-            match self.remaining_headers.next() {
-                Some(header) => match (header.0, self.cached_header_name.take()) {
-                    (Some(name), _) | (None, Some(name)) => {
-                        if self
-                            .remaining_headers
-                            .peek()
-                            .map(|h| h.0.is_none())
-                            .unwrap_or_default()
-                        {
-                            self.cached_header_name = Some(name.clone());
-                        }
-                        return Some((name.into_http1_header_name(), header.1));
+            let header = self.remaining_headers.next()?;
+            match (header.0, self.cached_header_name.take()) {
+                (Some(name), _) | (None, Some(name)) => {
+                    if self
+                        .remaining_headers
+                        .peek()
+                        .map(|h| h.0.is_none())
+                        .unwrap_or_default()
+                    {
+                        self.cached_header_name = Some(name.clone());
                     }
-                    (None, None) => {
-                        if cfg!(debug_assertions) {
-                            panic!("no http header name found for multi-value header");
-                        }
+                    return Some((name.into_http1_header_name(), header.1));
+                }
+                (None, None) => {
+                    if cfg!(debug_assertions) {
+                        panic!("no http header name found for multi-value header");
                     }
-                },
-                None => return None,
+                }
             }
         }
     }
@@ -302,7 +332,7 @@ mod tests {
     macro_rules! test_req {
             ({$(
                 $name:literal: $value:literal
-            ),+ $(,)?}, $extra_headers:tt) => {
+            ),* $(,)?}, $extra_headers:tt) => {
             {
                 let mut map = Http1HeaderMap::default();
 
@@ -311,7 +341,7 @@ mod tests {
                         $name,
                         HeaderValue::from_str($value).unwrap()
                     ).unwrap();
-                )+
+                )*
 
                 let extra_headers = _add_extra_headers!(&mut map.headers, $extra_headers);
 
@@ -330,18 +360,78 @@ mod tests {
 
                 $(
                     assert_eq!(Some(format!("{}: {}", $name, $value)), next());
-                )+
+                )*
 
-                match extra_headers {
-                    Some(extra_headers) => {
-                        for extra in extra_headers {
-                            assert_eq!(Some(extra), next())
-                        }
-                    },
-                    None => assert_eq!(None, next()),
+                if let Some(extra_headers) = extra_headers {
+                    for extra in extra_headers {
+                        assert_eq!(Some(extra), next())
+                    }
                 }
+
+                assert_eq!(None, next())
             }
         };
+    }
+
+    #[test]
+    fn test_only_extra_1() {
+        test_req!({}, {
+            "content-type": "application/json",
+        })
+    }
+
+    #[test]
+    fn test_only_extra_2() {
+        test_req!({}, {
+            "content-type": "application/json",
+            "content-length": "9",
+        })
+    }
+
+    #[test]
+    fn test_only_extra_2_manual_core_type() {
+        let mut map = HeaderMap::new();
+        map.insert(header::CONTENT_LENGTH, "123".parse().unwrap());
+        map.insert(header::CONTENT_TYPE, "json".parse().unwrap());
+
+        let mut iter = map.into_iter().peekable();
+        let _ = iter.peek();
+        assert_eq!(
+            iter.next(),
+            Some((Some(header::CONTENT_LENGTH), "123".parse().unwrap()))
+        );
+        let _ = iter.peek();
+        assert_eq!(
+            iter.next(),
+            Some((Some(header::CONTENT_TYPE), "json".parse().unwrap()))
+        );
+        assert!(iter.next().is_none());
+    }
+
+    #[test]
+    fn test_only_extra_2_manual_dummy_wrapper() {
+        let mut map = HeaderMap::new();
+        map.insert(header::CONTENT_LENGTH, "123".parse().unwrap());
+        map.insert(header::CONTENT_TYPE, "json".parse().unwrap());
+
+        let map: Http1HeaderMap = map.into();
+
+        let mut iter = map.into_iter();
+        assert_eq!(
+            iter.next(),
+            Some((
+                header::CONTENT_LENGTH.into_http1_header_name(),
+                "123".parse().unwrap()
+            ))
+        );
+        assert_eq!(
+            iter.next(),
+            Some((
+                header::CONTENT_TYPE.into_http1_header_name(),
+                "json".parse().unwrap()
+            ))
+        );
+        assert!(iter.next().is_none());
     }
 
     #[test]

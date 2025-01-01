@@ -79,9 +79,7 @@ pub(super) async fn get_report(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Html, Response> {
-    let http_info = get_http_info(&req);
-
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -94,6 +92,8 @@ pub(super) async fn get_report(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
 
     let head = r#"<script src="/assets/script.js"></script>"#.to_owned();
 
@@ -110,14 +110,7 @@ pub(super) async fn get_report(
     if let Some(pseudo) = http_info.pseudo_headers {
         tables.push(Table {
             title: "🚗 H2 Pseudo Headers".to_owned(),
-            rows: vec![(
-                "order".to_owned(),
-                pseudo
-                    .into_iter()
-                    .map(|h| h.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", "),
-            )],
+            rows: vec![("order".to_owned(), pseudo.join(", "))],
         });
     }
 
@@ -174,9 +167,7 @@ pub(super) async fn get_api_fetch_number(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
-    let http_info = get_http_info(&req);
-
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -189,6 +180,8 @@ pub(super) async fn get_api_fetch_number(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
 
     let tls_info = get_tls_display_info(&ctx);
 
@@ -208,9 +201,7 @@ pub(super) async fn post_api_fetch_number(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
-    let http_info = get_http_info(&req);
-
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -223,6 +214,8 @@ pub(super) async fn post_api_fetch_number(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
 
     let tls_info = get_tls_display_info(&ctx);
 
@@ -241,9 +234,7 @@ pub(super) async fn get_api_xml_http_request_number(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
-    let http_info = get_http_info(&req);
-
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -256,6 +247,8 @@ pub(super) async fn get_api_xml_http_request_number(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
 
     Ok(Json(json!({
         "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
@@ -272,9 +265,7 @@ pub(super) async fn post_api_xml_http_request_number(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
-    let http_info = get_http_info(&req);
-
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -287,6 +278,8 @@ pub(super) async fn post_api_xml_http_request_number(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
 
     let tls_info = get_tls_display_info(&ctx);
 
@@ -308,10 +301,7 @@ pub(super) async fn post_api_xml_http_request_number(
 pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<Html, Response> {
     // TODO: get TLS Info (for https access only)
     // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
-
-    let http_info = get_http_info(&req);
-
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -324,6 +314,8 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
 
     let mut content = String::new();
 
@@ -353,6 +345,13 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
             rows: http_info.headers,
         },
     ];
+
+    if let Some(pseudo) = http_info.pseudo_headers {
+        tables.push(Table {
+            title: "🚗 H2 Pseudo Headers".to_owned(),
+            rows: vec![("order".to_owned(), pseudo.join(", "))],
+        });
+    }
 
     let tls_info = get_tls_display_info(&ctx);
     if let Some(tls_info) = tls_info {

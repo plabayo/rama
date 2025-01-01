@@ -19,6 +19,16 @@ impl OriginalHttp1Headers {
     pub fn push(&mut self, name: Http1HeaderName) {
         self.ordered_headers.push(name);
     }
+
+    #[inline]
+    pub fn len(&self) -> usize {
+        self.ordered_headers.len()
+    }
+
+    #[inline]
+    pub fn is_empty(&self) -> bool {
+        self.ordered_headers.is_empty()
+    }
 }
 
 impl OriginalHttp1Headers {
