@@ -426,6 +426,8 @@ mod tests {
             "-.-.",
             "-.-.-",
             ".-.-",
+            "127.0.0.1",
+            "2001:db8:3333:4444:5555:6666:7777:8888",
             "-example.com",
             "local!host",
             "thislabeliswaytoolongforbeingeversomethingwewishtocareabout-example.com",

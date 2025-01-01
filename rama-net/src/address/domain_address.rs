@@ -3,6 +3,8 @@ use rama_core::error::{ErrorContext, OpaqueError};
 use std::fmt;
 use std::str::FromStr;
 
+/// A [`Domain`] with an associated port
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct DomainAddress {
     domain: Domain,
@@ -10,22 +12,27 @@ pub struct DomainAddress {
 }
 
 impl DomainAddress {
+    /// Creates a new [`DomainAddress`].
     pub const fn new(domain: Domain, port: u16) -> Self {
         Self { domain, port }
     }
 
+    /// Gets the [`Domain`] reference.
     pub fn domain(&self) -> &Domain {
         &self.domain
     }
 
+    /// Consumes the [`DomainAddress`] and returns the [`Domain`].
     pub fn into_domain(self) -> Domain {
         self.domain
     }
 
+    /// Gets the port.
     pub fn port(&self) -> u16 {
         self.port
     }
 
+    /// Consume self into its parts: `(Domain, port)`
     pub fn into_parts(self) -> (Domain, u16) {
         (self.domain, self.port)
     }
@@ -56,6 +63,7 @@ impl TryFrom<&str> for DomainAddress {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (domain, port) = parse_utils::split_port_from_str(s)?;
+        eprintln!("Domain: {}", domain);
         let domain = Domain::from_str(domain)?;
         Ok(Self::new(domain, port))
     }
@@ -160,7 +168,13 @@ mod tests {
             ".-",
             "::1",
             "127.0.0.1",
+            "127.0.0.1:8080",
+            "::1:8080",
+            "127.0.0.1",
             "[::1]",
+            "example",
+            "exa$mple.com:8080",
+            "2001:db8:3333:4444:5555:6666:7777:8888:8080",
             "2001:db8:3333:4444:5555:6666:7777:8888",
             "[2001:db8:3333:4444:5555:6666:7777:8888]",
             "example.com",
