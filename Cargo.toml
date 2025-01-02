@@ -39,6 +39,7 @@ rust-version = "1.80.0"
 async-compression = "0.4"
 base64 = "0.22"
 bitflags = "2.4"
+md5 = "0.7.0"
 brotli = "7"
 bytes = "1"
 clap = { version = "4.5.15", features = ["derive"] }

@@ -38,6 +38,7 @@ use tokio::net::TcpStream;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
+    net::fingerprint::Ja3,
     net::tls::server::ServerConfig,
     tls::std::server::TlsAcceptorLayer,
     tls::types::{client::ClientHelloExtension, SecureTransport},
@@ -349,7 +350,17 @@ impl Service<(), Request> for EchoService {
             .get::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .map(|hello| {
+                let ja3 = Ja3::compute(ctx.extensions())
+                    .inspect_err(|err| tracing::trace!(?err, "ja3 computation"))
+                    .ok()
+                    .map(|ja3| {
+                        json!({
+                            "full": format!("{ja3}"),
+                            "hash": format!("{ja3:x}"),
+                        })
+                    });
                 json!({
+                    "ja3": ja3,
                     "cipher_suites": hello
                     .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                     "compression_algorithms": hello

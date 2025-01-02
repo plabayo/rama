@@ -471,7 +471,14 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
 
 impl From<TlsDisplayInfo> for Vec<Table> {
     fn from(info: TlsDisplayInfo) -> Self {
-        let mut vec = Vec::with_capacity(info.extensions.len() + 1);
+        let mut vec = Vec::with_capacity(info.extensions.len() + 2);
+        vec.push(Table {
+            title: "🆔 Ja3".to_owned(),
+            rows: vec![
+                ("full".to_owned(), info.ja3.full),
+                ("hash".to_owned(), info.ja3.hash),
+            ],
+        });
         vec.push(Table {
             title: "🔒 TLS Client Hello — Header".to_owned(),
             rows: vec![

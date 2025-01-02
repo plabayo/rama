@@ -16,7 +16,7 @@ workspace = true
 [features]
 default = []
 http = ["dep:rama-http-types"]
-tls = ["dep:hex"]
+tls = ["dep:hex", "dep:md5"]
 rustls = ["tls", "dep:rustls"]
 boring = ["tls", "dep:boring", "dep:nom", "dep:itertools"]
 rustls-ring = ["rustls", "rustls/ring"]
@@ -32,6 +32,7 @@ headers = { workspace = true }
 hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true, optional = true }
+md5 = { workspace = true, optional = true }
 nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
@@ -46,6 +47,7 @@ venndb = { workspace = true, optional = true }
 
 [dev-dependencies]
 itertools = { workspace = true }
+nom = { workspace = true }
 quickcheck = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }

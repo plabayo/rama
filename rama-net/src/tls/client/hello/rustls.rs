@@ -1,5 +1,5 @@
 use super::ClientHelloExtension;
-use crate::tls::{ApplicationProtocol, CipherSuite, SignatureScheme};
+use crate::tls::{ApplicationProtocol, CipherSuite, ProtocolVersion, SignatureScheme};
 
 impl<'a> From<rustls::server::ClientHello<'a>> for super::ClientHello {
     fn from(value: rustls::server::ClientHello<'a>) -> Self {
@@ -30,6 +30,7 @@ impl<'a> From<rustls::server::ClientHello<'a>> for super::ClientHello {
         }
 
         Self {
+            protocol_version: ProtocolVersion::Unknown(0), // TODO: support if rustls can handle this
             cipher_suites,
             compression_algorithms: vec![],
             extensions,

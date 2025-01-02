@@ -20,12 +20,18 @@ mod boring;
 /// For Rama however we only focus on the parts which
 /// a user might want to inspect and/or set.
 pub struct ClientHello {
+    pub(super) protocol_version: ProtocolVersion,
     pub(super) cipher_suites: Vec<CipherSuite>,
     pub(super) compression_algorithms: Vec<CompressionAlgorithm>,
     pub(super) extensions: Vec<ClientHelloExtension>,
 }
 
 impl ClientHello {
+    /// Return all [`ProtocolVersion`]s defined in this [`ClientHello`].
+    pub fn protocol_version(&self) -> ProtocolVersion {
+        self.protocol_version
+    }
+
     /// Return all [`CipherSuite`]s defined in this [`ClientHello`].
     pub fn cipher_suites(&self) -> &[CipherSuite] {
         &self.cipher_suites[..]

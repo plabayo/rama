@@ -38,7 +38,7 @@ pub(crate) fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
 }
 
 fn parse_client_hello_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
-    let (i, _version) = be_u16(i)?;
+    let (i, version) = be_u16(i)?;
     let (i, _random) = take(32usize)(i)?;
     let (i, sidlen) = verify(be_u8, |&n| n <= 32)(i)?;
     let (i, _sid) = cond(sidlen > 0, take(sidlen as usize))(i)?;
@@ -60,6 +60,7 @@ fn parse_client_hello_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
     Ok((
         i,
         ClientHello {
+            protocol_version: version.into(),
             cipher_suites,
             compression_algorithms,
             extensions,

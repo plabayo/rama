@@ -7,7 +7,7 @@ use rama::{
         proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
         HeaderMap,
     },
-    net::{http::RequestContext, stream::SocketInfo},
+    net::{fingerprint::Ja3, http::RequestContext, stream::SocketInfo},
     tls::types::{
         client::{ClientHello, ClientHelloExtension},
         SecureTransport,
@@ -214,9 +214,16 @@ pub(super) fn get_http_info(headers: HeaderMap, ext: &mut Extensions) -> HttpInf
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TlsDisplayInfo {
+    pub(super) ja3: Ja3DisplayInfo,
     pub(super) cipher_suites: Vec<String>,
     pub(super) compression_algorithms: Vec<String>,
     pub(super) extensions: Vec<TlsDisplayInfoExtension>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct Ja3DisplayInfo {
+    pub(super) full: String,
+    pub(super) hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -236,7 +243,15 @@ pub(super) fn get_tls_display_info(ctx: &Context<Arc<State>>) -> Option<TlsDispl
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())?;
 
+    let ja3 = Ja3::compute(ctx.extensions())
+        .inspect_err(|err| tracing::error!(?err, "ja3 compute failure"))
+        .ok()?;
+
     Some(TlsDisplayInfo {
+        ja3: Ja3DisplayInfo {
+            full: format!("{ja3}"),
+            hash: format!("{ja3:x}"),
+        },
         cipher_suites: hello
             .cipher_suites()
             .iter()
