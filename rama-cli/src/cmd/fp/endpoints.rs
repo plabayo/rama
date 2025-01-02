@@ -256,6 +256,7 @@ pub(super) async fn get_api_xml_http_request_number(
             "headers": http_info.headers,
             "user_agent_info": user_agent_info,
             "request_info": request_info,
+            "http_info": http_info,
         }
     })))
 }
@@ -402,7 +403,7 @@ fn render_report(title: &'static str, head: String, mut html: String, tables: Ve
         html.push_str("<table>");
         for (key, value) in table.rows {
             html.push_str(&format!(
-                r##"<tr><td class="key">{}</td><td>{}</td></tr>"##,
+                r##"<tr><td class="key">{}</td><td><code>{}</code></td></tr>"##,
                 key, value
             ));
         }
