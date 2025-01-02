@@ -1,4 +1,4 @@
-use super::FromRequestContextRefPair;
+use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
 use crate::dep::http::request::Parts;
 use crate::utils::macros::define_http_rejection;
 use rama_core::Context;
@@ -44,5 +44,27 @@ where
         let params =
             serde_html_form::from_str(query).map_err(FailedToDeserializeQueryString::from_err)?;
         Ok(Query(params))
+    }
+}
+
+impl<T, S> OptionalFromRequestContextRefPair<S> for Query<T>
+where
+    T: DeserializeOwned + Send + Sync + 'static,
+    S: Clone + Send + Sync + 'static,
+{
+    type Rejection = FailedToDeserializeQueryString;
+
+    async fn from_request_context_ref_pair(
+        _ctx: &Context<S>,
+        parts: &Parts,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        match parts.uri.query() {
+            Some(query) => {
+                let params = serde_html_form::from_str(query)
+                    .map_err(FailedToDeserializeQueryString::from_err)?;
+                Ok(Some(Query(params)))
+            }
+            None => Ok(None),
+        }
     }
 }
