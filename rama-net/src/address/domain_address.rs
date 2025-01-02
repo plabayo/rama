@@ -63,7 +63,6 @@ impl TryFrom<&str> for DomainAddress {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         let (domain, port) = parse_utils::split_port_from_str(s)?;
-        eprintln!("Domain: {}", domain);
         let domain = Domain::from_str(domain)?;
         Ok(Self::new(domain, port))
     }
@@ -130,6 +129,7 @@ mod tests {
         for (s, (expected_domain, expected_port)) in [
             ("example.com:80", ("example.com", 80)),
             ("subdomain.example.com:443", ("subdomain.example.com", 443)),
+            ("127.0.0.1:8080", ("127.0.0.1", 8080)),
         ] {
             let msg = format!("parsing '{}'", s);
 
@@ -168,7 +168,6 @@ mod tests {
             ".-",
             "::1",
             "127.0.0.1",
-            "127.0.0.1:8080",
             "::1:8080",
             "127.0.0.1",
             "[::1]",
