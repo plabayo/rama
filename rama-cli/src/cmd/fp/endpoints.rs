@@ -482,6 +482,7 @@ impl From<TlsDisplayInfo> for Vec<Table> {
         vec.push(Table {
             title: "🔒 TLS Client Hello — Header".to_owned(),
             rows: vec![
+                ("Version".to_owned(), info.protocol_version),
                 ("Cipher Suites".to_owned(), info.cipher_suites.join(", ")),
                 (
                     "Compression Algorithms".to_owned(),

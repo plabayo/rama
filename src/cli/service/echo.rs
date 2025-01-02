@@ -361,6 +361,7 @@ impl Service<(), Request> for EchoService {
                     });
                 json!({
                     "ja3": ja3,
+                    "version": hello.protocol_version().to_string(),
                     "cipher_suites": hello
                     .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                     "compression_algorithms": hello

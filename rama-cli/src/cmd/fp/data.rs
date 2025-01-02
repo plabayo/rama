@@ -215,6 +215,7 @@ pub(super) fn get_http_info(headers: HeaderMap, ext: &mut Extensions) -> HttpInf
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TlsDisplayInfo {
     pub(super) ja3: Ja3DisplayInfo,
+    pub(super) protocol_version: String,
     pub(super) cipher_suites: Vec<String>,
     pub(super) compression_algorithms: Vec<String>,
     pub(super) extensions: Vec<TlsDisplayInfoExtension>,
@@ -252,6 +253,7 @@ pub(super) fn get_tls_display_info(ctx: &Context<Arc<State>>) -> Option<TlsDispl
             full: format!("{ja3}"),
             hash: format!("{ja3:x}"),
         },
+        protocol_version: hello.protocol_version().to_string(),
         cipher_suites: hello
             .cipher_suites()
             .iter()
