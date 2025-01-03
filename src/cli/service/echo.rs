@@ -25,6 +25,7 @@ use crate::{
         IntoResponse, Request, Response, Version,
     },
     layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
+    net::fingerprint::Ja4H,
     net::forwarded::Forwarded,
     net::http::RequestContext,
     net::stream::{layer::http::BodyLimitLayer, SocketInfo},
@@ -32,14 +33,13 @@ use crate::{
     rt::Executor,
     Context, Layer, Service,
 };
-use rama_net::fingerprint::Ja4H;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
-    net::fingerprint::Ja3,
+    net::fingerprint::{Ja3, Ja4},
     net::tls::server::ServerConfig,
     tls::std::server::TlsAcceptorLayer,
     tls::types::{client::ClientHelloExtension, SecureTransport},
@@ -361,6 +361,16 @@ impl Service<(), Request> for EchoService {
             .get::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .map(|hello| {
+                let ja4 = Ja4::compute(ctx.extensions())
+                    .inspect_err(|err| tracing::trace!(?err, "ja4 computation"))
+                    .ok()
+                    .map(|ja4| {
+                        json!({
+                            "hash": format!("{ja4}"),
+                            "raw": format!("{ja4:?}"),
+                        })
+                    });
+
                 let ja3 = Ja3::compute(ctx.extensions())
                     .inspect_err(|err| tracing::trace!(?err, "ja3 computation"))
                     .ok()
@@ -372,6 +382,7 @@ impl Service<(), Request> for EchoService {
                     });
 
                 json!({
+                    "ja4": ja4,
                     "ja3": ja3,
                     "version": hello.protocol_version().to_string(),
                     "cipher_suites": hello

@@ -7,8 +7,7 @@ use crate::tls::{
 
 #[derive(Debug, Clone)]
 /// Data which can be hashed using [`Self::hash`],
-/// and which is also displayed as a "ja3" hash when serializing (serde)
-/// or displaying it.
+/// and which is also displayed as a "ja3" hash.
 ///
 /// Computed using [`Ja3::compute`].
 pub struct Ja3 {

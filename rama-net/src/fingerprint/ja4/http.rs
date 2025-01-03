@@ -1,9 +1,9 @@
+use itertools::Itertools as _;
 use std::{
     borrow::Cow,
     fmt::{self, Write},
 };
 
-use itertools::Itertools;
 use rama_http_types::{
     header::{ACCEPT_LANGUAGE, COOKIE, REFERER},
     proto::h1::Http1HeaderMap,
@@ -12,7 +12,7 @@ use rama_http_types::{
 
 #[derive(Clone)]
 /// Data which can be hashed using [`Self::hash`],
-/// and which is also displayed as a "ja4h" hash when serializing (serde)
+/// and which is also displayed as a "ja4h" hash.
 /// or displaying it.
 ///
 /// Computed using [`Ja4H::compute`].

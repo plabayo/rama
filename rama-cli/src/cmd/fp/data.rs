@@ -8,7 +8,7 @@ use rama::{
         HeaderMap, Request,
     },
     net::{
-        fingerprint::{Ja3, Ja4H},
+        fingerprint::{Ja3, Ja4, Ja4H},
         http::RequestContext,
         stream::SocketInfo,
     },
@@ -235,11 +235,18 @@ pub(super) fn get_http_info(headers: HeaderMap, ext: &mut Extensions) -> HttpInf
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TlsDisplayInfo {
+    pub(super) ja4: Ja4DisplayInfo,
     pub(super) ja3: Ja3DisplayInfo,
     pub(super) protocol_version: String,
     pub(super) cipher_suites: Vec<String>,
     pub(super) compression_algorithms: Vec<String>,
     pub(super) extensions: Vec<TlsDisplayInfoExtension>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct Ja4DisplayInfo {
+    pub(super) full: String,
+    pub(super) hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -265,11 +272,19 @@ pub(super) fn get_tls_display_info(ctx: &Context<Arc<State>>) -> Option<TlsDispl
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())?;
 
+    let ja4 = Ja4::compute(ctx.extensions())
+        .inspect_err(|err| tracing::error!(?err, "ja4 compute failure"))
+        .ok()?;
+
     let ja3 = Ja3::compute(ctx.extensions())
         .inspect_err(|err| tracing::error!(?err, "ja3 compute failure"))
         .ok()?;
 
     Some(TlsDisplayInfo {
+        ja4: Ja4DisplayInfo {
+            full: format!("{ja4:?}"),
+            hash: format!("{ja4}"),
+        },
         ja3: Ja3DisplayInfo {
             full: format!("{ja3}"),
             hash: format!("{ja3:x}"),

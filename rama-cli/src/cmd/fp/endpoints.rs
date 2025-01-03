@@ -520,12 +520,19 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
 
 impl From<TlsDisplayInfo> for Vec<Table> {
     fn from(info: TlsDisplayInfo) -> Self {
-        let mut vec = Vec::with_capacity(info.extensions.len() + 2);
+        let mut vec = Vec::with_capacity(info.extensions.len() + 3);
+        vec.push(Table {
+            title: "🆔 Ja4".to_owned(),
+            rows: vec![
+                ("TLS Client Fingerprint".to_owned(), info.ja4.hash),
+                ("Raw (Debug) String".to_owned(), info.ja4.full),
+            ],
+        });
         vec.push(Table {
             title: "🆔 Ja3".to_owned(),
             rows: vec![
-                ("full".to_owned(), info.ja3.full),
                 ("hash".to_owned(), info.ja3.hash),
+                ("full".to_owned(), info.ja3.full),
             ],
         });
         vec.push(Table {

@@ -54,6 +54,18 @@ macro_rules! enum_builder {
                 }
             }
         }
+
+        impl ::std::fmt::LowerHex for $enum_name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::LowerHex::fmt(&u8::from(*self), f)
+            }
+        }
+
+        impl ::std::fmt::UpperHex for $enum_name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::UpperHex::fmt(&u8::from(*self), f)
+            }
+        }
     };
     (
         $(#[$comment:meta])*
@@ -98,7 +110,7 @@ macro_rules! enum_builder {
         }
 
         impl ::std::fmt::Display for $enum_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 match self {
                     $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $enum_val)),*
                     ,$enum_name::Unknown(x) => if x & 0x0f0f == 0x0a0a {
@@ -107,6 +119,18 @@ macro_rules! enum_builder {
                         write!(f, "Unknown ({x:#06x})")
                         }
                 }
+            }
+        }
+
+        impl ::std::fmt::LowerHex for $enum_name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::LowerHex::fmt(&u16::from(*self), f)
+            }
+        }
+
+        impl ::std::fmt::UpperHex for $enum_name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::UpperHex::fmt(&u16::from(*self), f)
             }
         }
     };

@@ -16,9 +16,9 @@ workspace = true
 [features]
 default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
-tls = ["dep:hex", "dep:md5", "dep:sha2"]
+tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
 rustls = ["tls", "dep:rustls"]
-boring = ["tls", "dep:boring", "dep:nom", "dep:itertools"]
+boring = ["tls", "dep:boring", "dep:nom"]
 rustls-ring = ["rustls", "rustls/ring"]
 telemetry = ["rama-core/telemetry"]
 

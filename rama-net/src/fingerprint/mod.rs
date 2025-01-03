@@ -7,6 +7,9 @@ mod ja4;
 pub use ja4::{Ja4H, Ja4HComputeError};
 
 #[cfg(feature = "tls")]
+pub use ja4::{Ja4, Ja4ComputeError};
+
+#[cfg(feature = "tls")]
 mod ja3;
 
 #[cfg(feature = "tls")]
