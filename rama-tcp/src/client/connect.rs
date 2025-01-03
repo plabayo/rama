@@ -22,6 +22,7 @@ use tokio::{
         Semaphore,
     },
 };
+use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
 /// to actually establish the [`TcpStream`.]
@@ -170,8 +171,8 @@ async fn tcp_connect_inner<State, Dns, Connector>(
     ctx: &Context<State>,
     domain: Domain,
     port: u16,
-    dns: Dns,
-    connector: Connector,
+    dns: DnsResolveIpMode,
+    connector: ConnectIpMode<Connector>,
 ) -> Result<(TcpStream, SocketAddr), OpaqueError>
 where
     State: Clone + Send + Sync + 'static,
@@ -183,37 +184,32 @@ where
     let connected = Arc::new(AtomicBool::new(false));
     let sem = Arc::new(Semaphore::new(3));
 
-    // IPv6
-    let ipv6_tx = tx.clone();
-    let ipv6_domain = domain.clone();
-    let ipv6_connected = connected.clone();
-    let ipv6_sem = sem.clone();
-    ctx.spawn(tcp_connect_inner_branch(
-        dns.clone(),
-        connector.clone(),
-        IpKind::Ipv6,
-        ipv6_domain,
-        port,
-        ipv6_tx,
-        ipv6_connected,
-        ipv6_sem,
-    ));
+    if dns.ipv4_supported() {
+            ctx.spawn(tcp_connect_inner_branch(
+                dns.clone(),
+                connector.clone(),
+                IpKind::Ipv4,
+                domain.clone(),
+                port,
+                tx.clone(),
+                connected.clone(),
+                sem.clone(),
+            ));
+        }
+       
 
-    // IPv4
-    let ipv4_tx = tx;
-    let ipv4_domain = domain.clone();
-    let ipv4_connected = connected.clone();
-    let ipv4_sem = sem;
-    ctx.spawn(tcp_connect_inner_branch(
-        dns,
-        connector,
-        IpKind::Ipv4,
-        ipv4_domain,
-        port,
-        ipv4_tx,
-        ipv4_connected,
-        ipv4_sem,
-    ));
+    if dns.ipv6_supported() {
+            ctx.spawn(tcp_connect_inner_branch(
+                dns.clone(),
+                connector.clone(),
+                IpKind::Ipv6,
+                domain.clone(),
+                port,
+                tx.clone(),
+                connected.clone(),
+                sem.clone(),
+            ));
+        }
 
     // wait for the first connection to succeed,
     // ignore the rest of the connections (sorry, but not sorry)
@@ -235,7 +231,7 @@ enum IpKind {
 
 #[allow(clippy::too_many_arguments)]
 async fn tcp_connect_inner_branch<Dns, Connector>(
-    dns: Dns,
+    dns: DnsResolveIpMode,
     connector: Connector,
     ip_kind: IpKind,
     domain: Domain,
@@ -247,23 +243,38 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     Dns: DnsResolver<Error: Into<BoxError>> + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
+    
     let ip_it = match ip_kind {
-        IpKind::Ipv4 => match dns.ipv4_lookup(domain).await {
-            Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
-            Err(err) => {
-                let err = OpaqueError::from_boxed(err.into());
-                tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
-                return;
-            }
-        },
-        IpKind::Ipv6 => match dns.ipv6_lookup(domain).await {
+        IpKind::Ipv4 =>{
+            if dns.ipv4_supported(){
+                match dns.ipv4_lookup(domain).await {
+                    Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
+                    Err(err) => {
+                        let err = OpaqueError::from_boxed(err.into());
+                        tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
+                        return;
+                    }
+                }
+           
+        } else {
+            tracing::debug!("IPv4 not supported by the DNS mode: no connection can be established");
+        }
+    },
+    IpKind::Ipv6 => {
+        if dns.ipv6_supported() {
+            match dns.ipv6_lookup(domain).await {
             Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
                 let err = OpaqueError::from_boxed(err.into());
                 tracing::trace!(err = ?err, "[{ip_kind:?}] failed to resolve domain to IPv6 addresses");
                 return;
             }
-        },
+        }
+    }
+    else {
+        tracing::debug!("IPv4 not supported by the DNS mode: no connection can be established");
+    }
+    }
     };
 
     for (index, ip) in ip_it.enumerate() {
