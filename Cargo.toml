@@ -146,6 +146,7 @@ itoa = "1"
 want = "0.3"
 futures-util = "0.3"
 futures-channel = "0.3"
+sha2 = "0.10.8"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"

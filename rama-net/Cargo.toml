@@ -15,8 +15,8 @@ workspace = true
 
 [features]
 default = []
-http = ["dep:rama-http-types"]
-tls = ["dep:hex", "dep:md5"]
+http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
+tls = ["dep:hex", "dep:md5", "dep:sha2"]
 rustls = ["tls", "dep:rustls"]
 boring = ["tls", "dep:boring", "dep:nom", "dep:itertools"]
 rustls-ring = ["rustls", "rustls/ring"]
@@ -41,6 +41,7 @@ rama-http-types = { version = "0.2.0-alpha.5", path = "../rama-http-types", opti
 rama-utils = { version = "0.2.0-alpha.5", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net"] }
 tracing = { workspace = true }
 venndb = { workspace = true, optional = true }

@@ -32,6 +32,7 @@ use crate::{
     rt::Executor,
     Context, Layer, Service,
 };
+use rama_net::fingerprint::Ja4H;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
@@ -328,6 +329,16 @@ impl Service<(), Request> for EchoService {
             .get::<PseudoHeaderOrder>()
             .map(|o| o.iter().collect());
 
+        let ja4h = Ja4H::compute(&req)
+            .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
+            .ok()
+            .map(|ja4h| {
+                json!({
+                    "hash": format!("{ja4h}"),
+                    "raw": format!("{ja4h:?}"),
+                })
+            });
+
         let (mut parts, body) = req.into_parts();
 
         let headers: Vec<_> = Http1HeaderMap::new(parts.headers, Some(&mut parts.extensions))
@@ -359,6 +370,7 @@ impl Service<(), Request> for EchoService {
                             "hash": format!("{ja3:x}"),
                         })
                     });
+
                 json!({
                     "ja3": ja3,
                     "version": hello.protocol_version().to_string(),
@@ -405,6 +417,7 @@ impl Service<(), Request> for EchoService {
         Ok(Json(json!({
             "ua": user_agent_info,
             "http": {
+                "ja4h": ja4h,
                 "version": format!("{:?}", parts.version),
                 "scheme": scheme,
                 "method": format!("{:?}", parts.method),

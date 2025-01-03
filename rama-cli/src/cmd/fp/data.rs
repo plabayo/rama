@@ -5,9 +5,13 @@ use rama::{
         dep::http::{request::Parts, Extensions},
         headers::Forwarded,
         proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
-        HeaderMap,
+        HeaderMap, Request,
     },
-    net::{fingerprint::Ja3, http::RequestContext, stream::SocketInfo},
+    net::{
+        fingerprint::{Ja3, Ja4H},
+        http::RequestContext,
+        stream::SocketInfo,
+    },
     tls::types::{
         client::{ClientHello, ClientHelloExtension},
         SecureTransport,
@@ -185,6 +189,22 @@ pub(super) async fn get_request_info(
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub(super) struct Ja4HInfo {
+    pub(super) hash: String,
+    pub(super) human_str: String,
+}
+
+pub(super) fn get_ja4h_info<B>(req: &Request<B>) -> Option<Ja4HInfo> {
+    Ja4H::compute(req)
+        .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
+        .ok()
+        .map(|ja4h| Ja4HInfo {
+            hash: format!("{ja4h}"),
+            human_str: format!("{ja4h:?}"),
+        })
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub(super) struct HttpInfo {
     pub(super) headers: Vec<(String, String)>,
     pub(super) pseudo_headers: Option<Vec<String>>,
@@ -202,6 +222,7 @@ pub(super) fn get_http_info(headers: HeaderMap, ext: &mut Extensions) -> HttpInf
             )
         })
         .collect();
+
     let pseudo_headers: Option<Vec<_>> = ext
         .get::<PseudoHeaderOrder>()
         .map(|o| o.iter().map(|p| p.to_string()).collect());

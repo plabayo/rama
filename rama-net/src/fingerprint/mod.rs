@@ -1,5 +1,11 @@
 //! fingerprint implementations for the network surface
 
+#[cfg(any(feature = "tls", feature = "http"))]
+mod ja4;
+
+#[cfg(feature = "http")]
+pub use ja4::{Ja4H, Ja4HComputeError};
+
 #[cfg(feature = "tls")]
 mod ja3;
 

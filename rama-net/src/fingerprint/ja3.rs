@@ -7,7 +7,7 @@ use crate::tls::{
 
 #[derive(Debug, Clone)]
 /// Data which can be hashed using [`Self::hash`],
-/// and which is also displayed as a hash when serializing (serde)
+/// and which is also displayed as a "ja3" hash when serializing (serde)
 /// or displaying it.
 ///
 /// Computed using [`Ja3::compute`].

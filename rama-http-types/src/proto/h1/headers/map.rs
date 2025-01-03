@@ -9,7 +9,7 @@ use super::{
 use crate::{
     dep::http::Extensions,
     header::{self, InvalidHeaderName},
-    HeaderMap, HeaderName, HeaderValue,
+    HeaderMap, HeaderName, HeaderValue, Request,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -23,6 +23,15 @@ impl Http1HeaderMap {
         Self {
             headers: HeaderMap::with_capacity(size),
             original_headers: OriginalHttp1Headers::with_capacity(size),
+        }
+    }
+
+    pub fn copy_from_req<B>(req: &Request<B>) -> Self {
+        let headers = req.headers().clone();
+        let original_headers = req.extensions().get().cloned().unwrap_or_default();
+        Self {
+            headers,
+            original_headers,
         }
     }
 
