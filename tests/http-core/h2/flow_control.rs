@@ -1,6 +1,7 @@
 use futures::{StreamExt, TryStreamExt};
 use h2_support::prelude::*;
 use h2_support::util::yield_once;
+use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
 
 // In this case, the stream & connection both have capacity, but capacity is not
 // explicitly requested.
@@ -491,7 +492,8 @@ async fn stream_close_by_trailers_frame_releases_capacity() {
 
         // Closing the previous stream by sending a trailers frame will
         // release the capacity to s2
-        s1.send_trailers(Default::default()).unwrap();
+        s1.send_trailers(Default::default(), OriginalHttp1Headers::new())
+            .unwrap();
 
         // The capacity should be available
         assert_eq!(s2.capacity(), 5);

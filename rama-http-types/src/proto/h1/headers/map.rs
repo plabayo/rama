@@ -26,6 +26,13 @@ impl Http1HeaderMap {
         }
     }
 
+    pub fn from_parts(headers: HeaderMap, original_headers: OriginalHttp1Headers) -> Self {
+        Self {
+            headers,
+            original_headers,
+        }
+    }
+
     pub fn copy_from_req<B>(req: &Request<B>) -> Self {
         let headers = req.headers().clone();
         let original_headers = req.extensions().get().cloned().unwrap_or_default();
@@ -52,6 +59,10 @@ impl Http1HeaderMap {
     pub fn consume(self, ext: &mut Extensions) -> HeaderMap {
         ext.insert(self.original_headers);
         self.headers
+    }
+
+    pub fn into_parts(self) -> (HeaderMap, OriginalHttp1Headers) {
+        (self.headers, self.original_headers)
     }
 
     pub fn append(&mut self, name: impl IntoHttp1HeaderName, value: HeaderValue) {

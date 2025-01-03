@@ -1,5 +1,6 @@
 use futures::{FutureExt, StreamExt, TryFutureExt};
 use h2_support::prelude::*;
+use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
 
 use std::io;
 use std::{
@@ -113,7 +114,9 @@ fn hammer_client_concurrency() {
                     .unwrap();
 
                 let (response, mut stream) = client.send_request(request, false).unwrap();
-                stream.send_trailers(HeaderMap::new()).unwrap();
+                stream
+                    .send_trailers(HeaderMap::new(), OriginalHttp1Headers::new())
+                    .unwrap();
 
                 tokio::spawn(async move {
                     h2.await.unwrap();

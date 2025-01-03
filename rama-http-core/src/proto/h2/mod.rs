@@ -12,6 +12,7 @@ use rama_core::error::BoxError;
 use rama_http_types::header::{
     CONNECTION, KEEP_ALIVE, PROXY_CONNECTION, TE, TRANSFER_ENCODING, UPGRADE,
 };
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, HeaderName};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tracing::{debug, trace, warn};
@@ -168,7 +169,11 @@ where
                         // no more DATA, so give any capacity back
                         me.body_tx.reserve_capacity(0);
                         me.body_tx
-                            .send_trailers(frame.into_trailers().unwrap_or_else(|_| unreachable!()))
+                            .send_trailers(
+                                frame.into_trailers().unwrap_or_else(|_| unreachable!()),
+                                // TODO: support trailer order...
+                                OriginalHttp1Headers::new(),
+                            )
                             .map_err(crate::Error::new_body_write)?;
                         return Poll::Ready(Ok(()));
                     } else {

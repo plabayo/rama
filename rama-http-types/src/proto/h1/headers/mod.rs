@@ -12,4 +12,4 @@ pub use name::{Http1HeaderName, IntoHttp1HeaderName, TryIntoHttp1HeaderName};
 pub mod original;
 
 mod map;
-pub use map::Http1HeaderMap;
+pub use map::{Http1HeaderMap, Http1HeaderMapIntoIter};

@@ -3,6 +3,7 @@ use crate::h2::codec::UserError;
 use crate::h2::frame::{PushPromiseHeaderError, Reason, DEFAULT_INITIAL_WINDOW_SIZE};
 use crate::h2::proto;
 
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, Request, Response};
 
 use std::cmp::Ordering;
@@ -224,6 +225,7 @@ impl Recv {
                         rama_http_types::StatusCode::REQUEST_HEADER_FIELDS_TOO_LARGE,
                     ),
                     HeaderMap::new(),
+                    OriginalHttp1Headers::new(),
                 );
                 res.set_end_stream();
                 Err(RecvHeaderBlockError::Oversize(Some(res)))
@@ -233,7 +235,7 @@ impl Recv {
         }
 
         let stream_id = frame.stream_id();
-        let (pseudo, fields) = frame.into_parts();
+        let (pseudo, fields, field_order) = frame.into_parts();
 
         if pseudo.protocol.is_some()
             && counts.peer().is_server()
@@ -249,9 +251,10 @@ impl Recv {
         }
 
         if !pseudo.is_informational() {
-            let message = counts
-                .peer()
-                .convert_poll_message(pseudo, fields, stream_id)?;
+            let message =
+                counts
+                    .peer()
+                    .convert_poll_message(pseudo, fields, field_order, stream_id)?;
 
             // Push the frame onto the stream's recv buffer
             stream
@@ -754,8 +757,13 @@ impl Recv {
         }
 
         let promised_id = frame.promised_id();
-        let (pseudo, fields) = frame.into_parts();
-        let req = crate::h2::server::Peer::convert_poll_message(pseudo, fields, promised_id)?;
+        let (pseudo, fields, field_order) = frame.into_parts();
+        let req = crate::h2::server::Peer::convert_poll_message(
+            pseudo,
+            fields,
+            field_order,
+            promised_id,
+        )?;
 
         if let Err(e) = frame::PushPromise::validate_request(&req) {
             match e {

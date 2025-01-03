@@ -4,6 +4,7 @@ use futures::future::lazy;
 use futures::{FutureExt, StreamExt, TryStreamExt};
 use h2_support::prelude::*;
 use h2_support::util::yield_once;
+use rama_http::proto::h1::headers::original::OriginalHttp1Headers;
 use std::task::Poll;
 use tokio::sync::oneshot;
 
@@ -942,7 +943,7 @@ async fn rst_while_closing() {
         };
         let mut stream = conn.drive(req).await;
         // Enqueue trailers frame.
-        let _ = stream.send_trailers(HeaderMap::new());
+        let _ = stream.send_trailers(HeaderMap::new(), OriginalHttp1Headers::new());
         // Signal the server mock to send RST_FRAME
         let _: () = tx.send(()).unwrap();
         drop(stream);

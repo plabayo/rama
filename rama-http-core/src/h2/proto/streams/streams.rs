@@ -8,6 +8,7 @@ use crate::h2::proto::{peer, Error, Initiator, Open, Peer, WindowSize};
 use crate::h2::{client, proto, server};
 
 use bytes::{Buf, Bytes};
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, Request, Response};
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
@@ -1092,7 +1093,11 @@ impl<B> StreamRef<B> {
         })
     }
 
-    pub(crate) fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), UserError> {
+    pub(crate) fn send_trailers(
+        &mut self,
+        trailers: HeaderMap,
+        trailer_order: OriginalHttp1Headers,
+    ) -> Result<(), UserError> {
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1103,7 +1108,7 @@ impl<B> StreamRef<B> {
 
         me.counts.transition(stream, |counts, stream| {
             // Create the trailers frame
-            let frame = frame::Headers::trailers(stream.id, trailers);
+            let frame = frame::Headers::trailers(stream.id, trailers, trailer_order);
 
             // Send the trailers frame
             actions

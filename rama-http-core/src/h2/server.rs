@@ -121,6 +121,7 @@ use crate::h2::proto::{self, Config, Error, Prioritized};
 use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use bytes::{Buf, Bytes};
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Method, Request, Response};
 use std::future::Future;
@@ -1444,8 +1445,10 @@ impl Peer {
             }
         }
 
+        let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
+
         // Create the HEADERS frame
-        let mut frame = frame::Headers::new(id, pseudo, headers);
+        let mut frame = frame::Headers::new(id, pseudo, headers, header_order);
 
         if end_of_stream {
             frame.set_end_stream()
@@ -1498,11 +1501,14 @@ impl Peer {
             }
         }
 
+        let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
+
         Ok(frame::PushPromise::new(
             stream_id,
             promised_id,
             pseudo,
             headers,
+            header_order,
         ))
     }
 }
@@ -1525,6 +1531,7 @@ impl proto::Peer for Peer {
     fn convert_poll_message(
         pseudo: Pseudo,
         fields: HeaderMap,
+        field_order: OriginalHttp1Headers,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error> {
         use rama_http_types::{dep::http::uri, Version};
@@ -1633,7 +1640,11 @@ impl proto::Peer for Peer {
         };
 
         if !pseudo.order.is_empty() {
-            request.extensions_mut().insert(pseudo.order.clone());
+            request.extensions_mut().insert(pseudo.order);
+        }
+
+        if !field_order.is_empty() {
+            request.extensions_mut().insert(field_order);
         }
 
         *request.headers_mut() = fields;

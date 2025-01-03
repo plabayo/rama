@@ -16,6 +16,12 @@ pub struct OriginalHttp1Headers {
 }
 
 impl OriginalHttp1Headers {
+    pub fn new() -> Self {
+        Self {
+            ordered_headers: Vec::new(),
+        }
+    }
+
     pub fn push(&mut self, name: Http1HeaderName) {
         self.ordered_headers.push(name);
     }
