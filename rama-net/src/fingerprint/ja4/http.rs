@@ -60,17 +60,14 @@ impl Ja4H {
                 }
                 COOKIE => {
                     has_cookie_header = true;
-                    cookie_pairs = std::str::from_utf8(value.as_bytes()).ok().map(|s| {
-                        let mut s: Vec<_> = s
-                            .split("; ")
-                            .map(|cookie| match cookie.split_once('=') {
-                                None => (cookie.to_owned(), None),
-                                Some((name, value)) => (name.to_owned(), Some(value.to_owned())),
-                            })
-                            .collect();
-                        s.sort_unstable();
-                        s
-                    });
+                    if let Ok(s) = std::str::from_utf8(value.as_bytes()) {
+                        let pairs = cookie_pairs.get_or_insert_with(Vec::default);
+                        pairs.extend(s.split("; ").map(|cookie| match cookie.split_once('=') {
+                            None => (cookie.to_owned(), None),
+                            Some((name, value)) => (name.to_owned(), Some(value.to_owned())),
+                        }));
+                        pairs.sort_unstable();
+                    }
                     None
                 }
                 REFERER => {
