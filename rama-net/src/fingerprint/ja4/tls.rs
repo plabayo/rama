@@ -9,8 +9,7 @@ use crate::tls::{
 };
 
 #[derive(Clone)]
-/// Data which can be hashed using [`Self::hash`],
-/// and which is also displayed as a "ja4" hash.
+/// Input data for a "ja4" hash.
 ///
 /// Computed using [`Ja4::compute`].
 pub struct Ja4 {

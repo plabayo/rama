@@ -11,8 +11,7 @@ use rama_http_types::{
 };
 
 #[derive(Clone)]
-/// Data which can be hashed using [`Self::hash`],
-/// and which is also displayed as a "ja4h" hash.
+/// Input data for a "ja4h" hash.
 /// or displaying it.
 ///
 /// Computed using [`Ja4H::compute`].
