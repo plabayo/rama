@@ -13,6 +13,7 @@ members = [
     "rama-http-core/tests/h2-fuzz",
     "rama-http-core/tests/h2-support",
     "rama-http-types",
+    "rama-icap",
     "rama-macros",
     "rama-net",
     "rama-proxy",

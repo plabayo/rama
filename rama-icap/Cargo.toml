@@ -1,0 +1,16 @@
+[package]
+name = "rama-icap"
+version = "0.1.0"
+edition = "2021"
+description = "ICAP (Internet Content Adaptation Protocol) support for Rama"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/rama-net/rama"
+
+[dependencies]
+rama-core = { path = "../rama-core", version = "0.2.0-alpha.4" }
+rama-error = { path = "../rama-error", version = "0.2.0-alpha.4" }
+rama-net = { path = "../rama-net", version = "0.2.0-alpha.4" }
+bytes = "1.5"
+tokio = { version = "1.35", features = ["full"] }
+http = "1.0"
+thiserror = "1.0"
