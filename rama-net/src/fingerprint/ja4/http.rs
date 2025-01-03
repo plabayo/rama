@@ -28,7 +28,7 @@ pub struct Ja4H {
 impl Ja4H {
     /// Compute the [`Ja4H`] (hash).
     ///
-    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting`>
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
     pub fn compute<B>(req: &Request<B>) -> Result<Self, Ja4HComputeError> {
         let req_method = HttpRequestMethod::from(req.method().clone());

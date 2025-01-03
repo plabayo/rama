@@ -25,7 +25,7 @@ pub struct Ja4 {
 impl Ja4 {
     /// Compute the [`Ja4`] (hash).
     ///
-    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting`>
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
     pub fn compute(ext: &Extensions) -> Result<Self, Ja4ComputeError> {
         let client_hello = ext
