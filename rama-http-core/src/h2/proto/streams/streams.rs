@@ -8,7 +8,9 @@ use crate::h2::proto::{peer, Error, Initiator, Open, Peer, WindowSize};
 use crate::h2::{client, proto, server};
 
 use bytes::{Buf, Bytes};
+use rama_http_types::dep::http::Extensions;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Request, Response};
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
@@ -100,6 +102,21 @@ struct Actions {
 #[derive(Debug)]
 struct SendBuffer<B> {
     inner: Mutex<Buffer<Frame<B>>>,
+}
+
+fn clear_extensions_safely(ext: &mut Extensions) {
+    let pseudo_order: Option<PseudoHeaderOrder> = ext.remove();
+    let field_order: Option<OriginalHttp1Headers> = ext.remove();
+
+    ext.clear();
+
+    if let Some(pseudo_order) = pseudo_order {
+        ext.insert(pseudo_order);
+    }
+
+    if let Some(field_order) = field_order {
+        ext.insert(field_order);
+    }
 }
 
 // ===== impl Streams =====
@@ -231,7 +248,7 @@ where
         let protocol = request.extensions_mut().remove::<Protocol>();
 
         // Clear before taking lock, incase extensions contain a StreamRef.
-        request.extensions_mut().clear();
+        clear_extensions_safely(request.extensions_mut());
 
         // TODO: There is a hazard with assigning a stream ID before the
         // prioritize layer. If prioritization reorders new streams, this
@@ -1135,7 +1152,7 @@ impl<B> StreamRef<B> {
         end_of_stream: bool,
     ) -> Result<(), UserError> {
         // Clear before taking lock, incase extensions contain a StreamRef.
-        response.extensions_mut().clear();
+        clear_extensions_safely(response.extensions_mut());
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1158,7 +1175,7 @@ impl<B> StreamRef<B> {
         mut request: Request<()>,
     ) -> Result<StreamRef<B>, UserError> {
         // Clear before taking lock, incase extensions contain a StreamRef.
-        request.extensions_mut().clear();
+        clear_extensions_safely(request.extensions_mut());
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
