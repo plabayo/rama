@@ -72,8 +72,20 @@ where
         parts.headers = header_map.clone().consume(&mut parts.extensions);
 
         for (name, value) in header_map {
-            w.write_all(format!("{}: {}\r\n", name, value.to_str()?).as_bytes())
-                .await?;
+            match parts.version {
+                http::Version::HTTP_2 | http::Version::HTTP_3 => {
+                    // write lower-case for H2/H3
+                    w.write_all(
+                        format!("{}: {}\r\n", name.header_name().as_str(), value.to_str()?)
+                            .as_bytes(),
+                    )
+                    .await?;
+                }
+                _ => {
+                    w.write_all(format!("{}: {}\r\n", name, value.to_str()?).as_bytes())
+                        .await?;
+                }
+            }
         }
     }
 
