@@ -162,3 +162,4 @@ publish:
     cargo publish -p rama-udp
     cargo publish -p rama-socks5
     cargo publish -p rama
+    cargo publish -p rama-cli
