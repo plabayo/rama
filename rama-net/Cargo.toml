@@ -36,9 +36,9 @@ md5 = { workspace = true, optional = true }
 nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.5", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.5", path = "../rama-http-types", optional = true }
-rama-utils = { version = "0.2.0-alpha.5", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.6", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.6", path = "../rama-http-types", optional = true }
+rama-utils = { version = "0.2.0-alpha.6", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true, optional = true }
