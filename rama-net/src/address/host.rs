@@ -314,7 +314,7 @@ impl<'de> serde::Deserialize<'de> for Host {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = <&'de str>::deserialize(deserializer)?;
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         s.parse().map_err(serde::de::Error::custom)
     }
 }

@@ -47,8 +47,8 @@ impl<'de> Deserialize<'de> for Http1HeaderName {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = <&'de str>::deserialize(deserializer)?;
-        Self::try_copy_from_str(s).map_err(D::Error::custom)
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        Self::try_copy_from_str(&s).map_err(D::Error::custom)
     }
 }
 

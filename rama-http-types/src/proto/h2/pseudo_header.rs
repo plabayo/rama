@@ -80,7 +80,7 @@ impl<'de> Deserialize<'de> for PseudoHeader {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = <&'de str>::deserialize(deserializer)?;
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         s.parse().map_err(D::Error::custom)
     }
 }
