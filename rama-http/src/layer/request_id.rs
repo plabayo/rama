@@ -63,6 +63,7 @@ use crate::{
     header::{HeaderName, HeaderValue},
     Request, Response,
 };
+use nanoid::nanoid;
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use uuid::Uuid;
@@ -385,6 +386,17 @@ impl MakeRequestId for MakeRequestUuid {
     }
 }
 
+/// A [`MakeRequestId`] that generates `NanoID`s.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MakeRequestNanoid;
+
+impl MakeRequestId for MakeRequestNanoid {
+    fn make_request_id<B>(&self, _request: &Request<B>) -> Option<RequestId> {
+        let request_id = nanoid!().parse().unwrap();
+        Some(RequestId::new(request_id))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::layer::set_header;
@@ -482,5 +494,20 @@ mod tests {
         let mut res = svc.serve(Context::default(), req).await.unwrap();
         let id = res.headers_mut().remove("x-request-id").unwrap();
         id.to_str().unwrap().parse::<Uuid>().unwrap();
+    }
+
+    #[tokio::test]
+    async fn nanoid() {
+        let svc = (
+            SetRequestIdLayer::x_request_id(MakeRequestNanoid),
+            PropagateRequestIdLayer::x_request_id(),
+        )
+            .layer(service_fn(handler));
+
+        // header on response
+        let req = Request::builder().body(Body::empty()).unwrap();
+        let mut res = svc.serve(Context::default(), req).await.unwrap();
+        let id = res.headers_mut().remove("x-request-id").unwrap();
+        assert_eq!(id.to_str().unwrap().chars().count(), 21);
     }
 }
