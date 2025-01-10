@@ -23,6 +23,8 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
@@ -42,6 +44,8 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
@@ -61,6 +65,8 @@ jobs:
           toolchain: ${{env.RUST_TOOLCHAIN}}
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: check
         run: |
           cargo check --workspace --all-targets --all-features
@@ -71,16 +77,18 @@ jobs:
         run: |
           cargo fmt --all --check
 
-  # TODO: enable again once this CI issue is gone :shrug:
-  # test-msrv:
-  #   needs: [check, check-msrv, check-all-features]
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #     - uses: dtolnay/rust-toolchain@master
-  #       with:
-  #         toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-  #     - uses: Swatinem/rust-cache@v2
+        # TODO: enable again once this CI issue is gone :shrug:
+        # test-msrv:
+        #   needs: [check, check-msrv, check-all-features]
+        #   runs-on: ubuntu-latest
+        #   steps:
+        #     - uses: actions/checkout@v4
+        #     - uses: dtolnay/rust-toolchain@master
+        #       with:
+        #         toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
+        #     - uses: Swatinem/rust-cache@v2
+        # with:
+        #   env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
   #     - name: Run tests
   #       run: cargo test --all-features --workspace
 
@@ -93,6 +101,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
       - name: Run tests
         run: cargo test --all-features --workspace
 
@@ -105,6 +115,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
         run: cargo test --all-features --workspace
 
@@ -117,6 +129,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
         run: cargo test --all-features --workspace
 
@@ -129,6 +143,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
         run: cargo test --all-features --workspace
 
@@ -141,6 +157,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
         run: cargo test --all-features --workspace
 
@@ -153,6 +171,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
         run: cargo test --all-features --workspace
 
@@ -165,6 +185,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
         run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
 
@@ -177,6 +199,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
       - name: Run tests
         run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
 
@@ -189,6 +213,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
         run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
 
@@ -201,6 +227,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
         run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
 
@@ -213,6 +241,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run tests
         run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
 
@@ -225,6 +255,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run tests
         run: cargo test --features=cli,telemetry,compression,rustls --workspace -- --ignored
 
@@ -237,6 +269,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run doc tests
         run: cargo test --doc --all-features --workspace
 
@@ -249,6 +283,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
       - name: Run doc tests
         run: cargo test --all-features --examples --workspace
 
@@ -261,6 +297,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run doc tests
         run: cargo test --all-features --examples --workspace
 
@@ -273,6 +311,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run doc tests
         run: cargo test --all-features --examples --workspace
 
@@ -285,6 +325,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_BETA}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_BETA}}"
       - name: Run doc tests
         run: cargo test --all-features --examples --workspace
 
@@ -297,6 +339,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Run doc tests
         run: cargo test --all-features --examples --workspace
 
@@ -309,6 +353,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Run doc tests
         run: cargo test --all-features --examples --workspace
 
@@ -334,6 +380,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
       - name: Install cargo-sort
         run: |
           cargo install cargo-sort 2>/dev/null || true

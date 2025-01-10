@@ -41,6 +41,8 @@ jobs:
         with:
           toolchain: ${{env.RUST_TOOLCHAIN}}
       - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
       - name: Generate Rust Docs
         env:
           RUSTDOCFLAGS: "-D rustdoc::broken_intra_doc_links"
