@@ -390,22 +390,9 @@ impl Builder {
     /// and no error will be reported.
     ///
     /// Default is false.
-    pub fn ignore_invalid_headers_in_responses(&mut self, enabled: bool) -> &mut Builder {
+    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Builder {
         self.h1_parser_config
             .ignore_invalid_headers_in_responses(enabled);
-        self
-    }
-
-    /// Set whether HTTP/1 connections will silently ignored malformed header lines.
-    ///
-    /// If this is enabled and a header line does not start with a valid header
-    /// name, or does not include a colon at all, the line will be silently ignored
-    /// and no error will be reported.
-    ///
-    /// Default is false.
-    pub fn ignore_invalid_headers_in_requests(&mut self, enabled: bool) -> &mut Builder {
-        self.h1_parser_config
-            .ignore_invalid_headers_in_requests(enabled);
         self
     }
 
