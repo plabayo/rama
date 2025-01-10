@@ -393,11 +393,11 @@ jobs:
   cargo-deny:
     needs: [check, check-msrv, check-all-features]
     runs-on: ubuntu-latest
-    env:
-      RUST_TOOLCHAIN: ${{env.RUST_TOOLCHAIN_MSRV}}
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+        env:
+          RUST_TOOLCHAIN: ${{env.RUST_TOOLCHAIN_MSRV}}
 
   cargo-fuzz-ua:
     needs: [check, check-msrv, check-all-features]
