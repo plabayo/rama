@@ -196,6 +196,7 @@ keywords = { workspace = true }
 categories = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
+resolver = "3"
 
 [lints]
 workspace = true
