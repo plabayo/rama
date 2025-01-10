@@ -600,7 +600,7 @@ where
 
                 let content_length = headers::content_length_parse_all(res.headers());
                 if let (Some(mut send_stream), StatusCode::OK) = (send_stream, res.status()) {
-                    if content_length.map_or(false, |len| len != 0) {
+                    if content_length.is_some_and(|len| len != 0) {
                         warn!("h2 connect response with non-zero body not supported");
 
                         send_stream.send_reset(crate::h2::Reason::INTERNAL_ERROR);
@@ -693,7 +693,7 @@ where
 
                     if is_connect
                         && headers::content_length_parse_all(req.headers())
-                            .map_or(false, |len| len != 0)
+                            .is_some_and(|len| len != 0)
                     {
                         warn!("h2 connect request with non-zero body not supported");
                         cb.send(Err(TrySendError {

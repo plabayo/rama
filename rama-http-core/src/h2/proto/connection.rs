@@ -439,7 +439,7 @@ where
                 if self
                     .go_away
                     .going_away()
-                    .map_or(false, |frame| frame.reason() == reason)
+                    .is_some_and(|frame| frame.reason() == reason)
                 {
                     tracing::trace!("    -> already going away");
                     *self.state = State::Closing(reason, initiator);

@@ -33,7 +33,7 @@ homepage = "https://ramaproxy.org"
 keywords = ["io", "async", "non-blocking", "service", "rama"]
 categories = ["asynchronous", "network-programming", "web-programming", "web-programming::http-client", "web-programming::http-server"]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.80.0"
+rust-version = "1.84.0"
 
 [workspace.dependencies]
 async-compression = "0.4"

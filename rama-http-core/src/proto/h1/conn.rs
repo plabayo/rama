@@ -275,7 +275,7 @@ where
             .head
             .headers
             .get(TE)
-            .map_or(false, |te_header| te_header == "trailers");
+            .is_some_and(|te_header| te_header == "trailers");
 
         Poll::Ready(Some(Ok((msg.head, msg.decode, wants))))
     }
@@ -593,7 +593,7 @@ where
         let outgoing_is_keep_alive = head
             .headers
             .get(CONNECTION)
-            .map_or(false, headers::connection_keep_alive);
+            .is_some_and(headers::connection_keep_alive);
 
         if !outgoing_is_keep_alive {
             match head.version {

@@ -374,7 +374,7 @@ enum RequestBuilderState {
     Error(OpaqueError),
 }
 
-impl<'a, S, State, Body> RequestBuilder<'a, S, State, Response<Body>>
+impl<S, State, Body> RequestBuilder<'_, S, State, Response<Body>>
 where
     S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
 {

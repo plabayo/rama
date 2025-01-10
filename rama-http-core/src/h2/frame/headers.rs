@@ -713,8 +713,7 @@ impl Pseudo {
 
     /// Whether it has status 1xx
     pub(crate) fn is_informational(&self) -> bool {
-        self.status
-            .map_or(false, |status| status.is_informational())
+        self.status.is_some_and(|status| status.is_informational())
     }
 }
 

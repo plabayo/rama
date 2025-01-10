@@ -16,7 +16,7 @@
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
-[rust-version-badge]: https://img.shields.io/badge/rustc-1.80+-blue?style=flat-square&logo=rust
+[rust-version-badge]: https://img.shields.io/badge/rustc-1.84+-blue?style=flat-square&logo=rust
 [rust-version-url]: https://www.rust-lang.org
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions
@@ -346,7 +346,7 @@ support as many as we reasonably can.
 
 ### Minimum supported Rust version
 
-Rama's MSRV is `1.80`.
+Rama's MSRV is `1.84`.
 
 [Using GitHub Actions we also test](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) if `rama` on that version still works on
 the stable and beta versions of _rust_ as well.
