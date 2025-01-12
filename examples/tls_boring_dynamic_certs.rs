@@ -6,24 +6,6 @@
 //! ```sh
 //! cargo run --example tls_boring_dynamic_certs --features=boring,http-full
 //! ```
-//!
-//! # Expected output
-//!
-//! The server will start and listen on `:64801`. You can use `curl` to interact with the service:
-//!
-//! ```sh
-//! curl -v https://127.0.0.1:62801
-//! ```
-//!
-//! The above will fail, due to not being haproxy encoded, but also because it is not a tls service...
-//!
-//! This one will work however:
-//!
-//! ```sh
-//! curl -k -v https://127.0.0.1:63801
-//! ```
-//!
-//! You should see a response with `HTTP/1.0 200 ok` and the body `Hello world!`.
 
 // these dependencies are re-exported by rama for your convenience,
 // as to make it easy to use them and ensure that the versions remain compatible
@@ -116,9 +98,10 @@ struct DynamicIssuer {
 impl DynamicIssuer {
     fn new() -> Self {
         Self {
-            example_data: example_self_signed_auth().expect("todo"),
-            second_example_data: second_example_self_signed_auth().expect("todo"),
-            default_data: example_self_signed_auth().expect("todo"),
+            example_data: example_self_signed_auth().expect("load example data"),
+            second_example_data: second_example_self_signed_auth()
+                .expect("load second example data"),
+            default_data: example_self_signed_auth().expect("load default data"),
         }
     }
 }
@@ -182,10 +165,10 @@ pub fn second_example_self_signed_auth() -> Result<ServerAuthData, OpaqueError> 
     })
 }
 
-async fn http_service<S>(ctx: Context<S>, _request: Request) -> Result<Response, Infallible> {
+async fn http_service<S>(_ctx: Context<S>, _request: Request) -> Result<Response, Infallible> {
     Ok(Response::new(
         format!(
-            "hello client, you were served by tls terminator proxy issuing a dynamic certificate\r\n"
+            "hello client, you were served by boring tls terminator proxy issuing a dynamic certificate\r\n"
         )
         .into(),
     ))

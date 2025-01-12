@@ -158,7 +158,7 @@ impl TlsCertSource {
                             issue_cert_for_ca(host.clone(), &ca_cert, &ca_key)
                         })
                         .context("fresh issue of cert + insert").map_err(|err| {
-                            tracing::error!(error = %err, "boring: servername callback: issue failed");
+                            tracing::error!(error = %err, "boring: select certificate callback: issue failed");
                             SelectCertError::ERROR
                         })?;
 
@@ -167,7 +167,7 @@ impl TlsCertSource {
                         issued_cert,
                         ssl_ref,
                     ).map_err(|err| {
-                        tracing::error!(error = %err, "boring: servername callback: add certs to ssl ref");
+                        tracing::error!(error = %err, "boring: select certificate callback: add certs to ssl ref");
                         SelectCertError::ERROR
                     })?;
 
@@ -227,7 +227,7 @@ impl TlsCertSource {
                                 issued_cert,
                                 ssl_ref,
                             ).map_err(|err| {
-                                tracing::error!(error = %err, "boring: servername callback: add certs to ssl ref");
+                                tracing::error!(error = %err, "boring: async select certificate callback: add certs to ssl ref");
                                 AsyncSelectCertError{}
                             })?;
                             Ok(())
@@ -348,19 +348,19 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
 fn to_host(ssl_ref: &SslRef, server_name: &Option<Host>) -> Result<Host, OpaqueError> {
     let host = match (ssl_ref.servername(NameType::HOST_NAME), &server_name) {
         (Some(sni), _) => {
-            tracing::trace!(host = %sni, "boring: servername callback: use client SNI");
+            tracing::trace!(host = %sni, "boring: server_name to host: use client SNI");
             sni.parse().map_err(|err| {
                 tracing::warn!(error = %err, "boring: invalid servername received in callback");
                 OpaqueError::from_display("sni parse failed")
             })? // from client (e.g. only possibility for SNI proxy)
         }
         (_, Some(host)) => {
-            tracing::trace!(%host, "boring: servername callback: use context");
+            tracing::trace!(%host, "boring: server_name not in sni: using context");
             host.clone() // from context (lower prio)
         }
         (None, None) => {
             tracing::warn!(
-                "boring: no host found in servername callback: defaulting to 'localhost'"
+                "boring: no host found in server_name or ctx: defaulting to 'localhost'"
             );
             Host::Name(Domain::from_static("localhost")) // fallback
         }
