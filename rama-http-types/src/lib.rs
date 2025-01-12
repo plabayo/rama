@@ -131,6 +131,9 @@ pub mod header {
         "x-real-ip",
     ];
 
+    // non-std web-crawler info headers
+    static_header!["x-robots-tag",];
+
     /// Static Header Value that is can be used as `User-Agent` or `Server` header.
     pub static RAMA_ID_HEADER_VALUE: HeaderValue = HeaderValue::from_static(
         const_format::formatcp!("{}/{}", rama_utils::info::NAME, rama_utils::info::VERSION),
