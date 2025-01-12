@@ -2,7 +2,7 @@ use super::{ProxyFilter, StringFilter};
 use rama_net::{
     address::ProxyAddress,
     asn::Asn,
-    transport::{TransportContext, TransportProtocol},
+    transport::{ProxyContext, TransportProtocol},
 };
 use rama_utils::str::NonEmptyString;
 use serde::{Deserialize, Serialize};
@@ -87,8 +87,8 @@ fn proxydb_insert_validator(proxy: &Proxy) -> bool {
 }
 
 impl Proxy {
-    /// Check if the proxy is a match for the given[`TransportContext`] and [`ProxyFilter`].
-    pub fn is_match(&self, ctx: &TransportContext, filter: &ProxyFilter) -> bool {
+    /// Check if the proxy is a match for the given[`ProxyContext`] and [`ProxyFilter`].
+    pub fn is_match(&self, ctx: &ProxyContext, filter: &ProxyFilter) -> bool {
         if let Some(id) = &filter.id {
             if id != &self.id {
                 return false;

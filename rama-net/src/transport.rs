@@ -26,6 +26,23 @@ pub struct TransportContext {
     pub authority: Authority,
 }
 
+/// The context as relevant to the proxy layer.
+///
+/// This is used to pass proxy related information to the transport layer.
+#[derive(Debug, Clone)]
+pub struct ProxyContext {
+    /// The transport protocol used by the proxy.
+    pub protocol: TransportProtocol,
+}
+
+impl From<TransportContext> for ProxyContext {
+    fn from(ctx: TransportContext) -> Self {
+        Self {
+            protocol: ctx.protocol,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// The protocol used for the transport layer.
 pub enum TransportProtocol {

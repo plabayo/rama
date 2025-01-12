@@ -5,7 +5,7 @@ use rama_core::{
 };
 use rama_net::{
     address::ProxyAddress,
-    transport::{TransportProtocol, TryRefIntoTransportContext},
+    transport::{ProxyContext, TransportProtocol, TryRefIntoTransportContext},
     user::{Basic, ProxyCredential},
     Protocol,
 };
@@ -212,18 +212,19 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let transport_ctx = ctx
+            let proxy_ctx: ProxyContext = ctx
                 .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
                 .map_err(|err| {
                     OpaqueError::from_boxed(err.into())
                         .context("proxydb: select proxy: get transport context")
                 })?
-                .clone();
-            let transport_protocol = transport_ctx.protocol.clone();
+                .clone()
+                .into();
+            let transport_protocol = proxy_ctx.protocol.clone();
 
             let proxy = self
                 .db
-                .get_proxy_if(transport_ctx, filter.clone(), self.predicate.clone())
+                .get_proxy_if(proxy_ctx, filter.clone(), self.predicate.clone())
                 .await
                 .map_err(|err| {
                     OpaqueError::from_std(ProxySelectError {
