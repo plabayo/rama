@@ -216,10 +216,7 @@ impl From<std::io::Error> for ProxyCsvRowReaderError {
 mod tests {
     use super::*;
     use crate::ProxyFilter;
-    use rama_net::{
-        transport::{TransportContext, TransportProtocol},
-        Protocol,
-    };
+    use rama_net::transport::{ProxyContext, TransportProtocol};
     use rama_utils::str::NonEmptyString;
     use std::str::FromStr;
 
@@ -538,11 +535,8 @@ mod tests {
     #[test]
     fn test_proxy_is_match_happy_path_proxy_with_any_filter_string_cases() {
         let proxy = parse_csv_row("id,1,,1,,,,,,,authority,*,*,*,*,*,*,0").unwrap();
-        let ctx = TransportContext {
+        let ctx = ProxyContext {
             protocol: TransportProtocol::Tcp,
-            app_protocol: Some(Protocol::HTTPS),
-            http_version: None,
-            authority: "localhost:8443".try_into().unwrap(),
         };
 
         for filter in [
@@ -589,11 +583,8 @@ mod tests {
         let proxy =
             parse_csv_row("id,1,,1,,,,,,,authority,pool,continent,country,state,city,carrier,42")
                 .unwrap();
-        let ctx = TransportContext {
+        let ctx = ProxyContext {
             protocol: TransportProtocol::Tcp,
-            app_protocol: Some(Protocol::HTTPS),
-            http_version: None,
-            authority: "localhost:8443".try_into().unwrap(),
         };
 
         for filter in [
