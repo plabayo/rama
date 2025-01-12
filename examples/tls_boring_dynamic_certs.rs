@@ -6,6 +6,51 @@
 //! ```sh
 //! cargo run --example tls_boring_dynamic_certs --features=boring,http-full
 //! ```
+//!
+//! Test if the correct certificates are returned by making curl resolve example and second.example to
+//! the localhost address on which we expose this service.
+//!
+//! Example certificate:
+//! ```sh
+//! curl -vik --resolve example:64801:127.0.0.1 https://example:64801
+//! ```
+//! Output
+//! ```
+//! * Server certificate:
+//! *  subject: CN=example.com
+//! *  start date: Dec  9 20:05:17 2024 GMT
+//! *  expire date: Dec  7 20:05:17 2034 GMT
+//! *  issuer: CN=example.com
+//! *  SSL certificate verify result: self signed certificate (18), continuing anyway.
+//! ```
+//!
+//! Second example certificate:
+//! ```sh
+//! curl -vik --resolve second.example:64801:127.0.0.1 https://second.example:64801
+//! ```
+//! Output
+//! ```
+//! * Server certificate:
+//! *  subject: CN=second.example.com
+//! *  start date: Dec  9 20:08:11 2024 GMT
+//! *  expire date: Dec  7 20:08:11 2034 GMT
+//! *  issuer: CN=second.example.com
+//! *  SSL certificate verify result: self signed certificate (18), continuing anyway.
+//! ```
+//!
+//! Fallback to to default (example certificate) if no matches are found:
+//! ```sh
+//! curl -vik https://127.0.0.1:64801
+//! ```
+//! Output
+//! ```
+//! * Server certificate:
+//! *  subject: CN=example.com
+//! *  start date: Dec  9 20:05:17 2024 GMT
+//! *  expire date: Dec  7 20:05:17 2034 GMT
+//! *  issuer: CN=example.com
+//! *  SSL certificate verify result: self signed certificate (18), continuing anyway.
+//! ```
 
 // these dependencies are re-exported by rama for your convenience,
 // as to make it easy to use them and ensure that the versions remain compatible
