@@ -9,6 +9,9 @@ members = [
     "rama-haproxy",
     "rama-http",
     "rama-http-backend",
+    "rama-http-core",
+    "rama-http-core/tests/h2-fuzz",
+    "rama-http-core/tests/h2-support",
     "rama-http-types",
     "rama-macros",
     "rama-net",
@@ -22,7 +25,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0-alpha.4"
+version = "0.2.0-alpha.7"
 license = "MIT OR Apache-2.0"
 edition = "2021"
 repository = "https://github.com/plabayo/rama"
@@ -30,12 +33,13 @@ homepage = "https://ramaproxy.org"
 keywords = ["io", "async", "non-blocking", "service", "rama"]
 categories = ["asynchronous", "network-programming", "web-programming", "web-programming::http-client", "web-programming::http-server"]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.80.0"
+rust-version = "1.84.0"
 
 [workspace.dependencies]
 async-compression = "0.4"
 base64 = "0.22"
 bitflags = "2.4"
+md5 = "0.7.0"
 brotli = "7"
 bytes = "1"
 clap = { version = "4.5.15", features = ["derive"] }
@@ -43,6 +47,7 @@ crossterm = "0.27"
 flate2 = "1.0"
 futures-lite = "2.3.0"
 futures-core = "0.3"
+futures = "0.3"
 h2 = "0.4"
 headers = "0.4"
 moka = "0.12.8"
@@ -52,12 +57,12 @@ http-body = "1"
 http-body-util = "0.1"
 http-range-header = "0.4.0"
 httpdate = "1.0"
-hyper = "1.4"
-hyper-util = "0.1.6"
 boring = "4.9.1"
 tokio-boring = "4.9.1"
 ipnet = "2.9.0"
-itertools = "0.13.0"
+libfuzzer-sys = "0.4"
+honggfuzz = "0.5.56"
+itertools = "0.14.0"
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 paste = "1.0"
@@ -98,6 +103,7 @@ syn = "2.0"
 sync_wrapper = "1.0"
 tempfile = "3.10"
 tokio = "1.38"
+spmc = "0.3"
 tokio-graceful = "0.2"
 tokio-rustls = { version = "0.26", default-features = false, features = [
     "logging",
@@ -108,8 +114,10 @@ tokio-test = "0.4.4"
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = "0.3.17"
+tracing-tree = "0.4.0"
 trybuild = "1.0.98"
 uuid = "1.6"
+nanoid = "0.4.0"
 zstd = "0.13"
 venndb = "0.5.0"
 unicode-normalization = "0.1.23"
@@ -125,10 +133,26 @@ hickory-resolver = { version = "0.24.1", default-features = false, features = [
 ] }
 arc-swap = "1.7.1"
 flume = "0.11.1"
+atomic-waker = "1.0.0"
+futures-sink = "0.3"
+fnv = "1.0.5"
+slab = "0.4.2"
+indexmap = "2"
+rand = "0.8.4"
+walkdir = "2.3.2"
+env_logger = "0.11.6"
+httparse = "1.8"
+smallvec = { version = "1.12", features = ["const_generics", "const_new"] }
+itoa = "1"
+want = "0.3"
+futures-util = "0.3"
+futures-channel = "0.3"
+sha2 = "0.10.8"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
 elided_lifetimes_in_paths = "allow"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(fuzzing)'] }
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
@@ -173,6 +197,7 @@ keywords = { workspace = true }
 categories = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
+resolver = "3"
 
 [lints]
 workspace = true
@@ -200,7 +225,7 @@ net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
 http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-tcp/http"]
-http-full = ["http", "tcp", "dep:rama-http-backend"]
+http-full = ["http", "tcp", "dep:rama-http-backend", "dep:rama-http-core"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 ua = ["dep:rama-ua"]
@@ -216,17 +241,18 @@ rustversion = { workspace = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.4", path = "rama-core" }
-rama-dns = { version = "0.2.0-alpha.4", path = "rama-dns", optional = true }
-rama-haproxy = { version = "0.2.0-alpha.4", path = "rama-haproxy", optional = true }
-rama-http = { version = "0.2.0-alpha.4", path = "rama-http", optional = true }
-rama-http-backend = { version = "0.2.0-alpha.4", path = "rama-http-backend", optional = true }
-rama-net = { version = "0.2.0-alpha.4", path = "rama-net", optional = true }
-rama-proxy = { version = "0.2.0-alpha.4", path = "rama-proxy", optional = true }
-rama-tcp = { version = "0.2.0-alpha.4", path = "rama-tcp", optional = true }
-rama-tls = { version = "0.2.0-alpha.4", path = "rama-tls", optional = true }
-rama-ua = { version = "0.2.0-alpha.4", path = "rama-ua", optional = true }
-rama-utils = { version = "0.2.0-alpha.4", path = "rama-utils" }
+rama-core = { version = "0.2.0-alpha.7", path = "rama-core" }
+rama-dns = { version = "0.2.0-alpha.7", path = "rama-dns", optional = true }
+rama-haproxy = { version = "0.2.0-alpha.7", path = "rama-haproxy", optional = true }
+rama-http = { version = "0.2.0-alpha.7", path = "rama-http", optional = true }
+rama-http-backend = { version = "0.2.0-alpha.7", path = "rama-http-backend", optional = true }
+rama-http-core = { version = "0.2.0-alpha.7", path = "rama-http-core", optional = true }
+rama-net = { version = "0.2.0-alpha.7", path = "rama-net", optional = true }
+rama-proxy = { version = "0.2.0-alpha.7", path = "rama-proxy", optional = true }
+rama-tcp = { version = "0.2.0-alpha.7", path = "rama-tcp", optional = true }
+rama-tls = { version = "0.2.0-alpha.7", path = "rama-tls", optional = true }
+rama-ua = { version = "0.2.0-alpha.7", path = "rama-ua", optional = true }
+rama-utils = { version = "0.2.0-alpha.7", path = "rama-utils" }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
@@ -237,14 +263,22 @@ bytes = { workspace = true }
 derive_more = { workspace = true, features = ["as_ref"] }
 divan = { workspace = true }
 escargot = { workspace = true }
+futures = { workspace = true }
+futures-channel = { workspace = true }
+futures-util = { workspace = true }
+h2-support = { path = "rama-http-core/tests/h2-support" }
+http = { workspace = true }
 itertools = { workspace = true }
 opentelemetry-otlp = { workspace = true }
 opentelemetry_sdk = { workspace = true }
+pin-project-lite = { workspace = true }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
+spmc = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
+tokio-test = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
@@ -261,6 +295,40 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [[bench]]
 name = "ua_parse"
+harness = false
+
+[[bench]]
+name = "h2"
+harness = false
+
+[[bench]]
+name = "http_core_body"
+path = "benches/http_core_body.rs"
+required-features = ["full"]
+harness = false
+
+[[bench]]
+name = "http_core_connect"
+path = "benches/http_core_connect.rs"
+required-features = ["full"]
+harness = false
+
+[[bench]]
+name = "http_core_end_to_end"
+path = "benches/http_core_end_to_end.rs"
+required-features = ["full"]
+harness = false
+
+[[bench]]
+name = "http_core_pipeline"
+path = "benches/http_core_pipeline.rs"
+required-features = ["full"]
+harness = false
+
+[[bench]]
+name = "http_core_server"
+path = "benches/http_core_server.rs"
+required-features = ["full"]
 harness = false
 
 [[example]]
@@ -354,3 +422,11 @@ required-features = ["boring", "haproxy", "http-full"]
 [[example]]
 name = "tls_termination"
 required-features = ["rustls", "haproxy", "http-full"]
+
+[profile.release]
+codegen-units = 1
+incremental = false
+
+[profile.bench]
+codegen-units = 1
+incremental = false

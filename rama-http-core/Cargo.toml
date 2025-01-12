@@ -1,0 +1,72 @@
+[package]
+name = "rama-http-core"
+description = "rama http protocol implementation and low level utilities"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "proxy", "http", "rama"]
+categories = ["asynchronous", "network-programming", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+# Enables **unstable** APIs. Any API exposed by this feature has no backwards
+# compatibility guarantees. In other words, you should not use this feature for
+# anything besides experimentation. Definitely **do not** publish a crate that
+# depends on this feature.
+unstable = []
+
+[dependencies]
+atomic-waker = { workspace = true }
+bytes = { workspace = true }
+fnv = { workspace = true }
+futures-channel = { workspace = true }
+futures-core = { workspace = true }
+futures-sink = { workspace = true }
+futures-util = { workspace = true }
+httparse = { workspace = true }
+httpdate = { workspace = true }
+indexmap = { workspace = true, features = ["std"] }
+itoa = { workspace = true }
+pin-project-lite = { workspace = true }
+rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.7", path = "../rama-http-types" }
+rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
+slab = { workspace = true }
+smallvec = { workspace = true }
+tokio = { workspace = true, features = ["io-util"] }
+tokio-test = { workspace = true }
+tokio-util = { workspace = true, features = ["codec", "io"] }
+tracing = { workspace = true, features = ["std"] }
+want = { workspace = true }
+
+[dev-dependencies]
+env_logger = { workspace = true }
+
+# Fuzzing
+quickcheck = { workspace = true }
+rand = { workspace = true }
+
+# HPACK fixtures
+hex = { workspace = true }
+rama-error = { path = "../rama-error" }
+serde_json = { workspace = true }
+walkdir = { workspace = true }
+
+# Examples
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "net"] }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

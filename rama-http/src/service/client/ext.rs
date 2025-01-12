@@ -205,8 +205,7 @@ impl IntoHeaderValue for &String {}
 impl IntoHeaderValue for &[u8] {}
 
 mod private {
-    use http::HeaderName;
-
+    use rama_http_types::HeaderName;
     use rama_net::Protocol;
 
     use super::*;
@@ -375,7 +374,7 @@ enum RequestBuilderState {
     Error(OpaqueError),
 }
 
-impl<'a, S, State, Body> RequestBuilder<'a, S, State, Response<Body>>
+impl<S, State, Body> RequestBuilder<'_, S, State, Response<Body>>
 where
     S: Service<State, Request, Response = Response<Body>, Error: Into<BoxError>>,
 {
@@ -649,7 +648,7 @@ where
 
 #[cfg(test)]
 mod test {
-    use http::StatusCode;
+    use rama_http_types::StatusCode;
 
     use super::*;
     use crate::{

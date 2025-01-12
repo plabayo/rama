@@ -5,11 +5,15 @@
 
 #[doc(inline)]
 pub use ::rama_http::{
-    dep, header, headers, io, matcher,
+    dep, header, headers, io, matcher, proto,
     response::{self, IntoResponse, Response},
     service, Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue,
     Method, Request, Scheme, StatusCode, Uri, Version,
 };
+
+#[cfg(feature = "http-full")]
+#[doc(inline)]
+pub use ::rama_http_core as core;
 
 pub mod layer {
     //! Http [`Layer`][crate::Layer]s provided by Rama.

@@ -31,6 +31,10 @@ mod body;
 #[doc(inline)]
 pub use body::{Body, Bytes, Form, Json, Text};
 
+mod option;
+#[doc(inline)]
+pub use option::{OptionalFromRequest, OptionalFromRequestContextRefPair};
+
 /// Types that can be created from request parts.
 ///
 /// Extractors that implement `FromRequestParts` cannot consume the request body and can thus be

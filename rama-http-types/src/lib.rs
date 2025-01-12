@@ -33,6 +33,8 @@ pub type Request<T = Body> = http::Request<T>;
 pub mod response;
 pub use response::{IntoResponse, IntoResponseParts, Response};
 
+pub mod proto;
+
 pub mod headers;
 
 pub mod dep {
@@ -118,7 +120,7 @@ pub mod header {
     static_header!["x-forwarded-host", "x-forwarded-for", "x-forwarded-proto",];
 
     // standard
-    static_header!["keep-alive", "proxy-connection", "via",];
+    static_header!["keep-alive", "proxy-connection"];
 
     // non-std client ip forward headers
     static_header![

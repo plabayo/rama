@@ -1,4 +1,4 @@
-use super::FromRequestContextRefPair;
+use super::{FromRequestContextRefPair, OptionalFromRequestContextRefPair};
 use crate::dep::http::request::Parts;
 use crate::headers::{self, Header};
 use crate::{HeaderName, IntoResponse, Response};
@@ -44,6 +44,30 @@ where
                     TypedHeaderRejectionReason::Error(err)
                 },
             })
+    }
+}
+
+impl<S, H> OptionalFromRequestContextRefPair<S> for TypedHeader<H>
+where
+    S: Clone + Send + Sync + 'static,
+    H: Header + Send + Sync + 'static,
+{
+    type Rejection = TypedHeaderRejection;
+
+    async fn from_request_context_ref_pair(
+        _ctx: &Context<S>,
+        parts: &Parts,
+    ) -> Result<Option<Self>, Self::Rejection> {
+        let mut values = parts.headers.get_all(H::name()).iter();
+        let is_missing = values.size_hint() == (0, Some(0));
+        match H::decode(&mut values) {
+            Ok(res) => Ok(Some(Self(res))),
+            Err(_) if is_missing => Ok(None),
+            Err(err) => Err(TypedHeaderRejection {
+                name: H::name(),
+                reason: TypedHeaderRejectionReason::Error(err),
+            }),
+        }
     }
 }
 

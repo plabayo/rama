@@ -142,6 +142,22 @@ where
             },
         }
     }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        if let BodyInner::Identity { inner } = &self.inner {
+            inner.size_hint()
+        } else {
+            http_body::SizeHint::new()
+        }
+    }
+
+    fn is_end_stream(&self) -> bool {
+        if let BodyInner::Identity { inner } = &self.inner {
+            inner.is_end_stream()
+        } else {
+            false
+        }
+    }
 }
 
 impl<B> DecorateAsyncRead for GzipEncoder<B>

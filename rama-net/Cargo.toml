@@ -15,10 +15,10 @@ workspace = true
 
 [features]
 default = []
-http = ["dep:rama-http-types"]
-tls = ["dep:hex"]
+http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
+tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
 rustls = ["tls", "dep:rustls"]
-boring = ["tls", "dep:boring", "dep:nom", "dep:itertools"]
+boring = ["tls", "dep:boring", "dep:nom"]
 rustls-ring = ["rustls", "rustls/ring"]
 telemetry = ["rama-core/telemetry"]
 
@@ -32,20 +32,23 @@ headers = { workspace = true }
 hex = { workspace = true, optional = true }
 ipnet = { workspace = true }
 itertools = { workspace = true, optional = true }
+md5 = { workspace = true, optional = true }
 nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.4", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.4", path = "../rama-http-types", optional = true }
-rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.7", path = "../rama-http-types", optional = true }
+rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
+sha2 = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net"] }
 tracing = { workspace = true }
 venndb = { workspace = true, optional = true }
 
 [dev-dependencies]
 itertools = { workspace = true }
+nom = { workspace = true }
 quickcheck = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }

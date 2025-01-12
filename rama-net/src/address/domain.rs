@@ -305,8 +305,8 @@ impl<'de> serde::Deserialize<'de> for Domain {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        s.try_into().map_err(serde::de::Error::custom)
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -403,6 +403,7 @@ mod tests {
             "example.com.",
             ".example.com.",
             "rr5---sn-q4fl6n6s.video.com", // multiple dashes
+            "127.0.0.1",
         ] {
             let msg = format!("to parse: {}", str);
             assert_eq!(Domain::try_from(str.to_owned()).expect(msg.as_str()), str);
@@ -426,6 +427,7 @@ mod tests {
             "-.-.",
             "-.-.-",
             ".-.-",
+            "2001:db8:3333:4444:5555:6666:7777:8888",
             "-example.com",
             "local!host",
             "thislabeliswaytoolongforbeingeversomethingwewishtocareabout-example.com",

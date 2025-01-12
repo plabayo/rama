@@ -1,6 +1,6 @@
 # 📦 Rama Crate
 
-Rama is a modular service framework distributed as a Rust crate at <https://crates.io/crates/rama/0.2.0-alpha.3>. You can add it to your project as follows:
+Rama is a modular service framework distributed as a Rust crate at <https://crates.io/crates/rama>. You can add it to your project as follows:
 
 ```
 cargo add rama
@@ -8,7 +8,7 @@ cargo add rama
 
 ## Quick Links
 
-* Crates Page: <https://crates.io/crates/rama/0.2.0-alpha.3>
+* Crates Page: <https://crates.io/crates/rama>
 * Official Docs Page (for releases): <https://docs.rs/rama>
     * Edge (main branch): <https://ramaproxy.org/docs/rama/index.html>
 * Github repo: <https://github.com/plabayo/rama>
@@ -41,6 +41,7 @@ Here is a list of all `rama` crates:
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
+- [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
 
 ## Examples
 
@@ -72,7 +73,7 @@ support as many as we reasonably can.
 
 ### Minimum supported Rust version
 
-Rama's MSRV is `1.80`.
+Rama's MSRV is `1.84`.
 
 [Using GitHub Actions we also test](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) if `rama` on that version still works on
 the stable and beta versions of _rust_ as well.

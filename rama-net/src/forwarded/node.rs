@@ -374,8 +374,8 @@ impl<'de> serde::Deserialize<'de> for NodeId {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        s.try_into().map_err(serde::de::Error::custom)
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 

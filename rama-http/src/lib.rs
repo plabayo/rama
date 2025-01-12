@@ -19,7 +19,7 @@
 
 #[doc(inline)]
 pub use ::rama_http_types::{
-    header,
+    header, proto,
     response::{self, IntoResponse, Response},
     Body, BodyDataStream, BodyExtractExt, BodyLimit, HeaderMap, HeaderName, HeaderValue, Method,
     Request, Scheme, StatusCode, Uri, Version,

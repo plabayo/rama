@@ -7,10 +7,18 @@ as a distant relative.
 
 ## Sync Forks
 
-- <https://github.com/tower-rs/tower/tree/71551010acff922c5b51c280e49a15ad2d33df61>
+### hyperium
+
+- <https://github.com/hyperium/h2/tree/v0.4.7>
+- <https://github.com/hyperium/hyper/tree/v1.5.2>
+- <https://github.com/hyperium/hyper-util/tree/v0.1.10>
+
+### tower-rs
+
+- <https://github.com/tower-rs/tower/tree/954e4c7e8d889b3b77e68886b2c78d5bb45b74fb>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
-- <https://github.com/tower-rs/tower-http/tree/aeca2626d4b5836d2fe66877ba1b857db9851815>
+- <https://github.com/tower-rs/tower-http/tree/d0c522b6da2620bf5314302d12e4cded7295b11c>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
@@ -18,9 +26,9 @@ as a distant relative.
 
 ## Relative Forks
 
-- <https://github.com/tokio-rs/axum/tree/3fda093806d43d64dd70cda0274cd3d73d29b6c7>
+- <https://github.com/tokio-rs/axum/tree/e0b55d750390d810028caad0387058751611c1b4>
   - FromRef (proc macro), we use it in a different form using `std::convert::AsRef` (to avoid clones);
   - IntoResponse Code
-  - FromRequest/ FromRequestParts code
+  - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code

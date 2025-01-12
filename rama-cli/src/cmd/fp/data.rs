@@ -1,8 +1,17 @@
 use super::State;
 use rama::{
     error::{BoxError, ErrorContext},
-    http::{dep::http::request::Parts, headers::Forwarded, Request},
-    net::{http::RequestContext, stream::SocketInfo},
+    http::{
+        dep::http::{request::Parts, Extensions},
+        headers::Forwarded,
+        proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
+        HeaderMap, Request,
+    },
+    net::{
+        fingerprint::{Ja3, Ja4, Ja4H},
+        http::RequestContext,
+        stream::SocketInfo,
+    },
     tls::types::{
         client::{ClientHello, ClientHelloExtension},
         SecureTransport,
@@ -180,33 +189,70 @@ pub(super) async fn get_request_info(
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub(super) struct HttpInfo {
-    pub(super) headers: Vec<(String, String)>,
+pub(super) struct Ja4HInfo {
+    pub(super) hash: String,
+    pub(super) human_str: String,
 }
 
-pub(super) fn get_http_info(req: &Request) -> HttpInfo {
-    // TODO: get in correct order
-    // TODO: get in correct case
-    // TODO: get also pseudo headers (or separate?!)
-    let headers = req
-        .headers()
-        .iter()
+pub(super) fn get_ja4h_info<B>(req: &Request<B>) -> Option<Ja4HInfo> {
+    Ja4H::compute(req)
+        .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
+        .ok()
+        .map(|ja4h| Ja4HInfo {
+            hash: format!("{ja4h}"),
+            human_str: format!("{ja4h:?}"),
+        })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct HttpInfo {
+    pub(super) headers: Vec<(String, String)>,
+    pub(super) pseudo_headers: Option<Vec<String>>,
+}
+
+pub(super) fn get_http_info(headers: HeaderMap, ext: &mut Extensions) -> HttpInfo {
+    let headers: Vec<_> = Http1HeaderMap::new(headers, Some(ext))
+        .into_iter()
         .map(|(name, value)| {
             (
-                name.as_str().to_owned(),
-                value.to_str().map(|v| v.to_owned()).unwrap_or_default(),
+                name.to_string(),
+                std::str::from_utf8(value.as_bytes())
+                    .map(|s| s.to_owned())
+                    .unwrap_or_else(|_| format!("0x{:x?}", value.as_bytes())),
             )
         })
         .collect();
 
-    HttpInfo { headers }
+    let pseudo_headers: Option<Vec<_>> = ext
+        .get::<PseudoHeaderOrder>()
+        .map(|o| o.iter().map(|p| p.to_string()).collect());
+
+    HttpInfo {
+        headers,
+        pseudo_headers,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TlsDisplayInfo {
+    pub(super) ja4: Ja4DisplayInfo,
+    pub(super) ja3: Ja3DisplayInfo,
+    pub(super) protocol_version: String,
     pub(super) cipher_suites: Vec<String>,
     pub(super) compression_algorithms: Vec<String>,
     pub(super) extensions: Vec<TlsDisplayInfoExtension>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct Ja4DisplayInfo {
+    pub(super) full: String,
+    pub(super) hash: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(super) struct Ja3DisplayInfo {
+    pub(super) full: String,
+    pub(super) hash: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -226,7 +272,24 @@ pub(super) fn get_tls_display_info(ctx: &Context<Arc<State>>) -> Option<TlsDispl
         .get::<SecureTransport>()
         .and_then(|st| st.client_hello())?;
 
+    let ja4 = Ja4::compute(ctx.extensions())
+        .inspect_err(|err| tracing::error!(?err, "ja4 compute failure"))
+        .ok()?;
+
+    let ja3 = Ja3::compute(ctx.extensions())
+        .inspect_err(|err| tracing::error!(?err, "ja3 compute failure"))
+        .ok()?;
+
     Some(TlsDisplayInfo {
+        ja4: Ja4DisplayInfo {
+            full: format!("{ja4:?}"),
+            hash: format!("{ja4}"),
+        },
+        ja3: Ja3DisplayInfo {
+            full: format!("{ja3}"),
+            hash: format!("{ja3:x}"),
+        },
+        protocol_version: hello.protocol_version().to_string(),
         cipher_suites: hello
             .cipher_suites()
             .iter()

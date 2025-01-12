@@ -16,7 +16,7 @@
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
-[rust-version-badge]: https://img.shields.io/badge/rustc-1.80+-blue?style=flat-square&logo=rust
+[rust-version-badge]: https://img.shields.io/badge/rustc-1.84+-blue?style=flat-square&logo=rust
 [rust-version-url]: https://www.rust-lang.org
 [actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
 [actions-url]: https://github.com/plabayo/rama/actions
@@ -69,6 +69,7 @@ This framework comes with 🔋 batteries included, giving you the full freedome 
 | ✅ [telemetry](https://ramaproxy.org/docs/rama/telemetry/index.html) | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html) ⸱ ✅ [http metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html) ⸱ ✅ [transport metrics](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html) |
 | ✅ upstream [proxies](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [MemoryProxyDB](https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html) ⸱ ✅ [L4 Username Config](https://ramaproxy.org/docs/rama/username/index.html) ⸱ ✅ [Proxy Filters](https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html) |
 | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html) |
+| ✅ [Fingerprinting](https://ramaproxy.org/docs/rama/net/fingerprint/index.html) | ✅ [Ja3](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja3.html) ⸱ ✅ [Ja4](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4.html) ⸱ ✅ [Ja4H](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4H.html) |
 | ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ 🏗️ Connection Pool <sup>(2)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/binary/rama) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client ⸱ ❌ WASM Plugins <sup>(3)</sup> |
@@ -201,6 +202,7 @@ Here is a list of all `rama` crates:
 - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
+- [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
 
 ## 🏢 | Proxy Examples
 
@@ -344,7 +346,7 @@ support as many as we reasonably can.
 
 ### Minimum supported Rust version
 
-Rama's MSRV is `1.80`.
+Rama's MSRV is `1.84`.
 
 [Using GitHub Actions we also test](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) if `rama` on that version still works on
 the stable and beta versions of _rust_ as well.

@@ -172,9 +172,7 @@ fn status<B>(res: &Response<B>) -> Option<i32> {
     let is_grpc = res
         .headers()
         .get(http::header::CONTENT_TYPE)
-        .map_or(false, |value| {
-            value.as_bytes().starts_with("application/grpc".as_bytes())
-        });
+        .is_some_and(|value| value.as_bytes().starts_with("application/grpc".as_bytes()));
 
     if is_grpc {
         match crate::layer::classify::grpc_errors_as_failures::classify_grpc_metadata(

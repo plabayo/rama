@@ -43,7 +43,7 @@ impl Basic {
     pub fn try_from_header_str(s: impl AsRef<str>) -> Result<Self, OpaqueError> {
         let value = s.as_ref();
 
-        if value.as_bytes().len() <= BASIC_SCHEME.len() + 1 {
+        if value.len() <= BASIC_SCHEME.len() + 1 {
             return Err(OpaqueError::from_display(
                 "invalid scheme length in basic str",
             ));

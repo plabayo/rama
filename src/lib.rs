@@ -27,6 +27,7 @@
 //! | ✅ [telemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry][telemetry::opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::net::stream::layer::opentelemetry) |
 //! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
+//! | ✅ [Fingerprinting](crate::net::fingerprint) | ✅ [Ja3](crate::net::fingerprint::Ja3) ⸱ ✅ [Ja4](crate::net::fingerprint::Ja4) ⸱ ✅ [Ja4H](crate::net::fingerprint::Ja4H) |
 //! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ 🏗️ Connection Pool <sup>(2)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 //! | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 //! | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/binary/rama) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client <sup>(1)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
@@ -153,6 +154,7 @@
 //! - [`rama-http-types`](https://crates.io/crates/rama-http-types): http types and utilities
 //! - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 //! - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
+//! - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
 //!
 //! ## 🏢 | Proxy Examples
 //!

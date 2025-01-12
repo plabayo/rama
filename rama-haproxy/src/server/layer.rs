@@ -1,5 +1,8 @@
 use crate::protocol::{v1, v2, HeaderResult, PartialResult};
-use rama_core::{error::BoxError, Context, Layer, Service};
+use rama_core::{
+    error::{BoxError, ErrorExt},
+    Context, Layer, Service,
+};
 use rama_net::{
     forwarded::{Forwarded, ForwardedElement},
     stream::{ChainReader, HeapReader, Stream},
@@ -79,11 +82,18 @@ where
         let mut buffer = [0; 512];
         let mut read = 0;
         let header = loop {
-            read += stream.read(&mut buffer[read..]).await?;
+            let n = stream.read(&mut buffer[read..]).await?;
+            read += n;
 
             let header = HeaderResult::parse(&buffer[..read]);
             if header.is_complete() {
                 break header;
+            }
+
+            if n == 0 {
+                return Err(std::io::Error::from(std::io::ErrorKind::UnexpectedEof)
+                    .context("HaProxy header incomplete")
+                    .into_boxed());
             }
 
             tracing::debug!("Incomplete header. Read {} bytes so far.", read);

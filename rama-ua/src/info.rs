@@ -270,9 +270,9 @@ impl<'de> Deserialize<'de> for HttpAgent {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         match_ignore_ascii_case_str! {
-            match (s.as_str()) {
+            match (s) {
                 "chrome" | "chromium" => Ok(HttpAgent::Chromium),
                 "Firefox" => Ok(HttpAgent::Firefox),
                 "Safari" => Ok(HttpAgent::Safari),
@@ -358,9 +358,9 @@ impl<'de> Deserialize<'de> for TlsAgent {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         match_ignore_ascii_case_str! {
-            match (s.as_str()) {
+            match (s) {
                 "rustls" => Ok(TlsAgent::Rustls),
                 "boring" | "boringssl" => Ok(TlsAgent::Boringssl),
                 "nss" => Ok(TlsAgent::Nss),

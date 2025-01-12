@@ -1,6 +1,4 @@
 use super::{svc::SendRequest, HttpClientService};
-use crate::executor::HyperExecutor;
-use hyper_util::rt::TokioIo;
 use rama_core::{
     error::{BoxError, OpaqueError},
     Context, Layer, Service,
@@ -13,7 +11,6 @@ use rama_net::{
 
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
-use tokio::sync::Mutex;
 use tracing::trace;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -102,13 +99,14 @@ where
             *req.version_mut() = new_version;
         }
 
-        let io = TokioIo::new(Box::pin(conn));
+        let io = Box::pin(conn);
 
         match req.version() {
             Version::HTTP_2 => {
                 trace!(uri = %req.uri(), "create h2 client executor");
-                let executor = HyperExecutor(ctx.executor().clone());
-                let (sender, conn) = hyper::client::conn::http2::handshake(executor, io).await?;
+                let executor = ctx.executor().clone();
+                let (sender, conn) =
+                    rama_http_core::client::conn::http2::handshake(executor, io).await?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
@@ -116,7 +114,7 @@ where
                     }
                 });
 
-                let svc = HttpClientService(SendRequest::Http2(Mutex::new(sender)));
+                let svc = HttpClientService(SendRequest::Http2(sender));
 
                 Ok(EstablishedClientConnection {
                     ctx,
@@ -127,7 +125,7 @@ where
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
                 trace!(uri = %req.uri(), "create ~h1 client executor");
-                let (sender, conn) = hyper::client::conn::http1::handshake(io).await?;
+                let (sender, conn) = rama_http_core::client::conn::http1::handshake(io).await?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {
@@ -135,7 +133,7 @@ where
                     }
                 });
 
-                let svc = HttpClientService(SendRequest::Http1(Mutex::new(sender)));
+                let svc = HttpClientService(SendRequest::Http1(sender));
 
                 Ok(EstablishedClientConnection {
                     ctx,

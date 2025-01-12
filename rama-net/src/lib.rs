@@ -35,3 +35,6 @@ pub mod http;
 
 #[cfg(feature = "tls")]
 pub mod tls;
+
+#[cfg(any(feature = "tls", feature = "http"))]
+pub mod fingerprint;
