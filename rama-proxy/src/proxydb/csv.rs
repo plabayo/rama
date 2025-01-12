@@ -215,8 +215,8 @@ impl From<std::io::Error> for ProxyCsvRowReaderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ProxyFilter;
-    use rama_net::transport::{ProxyContext, TransportProtocol};
+    use crate::{proxydb::ProxyContext, ProxyFilter};
+    use rama_net::transport::TransportProtocol;
     use rama_utils::str::NonEmptyString;
     use std::str::FromStr;
 

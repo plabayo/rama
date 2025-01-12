@@ -1,9 +1,5 @@
-use super::{ProxyFilter, StringFilter};
-use rama_net::{
-    address::ProxyAddress,
-    asn::Asn,
-    transport::{ProxyContext, TransportProtocol},
-};
+use super::{ProxyContext, ProxyFilter, StringFilter};
+use rama_net::{address::ProxyAddress, asn::Asn, transport::TransportProtocol};
 use rama_utils::str::NonEmptyString;
 use serde::{Deserialize, Serialize};
 

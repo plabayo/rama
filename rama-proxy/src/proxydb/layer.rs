@@ -1,11 +1,11 @@
-use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
+use super::{Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyQueryPredicate};
 use rama_core::{
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     Context, Layer, Service,
 };
 use rama_net::{
     address::ProxyAddress,
-    transport::{ProxyContext, TransportProtocol, TryRefIntoTransportContext},
+    transport::{TransportProtocol, TryRefIntoTransportContext},
     user::{Basic, ProxyCredential},
     Protocol,
 };
@@ -212,15 +212,14 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let proxy_ctx: ProxyContext = ctx
+            let proxy_ctx: ProxyContext = (&*ctx
                 .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
                 .map_err(|err| {
                     OpaqueError::from_boxed(err.into())
                         .context("proxydb: select proxy: get transport context")
-                })?
-                .clone()
+                })?)
                 .into();
-            let transport_protocol = proxy_ctx.protocol.clone();
+            let transport_protocol = proxy_ctx.protocol;
 
             let proxy = self
                 .db

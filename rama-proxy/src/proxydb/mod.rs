@@ -1,5 +1,5 @@
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
-use rama_net::{asn::Asn, transport::ProxyContext};
+use rama_net::asn::Asn;
 use rama_utils::str::NonEmptyString;
 use serde::{Deserialize, Serialize};
 use std::{fmt, future::Future};
@@ -9,6 +9,9 @@ mod update;
 #[cfg(feature = "live-update")]
 #[doc(inline)]
 pub use update::{proxy_db_updater, LiveUpdateProxyDB, LiveUpdateProxyDBSetter};
+
+mod context;
+pub use context::ProxyContext;
 
 mod internal;
 #[doc(inline)]
