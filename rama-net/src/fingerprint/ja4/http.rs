@@ -1,3 +1,17 @@
+//! Ja4H implementation for Rama (in Rust).
+//!
+//! JA4H is part of the Ja4+ is copyrighted
+//! and licensed by FoxIO. See license information below:
+//!
+//! > Copyright 2023 AOL Inc. All rights reserved.
+//! > Portions Copyright 2023 FoxIO
+//! >
+//! > SPDX-License-Identifier: FoxIO License 1.1
+//! >
+//! > This software requires a license to use. See
+//! > - <https://github.com/FoxIO-LLC/ja4#licensing>
+//! > - <https://github.com/FoxIO-LLC/ja4/blob/main/License%20FAQ.md>
+
 use itertools::Itertools as _;
 use std::{
     borrow::Cow,
