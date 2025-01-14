@@ -1,4 +1,3 @@
-// TODO docs
 //! This example demonstrates how to dynamically choose certificates for incomming requests
 //!
 //! # Run the example
@@ -68,9 +67,7 @@ use rama::{
         tls::server::{ServerAuth, ServerConfig},
         tls::{
             client::ClientHello,
-            server::{
-                DynamicCertIssuer, ServerAuthData, ServerCertIssuerData, ServerCertIssuerKind,
-            },
+            server::{DynamicCertIssuer, ServerAuthData, ServerCertIssuerData},
             DataEncoding,
         },
     },
@@ -80,6 +77,8 @@ use rama::{
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
     Context, Layer,
 };
+use rama_http::IntoResponse;
+use rama_net::tls::server::CacheKind;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
@@ -100,9 +99,8 @@ async fn main() {
     let issuer = DynamicIssuer::new();
 
     let tls_server_config = ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData {
-        kind: ServerCertIssuerKind::from_dynamic_issuer(issuer),
-        max_cache_size: 0,
-        disable_cache_for_dynamic_issuer: true,
+        kind: issuer.into(),
+        cache_kind: CacheKind::Disabled,
         ..Default::default()
     }));
 
@@ -195,14 +193,12 @@ pub fn example_self_signed_auth() -> Result<ServerAuthData, OpaqueError> {
 pub fn second_example_self_signed_auth() -> Result<ServerAuthData, OpaqueError> {
     Ok(ServerAuthData {
         private_key: DataEncoding::Pem(
-            std::str::from_utf8(include_bytes!("./assets/second_example.com.key"))
-                .expect("should decode")
+            include_str!("./assets/second_example.com.key")
                 .try_into()
                 .expect("should work"),
         ),
         cert_chain: DataEncoding::Pem(
-            std::str::from_utf8(include_bytes!("./assets/second_example.com.crt"))
-                .expect("should decode")
+            include_str!("./assets/second_example.com.crt")
                 .try_into()
                 .expect("should work"),
         ),
@@ -211,10 +207,8 @@ pub fn second_example_self_signed_auth() -> Result<ServerAuthData, OpaqueError> 
 }
 
 async fn http_service<S>(_ctx: Context<S>, _request: Request) -> Result<Response, Infallible> {
-    Ok(Response::new(
-        format!(
-            "hello client, you were served by boring tls terminator proxy issuing a dynamic certificate\r\n"
-        )
-        .into(),
-    ))
+    Ok(
+        "hello client, you were served by boring tls terminator proxy issuing a dynamic certificate"
+            .into_response(),
+    )
 }

@@ -4,7 +4,7 @@ use crate::{
 };
 use rama_core::error::OpaqueError;
 use serde::{Deserialize, Serialize};
-use std::{future::Future, pin::Pin, sync::Arc};
+use std::{future::Future, num::NonZeroU64, pin::Pin, sync::Arc};
 
 #[derive(Debug, Clone)]
 /// Common API to configure a TLS Server
@@ -70,12 +70,23 @@ impl Default for ServerAuth {
 pub struct ServerCertIssuerData {
     /// The kind of server cert issuer
     pub kind: ServerCertIssuerKind,
-    /// The max amount of certs to cache,
-    /// a default value of 8096 is used if 0.
-    pub max_cache_size: u64,
-    /// If cache should be disabled when
-    /// using a dynamic issuer.
-    pub disable_cache_for_dynamic_issuer: bool,
+    /// Cache kind that will be used to cache certificates
+    pub cache_kind: CacheKind,
+}
+
+#[derive(Debug, Clone)]
+/// Cache kind that will be used to cache results of certificate issuers
+pub enum CacheKind {
+    MemCache { max_size: NonZeroU64 },
+    Disabled,
+}
+
+impl Default for CacheKind {
+    fn default() -> Self {
+        Self::MemCache {
+            max_size: NonZeroU64::new(8096).unwrap(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -96,8 +107,11 @@ impl Default for ServerCertIssuerKind {
     }
 }
 
-impl ServerCertIssuerKind {
-    pub fn from_dynamic_issuer<T: DynamicCertIssuer + Send + Sync + 'static>(issuer: T) -> Self {
+impl<T> From<T> for ServerCertIssuerKind
+where
+    T: DynamicCertIssuer,
+{
+    fn from(issuer: T) -> Self {
         Self::Dynamic(DynamicIssuer::new(issuer))
     }
 }
@@ -136,7 +150,7 @@ pub struct DynamicIssuer {
 }
 
 impl DynamicIssuer {
-    pub fn new<T: DynamicCertIssuer + Send + Sync + 'static>(issuer: T) -> Self {
+    pub fn new<T: DynamicCertIssuer>(issuer: T) -> Self {
         return Self {
             issuer: Arc::new(issuer),
         };
@@ -159,7 +173,7 @@ impl std::fmt::Debug for DynamicIssuer {
 
 /// Trait that needs to be implemented by cert issuers to support dynamically
 /// issueing (external) certs based on client_hello input.
-pub trait DynamicCertIssuer {
+pub trait DynamicCertIssuer: Send + Sync + 'static {
     fn issue_cert(
         &self,
         client_hello: ClientHello,
@@ -168,7 +182,7 @@ pub trait DynamicCertIssuer {
 }
 
 /// Internal trait to support dynamic dispatch of trait with async fn.
-/// See trait DynService<S, Request> for more info about this pattern.
+/// See trait [`rama_core::service::svc::DynService`] for more info about this pattern.
 trait DynDynamicCertIssuer {
     fn issue_cert(
         &self,
@@ -183,7 +197,6 @@ where
 {
     fn issue_cert(
         &self,
-
         client_hello: ClientHello,
         server_name: Option<Host>,
     ) -> Pin<Box<dyn Future<Output = Result<ServerAuthData, OpaqueError>> + Send + Sync + '_>> {

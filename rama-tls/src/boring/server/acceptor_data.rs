@@ -22,7 +22,7 @@ use rama_net::{
     tls::{
         client::ClientHello as RamaClientHello,
         server::{
-            ClientVerifyMode, DynamicIssuer, SelfSignedData, ServerAuth, ServerAuthData,
+            CacheKind, ClientVerifyMode, DynamicIssuer, SelfSignedData, ServerAuth, ServerAuthData,
             ServerCertIssuerKind,
         },
         ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion,
@@ -65,7 +65,7 @@ enum TlsCertSourceKind {
     InMemory(IssuedCert),
     InMemoryIssuer {
         /// Cache for certs already issued
-        cert_cache: Cache<Host, IssuedCert>,
+        cert_cache: Option<Cache<Host, IssuedCert>>,
         /// Private Key for issueing
         ca_key: PKey<Private>,
         /// CA Cert to be used for issueing
@@ -153,14 +153,20 @@ impl TlsCertSource {
                     })?;
 
                     tracing::trace!(%host, "try to use cached issued cert or generate new one");
-                    let issued_cert = cert_cache
+                    let issued_cert = match &cert_cache {
+                        None => issue_cert_for_ca(host.clone(), &ca_cert, &ca_key).context("fresh issue of cert").map_err(|err| {
+                            tracing::error!(error = %err, "boring: select certificate callback: issue failed");
+                            SelectCertError::ERROR
+                        })?,
+                        Some(cert_cache) => cert_cache
                         .try_get_with(host.clone(), || {
                             issue_cert_for_ca(host.clone(), &ca_cert, &ca_key)
                         })
                         .context("fresh issue of cert + insert").map_err(|err| {
                             tracing::error!(error = %err, "boring: select certificate callback: issue failed");
                             SelectCertError::ERROR
-                        })?;
+                        })?,
+                    };
 
                     add_issued_cert_to_ssl_ref(
                         host,
@@ -285,14 +291,15 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
             }
 
             ServerAuth::CertIssuer(data) => {
-                let cert_cache = Cache::builder()
-                    .time_to_live(Duration::from_secs(60 * 60 * 24 * 89))
-                    .max_capacity(if data.max_cache_size == 0 {
-                        8096
-                    } else {
-                        data.max_cache_size
-                    })
-                    .build();
+                let cert_cache = match data.cache_kind {
+                    CacheKind::Disabled => None,
+                    CacheKind::MemCache { max_size } => Some(
+                        Cache::builder()
+                            .time_to_live(Duration::from_secs(60 * 60 * 24 * 89))
+                            .max_capacity(max_size.into())
+                            .build(),
+                    ),
+                };
 
                 match data.kind {
                     ServerCertIssuerKind::SelfSigned(data) => {
@@ -318,11 +325,6 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
                         }
                     }
                     ServerCertIssuerKind::Dynamic(issuer) => {
-                        let cert_cache = if data.disable_cache_for_dynamic_issuer {
-                            None
-                        } else {
-                            Some(cert_cache)
-                        };
                         TlsCertSourceKind::DynamicIssuer { issuer, cert_cache }
                     }
                 }
@@ -358,6 +360,8 @@ fn to_host(ssl_ref: &SslRef, server_name: &Option<Host>) -> Result<Host, OpaqueE
             tracing::trace!(%host, "boring: server_name not in sni: using context");
             host.clone() // from context (lower prio)
         }
+        // We aren't sure if we actually want this logic here or if this should be an error path
+        // We will come back to this once we have some more data about this.
         (None, None) => {
             tracing::warn!(
                 "boring: no host found in server_name or ctx: defaulting to 'localhost'"
