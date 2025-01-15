@@ -4,6 +4,8 @@ mod element;
 
 mod iterator;
 
+mod valid_date;
+
 // ----------------------------------------------- \\
 
 use crate::headers::Header;
