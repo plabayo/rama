@@ -118,6 +118,16 @@ where
     let domain = match host {
         Host::Name(domain) => domain,
         Host::Address(ip) => {
+            //check if IP Version is allowed
+            match (ip.is_ipv4(), connector) {
+                (true, ConnectIpMode::Ipv6) => {
+                    return Err(OpaqueError::from_display("IPv4 address is not allowed"));
+                }
+                (false, ConnectIpMode::Ipv4) => {
+                    return Err(OpaqueError::from_display("IPv6 address is not allowed"));
+                }
+                _ => {}
+            }
             // if the authority is already defined as an IP address, we can directly connect to it
             let addr = (ip, port).into();
             let stream = connector
@@ -264,15 +274,32 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     for (index, ip) in ip_it.enumerate() {
         let addr = (ip, port).into();
 
-        let sem = sem.clone();
+        let sem = match(ip.is_ipv4(),connector){
+            (true, ConnectIpMode::Ipv6) => {
+                tracing::trace!("[{ip_kind:?}] #{index}: abort connect loop to {addr} (IPv4 address is not allowed)");
+                continue;
+            }
+            (false, ConnectIpMode::Ipv4) => {
+                tracing::trace!("[{ip_kind:?}] #{index}: abort connect loop to {addr} (IPv6 address is not allowed)");
+                continue;
+            }
+            _ => sem.clone(),
+        };
+        
         let tx = tx.clone();
         let connected = connected.clone();
 
         // back off retries exponentially
         if index > 0 {
-            let delay = match ip_kind {
-                IpKind::Ipv4 => Duration::from_micros((21 * 2 * index) as u64),
-                IpKind::Ipv6 => Duration::from_micros((15 * 2 * index) as u64),
+            let delay = match (ip_kind, dns) {
+                //When IPv4 preffered give shorter delay
+                (IpKind::Ipv4,DnsResolveIpMode::DualPreferIpV4) => Duration::from_micros((15 * 2 * index) as u64),
+                (IpKind::Ipv6, DnsResolveIpMode::DualPreferIpV4) => Duration::from_micros((21 * 2 * index) as u64),
+                
+                //IPv6 preffered 
+                (IpKind::Ipv4, _) => Duration::from_micros((21 * 2 * index) as u64),
+                (IpKind::Ipv6, _) => Duration::from_micros((15 * 2 * index) as u64),
+
             };
             tokio::time::sleep(delay).await;
         }
