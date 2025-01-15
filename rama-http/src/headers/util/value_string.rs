@@ -67,7 +67,7 @@ impl<'a> From<&'a HeaderValueString> for HeaderValue {
 }
 
 #[derive(Debug)]
-pub(crate) struct FromStrError(());
+pub struct FromStrError(());
 
 impl FromStr for HeaderValueString {
     type Err = FromStrError;
