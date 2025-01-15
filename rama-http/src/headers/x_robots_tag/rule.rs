@@ -2,9 +2,10 @@ use rama_core::error::OpaqueError;
 use std::convert::{TryFrom, TryInto};
 use std::fmt::Formatter;
 use std::str::FromStr;
+use crate::headers::x_robots_tag::valid_date::ValidDate;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum Rule {
+pub enum Rule {
     All,
     NoIndex,
     NoFollow,
@@ -16,7 +17,11 @@ pub(super) enum Rule {
     MaxVideoPreview(Option<u32>),
     NoTranslate,
     NoImageIndex,
-    UnavailableAfter(String), // "A date must be specified in a format such as RFC 822, RFC 850, or ISO 8601."
+    UnavailableAfter(ValidDate), // "A date must be specified in a format such as RFC 822, RFC 850, or ISO 8601."
+    // custom rules
+    NoAi,
+    NoImageAi,
+    SPC
 }
 
 impl std::fmt::Display for Rule {
@@ -37,6 +42,9 @@ impl std::fmt::Display for Rule {
             Rule::NoTranslate => write!(f, "notranslate"),
             Rule::NoImageIndex => write!(f, "noimageindex"),
             Rule::UnavailableAfter(date) => write!(f, "unavailable_after: {}", date),
+            Rule::NoAi => write!(f, "noai"),
+            Rule::NoImageAi => write!(f, "noimageai"),
+            Rule::SPC => write!(f, "spc"),
         }
     }
 }
@@ -74,14 +82,17 @@ impl TryFrom<&[&str]> for Rule {
             })),
             ["notranslate"] => Ok(Rule::NoTranslate),
             ["noimageindex"] => Ok(Rule::NoImageIndex),
-            ["unavailable_after", date] => Ok(Rule::UnavailableAfter(date.to_owned())),
+            ["unavailable_after", date] => Ok(Rule::UnavailableAfter(date.parse()?)),
+            ["noai"] => Ok(Rule::NoAi),
+            ["noimageai"] => Ok(Rule::NoImageAi),
+            ["spc"] => Ok(Rule::SPC),
             _ => Err(OpaqueError::from_display("Invalid X-Robots-Tag rule")),
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-enum MaxImagePreviewSetting {
+pub enum MaxImagePreviewSetting {
     None,
     Standard,
     Large,
