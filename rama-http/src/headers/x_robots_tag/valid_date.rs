@@ -6,10 +6,10 @@ use std::str::FromStr;
 
 // "A date must be specified in a format such as RFC 822, RFC 850, or ISO 8601."
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ValidDate(String);
+pub struct ValidDate(String);
 
 impl ValidDate {
-    pub(crate) fn new(date: &str) -> Option<Self> {
+    pub fn new(date: &str) -> Option<Self> {
         let new = Self(date.to_owned());
         match new.is_valid() {
             true => Some(new),
@@ -17,15 +17,15 @@ impl ValidDate {
         }
     }
 
-    pub(crate) fn date(&self) -> &str {
+    pub fn date(&self) -> &str {
         &self.0
     }
 
-    pub(crate) fn into_date(self) -> String {
+    pub fn into_date(self) -> String {
         self.0
     }
 
-    pub(crate) fn is_valid(&self) -> bool {
+    pub fn is_valid(&self) -> bool {
         let rfc_822 = r"^(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\s(0[1-9]|[12]\d|3[01])\s(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s\d{2}\s([01]\d|2[0-4]):([0-5]\d|60):([0-5]\d|60)\s(UT|GMT|EST|EDT|CST|CDT|MST|MDT|PST|PDT|[+-]\d{4})$";
         let rfc_850 = r"^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday),\s(0?[1-9]|[12]\d|3[01])-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{2}\s([01]\d|2[0-4]):([0-5]\d|60):([0-5]\d|60)\s(UT|GMT|EST|EDT|CST|CDT|MST|MDT|PST|PDT|[+-]\d{4})$";
         let iso_8601 = r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\s([01]\d|2[0-4]):([0-5]\d|60):([0-5]\d|60).\d{3}$";
@@ -36,7 +36,7 @@ impl ValidDate {
     }
 }
 
-pub(crate) fn check_is_valid(re: &str, date: &str) -> bool {
+fn check_is_valid(re: &str, date: &str) -> bool {
     Regex::new(re)
         .and_then(|r| Ok(r.is_match(date)))
         .unwrap_or(false)
