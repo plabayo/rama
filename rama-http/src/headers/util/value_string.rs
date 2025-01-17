@@ -1,6 +1,6 @@
 use std::{
-	fmt,
-	str::{self, FromStr},
+    fmt,
+    str::{self, FromStr},
 };
 
 use bytes::Bytes;
