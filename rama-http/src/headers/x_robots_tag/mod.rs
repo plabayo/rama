@@ -2,7 +2,7 @@ mod rule;
 
 mod element;
 
-mod iterator;
+mod element_iter;
 
 mod valid_date;
 
@@ -11,7 +11,7 @@ mod valid_date;
 use crate::headers::Header;
 use element::Element;
 use http::{HeaderName, HeaderValue};
-use iterator::Iterator as XRobotsTagIterator;
+use element_iter::ElementIter;
 use std::fmt::Formatter;
 use std::iter::Iterator;
 
@@ -63,9 +63,9 @@ impl FromIterator<Element> for XRobotsTag {
 
 impl IntoIterator for XRobotsTag {
     type Item = Element;
-    type IntoIter = XRobotsTagIterator;
+    type IntoIter = ElementIter;
 
     fn into_iter(self) -> Self::IntoIter {
-        XRobotsTagIterator::new(self.0.into_iter())
+        ElementIter::new(self.0.into_iter())
     }
 }
