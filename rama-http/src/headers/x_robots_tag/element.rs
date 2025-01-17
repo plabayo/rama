@@ -1,7 +1,8 @@
 use crate::headers::util::csv::{fmt_comma_delimited, split_csv_str};
 use crate::headers::util::value_string::HeaderValueString;
 use crate::headers::x_robots_tag::rule::Rule;
-use rama_core::error::OpaqueError;
+use rama_core::error::{ErrorContext, OpaqueError};
+use regex::Regex;
 use std::fmt::Formatter;
 use std::str::FromStr;
 
@@ -55,25 +56,36 @@ impl FromStr for Element {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let (bot_name, indexing_rule) = match Rule::from_str(s) {
-            Ok(rule) => (None, Ok(rule)),
-            Err(e) => match *s.split(":").map(str::trim).collect::<Vec<_>>().as_slice() {
-                [bot_name, rule] => (Some(bot_name.to_owned()), rule.parse()),
-                [bot_name, rule_name, rule_value] => (
-                    Some(bot_name.to_owned()),
-                    [rule_name, rule_value][..].try_into(),
-                ),
-                _ => (None, Err(e)),
-            },
-        };
-        match indexing_rule {
-            Ok(indexing_rule) => Ok(Element {
-                bot_name,
-                indexing_rule,
-            }),
-            Err(_) => Err(OpaqueError::from_display(
-                "Failed to parse XRobotsTagElement",
-            )),
+        let regex = Regex::new(r"^\s*([^:]+?):\s*(.+)$")
+            .context("Failed to compile a regular expression")?;
+
+        let mut bot_name = None;
+        let mut rules_str = s;
+
+        if let Some(captures) = regex.captures(s) {
+            let bot_name_candidate = captures
+                .get(1)
+                .context("Failed to capture the target bot name")?
+                .as_str()
+                .trim();
+            
+            if bot_name_candidate.parse::<Rule>().is_err() {
+                bot_name = HeaderValueString::from_string(bot_name_candidate.to_owned());
+                rules_str = captures
+                    .get(2)
+                    .context("Failed to capture the indexing rules")?
+                    .as_str()
+                    .trim();
+            }
         }
+
+        let indexing_rules = split_csv_str(rules_str)
+            .collect::<Result<Vec<_>, _>>()
+            .context("Failed to parse the indexing rules")?;
+
+        Ok(Self {
+            bot_name,
+            indexing_rules,
+        })
     }
 }
