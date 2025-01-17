@@ -1,8 +1,7 @@
+use crate::headers::x_robots_tag::valid_date::ValidDate;
 use rama_core::error::OpaqueError;
-use std::convert::{TryFrom, TryInto};
 use std::fmt::Formatter;
 use std::str::FromStr;
-use crate::headers::x_robots_tag::valid_date::ValidDate;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Rule {
@@ -21,7 +20,7 @@ pub enum Rule {
     // custom rules
     NoAi,
     NoImageAi,
-    SPC
+    SPC,
 }
 
 impl std::fmt::Display for Rule {
@@ -53,39 +52,51 @@ impl FromStr for Rule {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        s.split(":")
-            .map(str::trim)
-            .collect::<Vec<_>>()
-            .as_slice()
-            .try_into()
+        Self::from_iter(s.split(":").map(str::trim))
     }
 }
 
-impl TryFrom<&[&str]> for Rule {
-    type Error = OpaqueError;
-
-    fn try_from(value: &[&str]) -> Result<Self, Self::Error> {
-        match *value {
-            ["all"] => Ok(Rule::All),
-            ["no_index"] => Ok(Rule::NoIndex),
-            ["no_follow"] => Ok(Rule::NoFollow),
-            ["none"] => Ok(Rule::None),
-            ["no_snippet"] => Ok(Rule::NoSnippet),
-            ["indexifembedded"] => Ok(Rule::IndexIfEmbedded),
-            ["max-snippet", number] => Ok(Rule::MaxSnippet(
-                number.parse().map_err(OpaqueError::from_display)?,
-            )),
-            ["max-image-preview", setting] => Ok(Rule::MaxImagePreview(setting.parse()?)),
-            ["max-video-preview", number] => Ok(Rule::MaxVideoPreview(match number {
-                "-1" => None,
-                n => Some(n.parse().map_err(OpaqueError::from_display)?),
-            })),
-            ["notranslate"] => Ok(Rule::NoTranslate),
-            ["noimageindex"] => Ok(Rule::NoImageIndex),
-            ["unavailable_after", date] => Ok(Rule::UnavailableAfter(date.parse()?)),
-            ["noai"] => Ok(Rule::NoAi),
-            ["noimageai"] => Ok(Rule::NoImageAi),
-            ["spc"] => Ok(Rule::SPC),
+impl<'a> Rule {
+    fn from_iter(mut value: impl Iterator<Item = &'a str>) -> Result<Self, OpaqueError> {
+        match value.next() {
+            Some("all") => Ok(Rule::All),
+            Some("no_index") => Ok(Rule::NoIndex),
+            Some("no_follow") => Ok(Rule::NoFollow),
+            Some("none") => Ok(Rule::None),
+            Some("no_snippet") => Ok(Rule::NoSnippet),
+            Some("indexifembedded") => Ok(Rule::IndexIfEmbedded),
+            Some("max-snippet") => match value.next() {
+                Some(number) => Ok(Rule::MaxSnippet(number.parse().map_err(OpaqueError::from_display)?)),
+                None => Err(OpaqueError::from_display(
+                    "No number specified for 'max-snippet'",
+                )),
+            },
+            Some("max-image-preview") => match value.next() {
+                Some(setting) => Ok(Rule::MaxImagePreview(setting.parse()?)),
+                None => Err(OpaqueError::from_display(
+                    "No setting specified for 'max-image-preview'",
+                )),
+            },
+            Some("max-video-preview") => match value.next() {
+                Some(number) => Ok(Rule::MaxVideoPreview(match number {
+                    "-1" => None,
+                    n => Some(n.parse().map_err(OpaqueError::from_display)?),
+                })),
+                None => Err(OpaqueError::from_display(
+                    "No number specified for 'max-video-preview'",
+                )),
+            },
+            Some("notranslate") => Ok(Rule::NoTranslate),
+            Some("noimageindex") => Ok(Rule::NoImageIndex),
+            Some("unavailable_after") => match value.next() {
+                Some(date) => Ok(Rule::UnavailableAfter(date.parse()?)),
+                None => Err(OpaqueError::from_display(
+                    "No date specified for 'unavailable-after'",
+                )),
+            },
+            Some("noai") => Ok(Rule::NoAi),
+            Some("noimageai") => Ok(Rule::NoImageAi),
+            Some("spc") => Ok(Rule::SPC),
             _ => Err(OpaqueError::from_display("Invalid X-Robots-Tag rule")),
         }
     }
