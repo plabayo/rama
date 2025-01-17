@@ -16,9 +16,10 @@ where
 {
     values
         .flat_map(|value| {
-            value.to_str().into_iter().flat_map(|string| {
-                split_csv_str(string)
-            })
+            value
+                .to_str()
+                .into_iter()
+                .flat_map(|string| split_csv_str(string))
         })
         .collect()
 }

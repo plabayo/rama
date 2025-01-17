@@ -66,7 +66,9 @@ impl<'a> Rule {
             Some("no_snippet") => Ok(Rule::NoSnippet),
             Some("indexifembedded") => Ok(Rule::IndexIfEmbedded),
             Some("max-snippet") => match value.next() {
-                Some(number) => Ok(Rule::MaxSnippet(number.parse().map_err(OpaqueError::from_display)?)),
+                Some(number) => Ok(Rule::MaxSnippet(
+                    number.parse().map_err(OpaqueError::from_display)?,
+                )),
                 None => Err(OpaqueError::from_display(
                     "No number specified for 'max-snippet'",
                 )),

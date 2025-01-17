@@ -68,7 +68,7 @@ impl FromStr for Element {
                 .context("Failed to capture the target bot name")?
                 .as_str()
                 .trim();
-            
+
             if bot_name_candidate.parse::<Rule>().is_err() {
                 bot_name = HeaderValueString::from_string(bot_name_candidate.to_owned());
                 rules_str = captures

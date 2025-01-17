@@ -10,8 +10,8 @@ mod valid_date;
 
 use crate::headers::Header;
 use element::Element;
-use http::{HeaderName, HeaderValue};
 use element_iter::ElementIter;
+use http::{HeaderName, HeaderValue};
 use std::fmt::Formatter;
 use std::iter::Iterator;
 
