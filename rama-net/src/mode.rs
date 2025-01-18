@@ -17,10 +17,9 @@ impl DnsResolveIpMode{
 
     /// checks if IPv6 is supported in current mode
     pub fn ipv6_supported(&self) -> bool {
-        matches!(self.mode, DnsResolveIpMode::Dual | DnsResolveIpMode::SingleIpV6)
+        matches!(self.mode, DnsResolveIpMode::Dual | DnsResolveIpMode::SingleIpV6 | DnsResolveIpMode::DualPreferIpV4)
     }
 }
-
 ///Mode for establishing a connection
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ConnectIpMode {

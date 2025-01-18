@@ -119,15 +119,16 @@ where
         Host::Name(domain) => domain,
         Host::Address(ip) => {
             //check if IP Version is allowed
-            match (ip.is_ipv4(), connector) {
-                (true, ConnectIpMode::Ipv6) => {
+            match (ip, connector.deref()) {
+                (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
                     return Err(OpaqueError::from_display("IPv4 address is not allowed"));
                 }
-                (false, ConnectIpMode::Ipv4) => {
+                (IpAddr::V6(_), ConnectIpMode::Ipv4) => {
                     return Err(OpaqueError::from_display("IPv6 address is not allowed"));
                 }
-                _ => {}
-            }
+                _ => (),
+            }            
+            
             // if the authority is already defined as an IP address, we can directly connect to it
             let addr = (ip, port).into();
             let stream = connector
@@ -240,7 +241,7 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
     
     let ip_it = match ip_kind {
         IpKind::Ipv4 =>{
-            if dns.ipv4_supported(){
+           
                 match dns.ipv4_lookup(domain).await {
                     Ok(ips) => Either::A(ips.into_iter().map(IpAddr::V4)),
                     Err(err) => {
@@ -248,15 +249,10 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                         tracing::trace!(err = %err, "[{ip_kind:?}] failed to resolve domain to IPv4 addresses");
                         return;
                     }
-                }
-           
-        } else {
-            tracing::debug!("IPv4 not supported by the DNS mode: no connection can be established");
-        }
-    },
+                }           
+       },
     IpKind::Ipv6 => {
-        if dns.ipv6_supported() {
-            match dns.ipv6_lookup(domain).await {
+         match dns.ipv6_lookup(domain).await {
             Ok(ips) => Either::B(ips.into_iter().map(IpAddr::V6)),
             Err(err) => {
                 let err = OpaqueError::from_boxed(err.into());
@@ -264,13 +260,15 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
                 return;
             }
         }
-    }
-    else {
-        tracing::debug!("IPv4 not supported by the DNS mode: no connection can be established");
-    }
-    }
+      }
     };
-
+    //Calculate the delay based on the IP kind and DNS mode
+    let (ipv4_delay_scalar, ipv6_delay_scalar) = match dns {
+        DnsResolveIpMode::DualPreferIpV4 | DnsResolveIpMode::SingleIpV4 => (15 *2, 21 * 2),
+        DnsResolveIpMode::Dual | DnsResolveIpMode::SingleIpV6 => (21 *2, 15 *2),
+        
+        
+    };
     for (index, ip) in ip_it.enumerate() {
         let addr = (ip, port).into();
 
@@ -291,14 +289,9 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
 
         // back off retries exponentially
         if index > 0 {
-            let delay = match (ip_kind, dns) {
-                //When IPv4 preffered give shorter delay
-                (IpKind::Ipv4,DnsResolveIpMode::DualPreferIpV4) => Duration::from_micros((15 * 2 * index) as u64),
-                (IpKind::Ipv6, DnsResolveIpMode::DualPreferIpV4) => Duration::from_micros((21 * 2 * index) as u64),
-                
-                //IPv6 preffered 
-                (IpKind::Ipv4, _) => Duration::from_micros((21 * 2 * index) as u64),
-                (IpKind::Ipv6, _) => Duration::from_micros((15 * 2 * index) as u64),
+            let delay = match ip_kind {
+                IpKind::Ipv4 => Duration::from_micros((ipv4_delay_scalar *index) as u64),
+                IpKind::Ipv6 => Duration::from_micros((ipv6_delay_scalar *index) as u64),
 
             };
             tokio::time::sleep(delay).await;
