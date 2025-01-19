@@ -2316,6 +2316,7 @@ dependencies = [
  "mime_guess",
  "paste",
  "pin-project-lite",
+ "rama-core",
  "rama-error",
  "rama-utils",
  "serde",
