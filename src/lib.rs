@@ -29,9 +29,9 @@
 //! >
 //! > Where required we had to fork other crates due to an incompatibility in needs or scope,
 //! > while this is unfortuante as it leads to more work for us, we gladly do so in case
-//! > it fits in our mission of empowerement of rama users, including ourselves.
+//! > it fits in our mission of empowering rama users, including ourselves.
 //! > You can find more information about these forks at <https://github.com/plabayo/rama/blob/main/FORK.md>.
-//! > As much as possible we preserve the code layout of forked cod modules, as to be able
+//! > As much as possible we preserve the code layout of forked code modules, as to be able
 //! > to keep in sync with upstream and push patches upstream where applicable.
 //!
 //! Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
