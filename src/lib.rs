@@ -22,6 +22,17 @@
 //! > Rama is all about empowerement and modularity. It is there to aid you in building your proxies, servers and clients,
 //! > without getting in your way and without stopping you in your mission where rama might fall short. A web stack
 //! > build with Rama can always be customised to your needs, even if that particular part or layer is custom to your purpose only.
+//! >
+//! > It goes without saying That Rama is built upon the shoulders of giants.
+//! > Please refer to the acknowledgements at <https://github.com/plabayo/rama?tab=readme-ov-file>
+//! > for more information about this.
+//! >
+//! > Where required we had to fork other crates due to an incompatibility in needs or scope,
+//! > while this is unfortuante as it leads to more work for us, we gladly do so in case
+//! > it fits in our mission of empowerement of rama users, including ourselves.
+//! > You can find more information about these forks at <https://github.com/plabayo/rama/blob/main/FORK.md>.
+//! > As much as possible we preserve the code layout of forked cod modules, as to be able
+//! > to keep in sync with upstream and push patches upstream where applicable.
 //!
 //! Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 //! Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
