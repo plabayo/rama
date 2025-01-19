@@ -12,11 +12,11 @@
 //! >   Axum does mean you give up full control over your web stack, meaning as soon as you need something which
 //! >   is not typical or standard-enforced, you might get stuck.
 //! > - You might want to use [Reqwest](https://docs.rs/reqwest/latest/reqwest/) if all you need is to make a typical
-//! >   http request with no need for finegrained control over your http requests get sent or the kind of http responses you can receive
+//! >   http request with no need for finegrained control over your http requests that get sent or the kind of http responses you can receive
 //! >   and in case the use use of tls is a mere detail only noticable because you are surfing to an `https` server, with the `s` for secure.
 //! >
 //! > In case you are building proxies and you feel that Rama is not the right approach for you,
-//! > than you might also want to check out [the alternatives mentioned in this project's README],
+//! > than you might also want to check out the alternatives mentioned in this project's README,
 //! > easily available at <https://github.com/plabayo/rama?tab=readme-ov-file#--alternatives>.
 //! >
 //! > Rama is all about empowerement and modularity. It is there to aid you in building your proxies, servers and clients,
