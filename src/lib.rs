@@ -2,36 +2,36 @@
 //!
 //! > The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
 //! >
-//! > It might however not be a framework for everyone. In particular if you are building typical simple web server
-//! > or just need an http client for making a standard request, you might be better served with other crates.
-//! > Because while we at [Plabayo](https://plabayo.tech) do use Rama for most of our web needs, be it clients, servers or proxies,
-//! > it is not the most easy framework to use, and does not have yet the big community backing that other crates do have.
+//! > It might however not be a framework for everyone. In particular, if you are building a typical simple web server
+//! > or just need an http client for making standard requests, you might be better served with other crates.
+//! > While we at [Plabayo](https://plabayo.tech) do use Rama for most of our web needs, be it clients, servers or proxies,
+//! > it is not the easiest framework to use, and does not yet have the big community backing that other crates have.
 //! >
 //! > - You might want to use [Axum](https://github.com/tokio-rs/axum) if you are building a typical http web server,
-//! >   it comes with a lot of extra community crates to help you with pretty much anything you can think of. Using
+//! >   as it comes with a lot of extra community crates to help you with pretty much anything you can think of. Using
 //! >   Axum does mean you give up full control over your web stack, meaning as soon as you need something which
 //! >   is not typical or standard-enforced, you might get stuck.
-//! > - You might want to use [Reqwest](https://docs.rs/reqwest/latest/reqwest/) if all you need is to make a typical
-//! >   http request with no need for finegrained control over your http requests that get sent or the kind of http responses you can receive
-//! >   and in case the use use of tls is a mere detail only noticable because you are surfing to an `https` server, with the `s` for secure.
+//! > - You might want to use [Reqwest](https://docs.rs/reqwest/latest/reqwest/) if all you need is to make typical
+//! >   http requests with no need for fine-grained control over your http requests or responses,
+//! >   and where TLS is a mere detail only noticeable because you are surfing to an `https` server, with the `s` for secure.
 //! >
-//! > In case you are building proxies and you feel that Rama is not the right approach for you,
-//! > than you might also want to check out the alternatives mentioned in this project's README,
+//! > If you are building proxies and you feel that Rama is not the right approach for you,
+//! > then you might also want to check out the alternatives mentioned in this project's README,
 //! > easily available at <https://github.com/plabayo/rama?tab=readme-ov-file#--alternatives>.
 //! >
-//! > Rama is all about empowerement and modularity. It is there to aid you in building your proxies, servers and clients,
+//! > Rama is all about empowerment and modularity. It is there to aid you in building your proxies, servers and clients,
 //! > without getting in your way and without stopping you in your mission where rama might fall short. A web stack
-//! > build with Rama can always be customised to your needs, even if that particular part or layer is custom to your purpose only.
+//! > built with Rama can always be customized to your needs, even if that particular part or layer is custom to your purpose only.
 //! >
-//! > It goes without saying That Rama is built upon the shoulders of giants.
+//! > It goes without saying that Rama is built upon the shoulders of giants.
 //! > Please refer to the acknowledgements at <https://github.com/plabayo/rama?tab=readme-ov-file>
 //! > for more information about this.
 //! >
-//! > Where required we had to fork other crates due to an incompatibility in needs or scope,
-//! > while this is unfortuante as it leads to more work for us, we gladly do so in case
-//! > it fits in our mission of empowering rama users, including ourselves.
+//! > Where required we had to fork other crates due to an incompatibility in needs or scope.
+//! > While this is unfortunate as it leads to more work for us, we gladly do so in cases
+//! > where it fits our mission of empowering rama users, including ourselves.
 //! > You can find more information about these forks at <https://github.com/plabayo/rama/blob/main/FORK.md>.
-//! > As much as possible we preserve the code layout of forked code modules, as to be able
+//! > As much as possible we preserve the code layout of forked code modules to be able
 //! > to keep in sync with upstream and push patches upstream where applicable.
 //!
 //! Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
@@ -55,13 +55,13 @@
 //! | ✅ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ ✅ [BoringSSL](crate::tls::boring) ⸱ ❌ NSS <sup>(3)</sup> |
 //! | ✅ [dns] | ✅ [DNS Resolver][crate::dns::DnsResolver] |
 //! | ✅ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::haproxy) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(1)</sup> ⸱ 🏗️ SOCKS5H <sup>(1)</sup> |
-//! | 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(2)</sup> ⸱ 🏗️ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
+//! | 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(1)</sup> ⸱ 🏗️ WSS <sup>(1)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 //! | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service] ⸱ ✅ [Layer] ⸱ ✅ [context] ⸱ ✅ [dyn dispatch](crate::service::BoxService) ⸱ ✅ [middleware](crate::layer) |
 //! | ✅ [telemetry] | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry][telemetry::opentelemetry] ⸱ ✅ [http metrics](crate::http::layer::opentelemetry) ⸱ ✅ [transport metrics](crate::net::stream::layer::opentelemetry) |
 //! | ✅ upstream [proxies](proxy) | ✅ [MemoryProxyDB](crate::proxy::MemoryProxyDB) ⸱ ✅ [L4 Username Config] ⸱ ✅ [Proxy Filters](crate::proxy::ProxyFilter) |
 //! | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](crate::ua::UserAgent) |
 //! | ✅ [Fingerprinting](crate::net::fingerprint) | ✅ [Ja3](crate::net::fingerprint::Ja3) ⸱ ✅ [Ja4](crate::net::fingerprint::Ja4) ⸱ ✅ [Ja4H](crate::net::fingerprint::Ja4H) |
-//! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ 🏗️ Connection Pool <sup>(2)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
+//! | ✅ utilities | ✅ [error handling](crate::error) ⸱ ✅ [graceful shutdown](crate::graceful) ⸱ 🏗️ Connection Pool <sup>(1)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 //! | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 //! | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client <sup>(1)</sup> ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 //! | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
@@ -71,8 +71,8 @@
 //!
 //! > 🗒️ _Footnotes_
 //! >
-//! > * <sup>(1)</sup> Part of [`v0.2.0` milestone (ETA: 2024 mid Q3)](https://github.com/plabayo/rama/milestone/1)
-//! > * <sup>(2)</sup> Part of [`v0.3.0` milestone (ETA: 2024 end Q3)](https://github.com/plabayo/rama/milestone/2)
+//! > * <sup>(1)</sup> Part of [`v0.2.0` milestone (ETA: 2025 mid Q1)](https://github.com/plabayo/rama/milestone/1)
+//! > * <sup>(2)</sup> Part of [`v0.3.0` milestone (ETA: 2025 end Q2)](https://github.com/plabayo/rama/milestone/2)
 //! > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](https://ramaproxy.org/book/sponsor.html) to help accelerate its priority.
 //!
 //! The primary focus of Rama is to aid you in your development of [proxies](https://ramaproxy.org/book/proxies/intro.html):
