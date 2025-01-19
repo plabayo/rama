@@ -35,7 +35,28 @@
 [polar-url]: https://polar.sh/plabayo
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
-The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
+
+> The reasons behind the creation of rama can be read in [the "Why Rama" chapter](https://ramaproxy.org/book/why_rama).
+>
+> It might however not be a framework for everyone. In particular if you are building typical simple web server
+> or just need an http client for making a standard request, you might be better served with other crates.
+> Because while we at [Plabayo](https://plabayo.tech) do use Rama for most of our web needs, be it clients, servers or proxies,
+> it is not the most easy framework to use, and does not have yet the big community backing that other crates do have.
+>
+> - You might want to use [Axum](https://github.com/tokio-rs/axum) if you are building a typical http web server,
+>   it comes with a lot of extra community crates to help you with pretty much anything you can think of. Using
+>   Axum does mean you give up full control over your web stack, meaning as soon as you need something which
+>   is not typical or standard-enforced, you might get stuck.
+> - You might want to use [Reqwest](https://docs.rs/reqwest/latest/reqwest/) if all you need is to make a typical
+>   http request with no need for finegrained control over your http requests get sent or the kind of http responses you can receive
+>   and in case the use use of tls is a mere detail only noticable because you are surfing to an `https` server, with the `s` for secure.
+>
+> In case you are building proxies and you feel that Rama is not the right approach for you,
+> than you might also want to check out [the alternatives mentioned at the bottom of this README](#--alternatives).
+>
+> Rama is all about empowerement and modularity. It is there to aid you in building your proxies, servers and clients,
+> without getting in your way and without stopping you in your mission where rama might fall short. A web stack
+> build with Rama can always be customised to your needs, even if that particular part or layer is custom to your purpose only.
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
