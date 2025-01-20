@@ -29,7 +29,39 @@
 [polar-url]: https://polar.sh/plabayo
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
-The reasons behind the creation of rama can be read in [the "Why Rama" chapter](./why_rama.md).
+
+> The motivations behind Rama's creation are detailed in [the "Why Rama" chapter](./why_rama.md).
+>
+> While powerful and flexible, Rama might not be the ideal framework for everyone. If you're building a 
+> conventional web server or need a simple HTTP client, other crates might better suit your needs. Although 
+> we at [Plabayo](https://plabayo.tech) use Rama extensively for our web infrastructure (clients, servers, 
+> and proxies), it has a steeper learning curve and a smaller community compared to more established alternatives.
+>
+> Consider these alternatives for simpler use cases:
+>
+> - [Axum](https://github.com/tokio-rs/axum) for building standard HTTP web servers. It offers extensive 
+>   community support and ecosystem integrations. However, be aware that Axum's higher-level abstractions 
+>   may limit your control over the web stack when you need to implement non-standard features.
+>
+> - [Reqwest](https://docs.rs/reqwest/latest/reqwest/) for basic HTTP client needs. It's ideal when you 
+>   don't require fine-grained control over HTTP requests/responses or TLS configuration details.
+>
+> If you're specifically building proxies and find Rama's approach doesn't align with your needs, 
+> explore the alternatives listed in our [project README](https://github.com/plabayo/rama?tab=readme-ov-file#--alternatives).
+>
+> Rama's core philosophy centers on empowerment and modularity. It provides a foundation for building 
+> proxies, servers, and clients without imposing restrictions. Any component in a Rama-based web stack 
+> can be customized to meet your specific requirements, even if that means implementing custom solutions 
+> for particular layers.
+>
+> We gratefully acknowledge that Rama stands on the shoulders of giants. For more details about our 
+> inspirations and dependencies, see our [acknowledgements](https://github.com/plabayo/rama?tab=readme-ov-file).
+>
+> In some cases, we've had to fork external crates to accommodate our specific needs or scope requirements. 
+> While this creates additional maintenance work, we believe it's worthwhile to support our mission of 
+> empowering Rama users. Details about these forks can be found in our [FORK.md](https://github.com/plabayo/rama/blob/main/FORK.md). 
+> We maintain the original code structure in these forks to facilitate upstream synchronization and 
+> contribute patches back when possible.
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
 Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
@@ -53,13 +85,13 @@ This framework comes with 🔋 batteries included, giving you the full freedome 
 | ✅ [tls](https://ramaproxy.org/docs/rama/tls/index.html) | ✅ [Rustls](https://ramaproxy.org/docs/rama/tls/rustls/index.html) ⸱ ✅ [BoringSSL](https://ramaproxy.org/docs/rama/tls/boring/index.html) ⸱ ❌ NSS <sup>(3)</sup> |
 | ✅ [dns](https://ramaproxy.org/docs/rama/dns/index.html) | ✅ [DNS Resolver](https://ramaproxy.org/docs/rama/dns/trait.DnsResolver.html) |
 | ✅ [proxy protocols](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [PROXY protocol](https://ramaproxy.org/docs/rama/proxy/haproxy/index.html) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(1)</sup> ⸱ 🏗️ SOCKS5H <sup>(1)</sup> |
-| 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(2)</sup> ⸱ 🏗️ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
+| 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(1)</sup> ⸱ 🏗️ WSS <sup>(1)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
 | ✅ [async-method trait](https://blog.rust-lang.org/inside-rust/2023/05/03/stabilizing-async-fn-in-trait.html) services | ✅ [Service](https://ramaproxy.org/docs/rama/service/trait.Service.html) ⸱ ✅ [Layer](https://ramaproxy.org/docs/rama/layer/trait.Layer.html) ⸱ ✅ [context](https://ramaproxy.org/docs/rama/context/index.html) ⸱ ✅ [dyn dispatch](https://ramaproxy.org/docs/rama/service/struct.BoxService.html) ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/layer/index.html) |
 | ✅ [telemetry](https://ramaproxy.org/docs/rama/telemetry/index.html) | ✅ [tracing](https://tracing.rs/tracing/) ⸱ ✅ [opentelemetry](https://ramaproxy.org/docs/rama/telemetry/opentelemetry/index.html) ⸱ ✅ [http metrics](https://ramaproxy.org/docs/rama/http/layer/opentelemetry/index.html) ⸱ ✅ [transport metrics](https://ramaproxy.org/docs/rama/net/stream/layer/opentelemetry/index.html) |
 | ✅ upstream [proxies](https://ramaproxy.org/docs/rama/proxy/index.html) | ✅ [MemoryProxyDB](https://ramaproxy.org/docs/rama/proxy/struct.MemoryProxyDB.html) ⸱ ✅ [L4 Username Config](https://ramaproxy.org/docs/rama/username/index.html) ⸱ ✅ [Proxy Filters](https://ramaproxy.org/docs/rama/proxy/struct.ProxyFilter.html) |
 | 🏗️ [User Agent (UA)](https://ramaproxy.org/book/intro/user_agent) | 🏗️ Http Emulation <sup>(1)</sup> ⸱ 🏗️ Tls Emulation <sup>(1)</sup> ⸱ ✅ [UA Parsing](https://ramaproxy.org/docs/rama/ua/struct.UserAgent.html) |
 | ✅ [Fingerprinting](https://ramaproxy.org/docs/rama/net/fingerprint/index.html) | ✅ [Ja3](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja3.html) ⸱ ✅ [Ja4](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4.html) ⸱ ✅ [Ja4H](https://ramaproxy.org/docs/rama/net/fingerprint/struct.Ja4H.html) |
-| ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ 🏗️ Connection Pool <sup>(2)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
+| ✅ utilities | ✅ [error handling](https://ramaproxy.org/docs/rama/error/index.html) ⸱ ✅ [graceful shutdown](https://ramaproxy.org/docs/rama/graceful/index.html) ⸱ 🏗️ Connection Pool <sup>(1)</sup> ⸱ 🏗️ IP2Loc <sup>(2)</sup> |
 | 🏗️ [TUI](https://ratatui.rs/) | 🏗️ traffic logger <sup>(2)</sup> ⸱ 🏗️ curl export <sup>(2)</sup> ⸱ ❌ traffic intercept <sup>(3)</sup> ⸱ ❌ traffic replay <sup>(3)</sup> |
 | ✅ binary | ✅ [prebuilt binaries](https://ramaproxy.org/book/deploy/rama-cli) ⸱ 🏗️ proxy config <sup>(2)</sup> ⸱ ✅ http client ⸱ ❌ WASM Plugins <sup>(3)</sup> |
 | 🏗️ data scraping | 🏗️ Html Processor <sup>(2)</sup> ⸱ ❌ Json Processor <sup>(3)</sup> |
@@ -67,8 +99,8 @@ This framework comes with 🔋 batteries included, giving you the full freedome 
 
 > 🗒️ _Footnotes_
 >
-> * <sup>(1)</sup> Part of [`v0.2.0` milestone (ETA: 2024 mid Q3)](https://github.com/plabayo/rama/milestone/1)
-> * <sup>(2)</sup> Part of [`v0.3.0` milestone (ETA: 2024 end Q3)](https://github.com/plabayo/rama/milestone/2)
+> * <sup>(1)</sup> Part of [`v0.2.0` milestone (ETA: 2025 mid Q1)](https://github.com/plabayo/rama/milestone/1)
+> * <sup>(2)</sup> Part of [`v0.3.0` milestone (ETA: 2025 end Q2)](https://github.com/plabayo/rama/milestone/2)
 > * <sup>(3)</sup> No immediate plans, but on our radar. Please [open an issue](https://github.com/plabayo/rama/issues) to request this feature if you have an immediate need for it. Please add sufficient motivation/reasoning and consider [becoming a sponsor](./sponsor.md) to help accelerate its priority.
 
 The primary focus of Rama is to aid you in your development of proxies:
