@@ -21,6 +21,7 @@ boring = ["tls", "rama-net/boring", "rama-tls/boring"]
 rustls-ring = ["rustls", "rama-tls/rustls-ring"]
 
 [dependencies]
+const_format = { workspace = true }
 h2 = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }

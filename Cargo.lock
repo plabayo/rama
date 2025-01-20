@@ -2250,6 +2250,7 @@ dependencies = [
 name = "rama-http-backend"
 version = "0.2.0-alpha.7"
 dependencies = [
+ "const_format",
  "h2",
  "pin-project-lite",
  "rama-core",
