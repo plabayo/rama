@@ -50,6 +50,7 @@ venndb = { workspace = true, optional = true }
 itertools = { workspace = true }
 nom = { workspace = true }
 quickcheck = { workspace = true }
+serde_json = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
 
