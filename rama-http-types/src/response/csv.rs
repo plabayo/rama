@@ -12,15 +12,15 @@ use std::fmt;
 
 use super::Headers;
 
-/// Wrapper used to create Json Http [`Response`]s,
-/// as well as to extract Json from Http [`Request`] bodies.
+/// Wrapper used to create Csv Http [`Response`]s,
+/// as well as to extract Csv from Http [`Request`] bodies.
 ///
 /// [`Request`]: crate::Request
 /// [`Response`]: crate::Response
 ///
 /// # Examples
 ///
-/// ## Creating a Json Response
+/// ## Creating a Csv Response
 ///
 /// ```
 /// use serde_json::json;
@@ -39,7 +39,7 @@ use super::Headers;
 /// }
 /// ```
 ///
-/// ## Extracting Json from a Request
+/// ## Extracting Csv from a Request
 ///
 /// ```
 /// use serde_json::json;
@@ -112,10 +112,7 @@ where
         }
 
         (
-            [(
-                CONTENT_TYPE,
-                HeaderValue::from_str(&mime::TEXT_CSV.to_string()).unwrap(),
-            )],
+            [(CONTENT_TYPE, HeaderValue::from_static("text/csv"))],
             buf.into_inner().freeze(),
         )
             .into_response()
