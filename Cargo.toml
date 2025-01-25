@@ -412,6 +412,10 @@ name = "tcp_listener_layers"
 required-features = ["tcp"]
 
 [[example]]
+name = "tls_boring_dynamic_certs"
+required-features = ["boring", "http-full"]
+
+[[example]]
 name = "tls_boring_termination"
 required-features = ["boring", "haproxy", "http-full"]
 
