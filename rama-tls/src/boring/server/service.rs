@@ -99,6 +99,10 @@ where
             })
             .or_else(|| ctx.get::<RequestContext>().map(|ctx| ctx.authority.host()));
 
+        // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
+        // are called multiples times (fn closures type). But in testing it seems fnOnce should also
+        // work (at least for how we use it). When we integrate boringssl bindings we should reconsider
+        // this and see if we can expose this in a better way.
         let mut maybe_client_hello = self
             .store_client_hello
             .then_some(Arc::new(Mutex::new(None)));
