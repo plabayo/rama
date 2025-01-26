@@ -49,6 +49,21 @@ Examples to help you get started can be found in
 [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to know how to use rama for your purposes.
 
+## 💪 | Performance
+
+`rama`'s default http implementation is forked from [`hyper`] and adds very little
+overhead. So `rama`'s performance is comparable to [`hyper`] and frameworks that built on top of that.
+
+[`hyper`]: https://github.com/hyperium/hyper
+
+Here's a list of external benchmarks:
+
+- http server benchmark @ <https://web-frameworks-benchmark.netlify.app/result>
+
+Please [open an issue](https://github.com/plabayo/rama/issues) or Pull Request (PR) in case
+you are aware of any other benchmarks of interest in regards to http(s) servers,
+http(s) clients or proxies such as Man-In-The-Middle (MITM) proxies.
+
 ## ⛨ | Safety
 
 The rama crates avoid `unsafe_code`, but do make use of it for some low level primitives (e.g. http core)
