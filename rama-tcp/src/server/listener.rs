@@ -2,12 +2,13 @@ use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::Context;
 use rama_core::Service;
+use rama_net::address::SocketAddress;
 use rama_net::stream::SocketInfo;
 use std::fmt;
 use std::pin::pin;
 use std::sync::Arc;
 use std::{io, net::SocketAddr};
-use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
+use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 
 /// Builder for `TcpListener`.
 pub struct TcpListenerBuilder<S> {
@@ -93,8 +94,11 @@ where
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
-    pub async fn bind<A: ToSocketAddrs>(self, addr: A) -> io::Result<TcpListener<S>> {
-        let inner = TokioTcpListener::bind(addr).await?;
+    pub async fn bind<A: TryInto<SocketAddress, Error = io::Error>>(
+        self,
+        addr: A,
+    ) -> io::Result<TcpListener<S>> {
+        let inner = TokioTcpListener::bind(Into::<SocketAddr>::into(addr.try_into()?)).await?;
 
         if let Some(ttl) = self.ttl {
             inner.set_ttl(ttl)?;
@@ -149,7 +153,7 @@ impl TcpListener<()> {
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
-    pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
+    pub async fn bind<A: TryInto<SocketAddress, Error = io::Error>>(addr: A) -> io::Result<Self> {
         TcpListenerBuilder::default().bind(addr).await
     }
 }
