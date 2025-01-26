@@ -27,3 +27,11 @@ pub struct UserAgentProfile {
 // TODO support serialize / deseralize fo this struct and its property types
 // TODO implement querying profiles
 // TODO add query tests
+//
+// TODO: do we really need VennDB here, we might be better off flattening it different...
+// also we need to take into account the market spread
+//
+// TODO should we strip out heavy duplicate data? e.g. there is probably a lot of duplication
+// in the TlsProfileData (inner) and HttpProfileData (inner)
+//
+// TODO: do we need to really take into account initiator, fetch and Resource type?
