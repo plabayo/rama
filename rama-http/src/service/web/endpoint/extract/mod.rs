@@ -29,7 +29,7 @@ pub use typed_header::{TypedHeader, TypedHeaderRejection, TypedHeaderRejectionRe
 
 mod body;
 #[doc(inline)]
-pub use body::{Body, Bytes, Form, Json, Text};
+pub use body::{Body, Bytes, Csv, Form, Json, Text};
 
 mod option;
 #[doc(inline)]

@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 bytes = { workspace = true }
 const_format = { workspace = true }
+csv = { workspace = true }
 futures-core = { workspace = true }
 futures-lite = { workspace = true }
 headers = { workspace = true }
