@@ -42,6 +42,7 @@ bitflags = "2.4"
 md5 = "0.7.0"
 brotli = "7"
 bytes = "1"
+chrono = "0.4.39"
 clap = { version = "4.5.15", features = ["derive"] }
 crossterm = "0.27"
 csv = "1.3.1"
@@ -255,7 +256,7 @@ rama-tls = { version = "0.2.0-alpha.7", path = "rama-tls", optional = true }
 rama-ua = { version = "0.2.0-alpha.7", path = "rama-ua", optional = true }
 rama-utils = { version = "0.2.0-alpha.7", path = "rama-utils" }
 serde_html_form = { workspace = true, optional = true }
-serde_json = { workspace = true, optional = true }
+    serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tracing = { workspace = true, optional = true }
 
