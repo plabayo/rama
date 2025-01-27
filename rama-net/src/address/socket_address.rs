@@ -3,7 +3,7 @@ use rama_core::error::{ErrorContext, OpaqueError};
 #[cfg(feature = "http")]
 use rama_http_types::HeaderValue;
 use std::fmt;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
 use std::str::FromStr;
 
 /// An [`IpAddr`] with an associated port
@@ -53,6 +53,24 @@ impl From<&SocketAddr> for SocketAddress {
         SocketAddress {
             ip_addr: addr.ip(),
             port: addr.port(),
+        }
+    }
+}
+
+impl From<SocketAddrV4> for SocketAddress {
+    fn from(value: SocketAddrV4) -> Self {
+        SocketAddress {
+            ip_addr: (*value.ip()).into(),
+            port: value.port(),
+        }
+    }
+}
+
+impl From<SocketAddrV6> for SocketAddress {
+    fn from(value: SocketAddrV6) -> Self {
+        SocketAddress {
+            ip_addr: (*value.ip()).into(),
+            port: value.port(),
         }
     }
 }
@@ -128,6 +146,14 @@ impl TryFrom<String> for SocketAddress {
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         s.as_str().try_into()
+    }
+}
+
+impl TryFrom<&String> for SocketAddress {
+    type Error = OpaqueError;
+
+    fn try_from(value: &String) -> Result<Self, Self::Error> {
+        value.as_str().try_into()
     }
 }
 
