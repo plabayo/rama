@@ -36,7 +36,7 @@ use rama::net::tls::{
     ApplicationProtocol,
 };
 
-type ClientService<State> = BoxService<State, Request, Response, BoxError>;
+pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
 /// Runner for examples.
 pub(super) struct ExampleRunner<State = ()> {
@@ -140,6 +140,10 @@ where
             server_process: child,
             client,
         }
+    }
+
+    pub(super) fn set_client(&mut self, client: ClientService<State>) {
+        self.client = client;
     }
 
     /// Create a `GET` http request to be sent to the child server.
