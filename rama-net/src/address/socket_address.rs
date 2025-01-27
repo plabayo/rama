@@ -149,6 +149,14 @@ impl TryFrom<String> for SocketAddress {
     }
 }
 
+impl TryFrom<&String> for SocketAddress {
+    type Error = OpaqueError;
+
+    fn try_from(value: &String) -> Result<Self, Self::Error> {
+        value.as_str().try_into()
+    }
+}
+
 impl TryFrom<&str> for SocketAddress {
     type Error = OpaqueError;
 
