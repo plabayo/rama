@@ -2,16 +2,22 @@ use crate::headers::util::value_string::HeaderValueString;
 use crate::headers::x_robots_tag::custom_rule::CustomRule;
 use crate::headers::x_robots_tag::max_image_preview_setting::MaxImagePreviewSetting;
 use crate::headers::x_robots_tag::robots_tag::RobotsTag;
+use crate::headers::x_robots_tag::valid_date::ValidDate;
 
 macro_rules! builder_field {
     ($field:ident, $type:ty) => {
         paste::paste! {
-            pub fn [<$field>](mut self, [<$field>]: $type) -> Self {
+            pub(super) fn [<$field>](mut self, [<$field>]: $type) -> Self {
                 self.0.[<set_ $field>]([<$field>]);
                 self
             }
 
-            pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
+            pub(super) fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
+                self.0.[<set_ $field>]([<$field>]);
+                self
+            }
+
+            pub(super) fn [<with_ $field>](mut self, [<$field>]: $type) -> Self {
                 self.0.[<set_ $field>]([<$field>]);
                 self
             }
@@ -19,27 +25,30 @@ macro_rules! builder_field {
     };
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
-pub struct RobotsTagBuilder<T = ()>(T);
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct RobotsTagBuilder<T = ()>(T);
 
 impl RobotsTagBuilder<()> {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         RobotsTagBuilder(())
     }
 
-    pub fn bot_name(self, bot_name: Option<HeaderValueString>) -> RobotsTagBuilder<RobotsTag> {
-        RobotsTagBuilder(RobotsTag::with_bot_name(bot_name))
+    pub(super) fn bot_name(
+        self,
+        bot_name: Option<HeaderValueString>,
+    ) -> RobotsTagBuilder<RobotsTag> {
+        RobotsTagBuilder(RobotsTag::new_with_bot_name(bot_name))
     }
 }
 
 impl RobotsTagBuilder<RobotsTag> {
-    pub fn add_custom_rule(&mut self, rule: CustomRule) -> &mut Self {
-        self.0.add_custom_rules(rule);
-        self
+    pub(super) fn build(self) -> RobotsTag {
+        self.0
     }
 
-    pub fn build(self) -> RobotsTag {
-        self.0
+    pub(super) fn add_custom_rule(&mut self, rule: CustomRule) -> &mut Self {
+        self.0.add_custom_rule(rule);
+        self
     }
 
     builder_field!(bot_name, HeaderValueString);
@@ -54,7 +63,7 @@ impl RobotsTagBuilder<RobotsTag> {
     builder_field!(max_video_preview, u32);
     builder_field!(no_translate, bool);
     builder_field!(no_image_index, bool);
-    builder_field!(unavailable_after, chrono::DateTime<chrono::Utc>);
+    builder_field!(unavailable_after, ValidDate);
     builder_field!(no_ai, bool);
     builder_field!(no_image_ai, bool);
     builder_field!(spc, bool);

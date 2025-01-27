@@ -3,7 +3,7 @@ use std::fmt::Formatter;
 use std::str::FromStr;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum MaxImagePreviewSetting {
+pub(super) enum MaxImagePreviewSetting {
     None,
     Standard,
     Large,

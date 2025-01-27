@@ -2,15 +2,21 @@ use crate::headers::util::value_string::HeaderValueString;
 use crate::headers::x_robots_tag::custom_rule::CustomRule;
 use crate::headers::x_robots_tag::max_image_preview_setting::MaxImagePreviewSetting;
 use crate::headers::x_robots_tag::robots_tag_builder::RobotsTagBuilder;
+use crate::headers::x_robots_tag::valid_date::ValidDate;
 
 macro_rules! getter_setter {
     ($field:ident, $type:ty) => {
         paste::paste! {
-            pub fn [<$field>](&self) -> $type {
+            pub(super) fn [<$field>](&self) -> $type {
                 self.[<$field>]
             }
 
-            pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
+            pub(super) fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
+                self.[<$field>] = [<$field>];
+                self
+            }
+
+            pub(super) fn [<with_ $field>](mut self, [<$field>]: $type) -> Self {
                 self.[<$field>] = [<$field>];
                 self
             }
@@ -19,25 +25,17 @@ macro_rules! getter_setter {
 
     ($field:ident, $type:ty, optional) => {
         paste::paste! {
-            pub fn [<$field>](&self) -> Option<&$type> {
+            pub(super) fn [<$field>](&self) -> Option<&$type> {
                 self.[<$field>].as_ref()
             }
 
-            pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
+            pub(super) fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
                 self.[<$field>] = Some([<$field>]);
                 self
             }
-        }
-    };
 
-    ($field:ident, $type:ty, vec) => {
-        paste::paste! {
-            pub fn [<$field>](&self) -> &Vec<$type> {
-                &self.[<$field>]
-            }
-
-            pub fn [<add_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
-                self.[<$field>].push([<$field>]);
+            pub(super) fn [<with_ $field>](mut self, [<$field>]: $type) -> Self {
+                self.[<$field>] = Some([<$field>]);
                 self
             }
         }
@@ -45,7 +43,7 @@ macro_rules! getter_setter {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Default)]
-pub struct RobotsTag {
+pub(super) struct RobotsTag {
     bot_name: Option<HeaderValueString>,
     all: bool,
     no_index: bool,
@@ -58,7 +56,7 @@ pub struct RobotsTag {
     max_video_preview: Option<u32>,
     no_translate: bool,
     no_image_index: bool,
-    unavailable_after: Option<chrono::DateTime<chrono::Utc>>, // "A date must be specified in a format such as RFC 822, RFC 850, or ISO 8601."
+    unavailable_after: Option<ValidDate>, // "A date must be specified in a format such as RFC 822, RFC 850, or ISO 8601."
     // custom rules
     no_ai: bool,
     no_image_ai: bool,
@@ -67,18 +65,23 @@ pub struct RobotsTag {
 }
 
 impl RobotsTag {
-    pub fn new() -> Self {
+    pub(super) fn new() -> Self {
         Default::default()
     }
 
-    pub fn with_bot_name(bot_name: Option<HeaderValueString>) -> Self {
+    pub(super) fn new_with_bot_name(bot_name: Option<HeaderValueString>) -> Self {
         Self {
             bot_name,
             ..Default::default()
         }
     }
 
-    pub fn builder() -> RobotsTagBuilder {
+    pub(super) fn add_custom_rule(&mut self, rule: CustomRule) -> &mut Self {
+        self.custom_rules.push(rule);
+        self
+    }
+
+    pub(super) fn builder() -> RobotsTagBuilder {
         RobotsTagBuilder::new()
     }
 
@@ -94,9 +97,8 @@ impl RobotsTag {
     getter_setter!(max_video_preview, u32, optional);
     getter_setter!(no_translate, bool);
     getter_setter!(no_image_index, bool);
-    getter_setter!(unavailable_after, chrono::DateTime<chrono::Utc>, optional);
+    getter_setter!(unavailable_after, ValidDate, optional);
     getter_setter!(no_ai, bool);
     getter_setter!(no_image_ai, bool);
     getter_setter!(spc, bool);
-    getter_setter!(custom_rules, CustomRule, vec);
 }
