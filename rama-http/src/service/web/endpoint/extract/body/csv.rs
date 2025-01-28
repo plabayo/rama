@@ -4,8 +4,6 @@ use crate::service::web::extract::FromRequest;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
 use crate::Request;
 use bytes::Buf;
-use csv::{self, StringRecord};
-use serde_json::json;
 
 pub use crate::response::Csv;
 
@@ -27,7 +25,7 @@ define_http_rejection! {
 }
 
 composite_http_rejection! {
-    /// Rejection used for [`Json`]
+    /// Rejection used for [`Csv`]
     ///
     /// Contains one variant for each way the [`Csv`] extractor
     /// can fail.
@@ -38,9 +36,9 @@ composite_http_rejection! {
     }
 }
 
-impl<T> FromRequest for Csv<T>
+impl<T> FromRequest for Csv<Vec<T>>
 where
-    T: serde::de::DeserializeOwned + Send + Sync + 'static + std::fmt::Debug,
+    T: serde::de::DeserializeOwned + Send + Sync + 'static,
 {
     type Rejection = CsvRejection;
 
@@ -53,27 +51,20 @@ where
         match body.collect().await {
             Ok(c) => {
                 let b = c.to_bytes();
-
-                println!("from_request {:?}", b);
-
                 let mut rdr = csv::Reader::from_reader(b.clone().reader());
-                println!("rdr {:?}", rdr.headers());
-                // let headers = rdr.headers();
-                let mut out = vec![];
-                for result in rdr.deserialize() {
-                    let record: Result<T, _> = result;
-                    match record {
-                        Ok(r) => out.push(r),
-                        Err(err) => return Err(FailedToDeserializeCsv::from_err(err).into()),
-                    }
+
+                let out: Result<Vec<T>, _> = rdr
+                    .deserialize()
+                    .map(|rec| {
+                        let record: Result<T, _> = rec;
+                        record
+                    })
+                    .collect();
+
+                match out {
+                    Ok(s) => Ok(Self(s)),
+                    Err(err) => Err(FailedToDeserializeCsv::from_err(err).into()),
                 }
-                println!("out: {:?}\n", out);
-                let out = out.pop().unwrap();
-                Ok(Self(out))
-                // match serde_json::from_slice(&b) {
-                //     Ok(s) => Ok(Self(s)),
-                //     Err(err) => Err(FailedToDeserializeCsv::from_err(err).into()),
-                // }
             }
             Err(err) => Err(BytesRejection::from_err(err).into()),
         }
@@ -89,73 +80,76 @@ mod test {
 
     #[tokio::test]
     async fn test_csv() {
-        #[derive(Debug, serde::Deserialize)]
+        #[derive(serde::Deserialize)]
         struct Input {
             name: String,
             age: u8,
             alive: Option<bool>,
         }
 
-        let service = WebService::default().post("/", |Csv(body): Csv<Input>| async move {
-            println!("in test {:?}", body);
-            // body should be like Vec<Input>
-            assert_eq!(body.name, "glen");
-            assert_eq!(body.age, 42);
-            assert_eq!(body.alive, None);
-            StatusCode::IM_A_TEAPOT
+        let service = WebService::default().post("/", |Csv(body): Csv<Vec<Input>>| async move {
+            assert_eq!(body.len(), 2);
+
+            assert_eq!(body[0].name, "glen");
+            assert_eq!(body[0].age, 42);
+            assert_eq!(body[0].alive, None);
+
+            assert_eq!(body[1].name, "adr");
+            assert_eq!(body[1].age, 40);
+            assert_eq!(body[1].alive, Some(true));
+            StatusCode::OK
         });
 
         let req = http::Request::builder()
             .method(http::Method::POST)
             .header(http::header::CONTENT_TYPE, "text/csv; charset=utf-8")
-            .body("name,age,alive\nglen,42,".into())
+            .body("name,age,alive\nglen,42,\nadr,40,true\n".into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
         println!("debug {:?}", resp);
         assert_eq!(resp.status(), StatusCode::OK);
     }
 
-    // #[tokio::test]
-    // #[ignore]
-    // async fn test_json_missing_content_type() {
-    //     #[derive(Debug, serde::Deserialize)]
-    //     struct Input {
-    //         _name: String,
-    //         _age: u8,
-    //         _alive: Option<bool>,
-    //     }
-    //
-    //     let service =
-    //         WebService::default().post("/", |Csv(_): Csv<Input>| async move { StatusCode::OK });
-    //
-    //     let req = http::Request::builder()
-    //         .method(http::Method::POST)
-    //         .header(http::header::CONTENT_TYPE, "text/plain")
-    //         .body(r#"{"name": "glen", "age": 42}"#.into())
-    //         .unwrap();
-    //     let resp = service.serve(Context::default(), req).await.unwrap();
-    //     assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
-    // }
-    //
-    // #[tokio::test]
-    // #[ignore]
-    // async fn test_json_invalid_body_encoding() {
-    //     #[derive(Debug, serde::Deserialize)]
-    //     struct Input {
-    //         _name: String,
-    //         _age: u8,
-    //         _alive: Option<bool>,
-    //     }
-    //
-    //     let service =
-    //         WebService::default().post("/", |Csv(_): Csv<Input>| async move { StatusCode::OK });
-    //
-    //     let req = http::Request::builder()
-    //         .method(http::Method::POST)
-    //         .header(http::header::CONTENT_TYPE, "text/csv; charset=utf-8")
-    //         .body(r#"deal with it, or not?!"#.into())
-    //         .unwrap();
-    //     let resp = service.serve(Context::default(), req).await.unwrap();
-    //     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-    // }
+    #[tokio::test]
+    async fn test_csv_missing_content_type() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Input {
+            _name: String,
+            _age: u8,
+            _alive: Option<bool>,
+        }
+
+        let service = WebService::default()
+            .post("/", |Csv(_): Csv<Vec<Input>>| async move { StatusCode::OK });
+
+        let req = http::Request::builder()
+            .method(http::Method::POST)
+            .header(http::header::CONTENT_TYPE, "text/plain")
+            .body(r#"{"name": "glen", "age": 42}"#.into())
+            .unwrap();
+        let resp = service.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    #[tokio::test]
+    async fn test_csv_invalid_body() {
+        #[derive(Debug, serde::Deserialize)]
+        struct Input {
+            _name: String,
+            _age: u8,
+            _alive: Option<bool>,
+        }
+
+        let service = WebService::default()
+            .post("/", |Csv(_): Csv<Vec<Input>>| async move { StatusCode::OK });
+
+        let req = http::Request::builder()
+            .method(http::Method::POST)
+            .header(http::header::CONTENT_TYPE, "text/csv; charset=utf-8")
+            // the missing column last line should trigger an error
+            .body("name,age,alive\nglen,42,\nadr,40\n".into())
+            .unwrap();
+        let resp = service.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    }
 }
