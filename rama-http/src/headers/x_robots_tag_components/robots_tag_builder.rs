@@ -1,8 +1,8 @@
 use crate::headers::util::value_string::HeaderValueString;
-use crate::headers::x_robots_tag::custom_rule::CustomRule;
-use crate::headers::x_robots_tag::max_image_preview_setting::MaxImagePreviewSetting;
-use crate::headers::x_robots_tag::robots_tag::RobotsTag;
-use crate::headers::x_robots_tag::valid_date::ValidDate;
+use crate::headers::x_robots_tag_components::custom_rule::CustomRule;
+use crate::headers::x_robots_tag_components::max_image_preview_setting::MaxImagePreviewSetting;
+use crate::headers::x_robots_tag_components::robots_tag::RobotsTag;
+use crate::headers::x_robots_tag_components::valid_date::ValidDate;
 
 macro_rules! builder_field {
     ($field:ident, $type:ty) => {
