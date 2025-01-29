@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
-use rama_core::error::OpaqueError;
+use rama_core::error::{ErrorContext, OpaqueError};
 use std::ops::Deref;
+use std::str::FromStr;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ValidDate(DateTime<Utc>);
@@ -42,5 +43,21 @@ impl AsRef<DateTime<Utc>> for ValidDate {
 impl AsMut<DateTime<Utc>> for ValidDate {
     fn as_mut(&mut self) -> &mut DateTime<Utc> {
         &mut self.0
+    }
+}
+
+impl FromStr for ValidDate {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        ValidDate::new(
+            DateTime::parse_from_rfc3339(s)
+                .or_else(|_| {
+                    DateTime::parse_from_rfc2822(s)
+                        .or_else(|_| DateTime::parse_from_str(s, "%A, %d-%b-%y %T %Z"))
+                })
+                .with_context(|| "Failed to parse date")?
+                .with_timezone(&Utc),
+        )
     }
 }
