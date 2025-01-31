@@ -42,7 +42,7 @@ macro_rules! getter_setter {
     };
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Default)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct RobotsTag {
     bot_name: Option<HeaderValueString>,
     all: bool,
@@ -65,17 +65,28 @@ pub(crate) struct RobotsTag {
 }
 
 impl RobotsTag {
-    pub(super) fn new() -> Self {
-        Default::default()
-    }
-
     pub(super) fn new_with_bot_name(bot_name: Option<HeaderValueString>) -> Self {
         Self {
             bot_name,
-            ..Default::default()
+            all: false,
+            no_index: false,
+            no_follow: false,
+            none: false,
+            no_snippet: false,
+            index_if_embedded: false,
+            max_snippet: 0,
+            max_image_preview: None,
+            max_video_preview: None,
+            no_translate: false,
+            no_image_index: false,
+            unavailable_after: None,
+            no_ai: false,
+            no_image_ai: false,
+            spc: false,
+            custom_rules: vec![],
         }
     }
-
+    
     pub(super) fn add_custom_rule(&mut self, rule: CustomRule) -> &mut Self {
         self.custom_rules.push(rule);
         self

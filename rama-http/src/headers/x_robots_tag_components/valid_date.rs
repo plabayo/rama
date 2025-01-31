@@ -7,8 +7,8 @@ use std::str::FromStr;
 pub(super) struct ValidDate(DateTime<Utc>);
 
 impl ValidDate {
-    pub(super) fn new(date: DateTime<Utc>) -> Result<Self, OpaqueError> {
-        Ok(Self(date))
+    pub(super) fn new(date: DateTime<Utc>) -> Self {
+        Self(date)
     }
 }
 
@@ -23,14 +23,6 @@ impl Deref for ValidDate {
 impl From<ValidDate> for DateTime<Utc> {
     fn from(value: ValidDate) -> Self {
         value.0
-    }
-}
-
-impl TryFrom<DateTime<Utc>> for ValidDate {
-    type Error = OpaqueError;
-
-    fn try_from(value: DateTime<Utc>) -> Result<Self, Self::Error> {
-        ValidDate::new(value)
     }
 }
 
@@ -50,7 +42,7 @@ impl FromStr for ValidDate {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        ValidDate::new(
+        Ok(ValidDate::new(
             DateTime::parse_from_rfc3339(s)
                 .or_else(|_| {
                     DateTime::parse_from_rfc2822(s)
@@ -58,6 +50,6 @@ impl FromStr for ValidDate {
                 })
                 .with_context(|| "Failed to parse date")?
                 .with_timezone(&Utc),
-        )
+        ))
     }
 }

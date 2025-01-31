@@ -256,7 +256,7 @@ rama-tls = { version = "0.2.0-alpha.7", path = "rama-tls", optional = true }
 rama-ua = { version = "0.2.0-alpha.7", path = "rama-ua", optional = true }
 rama-utils = { version = "0.2.0-alpha.7", path = "rama-utils" }
 serde_html_form = { workspace = true, optional = true }
-    serde_json = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
 tracing = { workspace = true, optional = true }
 

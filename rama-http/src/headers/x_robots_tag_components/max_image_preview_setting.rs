@@ -23,13 +23,16 @@ impl FromStr for MaxImagePreviewSetting {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s.to_lowercase().trim() {
-            "none" => Ok(MaxImagePreviewSetting::None),
-            "standard" => Ok(MaxImagePreviewSetting::Standard),
-            "large" => Ok(MaxImagePreviewSetting::Large),
-            _ => Err(OpaqueError::from_display(
+        if s.eq_ignore_ascii_case("none") {
+            Ok(MaxImagePreviewSetting::None)
+        } else if s.eq_ignore_ascii_case("standard") {
+            Ok(MaxImagePreviewSetting::Standard)
+        } else if s.eq_ignore_ascii_case("large") {
+            Ok(MaxImagePreviewSetting::Large)
+        } else {
+            Err(OpaqueError::from_display(
                 "failed to parse MaxImagePreviewSetting",
-            )),
+            ))
         }
     }
 }
