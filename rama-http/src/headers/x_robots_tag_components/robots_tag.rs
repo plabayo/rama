@@ -1,8 +1,11 @@
 use crate::headers::util::value_string::HeaderValueString;
 use crate::headers::x_robots_tag_components::custom_rule::CustomRule;
 use crate::headers::x_robots_tag_components::max_image_preview_setting::MaxImagePreviewSetting;
-use crate::headers::x_robots_tag_components::robots_tag_builder::RobotsTagBuilder;
+use crate::headers::x_robots_tag_components::robots_tag_components::Builder;
 use crate::headers::x_robots_tag_components::valid_date::ValidDate;
+use rama_core::error::OpaqueError;
+use std::fmt::{Display, Formatter};
+use std::str::FromStr;
 
 macro_rules! getter_setter {
     ($field:ident, $type:ty) => {
@@ -86,14 +89,14 @@ impl RobotsTag {
             custom_rules: vec![],
         }
     }
-    
+
     pub(super) fn add_custom_rule(&mut self, rule: CustomRule) -> &mut Self {
         self.custom_rules.push(rule);
         self
     }
 
-    pub(super) fn builder() -> RobotsTagBuilder {
-        RobotsTagBuilder::new()
+    pub(super) fn builder() -> Builder {
+        Builder::new()
     }
 
     getter_setter!(bot_name, HeaderValueString, optional);
@@ -112,4 +115,100 @@ impl RobotsTag {
     getter_setter!(no_ai, bool);
     getter_setter!(no_image_ai, bool);
     getter_setter!(spc, bool);
+
+    pub(super) fn is_valid_field_name(field_name: &str) -> bool {
+        field_name.eq_ignore_ascii_case("all")
+            || field_name.eq_ignore_ascii_case("noindex")
+            || field_name.eq_ignore_ascii_case("nofollow")
+            || field_name.eq_ignore_ascii_case("none")
+            || field_name.eq_ignore_ascii_case("nosnippet")
+            || field_name.eq_ignore_ascii_case("indexifembedded")
+            || field_name.eq_ignore_ascii_case("notranslate")
+            || field_name.eq_ignore_ascii_case("noimageindex")
+            || field_name.eq_ignore_ascii_case("noai")
+            || field_name.eq_ignore_ascii_case("noimageai")
+            || field_name.eq_ignore_ascii_case("spc")
+    }
+
+    pub(super) fn from_str(s: &str) -> Result<Option<Self>, OpaqueError> {
+        let mut bot_name = None;
+        let mut fields = s;
+
+        if let Some((bot_name_candidate, rest)) = s.split_once(':') {
+            if !RobotsTag::is_valid_field_name(bot_name_candidate) {
+                bot_name = Some(
+                    HeaderValueString::from_str(bot_name_candidate)
+                        .map_err(OpaqueError::from_std)?,
+                );
+                fields = rest;
+            }
+        }
+
+        let mut builder = RobotsTag::builder().bot_name(bot_name);
+
+        for field in fields.split(',') {
+            match builder.add_field(field) {
+                Ok(_) => {}
+                Err(e) if e.to_string().contains("not a valid robots tag field") => {
+                    // re
+                    return Ok(None);
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Ok(Some(builder.build()?))
+    }
+}
+
+impl Display for RobotsTag {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        if let Some(bot_name) = self.bot_name() {
+            write!(f, "{bot_name}: ")?;
+        }
+
+        let mut _first = true;
+
+        macro_rules! write_field {
+            ($cond:expr, $fmt:expr) => {
+                if $cond {
+                    if !_first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}", $fmt)?;
+                    _first = false;
+                }
+            };
+            ($cond:expr, $fmt:expr, optional) => {
+                if let Some(value) = $cond {
+                    if !_first {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{}: {}", $fmt, value)?;
+                    _first = false;
+                }
+            };
+        }
+
+        write_field!(self.all(), "all");
+        write_field!(self.no_index(), "noindex");
+        write_field!(self.no_follow(), "nofollow");
+        write_field!(self.none(), "none");
+        write_field!(self.no_snippet(), "nosnippet");
+        write_field!(self.index_if_embedded(), "indexifembedded");
+        write_field!(
+            self.max_snippet() != 0,
+            format!("max-snippet: {}", self.max_snippet())
+        );
+        write_field!(self.max_image_preview(), "max-image-preview", optional);
+        write_field!(self.max_video_preview(), "max-video-preview", optional);
+        write_field!(self.no_translate(), "notranslate");
+        write_field!(self.no_image_index(), "noimageindex");
+        write_field!(self.unavailable_after(), "unavailable_after", optional);
+        write_field!(self.no_ai(), "noai");
+        write_field!(self.no_image_ai(), "noimageai");
+        write_field!(self.spc(), "spc");
+
+        writeln!(f)
+    }
 }
