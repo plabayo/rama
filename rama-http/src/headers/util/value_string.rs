@@ -1,12 +1,11 @@
+use crate::headers::Error;
+use bytes::Bytes;
+use http::header::HeaderValue;
+use std::fmt::{Display, Formatter};
 use std::{
     fmt,
     str::{self, FromStr},
 };
-
-use bytes::Bytes;
-use http::header::HeaderValue;
-
-use crate::headers::Error;
 
 /// A value that is both a valid `HeaderValue` and `String`.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -67,7 +66,7 @@ impl<'a> From<&'a HeaderValueString> for HeaderValue {
 }
 
 #[derive(Debug)]
-pub struct FromStrError(());
+pub struct FromStrError(&'static str);
 
 impl FromStr for HeaderValueString {
     type Err = FromStrError;
@@ -76,6 +75,14 @@ impl FromStr for HeaderValueString {
         // A valid `str` (the argument)...
         src.parse()
             .map(|value| HeaderValueString { value })
-            .map_err(|_| FromStrError(()))
+            .map_err(|_| FromStrError("failed to parse header value from string"))
     }
 }
+
+impl Display for FromStrError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        writeln!(f, "{}", self.0)
+    }
+}
+
+impl std::error::Error for FromStrError {}
