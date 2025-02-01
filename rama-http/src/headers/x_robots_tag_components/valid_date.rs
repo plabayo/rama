@@ -1,5 +1,6 @@
 use chrono::{DateTime, Utc};
 use rama_core::error::{ErrorContext, OpaqueError};
+use std::fmt::{Display, Formatter};
 use std::ops::Deref;
 use std::str::FromStr;
 
@@ -51,5 +52,11 @@ impl FromStr for ValidDate {
                 .with_context(|| "Failed to parse date")?
                 .with_timezone(&Utc),
         ))
+    }
+}
+
+impl Display for ValidDate {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        writeln!(f, "{}", self.0)
     }
 }
