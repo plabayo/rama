@@ -3,9 +3,7 @@ use crate::headers::x_robots_tag_components::custom_rule::CustomRule;
 use crate::headers::x_robots_tag_components::max_image_preview_setting::MaxImagePreviewSetting;
 use crate::headers::x_robots_tag_components::robots_tag_components::Builder;
 use crate::headers::x_robots_tag_components::valid_date::ValidDate;
-use rama_core::error::OpaqueError;
 use std::fmt::{Display, Formatter};
-use std::str::FromStr;
 
 macro_rules! getter_setter {
     ($field:ident, $type:ty) => {
@@ -129,36 +127,6 @@ impl RobotsTag {
             || field_name.eq_ignore_ascii_case("noimageai")
             || field_name.eq_ignore_ascii_case("spc")
     }
-
-    pub(super) fn from_str(s: &str) -> Result<Option<Self>, OpaqueError> {
-        let mut bot_name = None;
-        let mut fields = s;
-
-        if let Some((bot_name_candidate, rest)) = s.split_once(':') {
-            if !RobotsTag::is_valid_field_name(bot_name_candidate) {
-                bot_name = Some(
-                    HeaderValueString::from_str(bot_name_candidate)
-                        .map_err(OpaqueError::from_std)?,
-                );
-                fields = rest;
-            }
-        }
-
-        let mut builder = RobotsTag::builder().bot_name(bot_name);
-
-        for field in fields.split(',') {
-            match builder.add_field(field) {
-                Ok(_) => {}
-                Err(e) if e.to_string().contains("not a valid robots tag field") => {
-                    // re
-                    return Ok(None);
-                }
-                Err(e) => return Err(e),
-            }
-        }
-
-        Ok(Some(builder.build()?))
-    }
 }
 
 impl Display for RobotsTag {
@@ -209,6 +177,6 @@ impl Display for RobotsTag {
         write_field!(self.no_image_ai(), "noimageai");
         write_field!(self.spc(), "spc");
 
-        writeln!(f)
+        Ok(())
     }
 }
