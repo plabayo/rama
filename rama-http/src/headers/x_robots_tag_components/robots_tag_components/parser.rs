@@ -1,5 +1,6 @@
 use crate::headers::util::value_string::HeaderValueString;
 use crate::headers::x_robots_tag_components::RobotsTag;
+use http::HeaderValue;
 use rama_core::error::OpaqueError;
 use std::str::FromStr;
 
@@ -9,9 +10,12 @@ pub(in crate::headers) struct Parser<'a> {
 
 impl<'a> Parser<'a> {
     pub(in crate::headers) fn new(remaining: &'a str) -> Self {
-        Self {
-            remaining: Some(remaining.trim()),
-        }
+        let remaining = match remaining.trim() {
+            "" => None,
+            text => Some(text),
+        };
+
+        Self { remaining }
     }
 }
 
@@ -19,7 +23,7 @@ impl<'a> Iterator for Parser<'_> {
     type Item = Result<RobotsTag, OpaqueError>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let mut remaining = self.remaining?;
+        let mut remaining = self.remaining?.trim();
 
         let bot_name = match Self::parse_bot_name(&mut remaining) {
             Ok(bot_name) => bot_name,
@@ -63,5 +67,11 @@ impl Parser<'_> {
         }
 
         Ok(None)
+    }
+
+    pub(in crate::headers) fn parse_value(
+        value: &HeaderValue,
+    ) -> Result<Vec<RobotsTag>, OpaqueError> {
+        Parser::new(value.to_str().map_err(OpaqueError::from_std)?).collect::<Result<Vec<_>, _>>()
     }
 }

@@ -17,16 +17,15 @@ impl Header for XRobotsTag {
         Self: Sized,
         I: Iterator<Item = &'i HeaderValue>,
     {
-        let mut elements = Vec::new();
-        for value in values {
-            let mut parser = Parser::new(value.to_str().map_err(|_| Error::invalid())?);
-            while let Some(result) = parser.next() {
-                match result {
-                    Ok(robots_tag) => elements.push(robots_tag),
-                    Err(_) => return Err(Error::invalid()),
-                }
-            }
-        }
+        let elements = values.try_fold(Vec::new(), |mut acc, value| {
+            acc.extend(Parser::parse_value(value).map_err(|err| {
+                tracing::debug!(?err, "x-robots-tag header element decoding failure");
+                Error::invalid()
+            })?);
+
+            Ok(acc)
+        })?;
+
         Ok(XRobotsTag(elements))
     }
 
