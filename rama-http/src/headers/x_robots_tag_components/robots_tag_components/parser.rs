@@ -42,7 +42,7 @@ impl<'a> Iterator for Parser<'_> {
                 Ok(_) => {
                     remaining = rest.trim();
                 }
-                Err(e) if e.to_string().contains("not a valid robots tag field") => {
+                Err(e) if e.is::<headers::Error>() => {
                     self.remaining = Some(remaining.trim());
                     return Some(builder.build());
                 }

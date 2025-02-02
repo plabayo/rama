@@ -3,6 +3,7 @@ use crate::headers::x_robots_tag_components::custom_rule::CustomRule;
 use crate::headers::x_robots_tag_components::max_image_preview_setting::MaxImagePreviewSetting;
 use crate::headers::x_robots_tag_components::robots_tag::RobotsTag;
 use crate::headers::x_robots_tag_components::valid_date::ValidDate;
+use headers::Error;
 use rama_core::error::OpaqueError;
 
 macro_rules! builder_field {
@@ -99,7 +100,7 @@ impl Builder<RobotsTag> {
             } else if key.eq_ignore_ascii_case("unavailable_after: <date/time>") {
                 self.set_unavailable_after(value.parse()?)
             } else {
-                return Err(OpaqueError::from_display("not a valid robots tag field"));
+                return Err(OpaqueError::from_std(Error::invalid()));
             })
         } else {
             self.add_simple_field(s)
@@ -130,7 +131,7 @@ impl Builder<RobotsTag> {
         } else if s.eq_ignore_ascii_case("spc") {
             self.set_spc(true)
         } else {
-            return Err(OpaqueError::from_display("not a valid robots tag field"));
+            return Err(OpaqueError::from_std(Error::invalid()));
         })
     }
 }
