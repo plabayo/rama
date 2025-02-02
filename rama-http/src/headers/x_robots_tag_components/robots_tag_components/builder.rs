@@ -68,7 +68,7 @@ impl Builder<NoTag> {
         self.0.bot_name = Some(bot_name);
         self
     }
-    
+
     no_tag_builder_field!(all, bool);
     no_tag_builder_field!(no_index, bool);
     no_tag_builder_field!(no_follow, bool);
