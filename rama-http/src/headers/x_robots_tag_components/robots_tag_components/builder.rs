@@ -6,91 +6,130 @@ use crate::headers::x_robots_tag_components::valid_date::ValidDate;
 use headers::Error;
 use rama_core::error::OpaqueError;
 
-macro_rules! builder_field {
+macro_rules! robots_tag_builder_field {
     ($field:ident, $type:ty) => {
         paste::paste! {
             pub(in crate::headers::x_robots_tag_components) fn [<$field>](mut self, [<$field>]: $type) -> Self {
-                self.content.[<set_ $field>]([<$field>]);
-                self.valid = true;
+                self.0.[<set_ $field>]([<$field>]);
                 self
             }
 
             pub(in crate::headers::x_robots_tag_components) fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
-                self.content.[<set_ $field>]([<$field>]);
-                self.valid = true;
+                self.0.[<set_ $field>]([<$field>]);
                 self
             }
         }
     };
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::headers::x_robots_tag_components) struct Builder<T = ()> {
-    content: T,
-    valid: bool,
+macro_rules! no_tag_builder_field {
+    ($field:ident, $type:ty) => {
+        paste::paste! {
+            pub(in crate::headers::x_robots_tag_components) fn [<$field>](self, [<$field>]: $type) -> Builder<RobotsTag> {
+                Builder(RobotsTag::new_with_bot_name(self.0.bot_name)).[<$field>]([<$field>])
+            }
+        }
+    };
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(in crate::headers::x_robots_tag_components) struct Builder<T = ()>(T);
 
 impl Builder<()> {
     pub(in crate::headers::x_robots_tag_components) fn new() -> Self {
-        Builder {
-            content: (),
-            valid: false,
-        }
+        Builder(())
     }
 
     pub(in crate::headers::x_robots_tag_components) fn bot_name(
         &self,
         bot_name: Option<HeaderValueString>,
-    ) -> Builder<RobotsTag> {
-        Builder {
-            content: RobotsTag::new_with_bot_name(bot_name),
-            valid: false,
-        }
+    ) -> Builder<NoTag> {
+        Builder(NoTag { bot_name })
+    }
+}
+
+pub(in crate::headers::x_robots_tag_components) struct NoTag {
+    bot_name: Option<HeaderValueString>,
+}
+
+impl Builder<NoTag> {
+    pub(in crate::headers::x_robots_tag_components) fn bot_name(
+        mut self,
+        bot_name: HeaderValueString,
+    ) -> Self {
+        self.0.bot_name = Some(bot_name);
+        self
+    }
+
+    pub(in crate::headers::x_robots_tag_components) fn set_bot_name(
+        &mut self,
+        bot_name: HeaderValueString,
+    ) -> &mut Self {
+        self.0.bot_name = Some(bot_name);
+        self
+    }
+    
+    no_tag_builder_field!(all, bool);
+    no_tag_builder_field!(no_index, bool);
+    no_tag_builder_field!(no_follow, bool);
+    no_tag_builder_field!(none, bool);
+    no_tag_builder_field!(no_snippet, bool);
+    no_tag_builder_field!(index_if_embedded, bool);
+    no_tag_builder_field!(max_snippet, u32);
+    no_tag_builder_field!(max_image_preview, MaxImagePreviewSetting);
+    no_tag_builder_field!(max_video_preview, u32);
+    no_tag_builder_field!(no_translate, bool);
+    no_tag_builder_field!(no_image_index, bool);
+    no_tag_builder_field!(unavailable_after, ValidDate);
+    no_tag_builder_field!(no_ai, bool);
+    no_tag_builder_field!(no_image_ai, bool);
+    no_tag_builder_field!(spc, bool);
+
+    pub(in crate::headers::x_robots_tag_components) fn add_field(
+        self,
+        s: &str,
+    ) -> Result<Builder<RobotsTag>, OpaqueError> {
+        let mut builder = Builder(RobotsTag::new_with_bot_name(self.0.bot_name));
+        builder.add_field(s)?;
+        Ok(builder)
     }
 }
 
 impl Builder<RobotsTag> {
-    pub(in crate::headers::x_robots_tag_components) fn build(
-        self,
-    ) -> Result<RobotsTag, OpaqueError> {
-        if self.valid {
-            Ok(self.content)
-        } else {
-            Err(OpaqueError::from_display("not a valid robots tag"))
-        }
+    pub(in crate::headers::x_robots_tag_components) fn build(self) -> RobotsTag {
+        self.0
     }
 
     pub(in crate::headers::x_robots_tag_components) fn add_custom_rule(
         &mut self,
         rule: CustomRule,
     ) -> &mut Self {
-        self.content.add_custom_rule(rule);
-        self.valid = true;
+        self.0.add_custom_rule(rule);
         self
     }
 
-    builder_field!(bot_name, HeaderValueString);
-    builder_field!(all, bool);
-    builder_field!(no_index, bool);
-    builder_field!(no_follow, bool);
-    builder_field!(none, bool);
-    builder_field!(no_snippet, bool);
-    builder_field!(index_if_embedded, bool);
-    builder_field!(max_snippet, u32);
-    builder_field!(max_image_preview, MaxImagePreviewSetting);
-    builder_field!(max_video_preview, u32);
-    builder_field!(no_translate, bool);
-    builder_field!(no_image_index, bool);
-    builder_field!(unavailable_after, ValidDate);
-    builder_field!(no_ai, bool);
-    builder_field!(no_image_ai, bool);
-    builder_field!(spc, bool);
+    robots_tag_builder_field!(bot_name, HeaderValueString);
+    robots_tag_builder_field!(all, bool);
+    robots_tag_builder_field!(no_index, bool);
+    robots_tag_builder_field!(no_follow, bool);
+    robots_tag_builder_field!(none, bool);
+    robots_tag_builder_field!(no_snippet, bool);
+    robots_tag_builder_field!(index_if_embedded, bool);
+    robots_tag_builder_field!(max_snippet, u32);
+    robots_tag_builder_field!(max_image_preview, MaxImagePreviewSetting);
+    robots_tag_builder_field!(max_video_preview, u32);
+    robots_tag_builder_field!(no_translate, bool);
+    robots_tag_builder_field!(no_image_index, bool);
+    robots_tag_builder_field!(unavailable_after, ValidDate);
+    robots_tag_builder_field!(no_ai, bool);
+    robots_tag_builder_field!(no_image_ai, bool);
+    robots_tag_builder_field!(spc, bool);
 
     pub(in crate::headers::x_robots_tag_components) fn add_field(
         &mut self,
         s: &str,
     ) -> Result<&mut Self, OpaqueError> {
-        if let Some((key, value)) = s.split_once(':') {
+        if let Some((key, value)) = s.trim().split_once(':') {
             Ok(if key.eq_ignore_ascii_case("max-snippet") {
                 self.set_max_snippet(value.parse().map_err(OpaqueError::from_std)?)
             } else if key.eq_ignore_ascii_case("max-image-preview") {

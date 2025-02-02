@@ -30,7 +30,17 @@ impl<'a> Iterator for Parser<'_> {
             Err(e) => return Some(Err(e)),
         };
 
-        let mut builder = RobotsTag::builder().bot_name(bot_name);
+        let mut builder = if let Some((field, rest)) = remaining.split_once(',') {
+            match RobotsTag::builder().bot_name(bot_name).add_field(field) {
+                Ok(builder) => {
+                    remaining = rest.trim();
+                    builder
+                }
+                Err(_) => return None,
+            }
+        } else {
+            return None;
+        };
 
         while let Some((field, rest)) = remaining.split_once(',') {
             let field = field.trim();
@@ -44,13 +54,13 @@ impl<'a> Iterator for Parser<'_> {
                 }
                 Err(e) if e.is::<headers::Error>() => {
                     self.remaining = Some(remaining.trim());
-                    return Some(builder.build());
+                    return Some(Ok(builder.build()));
                 }
                 Err(e) => return Some(Err(e)),
             }
         }
 
-        Some(builder.build())
+        Some(Ok(builder.build()))
     }
 }
 
