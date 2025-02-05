@@ -101,7 +101,6 @@ async fn main() {
     let tls_server_config = ServerConfig::new(ServerAuth::CertIssuer(ServerCertIssuerData {
         kind: issuer.into(),
         cache_kind: CacheKind::Disabled,
-        ..Default::default()
     }));
 
     let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");

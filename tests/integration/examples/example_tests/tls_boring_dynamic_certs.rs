@@ -103,7 +103,7 @@ where
         ..Default::default()
     });
 
-    let client = (
+    (
         MapResultLayer::new(map_internal_client_error),
         TraceLayer::new_for_http(),
         #[cfg(feature = "compression")]
@@ -123,9 +123,7 @@ where
         AddRequiredRequestHeadersLayer::default(),
     )
         .layer(inner_client)
-        .boxed();
-
-    client
+        .boxed()
 }
 
 fn map_internal_client_error<E, Body>(

@@ -151,9 +151,9 @@ pub struct DynamicIssuer {
 
 impl DynamicIssuer {
     pub fn new<T: DynamicCertIssuer>(issuer: T) -> Self {
-        return Self {
+        Self {
             issuer: Arc::new(issuer),
-        };
+        }
     }
 
     pub async fn issue_cert(

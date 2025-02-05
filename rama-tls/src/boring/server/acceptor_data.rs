@@ -147,7 +147,7 @@ impl TlsCertSource {
                     let mut client_hello = client_hello;
                     let ssl_ref = client_hello.ssl_mut();
 
-                    let host = to_host(&ssl_ref, &server_name).map_err(|err| {
+                    let host = to_host(ssl_ref, &server_name).map_err(|err| {
                         tracing::error!(error = %err, "boring: failed getting host");
                         SelectCertError::ERROR
                     })?;
@@ -196,7 +196,7 @@ impl TlsCertSource {
                     }
 
                     let ssl_ref = client_hello.ssl_mut();
-                    let host = to_host(&ssl_ref, &server_name).map_err(|err| {
+                    let host = to_host(ssl_ref, &server_name).map_err(|err| {
                         tracing::error!(error = %err, "boring: failed getting host");
                         AsyncSelectCertError{}
                     })?;
@@ -393,7 +393,7 @@ fn server_auth_data_to_private_key_and_ca_chain(
         DataEncoding::Der(raw_data) => vec![X509::from_der(&raw_data[..])
             .context("boring/TlsAcceptorData: parse x509 server cert from DER content")?],
         DataEncoding::DerStack(raw_data_list) => raw_data_list
-            .into_iter()
+            .iter()
             .map(|raw_data| {
                 X509::from_der(&raw_data[..])
                     .context("boring/TlsAcceptorData: parse x509 server cert from DER content")
@@ -460,7 +460,7 @@ fn add_issued_cert_to_ssl_ref(
                 .context("boring add issue cert to ssl ref: set certificate")?;
         } else {
             builder
-                .add_chain_cert(&ca_cert)
+                .add_chain_cert(ca_cert)
                 .context("boring add issue cert to ssl ref: add chain certificate")?;
         }
     }
