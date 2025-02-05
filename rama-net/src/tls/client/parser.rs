@@ -14,7 +14,7 @@ use nom::{
     error::{make_error, ErrorKind},
     multi::{length_data, many0},
     number::streaming::{be_u16, be_u8},
-    IResult,
+    IResult, Parser,
 };
 use rama_core::error::OpaqueError;
 use std::str;
@@ -40,13 +40,13 @@ pub(crate) fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
 fn parse_client_hello_inner(i: &[u8]) -> IResult<&[u8], ClientHello> {
     let (i, version) = be_u16(i)?;
     let (i, _random) = take(32usize)(i)?;
-    let (i, sidlen) = verify(be_u8, |&n| n <= 32)(i)?;
-    let (i, _sid) = cond(sidlen > 0, take(sidlen as usize))(i)?;
+    let (i, sidlen) = verify(be_u8, |&n| n <= 32).parse(i)?;
+    let (i, _sid) = cond(sidlen > 0, take(sidlen as usize)).parse(i)?;
     let (i, ciphers_len) = be_u16(i)?;
     let (i, cipher_suites) = parse_cipher_suites(i, ciphers_len as usize)?;
     let (i, comp_len) = be_u8(i)?;
     let (i, compression_algorithms) = parse_compressions_algs(i, comp_len as usize)?;
-    let (i, opt_ext) = opt(complete(length_data(be_u16)))(i)?;
+    let (i, opt_ext) = opt(complete(length_data(be_u16))).parse(i)?;
 
     let mut extensions = vec![];
     if let Some(mut i) = opt_ext {
@@ -99,7 +99,7 @@ fn parse_compressions_algs(i: &[u8], len: usize) -> IResult<&[u8], Vec<Compressi
 fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExtension> {
     let (i, ext_type) = be_u16(i)?;
     let id = ExtensionId::from(ext_type);
-    let (i, ext_data) = length_data(be_u16)(i)?;
+    let (i, ext_data) = length_data(be_u16).parse(i)?;
 
     let ext_len = ext_data.len() as u16;
 
@@ -139,7 +139,8 @@ fn parse_tls_extension_sni_content(i: &[u8]) -> IResult<&[u8], ClientHelloExtens
     let (i, mut v) = map_parser(
         take(list_len),
         many0(complete(parse_tls_extension_sni_hostname)),
-    )(i)?;
+    )
+    .parse(i)?;
     if v.len() > 1 {
         return Err(nom::Err::Error(nom::error::Error::new(
             i,
@@ -166,7 +167,7 @@ fn parse_tls_extension_sni_hostname(i: &[u8]) -> IResult<&[u8], Host> {
     if nt != 0 {
         return Err(nom::Err::Error(nom::error::Error::new(i, ErrorKind::IsNot)));
     }
-    let (i, v) = length_data(be_u16)(i)?;
+    let (i, v) = length_data(be_u16).parse(i)?;
     let host = str::from_utf8(v)
         .map_err(|_| nom::Err::Error(nom::error::Error::new(i, ErrorKind::Not)))?
         .parse()
@@ -179,14 +180,16 @@ fn parse_tls_extension_elliptic_curves_content(i: &[u8]) -> IResult<&[u8], Clien
     map_parser(
         length_data(be_u16),
         map(parse_u16_type, ClientHelloExtension::SupportedGroups),
-    )(i)
+    )
+    .parse(i)
 }
 
 fn parse_tls_extension_ec_point_formats_content(i: &[u8]) -> IResult<&[u8], ClientHelloExtension> {
     map_parser(
         length_data(be_u8),
         map(parse_u8_type, ClientHelloExtension::ECPointFormats),
-    )(i)
+    )
+    .parse(i)
 }
 
 // TLS 1.3 draft 23
@@ -208,13 +211,14 @@ fn parse_tls_extension_supported_versions_content(
     if ext_len == 2 {
         map(be_u16, |x| {
             ClientHelloExtension::SupportedVersions(vec![ProtocolVersion::from(x)])
-        })(i)
+        })
+        .parse(i)
     } else {
         let (i, _) = be_u8(i)?;
         if ext_len == 0 {
             return Err(nom::Err::Error(make_error(i, ErrorKind::Verify)));
         }
-        let (i, l) = map_parser(take(ext_len - 1), parse_u16_type)(i)?;
+        let (i, l) = map_parser(take(ext_len - 1), parse_u16_type).parse(i)?;
         Ok((i, ClientHelloExtension::SupportedVersions(l)))
     }
 }
@@ -226,7 +230,8 @@ fn parse_tls_extension_signature_algorithms_content(
     map_parser(
         length_data(be_u16),
         map(parse_u16_type, ClientHelloExtension::SignatureAlgorithms),
-    )(i)
+    )
+    .parse(i)
 }
 
 /// Defined in [RFC7301]
@@ -237,13 +242,14 @@ fn parse_tls_extension_alpn_content(i: &[u8]) -> IResult<&[u8], ClientHelloExten
             parse_protocol_name_list,
             ClientHelloExtension::ApplicationLayerProtocolNegotiation,
         ),
-    )(i)
+    )
+    .parse(i)
 }
 
 fn parse_protocol_name_list(mut i: &[u8]) -> IResult<&[u8], Vec<ApplicationProtocol>> {
     let mut v = vec![];
     while !i.is_empty() {
-        let (n, alpn) = map_parser(length_data(be_u8), parse_protocol_name)(i)?;
+        let (n, alpn) = map_parser(length_data(be_u8), parse_protocol_name).parse(i)?;
         v.push(alpn);
         i = n;
     }

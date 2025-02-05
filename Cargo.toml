@@ -44,6 +44,7 @@ brotli = "7"
 bytes = "1"
 clap = { version = "4.5.15", features = ["derive"] }
 crossterm = "0.27"
+csv = "1.3.1"
 flate2 = "1.0"
 futures-lite = "2.3.0"
 futures-core = "0.3"
@@ -73,7 +74,7 @@ proc-macro2 = "1.0"
 opentelemetry = { version = "0.27.0", default-features = false, features = [
     "trace",
 ] }
-nom = "7.1.3"
+nom = "8.0.0"
 opentelemetry-otlp = { version = "0.27.0", features = ["tokio"] }
 opentelemetry_sdk = { version = "0.27.0", default-features = false, features = [
     "trace",
@@ -92,7 +93,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
     "aws_lc_rs",
 ] }
-derive_more = "1.0.0"
+derive_more = "2.0.1"
 rustls-native-certs = "0.8.0"
 rustls-pemfile = "2.1"
 rustversion = "1.0.9"
@@ -138,7 +139,7 @@ futures-sink = "0.3"
 fnv = "1.0.5"
 slab = "0.4.2"
 indexmap = "2"
-rand = "0.8.4"
+rand = "0.9.0"
 walkdir = "2.3.2"
 env_logger = "0.11.6"
 httparse = "1.8"
@@ -411,6 +412,10 @@ required-features = ["tcp"]
 [[example]]
 name = "tcp_listener_layers"
 required-features = ["tcp"]
+
+[[example]]
+name = "tls_boring_dynamic_certs"
+required-features = ["boring", "http-full"]
 
 [[example]]
 name = "tls_boring_termination"

@@ -5,7 +5,7 @@ use crate::{
         tokio_boring::SslStream,
     },
     keylog::new_key_log_file_handle,
-    types::{client::ClientHello, SecureTransport},
+    types::SecureTransport,
 };
 use parking_lot::Mutex;
 use rama_core::{
@@ -99,10 +99,18 @@ where
             })
             .or_else(|| ctx.get::<RequestContext>().map(|ctx| ctx.authority.host()));
 
+        // We use arc mutex instead of oneshot channel since it is possible that certificate callbacks
+        // are called multiples times (fn closures type). But in testing it seems fnOnce should also
+        // work (at least for how we use it). When we integrate boringssl bindings we should reconsider
+        // this and see if we can expose this in a better way.
+        let mut maybe_client_hello = self
+            .store_client_hello
+            .then_some(Arc::new(Mutex::new(None)));
+
         let mut acceptor_builder = tls_config
             .cert_source
             .clone()
-            .issue_certs(acceptor_builder, server_host.cloned())
+            .issue_certs(acceptor_builder, server_host.cloned(), &maybe_client_hello)
             .await?;
 
         if let Some(min_ver) = tls_config.protocol_versions.iter().flatten().min() {
@@ -128,25 +136,6 @@ where
                 .add_client_ca(ca_cert)
                 .context("build boring ssl acceptor: set ca client cert")?;
         }
-
-        let mut maybe_client_hello = if self.store_client_hello {
-            let maybe_client_hello = Arc::new(Mutex::new(None));
-            let cb_maybe_client_hello = maybe_client_hello.clone();
-            acceptor_builder.set_select_certificate_callback(move |boring_client_hello| {
-                let maybe_client_hello = match ClientHello::try_from(boring_client_hello) {
-                    Ok(ch) => Some(ch),
-                    Err(err) => {
-                        tracing::warn!(err = %err, "failed to extract boringssl client hello");
-                        None
-                    }
-                };
-                *cb_maybe_client_hello.lock() = maybe_client_hello;
-                Ok(())
-            });
-            Some(maybe_client_hello)
-        } else {
-            None
-        };
 
         if let Some(alpn_protocols) = tls_config.alpn_protocols.clone() {
             trace!("tls boring server service: set alpn protos callback");

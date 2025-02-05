@@ -21,11 +21,17 @@ use rama::{
     service::service_fn,
     tcp::server::TcpListener,
 };
-use std::convert::Infallible;
+use rama_net::address::SocketAddress;
+use std::{
+    convert::Infallible,
+    net::{IpAddr, Ipv4Addr},
+};
 use tokio::io::AsyncWriteExt;
 
 const SRC: &str = include_str!("./tcp_listener_hello.rs");
-const ADDR: &str = "127.0.0.1:62500";
+// The below &str type will also work!
+// const ADDR: &str = "127.0.0.1:62500";
+const ADDR: SocketAddress = SocketAddress::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 62500);
 
 #[tokio::main]
 async fn main() {
