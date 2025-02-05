@@ -55,6 +55,7 @@ pub struct MessageParser {
     version: Option<Version>,
     status: Option<u16>,
     reason: Option<String>,
+    sections: Vec<(SectionType, usize)>,
 }
 
 impl MessageParser {
@@ -69,6 +70,7 @@ impl MessageParser {
             version: None,
             status: None,
             reason: None,
+            sections: Vec::new(),
         }
     }
 
@@ -233,14 +235,16 @@ impl MessageParser {
     }
 
     fn parse_encapsulated(&mut self) -> Result<bool> {
-        // Parse the Encapsulated header
+        // Get the Encapsulated header
         if let Some(enc) = self.headers.get("Encapsulated") {
             let enc = enc.to_str().map_err(|_| Error::InvalidEncoding)?;
             
-            // Parse each section
+            // Parse each section's offset
+            let mut sections = Vec::new();
             for section in enc.split(',') {
                 let mut parts = section.trim().split('=');
                 let name = parts.next().ok_or(Error::InvalidHeader)?;
+                
                 let offset = parts.next()
                     .ok_or(Error::InvalidHeader)?
                     .parse::<usize>()
@@ -255,28 +259,48 @@ impl MessageParser {
                     "opt-body" => SectionType::OptionsBody,
                     _ => return Err(Error::InvalidHeader),
                 };
-
+                
+                sections.push((section_type, offset));
+            }
+            
+            // Sort sections by offset
+            sections.sort_by_key(|(_, offset)| *offset);
+            
+            // Initialize encapsulated map with empty vectors for each section
+            for (section_type, _) in sections.clone() {
                 self.encapsulated.insert(section_type, Vec::new());
             }
-        } else if self.method != Some(Method::Options) {
-            return Err(Error::MissingEncapsulated);
+            
+            // Store the sorted sections for later use in parse_body
+            self.sections = sections;
         }
-
+        
         self.state = State::Body;
         Ok(true)
     }
 
     fn parse_body(&mut self) -> Result<bool> {
-        // For now, just collect all remaining data as body
-        if !self.buffer.is_empty() {
-            let data = self.buffer.split().freeze();
+        // Get the body data
+        let body = self.buffer.split();
+        println!("self buffer: {:?}", self.buffer.len());
+        // Process sections in order
+        for i in 0..self.sections.len() {
+            let (section_type, start_offset) = self.sections[i].clone();
+            let end_offset = if i < self.sections.len() - 1 {
+                self.sections[i + 1].1
+            } else {
+                body.len()
+            };
             
-            // Add body data to appropriate section
-            if let Some(section) = self.encapsulated.values_mut().next() {
-                section.extend_from_slice(&data);
+            // Extract section data
+            if start_offset < body.len() {
+                let section_data = &body[start_offset..std::cmp::min(end_offset, body.len())];
+                if let Some(data) = self.encapsulated.get_mut(&section_type) {
+                    data.extend_from_slice(section_data);
+                }
             }
         }
-
+        
         self.state = State::Complete;
         Ok(true)
     }
