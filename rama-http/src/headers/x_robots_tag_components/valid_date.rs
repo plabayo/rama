@@ -27,6 +27,12 @@ impl From<ValidDate> for DateTime<Utc> {
     }
 }
 
+impl From<DateTime<Utc>> for ValidDate {
+    fn from(value: DateTime<Utc>) -> Self {
+        Self::new(value)
+    }
+}
+
 impl AsRef<DateTime<Utc>> for ValidDate {
     fn as_ref(&self) -> &DateTime<Utc> {
         &self.0

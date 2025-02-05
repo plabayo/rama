@@ -4,12 +4,12 @@ use http::HeaderValue;
 use rama_core::error::OpaqueError;
 use std::str::FromStr;
 
-pub(in crate::headers) struct Parser<'a> {
+pub(crate) struct Parser<'a> {
     remaining: Option<&'a str>,
 }
 
 impl<'a> Parser<'a> {
-    pub(in crate::headers) fn new(remaining: &'a str) -> Self {
+    pub(crate) fn new(remaining: &'a str) -> Self {
         let remaining = match remaining.trim() {
             "" => None,
             text => Some(text),
@@ -79,9 +79,7 @@ impl Parser<'_> {
         Ok(None)
     }
 
-    pub(in crate::headers) fn parse_value(
-        value: &HeaderValue,
-    ) -> Result<Vec<RobotsTag>, OpaqueError> {
+    pub(crate) fn parse_value(value: &HeaderValue) -> Result<Vec<RobotsTag>, OpaqueError> {
         Parser::new(value.to_str().map_err(OpaqueError::from_std)?).collect::<Result<Vec<_>, _>>()
     }
 }

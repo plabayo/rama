@@ -1,5 +1,5 @@
 mod builder;
-pub(super) use builder::Builder;
+pub use builder::Builder;
 
 mod parser;
-pub(in crate::headers) use parser::Parser;
+pub(crate) use parser::Parser;

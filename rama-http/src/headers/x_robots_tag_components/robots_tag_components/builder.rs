@@ -1,20 +1,18 @@
 use crate::headers::util::value_string::HeaderValueString;
-use crate::headers::x_robots_tag_components::custom_rule::CustomRule;
-use crate::headers::x_robots_tag_components::max_image_preview_setting::MaxImagePreviewSetting;
-use crate::headers::x_robots_tag_components::robots_tag::RobotsTag;
-use crate::headers::x_robots_tag_components::valid_date::ValidDate;
+use crate::headers::x_robots_tag_components::{MaxImagePreviewSetting, RobotsTag, ValidDate};
+use chrono::{DateTime, Utc};
 use headers::Error;
 use rama_core::error::OpaqueError;
 
 macro_rules! robots_tag_builder_field {
     ($field:ident, $type:ty) => {
         paste::paste! {
-            pub(in crate::headers::x_robots_tag_components) fn [<$field>](mut self, [<$field>]: $type) -> Self {
+            pub fn [<$field>](mut self, [<$field>]: $type) -> Self {
                 self.0.[<set_ $field>]([<$field>]);
                 self
             }
 
-            pub(in crate::headers::x_robots_tag_components) fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
+            pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
                 self.0.[<set_ $field>]([<$field>]);
                 self
             }
@@ -25,7 +23,7 @@ macro_rules! robots_tag_builder_field {
 macro_rules! no_tag_builder_field {
     ($field:ident, $type:ty) => {
         paste::paste! {
-            pub(in crate::headers::x_robots_tag_components) fn [<$field>](self, [<$field>]: $type) -> Builder<RobotsTag> {
+            pub fn [<$field>](self, [<$field>]: $type) -> Builder<RobotsTag> {
                 Builder(RobotsTag::new_with_bot_name(self.0.bot_name)).[<$field>]([<$field>])
             }
         }
@@ -33,38 +31,29 @@ macro_rules! no_tag_builder_field {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(in crate::headers::x_robots_tag_components) struct Builder<T = ()>(T);
+pub struct Builder<T = ()>(T);
 
 impl Builder<()> {
-    pub(in crate::headers::x_robots_tag_components) fn new() -> Self {
+    pub fn new() -> Self {
         Builder(())
     }
 
-    pub(in crate::headers::x_robots_tag_components) fn bot_name(
-        &self,
-        bot_name: Option<HeaderValueString>,
-    ) -> Builder<NoTag> {
+    pub fn bot_name(&self, bot_name: Option<HeaderValueString>) -> Builder<NoTag> {
         Builder(NoTag { bot_name })
     }
 }
 
-pub(in crate::headers::x_robots_tag_components) struct NoTag {
+pub struct NoTag {
     bot_name: Option<HeaderValueString>,
 }
 
 impl Builder<NoTag> {
-    pub(in crate::headers::x_robots_tag_components) fn bot_name(
-        mut self,
-        bot_name: HeaderValueString,
-    ) -> Self {
+    pub fn bot_name(mut self, bot_name: HeaderValueString) -> Self {
         self.0.bot_name = Some(bot_name);
         self
     }
 
-    pub(in crate::headers::x_robots_tag_components) fn set_bot_name(
-        &mut self,
-        bot_name: HeaderValueString,
-    ) -> &mut Self {
+    pub fn set_bot_name(&mut self, bot_name: HeaderValueString) -> &mut Self {
         self.0.bot_name = Some(bot_name);
         self
     }
@@ -80,15 +69,12 @@ impl Builder<NoTag> {
     no_tag_builder_field!(max_video_preview, u32);
     no_tag_builder_field!(no_translate, bool);
     no_tag_builder_field!(no_image_index, bool);
-    no_tag_builder_field!(unavailable_after, ValidDate);
+    no_tag_builder_field!(unavailable_after, DateTime<Utc>);
     no_tag_builder_field!(no_ai, bool);
     no_tag_builder_field!(no_image_ai, bool);
     no_tag_builder_field!(spc, bool);
 
-    pub(in crate::headers::x_robots_tag_components) fn add_field(
-        self,
-        s: &str,
-    ) -> Result<Builder<RobotsTag>, OpaqueError> {
+    pub fn add_field(self, s: &str) -> Result<Builder<RobotsTag>, OpaqueError> {
         let mut builder = Builder(RobotsTag::new_with_bot_name(self.0.bot_name));
         builder.add_field(s)?;
         Ok(builder)
@@ -96,15 +82,21 @@ impl Builder<NoTag> {
 }
 
 impl Builder<RobotsTag> {
-    pub(in crate::headers::x_robots_tag_components) fn build(self) -> RobotsTag {
+    pub fn build(self) -> RobotsTag {
         self.0
     }
 
-    pub(in crate::headers::x_robots_tag_components) fn add_custom_rule(
+    pub fn add_custom_rule_simple(&mut self, key: HeaderValueString) -> &mut Self {
+        self.0.add_custom_rule_simple(key);
+        self
+    }
+
+    pub fn add_custom_rule_composite(
         &mut self,
-        rule: CustomRule,
+        key: HeaderValueString,
+        value: HeaderValueString,
     ) -> &mut Self {
-        self.0.add_custom_rule(rule);
+        self.0.add_custom_rule_composite(key, value);
         self
     }
 
@@ -120,15 +112,12 @@ impl Builder<RobotsTag> {
     robots_tag_builder_field!(max_video_preview, u32);
     robots_tag_builder_field!(no_translate, bool);
     robots_tag_builder_field!(no_image_index, bool);
-    robots_tag_builder_field!(unavailable_after, ValidDate);
+    robots_tag_builder_field!(unavailable_after, DateTime<Utc>);
     robots_tag_builder_field!(no_ai, bool);
     robots_tag_builder_field!(no_image_ai, bool);
     robots_tag_builder_field!(spc, bool);
 
-    pub(in crate::headers::x_robots_tag_components) fn add_field(
-        &mut self,
-        s: &str,
-    ) -> Result<&mut Self, OpaqueError> {
+    pub fn add_field(&mut self, s: &str) -> Result<&mut Self, OpaqueError> {
         if let Some((key, value)) = s.trim().split_once(':') {
             Ok(if key.eq_ignore_ascii_case("max-snippet") {
                 self.set_max_snippet(value.parse().map_err(OpaqueError::from_std)?)
@@ -137,7 +126,7 @@ impl Builder<RobotsTag> {
             } else if key.eq_ignore_ascii_case("max-video-preview") {
                 self.set_max_video_preview(value.parse().map_err(OpaqueError::from_std)?)
             } else if key.eq_ignore_ascii_case("unavailable_after: <date/time>") {
-                self.set_unavailable_after(value.parse()?)
+                self.set_unavailable_after(value.parse::<ValidDate>()?.into())
             } else {
                 return Err(OpaqueError::from_std(Error::invalid()));
             })

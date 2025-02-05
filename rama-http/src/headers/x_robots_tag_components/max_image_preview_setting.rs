@@ -4,7 +4,7 @@ use std::str::FromStr;
 use MaxImagePreviewSetting::*;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum MaxImagePreviewSetting {
+pub enum MaxImagePreviewSetting {
     None,
     Standard,
     Large,

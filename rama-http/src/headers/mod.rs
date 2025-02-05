@@ -103,9 +103,9 @@ pub use ::rama_http_types::headers::HeaderExt;
 
 pub(crate) mod util;
 
-mod x_robots_tag_components;
+pub mod x_robots_tag_components;
 
-pub mod x_robots_tag;
+mod x_robots_tag;
 pub use x_robots_tag::XRobotsTag;
 
 pub use util::quality_value::{Quality, QualityValue};

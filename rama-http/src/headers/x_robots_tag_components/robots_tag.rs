@@ -1,23 +1,22 @@
 use crate::headers::util::value_string::HeaderValueString;
-use crate::headers::x_robots_tag_components::custom_rule::CustomRule;
-use crate::headers::x_robots_tag_components::max_image_preview_setting::MaxImagePreviewSetting;
 use crate::headers::x_robots_tag_components::robots_tag_components::Builder;
-use crate::headers::x_robots_tag_components::valid_date::ValidDate;
+use crate::headers::x_robots_tag_components::{CustomRule, MaxImagePreviewSetting, ValidDate};
+use chrono::{DateTime, Utc};
 use std::fmt::{Display, Formatter};
 
 macro_rules! getter_setter {
     ($field:ident, $type:ty) => {
         paste::paste! {
-            pub(super) fn [<$field>](&self) -> $type {
+            pub fn [<$field>](&self) -> $type {
                 self.[<$field>]
             }
 
-            pub(super) fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
+            pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
                 self.[<$field>] = [<$field>];
                 self
             }
 
-            pub(super) fn [<with_ $field>](mut self, [<$field>]: $type) -> Self {
+            pub fn [<with_ $field>](mut self, [<$field>]: $type) -> Self {
                 self.[<$field>] = [<$field>];
                 self
             }
@@ -26,16 +25,16 @@ macro_rules! getter_setter {
 
     ($field:ident, $type:ty, optional) => {
         paste::paste! {
-            pub(super) fn [<$field>](&self) -> Option<&$type> {
+            pub fn [<$field>](&self) -> Option<&$type> {
                 self.[<$field>].as_ref()
             }
 
-            pub(super) fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
+            pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
                 self.[<$field>] = Some([<$field>]);
                 self
             }
 
-            pub(super) fn [<with_ $field>](mut self, [<$field>]: $type) -> Self {
+            pub fn [<with_ $field>](mut self, [<$field>]: $type) -> Self {
                 self.[<$field>] = Some([<$field>]);
                 self
             }
@@ -44,7 +43,7 @@ macro_rules! getter_setter {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct RobotsTag {
+pub struct RobotsTag {
     bot_name: Option<HeaderValueString>,
     all: bool,
     no_index: bool,
@@ -58,7 +57,6 @@ pub(crate) struct RobotsTag {
     no_translate: bool,
     no_image_index: bool,
     unavailable_after: Option<ValidDate>,
-    // custom rules
     no_ai: bool,
     no_image_ai: bool,
     spc: bool,
@@ -88,12 +86,27 @@ impl RobotsTag {
         }
     }
 
-    pub(super) fn add_custom_rule(&mut self, rule: CustomRule) -> &mut Self {
-        self.custom_rules.push(rule);
+    pub fn add_custom_rule_simple(&mut self, key: HeaderValueString) -> &mut Self {
+        self.custom_rules.push(key.into());
         self
     }
 
-    pub(super) fn builder() -> Builder {
+    pub fn add_custom_rule_composite(
+        &mut self,
+        key: HeaderValueString,
+        value: HeaderValueString,
+    ) -> &mut Self {
+        self.custom_rules.push((key, value).into());
+        self
+    }
+
+    pub fn custom_rules(
+        &self,
+    ) -> impl Iterator<Item = (&HeaderValueString, &Option<HeaderValueString>)> {
+        self.custom_rules.iter().map(|x| x.as_tuple())
+    }
+
+    pub fn builder() -> Builder {
         Builder::new()
     }
 
@@ -109,7 +122,6 @@ impl RobotsTag {
     getter_setter!(max_video_preview, u32, optional);
     getter_setter!(no_translate, bool);
     getter_setter!(no_image_index, bool);
-    getter_setter!(unavailable_after, ValidDate, optional);
     getter_setter!(no_ai, bool);
     getter_setter!(no_image_ai, bool);
     getter_setter!(spc, bool);
@@ -130,6 +142,20 @@ impl RobotsTag {
             || field_name.eq_ignore_ascii_case("noai")
             || field_name.eq_ignore_ascii_case("noimageai")
             || field_name.eq_ignore_ascii_case("spc")
+    }
+
+    pub fn unavailable_after(&self) -> Option<&DateTime<Utc>> {
+        self.unavailable_after.as_deref()
+    }
+
+    pub fn set_unavailable_after(&mut self, unavailable_after: DateTime<Utc>) -> &mut Self {
+        self.unavailable_after = Some(unavailable_after.into());
+        self
+    }
+
+    pub fn with_unavailable_after(mut self, unavailable_after: DateTime<Utc>) -> Self {
+        self.unavailable_after = Some(unavailable_after.into());
+        self
     }
 }
 
