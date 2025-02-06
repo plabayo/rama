@@ -1,6 +1,3 @@
-mod ua;
-pub use ua::*;
-
 mod http;
 pub use http::*;
 
@@ -8,3 +5,6 @@ pub use http::*;
 mod tls;
 #[cfg(feature = "tls")]
 pub use tls::*;
+
+mod db;
+pub use db::*;

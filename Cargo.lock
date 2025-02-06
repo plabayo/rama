@@ -1213,6 +1213,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "highway"
+version = "1.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9040319a6910b901d5d49cbada4a99db52836a1b63228a05f7e2b7f8feef89b1"
+
+[[package]]
 name = "home"
 version = "0.5.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2477,14 +2483,16 @@ name = "rama-ua"
 version = "0.2.0-alpha.7"
 dependencies = [
  "bytes",
+ "highway",
  "rama-core",
  "rama-http-types",
  "rama-net",
  "rama-utils",
+ "rand 0.9.0",
  "serde",
  "serde_json",
  "tokio",
- "venndb",
+ "tracing",
 ]
 
 [[package]]

@@ -171,84 +171,193 @@ impl FromStr for UserAgent {
 
 /// The kind of [`UserAgent`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum UserAgentKind {
     /// Chromium Browser
-    Chromium,
+    Chromium = 0b0000_0001,
     /// Firefox Browser
-    Firefox,
+    Firefox = 0b0000_0010,
     /// Safari Browser
-    Safari,
+    Safari = 0b0000_0100,
+}
+
+impl UserAgentKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            UserAgentKind::Chromium => "Chromium",
+            UserAgentKind::Firefox => "Firefox",
+            UserAgentKind::Safari => "Safari",
+        }
+    }
 }
 
 impl fmt::Display for UserAgentKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            UserAgentKind::Chromium => write!(f, "Chromium"),
-            UserAgentKind::Firefox => write!(f, "Firefox"),
-            UserAgentKind::Safari => write!(f, "Safari"),
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl FromStr for UserAgentKind {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match_ignore_ascii_case_str! {
+            match (s) {
+                "chromium" => Ok(UserAgentKind::Chromium),
+                "firefox" => Ok(UserAgentKind::Firefox),
+                "safari" => Ok(UserAgentKind::Safari),
+                _ => Err(OpaqueError::from_display(format!("invalid user agent kind: {}", s))),
+            }
         }
+    }
+}
+
+impl Serialize for UserAgentKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for UserAgentKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse::<UserAgentKind>().map_err(serde::de::Error::custom)
     }
 }
 
 /// Device on which the [`UserAgent`] operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum DeviceKind {
     /// Personal Computers
-    Desktop,
+    Desktop = 0b0000_0001,
     /// Phones, Tablets and other mobile devices
-    Mobile,
+    Mobile = 0b0000_0010,
+}
+
+impl DeviceKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DeviceKind::Desktop => "Desktop",
+            DeviceKind::Mobile => "Mobile",
+        }
+    }
 }
 
 impl fmt::Display for DeviceKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            DeviceKind::Desktop => write!(f, "Desktop"),
-            DeviceKind::Mobile => write!(f, "Mobile"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
 /// Platform within the [`UserAgent`] operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum PlatformKind {
     /// Windows Platform ([`Desktop`](DeviceKind::Desktop))
-    Windows,
+    Windows = 0b0000_0001,
     /// MacOS Platform ([`Desktop`](DeviceKind::Desktop))
-    MacOS,
+    MacOS = 0b0000_0010,
     /// Linux Platform ([`Desktop`](DeviceKind::Desktop))
-    Linux,
+    Linux = 0b0000_0100,
     /// Android Platform ([`Mobile`](DeviceKind::Mobile))
-    Android,
+    Android = 0b0001_0000,
     /// iOS Platform ([`Mobile`](DeviceKind::Mobile))
-    IOS,
+    IOS = 0b0010_0000,
+}
+
+impl PlatformKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            PlatformKind::Windows => "Windows",
+            PlatformKind::MacOS => "MacOS",
+            PlatformKind::Linux => "Linux",
+            PlatformKind::Android => "Android",
+            PlatformKind::IOS => "iOS",
+        }
+    }
+}
+
+impl FromStr for PlatformKind {
+    type Err = OpaqueError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match_ignore_ascii_case_str! {
+            match (s) {
+                "windows" => Ok(PlatformKind::Windows),
+                "macos" => Ok(PlatformKind::MacOS),
+                "linux" => Ok(PlatformKind::Linux),
+                "android" => Ok(PlatformKind::Android),
+                "ios" => Ok(PlatformKind::IOS),
+                _ => Err(OpaqueError::from_display(format!("invalid platform: {}", s))),
+            }
+        }
+    }
+}
+
+impl Serialize for PlatformKind {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::ser::Serializer,
+    {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for PlatformKind {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse::<PlatformKind>().map_err(serde::de::Error::custom)
+    }
 }
 
 impl fmt::Display for PlatformKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            PlatformKind::Windows => write!(f, "Windows"),
-            PlatformKind::MacOS => write!(f, "MacOS"),
-            PlatformKind::Linux => write!(f, "Linux"),
-            PlatformKind::Android => write!(f, "Android"),
-            PlatformKind::IOS => write!(f, "iOS"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
 /// Http implementation used by the [`UserAgent`]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum HttpAgent {
     /// Chromium based browsers share the same http implementation
-    Chromium,
+    Chromium = 0b0000_0001,
     /// Firefox has its own http implementation
-    Firefox,
+    Firefox = 0b0000_0010,
     /// Safari also has its own http implementation
-    Safari,
+    Safari = 0b0000_0100,
     /// Preserve the incoming Http Agent as much as possible.
     ///
     /// For emulators this means that emulators will aim to have a
     /// hands-off approach to the incoming http request.
-    Preserve,
+    Preserve = 0b1000_0000,
+}
+
+impl HttpAgent {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            HttpAgent::Chromium => "Chromium",
+            HttpAgent::Firefox => "Firefox",
+            HttpAgent::Safari => "Safari",
+            HttpAgent::Preserve => "Preserve",
+        }
+    }
+}
+
+impl fmt::Display for HttpAgent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
 }
 
 impl Serialize for HttpAgent {
@@ -256,12 +365,7 @@ impl Serialize for HttpAgent {
     where
         S: serde::ser::Serializer,
     {
-        match self {
-            HttpAgent::Chromium => serializer.serialize_str("Chromium"),
-            HttpAgent::Firefox => serializer.serialize_str("Firefox"),
-            HttpAgent::Safari => serializer.serialize_str("Safari"),
-            HttpAgent::Preserve => serializer.serialize_str("Preserve"),
-        }
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -271,15 +375,7 @@ impl<'de> Deserialize<'de> for HttpAgent {
         D: Deserializer<'de>,
     {
         let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        match_ignore_ascii_case_str! {
-            match (s) {
-                "chrome" | "chromium" => Ok(HttpAgent::Chromium),
-                "Firefox" => Ok(HttpAgent::Firefox),
-                "Safari" => Ok(HttpAgent::Safari),
-                "preserve" => Ok(HttpAgent::Preserve),
-                _ => Err(serde::de::Error::custom("invalid http agent")),
-            }
-        }
+        s.parse::<HttpAgent>().map_err(serde::de::Error::custom)
     }
 }
 
@@ -299,43 +395,39 @@ impl FromStr for HttpAgent {
     }
 }
 
-impl fmt::Display for HttpAgent {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HttpAgent::Chromium => write!(f, "Chromium"),
-            HttpAgent::Firefox => write!(f, "Firefox"),
-            HttpAgent::Safari => write!(f, "Safari"),
-            HttpAgent::Preserve => write!(f, "Preserve"),
-        }
-    }
-}
-
 /// Tls implementation used by the [`UserAgent`]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[repr(u8)]
 pub enum TlsAgent {
     /// Rustls is used as a fallback for all user agents,
     /// that are not chromium based.
-    Rustls,
+    Rustls = 0b0000_0001,
     /// Boringssl is used for Chromium based user agents.
-    Boringssl,
+    Boringssl = 0b0000_0010,
     /// NSS is used for Firefox
-    Nss,
+    Nss = 0b0000_0100,
     /// Preserve the incoming TlsAgent as much as possible.
     ///
     /// For this Tls this means that emulators can try to
     /// preserve details of the incoming Tls connection
     /// such as the (Tls) Client Hello.
-    Preserve,
+    Preserve = 0b1000_0000,
+}
+
+impl TlsAgent {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            TlsAgent::Rustls => "Rustls",
+            TlsAgent::Boringssl => "Boringssl",
+            TlsAgent::Nss => "NSS",
+            TlsAgent::Preserve => "Preserve",
+        }
+    }
 }
 
 impl fmt::Display for TlsAgent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            TlsAgent::Rustls => write!(f, "Rustls"),
-            TlsAgent::Boringssl => write!(f, "Boringssl"),
-            TlsAgent::Nss => write!(f, "NSS"),
-            TlsAgent::Preserve => write!(f, "Preserve"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 
@@ -344,12 +436,7 @@ impl Serialize for TlsAgent {
     where
         S: serde::ser::Serializer,
     {
-        match self {
-            TlsAgent::Rustls => serializer.serialize_str("Rustls"),
-            TlsAgent::Boringssl => serializer.serialize_str("Boringssl"),
-            TlsAgent::Nss => serializer.serialize_str("NSS"),
-            TlsAgent::Preserve => serializer.serialize_str("Preserve"),
-        }
+        serializer.serialize_str(self.as_str())
     }
 }
 
@@ -359,15 +446,7 @@ impl<'de> Deserialize<'de> for TlsAgent {
         D: Deserializer<'de>,
     {
         let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
-        match_ignore_ascii_case_str! {
-            match (s) {
-                "rustls" => Ok(TlsAgent::Rustls),
-                "boring" | "boringssl" => Ok(TlsAgent::Boringssl),
-                "nss" => Ok(TlsAgent::Nss),
-                "preserve" => Ok(TlsAgent::Preserve),
-                _ => Err(serde::de::Error::custom("invalid tls agent")),
-            }
-        }
+        s.parse::<TlsAgent>().map_err(serde::de::Error::custom)
     }
 }
 

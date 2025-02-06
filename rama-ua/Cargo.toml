@@ -15,7 +15,6 @@ workspace = true
 
 [features]
 default = []
-memory-db = ["dep:venndb"]
 tls = ["dep:rama-net", "rama-net/tls"]
 
 [dependencies]
@@ -25,7 +24,9 @@ rama-http-types = { version = "0.2.0-alpha.7", path = "../rama-http-types" }
 rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", optional = true }
 rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
 serde = { workspace = true, features = ["derive"] }
-venndb = { workspace = true, optional = true }
+rand = { workspace = true }
+tracing = { workspace = true }
+highway = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }

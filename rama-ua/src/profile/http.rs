@@ -1,92 +1,37 @@
+use highway::HighwayHasher;
 use rama_core::error::OpaqueError;
 use rama_http_types::proto::h2::PseudoHeader;
 use serde::{Deserialize, Serialize};
-use std::str::FromStr;
+use std::{borrow::Cow, hash::{Hash as _, Hasher as _}, str::FromStr};
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
-#[cfg_attr(feature = "memory-db", derive(venndb::VennDB))]
+use crate::{PlatformKind, UserAgentKind};
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+pub struct UserAgentHttpProfile {
+    pub ua_kind: UserAgentKind,
+    pub ua_kind_version: usize,
+    pub platform_kind: PlatformKind,
+    pub http: HttpProfile,
+}
+
+impl UserAgentHttpProfile {
+    pub fn key(&self) -> u64 {
+        let mut hasher = HighwayHasher::default();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Hash)]
 pub struct HttpProfile {
-    #[cfg_attr(feature = "memory-db", venndb(key))]
     pub ja4h: String,
     pub http_headers: Vec<(String, String)>,
     pub http_pseudo_headers: Vec<PseudoHeader>,
-    #[cfg_attr(feature = "memory-db", venndb(filter))]
-    pub fetch_mode: Option<FetchMode>,
-    #[cfg_attr(feature = "memory-db", venndb(filter))]
-    pub resource_type: Option<FetchMode>,
-    #[cfg_attr(feature = "memory-db", venndb(filter))]
-    pub initiator: Option<Initiator>,
-    #[cfg_attr(feature = "memory-db", venndb(filter))]
-    pub http_version: Option<HttpVersion>,
+    pub initiator: Initiator,
+    pub http_version: HttpVersion,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
-pub enum FetchMode {
-    Cors,
-    Navigate,
-    NoCors,
-    SameOrigin,
-    Websocket,
-}
-
-impl std::fmt::Display for FetchMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Cors => write!(f, "cors"),
-            Self::Navigate => write!(f, "navigate"),
-            Self::NoCors => write!(f, "no-cors"),
-            Self::SameOrigin => write!(f, "same-origin"),
-            Self::Websocket => write!(f, "websocket"),
-        }
-    }
-}
-
-impl FromStr for FetchMode {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "cors" => Ok(Self::Cors),
-            "navigate" => Ok(Self::Navigate),
-            "no-cors" => Ok(Self::NoCors),
-            "same-origin" => Ok(Self::SameOrigin),
-            "websocket" => Ok(Self::Websocket),
-            _ => Err(s.to_owned()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
-pub enum ResourceType {
-    Document,
-    Xhr,
-    Form,
-}
-
-impl std::fmt::Display for ResourceType {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Document => write!(f, "document"),
-            Self::Xhr => write!(f, "xhr"),
-            Self::Form => write!(f, "form"),
-        }
-    }
-}
-
-impl FromStr for ResourceType {
-    type Err = String;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "document" => Ok(Self::Document),
-            "xhr" => Ok(Self::Xhr),
-            "form" => Ok(Self::Form),
-            _ => Err(s.to_owned()),
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub enum Initiator {
     Navigator,
     Fetch,
@@ -119,11 +64,21 @@ impl FromStr for Initiator {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HttpVersion {
     H1,
     H2,
     H3,
+}
+
+impl HttpVersion {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::H1 => "http/1",
+            Self::H2 => "h2",
+            Self::H3 => "h3",
+        }
+    }
 }
 
 impl FromStr for HttpVersion {
@@ -142,3 +97,21 @@ impl FromStr for HttpVersion {
         })
     }
 }
+
+impl Serialize for HttpVersion {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> Deserialize<'de> for HttpVersion {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de> {
+        let s = <Cow<'de, str>>::deserialize(deserializer)?;
+        HttpVersion::from_str(&s).map_err(serde::de::Error::custom)
+    }
+}
+
