@@ -2,7 +2,11 @@ use highway::HighwayHasher;
 use rama_core::error::OpaqueError;
 use rama_http_types::proto::h2::PseudoHeader;
 use serde::{Deserialize, Serialize};
-use std::{borrow::Cow, hash::{Hash as _, Hasher as _}, str::FromStr};
+use std::{
+    borrow::Cow,
+    hash::{Hash as _, Hasher as _},
+    str::FromStr,
+};
 
 use crate::{PlatformKind, UserAgentKind};
 
@@ -101,7 +105,8 @@ impl FromStr for HttpVersion {
 impl Serialize for HttpVersion {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
-        S: serde::Serializer {
+        S: serde::Serializer,
+    {
         serializer.serialize_str(self.as_str())
     }
 }
@@ -109,9 +114,9 @@ impl Serialize for HttpVersion {
 impl<'de> Deserialize<'de> for HttpVersion {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
-        D: serde::Deserializer<'de> {
+        D: serde::Deserializer<'de>,
+    {
         let s = <Cow<'de, str>>::deserialize(deserializer)?;
         HttpVersion::from_str(&s).map_err(serde::de::Error::custom)
     }
 }
-

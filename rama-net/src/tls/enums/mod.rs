@@ -184,7 +184,7 @@ macro_rules! enum_builder {
     ) => {
         $(#[$comment])*
         #[non_exhaustive]
-        #[derive(Debug, PartialEq, Eq, Clone)]
+        #[derive(Debug, PartialEq, Eq, Clone, Hash)]
         $enum_vis enum $enum_name {
             $( $enum_var),*
             ,Unknown(Vec<u8>)

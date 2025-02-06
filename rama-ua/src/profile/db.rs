@@ -1,16 +1,18 @@
-use std::collections::HashMap;
-use rand::{distr::{weighted::WeightedIndex, Distribution as _}, seq::{IndexedRandom as _, IteratorRandom as _}};
+use rand::{
+    distr::{weighted::WeightedIndex, Distribution as _},
+    seq::{IndexedRandom as _, IteratorRandom as _},
+};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
-use crate::{PlatformKind, UserAgentKind, Initiator};
-
+use crate::{Initiator, PlatformKind, UserAgentKind};
 
 #[derive(Debug, Default)]
 pub struct UserAgentDatabase {
     profiles: HashMap<UserAgentProfileKey, UserAgentProfile>,
 
     http_profiles: HashMap<u64, crate::HttpProfile>,
-    
+
     #[cfg(feature = "tls")]
     tls_profiles: HashMap<u64, crate::TlsProfile>,
 }
@@ -109,11 +111,15 @@ impl Serialize for UserAgentFilter {
         if self.platform | PlatformKind::IOS as u8 != 0 {
             platforms.push(PlatformKind::IOS);
         }
-        
+
         let filter = UserAgentFilterSerde {
             kind: if kinds.is_empty() { None } else { Some(kinds) },
-            platform: if platforms.is_empty() { None } else { Some(platforms) },
-            initiator: self.initiator.clone(),
+            platform: if platforms.is_empty() {
+                None
+            } else {
+                Some(platforms)
+            },
+            initiator: self.initiator,
         };
         filter.serialize(serializer)
     }
@@ -146,33 +152,41 @@ impl<'de> Deserialize<'de> for UserAgentFilter {
 impl UserAgentDatabase {
     pub fn insert_http_profile(&mut self, profile: crate::UserAgentHttpProfile) {
         let key = profile.key();
-        self.profiles.entry(UserAgentProfileKey {
-            ua_kind: profile.ua_kind,
-            ua_kind_version: profile.ua_kind_version,
-            platform_kind: profile.platform_kind,
-        }).or_insert_with(|| UserAgentProfile {
-            ua_kind: profile.ua_kind,
-            platform_kind: profile.platform_kind,
-            http_profiles: Vec::new(),
-            #[cfg(feature = "tls")]
-            tls_profiles: Vec::new(),
-        }).http_profiles.push(key);
+        self.profiles
+            .entry(UserAgentProfileKey {
+                ua_kind: profile.ua_kind,
+                ua_kind_version: profile.ua_kind_version,
+                platform_kind: profile.platform_kind,
+            })
+            .or_insert_with(|| UserAgentProfile {
+                ua_kind: profile.ua_kind,
+                platform_kind: profile.platform_kind,
+                http_profiles: Vec::new(),
+                #[cfg(feature = "tls")]
+                tls_profiles: Vec::new(),
+            })
+            .http_profiles
+            .push(key);
         self.http_profiles.insert(key, profile.http);
     }
 
     #[cfg(feature = "tls")]
     pub fn insert_tls_profile(&mut self, profile: crate::UserAgentTlsProfile) {
         let key = profile.key();
-        self.profiles.entry(UserAgentProfileKey {
-            ua_kind: profile.ua_kind,
-            ua_kind_version: profile.ua_kind_version,
-            platform_kind: profile.platform_kind,
-        }).or_insert_with(|| UserAgentProfile {
-            ua_kind: profile.ua_kind,
-            platform_kind: profile.platform_kind,
-            http_profiles: Vec::new(),
-            tls_profiles: Vec::new(),
-        }).tls_profiles.push(key);
+        self.profiles
+            .entry(UserAgentProfileKey {
+                ua_kind: profile.ua_kind,
+                ua_kind_version: profile.ua_kind_version,
+                platform_kind: profile.platform_kind,
+            })
+            .or_insert_with(|| UserAgentProfile {
+                ua_kind: profile.ua_kind,
+                platform_kind: profile.platform_kind,
+                http_profiles: Vec::new(),
+                tls_profiles: Vec::new(),
+            })
+            .tls_profiles
+            .push(key);
     }
 
     pub fn query(
@@ -195,41 +209,59 @@ impl UserAgentDatabase {
         } else {
             filter.platform
         };
-    
-        let profiles: Vec<_> = self.profiles.values()
+
+        let profiles: Vec<_> = self
+            .profiles
+            .values()
             .filter(|profile| profile.match_filters(kind_mask, platform_mask))
             .collect();
         if profiles.is_empty() {
             tracing::debug!(?filter, "no profiles found for provided filters");
             return None;
         } else {
-            tracing::trace!(?filter, "found {} profile(s) for provided filters", profiles.len());
+            tracing::trace!(
+                ?filter,
+                "found {} profile(s) for provided filters",
+                profiles.len()
+            );
         }
 
         // market share from https://gs.statcounter.com/browser-market-share/mobile/worldwide (feb 2025)
-        let weights: Vec<f64> = profiles.iter().map(|profiles| match profiles.ua_kind {
-            UserAgentKind::Firefox => 0.03,
-            UserAgentKind::Safari => 0.18,
-            UserAgentKind::Chromium => 0.79,
-        }).collect();
+        let weights: Vec<f64> = profiles
+            .iter()
+            .map(|profiles| match profiles.ua_kind {
+                UserAgentKind::Firefox => 0.03,
+                UserAgentKind::Safari => 0.18,
+                UserAgentKind::Chromium => 0.79,
+            })
+            .collect();
         let dist = WeightedIndex::new(&weights).ok()?;
         let profile = profiles.get(dist.sample(&mut rng))?;
 
         // try to get random http profile with initiator if defined, else random http profile
         let http_profile_index = if let Some(initiator) = filter.initiator {
-            profile.http_profiles.iter().filter(|key| self.http_profiles.get(key).map(|http| http.initiator == initiator).unwrap_or(false)).choose(&mut rng)
+            profile
+                .http_profiles
+                .iter()
+                .filter(|key| {
+                    self.http_profiles
+                        .get(key)
+                        .map(|http| http.initiator == initiator)
+                        .unwrap_or(false)
+                })
+                .choose(&mut rng)
         } else {
             profile.http_profiles.choose(&mut rng)
         }?;
         let http_profile = self.http_profiles.get(http_profile_index)?;
-        
 
         #[cfg(feature = "tls")]
-        profile.tls_profiles.choose(&mut rng).and_then(|key| {
-            self.tls_profiles.get(key)
-        })?;
+        let tls_profile = profile
+            .tls_profiles
+            .choose(&mut rng)
+            .and_then(|key| self.tls_profiles.get(key))?;
 
-        Some(UserAgentProfileQueryResult{
+        Some(UserAgentProfileQueryResult {
             http: http_profile,
             #[cfg(feature = "tls")]
             tls: tls_profile,

@@ -12,7 +12,7 @@ mod rustls;
 #[cfg(feature = "boring")]
 mod boring;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 /// When a client first connects to a server, it is required to send
 /// the ClientHello as its first message.
 ///
@@ -127,7 +127,7 @@ impl ClientHello {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 /// Extensions that can be set in a [`ClientHello`] message by a TLS client.
 ///
 /// While its name may infer that an extension is by definition optional,

@@ -1,7 +1,11 @@
+use std::hash::{Hash as _, Hasher as _};
+
 use rama_net::tls::client::ClientHello;
 use serde::{Deserialize, Serialize};
 
 use highway::HighwayHasher;
+
+use crate::{PlatformKind, UserAgentKind};
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 pub struct UserAgentTlsProfile {
