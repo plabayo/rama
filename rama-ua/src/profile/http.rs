@@ -35,6 +35,14 @@ pub struct HttpProfile {
     pub http_version: HttpVersion,
 }
 
+impl HttpProfile {
+    pub fn key(&self) -> u64 {
+        let mut hasher = HighwayHasher::default();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Deserialize, Serialize)]
 pub enum Initiator {
     Navigator,

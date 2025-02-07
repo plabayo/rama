@@ -9,7 +9,8 @@ use crate::{Initiator, PlatformKind, UserAgentKind};
 
 #[derive(Debug, Default)]
 pub struct UserAgentDatabase {
-    profiles: HashMap<UserAgentProfileKey, UserAgentProfile>,
+    profile_keys: HashMap<UserAgentProfileKey, usize>,
+    profiles: Vec<UserAgentProfile>,
 
     http_profiles: HashMap<u64, crate::HttpProfile>,
 
@@ -151,42 +152,52 @@ impl<'de> Deserialize<'de> for UserAgentFilter {
 
 impl UserAgentDatabase {
     pub fn insert_http_profile(&mut self, profile: crate::UserAgentHttpProfile) {
-        let key = profile.key();
-        self.profiles
+        let index = *self
+            .profile_keys
             .entry(UserAgentProfileKey {
                 ua_kind: profile.ua_kind,
                 ua_kind_version: profile.ua_kind_version,
                 platform_kind: profile.platform_kind,
             })
-            .or_insert_with(|| UserAgentProfile {
-                ua_kind: profile.ua_kind,
-                platform_kind: profile.platform_kind,
-                http_profiles: Vec::new(),
-                #[cfg(feature = "tls")]
-                tls_profiles: Vec::new(),
-            })
-            .http_profiles
-            .push(key);
+            .or_insert_with(|| {
+                let idx = self.profiles.len();
+                self.profiles.push(UserAgentProfile {
+                    ua_kind: profile.ua_kind,
+                    platform_kind: profile.platform_kind,
+                    http_profiles: Vec::new(),
+                    #[cfg(feature = "tls")]
+                    tls_profiles: Vec::new(),
+                });
+                idx
+            });
+        let key = profile.http.key();
         self.http_profiles.insert(key, profile.http);
+        self.profiles[index].http_profiles.push(key);
     }
 
     #[cfg(feature = "tls")]
     pub fn insert_tls_profile(&mut self, profile: crate::UserAgentTlsProfile) {
-        let key = profile.key();
-        self.profiles
+        let index = *self
+            .profile_keys
             .entry(UserAgentProfileKey {
                 ua_kind: profile.ua_kind,
                 ua_kind_version: profile.ua_kind_version,
                 platform_kind: profile.platform_kind,
             })
-            .or_insert_with(|| UserAgentProfile {
-                ua_kind: profile.ua_kind,
-                platform_kind: profile.platform_kind,
-                http_profiles: Vec::new(),
-                tls_profiles: Vec::new(),
-            })
-            .tls_profiles
-            .push(key);
+            .or_insert_with(|| {
+                let idx = self.profiles.len();
+                self.profiles.push(UserAgentProfile {
+                    ua_kind: profile.ua_kind,
+                    platform_kind: profile.platform_kind,
+                    http_profiles: Vec::new(),
+                    #[cfg(feature = "tls")]
+                    tls_profiles: Vec::new(),
+                });
+                idx
+            });
+        let key = profile.tls.key();
+        self.tls_profiles.insert(key, profile.tls);
+        self.profiles[index].tls_profiles.push(key);
     }
 
     pub fn query(
@@ -212,7 +223,7 @@ impl UserAgentDatabase {
 
         let profiles: Vec<_> = self
             .profiles
-            .values()
+            .iter()
             .filter(|profile| profile.match_filters(kind_mask, platform_mask))
             .collect();
         if profiles.is_empty() {

@@ -28,3 +28,11 @@ pub struct TlsProfile {
     pub ja4: String,
     pub client_hello: ClientHello,
 }
+
+impl TlsProfile {
+    pub fn key(&self) -> u64 {
+        let mut hasher = HighwayHasher::default();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+}
