@@ -5,19 +5,28 @@ pub enum DnsResolveIpMode {
     Dual,
     SingleIpV4,
     SingleIpV6,
-    DualPreferIpV4
+    DualPreferIpV4,
 }
 
-impl DnsResolveIpMode{
-   
+impl DnsResolveIpMode {
     /// checks if IPv4 is supported in current mode
     pub fn ipv4_supported(&self) -> bool {
-        matches!(self.mode, DnsResolveIpMode::Dual | DnsResolveIpMode::SingleIpV4 | DnsResolveIpMode::DualPreferIpV4)
+        matches!(
+            self,
+            DnsResolveIpMode::Dual
+                | DnsResolveIpMode::SingleIpV4
+                | DnsResolveIpMode::DualPreferIpV4
+        )
     }
 
     /// checks if IPv6 is supported in current mode
     pub fn ipv6_supported(&self) -> bool {
-        matches!(self.mode, DnsResolveIpMode::Dual | DnsResolveIpMode::SingleIpV6 | DnsResolveIpMode::DualPreferIpV4)
+        matches!(
+            self,
+            DnsResolveIpMode::Dual
+                | DnsResolveIpMode::SingleIpV6
+                | DnsResolveIpMode::DualPreferIpV4
+        )
     }
 }
 ///Mode for establishing a connection

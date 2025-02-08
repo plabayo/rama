@@ -20,9 +20,9 @@ pub mod address;
 pub mod asn;
 pub mod client;
 pub mod forwarded;
+pub mod mode;
 pub mod stream;
 pub mod user;
-pub mod mode;
 
 pub(crate) mod proto;
 #[doc(inline)]
