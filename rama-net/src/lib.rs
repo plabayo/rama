@@ -38,3 +38,6 @@ pub mod tls;
 
 #[cfg(any(feature = "tls", feature = "http"))]
 pub mod fingerprint;
+
+#[cfg(any(windows, unix))]
+pub use ::socket2 as socket;

@@ -42,6 +42,7 @@ rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true, optional = true }
+socket2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net"] }
 tracing = { workspace = true }
 venndb = { workspace = true, optional = true }

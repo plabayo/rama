@@ -194,6 +194,49 @@ impl<S> TcpListener<S> {
     }
 }
 
+impl From<TokioTcpListener> for TcpListener<()> {
+    fn from(value: TokioTcpListener) -> Self {
+        Self {
+            inner: value,
+            state: (),
+        }
+    }
+}
+
+#[cfg(any(windows, unix))]
+impl TryFrom<rama_net::socket::Socket> for TcpListener<()> {
+    type Error = std::io::Error;
+
+    #[inline]
+    fn try_from(value: rama_net::socket::Socket) -> Result<Self, Self::Error> {
+        let listener = std::net::TcpListener::from(value);
+        listener.try_into()
+    }
+}
+
+impl TryFrom<std::net::TcpListener> for TcpListener<()> {
+    type Error = std::io::Error;
+
+    fn try_from(value: std::net::TcpListener) -> Result<Self, Self::Error> {
+        value.set_nonblocking(true)?;
+        Ok(Self {
+            inner: TokioTcpListener::from_std(value)?,
+            state: (),
+        })
+    }
+}
+
+impl TcpListener<()> {
+    /// Define the TcpListener's state after it was created,
+    /// useful in case it wasn't built using the builder.
+    pub fn with_state<S>(self, state: S) -> TcpListener<S> {
+        TcpListener {
+            inner: self.inner,
+            state,
+        }
+    }
+}
+
 impl<State> TcpListener<State>
 where
     State: Clone + Send + Sync + 'static,
