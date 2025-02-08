@@ -20,6 +20,7 @@ pub mod address;
 pub mod asn;
 pub mod client;
 pub mod forwarded;
+pub mod mode;
 pub mod stream;
 pub mod user;
 
