@@ -130,13 +130,15 @@ where
     Dns: DnsResolver<Error: Into<BoxError>> + Clone,
     Connector: TcpStreamConnector<Error: Into<BoxError> + Send + 'static> + Clone,
 {
+    let ip_mode = ctx.get().copied().unwrap_or_default();
+    let dns_mode = ctx.get().copied().unwrap_or_default();
+
     let (host, port) = authority.into_parts();
     let domain = match host {
         Host::Name(domain) => domain,
         Host::Address(ip) => {
-            let mode = ConnectIpMode::Dual; 
             //check if IP Version is allowed
-            match (ip, mode) {
+            match (ip, ip_mode) {
                 (IpAddr::V4(_), ConnectIpMode::Ipv6) => {
                     return Err(OpaqueError::from_display("IPv4 address is not allowed"));
                 }
@@ -163,10 +165,10 @@ where
                 ctx,
                 domain.clone(),
                 port,
-                DnsResolveIpMode::Dual,  // Use the mode from the overwrite
-                dns_overwrite.deref().clone(),  // Convert DnsOverwrite to a DnsResolver
+                dns_mode,
+                dns_overwrite.deref().clone(), // Convert DnsOverwrite to a DnsResolver
                 connector.clone(),
-                ConnectIpMode::Dual,
+                ip_mode,
             )
             .await
             {
@@ -175,20 +177,10 @@ where
         }
     }
 
-
     //... otherwise we'll try to establish a connection,
     // with dual-stack parallel connections...
 
-    tcp_connect_inner(
-        ctx,
-        domain,
-        port,
-        DnsResolveIpMode::Dual,
-        dns,
-        connector,
-        ConnectIpMode::Dual,
-    )
-    .await
+    tcp_connect_inner(ctx, domain, port, dns_mode, dns, connector, ip_mode).await
 }
 
 async fn tcp_connect_inner<State, Dns, Connector>(
@@ -224,7 +216,6 @@ where
         ));
     }
 
-
     if dns_mode.ipv6_supported() {
         ctx.spawn(tcp_connect_inner_branch(
             dns_mode,
@@ -249,7 +240,6 @@ where
         "failed to connect to any resolved IP address for {domain} (port {port})"
     )))
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum IpKind {

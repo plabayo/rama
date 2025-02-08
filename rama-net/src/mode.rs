@@ -1,4 +1,4 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 /// Enum representing the IP modes that can be used by the DNS resolver.
 pub enum DnsResolveIpMode {
     #[default]
@@ -30,7 +30,7 @@ impl DnsResolveIpMode {
     }
 }
 ///Mode for establishing a connection
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Hash)]
 pub enum ConnectIpMode {
     #[default]
     Dual,
