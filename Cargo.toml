@@ -150,6 +150,8 @@ want = "0.3"
 futures-util = "0.3"
 futures-channel = "0.3"
 sha2 = "0.10.8"
+jemallocator = { package = "tikv-jemallocator", version = "0.6" }
+mimalloc = { version = "0.1.39" }
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
