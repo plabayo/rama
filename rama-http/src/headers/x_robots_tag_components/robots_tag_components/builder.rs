@@ -30,6 +30,30 @@ macro_rules! no_tag_builder_field {
     };
 }
 
+/// Generic structure used for building a [`RobotsTag`] with compile-time validation
+///
+/// # States
+///
+/// - `Builder<()>`
+///     - a new builder without any values
+///     - can transform to `Builder<NoTag>` using the [`Builder::bot_name()`] function
+/// - `Builder<NoTag>`
+///     - holds a `bot_name` field, but still isn't a valid [`RobotsTag`]
+///     - can transform to `Builder<RobotsTag>` by specifying a valid [`RobotsTag`] field
+/// - `Builder<RobotsTag>`
+///     - holds a valid [`RobotsTag`] struct, which can be further modified
+///     - can be built into a [`RobotsTag`] using the [`Builder::<RobotsTag>::build()`] function
+///
+/// # Examples
+///
+/// ```
+/// # use rama_http::headers::x_robots_tag_components::RobotsTag;
+/// let robots_tag = RobotsTag::builder()
+///                     .bot_name(None)
+///                     .no_follow(true)
+///                     .build();
+/// assert_eq!(robots_tag.no_follow(), true);
+/// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Builder<T = ()>(T);
 
@@ -117,8 +141,38 @@ impl Builder<RobotsTag> {
     robots_tag_builder_field!(no_image_ai, bool);
     robots_tag_builder_field!(spc, bool);
 
+    /// Adds a field based on its `&str` representation
+    ///
+    /// # Returns and Errors
+    ///
+    /// - `Result<&mut Self, OpaqueError>`
+    ///     - `Ok(&mut Self)`
+    ///         - when the field was valid and successfully added
+    ///         - returns `&mut Self` wrapped inside for easier chaining of functions
+    ///     - `Err(OpaqueError)`
+    ///         - is of type [`headers::Error`] when the field name is not valid
+    ///         - for composite rules (key + value), wraps the conversion error for the value
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::num::ParseIntError;
+    /// # use rama_http::headers::x_robots_tag_components::RobotsTag;
+    /// let mut builder = RobotsTag::builder().bot_name(None).no_follow(true);
+    /// assert!(builder.add_field("nosnippet").is_ok());
+    /// assert!(builder.add_field("max-snippet: 8").is_ok());
+    /// assert!(builder.add_field("nonexistent").is_err_and(|e| e.is::<headers::Error>()));
+    /// assert!(builder.add_field("max-video-preview: not_a_number").is_err_and(|e| e.is::<ParseIntError>()));
+    ///
+    /// let robots_tag = builder.build();
+    ///
+    /// assert_eq!(robots_tag.no_snippet(), true);
+    /// assert_eq!(robots_tag.max_snippet(), 8);
+    /// ```
     pub fn add_field(&mut self, s: &str) -> Result<&mut Self, OpaqueError> {
-        if let Some((key, value)) = s.trim().split_once(':') {
+        if let Some((key, value)) = s.split_once(':') {
+            let key = key.trim();
+            let value = value.trim();
             Ok(if key.eq_ignore_ascii_case("max-snippet") {
                 self.set_max_snippet(value.parse().map_err(OpaqueError::from_std)?)
             } else if key.eq_ignore_ascii_case("max-image-preview") {
