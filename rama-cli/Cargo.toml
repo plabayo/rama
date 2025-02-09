@@ -14,11 +14,17 @@ default-run = "rama"
 [lints]
 workspace = true
 
+[features]
+jemalloc = ["dep:jemallocator"]
+mimalloc = ["dep:mimalloc"]
+
 [dependencies]
 base64 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }
+jemallocator = { workspace = true, optional = true }
+mimalloc = { workspace = true, optional = true }
 rama = { version = "0.2.0-alpha.7", path = "..", features = ["full"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

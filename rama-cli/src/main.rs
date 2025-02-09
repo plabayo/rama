@@ -12,6 +12,14 @@ use cmd::{echo, fp, http, ip, proxy};
 
 pub mod error;
 
+#[cfg(all(not(feature = "mimalloc"), feature = "jemalloc"))]
+#[global_allocator]
+static ALLOC: jemallocator::Jemalloc = jemallocator::Jemalloc;
+
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Debug, Parser)]
 #[command(name = "rama")]
 #[command(bin_name = "rama")]
