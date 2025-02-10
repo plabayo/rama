@@ -84,18 +84,10 @@ impl UserAgent {
     /// returns the device kind of the [`UserAgent`].
     pub fn device(&self) -> DeviceKind {
         match &self.data {
-            UserAgentData::Standard { platform, .. } => match platform {
-                Some(PlatformKind::Windows | PlatformKind::MacOS | PlatformKind::Linux) | None => {
-                    DeviceKind::Desktop
-                }
-                Some(PlatformKind::Android | PlatformKind::IOS) => DeviceKind::Mobile,
-            },
-            UserAgentData::Platform(platform) => match platform {
-                PlatformKind::Windows | PlatformKind::MacOS | PlatformKind::Linux => {
-                    DeviceKind::Desktop
-                }
-                PlatformKind::Android | PlatformKind::IOS => DeviceKind::Mobile,
-            },
+            UserAgentData::Standard { platform, .. } => {
+                platform.map(|p| p.device()).unwrap_or(DeviceKind::Desktop)
+            }
+            UserAgentData::Platform(platform) => platform.device(),
             UserAgentData::Device(kind) => *kind,
             UserAgentData::Unknown => DeviceKind::Desktop,
         }
@@ -108,6 +100,23 @@ impl UserAgent {
             Some(info.clone())
         } else {
             None
+        }
+    }
+
+    /// returns the [`UserAgentKind`] used by the [`UserAgent`], if known.
+    pub fn ua_kind(&self) -> Option<UserAgentKind> {
+        match self.http_agent_overwrite {
+            Some(HttpAgent::Chromium) => Some(UserAgentKind::Chromium),
+            Some(HttpAgent::Safari) => Some(UserAgentKind::Safari),
+            Some(HttpAgent::Firefox) => Some(UserAgentKind::Firefox),
+            Some(HttpAgent::Preserve) => None,
+            None => match &self.data {
+                UserAgentData::Standard {
+                    info: UserAgentInfo { kind, .. },
+                    ..
+                } => Some(*kind),
+                _ => None,
+            },
         }
     }
 
@@ -171,14 +180,13 @@ impl FromStr for UserAgent {
 
 /// The kind of [`UserAgent`]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum UserAgentKind {
     /// Chromium Browser
-    Chromium = 0b0000_0001,
+    Chromium,
     /// Firefox Browser
-    Firefox = 0b0000_0010,
+    Firefox,
     /// Safari Browser
-    Safari = 0b0000_0100,
+    Safari,
 }
 
 impl UserAgentKind {
@@ -233,12 +241,11 @@ impl<'de> Deserialize<'de> for UserAgentKind {
 
 /// Device on which the [`UserAgent`] operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum DeviceKind {
     /// Personal Computers
-    Desktop = 0b0000_0001,
+    Desktop,
     /// Phones, Tablets and other mobile devices
-    Mobile = 0b0000_0010,
+    Mobile,
 }
 
 impl DeviceKind {
@@ -258,18 +265,17 @@ impl fmt::Display for DeviceKind {
 
 /// Platform within the [`UserAgent`] operates.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum PlatformKind {
     /// Windows Platform ([`Desktop`](DeviceKind::Desktop))
-    Windows = 0b0000_0001,
+    Windows,
     /// MacOS Platform ([`Desktop`](DeviceKind::Desktop))
-    MacOS = 0b0000_0010,
+    MacOS,
     /// Linux Platform ([`Desktop`](DeviceKind::Desktop))
-    Linux = 0b0000_0100,
+    Linux,
     /// Android Platform ([`Mobile`](DeviceKind::Mobile))
-    Android = 0b0001_0000,
+    Android,
     /// iOS Platform ([`Mobile`](DeviceKind::Mobile))
-    IOS = 0b0010_0000,
+    IOS,
 }
 
 impl PlatformKind {
@@ -280,6 +286,15 @@ impl PlatformKind {
             PlatformKind::Linux => "Linux",
             PlatformKind::Android => "Android",
             PlatformKind::IOS => "iOS",
+        }
+    }
+
+    pub fn device(&self) -> DeviceKind {
+        match self {
+            PlatformKind::Windows | PlatformKind::MacOS | PlatformKind::Linux => {
+                DeviceKind::Desktop
+            }
+            PlatformKind::Android | PlatformKind::IOS => DeviceKind::Mobile,
         }
     }
 }
@@ -328,19 +343,18 @@ impl fmt::Display for PlatformKind {
 
 /// Http implementation used by the [`UserAgent`]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum HttpAgent {
     /// Chromium based browsers share the same http implementation
-    Chromium = 0b0000_0001,
+    Chromium,
     /// Firefox has its own http implementation
-    Firefox = 0b0000_0010,
+    Firefox,
     /// Safari also has its own http implementation
-    Safari = 0b0000_0100,
+    Safari,
     /// Preserve the incoming Http Agent as much as possible.
     ///
     /// For emulators this means that emulators will aim to have a
     /// hands-off approach to the incoming http request.
-    Preserve = 0b1000_0000,
+    Preserve,
 }
 
 impl HttpAgent {
@@ -397,21 +411,20 @@ impl FromStr for HttpAgent {
 
 /// Tls implementation used by the [`UserAgent`]
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-#[repr(u8)]
 pub enum TlsAgent {
     /// Rustls is used as a fallback for all user agents,
     /// that are not chromium based.
-    Rustls = 0b0000_0001,
+    Rustls,
     /// Boringssl is used for Chromium based user agents.
-    Boringssl = 0b0000_0010,
+    Boringssl,
     /// NSS is used for Firefox
-    Nss = 0b0000_0100,
+    Nss,
     /// Preserve the incoming TlsAgent as much as possible.
     ///
     /// For this Tls this means that emulators can try to
     /// preserve details of the incoming Tls connection
     /// such as the (Tls) Client Hello.
-    Preserve = 0b1000_0000,
+    Preserve,
 }
 
 impl TlsAgent {

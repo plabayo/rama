@@ -3,6 +3,7 @@ use std::{
     collections::{self, HashMap},
 };
 
+use http::header::AsHeaderName;
 use serde::{de::Error as _, ser::Error as _, Deserialize, Serialize};
 
 use super::{
@@ -53,6 +54,11 @@ impl Http1HeaderMap {
             headers,
             original_headers,
         }
+    }
+
+    #[inline]
+    pub fn get(&self, key: impl AsHeaderName) -> Option<&HeaderValue> {
+        self.headers.get(key)
     }
 
     pub fn into_headers(self) -> HeaderMap {

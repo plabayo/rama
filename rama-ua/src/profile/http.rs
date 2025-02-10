@@ -11,9 +11,9 @@ pub struct HttpProfile {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HttpHeadersProfile {
     pub navigate: Http1HeaderMap,
-    pub fetch: Http1HeaderMap,
-    pub xhr: Http1HeaderMap,
-    pub form: Http1HeaderMap,
+    pub fetch: Option<Http1HeaderMap>,
+    pub xhr: Option<Http1HeaderMap>,
+    pub form: Option<Http1HeaderMap>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

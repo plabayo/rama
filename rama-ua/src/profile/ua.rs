@@ -1,3 +1,4 @@
+use rama_http_types::header::USER_AGENT;
 use serde::{Deserialize, Serialize};
 
 use crate::{PlatformKind, UserAgentKind};
@@ -17,4 +18,14 @@ pub struct UserAgentProfile {
     #[cfg(feature = "tls")]
     /// The profile information regarding the tls implementation of the [`crate::UserAgent`].
     pub tls: super::TlsProfile,
+}
+
+impl UserAgentProfile {
+    pub fn ua_str(&self) -> Option<&str> {
+        self.http
+            .headers
+            .navigate
+            .get(USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+    }
 }
