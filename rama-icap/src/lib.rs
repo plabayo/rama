@@ -8,7 +8,7 @@ pub mod parser;
 
 use std::collections::HashMap;
 use thiserror::Error;
-use rama_http_types::{header::{InvalidHeaderValue, InvalidHeaderName}, HeaderMap};
+use rama_http_types::{header::{InvalidHeaderValue, InvalidHeaderName, HeaderName}, HeaderMap};
 use bytes::Bytes;
 
 /// Default ICAP port as specified in RFC 3507
@@ -27,6 +27,8 @@ pub enum Error {
     InvalidVersion(String),
     #[error("Invalid ICAP method: {0}")]
     InvalidMethod(String),
+    #[error("Invalid status code")]
+    InvalidStatus,
     #[error("Invalid ICAP message format: {0}")]
     InvalidFormat(String),
     #[error("Invalid encapsulated header: {0}")]
@@ -93,8 +95,47 @@ impl Version {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+pub struct Response {
+    pub status: u16,
+    pub reason: String,
+    pub headers: HeaderMap,
+}
+
+impl Default for Response {
+    fn default() -> Self {
+        Self {
+            status: 200,
+            reason: String::from("OK"),
+            headers: HeaderMap::new(),
+        }
+    }
+}
+
+impl Response {
+    pub fn new(headers: HeaderMap) -> Response {
+        Response {
+            status: 200,
+            reason: String::from("OK"),
+            headers,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        let mut len = 0;
+        for (name, value) in self.headers.iter() {
+            len += name.as_str().len() + 2 + value.len() + 2; // name: value\r\n
+        }
+        len + 2 // final \r\n
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum Encapsulated {
+    NullBody,
+    Options {
+        body: Option<Bytes>,
+    },
     RequestOnly {
         header: Option<Request>,
         body: Option<Bytes>,
@@ -109,13 +150,93 @@ pub enum Encapsulated {
         res_header: Option<Response>,
         res_body: Option<Bytes>,
     },
-    NullBody,
-    Options {
-        body: Option<Bytes>,
-    },
 }
 
-#[derive(Debug)]
+impl Encapsulated {
+    /// Check if this encapsulated message contains a specific section type
+    pub fn contains(&self, section_type: &SectionType) -> bool {
+        match (self, section_type) {
+            (Encapsulated::RequestOnly { header: Some(_), .. }, SectionType::RequestHeader) => true,
+            (Encapsulated::RequestOnly { body: Some(_), .. }, SectionType::RequestBody) => true,
+            (Encapsulated::ResponseOnly { header: Some(_), .. }, SectionType::ResponseHeader) => true,
+            (Encapsulated::ResponseOnly { body: Some(_), .. }, SectionType::ResponseBody) => true,
+            (Encapsulated::RequestResponse { req_header: Some(_), .. }, SectionType::RequestHeader) => true,
+            (Encapsulated::RequestResponse { req_body: Some(_), .. }, SectionType::RequestBody) => true,
+            (Encapsulated::RequestResponse { res_header: Some(_), .. }, SectionType::ResponseHeader) => true,
+            (Encapsulated::RequestResponse { res_body: Some(_), .. }, SectionType::ResponseBody) => true,
+            (Encapsulated::NullBody, SectionType::NullBody) => true,
+            (Encapsulated::Options { body: Some(_) }, SectionType::OptionsBody) => true,
+            _ => false,
+        }
+    }
+
+    pub fn from_sections(sections: HashMap<SectionType, Vec<u8>>) -> Self {
+        match (
+            sections.contains_key(&SectionType::RequestHeader),
+            sections.contains_key(&SectionType::RequestBody),
+            sections.contains_key(&SectionType::ResponseHeader),
+            sections.contains_key(&SectionType::ResponseBody),
+            sections.contains_key(&SectionType::OptionsBody),
+            sections.contains_key(&SectionType::NullBody),
+        ) {
+            (_, _, _, _, _, true) => Self::NullBody,
+            (_, _, _, _, true, _) => Self::Options {
+                body: sections.get(&SectionType::OptionsBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+            },
+            (true, _, true, _, _, _) | (_, true, true, _, _, _) |
+            (true, _, _, true, _, _) | (_, true, _, true, _, _) => Self::RequestResponse {
+                req_header: sections.get(&SectionType::RequestHeader)
+                    .map(|_| Request::default()),
+                req_body: sections.get(&SectionType::RequestBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+                res_header: sections.get(&SectionType::ResponseHeader)
+                    .map(|_| Response::default()),
+                res_body: sections.get(&SectionType::ResponseBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+            },
+            (true, _, _, _, _, _) | (_, true, _, _, _, _) => Self::RequestOnly {
+                header: sections.get(&SectionType::RequestHeader)
+                    .map(|_| Request::default()),
+                body: sections.get(&SectionType::RequestBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+            },
+            (_, _, true, _, _, _) | (_, _, _, true, _, _) => Self::ResponseOnly {
+                header: sections.get(&SectionType::ResponseHeader)
+                    .map(|_| Response::default()),
+                body: sections.get(&SectionType::ResponseBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+            },
+            _ => Self::NullBody,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        matches!(self, Self::NullBody)
+    }
+
+    pub fn get_section(&self, section_type: SectionType) -> Option<&[u8]> {
+        match (self, section_type) {
+            (Self::Options { body: Some(b) }, SectionType::OptionsBody) => Some(b),
+            (Self::RequestOnly { body: Some(b), .. }, SectionType::RequestBody) => Some(b),
+            (Self::ResponseOnly { body: Some(b), .. }, SectionType::ResponseBody) => Some(b),
+            (Self::RequestResponse { req_body: Some(b), .. }, SectionType::RequestBody) => Some(b),
+            (Self::RequestResponse { res_body: Some(b), .. }, SectionType::ResponseBody) => Some(b),
+            _ => None,
+        }
+    }
+}
+
+impl Default for Encapsulated {
+    fn default() -> Self {
+        Self::RequestOnly {
+            header: None,
+            body: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub enum IcapMessage {
     Request {
         method: Method,
@@ -125,12 +246,12 @@ pub enum IcapMessage {
         encapsulated: Encapsulated,
     },
     Response {
-        version: Version,
         status: u16,
         reason: String,
+        version: Version,
         headers: HeaderMap,
         encapsulated: Encapsulated,
-    },
+    }
 }
 
 impl IcapMessage {
@@ -142,7 +263,7 @@ impl IcapMessage {
                 let mut offset = request_line.len();
                 
                 for (name, value) in headers.iter() {
-                    offset += name.as_str().len() + 2 + value.len() + 2; // "name: value\r\n"
+                    offset += name.as_str().len() + 2 + value.len() + 2; // name: value\r\n
                 }
                 
                 offset += 2; // "\r\n"
@@ -155,7 +276,7 @@ impl IcapMessage {
                 let mut offset = response_line.len();
                 
                 for (name, value) in headers.iter() {
-                    offset += name.as_str().len() + 2 + value.len() + 2; // "name: value\r\n"
+                    offset += name.as_str().len() + 2 + value.len() + 2; // name: value\r\n
                 }
                 
                 offset += 2; // "\r\n"
@@ -173,15 +294,18 @@ impl IcapMessage {
     /// 
     /// # Example
     /// ```
-    /// use std::collections::HashMap;
+    /// use rama_http_types::HeaderMap;
     /// use crate::{IcapMessage, Method, Version, SectionType};
     /// 
     /// let mut request = IcapMessage::Request {
     ///     method: Method::ReqMod,
     ///     uri: "/modify".to_string(),
     ///     version: Version::V1_0,
-    ///     headers: http::HeaderMap::new(),
-    ///     encapsulated: Vec::new(),
+    ///     headers: HeaderMap::new(),
+    ///     encapsulated: Encapsulated::RequestOnly {
+    ///         header: Some(Request::default()),
+    ///         body: Some(b"GET / HTTP/1.1\r\n".to_vec().into()),
+    ///     },
     /// };
     /// request.prepare_headers().unwrap();
     /// ```
@@ -201,58 +325,126 @@ impl IcapMessage {
             IcapMessage::Request { headers, encapsulated, .. } => {
                 // Set Encapsulated header based on what sections we have
                 let mut parts = Vec::new();
-                let mut current_offset = 0;
+                let mut current_offset = offset;
 
-                for (section_type, data) in encapsulated.iter() {
-                    match section_type {
-                        SectionType::RequestHeader => {
+                match encapsulated {
+                    Encapsulated::RequestOnly { header, body } => {
+                        if let Some(header) = header {
                             parts.push(format!("req-hdr={}", current_offset));
-                            current_offset += data.len();
-                        },
-                        SectionType::RequestBody => {
+                            current_offset += header.len();
+                        }
+                        if let Some(body) = body {
                             parts.push(format!("req-body={}", current_offset));
-                            current_offset += data.len();
-                        },
-                        SectionType::NullBody => {
-                            parts.push(format!("null-body={}", current_offset));
-                        },
-                        _ => continue,
+                            current_offset += body.len();
+                        }
+                    },
+                    Encapsulated::RequestResponse { req_header, req_body, res_header, res_body } => {
+                        if let Some(header) = req_header {
+                            parts.push(format!("req-hdr={}", current_offset));
+                            current_offset += header.len();
+                        }
+                        if let Some(body) = req_body {
+                            parts.push(format!("req-body={}", current_offset));
+                            current_offset += body.len();
+                        }
+                        if let Some(header) = res_header {
+                            parts.push(format!("res-hdr={}", current_offset));
+                            current_offset += header.len();
+                        }
+                        if let Some(body) = res_body {
+                            parts.push(format!("res-body={}", current_offset));
+                            current_offset += body.len();
+                        }
+                    },
+                    Encapsulated::ResponseOnly { header, body } => {
+                        if let Some(header) = header {
+                            parts.push(format!("res-hdr={}", current_offset));
+                            current_offset += header.len();
+                        }
+                        if let Some(body) = body {
+                            parts.push(format!("res-body={}", current_offset));
+                            current_offset += body.len();
+                        }
+                    },
+                    Encapsulated::Options { body } => {
+                        if let Some(body) = body {
+                            parts.push(format!("opt-body={}", current_offset));
+                            current_offset += body.len();
+                        }
+                    },
+                    Encapsulated::NullBody => {
+                        parts.push("null-body=0".to_string());
                     }
                 }
 
-                if parts.is_empty() {
-                    parts.push(format!("null-body={}", current_offset));
+                if !parts.is_empty() {
+                    headers.insert(
+                        "Encapsulated",
+                        parts.join(", ").parse().unwrap(),
+                    );
                 }
-
-                headers.insert("Encapsulated", parts.join(", ").parse().unwrap());
             },
             IcapMessage::Response { headers, encapsulated, .. } => {
-                // Similar logic for responses
+                // Set Encapsulated header based on what sections we have
                 let mut parts = Vec::new();
-                let mut current_offset = 0;
+                let mut current_offset = offset;
 
-                for (section_type, data) in encapsulated.iter() {
-                    match section_type {
-                        SectionType::ResponseHeader => {
+                match encapsulated {
+                    Encapsulated::RequestOnly { header, body } => {
+                        if let Some(header) = header {
+                            parts.push(format!("req-hdr={}", current_offset));
+                            current_offset += header.len();
+                        }
+                        if let Some(body) = body {
+                            parts.push(format!("req-body={}", current_offset));
+                            current_offset += body.len();
+                        }
+                    },
+                    Encapsulated::RequestResponse { req_header, req_body, res_header, res_body } => {
+                        if let Some(header) = req_header {
+                            parts.push(format!("req-hdr={}", current_offset));
+                            current_offset += header.len();
+                        }
+                        if let Some(body) = req_body {
+                            parts.push(format!("req-body={}", current_offset));
+                            current_offset += body.len();
+                        }
+                        if let Some(header) = res_header {
                             parts.push(format!("res-hdr={}", current_offset));
-                            current_offset += data.len();
-                        },
-                        SectionType::ResponseBody => {
+                            current_offset += header.len();
+                        }
+                        if let Some(body) = res_body {
                             parts.push(format!("res-body={}", current_offset));
-                            current_offset += data.len();
-                        },
-                        SectionType::NullBody => {
-                            parts.push(format!("null-body={}", current_offset));
-                        },
-                        _ => continue,
+                            current_offset += body.len();
+                        }
+                    },
+                    Encapsulated::ResponseOnly { header, body } => {
+                        if let Some(header) = header {
+                            parts.push(format!("res-hdr={}", current_offset));
+                            current_offset += header.len();
+                        }
+                        if let Some(body) = body {
+                            parts.push(format!("res-body={}", current_offset));
+                            current_offset += body.len();
+                        }
+                    },
+                    Encapsulated::Options { body } => {
+                        if let Some(body) = body {
+                            parts.push(format!("opt-body={}", current_offset));
+                            current_offset += body.len();
+                        }
+                    },
+                    Encapsulated::NullBody => {
+                        parts.push("null-body=0".to_string());
                     }
                 }
 
-                if parts.is_empty() {
-                    parts.push(format!("null-body={}", current_offset));
+                if !parts.is_empty() {
+                    headers.insert(
+                        "Encapsulated",
+                        parts.join(", ").parse().unwrap(),
+                    );
                 }
-
-                headers.insert("Encapsulated", parts.join(", ").parse().unwrap());
             }
         }
         
@@ -304,6 +496,15 @@ impl IcapMessage {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum State {
+    StartLine,
+    Headers,
+    EncapsulatedHeader,
+    Body,
+    Complete,
+}
+
 #[derive(Clone, Debug, Hash, PartialEq, Eq)]
 pub enum SectionType {
     NullBody,
@@ -314,71 +515,56 @@ pub enum SectionType {
     OptionsBody,
 }
 
-#[derive(Debug)]
-pub struct Request<'a> {
-    /// The request method (REQMOD, RESPMOD, OPTIONS)
-    pub method: Option<&'a str>,
-    /// The request path/URI
-    pub path: Option<&'a str>,
-    /// ICAP version (as a number, 0 = 1.0)
-    pub version: Option<Version>,
-    /// Headers included in the request
-    pub headers: Vec<Header<'a>>,
-    /// Parsed encapsulated sections
-    pub encapsulated_sections: Option<HashMap<SectionType, Vec<u8>>>,
+#[derive(Debug, Clone)]
+pub struct Request {
+    pub method: String,
+    pub uri: String,
+    pub version: String,
+    pub headers: HeaderMap,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Header<'a> {
-    /// Header name
-    pub name: &'a str,
-    /// Header value
-    pub value: &'a [u8],
-}
-
-/// Empty header constant for initialization
-pub const EMPTY_HEADER: Header<'static> = Header { name: "", value: b"" };
-
-impl<'a> Request<'a> {
-    /// Create a new Request with a pre-allocated headers array
-    pub fn new(headers: &'a mut [Header<'a>]) -> Request<'a> {
-        Request {
-            method: None,
-            path: None,
-            version: None,
-            headers: Vec::new(),
-            encapsulated_sections: None,
+impl Default for Request {
+    fn default() -> Self {
+        Self {
+            method: String::from("GET"),
+            uri: String::from("/"),
+            version: String::from("HTTP/1.1"),
+            headers: HeaderMap::new(),
         }
     }
+}
 
-    /// Parse an ICAP request from a byte slice
-    pub fn parse(&mut self, buf: &'a [u8]) -> std::result::Result<Status<usize>, Error> {
-        // Basic implementation for testing
-        if buf.len() < 5 {
-            return Ok(Status::Partial);
+impl Request {
+    pub fn len(&self) -> usize {
+        let mut len = 0;
+        for (name, value) in self.headers.iter() {
+            len += name.as_str().len() + 2 + value.len() + 2; // name: value\r\n
         }
+        len + 2 // final \r\n
+    }
 
-        // Simple parsing for testing purposes
-        let mut parts = buf.split(|&b| b == b' ');
+    pub fn parse(&mut self, buf: &[u8]) -> Result<Status<()>> {
+        let buf_str = match std::str::from_utf8(buf) {
+            Ok(s) => s,
+            Err(_) => return Err(Error::Protocol("Invalid UTF-8 in request".to_string())),
+        };
         
-        // Parse method
-        if let Some(method) = parts.next() {
-            self.method = std::str::from_utf8(method).ok();
-        }
-
-        // Parse path
-        if let Some(path) = parts.next() {
-            self.path = std::str::from_utf8(path).ok();
-        }
-
-        // Parse version
-        if let Some(version) = parts.next() {
-            if version.starts_with(b"ICAP/1.") {
-                self.version = Some(Version::V1_0);
-            }
-        }
-
-        Ok(Status::Complete(buf.len()))
+        let mut parts = buf_str.splitn(3, ' ');
+        
+        self.method = parts.next()
+            .ok_or_else(|| Error::Protocol("Missing method".to_string()))?
+            .to_string();
+            
+        self.uri = parts.next()
+            .ok_or_else(|| Error::Protocol("Missing URI".to_string()))?
+            .to_string();
+            
+        self.version = parts.next()
+            .ok_or_else(|| Error::Protocol("Missing version".to_string()))?
+            .trim_end()
+            .to_string();
+            
+        Ok(Status::Complete(()))
     }
 }
 
@@ -396,28 +582,27 @@ pub use parser::MessageParser;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use http::HeaderMap;
-    use std::collections::HashMap;
+    use rama_http_types::HeaderMap;
 
     const NUM_OF_HEADERS: usize = 4;
 
     #[test]
     fn test_request_simple() {
-        let mut headers = vec![EMPTY_HEADER; NUM_OF_HEADERS];
-        let mut req = Request::new(&mut headers);
+        let mut headers = HeaderMap::new();
+        let mut req = Request::default();
         let buf = b"OPTIONS / ICAP/1.0\r\nEncapsulated:null-body=0\r\n\r\n";
         let status = req.parse(buf);
         
         assert!(matches!(status, Ok(Status::Complete(_))));
-        assert_eq!(req.method, Some("OPTIONS"));
-        assert_eq!(req.path, Some("/"));
-        assert_eq!(req.version, Some(Version::V1_0));
+        assert_eq!(req.method, "OPTIONS");
+        assert_eq!(req.uri, "/");
+        assert_eq!(req.version, "ICAP/1.0");
     }
 
     #[test]
     fn test_request_partial() {
-        let mut headers = vec![EMPTY_HEADER; NUM_OF_HEADERS];
-        let mut req = Request::new(&mut headers);
+        let mut headers = HeaderMap::new();
+        let mut req = Request::default();
         let buf = b"RESP";
         let status = req.parse(buf);
         
@@ -433,11 +618,16 @@ mod tests {
 
     #[test]
     fn test_icap_message_request() {
-        let mut headers = HeaderMap::new();
-        headers.insert("Host", "icap.example.org".parse().unwrap());
+        let headers = {
+            let mut headers = HeaderMap::new();
+            headers.insert("Host", "icap.example.org".parse().unwrap());
+            headers
+        };
         
-        let mut encapsulated = Vec::new();
-        encapsulated.push((SectionType::RequestHeader, b"GET / HTTP/1.1\r\n".to_vec()));
+        let encapsulated = Encapsulated::RequestOnly {
+            header: Some(Request::default()),  
+            body: Some(b"GET / HTTP/1.1\r\n".to_vec().into()),
+        };
         
         let msg = IcapMessage::Request {
             method: Method::ReqMod,
@@ -453,7 +643,7 @@ mod tests {
                 assert_eq!(uri, "/modify");
                 assert_eq!(version, Version::V1_0);
                 assert_eq!(headers.get("Host").unwrap(), "icap.example.org");
-                assert!(encapsulated.contains(&(SectionType::RequestHeader, b"GET / HTTP/1.1\r\n".to_vec())));
+                assert!(encapsulated.contains(&SectionType::RequestHeader));
             }
             _ => panic!("Expected Request variant"),
         }
@@ -464,8 +654,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("Server", "IcapServer/1.0".parse().unwrap());
         
-        let mut encapsulated = Vec::new();
-        encapsulated.push((SectionType::ResponseHeader, b"HTTP/1.1 200 OK\r\n".to_vec()));
+        let mut encapsulated = Encapsulated::RequestOnly {
+            header: Some(Request::default()),
+            body: Some(b"GET / HTTP/1.1\r\n".to_vec().into()),
+        };
         
         let msg = IcapMessage::Response {
             version: Version::V1_0,
@@ -481,7 +673,7 @@ mod tests {
                 assert_eq!(status, 200);
                 assert_eq!(reason, "OK");
                 assert_eq!(headers.get("Server").unwrap(), "IcapServer/1.0");
-                assert!(encapsulated.contains(&(SectionType::ResponseHeader, b"HTTP/1.1 200 OK\r\n".to_vec())));
+                assert!(encapsulated.contains(&SectionType::RequestHeader));
             }
             _ => panic!("Expected Response variant"),
         }
@@ -522,7 +714,10 @@ mod tests {
             uri: "icap://icap-server.net/virus_scan".to_string(),
             version: Version::V1_0,
             headers: headers.clone(),
-            encapsulated: Vec::new(),
+            encapsulated: Encapsulated::RequestOnly {
+                header: Some(Request::default()),  
+                body: Some(b"GET / HTTP/1.1\r\n".to_vec().into()),
+            },
         };
 
         // The request line "REQMOD icap://icap-server.net/virus_scan ICAP/1.0\r\n" is 51 bytes
@@ -538,7 +733,10 @@ mod tests {
             status: 200,
             reason: "OK".to_string(),
             headers: headers.clone(),
-            encapsulated: Vec::new(),
+            encapsulated: Encapsulated::RequestOnly {
+                header: Some(Request::default()),
+                body: Some(b"GET / HTTP/1.1\r\n".to_vec().into()),
+            },
         };
         // The response line "ICAP/1.0 200 OK\r\n" is 17 bytes
         // Headers: "Host: icap-server.net\r\n" (23 bytes) + "Connection: close\r\n" (19 bytes)
@@ -555,14 +753,11 @@ mod tests {
             uri: "icap://icap-server.net/virus_scan".to_string(),
             version: Version::V1_0,
             headers: HeaderMap::new(),
-            encapsulated: Vec::new(),
+            encapsulated: Encapsulated::RequestOnly {
+                header: Some(Request::default()),
+                body: Some(b"GET / HTTP/1.1\r\n".to_vec().into()),
+            },
         };
-        
-        // Add request header and body
-        if let IcapMessage::Request { encapsulated, .. } = &mut request {
-            encapsulated.push((SectionType::RequestHeader, Vec::new()));
-            encapsulated.push((SectionType::RequestBody, Vec::new()));
-        }
         
         request.prepare_headers().unwrap();
         
@@ -581,12 +776,16 @@ mod tests {
             uri: "icap://icap-server.net/virus_scan".to_string(),
             version: Version::V1_0,
             headers: HeaderMap::new(),
-            encapsulated: Vec::new(),
+            encapsulated: Encapsulated::RequestOnly {
+                header: Some(Request {
+                    method: "REQMOD".to_string(),
+                    uri: String::new(),
+                    version: "ICAP/1.0".to_string(),
+                    headers: HeaderMap::new(),
+                }),
+                body: None,
+            },
         };
-        
-        if let IcapMessage::Request { encapsulated, .. } = &mut request {
-            encapsulated.push((SectionType::RequestHeader, Vec::new()));
-        }
         request.prepare_headers().unwrap();
         
         let headers = match &request {
@@ -604,13 +803,11 @@ mod tests {
             status: 200,
             reason: "OK".to_string(),
             headers: HeaderMap::new(),
-            encapsulated: Vec::new(),
+            encapsulated: Encapsulated::RequestOnly {
+                header: Some(Request::default()),
+                body: Some(b"GET / HTTP/1.1\r\n".to_vec().into()),
+            },
         };
-        
-        if let IcapMessage::Response { encapsulated, .. } = &mut response {
-            encapsulated.push((SectionType::ResponseHeader, Vec::new()));
-            encapsulated.push((SectionType::ResponseBody, Vec::new()));
-        }
         
         response.prepare_headers().unwrap();
         
@@ -666,5 +863,28 @@ impl Message {
 impl Default for Message {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IcapHeaderName(String);
+
+impl IcapHeaderName {
+    pub fn new(name: impl Into<String>) -> Result<Self> {
+        let name = name.into();
+        if name.is_empty() {
+            return Err(Error::Protocol("Header name cannot be empty".to_string()));
+        }
+        Ok(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for IcapHeaderName {
+    fn as_ref(&self) -> &str {
+        &self.0
     }
 }

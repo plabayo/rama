@@ -6,7 +6,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use parking_lot::{Mutex, RwLock};
 use rama_http_types::HeaderMap;
 
-use crate::{Error, IcapMessage, Method, Result, State, Version};
+use crate::{Error, IcapMessage, Method, Result, Version, State};
 pub use self::conn::Conn;
 
 /// Trait for implementing ICAP services
@@ -43,7 +43,7 @@ where
     }
 
     /// Send a message on this connection
-    pub async fn send_message(&self, message: &mut IcapMessage) -> Result<()> {
+    pub async fn send_message(&self, message: IcapMessage) -> Result<()> {
         self.inner.lock().send_message(message).await
     }
 
@@ -122,11 +122,11 @@ where
             }
         };
         // Send request
-        conn.send_message(&mut request).await?;
+        conn.send_message(request).await?;
         
         // Get response
         let mut response = conn.recv_message().await?
-            .ok_or_else(|| Error::IncompleteMessage)?;
+            .ok_or_else(|| Error::Protocol("Incomplete message received".to_string()))?;
 
         // Return connection to pool
         self.connections.lock().push(conn);

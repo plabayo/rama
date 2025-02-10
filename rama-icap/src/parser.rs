@@ -1,8 +1,9 @@
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BytesMut, Bytes};
 use rama_http_types::HeaderMap;
 use std::collections::HashMap;
+use std::default::Default;
 
-use crate::{Error, IcapMessage, Method, Result, SectionType, State, Version};
+use crate::{Error, IcapMessage, Method, Result, SectionType, State, Version, Encapsulated, Request, Response};
 
 const MAX_HEADERS: usize = 100;
 const MAX_HEADER_NAME_LEN: usize = 100;
@@ -74,7 +75,6 @@ impl MessageParser {
     }
 
     pub fn parse(&mut self, buf: &[u8]) -> Result<Option<IcapMessage>> {
-        // Append new data to our buffer
         self.buffer.extend_from_slice(buf);
 
         loop {
@@ -83,26 +83,33 @@ impl MessageParser {
                     if !self.parse_start_line()? {
                         return Ok(None);
                     }
+                    self.state = State::Headers;
                 }
                 State::Headers => {
                     if !self.parse_headers()? {
                         return Ok(None);
                     }
+                    self.state = State::EncapsulatedHeader;
                 }
                 State::EncapsulatedHeader => {
-                    println!("encapsulated header");
                     if !self.parse_encapsulated()? {
                         return Ok(None);
                     }
+                    self.state = State::Body;
                 }
                 State::Body => {
-                    println!("body");
                     if !self.parse_body()? {
                         return Ok(None);
                     }
+                    self.state = State::Complete;
                 }
                 State::Complete => {
-                    return Ok(Some(self.build_message()?));
+                    let message = self.build_message()?;
+                    self.state = State::StartLine;
+                    self.headers.clear();
+                    self.encapsulated.clear();
+                    self.buffer.clear();
+                    return Ok(Some(message));
                 }
             }
         }
@@ -117,7 +124,7 @@ impl MessageParser {
             // Parse line
             let parts: Vec<&[u8]> = line.split(|&b| b == b' ').collect();
             if parts.len() != 3 {
-                return Err(Error::InvalidMethod);
+                return Err(Error::InvalidMethod("Incomplete message received".to_string()));
             }
 
             // Check if this is a response (starts with ICAP/)
@@ -131,7 +138,7 @@ impl MessageParser {
                 self.status = Some(status);
                 // Parse reason
                 let reason = std::str::from_utf8(parts[2])
-                    .map_err(|_| Error::InvalidReason)?
+                    .map_err(|_| Error::InvalidFormat("Invalid reason".to_string()))?
                     .to_string();
                 self.reason = Some(reason);
             } else {
@@ -141,13 +148,13 @@ impl MessageParser {
                     b"REQMOD" => Method::ReqMod,
                     b"RESPMOD" => Method::RespMod,
                     b"OPTIONS" => Method::Options,
-                    _ => return Err(Error::InvalidMethod),
+                    _ => return Err(Error::InvalidMethod("Invalid method".to_string())),
                 };
                 self.method = Some(method);
 
                 // Parse URI
                 let uri = std::str::from_utf8(parts[1])
-                    .map_err(|_| Error::InvalidUri)?
+                    .map_err(|_| Error::InvalidFormat("Invalid URI".to_string()))?
                     .to_string();
                 self.uri = Some(uri);
 
@@ -155,11 +162,10 @@ impl MessageParser {
                 if let Some(version) = self.parse_version(parts[2])? {
                     self.version = Some(version);
                 } else {
-                    return Err(Error::InvalidVersion);
+                    return Err(Error::InvalidVersion("Invalid version".to_string()));
                 }
             }
 
-            self.state = State::Headers;
             Ok(true)
         } else {
             Ok(false)
@@ -173,7 +179,7 @@ impl MessageParser {
         match bytes {
             [b'I', b'C', b'A', b'P', b'/', b'1', b'.', b'0', ..] => Ok(Some(Version::V1_0)),
             [b'I', b'C', b'A', b'P', b'/', b'1', b'.', b'1', ..] => Ok(Some(Version::V1_1)),
-            [b'I', b'C', b'A', b'P', b'/', ..] => Err(Error::InvalidVersion),
+            [b'I', b'C', b'A', b'P', b'/', ..] => Err(Error::InvalidVersion("Invalid version".to_string())),
             _ => Ok(None),
         }
     }
@@ -195,7 +201,7 @@ impl MessageParser {
                         // This is a request
                         match method {
                             Method::Options => {}, // Encapsulated header is optional for OPTIONS
-                            _ => return Err(Error::MissingEncapsulated)
+                            _ => return Err(Error::Protocol("Missing encapsulated header".to_string()))
                         }
                     }
                 }
@@ -209,19 +215,19 @@ impl MessageParser {
 
             // Split into name and value
             let mut parts = line.splitn(2, |&b| b == b':');
-            let name = parts.next().ok_or(Error::InvalidHeader)?;
-            let value = parts.next().ok_or(Error::InvalidHeader)?;
+            let name = parts.next().ok_or_else(|| Error::InvalidFormat("Missing header name".to_string()))?;
+            let value = parts.next().ok_or_else(|| Error::InvalidFormat("Missing header value".to_string()))?;
 
             // Validate lengths
             if name.len() > MAX_HEADER_NAME_LEN {
-                return Err(Error::MessageTooLarge);
+                return Err(Error::Protocol("Message too large".to_string()));
             }
             if value.len() > MAX_HEADER_VALUE_LEN {
-                return Err(Error::MessageTooLarge);
+                return Err(Error::Protocol("Message too large".to_string()));
             }
 
             // Convert to strings and add to headers
-            let name = http::HeaderName::from_bytes(name)?;
+            let name = rama_http_types::HeaderName::from_bytes(name)?;
             let value = String::from_utf8_lossy(value).trim().to_string();
             
             // Check for Encapsulated header
@@ -232,7 +238,7 @@ impl MessageParser {
             self.headers.insert(name, value.parse()?);
 
             if self.headers.len() > MAX_HEADERS {
-                return Err(Error::MessageTooLarge);
+                return Err(Error::Protocol("Message too large".to_string()));
             }
         }
 
@@ -242,27 +248,30 @@ impl MessageParser {
     fn parse_encapsulated(&mut self) -> Result<bool> {
         // Get the Encapsulated header
         if let Some(enc) = self.headers.get("Encapsulated") {
-            let enc = enc.to_str().map_err(|_| Error::InvalidEncoding)?;
+            let enc = enc.to_str().map_err(|_| Error::Protocol("Invalid encoding".to_string()))?;
             
             // Parse each section's offset
             let mut sections = Vec::new();
             for section in enc.split(',') {
                 let mut parts = section.trim().split('=');
-                let name = parts.next().ok_or(Error::InvalidHeader)?;
+                let name = parts.next()
+                    .ok_or_else(|| Error::Protocol("Missing header name".to_string()))?
+                    .trim()
+                    .to_lowercase();
                 
                 let offset = parts.next()
-                    .ok_or(Error::InvalidHeader)?
+                    .ok_or_else(|| Error::Protocol("Missing header value".to_string()))?
                     .parse::<usize>()
-                    .map_err(|_| Error::InvalidHeader)?;
-
-                let section_type = match name {
+                    .map_err(|_| Error::Protocol("Invalid header value offset".to_string()))?;
+                
+                let section_type = match name.as_str() {
                     "null-body" => SectionType::NullBody,
                     "req-hdr" => SectionType::RequestHeader,
                     "req-body" => SectionType::RequestBody,
                     "res-hdr" => SectionType::ResponseHeader,
                     "res-body" => SectionType::ResponseBody,
                     "opt-body" => SectionType::OptionsBody,
-                    _ => return Err(Error::InvalidHeader),
+                    _ => return Err(Error::Protocol("Invalid encapsulated header".to_string())),
                 };
                 
                 sections.push((section_type, offset));
@@ -304,17 +313,23 @@ impl MessageParser {
     /// 
     /// RESPMOD request with request headers, response headers and body:
     /// ```text
-    /// RESPMOD icap://server/path ICAP/1.0
-    /// Encapsulated: req-hdr=0, res-hdr=126, res-body=200
+    /// RESPMOD icap://icap.example.org/satisf ICAP/1.0
+    /// Encapsulated: req-hdr=0, res-hdr=137, res-body=200
     /// 
-    /// GET /path HTTP/1.1    <- req-hdr starts at offset 0
-    /// Host: example.com
+    /// GET /origin-resource HTTP/1.1    <- req-hdr starts at offset 0
+    /// Host: www.origin-server.com
+    /// Accept: text/html, text/plain, image/gif
+    /// Accept-Encoding: gzip, compress
     /// 
-    /// HTTP/1.1 200 OK       <- res-hdr starts at offset 126
-    /// Content-Type: text/plain
+    /// HTTP/1.1 200 OK       <- res-hdr starts at offset 137
+    /// Date: Mon, 10 Jan 2000 09:52:22 GMT
+    /// Server: Apache/1.3.6 (Unix)
+    /// ETag: \"63840-1ab7-378d415b\"
+    /// Content-Type: text/html
+    /// Content-Length: 51
     /// 
-    /// a3                    <- res-body starts at offset 200
-    /// Hello World!          <- chunk data
+    /// 33                    <- res-body starts at offset 200
+    /// This is data that was returned by an origin server.
     /// 0                     <- end of chunked data
     /// ```
     fn parse_body(&mut self) -> Result<bool> {
@@ -358,7 +373,7 @@ impl MessageParser {
                         // Parse chunk size (hex)
                         let chunk_size = match usize::from_str_radix(size_str.trim(), 16) {
                             Ok(size) => size,
-                            Err(_) => return Err(Error::InvalidHeader),
+                            Err(_) => return Err(Error::Protocol("Invalid chunk size".to_string())),
                         };
                         
                         // Last chunk
@@ -379,7 +394,7 @@ impl MessageParser {
                         if pos + 2 <= end_offset && self.buffer[pos] == b'\r' && self.buffer[pos + 1] == b'\n' {
                             pos += 2;
                         } else {
-                            return Err(Error::InvalidHeader);
+                            return Err(Error::Protocol("Invalid chunk encoding".to_string()));
                         }
                     }
                     
@@ -424,6 +439,47 @@ impl MessageParser {
         }
     }
 
+    fn build_encapsulated(&self) -> Result<Encapsulated> {
+        let has_request_header = self.encapsulated.contains_key(&SectionType::RequestHeader);
+        let has_request_body = self.encapsulated.contains_key(&SectionType::RequestBody);
+        let has_response_header = self.encapsulated.contains_key(&SectionType::ResponseHeader);
+        let has_response_body = self.encapsulated.contains_key(&SectionType::ResponseBody);
+        let has_options_body = self.encapsulated.contains_key(&SectionType::OptionsBody);
+        let has_null_body = self.encapsulated.contains_key(&SectionType::NullBody);
+
+        match (has_request_header, has_request_body, has_response_header, has_response_body, has_options_body, has_null_body) {
+            (_, _, _, _, _, true) => Ok(Encapsulated::NullBody),
+            (_, _, _, _, true, _) => Ok(Encapsulated::Options {
+                body: self.encapsulated.get(&SectionType::OptionsBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+            }),
+            (true, _, true, _, _, _) | (_, true, true, _,  _, _) | 
+            (true, _, _, true, _, _) | (_, true, _, true, _, _) => Ok(Encapsulated::RequestResponse {
+                req_header: self.encapsulated.get(&SectionType::RequestHeader)
+                    .map(|_| Request::default()),
+                req_body: self.encapsulated.get(&SectionType::RequestBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+                res_header: self.encapsulated.get(&SectionType::ResponseHeader)
+                    .map(|_| Response::default()),
+                res_body: self.encapsulated.get(&SectionType::ResponseBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+            }),
+            (true, _, _, _, _, _) | (_, true, _, _, _, _) => Ok(Encapsulated::RequestOnly {
+                header: self.encapsulated.get(&SectionType::RequestHeader)
+                    .map(|_| Request::default()),
+                body: self.encapsulated.get(&SectionType::RequestBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+            }),
+            (_, _, true, _, _, _) | (_, _, _, true, _, _) => Ok(Encapsulated::ResponseOnly {
+                header: self.encapsulated.get(&SectionType::ResponseHeader)
+                    .map(|_| Response::default()),
+                body: self.encapsulated.get(&SectionType::ResponseBody)
+                    .map(|v| Bytes::from(v.to_vec())),
+            }),
+            _ => Ok(Encapsulated::NullBody),
+        }
+    }
+
     fn build_message(&self) -> Result<IcapMessage> {
         match (self.method.as_ref(), self.status.as_ref()) {
             (Some(method), None) => {
@@ -433,7 +489,7 @@ impl MessageParser {
                     uri: self.uri.clone().unwrap(),
                     version: self.version.unwrap(),
                     headers: self.headers.clone(),
-                    encapsulated: self.encapsulated.clone(),
+                    encapsulated: self.build_encapsulated()?,
                 })
             }
             (None, Some(status)) => {
@@ -443,10 +499,10 @@ impl MessageParser {
                     status: *status,
                     reason: self.reason.clone().unwrap_or_default(),
                     headers: self.headers.clone(),
-                    encapsulated: self.encapsulated.clone(),
+                    encapsulated: self.build_encapsulated()?,
                 })
             }
-            _ => Err(Error::IncompleteMessage),
+            _ => Err(Error::Protocol("Invalid message".to_string())),
         }
     }
 }
