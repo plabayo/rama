@@ -7,12 +7,38 @@ pub mod proto;
 pub mod parser;
 
 use std::collections::HashMap;
-use http::HeaderMap;
 use thiserror::Error;
-use http::header::{InvalidHeaderValue, InvalidHeaderName};
+use rama_http_types::{header::{InvalidHeaderValue, InvalidHeaderName}, HeaderMap};
+use bytes::Bytes;
 
 /// Default ICAP port as specified in RFC 3507
 pub const DEFAULT_ICAP_PORT: u16 = 1344;
+
+/// Error types that can occur in ICAP operations
+#[derive(Debug, Error)]
+pub enum Error {
+    #[error("I/O error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("Invalid HTTP header value: {0}")]
+    InvalidHeaderValue(#[from] InvalidHeaderValue),
+    #[error("Invalid HTTP header name: {0}")]
+    InvalidHeaderName(#[from] InvalidHeaderName),
+    #[error("Invalid ICAP version: {0}")]
+    InvalidVersion(String),
+    #[error("Invalid ICAP method: {0}")]
+    InvalidMethod(String),
+    #[error("Invalid ICAP message format: {0}")]
+    InvalidFormat(String),
+    #[error("Invalid encapsulated header: {0}")]
+    InvalidEncapsulated(String),
+    #[error("Missing required header: {0}")]
+    MissingHeader(String),
+    #[error("Protocol error: {0}")]
+    Protocol(String),
+}
+
+/// Result type for ICAP operations
+pub type Result<T> = std::result::Result<T, Error>;
 
 /// ICAP version string
 pub const ICAP_VERSION: &str = "ICAP/1.0";
@@ -30,6 +56,16 @@ impl Method {
             Method::Options => "OPTIONS",
             Method::ReqMod => "REQMOD",
             Method::RespMod => "RESPMOD",
+        }
+    }
+}
+
+impl std::fmt::Display for Method {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Method::Options => write!(f, "OPTIONS"),
+            Method::ReqMod => write!(f, "REQMOD"),
+            Method::RespMod => write!(f, "RESPMOD"),
         }
     }
 }
@@ -57,21 +93,214 @@ impl Version {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
+pub enum Encapsulated {
+    RequestOnly {
+        header: Option<Request>,
+        body: Option<Bytes>,
+    },
+    ResponseOnly {
+        header: Option<Response>,
+        body: Option<Bytes>,
+    },
+    RequestResponse {
+        req_header: Option<Request>,
+        req_body: Option<Bytes>,
+        res_header: Option<Response>,
+        res_body: Option<Bytes>,
+    },
+    NullBody,
+    Options {
+        body: Option<Bytes>,
+    },
+}
+
+#[derive(Debug)]
 pub enum IcapMessage {
     Request {
         method: Method,
         uri: String,
         version: Version,
         headers: HeaderMap,
-        encapsulated: HashMap<SectionType, Vec<u8>>,
+        encapsulated: Encapsulated,
     },
     Response {
         version: Version,
         status: u16,
         reason: String,
         headers: HeaderMap,
-        encapsulated: HashMap<SectionType, Vec<u8>>,
+        encapsulated: Encapsulated,
+    },
+}
+
+impl IcapMessage {
+    fn calculate_icap_header_offset(&self) -> Result<usize> {
+        match self {
+            IcapMessage::Request { method, uri, version, headers, encapsulated: _ } => {
+                let request_line = format!("{} {} ICAP/{}.0\r\n", 
+                    method.to_string(), uri, if *version == Version::V1_0 { "1" } else { "2" });
+                let mut offset = request_line.len();
+                
+                for (name, value) in headers.iter() {
+                    offset += name.as_str().len() + 2 + value.len() + 2; // "name: value\r\n"
+                }
+                
+                offset += 2; // "\r\n"
+                
+                Ok(offset)
+            },
+            IcapMessage::Response { version, status, reason, headers, encapsulated: _ } => {
+                let response_line = format!("ICAP/{}.0 {} {}\r\n",
+                    if *version == Version::V1_0 { "1" } else { "2" }, status, reason);
+                let mut offset = response_line.len();
+                
+                for (name, value) in headers.iter() {
+                    offset += name.as_str().len() + 2 + value.len() + 2; // "name: value\r\n"
+                }
+                
+                offset += 2; // "\r\n"
+                
+                Ok(offset)
+            }
+        }
+    }
+
+    /// Prepares the headers for an ICAP message before sending.
+    /// 
+    /// This function calculates the offset values for the Encapsulated header,
+    /// which is required by the ICAP protocol to indicate the positions of 
+    /// encapsulated sections in the message body.
+    /// 
+    /// # Example
+    /// ```
+    /// use std::collections::HashMap;
+    /// use crate::{IcapMessage, Method, Version, SectionType};
+    /// 
+    /// let mut request = IcapMessage::Request {
+    ///     method: Method::ReqMod,
+    ///     uri: "/modify".to_string(),
+    ///     version: Version::V1_0,
+    ///     headers: http::HeaderMap::new(),
+    ///     encapsulated: Vec::new(),
+    /// };
+    /// request.prepare_headers().unwrap();
+    /// ```
+    pub fn prepare_headers(&mut self) -> Result<()> {
+        // Remove any existing Encapsulated header
+        match self {
+            IcapMessage::Request { headers, .. } | IcapMessage::Response { headers, .. } => {
+                headers.remove("encapsulated");
+                headers.remove("Encapsulated");
+            }
+        }
+
+        // Calculate offset before adding new Encapsulated header
+        let offset = self.calculate_icap_header_offset()?;
+        
+        match self {
+            IcapMessage::Request { headers, encapsulated, .. } => {
+                // Set Encapsulated header based on what sections we have
+                let mut parts = Vec::new();
+                let mut current_offset = 0;
+
+                for (section_type, data) in encapsulated.iter() {
+                    match section_type {
+                        SectionType::RequestHeader => {
+                            parts.push(format!("req-hdr={}", current_offset));
+                            current_offset += data.len();
+                        },
+                        SectionType::RequestBody => {
+                            parts.push(format!("req-body={}", current_offset));
+                            current_offset += data.len();
+                        },
+                        SectionType::NullBody => {
+                            parts.push(format!("null-body={}", current_offset));
+                        },
+                        _ => continue,
+                    }
+                }
+
+                if parts.is_empty() {
+                    parts.push(format!("null-body={}", current_offset));
+                }
+
+                headers.insert("Encapsulated", parts.join(", ").parse().unwrap());
+            },
+            IcapMessage::Response { headers, encapsulated, .. } => {
+                // Similar logic for responses
+                let mut parts = Vec::new();
+                let mut current_offset = 0;
+
+                for (section_type, data) in encapsulated.iter() {
+                    match section_type {
+                        SectionType::ResponseHeader => {
+                            parts.push(format!("res-hdr={}", current_offset));
+                            current_offset += data.len();
+                        },
+                        SectionType::ResponseBody => {
+                            parts.push(format!("res-body={}", current_offset));
+                            current_offset += data.len();
+                        },
+                        SectionType::NullBody => {
+                            parts.push(format!("null-body={}", current_offset));
+                        },
+                        _ => continue,
+                    }
+                }
+
+                if parts.is_empty() {
+                    parts.push(format!("null-body={}", current_offset));
+                }
+
+                headers.insert("Encapsulated", parts.join(", ").parse().unwrap());
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Convert the ICAP message to its byte representation
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        
+        match self {
+            IcapMessage::Request { method, uri, version, headers, encapsulated: _ } => {
+                // Write request line
+                let request_line = format!("{} {} ICAP/{}.0\r\n", 
+                    method.to_string(), uri, if *version == Version::V1_0 { "1" } else { "2" });
+                bytes.extend_from_slice(request_line.as_bytes());
+                
+                // Write headers
+                for (name, value) in headers.iter() {
+                    bytes.extend_from_slice(name.as_str().as_bytes());
+                    bytes.extend_from_slice(b": ");
+                    bytes.extend_from_slice(value.as_bytes());
+                    bytes.extend_from_slice(b"\r\n");
+                }
+                
+                // End of headers
+                bytes.extend_from_slice(b"\r\n");
+            },
+            IcapMessage::Response { version, status, reason, headers, encapsulated: _ } => {
+                // Write response line
+                let response_line = format!("ICAP/{}.0 {} {}\r\n",
+                    if *version == Version::V1_0 { "1" } else { "2" }, status, reason);
+                bytes.extend_from_slice(response_line.as_bytes());
+                
+                // Write headers
+                for (name, value) in headers.iter() {
+                    bytes.extend_from_slice(name.as_str().as_bytes());
+                    bytes.extend_from_slice(b": ");
+                    bytes.extend_from_slice(value.as_bytes());
+                    bytes.extend_from_slice(b"\r\n");
+                }
+                
+                // End of headers
+                bytes.extend_from_slice(b"\r\n");
+            }
+        }
+        
+        bytes
     }
 }
 
@@ -85,104 +314,7 @@ pub enum SectionType {
     OptionsBody,
 }
 
-#[derive(Debug, Error)]
-pub enum Error {
-    #[error("invalid method")]
-    InvalidMethod,
-    #[error("invalid version")]
-    InvalidVersion,
-    #[error("invalid header")]
-    InvalidHeader,
-    #[error("invalid encoding")]
-    InvalidEncoding,
-    #[error("message too large")]
-    MessageTooLarge,
-    #[error("incomplete message")]
-    IncompleteMessage,
-    #[error("invalid status code")]
-    InvalidStatus,
-    #[error("invalid reason phrase")]
-    InvalidReason,
-    #[error("invalid uri")]
-    InvalidUri,
-    #[error("missing encapsulated header")]
-    MissingEncapsulated,
-    #[error("invalid chunk size")]
-    InvalidChunkSize,
-    #[error("invalid version format")]
-    Version,
-    #[error("io error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("http error: {0}")]
-    Http(#[from] http::Error),
-    #[error("invalid header value: {0}")]
-    InvalidHeaderValue(#[from] InvalidHeaderValue),
-    #[error("invalid header name: {0}")]
-    InvalidHeaderName(#[from] InvalidHeaderName),
-}
-
-pub type Result<T> = std::result::Result<T, Error>;
-
-/// State of message parsing
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum State {
-    /// Reading the initial line
-    StartLine,
-    /// Reading headers
-    Headers,
-    /// Reading encapsulated header
-    EncapsulatedHeader,
-    /// Reading body
-    Body,
-    /// Message complete
-    Complete,
-}
-
-/// Represents what the connection wants to do next
-#[derive(Debug, Clone, Copy)]
-pub enum Wants {
-    /// Connection wants to read
-    Read,
-    /// Connection wants to write
-    Write,
-}
-
-/// Represents an ICAP message (either request or response)
 #[derive(Debug)]
-pub struct Message {
-    /// Headers specific to ICAP
-    pub headers: HashMap<String, String>,
-    /// Sections contained in the message body
-    pub sections: HashMap<SectionType, Vec<u8>>,
-}
-
-impl Message {
-    /// Create a new empty ICAP message
-    pub fn new() -> Self {
-        Message {
-            headers: HashMap::new(),
-            sections: HashMap::new(),
-        }
-    }
-
-    /// Add a header to the message
-    pub fn add_header(&mut self, name: impl Into<String>, value: impl Into<String>) {
-        self.headers.insert(name.into(), value.into());
-    }
-
-    /// Add a section to the message
-    pub fn add_section(&mut self, section_type: SectionType, content: Vec<u8>) {
-        self.sections.insert(section_type, content);
-    }
-}
-
-impl Default for Message {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-#[derive(Debug, Default)]
 pub struct Request<'a> {
     /// The request method (REQMOD, RESPMOD, OPTIONS)
     pub method: Option<&'a str>,
@@ -304,8 +436,8 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("Host", "icap.example.org".parse().unwrap());
         
-        let mut encapsulated = HashMap::new();
-        encapsulated.insert(SectionType::RequestHeader, b"GET / HTTP/1.1\r\n".to_vec());
+        let mut encapsulated = Vec::new();
+        encapsulated.push((SectionType::RequestHeader, b"GET / HTTP/1.1\r\n".to_vec()));
         
         let msg = IcapMessage::Request {
             method: Method::ReqMod,
@@ -321,7 +453,7 @@ mod tests {
                 assert_eq!(uri, "/modify");
                 assert_eq!(version, Version::V1_0);
                 assert_eq!(headers.get("Host").unwrap(), "icap.example.org");
-                assert!(encapsulated.contains_key(&SectionType::RequestHeader));
+                assert!(encapsulated.contains(&(SectionType::RequestHeader, b"GET / HTTP/1.1\r\n".to_vec())));
             }
             _ => panic!("Expected Request variant"),
         }
@@ -332,8 +464,8 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert("Server", "IcapServer/1.0".parse().unwrap());
         
-        let mut encapsulated = HashMap::new();
-        encapsulated.insert(SectionType::ResponseHeader, b"HTTP/1.1 200 OK\r\n".to_vec());
+        let mut encapsulated = Vec::new();
+        encapsulated.push((SectionType::ResponseHeader, b"HTTP/1.1 200 OK\r\n".to_vec()));
         
         let msg = IcapMessage::Response {
             version: Version::V1_0,
@@ -349,7 +481,7 @@ mod tests {
                 assert_eq!(status, 200);
                 assert_eq!(reason, "OK");
                 assert_eq!(headers.get("Server").unwrap(), "IcapServer/1.0");
-                assert!(encapsulated.contains_key(&SectionType::ResponseHeader));
+                assert!(encapsulated.contains(&(SectionType::ResponseHeader, b"HTTP/1.1 200 OK\r\n".to_vec())));
             }
             _ => panic!("Expected Response variant"),
         }
@@ -376,5 +508,163 @@ mod tests {
                 SectionType::OptionsBody => {},
             }
         }
+    }
+
+    #[test]
+    fn test_calculate_icap_header_offset() {
+        let mut headers = HeaderMap::new();
+        headers.insert("Host", "icap-server.net".parse().unwrap());
+        headers.insert("Connection", "close".parse().unwrap());
+        
+        // Test request
+        let request = IcapMessage::Request {
+            method: Method::ReqMod,
+            uri: "icap://icap-server.net/virus_scan".to_string(),
+            version: Version::V1_0,
+            headers: headers.clone(),
+            encapsulated: Vec::new(),
+        };
+
+        // The request line "REQMOD icap://icap-server.net/virus_scan ICAP/1.0\r\n" is 51 bytes
+        // Headers: "Host: icap-server.net\r\n" (23 bytes) + "Connection: close\r\n" (19 bytes)
+        // Final \r\n (2 bytes)
+        // Total: 51 + 23 + 19 + 2 = 95 bytes
+        // This is the offset where the encapsulated sections start
+        assert_eq!(request.calculate_icap_header_offset().unwrap(), 95);
+        
+        // Test response
+        let response = IcapMessage::Response {
+            version: Version::V1_0,
+            status: 200,
+            reason: "OK".to_string(),
+            headers: headers.clone(),
+            encapsulated: Vec::new(),
+        };
+        // The response line "ICAP/1.0 200 OK\r\n" is 17 bytes
+        // Headers: "Host: icap-server.net\r\n" (23 bytes) + "Connection: close\r\n" (19 bytes)
+        // Final \r\n (2 bytes)
+        // Total: 17 + 23 + 19 + 2 = 61 bytes
+        assert_eq!(response.calculate_icap_header_offset().unwrap(), 61);
+    }
+
+    #[test]
+    fn test_prepare_headers() {
+        // Test 1: Request with both header and body
+        let mut request = IcapMessage::Request {
+            method: Method::ReqMod,
+            uri: "icap://icap-server.net/virus_scan".to_string(),
+            version: Version::V1_0,
+            headers: HeaderMap::new(),
+            encapsulated: Vec::new(),
+        };
+        
+        // Add request header and body
+        if let IcapMessage::Request { encapsulated, .. } = &mut request {
+            encapsulated.push((SectionType::RequestHeader, Vec::new()));
+            encapsulated.push((SectionType::RequestBody, Vec::new()));
+        }
+        
+        request.prepare_headers().unwrap();
+        
+        let headers = match &request {
+            IcapMessage::Request { headers, .. } => headers,
+            _ => panic!("Expected Request"),
+        };
+        
+        // Verify Encapsulated header format: "req-hdr=0, req-body=X"
+        let enc = headers.get("Encapsulated").unwrap().to_str().unwrap();
+        assert!(enc.starts_with("req-hdr=0, req-body="));
+        
+        // Test 2: Request with only header (null-body)
+        let mut request = IcapMessage::Request {
+            method: Method::ReqMod,
+            uri: "icap://icap-server.net/virus_scan".to_string(),
+            version: Version::V1_0,
+            headers: HeaderMap::new(),
+            encapsulated: Vec::new(),
+        };
+        
+        if let IcapMessage::Request { encapsulated, .. } = &mut request {
+            encapsulated.push((SectionType::RequestHeader, Vec::new()));
+        }
+        request.prepare_headers().unwrap();
+        
+        let headers = match &request {
+            IcapMessage::Request { headers, .. } => headers,
+            _ => panic!("Expected Request"),
+        };
+        
+        // Verify Encapsulated header format: "req-hdr=0, null-body=X"
+        let enc = headers.get("Encapsulated").unwrap().to_str().unwrap();
+        assert!(enc.starts_with("req-hdr=0, null-body="));
+        
+        // Test 3: Response with body
+        let mut response = IcapMessage::Response {
+            version: Version::V1_0,
+            status: 200,
+            reason: "OK".to_string(),
+            headers: HeaderMap::new(),
+            encapsulated: Vec::new(),
+        };
+        
+        if let IcapMessage::Response { encapsulated, .. } = &mut response {
+            encapsulated.push((SectionType::ResponseHeader, Vec::new()));
+            encapsulated.push((SectionType::ResponseBody, Vec::new()));
+        }
+        
+        response.prepare_headers().unwrap();
+        
+        let headers = match &response {
+            IcapMessage::Response { headers, .. } => headers,
+            _ => panic!("Expected Response"),
+        };
+        
+        // Verify Encapsulated header format: "res-hdr=0, res-body=X"
+        let enc = headers.get("Encapsulated").unwrap().to_str().unwrap();
+        assert!(enc.starts_with("res-hdr=0, res-body="));
+    }
+}
+
+/// Represents what the connection wants to do next
+#[derive(Debug, Clone, Copy)]
+pub enum Wants {
+    /// Connection wants to read
+    Read,
+    /// Connection wants to write
+    Write,
+}
+
+/// Represents an ICAP message (either request or response)
+#[derive(Debug)]
+pub struct Message {
+    /// Headers specific to ICAP
+    pub headers: HashMap<String, String>,
+    /// Sections contained in the message body
+    pub sections: HashMap<SectionType, Vec<u8>>,
+}
+
+impl Message {
+    /// Create a new empty ICAP message
+    pub fn new() -> Self {
+        Message {
+            headers: HashMap::new(),
+            sections: HashMap::new(),
+        }
+    }
+
+    /// Add a header to the message
+    pub fn add_header(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.headers.insert(name.into(), value.into());
+    }
+
+    /// Add a section to the message
+    pub fn add_section(&mut self, section_type: SectionType, content: Vec<u8>) {
+        self.sections.insert(section_type, content);
+    }
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Self::new()
     }
 }

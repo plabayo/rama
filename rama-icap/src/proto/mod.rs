@@ -4,8 +4,9 @@ use std::future::Future;
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 use parking_lot::{Mutex, RwLock};
+use rama_http_types::HeaderMap;
 
-use crate::{Error, IcapMessage, Method, Result, SectionType, State, Version, Wants};
+use crate::{Error, IcapMessage, Method, Result, State, Version};
 pub use self::conn::Conn;
 
 /// Trait for implementing ICAP services
@@ -42,7 +43,7 @@ where
     }
 
     /// Send a message on this connection
-    pub async fn send_message(&self, message: &IcapMessage) -> Result<()> {
+    pub async fn send_message(&self, message: &mut IcapMessage) -> Result<()> {
         self.inner.lock().send_message(message).await
     }
 
@@ -87,7 +88,7 @@ where
 impl<S, T> RequestModService<S, T>
 where
     S: IcapService,
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     /// Create a new request modification service with custom connection type
     pub fn with_connection_type(service: S, addr: String) -> Self {
@@ -99,9 +100,9 @@ where
     }
 
     /// Process an HTTP request through ICAP
-    pub async fn process_request(&self, uri: String, headers: http::HeaderMap) -> Result<IcapMessage> {
+    pub async fn process_request(&self, uri: String, headers: HeaderMap) -> Result<IcapMessage> {
         // Create ICAP request
-        let request = IcapMessage::Request {
+        let mut request = IcapMessage::Request {
             method: Method::ReqMod,
             uri,
             version: Version::V1_0,
@@ -121,10 +122,10 @@ where
             }
         };
         // Send request
-        conn.send_message(&request).await?;
+        conn.send_message(&mut request).await?;
         
         // Get response
-        let response = conn.recv_message().await?
+        let mut response = conn.recv_message().await?
             .ok_or_else(|| Error::IncompleteMessage)?;
 
         // Return connection to pool
@@ -174,9 +175,9 @@ mod tests {
     }
 
     // Helper function to create test headers
-    fn create_test_headers() -> http::HeaderMap {
+    fn create_test_headers() -> HeaderMap {
         println!("Creating test headers...");
-        let mut headers = http::HeaderMap::new();
+        let mut headers = HeaderMap::new();
         headers.insert("Host", "example.com".parse().unwrap());
         headers
     }

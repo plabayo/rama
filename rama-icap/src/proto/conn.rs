@@ -1,15 +1,10 @@
-use bytes::{Buf, BufMut, BytesMut};
+use bytes::{BufMut, BytesMut};
 use parking_lot::{Mutex, RwLock};
 use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::{Error, IcapMessage, Method, Result, SectionType, State, Version, Wants};
+use crate::{Error, IcapMessage, Result, SectionType, State, Wants};
 use crate::parser::MessageParser;
-
-const MAX_HEADERS: usize = 100;
-const MAX_HEADER_NAME_LEN: usize = 100;
-const MAX_HEADER_VALUE_LEN: usize = 4096;
-const MAX_LINE_LENGTH: usize = 8192;
 
 /// A connection to an ICAP server
 pub struct Conn<T> {
@@ -34,9 +29,12 @@ where
         }
     }
 
-    pub async fn send_message(&mut self, message: &IcapMessage) -> Result<()> {
+    pub async fn send_message(&mut self, message: &mut IcapMessage) -> Result<()> {
+        // Prepare headers before sending
+        message.prepare_headers()?;
+
         let mut write_buf = self.write_buf.lock();
-        
+
         // Format message into write buffer
         match message {
             IcapMessage::Request { method, uri, version, headers, encapsulated } => {
@@ -60,7 +58,7 @@ where
                 if !encapsulated.is_empty() {
                     write_buf.put_slice(b"Encapsulated: ");
                     let mut first = true;
-                    for (section, data) in encapsulated {
+                    for (section, data) in &mut *encapsulated {
                         if !first {
                             write_buf.put_slice(b", ");
                         }
@@ -100,9 +98,6 @@ where
                 for data in encapsulated.values() {
                     write_buf.put_slice(data);
                 }
-
-                let len = encapsulated.get(&SectionType::RequestBody).unwrap().len();
-                println!("len in send message: {}", len);
             }
             IcapMessage::Response { version, status, reason, headers, encapsulated } => {
                 // Write status line
@@ -125,7 +120,7 @@ where
                 if !encapsulated.is_empty() {
                     write_buf.put_slice(b"Encapsulated: ");
                     let mut first = true;
-                    for (section, data) in encapsulated {
+                    for (section, data) in &mut *encapsulated {
                         if !first {
                             write_buf.put_slice(b", ");
                         }
@@ -178,34 +173,26 @@ where
 
     pub async fn recv_message(&mut self) -> Result<Option<IcapMessage>> {
         loop {
-            // Try parsing with existing buffer
             let message = {
                 let mut parser = self.parser.lock();
                 let read_buf = self.read_buf.lock();
                 parser.parse(&read_buf)?
             };
             
-            println!("message: {:?}", message);
-            if let Some(message) = message {
-                // Message complete, clear read buffer and return
-                self.read_buf.lock().clear();
-                return Ok(Some(message));
+            if message.is_some() {
+                return Ok(message);
             }
 
-            // Need more data - use dynamic buffer
-            let mut read_buf = BytesMut::with_capacity(8192); // Initial capacity
-            let n = self.io.read_buf(&mut read_buf).await?;
+            let mut guard = self.read_buf.lock();
+            let n = self.io.read_buf(&mut *guard).await?;
+            
             if n == 0 {
-                // EOF
-                return if self.read_buf.lock().is_empty() {
+                return if guard.is_empty() {
                     Ok(None)
                 } else {
                     Err(Error::IncompleteMessage)
                 };
             }
-
-            // Append to read buffer
-            self.read_buf.lock().extend_from_slice(&read_buf[..n]);
         }
     }
 
@@ -235,6 +222,7 @@ mod tests {
     use super::*;
     use std::collections::HashMap;
     use tokio::io::duplex;
+    use crate::{Method, Version};
 
     #[tokio::test]
     async fn test_send_receive_request() {
@@ -243,7 +231,7 @@ mod tests {
         let mut server_conn = Conn::new(server);
 
         // Create test request
-        let request = IcapMessage::Request {
+        let mut request = IcapMessage::Request {
             method: Method::Options,
             uri: "/echo".to_string(),
             version: Version::V1_0,
@@ -252,10 +240,14 @@ mod tests {
                 headers.insert("Host", "icap-server.net".parse().unwrap());
                 headers
             },
-            encapsulated: HashMap::new(),
+            encapsulated: {
+                let mut sections = HashMap::new();
+                sections.insert(SectionType::NullBody, Vec::new());
+                sections
+            },
         };
         // Send request
-        client_conn.send_message(&request).await.unwrap();
+        client_conn.send_message(&mut request).await.unwrap();
 
         // Receive request
         let received = server_conn.recv_message().await.unwrap().unwrap();
@@ -267,7 +259,7 @@ mod tests {
                 assert_eq!(uri, "/echo");
                 assert_eq!(version, Version::V1_0);
                 assert_eq!(headers.get("Host").unwrap(), "icap-server.net");
-                assert!(encapsulated.is_empty());
+                assert!(encapsulated.contains_key(&SectionType::NullBody));
             }
             _ => panic!("Expected request"),
         }
@@ -280,7 +272,7 @@ mod tests {
         let mut server_conn = Conn::new(server);
 
         // Create test response
-        let response = IcapMessage::Response {
+        let mut response = IcapMessage::Response {
             version: Version::V1_0,
             status: 200 ,
             reason: "OK".to_string(),
@@ -293,7 +285,7 @@ mod tests {
         };
 
         // Send response
-        server_conn.send_message(&response).await.unwrap();
+        server_conn.send_message(&mut response).await.unwrap();
 
         // Receive response
         let received = client_conn.recv_message().await.unwrap().unwrap();
@@ -318,11 +310,12 @@ mod tests {
         let mut server_conn = Conn::new(server);
 
         // Create test request with encapsulated sections
-        let mut encapsulated = HashMap::new();
-        encapsulated.insert(SectionType::RequestHeader, b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec());
-        encapsulated.insert(SectionType::RequestBody, b"Hello World".to_vec());
+        let mut encapsulated = Vec::new();
+        // Add sections in the order they should appear
+        encapsulated.push((SectionType::RequestHeader, b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec()));
+        encapsulated.push((SectionType::RequestBody, b"Hello World".to_vec()));
 
-        let request = IcapMessage::Request {
+        let mut request = IcapMessage::Request {
             method: Method::ReqMod,
             uri: "/modify".to_string(),
             version: Version::V1_0,
@@ -335,7 +328,7 @@ mod tests {
         };
 
         // Send request
-        client_conn.send_message(&request).await.unwrap();
+        client_conn.send_message(&mut request).await.unwrap();
 
         // Receive request
         let received = server_conn.recv_message().await.unwrap().unwrap();
@@ -347,14 +340,17 @@ mod tests {
                 assert_eq!(uri, "/modify");
                 assert_eq!(version, Version::V1_0);
                 assert_eq!(headers.get("Host").unwrap(), "icap-server.net");
-                assert!(encapsulated.contains_key(&SectionType::RequestHeader));
-                assert!(encapsulated.contains_key(&SectionType::RequestBody));
+                
+                // Verify encapsulated sections in order
+                assert_eq!(encapsulated.len(), 2);
+                assert!(matches!(encapsulated[0].0, SectionType::RequestHeader));
+                assert!(matches!(encapsulated[1].0, SectionType::RequestBody));
                 assert_eq!(
-                    encapsulated.get(&SectionType::RequestHeader).unwrap(),
+                    encapsulated[0].1,
                     b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
                 );
                 assert_eq!(
-                    encapsulated.get(&SectionType::RequestBody).unwrap(),
+                    encapsulated[1].1,
                     b"Hello World"
                 );
             }
@@ -371,15 +367,15 @@ mod tests {
         assert_eq!(*conn.state.read(), State::StartLine);
 
         // Create and send a request
-        let request = IcapMessage::Request {
+        let mut request = IcapMessage::Request {
             method: Method::Options,
             uri: "/echo".to_string(),
             version: Version::V1_0,
             headers: http::HeaderMap::new(),
             encapsulated: HashMap::new(),
         };
-
-        conn.send_message(&request).await.unwrap();
+        
+        conn.send_message(&mut request).await.unwrap();
         
         // After sending, should want to read
         assert!(matches!(conn.wants(), Wants::Read));
@@ -387,7 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_large_message() {
-        let (client, server) = duplex(16384);
+        let (client, server) = duplex(32768);
         let mut client_conn = Conn::new(client);
         let mut server_conn = Conn::new(server);
 
@@ -396,7 +392,7 @@ mod tests {
         let mut encapsulated = HashMap::new();
         encapsulated.insert(SectionType::RequestBody, large_body.clone());
         
-        let request = IcapMessage::Request {
+        let mut request = IcapMessage::Request {
             method: Method::ReqMod,
             uri: "/modify".to_string(),
             version: Version::V1_0,
@@ -405,7 +401,7 @@ mod tests {
         };
         
         // Send request
-        client_conn.send_message(&request).await.unwrap();
+        client_conn.send_message(&mut request).await.unwrap();
 
         // Receive request
         let received = server_conn.recv_message().await.unwrap().unwrap();
@@ -413,14 +409,12 @@ mod tests {
         // Verify large body was received correctly
         match received {
             IcapMessage::Request { encapsulated, .. } => {
-                let length = encapsulated.get(&SectionType::RequestBody).unwrap().len();
-                let expected_length = large_body.len();
-                println!("length: {}", length);
-                println!("expected_length: {}", expected_length);
-                /* assert_eq!(
+                /* let length = encapsulated.get(&SectionType::RequestBody).unwrap().len();
+                let expected_length = large_body.len(); */
+                assert_eq!(
                     encapsulated.get(&SectionType::RequestBody).unwrap(),
                     &large_body
-                ); */
+                );
             }
             _ => panic!("Expected request"),
         }
@@ -433,7 +427,7 @@ mod tests {
         let mut server_conn = Conn::new(server);
 
         // Create test request
-        let request = IcapMessage::Request {
+        let mut request = IcapMessage::Request {
             method: Method::Options,
             uri: "/echo".to_string(),
             version: Version::V1_0,
@@ -442,8 +436,7 @@ mod tests {
         };
 
         // Send request in parts
-        let mut buf = BytesMut::new();
-        client_conn.send_message(&request).await.unwrap();
+        client_conn.send_message(&mut request).await.unwrap();
 
         // First read should return None as message is incomplete
         assert!(server_conn.recv_message().await.unwrap().is_some());

@@ -1,5 +1,5 @@
 use bytes::{Buf, BytesMut};
-use http::HeaderMap;
+use rama_http_types::HeaderMap;
 use std::collections::HashMap;
 
 use crate::{Error, IcapMessage, Method, Result, SectionType, State, Version};
@@ -7,7 +7,6 @@ use crate::{Error, IcapMessage, Method, Result, SectionType, State, Version};
 const MAX_HEADERS: usize = 100;
 const MAX_HEADER_NAME_LEN: usize = 100;
 const MAX_HEADER_VALUE_LEN: usize = 4096;
-const MAX_LINE_LENGTH: usize = 8192;
 
 pub struct ByteParser<'a> {
     bytes: &'a [u8],
@@ -91,11 +90,13 @@ impl MessageParser {
                     }
                 }
                 State::EncapsulatedHeader => {
+                    println!("encapsulated header");
                     if !self.parse_encapsulated()? {
                         return Ok(None);
                     }
                 }
                 State::Body => {
+                    println!("body");
                     if !self.parse_body()? {
                         return Ok(None);
                     }
@@ -201,6 +202,10 @@ impl MessageParser {
                 self.state = State::EncapsulatedHeader;
                 return Ok(true);
             }
+            
+            // byte to string
+            let test = String::from_utf8_lossy(&line);
+            println!("test: {:?}", test);
 
             // Split into name and value
             let mut parts = line.splitn(2, |&b| b == b':');
@@ -279,24 +284,113 @@ impl MessageParser {
         Ok(true)
     }
 
+    /// Parse the body of an ICAP message which may contain multiple sections.
+    /// According to RFC 3507, an ICAP message can have different combinations of sections:
+    /// 
+    /// # Examples
+    /// 
+    /// REQMOD request with both headers and body:
+    /// ```text
+    /// REQMOD icap://server/path ICAP/1.0
+    /// Encapsulated: req-hdr=0, req-body=123
+    /// 
+    /// GET /path HTTP/1.1     <- req-hdr starts at offset 0
+    /// Host: example.com
+    /// 
+    /// a3                     <- req-body starts at offset 123
+    /// Hello World!           <- chunk data
+    /// 0                     <- end of chunked data
+    /// ```
+    /// 
+    /// RESPMOD request with request headers, response headers and body:
+    /// ```text
+    /// RESPMOD icap://server/path ICAP/1.0
+    /// Encapsulated: req-hdr=0, res-hdr=126, res-body=200
+    /// 
+    /// GET /path HTTP/1.1    <- req-hdr starts at offset 0
+    /// Host: example.com
+    /// 
+    /// HTTP/1.1 200 OK       <- res-hdr starts at offset 126
+    /// Content-Type: text/plain
+    /// 
+    /// a3                    <- res-body starts at offset 200
+    /// Hello World!          <- chunk data
+    /// 0                     <- end of chunked data
+    /// ```
     fn parse_body(&mut self) -> Result<bool> {
-        // Get the body data
-        let body = self.buffer.split();
-        println!("self buffer: {:?}", self.buffer.len());
-        // Process sections in order
+        // Process each section in order
         for i in 0..self.sections.len() {
             let (section_type, start_offset) = self.sections[i].clone();
+    
+            // Calculate end offset based on next section or buffer length
             let end_offset = if i < self.sections.len() - 1 {
-                self.sections[i + 1].1
+                self.sections[i + 1].1  // Next section's offset
             } else {
-                body.len()
+                self.buffer.len()  // Use remaining buffer for last section
             };
+            println!("end_offset: {}", end_offset);
             
-            // Extract section data
-            if start_offset < body.len() {
-                let section_data = &body[start_offset..std::cmp::min(end_offset, body.len())];
+            // Skip if we don't have enough data
+            if self.buffer.len() < start_offset {
+                return Ok(false);
+            }
+            
+            // Extract and process section
+            if start_offset < self.buffer.len() {
+                let section_data = if section_type == SectionType::RequestBody || section_type == SectionType::ResponseBody {
+                    // For body sections, we need to handle chunked encoding
+                    let mut chunk_data = Vec::new();
+                    let mut pos = start_offset;
+                    
+                    while pos < end_offset {
+                        // Try to read chunk size
+                        let mut size_str = String::new();
+                        while pos < end_offset {
+                            let byte = self.buffer[pos];
+                            pos += 1;
+                            if byte == b'\r' && pos < end_offset && self.buffer[pos] == b'\n' {
+                                pos += 1;
+                                break;
+                            }
+                            size_str.push(byte as char);
+                        }
+                        
+                        // Parse chunk size (hex)
+                        let chunk_size = match usize::from_str_radix(size_str.trim(), 16) {
+                            Ok(size) => size,
+                            Err(_) => return Err(Error::InvalidHeader),
+                        };
+                        
+                        // Last chunk
+                        if chunk_size == 0 {
+                            break;
+                        }
+                        
+                        // Check if we have enough data for this chunk
+                        if pos + chunk_size + 2 > end_offset {
+                            return Ok(false);
+                        }
+                        
+                        // Add chunk data
+                        chunk_data.extend_from_slice(&self.buffer[pos..pos + chunk_size]);
+                        pos += chunk_size;
+                        
+                        // Skip CRLF
+                        if pos + 2 <= end_offset && self.buffer[pos] == b'\r' && self.buffer[pos + 1] == b'\n' {
+                            pos += 2;
+                        } else {
+                            return Err(Error::InvalidHeader);
+                        }
+                    }
+                    
+                    chunk_data
+                } else {
+                    // For headers and other sections, just copy the data
+                    self.buffer[start_offset..std::cmp::min(end_offset, self.buffer.len())].to_vec()
+                };
+                
                 if let Some(data) = self.encapsulated.get_mut(&section_type) {
-                    data.extend_from_slice(section_data);
+                    *data = section_data;
                 }
             }
         }
@@ -309,6 +403,8 @@ impl MessageParser {
         let mut line = Vec::new();
         let mut found_line = false;
 
+        println!("self.buffer: {:?}\nTESTEND", String::from_utf8_lossy(self.buffer.as_ref()));
+    
         for (i, &b) in self.buffer.iter().enumerate() {
             if b == b'\n' {
                 line.extend_from_slice(&self.buffer[..i]);
@@ -407,22 +503,31 @@ mod tests {
     #[test]
     fn test_parse_encapsulated() {
         let mut parser = MessageParser::new();
-        let data = b"REQMOD icap://example.org/modify ICAP/1.0\r\n\
-                    Host: example.org\r\n\
-                    Encapsulated: req-hdr=0, req-body=178\r\n\r\n\
-                    GET / HTTP/1.1\r\n\
+        let data = b"RESPMOD icap://icap.example.org/satisf ICAP/1.0\r\n\
+                    Host: icap.example.org\r\n\
+                    Encapsulated: req-hdr=0, res-hdr=137, res-body=296\r\n\r\n\
+                    GET /origin-resource HTTP/1.1\r\n\
                     Host: www.origin-server.com\r\n\
-                    Accept: text/html\r\n\r\n\
-                    Some body content";
-        
+                    Accept: text/html, text/plain, image/gif\r\n\
+                    Accept-Encoding: gzip, compress\r\n\r\n\
+                    HTTP/1.1 200 OK\r\n\
+                    Date: Mon, 10 Jan 2000 09:52:22 GMT\r\n\
+                    Server: Apache/1.3.6 (Unix)\r\n\
+                    ETag: \"63840-1ab7-378d415b\"\r\n\
+                    Content-Type: text/html\r\n\
+                    Content-Length: 51\r\n\r\n\
+                    33\r\n\
+                    This is data that was returned by an origin server.\r\n\
+                    0\r\n\r\n";
+
         let result = parser.parse(data).unwrap().unwrap();
         match result {
             IcapMessage::Request { method, uri, headers, encapsulated, .. } => {
-                assert_eq!(method, Method::ReqMod);
-                assert_eq!(uri, "icap://example.org/modify");
-                assert_eq!(headers.get("Host").unwrap(), "example.org");
-                assert!(encapsulated.contains_key(&SectionType::RequestHeader));
-                assert!(encapsulated.contains_key(&SectionType::RequestBody));
+                assert_eq!(method, Method::RespMod);
+                assert_eq!(uri, "icap://icap.example.org/satisf");
+                assert_eq!(headers.get("Host").unwrap(), "icap.example.org");
+                assert!(encapsulated.contains(&SectionType::RequestHeader));
+                assert!(encapsulated.contains(&SectionType::ResponseHeader));
             }
             _ => panic!("Expected Request"),
         }
@@ -446,6 +551,20 @@ mod tests {
             } 
             _ => panic!("Expected Response"),
         }
+    }
+
+    #[test]
+    fn test_read_line() {
+        let mut parser = MessageParser::new();
+        parser.buffer.extend_from_slice(b"line1\r\nline2\r\n");
+        
+        let line1 = parser.read_line().unwrap().unwrap();
+        assert_eq!(line1, b"line1");
+        
+        let line2 = parser.read_line().unwrap().unwrap();
+        assert_eq!(line2, b"line2");
+        
+        assert!(parser.read_line().unwrap().is_none());
     }
 
     #[test]
@@ -494,19 +613,5 @@ mod tests {
         let data = b"ICAP/1.0 200 OK\r\n\
                     Server: test-server/1.0\r\n\r\n";
         assert!(parser.parse(data).is_ok());
-    }
-
-    #[test]
-    fn test_read_line() {
-        let mut parser = MessageParser::new();
-        parser.buffer.extend_from_slice(b"line1\r\nline2\r\n");
-        
-        let line1 = parser.read_line().unwrap().unwrap();
-        assert_eq!(line1, b"line1");
-        
-        let line2 = parser.read_line().unwrap().unwrap();
-        assert_eq!(line2, b"line2");
-        
-        assert!(parser.read_line().unwrap().is_none());
     }
 }
