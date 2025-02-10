@@ -1,5 +1,3 @@
-use crate::headers::Error;
-use bytes::Bytes;
 use http::header::HeaderValue;
 use std::fmt::{Display, Formatter};
 use std::{
@@ -17,29 +15,6 @@ pub struct HeaderValueString {
 }
 
 impl HeaderValueString {
-    pub(crate) fn from_val(val: &HeaderValue) -> Result<Self, Error> {
-        if val.to_str().is_ok() {
-            Ok(HeaderValueString { value: val.clone() })
-        } else {
-            Err(Error::invalid())
-        }
-    }
-
-    pub(crate) fn from_string(src: String) -> Option<Self> {
-        // A valid `str` (the argument)...
-        let bytes = Bytes::from(src);
-        HeaderValue::from_maybe_shared(bytes)
-            .ok()
-            .map(|value| HeaderValueString { value })
-    }
-
-    pub(crate) fn from_static(src: &'static str) -> HeaderValueString {
-        // A valid `str` (the argument)...
-        HeaderValueString {
-            value: HeaderValue::from_static(src),
-        }
-    }
-
     pub(crate) fn as_str(&self) -> &str {
         // HeaderValueString is only created from HeaderValues
         // that have validated they are also UTF-8 strings.
@@ -48,13 +23,13 @@ impl HeaderValueString {
 }
 
 impl fmt::Debug for HeaderValueString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         fmt::Debug::fmt(self.as_str(), f)
     }
 }
 
-impl fmt::Display for HeaderValueString {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+impl Display for HeaderValueString {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         fmt::Display::fmt(self.as_str(), f)
     }
 }
