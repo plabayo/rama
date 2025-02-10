@@ -5,15 +5,43 @@ use headers::Error;
 use rama_core::error::OpaqueError;
 
 macro_rules! robots_tag_builder_field {
+    ($field:ident, bool) => {
+        paste::paste! {
+            pub fn [<$field>](mut self) -> Self {
+                self.0.[<$field>] = true;
+                self
+            }
+
+            pub fn [<set_ $field>](&mut self) -> &mut Self {
+                self.0.[<$field>] = true;
+                self
+            }
+        }
+    };
+
     ($field:ident, $type:ty) => {
         paste::paste! {
             pub fn [<$field>](mut self, [<$field>]: $type) -> Self {
-                self.0.[<set_ $field>]([<$field>]);
+                self.0.[<$field>] = [<$field>];
                 self
             }
 
             pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
-                self.0.[<set_ $field>]([<$field>]);
+                self.0.[<$field>] = [<$field>];
+                self
+            }
+        }
+    };
+
+    ($field:ident, $type:ty, optional) => {
+        paste::paste! {
+            pub fn [<$field>](mut self, [<$field>]: $type) -> Self {
+                self.0.[<$field>] = Some([<$field>]);
+                self
+            }
+
+            pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
+                self.0.[<$field>] = Some([<$field>]);
                 self
             }
         }
@@ -21,6 +49,14 @@ macro_rules! robots_tag_builder_field {
 }
 
 macro_rules! no_tag_builder_field {
+    ($field:ident, bool) => {
+        paste::paste! {
+            pub fn [<$field>](self) -> Builder<RobotsTag> {
+                Builder(RobotsTag::new_with_bot_name(self.0.bot_name)).[<$field>]()
+            }
+        }
+    };
+
     ($field:ident, $type:ty) => {
         paste::paste! {
             pub fn [<$field>](self, [<$field>]: $type) -> Builder<RobotsTag> {
@@ -49,29 +85,24 @@ macro_rules! no_tag_builder_field {
 /// ```
 /// # use rama_http::headers::x_robots_tag_components::RobotsTag;
 /// let robots_tag = RobotsTag::builder()
-///                     .bot_name(None)
-///                     .no_follow(true)
+///                     .no_follow()
 ///                     .build();
 /// assert_eq!(robots_tag.no_follow(), true);
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Builder<T = ()>(T);
 
-impl Builder<()> {
-    pub fn new() -> Self {
-        Builder(())
-    }
-
-    pub fn bot_name(&self, bot_name: Option<HeaderValueString>) -> Builder<NoTag> {
-        Builder(NoTag { bot_name })
-    }
-}
+impl Builder<()> {}
 
 pub struct NoTag {
     bot_name: Option<HeaderValueString>,
 }
 
 impl Builder<NoTag> {
+    pub fn new() -> Self {
+        Self(NoTag { bot_name: None })
+    }
+
     pub fn bot_name(mut self, bot_name: HeaderValueString) -> Self {
         self.0.bot_name = Some(bot_name);
         self
@@ -111,7 +142,7 @@ impl Builder<RobotsTag> {
     }
 
     pub fn add_custom_rule_simple(&mut self, key: HeaderValueString) -> &mut Self {
-        self.0.add_custom_rule_simple(key);
+        self.0.custom_rules.push(key.into());
         self
     }
 
@@ -120,11 +151,21 @@ impl Builder<RobotsTag> {
         key: HeaderValueString,
         value: HeaderValueString,
     ) -> &mut Self {
-        self.0.add_custom_rule_composite(key, value);
+        self.0.custom_rules.push((key, value).into());
         self
     }
 
-    robots_tag_builder_field!(bot_name, HeaderValueString);
+    pub fn set_unavailable_after(&mut self, unavailable_after: DateTime<Utc>) -> &mut Self {
+        self.0.unavailable_after = Some(unavailable_after.into());
+        self
+    }
+
+    pub fn unavailable_after(mut self, unavailable_after: DateTime<Utc>) -> Self {
+        self.0.unavailable_after = Some(unavailable_after.into());
+        self
+    }
+
+    robots_tag_builder_field!(bot_name, HeaderValueString, optional);
     robots_tag_builder_field!(all, bool);
     robots_tag_builder_field!(no_index, bool);
     robots_tag_builder_field!(no_follow, bool);
@@ -132,11 +173,10 @@ impl Builder<RobotsTag> {
     robots_tag_builder_field!(no_snippet, bool);
     robots_tag_builder_field!(index_if_embedded, bool);
     robots_tag_builder_field!(max_snippet, u32);
-    robots_tag_builder_field!(max_image_preview, MaxImagePreviewSetting);
-    robots_tag_builder_field!(max_video_preview, u32);
+    robots_tag_builder_field!(max_image_preview, MaxImagePreviewSetting, optional);
+    robots_tag_builder_field!(max_video_preview, u32, optional);
     robots_tag_builder_field!(no_translate, bool);
     robots_tag_builder_field!(no_image_index, bool);
-    robots_tag_builder_field!(unavailable_after, DateTime<Utc>);
     robots_tag_builder_field!(no_ai, bool);
     robots_tag_builder_field!(no_image_ai, bool);
     robots_tag_builder_field!(spc, bool);
@@ -158,7 +198,8 @@ impl Builder<RobotsTag> {
     /// ```
     /// # use std::num::ParseIntError;
     /// # use rama_http::headers::x_robots_tag_components::RobotsTag;
-    /// let mut builder = RobotsTag::builder().bot_name(None).no_follow(true);
+    /// let mut builder = RobotsTag::builder().no_follow();
+    ///
     /// assert!(builder.add_field("nosnippet").is_ok());
     /// assert!(builder.add_field("max-snippet: 8").is_ok());
     /// assert!(builder.add_field("nonexistent").is_err_and(|e| e.is::<headers::Error>()));
@@ -191,27 +232,27 @@ impl Builder<RobotsTag> {
 
     fn add_simple_field(&mut self, s: &str) -> Result<&mut Self, OpaqueError> {
         Ok(if s.eq_ignore_ascii_case("all") {
-            self.set_all(true)
+            self.set_all()
         } else if s.eq_ignore_ascii_case("noindex") {
-            self.set_no_index(true)
+            self.set_no_index()
         } else if s.eq_ignore_ascii_case("nofollow") {
-            self.set_no_follow(true)
+            self.set_no_follow()
         } else if s.eq_ignore_ascii_case("none") {
-            self.set_none(true)
+            self.set_none()
         } else if s.eq_ignore_ascii_case("nosnippet") {
-            self.set_no_snippet(true)
+            self.set_no_snippet()
         } else if s.eq_ignore_ascii_case("indexifembedded") {
-            self.set_index_if_embedded(true)
+            self.set_index_if_embedded()
         } else if s.eq_ignore_ascii_case("notranslate") {
-            self.set_no_translate(true)
+            self.set_no_translate()
         } else if s.eq_ignore_ascii_case("noimageindex") {
-            self.set_no_image_index(true)
+            self.set_no_image_index()
         } else if s.eq_ignore_ascii_case("noai") {
-            self.set_no_ai(true)
+            self.set_no_ai()
         } else if s.eq_ignore_ascii_case("noimageai") {
-            self.set_no_image_ai(true)
+            self.set_no_image_ai()
         } else if s.eq_ignore_ascii_case("spc") {
-            self.set_spc(true)
+            self.set_spc()
         } else {
             return Err(OpaqueError::from_std(Error::invalid()));
         })

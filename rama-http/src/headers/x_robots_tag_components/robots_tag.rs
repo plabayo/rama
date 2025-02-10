@@ -1,24 +1,14 @@
 use crate::headers::util::value_string::HeaderValueString;
-use crate::headers::x_robots_tag_components::robots_tag_components::Builder;
+use crate::headers::x_robots_tag_components::robots_tag_components::{Builder, NoTag};
 use crate::headers::x_robots_tag_components::{CustomRule, MaxImagePreviewSetting, ValidDate};
 use chrono::{DateTime, Utc};
 use std::fmt::{Display, Formatter};
 
-macro_rules! getter_setter {
+macro_rules! getter {
     ($field:ident, $type:ty) => {
         paste::paste! {
             pub fn [<$field>](&self) -> $type {
                 self.[<$field>]
-            }
-
-            pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
-                self.[<$field>] = [<$field>];
-                self
-            }
-
-            pub fn [<with_ $field>](mut self, [<$field>]: $type) -> Self {
-                self.[<$field>] = [<$field>];
-                self
             }
         }
     };
@@ -28,39 +18,29 @@ macro_rules! getter_setter {
             pub fn [<$field>](&self) -> Option<&$type> {
                 self.[<$field>].as_ref()
             }
-
-            pub fn [<set_ $field>](&mut self, [<$field>]: $type) -> &mut Self {
-                self.[<$field>] = Some([<$field>]);
-                self
-            }
-
-            pub fn [<with_ $field>](mut self, [<$field>]: $type) -> Self {
-                self.[<$field>] = Some([<$field>]);
-                self
-            }
         }
     };
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RobotsTag {
-    bot_name: Option<HeaderValueString>,
-    all: bool,
-    no_index: bool,
-    no_follow: bool,
-    none: bool,
-    no_snippet: bool,
-    index_if_embedded: bool,
-    max_snippet: u32,
-    max_image_preview: Option<MaxImagePreviewSetting>,
-    max_video_preview: Option<u32>,
-    no_translate: bool,
-    no_image_index: bool,
-    unavailable_after: Option<ValidDate>,
-    no_ai: bool,
-    no_image_ai: bool,
-    spc: bool,
-    custom_rules: Vec<CustomRule>,
+    pub(super) bot_name: Option<HeaderValueString>,
+    pub(super) all: bool,
+    pub(super) no_index: bool,
+    pub(super) no_follow: bool,
+    pub(super) none: bool,
+    pub(super) no_snippet: bool,
+    pub(super) index_if_embedded: bool,
+    pub(super) max_snippet: u32,
+    pub(super) max_image_preview: Option<MaxImagePreviewSetting>,
+    pub(super) max_video_preview: Option<u32>,
+    pub(super) no_translate: bool,
+    pub(super) no_image_index: bool,
+    pub(super) unavailable_after: Option<ValidDate>,
+    pub(super) no_ai: bool,
+    pub(super) no_image_ai: bool,
+    pub(super) spc: bool,
+    pub(super) custom_rules: Vec<CustomRule>,
 }
 
 impl RobotsTag {
@@ -86,18 +66,8 @@ impl RobotsTag {
         }
     }
 
-    pub fn add_custom_rule_simple(&mut self, key: HeaderValueString) -> &mut Self {
-        self.custom_rules.push(key.into());
-        self
-    }
-
-    pub fn add_custom_rule_composite(
-        &mut self,
-        key: HeaderValueString,
-        value: HeaderValueString,
-    ) -> &mut Self {
-        self.custom_rules.push((key, value).into());
-        self
+    pub fn builder() -> Builder<NoTag> {
+        Builder::new()
     }
 
     pub fn custom_rules(
@@ -106,25 +76,25 @@ impl RobotsTag {
         self.custom_rules.iter().map(|x| x.as_tuple())
     }
 
-    pub fn builder() -> Builder {
-        Builder::new()
-    }
+    getter!(bot_name, HeaderValueString, optional);
+    getter!(all, bool);
+    getter!(no_index, bool);
+    getter!(no_follow, bool);
+    getter!(none, bool);
+    getter!(no_snippet, bool);
+    getter!(index_if_embedded, bool);
+    getter!(max_snippet, u32);
+    getter!(max_image_preview, MaxImagePreviewSetting, optional);
+    getter!(max_video_preview, u32, optional);
+    getter!(no_translate, bool);
+    getter!(no_image_index, bool);
+    getter!(no_ai, bool);
+    getter!(no_image_ai, bool);
+    getter!(spc, bool);
 
-    getter_setter!(bot_name, HeaderValueString, optional);
-    getter_setter!(all, bool);
-    getter_setter!(no_index, bool);
-    getter_setter!(no_follow, bool);
-    getter_setter!(none, bool);
-    getter_setter!(no_snippet, bool);
-    getter_setter!(index_if_embedded, bool);
-    getter_setter!(max_snippet, u32);
-    getter_setter!(max_image_preview, MaxImagePreviewSetting, optional);
-    getter_setter!(max_video_preview, u32, optional);
-    getter_setter!(no_translate, bool);
-    getter_setter!(no_image_index, bool);
-    getter_setter!(no_ai, bool);
-    getter_setter!(no_image_ai, bool);
-    getter_setter!(spc, bool);
+    pub fn unavailable_after(&self) -> Option<&DateTime<Utc>> {
+        self.unavailable_after.as_deref()
+    }
 
     pub(super) fn is_valid_field_name(field_name: &str) -> bool {
         field_name.trim().eq_ignore_ascii_case("all")
@@ -142,20 +112,6 @@ impl RobotsTag {
             || field_name.eq_ignore_ascii_case("noai")
             || field_name.eq_ignore_ascii_case("noimageai")
             || field_name.eq_ignore_ascii_case("spc")
-    }
-
-    pub fn unavailable_after(&self) -> Option<&DateTime<Utc>> {
-        self.unavailable_after.as_deref()
-    }
-
-    pub fn set_unavailable_after(&mut self, unavailable_after: DateTime<Utc>) -> &mut Self {
-        self.unavailable_after = Some(unavailable_after.into());
-        self
-    }
-
-    pub fn with_unavailable_after(mut self, unavailable_after: DateTime<Utc>) -> Self {
-        self.unavailable_after = Some(unavailable_after.into());
-        self
     }
 }
 

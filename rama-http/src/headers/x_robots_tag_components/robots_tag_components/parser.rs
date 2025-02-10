@@ -30,8 +30,13 @@ impl<'a> Iterator for Parser<'_> {
             Err(e) => return Some(Err(e)),
         };
 
+        let mut builder = RobotsTag::builder();
+
         let mut builder = if let Some((field, rest)) = remaining.split_once(',') {
-            match RobotsTag::builder().bot_name(bot_name).add_field(field) {
+            if let Some(bot_name) = bot_name {
+                builder.set_bot_name(bot_name);
+            }
+            match builder.add_field(field) {
                 Ok(builder) => {
                     remaining = rest.trim();
                     builder
