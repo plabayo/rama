@@ -1,4 +1,9 @@
-use std::collections::{self, HashMap};
+use std::{
+    borrow::Cow,
+    collections::{self, HashMap},
+};
+
+use serde::{de::Error as _, ser::Error as _, Deserialize, Serialize};
 
 use super::{
     name::{IntoHttp1HeaderName, IntoSealed as _, TryIntoHttp1HeaderName},
@@ -129,6 +134,41 @@ impl IntoIterator for Http1HeaderMap {
                 headers: self.headers.into(),
             },
         }
+    }
+}
+
+impl Serialize for Http1HeaderMap {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let headers: Result<Vec<_>, _> = self
+            .clone()
+            .into_iter()
+            .map(|(name, value)| {
+                let value = value.to_str().map_err(S::Error::custom)?;
+                Ok::<_, S::Error>((name, value.to_owned()))
+            })
+            .collect();
+        headers?.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Http1HeaderMap {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let headers = <Vec<(Http1HeaderName, Cow<'de, str>)>>::deserialize(deserializer)?;
+        headers
+            .into_iter()
+            .map(|(name, value)| {
+                Ok::<_, D::Error>((
+                    name,
+                    HeaderValue::from_str(&value).map_err(D::Error::custom)?,
+                ))
+            })
+            .collect()
     }
 }
 
