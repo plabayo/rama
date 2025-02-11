@@ -22,6 +22,9 @@ macro_rules! getter {
     };
 }
 
+/// A single element of [`XRobotsTag`] corresponding to the valid values for one `bot_name`
+///
+/// [List of directives](https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Robots-Tag#directives)
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RobotsTag {
     pub(super) bot_name: Option<HeaderValueString>,

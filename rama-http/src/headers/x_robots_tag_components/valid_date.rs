@@ -9,12 +9,6 @@ use std::sync::OnceLock;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ValidDate(DateTime<Utc>);
 
-impl ValidDate {
-    pub(super) fn new(date: DateTime<Utc>) -> Self {
-        Self(date)
-    }
-}
-
 impl Deref for ValidDate {
     type Target = DateTime<Utc>;
 
@@ -31,7 +25,7 @@ impl From<ValidDate> for DateTime<Utc> {
 
 impl From<DateTime<Utc>> for ValidDate {
     fn from(value: DateTime<Utc>) -> Self {
-        Self::new(value)
+        Self(value)
     }
 }
 
@@ -51,7 +45,7 @@ impl FromStr for ValidDate {
     type Err = OpaqueError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        Ok(ValidDate::new(
+        Ok(ValidDate(
             DateTime::parse_from_rfc3339(s) // check ISO 8601
                 .or_else(|_| {
                     DateTime::parse_from_rfc2822(s) // check RFC 822
