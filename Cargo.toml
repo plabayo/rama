@@ -72,16 +72,16 @@ pin-project-lite = "0.2.13"
 rustls-pki-types = "^1"
 proc-macro2 = "1.0"
 socket2 = "0.5.8"
-opentelemetry = { version = "0.27.0", default-features = false, features = [
+opentelemetry = { version = "0.28.0", default-features = false, features = [
     "trace",
 ] }
 nom = "8.0.0"
-opentelemetry-otlp = { version = "0.27.0", features = ["tokio"] }
-opentelemetry_sdk = { version = "0.27.0", default-features = false, features = [
+opentelemetry-otlp = { version = "0.28.0", features = ["tokio"] }
+opentelemetry_sdk = { version = "0.28.0", default-features = false, features = [
     "trace",
     "rt-tokio",
 ] }
-opentelemetry-semantic-conventions = { version = "0.27", features = [
+opentelemetry-semantic-conventions = { version = "0.28", features = [
     "semconv_experimental",
 ] }
 quickcheck = "1.0"
@@ -273,7 +273,7 @@ futures-util = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
 http = { workspace = true }
 itertools = { workspace = true }
-opentelemetry-otlp = { workspace = true }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 opentelemetry_sdk = { workspace = true }
 pin-project-lite = { workspace = true }
 regex = { workspace = true }
