@@ -53,5 +53,5 @@ Before you can do this you do require the following to be installed:
 * `cargo hack`: <https://github.com/taiki-e/cargo-hack?tab=readme-ov-file#installation>
 
 Once this is all done you should be able to run `just qa`.
-When all these pasts you can be pretty certain that all tests in the GitHub CI step
+When all these pass you can be pretty certain that all tests in the GitHub CI step
 will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV (`1.84`) and three platforms in total: MacOS, Linux and Windows.

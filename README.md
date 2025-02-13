@@ -84,7 +84,7 @@ to get inspired on how you can use it for your purposes.
 > To learn more about sponsorship opportunities, please refer to [the "Sponsors" section below](#--sponsors)
 > or contact us directly at [sponsor@ramaproxy.org](mailto:sponsor@ramaproxy.org).
 
-This framework comes with 🔋 batteries included, giving you the full freedome to build the middleware and services you want, without _having_ to repeat the "common":
+This framework comes with 🔋 batteries included, giving you the full freedom to build the middleware and services you want, without _having_ to repeat the "common":
 
 | category | support list |
 |-|-|
@@ -183,11 +183,11 @@ in production by ourselves and others alike. This is great as it gives us new pe
 and grow the framework. It does mean however that there are still several non-backward compatible releases that will follow `0.2`.
 
 In the meanwhile the async ecosystem of Rust is also maturing, and edition 2024 is also to be expected as a 2024 end of year gift.
-It goes also without saying that we do not nilly-willy change designs or break on purpose. The core design is by now also well defined. But truth has to be said,
-there is still plenty to be improve and work out. Production use and feedback from you and other users helps a lot with that. As such,
+It goes also without saying that we do not willy-nilly change designs or break on purpose. The core design is by now also well defined. But truth has to be said,
+there is still plenty to be improved and worked out. Production use and feedback from you and other users helps a lot with that. As such,
 if you use Rama do let us know feedback over [Discord][discord-url], [email](mailto:glen@plabayo.tech) or a [GitHub issue](https://github.com/plabayo/rama/issues).
 
-👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commcercial purposes. Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo). It helps make the development cycle to remain sustainable, and is beneficial to you as well. As part of your benefits we are also available to assist you with migrations between breaking releases. For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf. A win for everybody. 💪
+👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commercial purposes. Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo). It helps make the development cycle to remain sustainable, and is beneficial to you as well. As part of your benefits we are also available to assist you with migrations between breaking releases. For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf. A win for everybody. 💪
 
 ## 📣 | Rama Ecosystem
 
@@ -307,7 +307,7 @@ automated processes look like a human.
 
 ## 🧑‍💻 | Http Clients
 
-In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pillar of Rama's architecture is build on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes as input a user-defined `State` (e.g. containing your database Pool) and a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request and state to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
+In [The rama book](https://ramaproxy.org/book) you can read and learn that a big pillar of Rama's architecture is built on top of [the Service concept](https://ramaproxy.org/book/intro/services_all_the_way_down.html). A [`Service`][rama-service] takes as input a user-defined `State` (e.g. containing your database Pool) and a `Request`, and uses it to serve either a `Response` or `Error`. Such a [`Service`][rama-service] can produce the response "directly" (also called ☘️ Leaf services) or instead pass the request and state to an inner [`Service`][rama-service] which it wraps around (so called 🍔 Middlewares).
 
 [rama-service]: https://ramaproxy.org/docs/rama/service/trait.Service.html
 
@@ -387,7 +387,7 @@ on a variety of Linux systems. There is no windows support, and neither do we te
 | Linux    | ✅     | Ubuntu 22.04 ([GitHub Action](https://docs.github.com/en/actions/using-github-hosted-runners/about-github-hosted-runners/about-github-hosted-runners)) |
 
 Please [open a ticket](https://github.com/plabayo/rama/issues) in case you have compatibility issues for your setup/platform.
-Our goal is not to support all possible platformns in the world, but we do want to
+Our goal is not to support all possible platforms in the world, but we do want to
 support as many as we reasonably can.
 
 ### Minimum supported Rust version
@@ -440,7 +440,7 @@ if you are planning to pick it up, as to avoid multiple people trying to solve t
 >
 > Only once this R&D is complete and alignment is confirmed, shall the feature be started to be implemented.
 
-Should you want to contribure this project but you do not yet know how to program in Rust, you could start learning Rust with as goal to contribute as soon as possible to `rama` by using "[the Rust 101 Learning Guide](https://rust-lang.guide/)" as your study companion. Glen can also be hired as a mentor or teacher to give you paid 1-on-1 lessons and other similar consultancy services. You can find his contact details at <https://www.glendc.com/>.
+Should you want to contribute to this project but you do not yet know how to program in Rust, you could start learning Rust with as goal to contribute as soon as possible to `rama` by using "[the Rust 101 Learning Guide](https://rust-lang.guide/)" as your study companion. Glen can also be hired as a mentor or teacher to give you paid 1-on-1 lessons and other similar consultancy services. You can find his contact details at <https://www.glendc.com/>.
 
 ### Contribution
 
@@ -456,7 +456,7 @@ without any additional terms or conditions.
 
 Special thanks goes to all involved in developing, maintaining and supporting [the Rust programming language](https://www.rust-lang.org/), the [Tokio ecosystem](https://tokio.rs/) and [all other crates](./Cargo.toml) that we depend upon. This also includes [Hyper and its ecosystem](https://github.com/hyperium) as without those projects Rama would not be. The core http module of rama is a specialised fork of `hyper` and use the underlying `h2` and `h3` crates as dependencies.
 
-Extra credits also go to [Axum](https://github.com/tokio-rs/axum), from which ideas and code were copied as its a project very much in line with the kind of software we want Rama to be, but for a different purpose. Our hats also go off to [Tower][Tower], its inventors and all the people and creatures that help make it be every day. The service concept is derived from [Tower][Tower] and many of our layers are a [Tower][Tower] fork, adapted where required or desired.
+Extra credits also go to [Axum](https://github.com/tokio-rs/axum), from which ideas and code were copied as it's a project very much in line with the kind of software we want Rama to be, but for a different purpose. Our hats also go off to [Tower][Tower], its inventors and all the people and creatures that help make it be every day. The service concept is derived from [Tower][Tower] and many of our layers are a [Tower][Tower] fork, adapted where required or desired.
 
 An extra big shoutout goes also to the online communities surrounding and part of these ecosystems. They are a great place to hangout and always friendly and helpful. Thanks.
 
@@ -504,7 +504,7 @@ We are grateful to both sponsors for sponsering us these cloud resources.
 
 ### Professional Services
 
-🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription at [polar.sh/plabayo](https://polar.sh/plabayo).
+🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an enterprise subscription at [polar.sh/plabayo](https://polar.sh/plabayo).
 
 These type of contracts are another way for you to be able to support the project and
 at the same time get serviced for your own needs and purposes.
@@ -526,7 +526,7 @@ and on the 28th of February of 2024 they also open sourced it.
 Rama is not for everyone, but we sure hope it is right for you.
 If not, consider giving [`pingora`] a try, it might very well be the next best thing for you.
 
-Secondly, [ByteDance] has an open source proxy framework written in Rust to developer forward
+Secondly, [ByteDance] has an open source proxy framework written in Rust to develop forward
 and reverse proxies alike, named [`g3proxy`].
 
 [Cloudflare]: https://www.cloudflare.com/
