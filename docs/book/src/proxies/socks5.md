@@ -50,3 +50,17 @@ Similar to [HTTP proxies](./http.md), a SOCKS5 proxy can only do routing of conn
 but can just as easily sniff the application packets and as such be [a MITM proxy](./mitm.md).
 It can even go further and actively mold the packets and therefore be more of
 [a Distortion proxy](./distort.md).
+
+## Transport Proxies
+
+Proxies that operate on the TCP/UDP layers are also referred to as "transport proxies".
+Socks5 proxies are an example of this. An [http proxy](./http.md) can also be a transport proxy,
+and in fact most commcercial proxies out in the wild are just that. The key difference
+with socks5 proxies is however that for plain text requests it is still
+the (http) proxy that will see the http request to be proxied, while even for plain text
+requests (read: not encrypted with TLS) socks5 proxies do not _have_ to see the requests.
+
+That said, regardless if you expose yourself as an [http proxy](./http.md) or socks5 proxy,
+you can if you want to still run your proxy as a [Man In The Middle Proxy](./mitm.md),
+and at that point you are no longer a transport proxy, but do see the http requests coming by,
+regardless if they were initially secured via tls.

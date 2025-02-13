@@ -52,7 +52,7 @@ use rama::{
         metrics::UpDownCounter,
         sdk::{
             metrics::{PeriodicReader, SdkMeterProvider},
-            runtime, Resource,
+            Resource,
         },
         semantic_conventions::{
             self,
@@ -111,19 +111,20 @@ async fn main() {
     let meter_exporter = opentelemetry_otlp::MetricExporter::builder()
         .with_tonic()
         .with_export_config(export_config)
+        .with_timeout(Duration::from_secs(10))
         .build()
         .expect("build OT exporter");
 
-    let meter_reader = PeriodicReader::builder(meter_exporter, runtime::Tokio)
+    let meter_reader = PeriodicReader::builder(meter_exporter)
         .with_interval(Duration::from_secs(3))
-        .with_timeout(Duration::from_secs(10))
         .build();
 
     let meter = SdkMeterProvider::builder()
-        .with_resource(Resource::new(vec![KeyValue::new(
-            "service.name",
-            "http_telemetry",
-        )]))
+        .with_resource(
+            Resource::builder()
+                .with_attribute(KeyValue::new("service.name", "http_telemetry"))
+                .build(),
+        )
         .with_reader(meter_reader)
         .build();
 
