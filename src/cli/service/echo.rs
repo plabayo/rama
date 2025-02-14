@@ -388,7 +388,7 @@ impl Service<(), Request> for EchoService {
                         .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         "compression_algorithms": hello
                         .compression_algorithms().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                    },                    
+                    },
                     "extensions": hello.extensions().iter().map(|extension| match extension {
                         ClientHelloExtension::ServerName(domain) => json!({
                             "id": extension.id().to_string(),
