@@ -196,7 +196,7 @@ impl Encapsulated {
 
     pub fn get_section(&self, section_type: SectionType) -> Option<&[u8]> {
         match (self, section_type) {
-            (Self::Options { opt_body: Some(b) }, SectionType::OptionsBody) => Some(b.as_bytes()),
+            (Self::Options { opt_body: Some(b) }, SectionType::OptionsBody) => Some(b),
             (Self::RequestOnly { req_body: Some(b), .. }, SectionType::RequestBody) => Some(b.as_bytes()),
             (Self::ResponseOnly { res_body: Some(b), .. }, SectionType::ResponseBody) => Some(b.as_bytes()),
             (Self::RequestResponse { req_body: Some(b), .. }, SectionType::RequestBody) => Some(b.as_bytes()),
