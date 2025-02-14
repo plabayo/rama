@@ -1,7 +1,6 @@
 # 💖 Sponsor
 
 [![GitHub Sponsors][ghs-badge]][ghs-url]
-[![Polar Subscribe][polar-badge]][polar-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
 
@@ -11,8 +10,6 @@
 [ghs-url]: https://github.com/sponsors/plabayo
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
-[polar-badge]: https://img.shields.io/badge/polar.sh-subscribe?style=for-the-badge&color=blue
-[polar-url]: https://polar.sh/plabayo
 
 Plabayo was co-founded in 2021 by Elizabeth C. Gonzales Belsuzarri and Glen Henri J. De Cauwsemaecker
 to develop free and open source software, next to providing consultancy and educational services.
@@ -27,9 +24,9 @@ Financial contributors help in compensate for the many unpaid developer hours we
 
 ## 💎 | Financial Contributions
 
-You can become a regular financial contributor to Rama by paying for a monthly subscription at [polar.sh/plabayo](https://polar.sh/plabayo). In case you want a specific github issue to be resolved or like you can also fund issues via that platform. One time contributions are possible as well and greatly appreciated.
+You can become a regular financial contributor to Rama by paying for a monthly subscription at [Github Sponsors][ghs-url]. One time contributions are possible as well.
 
-> 💡 Business subscriptions are available at [polar.sh/plabayo](https://polar.sh/plabayo) for businesses, enterprises and individuals who can afford it 🙏. These subscriptions keep the development of Rama and other projects sustainable and unlocks support for you and your team in the integration and usage of Rama.
+> 💡 Business subscriptions are available via [Gihub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734) for businesses, enterprises and individuals who can afford it 🙏. These subscriptions keep the development of Rama and other projects sustainable and unlocks support for you and your team in the integration and usage of Rama.
 >
 > 👉 For even more custom integrations or features you can always get in touch by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech).
 
@@ -64,7 +61,7 @@ We are grateful to both sponsors for sponsering us these valuable cloud resource
 
 ## Professional Services
 
-🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription at [polar.sh/plabayo](https://polar.sh/plabayo).
+🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription via [Gihub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734).
 
 These type of contracts are another way for you to be able to support the project and
 at the same time get serviced for your own needs and purposes.

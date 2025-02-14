@@ -25,42 +25,40 @@
 [ghs-url]: https://github.com/sponsors/plabayo
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
-[polar-badge]: https://img.shields.io/badge/polar.sh-subscribe?style=for-the-badge&color=blue
-[polar-url]: https://polar.sh/plabayo
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 
 > The motivations behind Rama's creation are detailed in [the "Why Rama" chapter](./why_rama.md).
 >
-> While powerful and flexible, Rama might not be the ideal framework for everyone. If you're building a 
-> conventional web server or need a simple HTTP client, other crates might better suit your needs. Although 
-> we at [Plabayo](https://plabayo.tech) use Rama extensively for our web infrastructure (clients, servers, 
+> While powerful and flexible, Rama might not be the ideal framework for everyone. If you're building a
+> conventional web server or need a simple HTTP client, other crates might better suit your needs. Although
+> we at [Plabayo](https://plabayo.tech) use Rama extensively for our web infrastructure (clients, servers,
 > and proxies), it has a steeper learning curve and a smaller community compared to more established alternatives.
 >
 > Consider these alternatives for simpler use cases:
 >
-> - [Axum](https://github.com/tokio-rs/axum) for building standard HTTP web servers. It offers extensive 
->   community support and ecosystem integrations. However, be aware that Axum's higher-level abstractions 
+> - [Axum](https://github.com/tokio-rs/axum) for building standard HTTP web servers. It offers extensive
+>   community support and ecosystem integrations. However, be aware that Axum's higher-level abstractions
 >   may limit your control over the web stack when you need to implement non-standard features.
 >
-> - [Reqwest](https://docs.rs/reqwest/latest/reqwest/) for basic HTTP client needs. It's ideal when you 
+> - [Reqwest](https://docs.rs/reqwest/latest/reqwest/) for basic HTTP client needs. It's ideal when you
 >   don't require fine-grained control over HTTP requests/responses or TLS configuration details.
 >
-> If you're specifically building proxies and find Rama's approach doesn't align with your needs, 
+> If you're specifically building proxies and find Rama's approach doesn't align with your needs,
 > explore the alternatives listed in our [project README](https://github.com/plabayo/rama?tab=readme-ov-file#--alternatives).
 >
-> Rama's core philosophy centers on empowerment and modularity. It provides a foundation for building 
-> proxies, servers, and clients without imposing restrictions. Any component in a Rama-based web stack 
-> can be customized to meet your specific requirements, even if that means implementing custom solutions 
+> Rama's core philosophy centers on empowerment and modularity. It provides a foundation for building
+> proxies, servers, and clients without imposing restrictions. Any component in a Rama-based web stack
+> can be customized to meet your specific requirements, even if that means implementing custom solutions
 > for particular layers.
 >
-> We gratefully acknowledge that Rama stands on the shoulders of giants. For more details about our 
+> We gratefully acknowledge that Rama stands on the shoulders of giants. For more details about our
 > inspirations and dependencies, see our [acknowledgements](https://github.com/plabayo/rama?tab=readme-ov-file).
 >
-> In some cases, we've had to fork external crates to accommodate our specific needs or scope requirements. 
-> While this creates additional maintenance work, we believe it's worthwhile to support our mission of 
-> empowering Rama users. Details about these forks can be found in our [FORK.md](https://github.com/plabayo/rama/blob/main/FORK.md). 
-> We maintain the original code structure in these forks to facilitate upstream synchronization and 
+> In some cases, we've had to fork external crates to accommodate our specific needs or scope requirements.
+> While this creates additional maintenance work, we believe it's worthwhile to support our mission of
+> empowering Rama users. Details about these forks can be found in our [FORK.md](https://github.com/plabayo/rama/blob/main/FORK.md).
+> We maintain the original code structure in these forks to facilitate upstream synchronization and
 > contribute patches back when possible.
 
 Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime.
@@ -138,7 +136,6 @@ on both the Http and Tls layers. By design we do not consider Tcp and Udp finger
 
 Next to proxies, Rama can also be used to develop [Web Services](./web_servers.md) and [Http Clients](./http_clients.md).
 
-[![Polar Subscribe][polar-badge]][polar-url]
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
@@ -151,7 +148,7 @@ to know how to use rama for your purposes.
 > 💡 You can find the edge docs of the rama framework code at <https://ramaproxy.org/docs/rama/index.html>,
 > which contains the documentation for the main branch of the project.
 
-🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription at [polar.sh/plabayo](https://polar.sh/plabayo).
+🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an entireprise subscription via [Gihub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734).
 
 💖 Please consider becoming [a sponsor][ghs-url] if you critically depend upon Rama (ラマ) or if you are a fan of the project.
 
@@ -176,4 +173,4 @@ It goes also without saying that we do not nilly-willy change designs or break o
 there is still plenty to be improve and work out. Production use and feedback from you and other users helps a lot with that. As such,
 if you use Rama do let us know feedback over [Discord][discord-url], [email](mailto:glen@plabayo.tech) or a [GitHub issue](https://github.com/plabayo/rama/issues).
 
-👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commcercial purposes. Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo). It helps make the development cycle to remain sustainable, and is beneficial to you as well. As part of your benefits we are also available to assist you with migrations between breaking releases. For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf. A win for everybody. 💪
+👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commcercial purposes. Please consider becoming [a business/enterprise subscriber](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734). It helps make the development cycle to remain sustainable, and is beneficial to you as well. As part of your benefits we are also available to assist you with migrations between breaking releases. For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf. A win for everybody. 💪

@@ -135,7 +135,7 @@
 //! if you use Rama do let us know feedback over [Discord][discord-url], [email](mailto:glen@plabayo.tech) or a [GitHub issue](https://github.com/plabayo/rama/issues).
 //!
 //! 👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commcercial purposes.
-//! Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo).
+//! Please consider becoming [a business/enterprise subscriber](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734).
 //! It helps make the development cycle to remain sustainable, and is beneficial to you as well.
 //! As part of your benefits we are also available to assist you with migrations between breaking releases.
 //! For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf.
