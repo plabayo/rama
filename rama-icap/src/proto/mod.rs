@@ -102,7 +102,7 @@ where
     /// Process an HTTP request through ICAP
     pub async fn process_request(&self, uri: String, headers: HeaderMap) -> Result<IcapMessage> {
         // Create ICAP request
-        let mut request = IcapMessage::Request {
+        let request = IcapMessage::Request {
             method: Method::ReqMod,
             uri,
             version: Version::V1_0,
@@ -125,7 +125,7 @@ where
         conn.send_message(request).await?;
         
         // Get response
-        let mut response = conn.recv_message().await?
+        let response = conn.recv_message().await?
             .ok_or_else(|| Error::Protocol("Incomplete message received".to_string()))?;
 
         // Return connection to pool

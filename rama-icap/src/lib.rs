@@ -8,7 +8,10 @@ pub mod parser;
 
 use std::collections::HashMap;
 use thiserror::Error;
-use rama_http_types::{header::{InvalidHeaderValue, InvalidHeaderName, HeaderName}, HeaderMap};
+use rama_http_types::{
+    Request, Response, HeaderMap, Method as HttpMethod, Version as HttpVersion,
+    Body, StatusCode,
+};
 use bytes::Bytes;
 
 /// Default ICAP port as specified in RFC 3507
@@ -19,10 +22,10 @@ pub const DEFAULT_ICAP_PORT: u16 = 1344;
 pub enum Error {
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("Invalid HTTP header value: {0}")]
-    InvalidHeaderValue(#[from] InvalidHeaderValue),
-    #[error("Invalid HTTP header name: {0}")]
-    InvalidHeaderName(#[from] InvalidHeaderName),
+    #[error("Invalid HTTP header value")]
+    InvalidHeaderValue,
+    #[error("Invalid HTTP header name")]
+    InvalidHeaderName,
     #[error("Invalid ICAP version: {0}")]
     InvalidVersion(String),
     #[error("Invalid ICAP method: {0}")]
@@ -60,6 +63,14 @@ impl Method {
             Method::RespMod => "RESPMOD",
         }
     }
+
+    pub fn as_bytes(&self) -> &'static [u8] {
+        match self {
+            Method::Options => b"OPTIONS",
+            Method::ReqMod => b"REQMOD",
+            Method::RespMod => b"RESPMOD",
+        }
+    }
 }
 
 impl std::fmt::Display for Method {
@@ -75,80 +86,48 @@ impl std::fmt::Display for Method {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Version {
     V1_0 = 0,
-    V1_1 = 1,
 }
 
 impl Version {
     pub fn as_str(&self) -> &'static str {
         match self {
             Version::V1_0 => "ICAP/1.0",
-            Version::V1_1 => "ICAP/1.1",
+        }
+    }
+
+    pub fn as_bytes(&self) -> &'static [u8] {
+        match self {
+            Version::V1_0 => b"ICAP/1.0",
         }
     }
     
     pub fn from_u8(value: u8) -> Option<Self> {
         match value {
             0 => Some(Version::V1_0),
-            1 => Some(Version::V1_1),
             _ => None,
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Response {
-    pub status: u16,
-    pub reason: String,
-    pub headers: HeaderMap,
-}
-
-impl Default for Response {
-    fn default() -> Self {
-        Self {
-            status: 200,
-            reason: String::from("OK"),
-            headers: HeaderMap::new(),
-        }
-    }
-}
-
-impl Response {
-    pub fn new(headers: HeaderMap) -> Response {
-        Response {
-            status: 200,
-            reason: String::from("OK"),
-            headers,
-        }
-    }
-
-    pub fn len(&self) -> usize {
-        let mut len = 0;
-        for (name, value) in self.headers.iter() {
-            len += name.as_str().len() + 2 + value.len() + 2; // name: value\r\n
-        }
-        len + 2 // final \r\n
-    }
-}
-
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum Encapsulated {
     NullBody,
     Options {
-        body: Option<Bytes>,
+        opt_body: Option<Body>,
     },
     RequestOnly {
-        header: Option<Request>,
-        body: Option<Bytes>,
+        req_header: Option<Request<Body>>,
+        req_body: Option<Body>,
     },
     ResponseOnly {
-        header: Option<Response>,
-        body: Option<Bytes>,
+        res_header: Option<Response<Body>>,
+        res_body: Option<Body>,
     },
     RequestResponse {
-        req_header: Option<Request>,
-        req_body: Option<Bytes>,
-        res_header: Option<Response>,
-        res_body: Option<Bytes>,
+        req_header: Option<Request<Body>>,
+        req_body: Option<Body>,
+        res_header: Option<Response<Body>>,
+        res_body: Option<Body>,
     },
 }
 
@@ -156,16 +135,16 @@ impl Encapsulated {
     /// Check if this encapsulated message contains a specific section type
     pub fn contains(&self, section_type: &SectionType) -> bool {
         match (self, section_type) {
-            (Encapsulated::RequestOnly { header: Some(_), .. }, SectionType::RequestHeader) => true,
-            (Encapsulated::RequestOnly { body: Some(_), .. }, SectionType::RequestBody) => true,
-            (Encapsulated::ResponseOnly { header: Some(_), .. }, SectionType::ResponseHeader) => true,
-            (Encapsulated::ResponseOnly { body: Some(_), .. }, SectionType::ResponseBody) => true,
+            (Encapsulated::RequestOnly { req_header: Some(_), .. }, SectionType::RequestHeader) => true,
+            (Encapsulated::RequestOnly { req_body: Some(_), .. }, SectionType::RequestBody) => true,
+            (Encapsulated::ResponseOnly { res_header: Some(_), .. }, SectionType::ResponseHeader) => true,
+            (Encapsulated::ResponseOnly { res_body: Some(_), .. }, SectionType::ResponseBody) => true,
             (Encapsulated::RequestResponse { req_header: Some(_), .. }, SectionType::RequestHeader) => true,
             (Encapsulated::RequestResponse { req_body: Some(_), .. }, SectionType::RequestBody) => true,
             (Encapsulated::RequestResponse { res_header: Some(_), .. }, SectionType::ResponseHeader) => true,
             (Encapsulated::RequestResponse { res_body: Some(_), .. }, SectionType::ResponseBody) => true,
             (Encapsulated::NullBody, SectionType::NullBody) => true,
-            (Encapsulated::Options { body: Some(_) }, SectionType::OptionsBody) => true,
+            (Encapsulated::Options { opt_body: Some(_) }, SectionType::OptionsBody) => true,
             _ => false,
         }
     }
@@ -181,31 +160,31 @@ impl Encapsulated {
         ) {
             (_, _, _, _, _, true) => Self::NullBody,
             (_, _, _, _, true, _) => Self::Options {
-                body: sections.get(&SectionType::OptionsBody)
-                    .map(|v| Bytes::from(v.to_vec())),
+                opt_body: sections.get(&SectionType::OptionsBody)
+                    .map(|v| Body::from(v.to_vec())),
             },
             (true, _, true, _, _, _) | (_, true, true, _, _, _) |
             (true, _, _, true, _, _) | (_, true, _, true, _, _) => Self::RequestResponse {
                 req_header: sections.get(&SectionType::RequestHeader)
                     .map(|_| Request::default()),
                 req_body: sections.get(&SectionType::RequestBody)
-                    .map(|v| Bytes::from(v.to_vec())),
+                    .map(|v| Body::from(v.to_vec())),
                 res_header: sections.get(&SectionType::ResponseHeader)
                     .map(|_| Response::default()),
                 res_body: sections.get(&SectionType::ResponseBody)
-                    .map(|v| Bytes::from(v.to_vec())),
+                    .map(|v| Body::from(v.to_vec())),
             },
             (true, _, _, _, _, _) | (_, true, _, _, _, _) => Self::RequestOnly {
-                header: sections.get(&SectionType::RequestHeader)
+                req_header: sections.get(&SectionType::RequestHeader)
                     .map(|_| Request::default()),
-                body: sections.get(&SectionType::RequestBody)
-                    .map(|v| Bytes::from(v.to_vec())),
+                req_body: sections.get(&SectionType::RequestBody)
+                    .map(|v| Body::from(v.to_vec())),
             },
             (_, _, true, _, _, _) | (_, _, _, true, _, _) => Self::ResponseOnly {
-                header: sections.get(&SectionType::ResponseHeader)
+                res_header: sections.get(&SectionType::ResponseHeader)
                     .map(|_| Response::default()),
-                body: sections.get(&SectionType::ResponseBody)
-                    .map(|v| Bytes::from(v.to_vec())),
+                res_body: sections.get(&SectionType::ResponseBody)
+                    .map(|v| Body::from(v.to_vec())),
             },
             _ => Self::NullBody,
         }
@@ -217,11 +196,11 @@ impl Encapsulated {
 
     pub fn get_section(&self, section_type: SectionType) -> Option<&[u8]> {
         match (self, section_type) {
-            (Self::Options { body: Some(b) }, SectionType::OptionsBody) => Some(b),
-            (Self::RequestOnly { body: Some(b), .. }, SectionType::RequestBody) => Some(b),
-            (Self::ResponseOnly { body: Some(b), .. }, SectionType::ResponseBody) => Some(b),
-            (Self::RequestResponse { req_body: Some(b), .. }, SectionType::RequestBody) => Some(b),
-            (Self::RequestResponse { res_body: Some(b), .. }, SectionType::ResponseBody) => Some(b),
+            (Self::Options { opt_body: Some(b) }, SectionType::OptionsBody) => Some(b.as_bytes()),
+            (Self::RequestOnly { req_body: Some(b), .. }, SectionType::RequestBody) => Some(b.as_bytes()),
+            (Self::ResponseOnly { res_body: Some(b), .. }, SectionType::ResponseBody) => Some(b.as_bytes()),
+            (Self::RequestResponse { req_body: Some(b), .. }, SectionType::RequestBody) => Some(b.as_bytes()),
+            (Self::RequestResponse { res_body: Some(b), .. }, SectionType::ResponseBody) => Some(b.as_bytes()),
             _ => None,
         }
     }
@@ -230,8 +209,8 @@ impl Encapsulated {
 impl Default for Encapsulated {
     fn default() -> Self {
         Self::RequestOnly {
-            header: None,
-            body: None,
+            req_header: None,
+            req_body: None,
         }
     }
 }
@@ -331,7 +310,7 @@ impl IcapMessage {
                     Encapsulated::RequestOnly { header, body } => {
                         if let Some(header) = header {
                             parts.push(format!("req-hdr={}", current_offset));
-                            current_offset += header.len();
+                            current_offset += header.headers().len();
                         }
                         if let Some(body) = body {
                             parts.push(format!("req-body={}", current_offset));
@@ -341,7 +320,7 @@ impl IcapMessage {
                     Encapsulated::RequestResponse { req_header, req_body, res_header, res_body } => {
                         if let Some(header) = req_header {
                             parts.push(format!("req-hdr={}", current_offset));
-                            current_offset += header.len();
+                            current_offset += header.headers().len();
                         }
                         if let Some(body) = req_body {
                             parts.push(format!("req-body={}", current_offset));
@@ -349,7 +328,7 @@ impl IcapMessage {
                         }
                         if let Some(header) = res_header {
                             parts.push(format!("res-hdr={}", current_offset));
-                            current_offset += header.len();
+                            current_offset += header.headers().len();
                         }
                         if let Some(body) = res_body {
                             parts.push(format!("res-body={}", current_offset));
@@ -359,7 +338,7 @@ impl IcapMessage {
                     Encapsulated::ResponseOnly { header, body } => {
                         if let Some(header) = header {
                             parts.push(format!("res-hdr={}", current_offset));
-                            current_offset += header.len();
+                            current_offset += header.headers().len();
                         }
                         if let Some(body) = body {
                             parts.push(format!("res-body={}", current_offset));
@@ -393,7 +372,7 @@ impl IcapMessage {
                     Encapsulated::RequestOnly { header, body } => {
                         if let Some(header) = header {
                             parts.push(format!("req-hdr={}", current_offset));
-                            current_offset += header.len();
+                            current_offset += header.headers().len();
                         }
                         if let Some(body) = body {
                             parts.push(format!("req-body={}", current_offset));
@@ -403,7 +382,7 @@ impl IcapMessage {
                     Encapsulated::RequestResponse { req_header, req_body, res_header, res_body } => {
                         if let Some(header) = req_header {
                             parts.push(format!("req-hdr={}", current_offset));
-                            current_offset += header.len();
+                            current_offset += header.headers().len();
                         }
                         if let Some(body) = req_body {
                             parts.push(format!("req-body={}", current_offset));
@@ -411,7 +390,7 @@ impl IcapMessage {
                         }
                         if let Some(header) = res_header {
                             parts.push(format!("res-hdr={}", current_offset));
-                            current_offset += header.len();
+                            current_offset += header.headers().len();
                         }
                         if let Some(body) = res_body {
                             parts.push(format!("res-body={}", current_offset));
@@ -421,7 +400,7 @@ impl IcapMessage {
                     Encapsulated::ResponseOnly { header, body } => {
                         if let Some(header) = header {
                             parts.push(format!("res-hdr={}", current_offset));
-                            current_offset += header.len();
+                            current_offset += header.headers().len();
                         }
                         if let Some(body) = body {
                             parts.push(format!("res-body={}", current_offset));
@@ -516,68 +495,70 @@ pub enum SectionType {
 }
 
 #[derive(Debug, Clone)]
-pub struct Request {
-    pub method: String,
-    pub uri: String,
-    pub version: String,
-    pub headers: HeaderMap,
+pub enum Wants {
+    /// Connection wants to read
+    Read,
+    /// Connection wants to write
+    Write,
 }
 
-impl Default for Request {
-    fn default() -> Self {
-        Self {
-            method: String::from("GET"),
-            uri: String::from("/"),
-            version: String::from("HTTP/1.1"),
-            headers: HeaderMap::new(),
-        }
-    }
-}
-
-impl Request {
-    pub fn len(&self) -> usize {
-        let mut len = 0;
-        for (name, value) in self.headers.iter() {
-            len += name.as_str().len() + 2 + value.len() + 2; // name: value\r\n
-        }
-        len + 2 // final \r\n
-    }
-
-    pub fn parse(&mut self, buf: &[u8]) -> Result<Status<()>> {
-        let buf_str = match std::str::from_utf8(buf) {
-            Ok(s) => s,
-            Err(_) => return Err(Error::Protocol("Invalid UTF-8 in request".to_string())),
-        };
-        
-        let mut parts = buf_str.splitn(3, ' ');
-        
-        self.method = parts.next()
-            .ok_or_else(|| Error::Protocol("Missing method".to_string()))?
-            .to_string();
-            
-        self.uri = parts.next()
-            .ok_or_else(|| Error::Protocol("Missing URI".to_string()))?
-            .to_string();
-            
-        self.version = parts.next()
-            .ok_or_else(|| Error::Protocol("Missing version".to_string()))?
-            .trim_end()
-            .to_string();
-            
-        Ok(Status::Complete(()))
-    }
-}
-
-/// Response status
+/// Represents an ICAP message (either request or response)
 #[derive(Debug)]
-pub enum Status<T> {
-    /// Represents a complete result
-    Complete(T),
-    /// Represents a partial result, needing more data
-    Partial,
+pub struct Message {
+    /// Headers specific to ICAP
+    pub headers: HashMap<String, String>,
+    /// Sections contained in the message body
+    pub sections: HashMap<SectionType, Vec<u8>>,
 }
 
-pub use parser::MessageParser;
+impl Message {
+    /// Create a new empty ICAP message
+    pub fn new() -> Self {
+        Message {
+            headers: HashMap::new(),
+            sections: HashMap::new(),
+        }
+    }
+
+    /// Add a header to the message
+    pub fn add_header(&mut self, name: impl Into<String>, value: impl Into<String>) {
+        self.headers.insert(name.into(), value.into());
+    }
+
+    /// Add a section to the message
+    pub fn add_section(&mut self, section_type: SectionType, content: Vec<u8>) {
+        self.sections.insert(section_type, content);
+    }
+}
+
+impl Default for Message {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IcapHeaderName(String);
+
+impl IcapHeaderName {
+    pub fn new(name: impl Into<String>) -> Result<Self> {
+        let name = name.into();
+        if name.is_empty() {
+            return Err(Error::Protocol("Header name cannot be empty".to_string()));
+        }
+        Ok(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl AsRef<str> for IcapHeaderName {
+    fn as_ref(&self) -> &str {
+        &self.0
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -594,9 +575,9 @@ mod tests {
         let status = req.parse(buf);
         
         assert!(matches!(status, Ok(Status::Complete(_))));
-        assert_eq!(req.method, "OPTIONS");
-        assert_eq!(req.uri, "/");
-        assert_eq!(req.version, "ICAP/1.0");
+        assert_eq!(req.method(), HttpMethod::Options);
+        assert_eq!(req.uri().path(), "/");
+        assert_eq!(req.version(), HttpVersion::ICAP_1_0);
     }
 
     #[test]
@@ -778,10 +759,11 @@ mod tests {
             headers: HeaderMap::new(),
             encapsulated: Encapsulated::RequestOnly {
                 header: Some(Request {
-                    method: "REQMOD".to_string(),
-                    uri: String::new(),
-                    version: "ICAP/1.0".to_string(),
+                    method: HttpMethod::ReqMod,
+                    uri: "/".parse().unwrap(),
+                    version: HttpVersion::ICAP_1_0,
                     headers: HeaderMap::new(),
+                    body: Body::empty(),
                 }),
                 body: None,
             },
