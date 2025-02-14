@@ -74,11 +74,15 @@ impl Ja4H {
                 }
                 COOKIE => {
                     has_cookie_header = true;
+                    // split on ; and then trim to handle different spacing, fixing the sorting issue
                     if let Ok(s) = std::str::from_utf8(value.as_bytes()) {
                         let pairs = cookie_pairs.get_or_insert_with(Vec::default);
-                        pairs.extend(s.split("; ").map(|cookie| match cookie.split_once('=') {
-                            None => (cookie.to_owned(), None),
-                            Some((name, value)) => (name.to_owned(), Some(value.to_owned())),
+                        pairs.extend(s.split(';').map(|cookie| {
+                            let cookie = cookie.trim();
+                            match cookie.split_once('=') {
+                                None => (cookie.to_owned(), None),
+                                Some((name, value)) => (name.to_owned(), Some(value.to_owned())),
+                            }
                         }));
                         pairs.sort_unstable();
                     }
@@ -377,8 +381,8 @@ mod tests {
         let test_cases = [
             test_case!(
                 description: "rust_ja4_http_test_http_stats_into_out",
-                debug_str: "ge11cr13enus_Host,Sec-Ch-Ua,Sec-Ch-Ua-Mobile,User-Agent,Sec-Ch-Ua-Platform,Accept,Sec-Fetch-Site,Sec-Fetch-Mode,Sec-Fetch-Dest,Sec-Fetch-Mode,Sec-Fetch-Dest,Accept-Encoding,Accept-Language_FastAB,_dd_s,countryCode,geoData,sato,stateCode,umto,usprivacy_FastAB=0=6859,1=8174,2=4183,3=3319,4=3917,5=2557,6=4259,7=6070,8=0804,9=6453,10=1942,11=4435,12=4143,13=9445,14=6957,15=8682,16=1885,17=1825,18=3760,19=0929,_dd_s=logs=1&id=b5c2d770-eaba-4847-8202-390c4552ff9a&created=1686159462724&expire=1686160422726,countryCode=US,geoData=purcellville|VA|20132|US|NA|-400|broadband|39.160|-77.700|511,sato=1,stateCode=VA,umto=1,usprivacy=1---",
-                hash_str: "ge11cr13enus_88d2d584d47f_0f2659b474bf_161698816dab",
+                debug_str: "ge11cr11enus_Host,Sec-Ch-Ua,Sec-Ch-Ua-Mobile,User-Agent,Sec-Ch-Ua-Platform,Accept,Sec-Fetch-Site,Sec-Fetch-Mode,Sec-Fetch-Dest,Accept-Encoding,Accept-Language_FastAB,_dd_s,countryCode,geoData,sato,stateCode,umto,usprivacy_FastAB=0=6859,1=8174,2=4183,3=3319,4=3917,5=2557,6=4259,7=6070,8=0804,9=6453,10=1942,11=4435,12=4143,13=9445,14=6957,15=8682,16=1885,17=1825,18=3760,19=0929,_dd_s=logs=1&id=b5c2d770-eaba-4847-8202-390c4552ff9a&created=1686159462724&expire=1686160422726,countryCode=US,geoData=purcellville|VA|20132|US|NA|-400|broadband|39.160|-77.700|511,sato=1,stateCode=VA,umto=1,usprivacy=1---",
+                hash_str: "ge11cr11enus_974ebe531c03_0f2659b474bf_161698816dab",
                 version: Version::HTTP_11,
                 method: Method::GET,
                 headers: {
@@ -391,9 +395,7 @@ mod tests {
                     "Accept": "*/*",
                     "Sec-Fetch-Site": "same-origin",
                     "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Dest": "empty",
-                    "Sec-Fetch-Mode": "cors",
-                    "Sec-Fetch-Dest": "empty",
+                    "Sec-Fetch-Dest": "empty", // should not have duplicated headers
                     "Referer": "https://www.cnn.com/",
                     "Accept-Encoding": "gzip, deflate",
                     "Accept-Language": "en-US,en;q=0.9",
@@ -417,6 +419,19 @@ mod tests {
                     "DNT": "1",
                     "Sec-GPC": "1",
                     "Priority": "u=2",
+                },
+            ),
+            test_case!(
+                description: "curl_ja4h_http2_cookies_different_order",
+                debug_str: "ge20cn030000_authorization,user-agent,accept_alpha,sierra,zulu_alpha=bravo,sierra=echo,zulu=tango",
+                hash_str: "ge20cn030000_a8ea46949477_7efd8825dc5a_f0c5f5a36bc1",
+                version: Version::HTTP_2,
+                method: Method::GET,
+                headers: {
+                    "authorization": "Basic d29yZDp3b3Jk",
+                    "user-agent": "curl/7.81.0",
+                    "accept": "*/*",
+                    "cookie": "sierra=echo;alpha=bravo;zulu=tango",
                 },
             ),
         ];
