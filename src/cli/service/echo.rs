@@ -382,13 +382,13 @@ impl Service<(), Request> for EchoService {
                     });
 
                 json!({
-                    "ja4": ja4,
-                    "ja3": ja3,
-                    "version": hello.protocol_version().to_string(),
-                    "cipher_suites": hello
-                    .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                    "compression_algorithms": hello
-                    .compression_algorithms().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    "header": {
+                        "version": hello.protocol_version().to_string(),
+                        "cipher_suites": hello
+                        .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        "compression_algorithms": hello
+                        .compression_algorithms().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    },                    
                     "extensions": hello.extensions().iter().map(|extension| match extension {
                         ClientHelloExtension::ServerName(domain) => json!({
                             "id": extension.id().to_string(),
@@ -419,6 +419,8 @@ impl Service<(), Request> for EchoService {
                             "data": format!("0x{}", hex::encode(data)),
                         }),
                     }).collect::<Vec<_>>(),
+                    "ja3": ja3,
+                    "ja4": ja4,
                 })
             });
 
