@@ -17,7 +17,7 @@ impl UserAgentDatabase {
     pub fn insert(&mut self, profile: UserAgentProfile) {
         let index = self.profiles.len();
         if let Some(ua_header) = profile.ua_str() {
-            self.map_ua_string.insert(ua_header.to_string(), index);
+            self.map_ua_string.insert(ua_header.to_owned(), index);
         }
 
         if let Some(platform) = profile.platform {
