@@ -65,3 +65,6 @@ pub use ua::*;
 
 mod profile;
 pub use profile::*;
+
+mod emulate;
+pub use emulate::*;
