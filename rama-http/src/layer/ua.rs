@@ -123,22 +123,25 @@ where
         mut ctx: Context<State>,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let mut user_agent = req
-            .headers()
-            .typed_get::<headers::UserAgent>()
-            .map(|ua| UserAgent::new(ua.to_string()));
-
-        if let Some(overwrites) = self
+        let overvwrites = self
             .overwrite_header
             .as_ref()
             .and_then(|header| req.headers().get(header))
             .map(|header| header.as_bytes())
-            .and_then(|value| serde_html_form::from_bytes::<UserAgentOverwrites>(value).ok())
-        {
-            if let Some(ua) = overwrites.ua {
-                user_agent = Some(UserAgent::new(ua));
-            }
-            if let Some(ref mut ua) = user_agent {
+            .and_then(|value| serde_html_form::from_bytes::<UserAgentOverwrites>(value).ok());
+
+        let mut user_agent = overvwrites
+            .as_ref()
+            .and_then(|o| o.ua.as_ref())
+            .map(UserAgent::new)
+            .or_else(|| {
+                req.headers()
+                    .typed_get::<headers::UserAgent>()
+                    .map(|ua| UserAgent::new(ua.to_string()))
+            });
+
+        if let Some(mut ua) = user_agent.take() {
+            if let Some(overwrites) = overvwrites {
                 if let Some(http_agent) = overwrites.http {
                     ua.with_http_agent(http_agent);
                 }
@@ -152,9 +155,7 @@ where
                     ua.with_request_initiator(req_init);
                 }
             }
-        }
 
-        if let Some(ua) = user_agent.take() {
             ctx.insert(ua);
         }
 

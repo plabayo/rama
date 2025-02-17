@@ -147,8 +147,8 @@ impl UserAgent {
     ///
     /// [`UserAgent`]: super::UserAgent
     pub fn http_agent(&self) -> HttpAgent {
-        match &self.http_agent_overwrite {
-            Some(agent) => agent.clone(),
+        match self.http_agent_overwrite {
+            Some(agent) => agent,
             None => match &self.data {
                 UserAgentData::Standard { info, .. } => match info.kind {
                     UserAgentKind::Chromium => HttpAgent::Chromium,
@@ -166,8 +166,8 @@ impl UserAgent {
     ///
     /// [`UserAgent`]: super::UserAgent
     pub fn tls_agent(&self) -> TlsAgent {
-        match &self.tls_agent_overwrite {
-            Some(agent) => agent.clone(),
+        match self.tls_agent_overwrite {
+            Some(agent) => agent,
             None => match &self.data {
                 UserAgentData::Standard { info, .. } => match info.kind {
                     UserAgentKind::Chromium => TlsAgent::Boringssl,
@@ -354,7 +354,7 @@ impl fmt::Display for PlatformKind {
 }
 
 /// Http implementation used by the [`UserAgent`]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum HttpAgent {
     /// Chromium based browsers share the same http implementation
     Chromium,
@@ -422,7 +422,7 @@ impl FromStr for HttpAgent {
 }
 
 /// Tls implementation used by the [`UserAgent`]
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TlsAgent {
     /// Rustls is used as a fallback for all user agents,
     /// that are not chromium based.

@@ -12,7 +12,7 @@ use rama_http_types::{
 };
 use rama_utils::macros::match_ignore_ascii_case_str;
 
-use crate::{RequestInitiator, UserAgent, UserAgentProfile};
+use crate::{HttpAgent, RequestInitiator, UserAgent, UserAgentProfile};
 
 use super::UserAgentProvider;
 
@@ -102,24 +102,55 @@ where
             "user agent profile selected for emulation"
         );
 
-        emulate_http_settings(&mut ctx, &req, profile);
-        let _base_http_headers = get_base_http_headers(&ctx, &req, profile);
+        let preserve_http = matches!(
+            ctx.get::<HttpAgent>()
+                .copied()
+                .or_else(|| ctx.get::<UserAgent>().map(|ua| ua.http_agent())),
+            Some(HttpAgent::Preserve),
+        );
 
-        // TODO: merge base headers with incoming headers... allowing some to overwrite, others not...
-        // also allowing anyway to overwrite if something is set...
+        if preserve_http {
+            tracing::trace!(
+                ua_kind = %profile.ua_kind,
+                ua_version = ?profile.ua_version,
+                platform = ?profile.platform,
+                "user agent emulation: skip http settings as http is instructed to be preserved"
+            );
+        } else {
+            emulate_http_settings(&mut ctx, &req, profile);
+            let _base_http_headers = get_base_http_headers(&ctx, &req, profile);
+
+            // TODO: merge base headers with incoming headers... allowing some to overwrite, others not...
+            // also allowing anyway to overwrite if something is set...
+        }
 
         #[cfg(feature = "tls")]
         {
-            // this Arc is to be lazilly cloned by a tls connector
-            // only when a connection is to be made, as to play nicely
-            // with concepts such as connection pooling
-            ctx.insert(profile.tls.client_config.clone());
+            use crate::TlsAgent;
+
+            let preserve_tls = matches!(
+                ctx.get::<TlsAgent>()
+                    .copied()
+                    .or_else(|| ctx.get::<UserAgent>().map(|ua| ua.tls_agent())),
+                Some(TlsAgent::Preserve),
+            );
+            if preserve_tls {
+                tracing::trace!(
+                    ua_kind = %profile.ua_kind,
+                    ua_version = ?profile.ua_version,
+                    platform = ?profile.platform,
+                    "user agent emulation: skip tls settings as http is instructed to be preserved"
+                );
+            } else {
+                // client_config's Arc is to be lazilly cloned by a tls connector
+                // only when a connection is to be made, as to play nicely
+                // with concepts such as connection pooling
+                ctx.insert(profile.tls.client_config.clone());
+            }
         }
 
-        #[allow(clippy::todo)]
-        {
-            todo!()
-        }
+        // serve emulated http(s) request via inner service
+        self.inner.serve(ctx, req).await.map_err(Into::into)
     }
 }
 
@@ -166,7 +197,11 @@ fn get_base_http_headers<'a, Body, State>(
     req: &Request<Body>,
     profile: &'a UserAgentProfile,
 ) -> &'a Http1HeaderMap {
-    match ctx.get::<UserAgent>().and_then(|ua| ua.request_initiator()) {
+    match ctx
+        .get::<RequestInitiator>()
+        .copied()
+        .or_else(|| ctx.get::<UserAgent>().and_then(|ua| ua.request_initiator()))
+    {
         Some(req_init) => {
             tracing::trace!(%req_init, "base http headers defined based on hint from UserAgent (overwrite)");
             get_base_http_headers_from_req_init(req_init, profile)
