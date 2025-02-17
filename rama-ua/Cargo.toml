@@ -19,7 +19,6 @@ tls = ["dep:rama-net", "rama-net/tls"]
 
 [dependencies]
 bytes = { workspace = true }
-highway = { workspace = true }
 rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.7", path = "../rama-http-types" }
 rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", optional = true }
