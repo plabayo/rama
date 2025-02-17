@@ -20,7 +20,7 @@ pub(crate) use parser::parse_client_hello;
 
 mod config;
 #[doc(inline)]
-pub use config::{ClientAuth, ClientAuthData, ClientConfig, ServerVerifyMode};
+pub use config::{ClientAuth, ClientAuthData, ClientConfig, ProxyClientConfig, ServerVerifyMode};
 
 use super::{ApplicationProtocol, DataEncoding, ProtocolVersion};
 

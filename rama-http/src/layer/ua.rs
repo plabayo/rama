@@ -148,6 +148,9 @@ where
                 if let Some(preserve_ua) = overwrites.preserve_ua {
                     ua.with_preserve_ua_header(preserve_ua);
                 }
+                if let Some(req_init) = overwrites.req_init {
+                    ua.with_request_initiator(req_init);
+                }
             }
         }
 
@@ -206,6 +209,7 @@ mod tests {
     use crate::{headers, IntoResponse, Response, StatusCode};
     use rama_core::service::service_fn;
     use rama_core::Context;
+    use rama_ua::RequestInitiator;
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -310,6 +314,7 @@ mod tests {
             assert_eq!(ua.http_agent(), HttpAgent::Safari);
             assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
             assert!(ua.preserve_ua_header());
+            assert_eq!(ua.request_initiator(), Some(RequestInitiator::Xhr));
 
             Ok(StatusCode::OK.into_response())
         }
@@ -327,6 +332,7 @@ mod tests {
                     http: Some(HttpAgent::Safari),
                     tls: Some(TlsAgent::Boringssl),
                     preserve_ua: Some(true),
+                    req_init: Some(RequestInitiator::Xhr),
                 })
                 .unwrap(),
             )

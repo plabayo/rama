@@ -1,5 +1,15 @@
+use std::sync::Arc;
+
 use super::{merge_client_hello_lists, ClientHelloExtension};
-use crate::tls::{CipherSuite, CompressionAlgorithm, DataEncoding, KeyLogIntent};
+use crate::tls::{CipherSuite, CompressionAlgorithm, DataEncoding, KeyLogIntent, ProtocolVersion};
+
+#[derive(Debug, Clone, Default)]
+/// Common API to configure a Proxy TLS Client
+///
+/// See [`ClientConfig`] for more information,
+/// this is only a new-type wrapper to be able to differentiate
+/// the info found in context for a dynamic https client.
+pub struct ProxyClientConfig(pub Arc<ClientConfig>);
 
 #[derive(Debug, Clone, Default)]
 /// Common API to configure a TLS Client
@@ -93,6 +103,17 @@ impl From<super::ClientHello> for ClientConfig {
                 .then_some(value.compression_algorithms),
             extensions: (!value.extensions.is_empty()).then_some(value.extensions),
             ..Default::default()
+        }
+    }
+}
+
+impl From<ClientConfig> for super::ClientHello {
+    fn from(value: ClientConfig) -> Self {
+        super::ClientHello {
+            protocol_version: ProtocolVersion::TLSv1_2,
+            cipher_suites: value.cipher_suites.unwrap_or_default(),
+            compression_algorithms: value.compression_algorithms.unwrap_or_default(),
+            extensions: value.extensions.unwrap_or_default(),
         }
     }
 }

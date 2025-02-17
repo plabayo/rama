@@ -2,4 +2,7 @@ mod provider;
 pub use provider::UserAgentProvider;
 
 mod layer;
-// TODO
+pub use layer::UserAgentEmulateLayer;
+
+mod service;
+pub use service::UserAgentEmulateService;

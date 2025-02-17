@@ -1,4 +1,4 @@
-use super::parse_http_user_agent_header;
+use super::{parse_http_user_agent_header, RequestInitiator};
 use rama_core::error::OpaqueError;
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde::{Deserialize, Deserializer, Serialize};
@@ -14,6 +14,7 @@ pub struct UserAgent {
     pub(super) http_agent_overwrite: Option<HttpAgent>,
     pub(super) tls_agent_overwrite: Option<TlsAgent>,
     pub(super) preserve_ua_header: bool,
+    pub(super) request_initiator: Option<RequestInitiator>,
 }
 
 impl fmt::Display for UserAgent {
@@ -74,6 +75,17 @@ impl UserAgent {
     /// the [`UserAgent::header_str`] value if possible.
     pub fn preserve_ua_header(&self) -> bool {
         self.preserve_ua_header
+    }
+
+    /// Define the [`RequestInitiator`] hint.
+    pub fn with_request_initiator(&mut self, req_init: RequestInitiator) -> &mut Self {
+        self.request_initiator = Some(req_init);
+        self
+    }
+
+    /// returns the [`RequestInitiator`] hint if available.
+    pub fn request_initiator(&self) -> Option<RequestInitiator> {
+        self.request_initiator
     }
 
     /// returns the `User-Agent` (header) value used by the [`UserAgent`].

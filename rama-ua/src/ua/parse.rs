@@ -32,6 +32,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
                     http_agent_overwrite: None,
                     tls_agent_overwrite: None,
                     preserve_ua_header: false,
+                    request_initiator: None,
                 }
             }
         }
@@ -74,6 +75,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
             preserve_ua_header: false,
+            request_initiator: None,
         };
     } else if contains_ignore_ascii_case(ua, "Desktop").is_some() {
         return UserAgent {
@@ -82,6 +84,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
             preserve_ua_header: false,
+            request_initiator: None,
         };
     } else {
         (None, None, None)
@@ -136,6 +139,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
             preserve_ua_header: false,
+            request_initiator: None,
         },
         (None, _, Some(platform)) => UserAgent {
             header,
@@ -143,6 +147,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
             preserve_ua_header: false,
+            request_initiator: None,
         },
         (None, _, None) => UserAgent {
             header,
@@ -150,6 +155,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
             preserve_ua_header: false,
+            request_initiator: None,
         },
     }
 }
