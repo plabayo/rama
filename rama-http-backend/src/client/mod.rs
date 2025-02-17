@@ -1,6 +1,7 @@
 //! Rama HTTP client module,
 //! which provides the [`HttpClient`] type to serve HTTP requests.
 
+#[cfg(any(feature = "rustls", feature = "boring"))]
 use std::sync::Arc;
 
 use proxy::layer::HttpProxyConnector;
@@ -9,17 +10,14 @@ use rama_core::{
     Context, Service,
 };
 use rama_http_types::{dep::http_body, Request, Response};
-use rama_net::{
-    client::{ConnectorService, EstablishedClientConnection},
-    tls::client::ProxyClientConfig,
-};
+use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_tls::std::client::{TlsConnector, TlsConnectorData};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_net::tls::client::ClientConfig;
+use rama_net::tls::client::{ClientConfig, ProxyClientConfig};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_core::error::ErrorContext;
