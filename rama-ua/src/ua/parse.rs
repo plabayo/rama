@@ -1,7 +1,9 @@
 #![allow(dead_code)]
 
+use std::sync::Arc;
+
 use super::{
-    info::{UserAgentData, UserAgentInfo},
+    info::{PlatformLike, UserAgentData, UserAgentInfo},
     DeviceKind, PlatformKind, UserAgent, UserAgentKind,
 };
 
@@ -20,8 +22,9 @@ const MAX_UA_LENGTH: usize = 512;
 /// - complete: we do not care about all the possible user agents out there, only the popular ones.
 ///
 /// That said. Do open a ticket if you find bugs or think something is missing.
-pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
-    let ua = header.as_str();
+pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserAgent {
+    let header = header.into();
+    let ua = header.as_ref();
     let ua = if ua.len() > MAX_UA_LENGTH {
         match ua.get(..MAX_UA_LENGTH) {
             Some(s) => s,
@@ -40,108 +43,99 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
         ua
     };
 
-    let (kind, kind_version, maybe_platform) = if let Some(loc) =
-        contains_ignore_ascii_case(ua, "Firefox")
-    {
-        let kind = UserAgentKind::Firefox;
-        let kind_version = parse_ua_version_firefox_and_chromium(&ua[loc..]);
-        (Some(kind), kind_version, None)
-    } else if let Some(loc) = contains_ignore_ascii_case(ua, "Chrom") {
-        let kind = UserAgentKind::Chromium;
-        let kind_version = parse_ua_version_firefox_and_chromium(&ua[loc..]);
-        (Some(kind), kind_version, None)
-    } else if contains_ignore_ascii_case(ua, "Safari").is_some() {
-        if let Some(firefox_loc) = contains_ignore_ascii_case(ua, "FxiOS") {
+    let (kind, kind_version, maybe_platform) =
+        if let Some(loc) = contains_ignore_ascii_case(ua, "Firefox") {
             let kind = UserAgentKind::Firefox;
-            let kind_version = parse_ua_version_firefox_and_chromium(&ua[firefox_loc..]);
-            (Some(kind), kind_version, Some(PlatformKind::IOS))
-        } else if let Some(chrome_loc) = contains_ignore_ascii_case(ua, "CriOS") {
-            let kind = UserAgentKind::Chromium;
-            let kind_version = parse_ua_version_firefox_and_chromium(&ua[chrome_loc..]);
-            (Some(kind), kind_version, Some(PlatformKind::IOS))
-        } else if let Some(chromium_loc) = contains_any_ignore_ascii_case(ua, &["Opera"]) {
-            let kind = UserAgentKind::Chromium;
-            let kind_version = parse_ua_version_firefox_and_chromium(&ua[chromium_loc..]);
+            let kind_version = parse_ua_version_firefox_and_chromium(&ua[loc..]);
             (Some(kind), kind_version, None)
+        } else if let Some(loc) = contains_ignore_ascii_case(ua, "Chrom") {
+            let kind = UserAgentKind::Chromium;
+            let kind_version = parse_ua_version_firefox_and_chromium(&ua[loc..]);
+            (Some(kind), kind_version, None)
+        } else if contains_ignore_ascii_case(ua, "Safari").is_some() {
+            if let Some(firefox_loc) = contains_ignore_ascii_case(ua, "FxiOS") {
+                let kind = UserAgentKind::Firefox;
+                let kind_version = parse_ua_version_firefox_and_chromium(&ua[firefox_loc..]);
+                (Some(kind), kind_version, Some(PlatformKind::IOS))
+            } else if let Some(chrome_loc) = contains_ignore_ascii_case(ua, "CriOS") {
+                let kind = UserAgentKind::Chromium;
+                let kind_version = parse_ua_version_firefox_and_chromium(&ua[chrome_loc..]);
+                (Some(kind), kind_version, Some(PlatformKind::IOS))
+            } else if let Some(chromium_loc) = contains_any_ignore_ascii_case(ua, &["Opera"]) {
+                let kind = UserAgentKind::Chromium;
+                let kind_version = parse_ua_version_firefox_and_chromium(&ua[chromium_loc..]);
+                (Some(kind), kind_version, None)
+            } else {
+                let kind = UserAgentKind::Safari;
+                let kind_version = parse_ua_version_safari(ua);
+                (Some(kind), kind_version, None)
+            }
         } else {
-            let kind = UserAgentKind::Safari;
-            let kind_version = parse_ua_version_safari(ua);
-            (Some(kind), kind_version, None)
-        }
-    } else if contains_any_ignore_ascii_case(ua, &["Mobile", "Phone", "Tablet", "Zune"]).is_some() {
-        return UserAgent {
-            header,
-            data: UserAgentData::Device(DeviceKind::Mobile),
-            http_agent_overwrite: None,
-            tls_agent_overwrite: None,
-            preserve_ua_header: false,
-            request_initiator: None,
+            (None, None, None)
         };
-    } else if contains_ignore_ascii_case(ua, "Desktop").is_some() {
-        return UserAgent {
-            header,
-            data: UserAgentData::Device(DeviceKind::Desktop),
-            http_agent_overwrite: None,
-            tls_agent_overwrite: None,
-            preserve_ua_header: false,
-            request_initiator: None,
-        };
-    } else {
-        (None, None, None)
-    };
 
-    let maybe_platform = match maybe_platform {
-        Some(platform) => Some(platform),
+    let (maybe_platform, maybe_device) = match maybe_platform {
+        Some(platform) => (Some(platform), None),
         None => {
             if contains_ignore_ascii_case(ua, "Windows").is_some() {
                 if contains_ignore_ascii_case(ua, "X11").is_some() {
-                    None
+                    (None, Some(DeviceKind::Mobile))
                 } else {
-                    Some(PlatformKind::Windows)
+                    (Some(PlatformKind::Windows), None)
                 }
             } else if contains_ignore_ascii_case(ua, "Android").is_some() {
                 if contains_ignore_ascii_case(ua, "iOS").is_some() {
-                    Some(PlatformKind::IOS)
+                    (Some(PlatformKind::IOS), None)
                 } else {
-                    Some(PlatformKind::Android)
+                    (Some(PlatformKind::Android), None)
                 }
             } else if contains_ignore_ascii_case(ua, "Linux").is_some() {
                 if contains_any_ignore_ascii_case(ua, &["Mobile", "UCW"]).is_some() {
-                    Some(PlatformKind::Android)
+                    (Some(PlatformKind::Android), None)
                 } else {
-                    Some(PlatformKind::Linux)
+                    (Some(PlatformKind::Linux), None)
                 }
             } else if contains_any_ignore_ascii_case(ua, &["iOS", "iPad", "iPod", "iPhone"])
                 .is_some()
             {
-                Some(PlatformKind::IOS)
+                (Some(PlatformKind::IOS), None)
             } else if contains_ignore_ascii_case(ua, "Mac").is_some() {
-                Some(PlatformKind::MacOS)
+                (Some(PlatformKind::MacOS), None)
             } else if contains_ignore_ascii_case(ua, "Darwin").is_some() {
                 if contains_ignore_ascii_case(ua, "86").is_some() {
-                    Some(PlatformKind::MacOS)
+                    (Some(PlatformKind::MacOS), None)
                 } else {
-                    Some(PlatformKind::IOS)
+                    (Some(PlatformKind::IOS), None)
                 }
+            } else if contains_any_ignore_ascii_case(ua, &["Mobile", "Phone", "Tablet", "Zune"])
+                .is_some()
+            {
+                (None, Some(DeviceKind::Mobile))
+            } else if contains_ignore_ascii_case(ua, "Desktop").is_some() {
+                (None, Some(DeviceKind::Desktop))
             } else {
-                None
+                (None, None)
             }
         }
     };
 
-    match (kind, kind_version, maybe_platform) {
-        (Some(kind), version, platform) => UserAgent {
+    match (kind, kind_version, maybe_platform, maybe_device) {
+        (Some(kind), version, platform, device) => UserAgent {
             header,
             data: UserAgentData::Standard {
                 info: UserAgentInfo { kind, version },
-                platform,
+                platform_like: match (platform, device) {
+                    (Some(platform), _) => Some(PlatformLike::Platform(platform)),
+                    (None, Some(device)) => Some(PlatformLike::Device(device)),
+                    (None, None) => None,
+                },
             },
             http_agent_overwrite: None,
             tls_agent_overwrite: None,
             preserve_ua_header: false,
             request_initiator: None,
         },
-        (None, _, Some(platform)) => UserAgent {
+        (None, _, Some(platform), _) => UserAgent {
             header,
             data: UserAgentData::Platform(platform),
             http_agent_overwrite: None,
@@ -149,7 +143,15 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
             preserve_ua_header: false,
             request_initiator: None,
         },
-        (None, _, None) => UserAgent {
+        (None, _, None, Some(device)) => UserAgent {
+            header,
+            data: UserAgentData::Device(device),
+            http_agent_overwrite: None,
+            tls_agent_overwrite: None,
+            preserve_ua_header: false,
+            request_initiator: None,
+        },
+        (None, _, None, None) => UserAgent {
             header,
             data: UserAgentData::Unknown,
             http_agent_overwrite: None,

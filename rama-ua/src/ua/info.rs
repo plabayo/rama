@@ -2,14 +2,14 @@ use super::{parse_http_user_agent_header, RequestInitiator};
 use rama_core::error::OpaqueError;
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde::{Deserialize, Deserializer, Serialize};
-use std::{convert::Infallible, fmt, str::FromStr};
+use std::{convert::Infallible, fmt, str::FromStr, sync::Arc};
 
 /// User Agent (UA) information.
 ///
 /// See [the module level documentation](crate) for more information.
 #[derive(Debug, Clone)]
 pub struct UserAgent {
-    pub(super) header: String,
+    pub(super) header: Arc<str>,
     pub(super) data: UserAgentData,
     pub(super) http_agent_overwrite: Option<HttpAgent>,
     pub(super) tls_agent_overwrite: Option<TlsAgent>,
@@ -28,11 +28,26 @@ impl fmt::Display for UserAgent {
 pub(super) enum UserAgentData {
     Standard {
         info: UserAgentInfo,
-        platform: Option<PlatformKind>,
+        platform_like: Option<PlatformLike>,
     },
     Platform(PlatformKind),
     Device(DeviceKind),
     Unknown,
+}
+
+#[derive(Debug, Clone)]
+pub(super) enum PlatformLike {
+    Platform(PlatformKind),
+    Device(DeviceKind),
+}
+
+impl PlatformLike {
+    pub(super) fn device(&self) -> DeviceKind {
+        match self {
+            PlatformLike::Platform(platform_kind) => platform_kind.device(),
+            PlatformLike::Device(device_kind) => *device_kind,
+        }
+    }
 }
 
 /// Information about the [`UserAgent`]
@@ -46,7 +61,7 @@ pub struct UserAgentInfo {
 
 impl UserAgent {
     /// Create a new [`UserAgent`] from a `User-Agent` (header) value.
-    pub fn new(header: impl Into<String>) -> Self {
+    pub fn new(header: impl Into<Arc<str>>) -> Self {
         parse_http_user_agent_header(header.into())
     }
 
@@ -94,14 +109,14 @@ impl UserAgent {
     }
 
     /// returns the device kind of the [`UserAgent`].
-    pub fn device(&self) -> DeviceKind {
+    pub fn device(&self) -> Option<DeviceKind> {
         match &self.data {
-            UserAgentData::Standard { platform, .. } => {
-                platform.map(|p| p.device()).unwrap_or(DeviceKind::Desktop)
-            }
-            UserAgentData::Platform(platform) => platform.device(),
-            UserAgentData::Device(kind) => *kind,
-            UserAgentData::Unknown => DeviceKind::Desktop,
+            UserAgentData::Standard {
+                ref platform_like, ..
+            } => platform_like.as_ref().map(|p| p.device()),
+            UserAgentData::Platform(platform) => Some(platform.device()),
+            UserAgentData::Device(kind) => Some(*kind),
+            UserAgentData::Unknown => None,
         }
     }
 
@@ -137,7 +152,10 @@ impl UserAgent {
     /// This is the platform the [`UserAgent`] is running on.
     pub fn platform(&self) -> Option<PlatformKind> {
         match &self.data {
-            UserAgentData::Standard { platform, .. } => *platform,
+            UserAgentData::Standard { platform_like, .. } => match platform_like {
+                Some(PlatformLike::Platform(platform)) => Some(*platform),
+                None | Some(PlatformLike::Device(_)) => None,
+            },
             UserAgentData::Platform(platform) => Some(*platform),
             _ => None,
         }
@@ -146,17 +164,17 @@ impl UserAgent {
     /// returns the [`HttpAgent`] used by the [`UserAgent`].
     ///
     /// [`UserAgent`]: super::UserAgent
-    pub fn http_agent(&self) -> HttpAgent {
+    pub fn http_agent(&self) -> Option<HttpAgent> {
         match self.http_agent_overwrite {
-            Some(agent) => agent,
+            Some(agent) => Some(agent),
             None => match &self.data {
-                UserAgentData::Standard { info, .. } => match info.kind {
+                UserAgentData::Standard { info, .. } => Some(match info.kind {
                     UserAgentKind::Chromium => HttpAgent::Chromium,
                     UserAgentKind::Firefox => HttpAgent::Firefox,
                     UserAgentKind::Safari => HttpAgent::Safari,
-                },
-                UserAgentData::Device(_) | UserAgentData::Platform(_) | UserAgentData::Unknown => {
-                    HttpAgent::Chromium
+                }),
+                UserAgentData::Platform(_) | UserAgentData::Device(_) | UserAgentData::Unknown => {
+                    None
                 }
             },
         }
@@ -165,17 +183,17 @@ impl UserAgent {
     /// returns the [`TlsAgent`] used by the [`UserAgent`].
     ///
     /// [`UserAgent`]: super::UserAgent
-    pub fn tls_agent(&self) -> TlsAgent {
+    pub fn tls_agent(&self) -> Option<TlsAgent> {
         match self.tls_agent_overwrite {
-            Some(agent) => agent,
+            Some(agent) => Some(agent),
             None => match &self.data {
-                UserAgentData::Standard { info, .. } => match info.kind {
+                UserAgentData::Standard { info, .. } => Some(match info.kind {
                     UserAgentKind::Chromium => TlsAgent::Boringssl,
                     UserAgentKind::Firefox => TlsAgent::Nss,
                     UserAgentKind::Safari => TlsAgent::Rustls,
-                },
+                }),
                 UserAgentData::Device(_) | UserAgentData::Platform(_) | UserAgentData::Unknown => {
-                    TlsAgent::Rustls
+                    None
                 }
             },
         }
@@ -507,9 +525,9 @@ mod tests {
             })
         );
         assert_eq!(ua.platform(), Some(PlatformKind::MacOS));
-        assert_eq!(ua.device(), DeviceKind::Desktop);
-        assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-        assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+        assert_eq!(ua.device(), Some(DeviceKind::Desktop));
+        assert_eq!(ua.http_agent(), Some(HttpAgent::Chromium));
+        assert_eq!(ua.tls_agent(), Some(TlsAgent::Boringssl));
     }
 
     #[test]
@@ -524,9 +542,9 @@ mod tests {
             })
         );
         assert_eq!(ua.platform(), Some(PlatformKind::MacOS));
-        assert_eq!(ua.device(), DeviceKind::Desktop);
-        assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-        assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+        assert_eq!(ua.device(), Some(DeviceKind::Desktop));
+        assert_eq!(ua.http_agent(), Some(HttpAgent::Chromium));
+        assert_eq!(ua.tls_agent(), Some(TlsAgent::Boringssl));
     }
 
     #[test]

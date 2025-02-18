@@ -123,16 +123,16 @@ where
         mut ctx: Context<State>,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let overvwrites = self
+        let overwrites = self
             .overwrite_header
             .as_ref()
             .and_then(|header| req.headers().get(header))
             .map(|header| header.as_bytes())
             .and_then(|value| serde_html_form::from_bytes::<UserAgentOverwrites>(value).ok());
 
-        let mut user_agent = overvwrites
+        let mut user_agent = overwrites
             .as_ref()
-            .and_then(|o| o.ua.as_ref())
+            .and_then(|o| o.ua.as_deref())
             .map(UserAgent::new)
             .or_else(|| {
                 req.headers()
@@ -141,7 +141,7 @@ where
             });
 
         if let Some(mut ua) = user_agent.take() {
-            if let Some(overwrites) = overvwrites {
+            if let Some(overwrites) = overwrites {
                 if let Some(http_agent) = overwrites.http {
                     ua.with_http_agent(http_agent);
                 }
@@ -242,6 +242,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_user_agent_classifier_layer_ua_iphone_app() {
+        const UA: &str = "iPhone App/1.0";
+
+        async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
+            let ua: &UserAgent = ctx.get().unwrap();
+
+            assert_eq!(ua.header_str(), UA);
+            assert!(ua.info().is_none());
+            assert_eq!(ua.platform(), Some(PlatformKind::IOS));
+            assert_eq!(ua.http_agent(), None);
+            assert_eq!(ua.tls_agent(), None);
+            assert!(!ua.preserve_ua_header());
+            assert!(ua.request_initiator().is_none());
+
+            Ok(StatusCode::OK.into_response())
+        }
+
+        let service = UserAgentClassifierLayer::new().layer(service_fn(handle));
+
+        let _ = service
+            .get("http://www.example.com")
+            .typed_header(headers::UserAgent::from_static(UA))
+            .send(Context::default())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
     async fn test_user_agent_classifier_layer_ua_chrome() {
         const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 
@@ -311,9 +339,9 @@ mod tests {
 
             assert_eq!(ua.header_str(), UA);
             assert!(ua.info().is_none());
-            assert!(ua.platform().is_none());
-            assert_eq!(ua.http_agent(), HttpAgent::Safari);
-            assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+            assert_eq!(ua.platform(), Some(PlatformKind::IOS));
+            assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
+            assert_eq!(ua.tls_agent(), Some(TlsAgent::Boringssl));
             assert!(ua.preserve_ua_header());
             assert_eq!(ua.request_initiator(), Some(RequestInitiator::Xhr));
 
@@ -330,7 +358,7 @@ mod tests {
                 "x-proxy-ua",
                 serde_html_form::to_string(&UserAgentOverwrites {
                     ua: Some(UA.to_owned()),
-                    http: Some(HttpAgent::Safari),
+                    http: Some(HttpAgent::Firefox),
                     tls: Some(TlsAgent::Boringssl),
                     preserve_ua: Some(true),
                     req_init: Some(RequestInitiator::Xhr),

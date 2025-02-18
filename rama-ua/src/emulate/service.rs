@@ -14,12 +14,13 @@ use rama_utils::macros::match_ignore_ascii_case_str;
 
 use crate::{HttpAgent, RequestInitiator, UserAgent, UserAgentProfile};
 
-use super::UserAgentProvider;
+use super::{UserAgentProvider, UserAgentSelectFallback};
 
 pub struct UserAgentEmulateService<S, P> {
     inner: S,
     provider: P,
     optional: bool,
+    select_fallback: Option<UserAgentSelectFallback>,
 }
 
 impl<S: fmt::Debug, P: fmt::Debug> fmt::Debug for UserAgentEmulateService<S, P> {
@@ -28,6 +29,7 @@ impl<S: fmt::Debug, P: fmt::Debug> fmt::Debug for UserAgentEmulateService<S, P> 
             .field("inner", &self.inner)
             .field("provider", &self.provider)
             .field("optional", &self.optional)
+            .field("select_fallback", &self.select_fallback)
             .finish()
     }
 }
@@ -38,6 +40,7 @@ impl<S: Clone, P: Clone> Clone for UserAgentEmulateService<S, P> {
             inner: self.inner.clone(),
             provider: self.provider.clone(),
             optional: self.optional,
+            select_fallback: self.select_fallback,
         }
     }
 }
@@ -48,6 +51,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
             inner,
             provider,
             optional: false,
+            select_fallback: None,
         }
     }
 
@@ -62,6 +66,19 @@ impl<S, P> UserAgentEmulateService<S, P> {
     /// See [`Self::optional`].
     pub fn set_optional(&mut self, optional: bool) -> &mut Self {
         self.optional = optional;
+        self
+    }
+
+    /// Choose what to do in case no profile could be selected
+    /// using the regular pre-conditions as specified by the provider.
+    pub fn select_fallback(mut self, fb: UserAgentSelectFallback) -> Self {
+        self.select_fallback = Some(fb);
+        self
+    }
+
+    /// See [`Self::select_fallback`].
+    pub fn set_select_fallback(&mut self, fb: UserAgentSelectFallback) -> &mut Self {
+        self.select_fallback = Some(fb);
         self
     }
 }
@@ -81,6 +98,10 @@ where
         mut ctx: Context<State>,
         req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
+        if let Some(fallback) = self.select_fallback {
+            ctx.insert(fallback);
+        }
+
         let profile = match self.provider.select_user_agent_profile(&ctx) {
             Some(profile) => profile,
             None => {
@@ -103,9 +124,7 @@ where
         );
 
         let preserve_http = matches!(
-            ctx.get::<HttpAgent>()
-                .copied()
-                .or_else(|| ctx.get::<UserAgent>().map(|ua| ua.http_agent())),
+            ctx.get::<UserAgent>().and_then(|ua| ua.http_agent()),
             Some(HttpAgent::Preserve),
         );
 
@@ -129,9 +148,7 @@ where
             use crate::TlsAgent;
 
             let preserve_tls = matches!(
-                ctx.get::<TlsAgent>()
-                    .copied()
-                    .or_else(|| ctx.get::<UserAgent>().map(|ua| ua.tls_agent())),
+                ctx.get::<UserAgent>().and_then(|ua| ua.tls_agent()),
                 Some(TlsAgent::Preserve),
             );
             if preserve_tls {

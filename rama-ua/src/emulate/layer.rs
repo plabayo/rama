@@ -2,9 +2,12 @@ use std::fmt;
 
 use rama_core::Layer;
 
+use super::UserAgentSelectFallback;
+
 pub struct UserAgentEmulateLayer<P> {
     provider: P,
     optional: bool,
+    select_fallback: Option<UserAgentSelectFallback>,
 }
 
 impl<P: fmt::Debug> fmt::Debug for UserAgentEmulateLayer<P> {
@@ -12,6 +15,7 @@ impl<P: fmt::Debug> fmt::Debug for UserAgentEmulateLayer<P> {
         f.debug_struct("UserAgentEmulateLayer")
             .field("provider", &self.provider)
             .field("optional", &self.optional)
+            .field("select_fallback", &self.select_fallback)
             .finish()
     }
 }
@@ -21,6 +25,7 @@ impl<P: Clone> Clone for UserAgentEmulateLayer<P> {
         Self {
             provider: self.provider.clone(),
             optional: self.optional,
+            select_fallback: self.select_fallback,
         }
     }
 }
@@ -30,6 +35,7 @@ impl<P> UserAgentEmulateLayer<P> {
         Self {
             provider,
             optional: false,
+            select_fallback: None,
         }
     }
 
@@ -46,12 +52,30 @@ impl<P> UserAgentEmulateLayer<P> {
         self.optional = optional;
         self
     }
+
+    /// Choose what to do in case no profile could be selected
+    /// using the regular pre-conditions as specified by the provider.
+    pub fn select_fallback(mut self, fb: UserAgentSelectFallback) -> Self {
+        self.select_fallback = Some(fb);
+        self
+    }
+
+    /// See [`Self::select_fallback`].
+    pub fn set_select_fallback(&mut self, fb: UserAgentSelectFallback) -> &mut Self {
+        self.select_fallback = Some(fb);
+        self
+    }
 }
 
 impl<S, P: Clone> Layer<S> for UserAgentEmulateLayer<P> {
     type Service = super::UserAgentEmulateService<S, P>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        super::UserAgentEmulateService::new(inner, self.provider.clone()).optional(self.optional)
+        let mut svc = super::UserAgentEmulateService::new(inner, self.provider.clone())
+            .optional(self.optional);
+        if let Some(fb) = self.select_fallback {
+            svc.set_select_fallback(fb);
+        }
+        svc
     }
 }

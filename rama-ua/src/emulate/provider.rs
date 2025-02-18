@@ -4,6 +4,23 @@ use rama_core::Context;
 
 use crate::{UserAgentDatabase, UserAgentProfile};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+/// Fallback strategy that can be injected into the context
+/// to customise what a provider can be requested to do
+/// in case the preconditions for UA selection were not fulfilled.
+///
+/// It is advised only fallback for pre-conditions and not
+/// post-selection failure as the latter would be rather confusing.
+///
+/// For example if you request a Chromium profile you do not expect a Firefox one.
+/// However if you do not give any filters it is fair to assume a random profile is desired,
+/// given those all satisfy the abscence of filters.
+pub enum UserAgentSelectFallback {
+    #[default]
+    Abort,
+    Random,
+}
+
 pub trait UserAgentProvider<State>: Send + Sync + 'static {
     fn select_user_agent_profile(&self, ctx: &Context<State>) -> Option<&UserAgentProfile>;
 }
@@ -25,7 +42,11 @@ impl<State> UserAgentProvider<State> for UserAgentProfile {
 impl<State> UserAgentProvider<State> for UserAgentDatabase {
     #[inline]
     fn select_user_agent_profile(&self, ctx: &Context<State>) -> Option<&UserAgentProfile> {
-        ctx.get().and_then(|agent| self.get(agent))
+        match (ctx.get(), ctx.get()) {
+            (Some(agent), _) => self.get(agent),
+            (None, Some(UserAgentSelectFallback::Random)) => self.rnd(),
+            (None, None | Some(UserAgentSelectFallback::Abort)) => None,
+        }
     }
 }
 
