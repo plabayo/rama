@@ -9,7 +9,7 @@ use rama_core::{Context, Layer, Service};
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::stream::Stream;
-use rama_net::tls::client::NegotiatedTlsParameters;
+use rama_net::tls::client::{ClientConfig, NegotiatedTlsParameters};
 use rama_net::tls::ApplicationProtocol;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
@@ -273,7 +273,21 @@ where
             "TlsConnector(auto): attempt to secure inner connection",
         );
 
-        let connector_data = ctx.get().cloned();
+        let connector_data = match ctx.get::<TlsConnectorData>() {
+            Some(cd) => Some(cd.clone()),
+            None => match ctx.get::<Arc<ClientConfig>>() {
+                // support info passed down by layers such as tls emulators
+                Some(tls_config) => Some(
+                    tls_config
+                        .as_ref()
+                        .clone()
+                        .try_into()
+                        .context("turn context ClientConfig into rustls connector data")?,
+                ),
+                None => None,
+            },
+        };
+
         let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         tracing::trace!(
@@ -332,7 +346,21 @@ where
 
         let server_host = transport_ctx.authority.host().clone();
 
-        let connector_data = ctx.get().cloned();
+        let connector_data = match ctx.get::<TlsConnectorData>() {
+            Some(cd) => Some(cd.clone()),
+            None => match ctx.get::<Arc<ClientConfig>>() {
+                // support info passed down by layers such as tls emulators
+                Some(tls_config) => Some(
+                    tls_config
+                        .as_ref()
+                        .clone()
+                        .try_into()
+                        .context("turn context ClientConfig into rustls connector data")?,
+                ),
+                None => None,
+            },
+        };
+
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
         ctx.insert(negotiated_params);
 
@@ -388,7 +416,21 @@ where
             }
         };
 
-        let connector_data = ctx.get().cloned();
+        let connector_data = match ctx.get::<TlsConnectorData>() {
+            Some(cd) => Some(cd.clone()),
+            None => match ctx.get::<Arc<ClientConfig>>() {
+                // support info passed down by layers such as tls emulators
+                Some(tls_config) => Some(
+                    tls_config
+                        .as_ref()
+                        .clone()
+                        .try_into()
+                        .context("turn context ClientConfig into rustls connector data")?,
+                ),
+                None => None,
+            },
+        };
+
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
         ctx.insert(negotiated_params);
 
