@@ -1,3 +1,4 @@
+use itertools::Itertools as _;
 use rand::seq::IndexedRandom as _;
 use std::collections::HashMap;
 
@@ -15,6 +16,25 @@ pub struct UserAgentDatabase {
 }
 
 impl UserAgentDatabase {
+    pub fn iter_ua_str(&self) -> impl Iterator<Item = &str> {
+        self.map_ua_string.keys().map(|s| s.as_str())
+    }
+
+    pub fn iter_ua_kind(&self) -> impl Iterator<Item = &UserAgentKind> {
+        self.map_ua_kind.keys()
+    }
+
+    pub fn iter_platform(&self) -> impl Iterator<Item = &PlatformKind> {
+        self.map_platform
+            .keys()
+            .map(|(_, platform)| platform)
+            .dedup()
+    }
+
+    pub fn iter_device(&self) -> impl Iterator<Item = &DeviceKind> {
+        self.map_device.keys().map(|(_, device)| device).dedup()
+    }
+
     pub fn insert(&mut self, profile: UserAgentProfile) {
         let index = self.profiles.len();
         if let Some(ua_header) = profile.ua_str() {
@@ -57,42 +77,64 @@ impl UserAgentDatabase {
             return Some(profile);
         }
 
-        match ua.ua_kind() {
-            Some(ua_kind) => match ua.platform() {
+        match (ua.ua_kind(), ua.platform(), ua.device()) {
+            (Some(ua_kind), Some(platform), _) => {
                 // UA + Platform Match (e.g. chrome windows)
-                Some(platform) => self
-                    .map_platform
+                self.map_platform
                     .get(&(ua_kind, platform))
                     .and_then(|v| v.choose(&mut rand::rng()))
-                    .and_then(|idx| self.profiles.get(*idx)),
+                    .and_then(|idx| self.profiles.get(*idx))
+            }
+            (Some(ua_kind), None, Some(device)) => {
                 // UA + Device match (e.g. firefox desktop)
-                None => match ua.device() {
-                    Some(device) => self
-                        .map_device
-                        .get(&(ua_kind, device))
-                        .and_then(|v| v.choose(&mut rand::rng()))
-                        .and_then(|idx| self.profiles.get(*idx)),
-                    None => self
-                        .map_ua_kind
-                        .get(&ua_kind)
-                        .and_then(|v| v.choose(&mut rand::rng()))
-                        .and_then(|idx| self.profiles.get(*idx)),
-                },
-            },
-            // Market-share Kind + Device match (e.g. chrome desktop)
-            None => {
-                let ua_kind = self.market_rnd_ua_kind();
-                match ua.device() {
-                    Some(device) => self
-                        .map_device
-                        .get(&(ua_kind, device))
-                        .and_then(|v| v.choose(&mut rand::rng()))
-                        .and_then(|idx| self.profiles.get(*idx)),
-                    None => self
-                        .map_ua_kind
-                        .get(&ua_kind)
-                        .and_then(|v| v.choose(&mut rand::rng()))
-                        .and_then(|idx| self.profiles.get(*idx)),
+                self.map_device
+                    .get(&(ua_kind, device))
+                    .and_then(|v| v.choose(&mut rand::rng()))
+                    .and_then(|idx| self.profiles.get(*idx))
+            }
+            (Some(ua_kind), None, None) => {
+                // random profile for this UA
+                self.map_ua_kind
+                    .get(&ua_kind)
+                    .and_then(|v| v.choose(&mut rand::rng()))
+                    .and_then(|idx| self.profiles.get(*idx))
+            }
+            (None, Some(platform), _) => {
+                // NOTE: I guestimated these numbers... Feel free to help improve these
+                let ua_kind = match platform {
+                    PlatformKind::Windows => self.market_rnd_ua_kind_with_shares(7, 0),
+                    PlatformKind::MacOS => self.market_rnd_ua_kind_with_shares(9, 35),
+                    PlatformKind::Linux => self.market_rnd_ua_kind_with_shares(22, 0),
+                    PlatformKind::Android => self.market_rnd_ua_kind_with_shares(3, 0),
+                    PlatformKind::IOS => self.market_rnd_ua_kind_with_shares(5, 42),
+                };
+                self.map_platform
+                    .get(&(ua_kind, platform))
+                    .and_then(|v| v.choose(&mut rand::rng()))
+                    .and_then(|idx| self.profiles.get(*idx))
+            }
+            (None, None, device) => {
+                // random ua kind matching with device or not
+                match device {
+                    Some(device) => {
+                        let ua_kind = match device {
+                            // https://gs.statcounter.com/browser-market-share/desktop/worldwide (feb 2025)
+                            DeviceKind::Desktop => self.market_rnd_ua_kind_with_shares(7, 9),
+                            // https://gs.statcounter.com/browser-market-share/mobile/worldwide (feb 2025)
+                            DeviceKind::Mobile => self.market_rnd_ua_kind_with_shares(1, 23),
+                        };
+                        self.map_device
+                            .get(&(ua_kind, device))
+                            .and_then(|v| v.choose(&mut rand::rng()))
+                            .and_then(|idx| self.profiles.get(*idx))
+                    }
+                    None => {
+                        let ua_kind = self.market_rnd_ua_kind();
+                        self.map_ua_kind
+                            .get(&ua_kind)
+                            .and_then(|v| v.choose(&mut rand::rng()))
+                            .and_then(|idx| self.profiles.get(*idx))
+                    }
                 }
             }
         }
@@ -103,16 +145,18 @@ impl UserAgentDatabase {
         self.profiles.iter()
     }
 
-    /// market share from
-    /// https://gs.statcounter.com/browser-market-share/mobile/worldwide (feb 2025)
     fn market_rnd_ua_kind(&self) -> UserAgentKind {
+        // https://gs.statcounter.com/browser-market-share/mobile/worldwide (feb 2025)
+        self.market_rnd_ua_kind_with_shares(3, 18)
+    }
+
+    fn market_rnd_ua_kind_with_shares(&self, firefox: i32, safari: i32) -> UserAgentKind {
         let r = rand::random_range(0..=100);
-        if r < 3 && self.map_ua_kind.contains_key(&UserAgentKind::Firefox) {
+        if r < firefox && self.map_ua_kind.contains_key(&UserAgentKind::Firefox) {
             UserAgentKind::Firefox
-        } else if r < 18 && self.map_ua_kind.contains_key(&UserAgentKind::Safari) {
+        } else if r < safari + firefox && self.map_ua_kind.contains_key(&UserAgentKind::Safari) {
             UserAgentKind::Safari
         } else {
-            // ~79% x-x
             UserAgentKind::Chromium
         }
     }

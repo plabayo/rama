@@ -35,8 +35,8 @@ async fn test_http_user_agent_classifier() {
     assert_eq!(ua_rama.kind, None);
     assert_eq!(ua_rama.version, None);
     assert_eq!(ua_rama.platform, None);
-    assert_eq!(ua_rama.http_agent, Some("Chromium".to_owned()));
-    assert_eq!(ua_rama.tls_agent, Some("Rustls".to_owned()));
+    assert_eq!(ua_rama.http_agent, None);
+    assert_eq!(ua_rama.tls_agent, None);
 
     const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 Edg/124.0.2478.67";
 
@@ -81,7 +81,7 @@ async fn test_http_user_agent_classifier() {
     assert_eq!(ua_app.ua, UA_APP);
     assert!(ua_app.kind.is_none());
     assert!(ua_app.version.is_none());
-    assert!(ua_app.platform.is_none());
+    assert_eq!(ua_app.platform, Some("iOS".to_owned()));
     assert_eq!(ua_app.http_agent, Some("Safari".to_owned()));
     assert_eq!(ua_app.tls_agent, Some("Boringssl".to_owned()));
 }

@@ -2515,6 +2515,7 @@ name = "rama-ua"
 version = "0.2.0-alpha.7"
 dependencies = [
  "bytes",
+ "itertools 0.14.0",
  "rama-core",
  "rama-http-types",
  "rama-net",
