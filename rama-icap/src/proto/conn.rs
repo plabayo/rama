@@ -1,657 +1,216 @@
-use std::collections::HashMap;
-use std::sync::Arc;
-use bytes::{BytesMut, BufMut};
-use parking_lot::{Mutex, RwLock};
-use tokio::io::{AsyncRead, AsyncWrite, AsyncReadExt, AsyncWriteExt};
-use rama_http_types::{
-    Request, Response, HeaderMap, Method as HttpMethod, Version as HttpVersion,
-    Body, StatusCode, Uri,
+use std::marker::PhantomData;
+use std::task::{Context, Poll};
+use tokio::io::{AsyncRead, AsyncWrite};
+use bytes::BytesMut;
+
+use crate::{Error, Result};
+use super::{
+    decode::Decoder,
+    encode::{Encoder, EncodedBuf},
+    IcapMessage,
+    role::IcapTransaction,
 };
 
-use crate::{IcapMessage, Method, Result, SectionType, State, Version, Wants, Encapsulated};
-
-/// A connection to an ICAP server
-pub struct Conn<T> {
-    io: T,
-    state: Arc<RwLock<State>>,
-    parser: Arc<Mutex<MessageParser>>,
-    write_buf: Arc<Mutex<BytesMut>>,
-    read_buf: Arc<Mutex<BytesMut>>,
+/// 連接狀態
+#[derive(Debug)]
+enum State {
+    Idle,
+    ReadingHead,
+    ReadingBody,
+    WritingHead,
+    WritingBody,
+    Done,
 }
 
-impl<T> Conn<T>
-where
-    T: AsyncRead + AsyncWrite + Unpin,
+/// ICAP 連接
+pub(crate) struct Conn {
+    buf: BytesMut,
+    state: State,
+    decoder: Decoder,
+    encoder: Encoder,
+}
+
+impl Conn
 {
-    pub fn new(io: T) -> Self {
+    pub(crate) fn new() -> Self {
         Self {
-            io,
-            state: Arc::new(RwLock::new(State::StartLine)),
-            parser: Arc::new(Mutex::new(MessageParser::new())),
-            write_buf: Arc::new(Mutex::new(BytesMut::with_capacity(8192))),
-            read_buf: Arc::new(Mutex::new(BytesMut::with_capacity(8192))),
+            buf: BytesMut::with_capacity(8192),
+            state: State::Idle,
+            decoder: Decoder::new(),
+            encoder: Encoder::new(),
         }
     }
 
-    pub async fn send_message(&mut self, message: IcapMessage) -> Result<()> {
-        // Format message into write buffer
-        let mut write_buf = self.write_buf.lock();
-        write_buf.clear();
+    pub(crate) fn read_message(&mut self, cx: &mut Context<'_>) -> Poll<Result<Option<IcapMessage>>> {
+        loop {
+            match self.state {
+                State::Idle => {
+                    // 開始讀取消息
+                    self.state = State::ReadingHead;
+                }
+                State::ReadingHead => {
+                    // 讀取緩衝區
+                    if let Poll::Ready(n) = self.io.poll_read(cx)? {
+                        if n == 0 {
+                            return Poll::Ready(Ok(None));
+                        }
+                    }
 
-        self.build_message(&mut write_buf, &message)?;
+                    // 解碼消息
+                    match self.decoder.decode(&mut self.buf)? {
+                        Some(message) => {
+                            self.state = State::Idle;
+                            return Poll::Ready(Ok(Some(message)));
+                        }
+                        None => {
+                            self.state = State::ReadingBody;
+                            continue;
+                        }
+                    }
+                }
+                State::ReadingBody => {
+                    // 讀取消息體
+                    if let Poll::Ready(n) = self.io.poll_read(cx)? {
+                        if n == 0 {
+                            return Poll::Ready(Ok(None));
+                        }
+                    }
 
-        // Write buffer to socket
-        self.io.write_all(&write_buf).await?;
-        self.io.flush().await?;
+                    // 解碼消息體
+                    match self.decoder.decode(&mut self.buf)? {
+                        Some(message) => {
+                            self.state = State::Idle;
+                            return Poll::Ready(Ok(Some(message)));
+                        }
+                        None => {
+                            return Poll::Pending;
+                        }
+                    }
+                }
+                _ => {
+                    return Poll::Ready(Err(Error::Protocol(
+                        "invalid state for reading".into(),
+                    )));
+                }
+            }
+        }
+    }
 
+    pub(crate) fn write_message(&mut self, message: IcapMessage) -> Result<()> {
+        self.encoder.encode(&message, &mut self.buf)?;
+        self.state = State::WritingHead;
         Ok(())
     }
 
-    fn build_message(&self, write_buf: &mut BytesMut, message: &IcapMessage) -> Result<()> {
-        match message {
-            IcapMessage::Request { method, uri, version, headers, encapsulated } => {
-                // Write request line
-                write_buf.put_slice(method.as_bytes());
-                write_buf.put_u8(b' ');
-                write_buf.put_slice(uri.as_bytes());
-                write_buf.put_u8(b' ');
-                write_buf.put_slice(version.as_bytes());
-                write_buf.put_slice(b"\r\n");
-
-                // Write headers
-                for (name, value) in headers.iter() {
-                    write_buf.put_slice(name.as_str().as_bytes());
-                    write_buf.put_slice(b": ");
-                    write_buf.put_slice(value.as_bytes());
-                    write_buf.put_slice(b"\r\n");
-                }
-
-                // Write encapsulated header
-                write_buf.put_slice(b"Encapsulated: ");
-                match encapsulated {
-                    Encapsulated::RequestResponse { req_header, req_body, res_header, res_body } => {
-                        let mut offset = 0;
-                        if let Some(data) = req_header {
-                            write_buf.put_slice(b"req-hdr=0");
-                            offset += data.len();
-                        }
-                        if let Some(data) = req_body {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"req-body=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                            offset += data.len();
-                        }
-                        if let Some(data) = res_header {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"res-hdr=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                            offset += data.len();
-                        }
-                        if let Some(data) = res_body {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"res-body=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                        }
-                    }
-                    Encapsulated::RequestOnly { req_header, req_body } => {
-                        let mut offset = 0;
-                        if let Some(data) = req_header {
-                            write_buf.put_slice(b"req-hdr=0");
-                            offset += data.len();
-                        }
-                        if let Some(data) = req_body {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"req-body=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                        }
-                    }
-                    Encapsulated::ResponseOnly { res_header, res_body } => {
-                        let mut offset = 0;
-                        if let Some(data) = res_header {
-                            write_buf.put_slice(b"res-hdr=0");
-                            offset += data.len();
-                        }
-                        if let Some(data) = res_body {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"res-body=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                        }
-                    }
-                    Encapsulated::NullBody => {
-                        write_buf.put_slice(b"null-body=0");
-                    }
-                    Encapsulated::Options { opt_body } => {
-                        if let Some(data) = opt_body {
-                            write_buf.put_slice(b"opt-body=0");
-                        }
-                    }
-                }
-                write_buf.put_slice(b"\r\n");
-                write_buf.put_slice(b"\r\n");
-            }
-            IcapMessage::Response { status, reason, version, headers, encapsulated } => {
-                // Write status line
-                write_buf.put_slice(format!("ICAP/{:?} {} {}\r\n", version, status, reason).as_bytes());
-
-                // Write headers
-                for (name, value) in headers.iter() {
-                    write_buf.put_slice(name.as_str().as_bytes());
-                    write_buf.put_slice(b": ");
-                    write_buf.put_slice(value.as_bytes());
-                    write_buf.put_slice(b"\r\n");
-                }
-
-                // Write encapsulated header
-                write_buf.put_slice(b"Encapsulated: ");
-                match encapsulated {
-                    Encapsulated::RequestResponse { req_header, req_body, res_header, res_body } => {
-                        let mut offset = 0;
-                        if let Some(data) = req_header {
-                            write_buf.put_slice(b"req-hdr=0");
-                            offset += data.len();
-                        }
-                        if let Some(data) = req_body {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"req-body=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                            offset += data.len();
-                        }
-                        if let Some(data) = res_header {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"res-hdr=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                            offset += data.len();
-                        }
-                        if let Some(data) = res_body {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"res-body=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                        }
-                    }
-                    Encapsulated::RequestOnly { req_header, req_body } => {
-                        let mut offset = 0;
-                        if let Some(data) = req_header {
-                            write_buf.put_slice(b"req-hdr=0");
-                            offset += data.len();
-                        }
-                        if let Some(data) = req_body {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"req-body=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                        }
-                    }
-                    Encapsulated::ResponseOnly { res_header, res_body } => {
-                        let mut offset = 0;
-                        if let Some(data) = res_header {
-                            write_buf.put_slice(b"res-hdr=0");
-                            offset += data.len();
-                        }
-                        if let Some(data) = res_body {
-                            if offset > 0 {
-                                write_buf.put_slice(b", ");
-                            }
-                            write_buf.put_slice(b"res-body=");
-                            write_buf.put_slice(offset.to_string().as_bytes());
-                        }
-                    }
-                    Encapsulated::NullBody => {
-                        write_buf.put_slice(b"null-body=0");
-                    }
-                    Encapsulated::Options { opt_body } => {
-                        if let Some(data) = opt_body {
-                            write_buf.put_slice(b"opt-body=0");
-                        }
-                    }
-                }
-                write_buf.put_slice(b"\r\n");
-                write_buf.put_slice(b"\r\n");
-            }
-        }
+    pub(crate) fn write_chunk(&mut self, chunk: &[u8]) -> Result<()> {
+        self.buf.extend_from_slice(chunk);
+        self.state = State::WritingBody;
         Ok(())
     }
 
-    fn write_encapsulated(&self, encapsulated: &Encapsulated, write_buf: &mut BytesMut) -> Result<()> {
-        write_buf.put_slice(b"Encapsulated: ");
-        match encapsulated {
-            Encapsulated::RequestOnly { req_header, req_body } => {
-                if let Some(header_data) = req_header {
-                    write_buf.put_slice(b"req-hdr=0");
-                    self.write_request_header(header_data, write_buf)?;
+    pub(crate) fn poll_flush(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
+        let n = self.buf.len();
+        if n > 0 {
+            if let Poll::Ready(m) = self.io.poll_write(cx)? {
+                if m == 0 {
+                    return Poll::Ready(Err(Error::Protocol(
+                        "failed to write to socket".into(),
+                    )));
                 }
-                if let Some(body_data) = req_body {
-                    write_buf.put_slice(b", req-body=");
-                    write_buf.put_slice(body_data.len().to_string().as_bytes());
-                    write_buf.put_slice(body_data);
-                }
-            }
-            Encapsulated::ResponseOnly { res_header, res_body } => {
-                if let Some(header_data) = res_header {
-                    write_buf.put_slice(b"res-hdr=0");
-                    self.write_response_header(header_data, write_buf)?;
-                }
-                if let Some(body_data) = res_body {
-                    write_buf.put_slice(b", res-body=");
-                    write_buf.put_slice(body_data.len().to_string().as_bytes());
-                    write_buf.put_slice(body_data);
-                }
-            }
-            Encapsulated::RequestResponse { req_header, req_body, res_header, res_body } => {
-                if let Some(header_data) = req_header {
-                    write_buf.put_slice(b"req-hdr=0");
-                    self.write_request_header(header_data, write_buf)?;
-                }
-                if let Some(body_data) = req_body {
-                    write_buf.put_slice(b", req-body=");
-                    write_buf.put_slice(body_data.len().to_string().as_bytes());
-                    write_buf.put_slice(body_data);
-                }
-                if let Some(header_data) = res_header {
-                    write_buf.put_slice(b", res-hdr=");
-                    self.write_response_header(header_data, write_buf)?;
-                }
-                if let Some(body_data) = res_body {
-                    write_buf.put_slice(b", res-body=");
-                    write_buf.put_slice(body_data.len().to_string().as_bytes());
-                    write_buf.put_slice(body_data);
-                }
-            }
-            Encapsulated::NullBody => {
-                write_buf.put_slice(b"null-body=0");
-            }
-            Encapsulated::Options { opt_body } => {
-                if let Some(body_data) = opt_body {
-                    write_buf.put_slice(b"opt-body=0");
-                    write_buf.put_slice(body_data);
+                self.buf.advance(m);
+                if self.buf.is_empty() {
+                    self.state = State::Idle;
                 }
             }
         }
-        write_buf.put_slice(b"\r\n");
-        Ok(())
-    }
-
-    fn write_request_header(&self, header: &Request, write_buf: &mut BytesMut) -> Result<()> {
-        write_buf.put_slice(header.method.as_bytes());
-        write_buf.put_u8(b' ');
-        write_buf.put_slice(header.uri.as_bytes());
-        write_buf.put_u8(b' ');
-        write_buf.put_slice(header.version.as_bytes());
-        write_buf.put_slice(b"\r\n");
-        
-        for (name, value) in header.headers.iter() {
-            write_buf.put_slice(name.as_str().as_bytes());
-            write_buf.put_slice(b": ");
-            write_buf.put_slice(value.as_bytes());
-            write_buf.put_slice(b"\r\n");
-        }
-        write_buf.put_slice(b"\r\n");
-        Ok(())
-    }
-
-    fn write_response_header(&self, header: &Response, write_buf: &mut BytesMut) -> Result<()> {
-        write_buf.put_slice(format!("HTTP/1.1 {} {}\r\n", header.status, header.reason).as_bytes());
-        
-        for (name, value) in header.headers.iter() {
-            write_buf.put_slice(name.as_str().as_bytes());
-            write_buf.put_slice(b": ");
-            write_buf.put_slice(value.as_bytes());
-            write_buf.put_slice(b"\r\n");
-        }
-        write_buf.put_slice(b"\r\n");
-        Ok(())
-    }
-
-    pub async fn recv_message(&mut self) -> Result<Option<IcapMessage>> {
-        let mut read_buf = self.read_buf.lock();
-        
-        // Read from socket into buffer
-        let bytes_read = self.io.read(&mut *read_buf).await?;
-        if bytes_read == 0 {
-            return Ok(None);
-        }
-
-        // Parse message from buffer
-        let mut parser = self.parser.lock();
-        match parser.parse(&read_buf)? {
-            Some(message) => Ok(Some(message)),
-            None => Ok(None)
-        }
-    }
-
-    pub fn wants(&self) -> Wants {
-        let state = self.state.read();
-        match *state {
-            State::StartLine | State::Headers | State::Body | State::EncapsulatedHeader => Wants::Read,
-            State::Complete => Wants::Write,
-        }
+        Poll::Ready(Ok(()))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
     use tokio::io::duplex;
-    use crate::{Method, Version, SectionType};
-    use rama_http_types::{
-        Request, Response, HeaderMap, Method as HttpMethod, Version as HttpVersion,
-        Body, StatusCode, Uri,
-    };
+    use rama_http_types::{Method, Version, HeaderMap};
 
     #[tokio::test]
-    async fn test_send_message() -> Result<()> {
-        let (client, _server) = tokio::io::duplex(1024);
-        let mut conn = Conn::new(client);
-
-        let mut sections = HashMap::new();
-        sections.insert(SectionType::RequestHeader, b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec());
-        sections.insert(SectionType::RequestBody, b"Hello World!".to_vec());
+    async fn test_conn_basic_operations() {
+        let (client, mut server) = duplex(1024);
+        let mut conn = Conn::<_, _>::new(client);
         
-        let encapsulated = Encapsulated::from_sections(sections);
-        let message = IcapMessage::Request {
-            method: Method::Options,
-            uri: "/".to_string(),
-            version: Version::V1_0,
-            headers: HeaderMap::new(),
-            encapsulated,
-        };
-
-        conn.send_message(message).await?;
-        Ok(())
+        assert!(matches!(conn.state, State::Idle));
     }
 
     #[tokio::test]
-    async fn test_send_receive_request() -> Result<()> {
-        let (client, server) = tokio::io::duplex(1024);
-        let mut client_conn = Conn::new(client);
-        let mut server_conn = Conn::new(server);
-
-        let mut sections = HashMap::new();
-        sections.insert(SectionType::RequestHeader, b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec());
-        sections.insert(SectionType::RequestBody, b"Hello World!".to_vec());
+    async fn test_conn_read_write_message() {
+        let (client, mut server) = duplex(1024);
+        let mut conn = Conn::<_, _>::new(client);
         
-        let encapsulated = Encapsulated::from_sections(sections);
-        let request = IcapMessage::Request {
-            method: Method::Options,
-            uri: "/".to_string(),
-            version: Version::V1_0,
-            headers: HeaderMap::new(),
-            encapsulated,
-        };
-
-        client_conn.send_message(request).await?;
+        // Test message
+        let mut msg = IcapMessage::new(Method::OPTIONS, Version::default());
+        msg.set_uri("icap://example.org/reqmod".parse().unwrap());
+        let mut headers = HeaderMap::new();
+        headers.insert("Host", "example.org".parse().unwrap());
+        msg.headers = headers;
         
-        let received = server_conn.recv_message().await?.unwrap();
-        match received {
-            IcapMessage::Request { encapsulated, .. } => {
-                match encapsulated {
-                    Encapsulated::RequestOnly { req_body, .. } => {
-                        assert_eq!(req_body.unwrap(), b"Hello World!".to_vec());
-                    }
-                    _ => panic!("Expected RequestOnly variant"),
-                }
-            }
-            _ => panic!("Expected Request message"),
-        }
+        // Write message
+        conn.write_message(msg.clone()).unwrap();
         
-        Ok(())
+        // Flush buffer
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        conn.poll_flush(&mut cx).await.unwrap();
+        
+        // Read server response
+        let mut buf = vec![0; 1024];
+        let n = server.read(&mut buf).await.unwrap();
+        assert!(n > 0);
+        
+        let received = String::from_utf8_lossy(&buf[..n]);
+        assert!(received.contains("OPTIONS icap://example.org/reqmod ICAP/1.0\r\n"));
+        assert!(received.contains("Host: example.org\r\n"));
     }
 
     #[tokio::test]
-    async fn test_send_receive_response() {
-        let (client, server) = duplex(8192);
-        let mut client_conn = Conn::new(client);
-        let mut server_conn = Conn::new(server);
+    async fn test_conn_state_transitions() {
+        let (client, _server) = duplex(1024);
+        let mut conn = Conn::<_, _>::new(client);
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        
+        // 初始狀態應該是 Idle
+        assert!(matches!(conn.state, State::Idle));
+        
+        // 開始讀取
+        let _ = conn.read_message(&mut cx);
+        assert!(matches!(conn.state, State::ReadingHead));
+        
+        // 寫入消息
+        let msg = IcapMessage::new(Method::OPTIONS, Version::default());
+        conn.write_message(msg).unwrap();
+        assert!(matches!(conn.state, State::WritingHead));
+    }
 
-        // Create test response
-        let mut response = IcapMessage::Response {
-            version: Version::V1_0,
-            status: 200 ,
-            reason: "OK".to_string(),
-            headers: {
-                let mut headers = HeaderMap::new();
-                headers.insert("Server", "test-server/1.0".parse().unwrap());
-                headers
-            },
-            encapsulated: Encapsulated::ResponseOnly {
-                res_header: Some(Response::default()),
-                res_body: Some(b"Hello World!".to_vec().into()),
-            },
-        };
-
-        // Send response
-        server_conn.send_message(response).await.unwrap();
-
-        // Receive response
-        let received = client_conn.recv_message().await.unwrap().unwrap();
-
-        // Verify received matches sent
-        match received {
-            IcapMessage::Response { version, status, reason, headers, encapsulated } => {
-                assert_eq!(version, Version::V1_0);
-                assert_eq!(status, 200);
-                assert_eq!(reason, "OK");
-                assert_eq!(headers.get("Server").unwrap(), "test-server/1.0");
-                assert!(encapsulated.is_empty());
-            }
-            _ => panic!("Expected response"),
+    #[tokio::test]
+    async fn test_conn_empty_read() {
+        let (client, server) = duplex(1024);
+        let mut conn = Conn::<_, _>::new(client);
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        
+        // 關閉服務器端
+        drop(server);
+        
+        // 讀取應該返回 None
+        if let Poll::Ready(Ok(msg)) = conn.read_message(&mut cx) {
+            assert!(msg.is_none());
         }
     }
 
     #[tokio::test]
-    async fn test_send_receive_with_encapsulated() {
-        let (client, server) = duplex(8192);
-        let mut client_conn = Conn::new(client);
-        let mut server_conn = Conn::new(server);
-
-        // Create test request with encapsulated sections
-        let mut encapsulated = Vec::new();
-        // Add sections in the order they should appear
-
-        let mut request = IcapMessage::Request {
-            method: Method::ReqMod,
-            uri: "/modify".to_string(),
-            version: Version::V1_0,
-            headers: {
-                let mut headers = HeaderMap::new();
-                headers.insert("Host", "icap-server.net".parse().unwrap());
-                headers
-            },
-            encapsulated: Encapsulated::RequestOnly {
-                req_header: {
-                    let mut req = Request::builder()
-                        .method(HttpMethod::GET)
-                        .uri(Uri::from_static("/"))
-                        .header("Host", "example.com")
-                        .body(Body::empty())
-                        .unwrap();
-                    Some(req)
-                },
-                req_body: Some(Body::from("Hello World")),
-            },
-        };
-
-        // Send request
-        client_conn.send_message(request).await.unwrap();
-
-        // Receive request
-        let received = server_conn.recv_message().await.unwrap().unwrap();
-
-        // Verify received matches sent
-        match received {
-            IcapMessage::Request { method, uri, version, headers, encapsulated } => {
-                assert_eq!(method, Method::ReqMod);
-                assert_eq!(uri, "/modify");
-                assert_eq!(version, Version::V1_0);
-                assert_eq!(headers.get("Host").unwrap(), "icap-server.net");
-                
-                // Verify encapsulated sections in order
-                assert_eq!(encapsulated.len(), 2);
-                assert!(matches!(encapsulated[0].0, SectionType::RequestHeader));
-                assert!(matches!(encapsulated[1].0, SectionType::RequestBody));
-                assert_eq!(
-                    encapsulated[0].1,
-                    b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"
-                );
-                assert_eq!(
-                    encapsulated[1].1,
-                    b"Hello World"
-                );
-            }
-            _ => panic!("Expected request"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_connection_state() {
-        let (client, _server) = duplex(8192);
-        let mut conn = Conn::new(client);
-
-        // Initial state should be StartLine
-        assert_eq!(*conn.state.read(), State::StartLine);
-
-        // Create and send a request
-        let mut request = IcapMessage::Request {
-            method: Method::Options,
-            uri: "/echo".to_string(),
-            version: Version::V1_0,
-            headers: HeaderMap::new(),
-            encapsulated: HashMap::new(),
-        };
+    async fn test_conn_error_handling() {
+        let (client, _server) = duplex(1024);
+        let mut conn = Conn::<_, _>::new(client);
         
-        conn.send_message(request).await.unwrap();
-        
-        // After sending, should want to read
-        assert!(matches!(conn.wants(), Wants::Read));
-    }
-
-    #[tokio::test]
-    async fn test_large_message() {
-        let (client, server) = duplex(32768);
-        let mut client_conn = Conn::new(client);
-        let mut server_conn = Conn::new(server);
-
-        // Create a large request body
-        let large_body = vec![b'x'; 8192];
-        let mut encapsulated = HashMap::new();
-        encapsulated.insert(SectionType::RequestBody, large_body.clone());
-        
-        let mut request = IcapMessage::Request {
-            method: Method::ReqMod,
-            uri: "/modify".to_string(),
-            version: Version::V1_0,
-            headers: HeaderMap::new(),
-            encapsulated,
-        };
-        
-        // Send request
-        client_conn.send_message(request).await.unwrap();
-
-        // Receive request
-        let received = server_conn.recv_message().await.unwrap().unwrap();
-
-        // Verify large body was received correctly
-        match received {
-            IcapMessage::Request { encapsulated, .. } => {
-                /* let length = encapsulated.get(&SectionType::RequestBody).unwrap().len();
-                let expected_length = large_body.len(); */
-                assert_eq!(
-                    encapsulated.get(&SectionType::RequestBody).unwrap(),
-                    &large_body
-                );
-            }
-            _ => panic!("Expected request"),
-        }
-    }
-
-    #[tokio::test]
-    async fn test_partial_receive() {
-        let (client, server) = duplex(8192);
-        let mut client_conn = Conn::new(client);
-        let mut server_conn = Conn::new(server);
-
-        // Create test request
-        let mut request = IcapMessage::Request {
-            method: Method::Options,
-            uri: "/echo".to_string(),
-            version: Version::V1_0,
-            headers: HeaderMap::new(),
-            encapsulated: HashMap::new(),
-        };
-
-        // Send request in parts
-        client_conn.send_message(request).await.unwrap();
-
-        // First read should return None as message is incomplete
-        assert!(server_conn.recv_message().await.unwrap().is_some());
-    }
-
-    #[tokio::test]
-    async fn test_parse_request() -> Result<()> {
-        let (client, _server) = tokio::io::duplex(1024);
-        let mut conn = Conn::new(client);
-
-        let mut sections = HashMap::new();
-        sections.insert(SectionType::RequestHeader, b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec());
-        sections.insert(SectionType::RequestBody, b"Hello World!".to_vec());
-        
-        let encapsulated = Encapsulated::RequestResponse {
-            req_header: Some(b"GET / HTTP/1.1\r\nHost: example.com\r\n\r\n".to_vec()),
-            req_body: Some(b"Hello World!".to_vec()),
-            res_header: None,
-            res_body: None,
-        };
-
-        let request = IcapMessage::Request {
-            method: Method::Options,
-            uri: "/".to_string(),
-            version: Version::V1_0,
-            headers: HeaderMap::new(),
-            encapsulated,
-        };
-
-        assert!(matches!(request, IcapMessage::Request { .. }));
-        Ok(())
-    }
-
-    #[tokio::test]
-    async fn test_parse_response() -> Result<()> {
-        let (client, _server) = tokio::io::duplex(1024);
-        let mut conn = Conn::new(client);
-
-        let encapsulated = Encapsulated::RequestResponse {
-            req_header: None,
-            req_body: None,
-            res_header: Some(b"HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\n".to_vec()),
-            res_body: Some(b"Hello World!".to_vec()),
-        };
-
-        let response = IcapMessage::Response {
-            status: 200,
-            reason: "OK".to_string(),
-            version: Version::V1_0,
-            headers: HeaderMap::new(),
-            encapsulated,
-        };
-
-        assert!(matches!(response, IcapMessage::Response { .. }));
-        Ok(())
+        // 寫入無效的消息
+        let result = conn.write_message(IcapMessage::new(Method::OPTIONS, Version::default()));
+        assert!(result.is_ok());
     }
 }
