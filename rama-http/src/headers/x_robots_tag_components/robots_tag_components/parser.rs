@@ -1,8 +1,7 @@
-use crate::headers::util::value_string::HeaderValueString;
+use crate::headers::x_robots_tag_components::robots_tag_components::Builder;
 use crate::headers::x_robots_tag_components::RobotsTag;
 use http::HeaderValue;
 use rama_core::error::OpaqueError;
-use std::str::FromStr;
 
 pub(crate) struct Parser<'a> {
     remaining: Option<&'a str>,
@@ -24,38 +23,16 @@ impl<'a> Iterator for Parser<'_> {
 
     fn next(&mut self) -> Option<Self::Item> {
         let mut remaining = self.remaining?.trim();
-
-        let bot_name = match Self::parse_bot_name(&mut remaining) {
-            Ok(bot_name) => bot_name,
-            Err(e) => return Some(Err(e)),
-        };
-
-        let mut builder = RobotsTag::builder();
-
-        let mut builder = if let Some((field, rest)) = remaining.split_once(',') {
-            if let Some(bot_name) = bot_name {
-                builder.set_bot_name(bot_name);
-            }
-            match builder.add_field(field) {
-                Ok(builder) => {
-                    remaining = rest.trim();
-                    builder
-                }
-                Err(_) => return None,
-            }
-        } else {
+        if remaining.is_empty() {
             return None;
-        };
+        }
+
+        let mut builder = Self::parse_first(&mut remaining).ok()?;
 
         while let Some((field, rest)) = remaining.split_once(',') {
-            let field = field.trim();
-            if field.is_empty() {
-                continue;
-            }
-
             match builder.add_field(field) {
                 Ok(_) => {
-                    remaining = rest.trim();
+                    remaining = rest;
                 }
                 Err(e) if e.is::<headers::Error>() => {
                     self.remaining = Some(remaining.trim());
@@ -65,26 +42,110 @@ impl<'a> Iterator for Parser<'_> {
             }
         }
 
-        Some(Ok(builder.build()))
+        match builder.add_field(remaining) {
+            Ok(_) => {
+                self.remaining = None;
+                Some(Ok(builder.build()))
+            }
+            Err(e) if e.is::<headers::Error>() => {
+                self.remaining = Some(remaining.trim());
+                Some(Ok(builder.build()))
+            }
+            Err(e) => Some(Err(e)),
+        }
     }
 }
 
 impl Parser<'_> {
-    fn parse_bot_name(remaining: &mut &str) -> Result<Option<HeaderValueString>, OpaqueError> {
-        if let Some((bot_name_candidate, rest)) = remaining.split_once(':') {
-            if !RobotsTag::is_valid_field_name(bot_name_candidate) {
-                *remaining = rest.trim();
-                return match HeaderValueString::from_str(bot_name_candidate) {
-                    Ok(bot) => Ok(Some(bot)),
-                    Err(e) => Err(OpaqueError::from_std(e)),
+    fn parse_first(remaining: &mut &str) -> Result<Builder<RobotsTag>, OpaqueError> {
+        match remaining.find(&[':', ',']) {
+            Some(index) if remaining.chars().nth(index) == Some(',') => {
+                let builder = RobotsTag::builder().add_field(&remaining[..index])?;
+                *remaining = &remaining[index + 1..];
+                Ok(builder)
+            }
+            Some(colon_index) if remaining.chars().nth(colon_index) == Some(':') => {
+                let (field, rest) = if let Some((before, after)) = remaining.split_once(',') {
+                    (before, after)
+                } else {
+                    (*remaining, "")
                 };
+
+                let builder = match RobotsTag::builder().add_field(field) {
+                    Ok(builder) => Ok(builder),
+                    Err(e) if e.is::<headers::Error>() => RobotsTag::builder()
+                        .bot_name(
+                            remaining[..colon_index]
+                                .trim()
+                                .parse()
+                                .map_err(OpaqueError::from_std)?,
+                        )
+                        .add_field(&field[colon_index + 1..]),
+                    Err(e) => Err(e),
+                };
+                *remaining = rest;
+                builder
+            }
+            _ => {
+                let builder = RobotsTag::builder().add_field(&remaining)?;
+                *remaining = "";
+                Ok(builder)
             }
         }
-
-        Ok(None)
     }
 
     pub(crate) fn parse_value(value: &HeaderValue) -> Result<Vec<RobotsTag>, OpaqueError> {
         Parser::new(value.to_str().map_err(OpaqueError::from_std)?).collect::<Result<Vec<_>, _>>()
     }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use chrono::{DateTime, Utc};
+
+    macro_rules! test_parse_first {
+        ($name:ident, $remaining:literal, $expected:expr) => {
+            #[test]
+            fn $name() {
+                let mut remaining = $remaining;
+                assert_eq!(Parser::parse_first(&mut remaining).unwrap(), $expected);
+                assert_eq!(remaining, $remaining.split_once(',').unwrap_or(("", "")).1);
+            }
+        };
+    }
+
+    test_parse_first!(one_tag, "nofollow", RobotsTag::builder().no_follow());
+
+    test_parse_first!(
+        multiple_tags,
+        "nofollow, nosnippet",
+        RobotsTag::builder().no_follow()
+    );
+
+    test_parse_first!(
+        one_tag_composite,
+        "google_bot: nofollow",
+        RobotsTag::builder()
+            .bot_name("google_bot".parse().unwrap())
+            .no_follow()
+    );
+
+    test_parse_first!(
+        multiple_tags_with_composite,
+        "google_bot: nofollow, nosnippet",
+        RobotsTag::builder()
+            .bot_name("google_bot".parse().unwrap())
+            .no_follow()
+    );
+
+    test_parse_first!(
+        unavailable_after,
+        "unavailable_after: 2025-02-18T08:25:15Z",
+        RobotsTag::builder().unavailable_after(
+            DateTime::parse_from_rfc3339("2025-02-18T08:25:15Z")
+                .unwrap()
+                .with_timezone(&Utc)
+        )
+    );
 }

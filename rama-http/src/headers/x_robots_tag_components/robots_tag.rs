@@ -88,7 +88,7 @@ impl RobotsTag {
     getter!(index_if_embedded, bool);
     getter!(max_snippet, u32);
     getter!(max_image_preview, MaxImagePreviewSetting, optional);
-    getter!(max_video_preview, u32, optional);
+    getter!(max_video_preview, Option<u32>);
     getter!(no_translate, bool);
     getter!(no_image_index, bool);
     getter!(no_ai, bool);
@@ -97,24 +97,6 @@ impl RobotsTag {
 
     pub fn unavailable_after(&self) -> Option<&DateTime<Utc>> {
         self.unavailable_after.as_deref()
-    }
-
-    pub(super) fn is_valid_field_name(field_name: &str) -> bool {
-        field_name.trim().eq_ignore_ascii_case("all")
-            || field_name.eq_ignore_ascii_case("noindex")
-            || field_name.eq_ignore_ascii_case("nofollow")
-            || field_name.eq_ignore_ascii_case("none")
-            || field_name.eq_ignore_ascii_case("nosnippet")
-            || field_name.eq_ignore_ascii_case("indexifembedded")
-            || field_name.eq_ignore_ascii_case("max-snippet")
-            || field_name.eq_ignore_ascii_case("max-image-preview")
-            || field_name.eq_ignore_ascii_case("max-video-preview")
-            || field_name.eq_ignore_ascii_case("notranslate")
-            || field_name.eq_ignore_ascii_case("noimageindex")
-            || field_name.eq_ignore_ascii_case("unavailable_after")
-            || field_name.eq_ignore_ascii_case("noai")
-            || field_name.eq_ignore_ascii_case("noimageai")
-            || field_name.eq_ignore_ascii_case("spc")
     }
 }
 

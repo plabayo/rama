@@ -121,7 +121,7 @@ impl Builder<NoTag> {
     no_tag_builder_field!(index_if_embedded, bool);
     no_tag_builder_field!(max_snippet, u32);
     no_tag_builder_field!(max_image_preview, MaxImagePreviewSetting);
-    no_tag_builder_field!(max_video_preview, u32);
+    no_tag_builder_field!(max_video_preview, Option<u32>);
     no_tag_builder_field!(no_translate, bool);
     no_tag_builder_field!(no_image_index, bool);
     no_tag_builder_field!(unavailable_after, DateTime<Utc>);
@@ -129,6 +129,8 @@ impl Builder<NoTag> {
     no_tag_builder_field!(no_image_ai, bool);
     no_tag_builder_field!(spc, bool);
 
+    /// Transforms the `Builder<NoTag>` into a `Builder<RobotsTag>` by calling the
+    /// [`Builder<RobotsTag>::add_field()`] function (see for more detailed documentation)
     pub fn add_field(self, s: &str) -> Result<Builder<RobotsTag>, OpaqueError> {
         let mut builder = Builder(RobotsTag::new_with_bot_name(self.0.bot_name));
         builder.add_field(s)?;
@@ -174,14 +176,14 @@ impl Builder<RobotsTag> {
     robots_tag_builder_field!(index_if_embedded, bool);
     robots_tag_builder_field!(max_snippet, u32);
     robots_tag_builder_field!(max_image_preview, MaxImagePreviewSetting, optional);
-    robots_tag_builder_field!(max_video_preview, u32, optional);
+    robots_tag_builder_field!(max_video_preview, Option<u32>);
     robots_tag_builder_field!(no_translate, bool);
     robots_tag_builder_field!(no_image_index, bool);
     robots_tag_builder_field!(no_ai, bool);
     robots_tag_builder_field!(no_image_ai, bool);
     robots_tag_builder_field!(spc, bool);
 
-    /// Adds a field based on its `&str` representation
+    /// Adds a field based on its `&str` representation (also handles whitespace by trimming)
     ///
     /// # Returns and Errors
     ///
@@ -219,17 +221,23 @@ impl Builder<RobotsTag> {
             } else if key.eq_ignore_ascii_case("max-image-preview") {
                 self.set_max_image_preview(value.parse()?)
             } else if key.eq_ignore_ascii_case("max-video-preview") {
-                self.set_max_video_preview(value.parse().map_err(OpaqueError::from_std)?)
-            } else if key.eq_ignore_ascii_case("unavailable_after: <date/time>") {
+                self.set_max_video_preview(match value {
+                    "-1" => None,
+                    _ => Some(value.parse().map_err(OpaqueError::from_std)?),
+                })
+            } else if key.eq_ignore_ascii_case("unavailable_after") {
                 self.set_unavailable_after(value.parse::<ValidDate>()?.into())
             } else {
                 return Err(OpaqueError::from_std(Error::invalid()));
             })
         } else {
-            self.add_simple_field(s)
+            self.add_simple_field(s.trim())
         }
     }
 
+    /// # Contracts
+    ///
+    /// - expects `s` to be trimmed in advance
     fn add_simple_field(&mut self, s: &str) -> Result<&mut Self, OpaqueError> {
         Ok(if s.eq_ignore_ascii_case("all") {
             self.set_all()
