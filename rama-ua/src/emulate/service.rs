@@ -6,7 +6,7 @@ use rama_core::{
 };
 use rama_http_types::{
     conn::Http1ClientContextParams,
-    header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, USER_AGENT},
+    header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, COOKIE, REFERER, USER_AGENT},
     proto::{
         h1::{
             headers::{original::OriginalHttp1Headers, HeaderMapValueRemover},
@@ -390,18 +390,24 @@ fn merge_http_headers(
     // put all "base" headers in correct order, and with proper name casing
     for (base_name, base_value) in base_http_headers.clone().into_iter() {
         let base_header_name = base_name.header_name();
+        let original_value = original_headers.remove(base_header_name);
         match base_header_name {
             &ACCEPT | &ACCEPT_LANGUAGE | &CONTENT_TYPE => {
-                let value = original_headers
-                    .remove(base_header_name)
-                    .unwrap_or(base_value);
+                let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
-            &USER_AGENT if preserve_ua_header => {
-                let value = original_headers
-                    .remove(base_header_name)
-                    .unwrap_or(base_value);
-                output_headers_ref.push((base_name, value));
+            &REFERER | &COOKIE => {
+                if let Some(value) = original_value {
+                    output_headers_ref.push((base_name, value));
+                }
+            }
+            &USER_AGENT => {
+                if preserve_ua_header {
+                    output_headers_ref.push((base_name, base_value));
+                } else {
+                    let value = original_value.unwrap_or(base_value);
+                    output_headers_ref.push((base_name, value));
+                }
             }
             _ => {
                 if base_header_name == CUSTOM_HEADER_MARKER {
