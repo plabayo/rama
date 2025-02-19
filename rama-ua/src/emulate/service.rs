@@ -1,18 +1,24 @@
 use std::fmt;
 
 use rama_core::{
-    error::{BoxError, OpaqueError},
+    error::{BoxError, ErrorContext, OpaqueError},
     Context, Service,
 };
 use rama_http_types::{
     conn::Http1ClientContextParams,
-    header::CONTENT_TYPE,
-    proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
-    HeaderName, Method, Request, Version,
+    header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, USER_AGENT},
+    proto::{
+        h1::{
+            headers::{original::OriginalHttp1Headers, HeaderMapValueRemover},
+            Http1HeaderMap,
+        },
+        h2::PseudoHeaderOrder,
+    },
+    HeaderMap, HeaderName, Method, Request, Version,
 };
 use rama_utils::macros::match_ignore_ascii_case_str;
 
-use crate::{HttpAgent, RequestInitiator, UserAgent, UserAgentProfile};
+use crate::{HttpAgent, RequestInitiator, UserAgent, UserAgentProfile, CUSTOM_HEADER_MARKER};
 
 use super::{UserAgentProvider, UserAgentSelectFallback};
 
@@ -20,6 +26,7 @@ pub struct UserAgentEmulateService<S, P> {
     inner: S,
     provider: P,
     optional: bool,
+    input_header_order: Option<HeaderName>,
     select_fallback: Option<UserAgentSelectFallback>,
 }
 
@@ -29,6 +36,7 @@ impl<S: fmt::Debug, P: fmt::Debug> fmt::Debug for UserAgentEmulateService<S, P> 
             .field("inner", &self.inner)
             .field("provider", &self.provider)
             .field("optional", &self.optional)
+            .field("input_header_order", &self.input_header_order)
             .field("select_fallback", &self.select_fallback)
             .finish()
     }
@@ -40,6 +48,7 @@ impl<S: Clone, P: Clone> Clone for UserAgentEmulateService<S, P> {
             inner: self.inner.clone(),
             provider: self.provider.clone(),
             optional: self.optional,
+            input_header_order: self.input_header_order.clone(),
             select_fallback: self.select_fallback,
         }
     }
@@ -51,6 +60,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
             inner,
             provider,
             optional: false,
+            input_header_order: None,
             select_fallback: None,
         }
     }
@@ -66,6 +76,28 @@ impl<S, P> UserAgentEmulateService<S, P> {
     /// See [`Self::optional`].
     pub fn set_optional(&mut self, optional: bool) -> &mut Self {
         self.optional = optional;
+        self
+    }
+
+    /// Define a header that if present is to contain a CSV header name list,
+    /// that allows you to define the desired header order for the (extra) headers
+    /// found in the input (http) request.
+    ///
+    /// Extra meaning any headers not considered a base header and already defined
+    /// by the (selected) User Agent Profile.
+    ///
+    /// This can be useful because your http client might not respect the header casing
+    /// and/or order of the headers taken together. Using this metadata allows you to
+    /// communicate this data through anyway. If however your http client does respect
+    /// casing and order, or you don't care about some of it, you might not need it.
+    pub fn input_header_order(mut self, name: HeaderName) -> Self {
+        self.input_header_order = Some(name);
+        self
+    }
+
+    /// See [`Self::input_header_order`].
+    pub fn set_input_header_order(&mut self, name: HeaderName) -> &mut Self {
+        self.input_header_order = Some(name);
         self
     }
 
@@ -96,7 +128,7 @@ where
     async fn serve(
         &self,
         mut ctx: Context<State>,
-        req: Request<Body>,
+        mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
         if let Some(fallback) = self.select_fallback {
             ctx.insert(fallback);
@@ -136,11 +168,35 @@ where
                 "user agent emulation: skip http settings as http is instructed to be preserved"
             );
         } else {
-            emulate_http_settings(&mut ctx, &req, profile);
-            let _base_http_headers = get_base_http_headers(&ctx, &req, profile);
+            emulate_http_settings(&mut ctx, &mut req, profile);
+            let base_http_headers = get_base_http_headers(&ctx, &req, profile);
+            let original_http_header_order =
+                get_original_http_header_order(&ctx, &req, self.input_header_order.as_ref())
+                    .context("collect original http header order")?;
 
-            // TODO: merge base headers with incoming headers... allowing some to overwrite, others not...
-            // also allowing anyway to overwrite if something is set...
+            let original_headers = req.headers().clone();
+
+            let preserve_ua_header = ctx
+                .get::<UserAgent>()
+                .map(|ua| ua.preserve_ua_header())
+                .unwrap_or_default();
+
+            let output_headers = merge_http_headers(
+                base_http_headers,
+                original_http_header_order,
+                original_headers,
+                preserve_ua_header,
+            )?;
+
+            tracing::trace!(
+                ua_kind = %profile.ua_kind,
+                ua_version = ?profile.ua_version,
+                platform = ?profile.platform,
+                "user agent emulation: http settings and headers emulated"
+            );
+            let (output_headers, original_headers) = output_headers.into_parts();
+            *req.headers_mut() = output_headers;
+            req.extensions_mut().insert(original_headers);
         }
 
         #[cfg(feature = "tls")]
@@ -173,7 +229,7 @@ where
 
 fn emulate_http_settings<Body, State>(
     ctx: &mut Context<State>,
-    req: &Request<Body>,
+    req: &mut Request<Body>,
     profile: &UserAgentProfile,
 ) {
     match req.version() {
@@ -195,7 +251,7 @@ fn emulate_http_settings<Body, State>(
                 platform = ?profile.platform,
                 "UA emulation add h2-specific settings",
             );
-            ctx.insert(PseudoHeaderOrder::from_iter(
+            req.extensions_mut().insert(PseudoHeaderOrder::from_iter(
                 profile.http.h2.http_pseudo_headers.iter(),
             ));
         }
@@ -297,3 +353,82 @@ fn get_base_http_headers_from_req_init(
             .unwrap_or(&profile.http.headers.navigate),
     }
 }
+
+fn get_original_http_header_order<Body, State>(
+    ctx: &Context<State>,
+    req: &Request<Body>,
+    input_header_order: Option<&HeaderName>,
+) -> Result<Option<OriginalHttp1Headers>, OpaqueError> {
+    if let Some(header) = input_header_order.and_then(|name| req.headers().get(name)) {
+        let s = header.to_str().context("interpret header as a utf-8 str")?;
+        let mut headers = OriginalHttp1Headers::with_capacity(s.matches(',').count());
+        for s in s.split(',') {
+            let s = s.trim();
+            if s.is_empty() {
+                continue;
+            }
+            headers.push(s.parse().context("parse header part as h1 headern name")?);
+        }
+        return Ok(Some(headers));
+    }
+    Ok(ctx.get().cloned())
+}
+
+fn merge_http_headers(
+    base_http_headers: &Http1HeaderMap,
+    original_http_header_order: Option<OriginalHttp1Headers>,
+    original_headers: HeaderMap,
+    preserve_ua_header: bool,
+) -> Result<Http1HeaderMap, OpaqueError> {
+    let mut original_headers = HeaderMapValueRemover::from(original_headers);
+
+    let mut output_headers_a = Vec::new();
+    let mut output_headers_b = Vec::new();
+
+    let mut output_headers_ref = &mut output_headers_a;
+
+    // put all "base" headers in correct order, and with proper name casing
+    for (base_name, base_value) in base_http_headers.clone().into_iter() {
+        let base_header_name = base_name.header_name();
+        match base_header_name {
+            &ACCEPT | &ACCEPT_LANGUAGE | &CONTENT_TYPE => {
+                let value = original_headers
+                    .remove(base_header_name)
+                    .unwrap_or(base_value);
+                output_headers_ref.push((base_name, value));
+            }
+            &USER_AGENT if preserve_ua_header => {
+                let value = original_headers
+                    .remove(base_header_name)
+                    .unwrap_or(base_value);
+                output_headers_ref.push((base_name, value));
+            }
+            _ => {
+                if base_header_name == CUSTOM_HEADER_MARKER {
+                    output_headers_ref = &mut output_headers_b;
+                } else {
+                    output_headers_ref.push((base_name, base_value));
+                }
+            }
+        }
+    }
+
+    // respect original header order of original headers where possible
+    for header_name in original_http_header_order.into_iter().flatten() {
+        if let Some(value) = original_headers.remove(header_name.header_name()) {
+            output_headers_a.push((header_name, value));
+        }
+    }
+
+    Ok(Http1HeaderMap::from_iter(
+        output_headers_a
+            .into_iter()
+            .chain(original_headers.into_iter()) // add all remaining original headers in any order within the right loc
+            .chain(output_headers_b.into_iter()),
+    ))
+}
+
+// TODO: test:
+// - get_base_http_headers
+// - get_original_http_header_order
+// - merge_http_headers

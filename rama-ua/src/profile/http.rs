@@ -1,5 +1,11 @@
-use rama_http_types::proto::{h1::Http1HeaderMap, h2::PseudoHeader};
+use rama_http_types::{
+    proto::{h1::Http1HeaderMap, h2::PseudoHeader},
+    HeaderName,
+};
 use serde::{Deserialize, Serialize};
+
+pub static CUSTOM_HEADER_MARKER: HeaderName =
+    HeaderName::from_static("x-rama-custom-header-marker");
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HttpProfile {

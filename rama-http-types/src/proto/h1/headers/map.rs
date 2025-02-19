@@ -232,7 +232,9 @@ impl Iterator for Http1HeaderMapIntoIter {
 }
 
 #[derive(Debug)]
-struct HeaderMapValueRemover {
+/// Utility that can be used to be able to remove
+/// headers from an [`HeaderMap`] in random order, one by one.
+pub struct HeaderMapValueRemover {
     header_map: HeaderMap,
     removed_values: Option<HashMap<HeaderName, std::vec::IntoIter<HeaderValue>>>,
 }
@@ -247,7 +249,7 @@ impl From<HeaderMap> for HeaderMapValueRemover {
 }
 
 impl HeaderMapValueRemover {
-    fn remove(&mut self, header: &HeaderName) -> Option<HeaderValue> {
+    pub fn remove(&mut self, header: &HeaderName) -> Option<HeaderValue> {
         match self.header_map.entry(header) {
             header::Entry::Occupied(occupied_entry) => {
                 let (k, mut values) = occupied_entry.remove_entry_mult();
@@ -290,7 +292,8 @@ impl IntoIterator for HeaderMapValueRemover {
 }
 
 #[derive(Debug)]
-struct HeaderMapValueRemoverIntoIter {
+/// Porduced by the [`IntoIterator`] implementation for [`HeaderMapValueRemover`].
+pub struct HeaderMapValueRemoverIntoIter {
     cached_header_name: Option<HeaderName>,
     cached_headers: Option<std::iter::Peekable<std::vec::IntoIter<HeaderValue>>>,
     removed_headers:

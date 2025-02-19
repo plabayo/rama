@@ -1,12 +1,14 @@
 use std::fmt;
 
 use rama_core::Layer;
+use rama_http_types::HeaderName;
 
 use super::UserAgentSelectFallback;
 
 pub struct UserAgentEmulateLayer<P> {
     provider: P,
     optional: bool,
+    input_header_order: Option<HeaderName>,
     select_fallback: Option<UserAgentSelectFallback>,
 }
 
@@ -15,6 +17,7 @@ impl<P: fmt::Debug> fmt::Debug for UserAgentEmulateLayer<P> {
         f.debug_struct("UserAgentEmulateLayer")
             .field("provider", &self.provider)
             .field("optional", &self.optional)
+            .field("input_header_order", &self.input_header_order)
             .field("select_fallback", &self.select_fallback)
             .finish()
     }
@@ -25,6 +28,7 @@ impl<P: Clone> Clone for UserAgentEmulateLayer<P> {
         Self {
             provider: self.provider.clone(),
             optional: self.optional,
+            input_header_order: self.input_header_order.clone(),
             select_fallback: self.select_fallback,
         }
     }
@@ -35,6 +39,7 @@ impl<P> UserAgentEmulateLayer<P> {
         Self {
             provider,
             optional: false,
+            input_header_order: None,
             select_fallback: None,
         }
     }
@@ -50,6 +55,28 @@ impl<P> UserAgentEmulateLayer<P> {
     /// See [`Self::optional`].
     pub fn set_optional(&mut self, optional: bool) -> &mut Self {
         self.optional = optional;
+        self
+    }
+
+    /// Define a header that if present is to contain a CSV header name list,
+    /// that allows you to define the desired header order for the (extra) headers
+    /// found in the input (http) request.
+    ///
+    /// Extra meaning any headers not considered a base header and already defined
+    /// by the (selected) User Agent Profile.
+    ///
+    /// This can be useful because your http client might not respect the header casing
+    /// and/or order of the headers taken together. Using this metadata allows you to
+    /// communicate this data through anyway. If however your http client does respect
+    /// casing and order, or you don't care about some of it, you might not need it.
+    pub fn input_header_order(mut self, name: HeaderName) -> Self {
+        self.input_header_order = Some(name);
+        self
+    }
+
+    /// See [`Self::input_header_order`].
+    pub fn set_input_header_order(&mut self, name: HeaderName) -> &mut Self {
+        self.input_header_order = Some(name);
         self
     }
 
@@ -75,6 +102,9 @@ impl<S, P: Clone> Layer<S> for UserAgentEmulateLayer<P> {
             .optional(self.optional);
         if let Some(fb) = self.select_fallback {
             svc.set_select_fallback(fb);
+        }
+        if let Some(name) = self.input_header_order.clone() {
+            svc.set_input_header_order(name);
         }
         svc
     }
