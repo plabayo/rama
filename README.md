@@ -31,8 +31,6 @@
 [ghs-url]: https://github.com/sponsors/plabayo
 [paypal-badge]: https://img.shields.io/badge/paypal-contribution?style=for-the-badge&color=blue
 [paypal-url]: https://www.paypal.com/donate/?hosted_button_id=P3KCGT2ACBVFE
-[polar-badge]: https://img.shields.io/badge/polar.sh-subscribe?style=for-the-badge&color=blue
-[polar-url]: https://polar.sh/plabayo
 
 🦙 Rama (ラマ) is a modular service framework for the 🦀 Rust language to move and transform your network packets.
 
@@ -72,7 +70,6 @@ Rama is async-first using [Tokio](https://tokio.rs/) as its _only_ Async Runtime
 Please refer to [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to get inspired on how you can use it for your purposes.
 
-[![Polar Subscribe][polar-badge]][polar-url]
 [![GitHub Sponsors][ghs-badge]][ghs-url]
 [![Buy Me A Coffee][bmac-badge]][bmac-url]
 [![Paypal Donation][paypal-badge]][paypal-url]
@@ -187,7 +184,7 @@ It goes also without saying that we do not willy-nilly change designs or break o
 there is still plenty to be improved and worked out. Production use and feedback from you and other users helps a lot with that. As such,
 if you use Rama do let us know feedback over [Discord][discord-url], [email](mailto:glen@plabayo.tech) or a [GitHub issue](https://github.com/plabayo/rama/issues).
 
-👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commercial purposes. Please consider becoming [a business/enterprise subscriber](https://polar.sh/plabayo). It helps make the development cycle to remain sustainable, and is beneficial to you as well. As part of your benefits we are also available to assist you with migrations between breaking releases. For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf. A win for everybody. 💪
+👉 If you are a company or enterprise that makes use of Rama, or even an individual user that makes use of Rama for commercial purposes. Please consider becoming [a business/enterprise subscriber](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734). It helps make the development cycle to remain sustainable, and is beneficial to you as well. As part of your benefits we are also available to assist you with migrations between breaking releases. For enterprise users we can even make time to develop those PR's in your integration codebases ourselves on your behalf. A win for everybody. 💪
 
 ## 📣 | Rama Ecosystem
 
@@ -466,9 +463,7 @@ An extra big shoutout goes also to the online communities surrounding and part o
 
 Rama is **completely free, open-source software** which needs lots of effort and time to develop and maintain.
 
-You can become a regular financial contributor to Rama by paying for a monthly subscription at [polar.sh/plabayo](https://polar.sh/plabayo). In case you want a specific github issue to be resolved or like you can also fund issues via that platform. One time contributions are possible as well and greatly appreciated.
-
-Alternatively you can also become a (monthly subscriber) sponsor or pay a one-time donation via [Github Sponsors][ghs-url]. For one-time donations you are also free to use ["Buy me a Coffee"][bmac-url] or ["Paypal Donations"][paypal-url] in case you are more at ease with any of these.
+You can become a regular financial contributor to Rama by paying for a monthly subscription at [Github Sponsors][ghs-url]. One time contributions are possible as well.
 
 Sponsors help us continue to maintain and improve `rama`, as well as other
 Free and Open Source (FOSS) technology. It also helps us to create
@@ -504,7 +499,7 @@ We are grateful to both sponsors for sponsering us these cloud resources.
 
 ### Professional Services
 
-🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an enterprise subscription at [polar.sh/plabayo](https://polar.sh/plabayo).
+🤝 Enterprise support, software customisations, integrations, professional support, consultancy and training are available upon request by sending an email to [glen@plabayo.tech](mailto:glen@plabayo.tech). Or get an enterprise subscription via [Gihub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734).
 
 These type of contracts are another way for you to be able to support the project and
 at the same time get serviced for your own needs and purposes.
