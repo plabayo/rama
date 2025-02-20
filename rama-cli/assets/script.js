@@ -25,8 +25,7 @@ async function fetchWithBackoff(url, options) {
 // Function to make a GET request
 async function makeGetRequest(url) {
     const headers = {
-        'x-CusToM-HEADER': `rama-fp${Date.now()}`,
-        'x-CusToM-HEADER-eXtRa': `rama-fpeXtRa-${Date.now()}`,
+        'x-RAMA-custom-header-marker': `rama-fp${Date.now()}`,
     };
 
     const options = {
@@ -40,8 +39,7 @@ async function makeGetRequest(url) {
 // Function to make a POST request
 async function makePostRequest(url, number) {
     const headers = {
-        'x-CusToM-HEADER': `rama-fp${Date.now()}`,
-        'x-CusToM-HEADER-eXtRa': `rama-fpeXtRa-${Date.now()}`,
+        'x-RAMA-custom-header-marker': `rama-fp${Date.now()}`,
     };
 
     const body = JSON.stringify({ number });
@@ -60,8 +58,7 @@ function makeRequestWithXHR(url, method, number) {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open(method, url);
-        xhr.setRequestHeader('x-CusToM-HEADER', `rama-fp${Date.now()}`);
-        xhr.setRequestHeader('x-CusToM-HEADER-eXtRa', `rama-fpeXtRa-${Date.now()}`);
+        xhr.setRequestHeader('x-RAMA-custom-header-marker', `rama-fp${Date.now()}`);
 
         xhr.onload = function () {
             if (xhr.status >= 200 && xhr.status < 300) {
