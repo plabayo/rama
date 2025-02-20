@@ -1,4 +1,4 @@
-use crate::{error::BoxError, Context, Layer, Service};
+use crate::{Context, Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt};
 

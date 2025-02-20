@@ -1,5 +1,5 @@
 use crate::stream::dep::ipnet::IpNet;
-use rama_core::{context::Extensions, Context};
+use rama_core::{Context, context::Extensions};
 
 #[cfg(feature = "http")]
 use crate::stream::SocketInfo;

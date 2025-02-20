@@ -121,7 +121,7 @@ impl Builder {
     /// This is not advised, as it can potentially expose servers to DOS vulnerabilities.
     ///
     /// See <https://rustsec.org/advisories/RUSTSEC-2024-0003.html> for more information.
-    pub fn max_local_error_reset_streams(mut self, max: impl Into<Option<usize>>) -> Self {
+    pub fn max_local_error_reset_streams(&mut self, max: impl Into<Option<usize>>) -> &mut Self {
         self.h2_builder.max_local_error_reset_streams = max.into();
         self
     }

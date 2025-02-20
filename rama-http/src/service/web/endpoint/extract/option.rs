@@ -3,7 +3,7 @@ use std::future::Future;
 use rama_core::Context;
 
 use crate::response::IntoResponse;
-use crate::{dep::http::request::Parts, Request};
+use crate::{Request, dep::http::request::Parts};
 
 use super::{FromRequest, FromRequestContextRefPair};
 

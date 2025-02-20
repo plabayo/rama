@@ -7,8 +7,8 @@ use rama_core::{Context, Layer, Service};
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::stream::Stream;
-use rama_net::tls::client::{ClientConfig, NegotiatedTlsParameters};
 use rama_net::tls::ApplicationProtocol;
+use rama_net::tls::client::{ClientConfig, NegotiatedTlsParameters};
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
 use std::sync::Arc;
@@ -503,7 +503,7 @@ impl<S, K> TlsConnector<S, K> {
                 return Err(OpaqueError::from_display(
                     "boring ssl connector: failed to establish session...",
                 )
-                .into_boxed())
+                .into_boxed());
             }
         };
 

@@ -377,11 +377,15 @@ fn test_parse_happy_uas() {
         let ua = UserAgent::new(test_case.ua);
 
         assert_eq!(ua.header_str(), test_case.ua);
-        assert_eq!(ua.info(), test_case.kind.map(|kind| UserAgentInfo {
-            kind,
-            version: test_case.version,
-        }),
-        "UA = '{}'", test_case.ua);
+        assert_eq!(
+            ua.info(),
+            test_case.kind.map(|kind| UserAgentInfo {
+                kind,
+                version: test_case.version,
+            }),
+            "UA = '{}'",
+            test_case.ua
+        );
         assert_eq!(ua.platform(), test_case.platform, "UA: {}", test_case.ua);
     }
 }

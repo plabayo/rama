@@ -31,14 +31,14 @@ pub const DEFAULT_USERNAME_LABEL_SEPARATOR: char = '-';
 mod parse;
 #[doc(inline)]
 pub use parse::{
-    parse_username, parse_username_with_separator, ExclusiveUsernameParsers, UsernameLabelParser,
-    UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
+    ExclusiveUsernameParsers, UsernameLabelParser, UsernameLabelState, UsernameLabels,
+    UsernameOpaqueLabelParser, parse_username, parse_username_with_separator,
 };
 
 mod compose;
 #[doc(inline)]
 pub use compose::{
-    compose_username, compose_username_with_separator, ComposeError, Composer, UsernameLabelWriter,
+    ComposeError, Composer, UsernameLabelWriter, compose_username, compose_username_with_separator,
 };
 
 #[cfg(test)]

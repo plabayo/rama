@@ -1,7 +1,7 @@
+use crate::Request;
 use crate::headers::{
     ForwardHeader, HeaderMapExt, Via, XForwardedFor, XForwardedHost, XForwardedProto,
 };
-use crate::Request;
 use rama_core::error::BoxError;
 use rama_core::{Context, Layer, Service};
 use rama_net::address::Domain;
@@ -408,10 +408,10 @@ all_the_tuples_no_last_special_case!(set_forwarded_service_for_tuple);
 mod tests {
     use super::*;
     use crate::{
-        headers::{TrueClientIp, XClientIp, XRealIp},
         IntoResponse, Response, StatusCode,
+        headers::{TrueClientIp, XClientIp, XRealIp},
     };
-    use rama_core::{error::OpaqueError, service::service_fn, Layer};
+    use rama_core::{Layer, error::OpaqueError, service::service_fn};
     use std::{convert::Infallible, net::IpAddr};
 
     fn assert_is_service<T: Service<(), Request<()>>>(_: T) {}

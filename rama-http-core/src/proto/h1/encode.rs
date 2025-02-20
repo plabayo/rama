@@ -5,11 +5,11 @@ use std::io::IoSlice;
 use bytes::buf::{Chain, Take};
 use bytes::{Buf, Bytes};
 use rama_http_types::{
+    HeaderMap, HeaderName, HeaderValue,
     header::{
         AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
         CONTENT_TYPE, HOST, MAX_FORWARDS, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING,
     },
-    HeaderMap, HeaderName, HeaderValue,
 };
 use tracing::{debug, trace};
 
@@ -438,11 +438,11 @@ impl std::error::Error for NotEof {}
 mod tests {
     use bytes::BufMut;
     use rama_http_types::{
+        HeaderMap, HeaderName, HeaderValue,
         header::{
             AUTHORIZATION, CACHE_CONTROL, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE,
             CONTENT_TYPE, HOST, MAX_FORWARDS, SET_COOKIE, TE, TRAILER, TRANSFER_ENCODING,
         },
-        HeaderMap, HeaderName, HeaderValue,
     };
 
     use super::super::io::Cursor;
@@ -582,9 +582,11 @@ mod tests {
             HeaderValue::from_static("header data"),
         )]);
 
-        assert!(encoder
-            .encode_trailers::<&[u8]>(headers.clone(), false)
-            .is_none());
+        assert!(
+            encoder
+                .encode_trailers::<&[u8]>(headers.clone(), false)
+                .is_none()
+        );
 
         let trailers = vec![];
         let encoder = encoder.into_chunked_with_trailing_fields(trailers);

@@ -10,8 +10,8 @@ pub use crate::protocol::ip::{IPv4, IPv6};
 pub use builder::{Builder, WriteToHeader, Writer};
 pub use error::ParseError;
 pub use model::{
-    AddressFamily, Addresses, Command, Header, Protocol, Type, TypeLengthValue, TypeLengthValues,
-    Unix, Version, PROTOCOL_PREFIX,
+    AddressFamily, Addresses, Command, Header, PROTOCOL_PREFIX, Protocol, Type, TypeLengthValue,
+    TypeLengthValues, Unix, Version,
 };
 use model::{MINIMUM_LENGTH, MINIMUM_TLV_LENGTH};
 use std::borrow::Cow;

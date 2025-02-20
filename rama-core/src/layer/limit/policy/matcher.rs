@@ -1,4 +1,4 @@
-use crate::{context::Extensions, matcher::Matcher, Context};
+use crate::{Context, context::Extensions, matcher::Matcher};
 
 use super::{Policy, PolicyOutput, PolicyResult};
 

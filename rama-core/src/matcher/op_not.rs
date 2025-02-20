@@ -1,5 +1,5 @@
 use super::Matcher;
-use crate::{context::Extensions, Context};
+use crate::{Context, context::Extensions};
 
 /// A matcher that matches if the inner matcher does not match.
 pub struct Not<T>(T);

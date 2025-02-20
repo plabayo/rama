@@ -1,6 +1,6 @@
 use crate::{
     address::Host,
-    tls::{client::ClientHello, ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion},
+    tls::{ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion, client::ClientHello},
 };
 use rama_core::error::OpaqueError;
 use serde::{Deserialize, Serialize};

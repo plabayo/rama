@@ -687,7 +687,7 @@ pub use map_state::{MapState, MapStateLayer};
 
 mod layer_fn;
 #[doc(inline)]
-pub use layer_fn::{layer_fn, LayerFn};
+pub use layer_fn::{LayerFn, layer_fn};
 
 mod map_request;
 #[doc(inline)]

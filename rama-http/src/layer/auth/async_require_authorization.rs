@@ -217,7 +217,7 @@ pub trait AsyncAuthorizeRequest<S, B> {
     ) -> impl std::future::Future<
         Output = Result<(Context<S>, Request<Self::RequestBody>), Response<Self::ResponseBody>>,
     > + Send
-           + '_;
+    + '_;
 }
 
 impl<S, B, F, Fut, ReqBody, ResBody> AsyncAuthorizeRequest<S, B> for F
@@ -247,7 +247,7 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::{header, Body, StatusCode};
+    use crate::{Body, StatusCode, header};
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
 

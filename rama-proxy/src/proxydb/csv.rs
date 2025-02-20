@@ -215,7 +215,7 @@ impl From<std::io::Error> for ProxyCsvRowReaderError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{proxydb::ProxyContext, ProxyFilter};
+    use crate::{ProxyFilter, proxydb::ProxyContext};
     use rama_net::transport::TransportProtocol;
     use rama_utils::str::NonEmptyString;
     use std::str::FromStr;
@@ -298,7 +298,7 @@ mod tests {
             (
                 "id,true,false,true,,false,,true,false,true,authority,pool_id,,country,,city,carrier,,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
                 Proxy {
-                   id: NonEmptyString::from_static("id"),
+                    id: NonEmptyString::from_static("id"),
                     address: ProxyAddress::from_str("username:password@authority").unwrap(),
                     tcp: true,
                     udp: false,
@@ -321,7 +321,7 @@ mod tests {
             (
                 "123,1,0,False,,True,,null,false,true,host:1234,,americas,*,*,*,carrier,13335,",
                 Proxy {
-                   id: NonEmptyString::from_static("123"),
+                    id: NonEmptyString::from_static("123"),
                     address: ProxyAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
@@ -344,7 +344,7 @@ mod tests {
             (
                 "123,1,0,False,,True,,null,false,true,host:1234,,europe,*,,*,carrier,0",
                 Proxy {
-                   id: NonEmptyString::from_static("123"),
+                    id: NonEmptyString::from_static("123"),
                     address: ProxyAddress::from_str("host:1234").unwrap(),
                     tcp: true,
                     udp: false,
@@ -367,7 +367,7 @@ mod tests {
             (
                 "foo,1,0,1,,0,,1,0,0,bar,baz,,US,,,,",
                 Proxy {
-                   id: NonEmptyString::from_static("foo"),
+                    id: NonEmptyString::from_static("foo"),
                     address: ProxyAddress::from_str("bar").unwrap(),
                     tcp: true,
                     udp: false,
@@ -441,7 +441,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_csv_row_reader_happy_one_row() {
-        let mut reader = ProxyCsvRowReader::raw("id,true,false,true,,false,,true,false,true,authority,pool_id,continent,country,state,city,carrier,13335,Basic dXNlcm5hbWU6cGFzc3dvcmQ=");
+        let mut reader = ProxyCsvRowReader::raw(
+            "id,true,false,true,,false,,true,false,true,authority,pool_id,continent,country,state,city,carrier,13335,Basic dXNlcm5hbWU6cGFzc3dvcmQ=",
+        );
         let proxy = reader.next().await.unwrap().unwrap();
 
         assert_eq!(proxy.id, "id");
@@ -470,7 +472,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_proxy_csv_row_reader_happy_multi_row() {
-        let mut reader = ProxyCsvRowReader::raw("id,true,false,false,true,true,false,true,false,true,authority,pool_id,continent,country,state,city,carrier,42,Basic dXNlcm5hbWU6cGFzc3dvcmQ=\nid2,1,0,0,0,0,0,1,0,0,authority2,pool_id2,continent2,country2,state2,city2,carrier2,1");
+        let mut reader = ProxyCsvRowReader::raw(
+            "id,true,false,false,true,true,false,true,false,true,authority,pool_id,continent,country,state,city,carrier,42,Basic dXNlcm5hbWU6cGFzc3dvcmQ=\nid2,1,0,0,0,0,0,1,0,0,authority2,pool_id2,continent2,country2,state2,city2,carrier2,1",
+        );
 
         let proxy = reader.next().await.unwrap().unwrap();
         assert_eq!(proxy.id, "id");

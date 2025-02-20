@@ -1,6 +1,6 @@
 use super::{
-    store, Buffer, Codec, Config, Counts, Frame, Prioritize, Prioritized, Store, Stream, StreamId,
-    StreamIdOverflow, WindowSize,
+    Buffer, Codec, Config, Counts, Frame, Prioritize, Prioritized, Store, Stream, StreamId,
+    StreamIdOverflow, WindowSize, store,
 };
 use crate::h2::codec::UserError;
 use crate::h2::frame::{self, Reason};
@@ -466,6 +466,16 @@ impl Send {
                     let mut total_reclaimed = 0;
                     store.try_for_each(|mut stream| {
                         let stream = &mut *stream;
+
+                        if stream.state.is_send_closed() && stream.buffered_send_data == 0 {
+                            tracing::trace!(
+                                "skipping send-closed stream; id={:?}; flow={:?}",
+                                stream.id,
+                                stream.send_flow
+                            );
+
+                            return Ok(());
+                        }
 
                         tracing::trace!(
                             "decrementing stream window; id={:?}; decr={}; flow={:?}",

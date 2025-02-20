@@ -1,14 +1,14 @@
 use super::utils;
 use rama::{
+    Context, Layer,
     http::{
-        headers::Accept, response::Json, server::HttpServer, BodyExtractExt, IntoResponse, Request,
+        BodyExtractExt, IntoResponse, Request, headers::Accept, response::Json, server::HttpServer,
     },
     net::address::ProxyAddress,
     rt::Executor,
     service::service_fn,
-    Context, Layer,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[cfg(feature = "compression")]
 use rama::http::layer::compression::CompressionLayer;

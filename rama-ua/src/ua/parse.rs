@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use super::{
-    info::{PlatformLike, UserAgentData, UserAgentInfo},
     DeviceKind, PlatformKind, UserAgent, UserAgentKind,
+    info::{PlatformLike, UserAgentData, UserAgentInfo},
 };
 
 /// Maximum length of a User Agent string that we take into consideration.
@@ -36,7 +36,7 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserA
                     tls_agent_overwrite: None,
                     preserve_ua_header: false,
                     request_initiator: None,
-                }
+                };
             }
         }
     } else {

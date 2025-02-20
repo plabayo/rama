@@ -20,7 +20,7 @@ use rama::error::{BoxError, OpaqueError};
 use rama::http::core::h2::client::SendRequest;
 use rama::http::core::h2::{RecvStream, SendStream};
 use rama::http::core::service::RamaHttpService;
-use rama::http::dep::http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
+use rama::http::dep::http_body_util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::rt::Executor;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -29,7 +29,7 @@ use tokio::net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpSt
 use rama::http::core::body::{Body, Incoming as IncomingBody};
 use rama::http::core::server::conn::{http1, http2};
 use rama::http::{Method, Request, Response, StatusCode, Uri, Version};
-use rama::service::{service_fn, Service};
+use rama::service::{Service, service_fn};
 use tokio::pin;
 
 use super::support;
@@ -1494,7 +1494,6 @@ async fn header_read_timeout_slow_writes() {
         tcp.write_all(
             b"\
             Something: 1\r\n\
-            \r\n\
         ",
         )
         .expect("write 2");
@@ -1502,6 +1501,7 @@ async fn header_read_timeout_slow_writes() {
         tcp.write_all(
             b"\
             Works: 0\r\n\
+            \r\n
         ",
         )
         .expect_err("write 3");
@@ -1545,7 +1545,7 @@ async fn header_read_timeout_starts_immediately() {
             socket,
             RamaHttpService::new(rama::Context::default(), unreachable_service()),
         );
-    conn.await.expect_err("header timeout");
+    assert!(conn.await.unwrap_err().is_timeout());
 }
 
 #[tokio::test]
@@ -1593,7 +1593,6 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
             b"\
             GET / HTTP/1.1\r\n\
             Something: 1\r\n\
-            \r\n\
         ",
         )
         .expect("write 5");
@@ -1601,6 +1600,7 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
         tcp.write_all(
             b"\
             Works: 0\r\n\
+            \r\n\
         ",
         )
         .expect_err("write 6");
@@ -1622,7 +1622,52 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
                 }),
             ),
         );
-    conn.without_shutdown().await.expect_err("header timeout");
+    assert!(conn.without_shutdown().await.unwrap_err().is_timeout());
+}
+
+#[tokio::test]
+async fn header_read_timeout_as_idle_timeout() {
+    let (listener, addr) = setup_tcp_listener();
+
+    thread::spawn(move || {
+        let mut tcp = connect(&addr);
+
+        tcp.write_all(
+            b"\
+            GET / HTTP/1.1\r\n\
+            \r\n\
+        ",
+        )
+        .expect("request 1");
+
+        thread::sleep(Duration::from_secs(6));
+
+        tcp.write_all(
+            b"\
+            GET / HTTP/1.1\r\n\
+            \r\n\
+        ",
+        )
+        .expect_err("request 2");
+    });
+
+    let (socket, _) = listener.accept().await.unwrap();
+    let conn = http1::Builder::new()
+        .header_read_timeout(Duration::from_secs(3))
+        .serve_connection(
+            socket,
+            RamaHttpService::new(
+                rama::Context::default(),
+                service_fn(|_| {
+                    let res = Response::builder()
+                        .status(200)
+                        .body(Empty::<Bytes>::new())
+                        .unwrap();
+                    future::ready(Ok::<_, Infallible>(res))
+                }),
+            ),
+        );
+    assert!(conn.without_shutdown().await.unwrap_err().is_timeout());
 }
 
 #[tokio::test]
@@ -1988,8 +2033,8 @@ async fn h2_connect() {
 
 #[tokio::test]
 async fn h2_connect_multiplex() {
-    use futures_util::stream::FuturesUnordered;
     use futures_util::StreamExt;
+    use futures_util::stream::FuturesUnordered;
 
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
@@ -3147,8 +3192,8 @@ impl Service<(), Request> for HelloWorld {
     }
 }
 
-fn unreachable_service(
-) -> impl Service<(), rama::http::Request, Response = rama::http::Response, Error = Infallible> + Clone
+fn unreachable_service()
+-> impl Service<(), rama::http::Request, Response = rama::http::Response, Error = Infallible> + Clone
 {
     service_fn(|_req| async move { unreachable!() })
 }

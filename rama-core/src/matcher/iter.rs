@@ -1,4 +1,4 @@
-use crate::{context::Extensions, Context};
+use crate::{Context, context::Extensions};
 
 use super::Matcher;
 

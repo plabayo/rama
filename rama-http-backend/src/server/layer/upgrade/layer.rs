@@ -1,5 +1,5 @@
-use super::{service::UpgradeHandler, UpgradeService, Upgraded};
-use rama_core::{matcher::Matcher, Context, Layer, Service};
+use super::{UpgradeService, Upgraded, service::UpgradeHandler};
+use rama_core::{Context, Layer, Service, matcher::Matcher};
 use rama_http_types::Request;
 use std::{convert::Infallible, fmt, sync::Arc};
 

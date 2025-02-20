@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{http::BodyExtractExt, Context};
+use rama::{Context, http::BodyExtractExt};
 
 const ADDRESS: &str = "127.0.0.1:62011";
 

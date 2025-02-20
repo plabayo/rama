@@ -4,18 +4,18 @@ use std::{
 };
 
 use http::header::AsHeaderName;
-use serde::{de::Error as _, ser::Error as _, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 
 use super::{
+    Http1HeaderName,
     name::{IntoHttp1HeaderName, IntoSealed as _, TryIntoHttp1HeaderName},
     original::{self, OriginalHttp1Headers},
-    Http1HeaderName,
 };
 
 use crate::{
+    HeaderMap, HeaderName, HeaderValue, Request,
     dep::http::Extensions,
     header::{self, InvalidHeaderName},
-    HeaderMap, HeaderName, HeaderValue, Request,
 };
 
 #[derive(Debug, Clone, Default)]

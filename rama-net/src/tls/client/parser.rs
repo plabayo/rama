@@ -6,15 +6,15 @@
 use super::{ClientHello, ClientHelloExtension};
 use crate::address::Host;
 use crate::tls::{
-    enums::CompressionAlgorithm, ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion,
+    ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, enums::CompressionAlgorithm,
 };
 use nom::{
+    IResult, Parser,
     bytes::streaming::take,
     combinator::{complete, cond, map, map_parser, opt, verify},
-    error::{make_error, ErrorKind},
+    error::{ErrorKind, make_error},
     multi::{length_data, many0},
-    number::streaming::{be_u16, be_u8},
-    IResult, Parser,
+    number::streaming::{be_u8, be_u16},
 };
 use rama_core::error::OpaqueError;
 use std::str;
@@ -77,7 +77,7 @@ fn parse_cipher_suites(i: &[u8], len: usize) -> IResult<&[u8], Vec<CipherSuite>>
     }
     let v = (i[..len])
         .chunks(2)
-        .map(|chunk| CipherSuite::from((chunk[0] as u16) << 8 | chunk[1] as u16))
+        .map(|chunk| CipherSuite::from(((chunk[0] as u16) << 8) | chunk[1] as u16))
         .collect();
     Ok((&i[len..], v))
 }
@@ -276,7 +276,7 @@ fn parse_u16_type<T: From<u16>>(i: &[u8]) -> IResult<&[u8], Vec<T>> {
     }
     let v = (i[..len])
         .chunks(2)
-        .map(|chunk| T::from((chunk[0] as u16) << 8 | chunk[1] as u16))
+        .map(|chunk| T::from(((chunk[0] as u16) << 8) | chunk[1] as u16))
         .collect();
     Ok((&i[len..], v))
 }

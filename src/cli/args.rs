@@ -3,11 +3,11 @@
 use crate::{
     error::{ErrorContext, OpaqueError},
     http::{
-        header::{Entry, HeaderValue, ACCEPT, CONTENT_LENGTH, CONTENT_TYPE},
         Body, Method, Request, Uri,
+        header::{ACCEPT, CONTENT_LENGTH, CONTENT_TYPE, Entry, HeaderValue},
     },
 };
-use rama_http::proto::h1::{headers::original::OriginalHttp1Headers, Http1HeaderName};
+use rama_http::proto::h1::{Http1HeaderName, headers::original::OriginalHttp1Headers};
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -83,9 +83,9 @@ impl RequestArgsBuilder {
                 body: HashMap::new(),
             }),
             BuilderState::Data {
-                ref mut query,
-                ref mut headers,
-                ref mut body,
+                query,
+                headers,
+                body,
                 ..
             } => match parse_arg_as_data(arg, query, headers, body) {
                 Ok(_) => None,
@@ -94,9 +94,7 @@ impl RequestArgsBuilder {
                     ignored: vec![],
                 }),
             },
-            BuilderState::Error {
-                ref mut ignored, ..
-            } => {
+            BuilderState::Error { ignored, .. } => {
                 ignored.push(arg);
                 None
             }
@@ -478,11 +476,7 @@ mod tests {
             (vec![":8080"], "GET / HTTP/1.1\r\n\r\n"),
             (vec!["HeAD", ":8000/foo"], "HEAD /foo HTTP/1.1\r\n\r\n"),
             (
-                vec![
-                    "example.com/bar",
-                    "FOO:bar",
-                    "AnSweR:42",
-                ],
+                vec!["example.com/bar", "FOO:bar", "AnSweR:42"],
                 "GET /bar HTTP/1.1\r\nFOO: bar\r\nAnSweR: 42\r\n\r\n",
             ),
             (
@@ -494,64 +488,35 @@ mod tests {
                 "POST /foo HTTP/1.1\r\nContent-Type: application/x-www-form-urlencoded\r\ncontent-length: 3\r\n\r\nc=d",
             ),
             (
-                vec![
-                    "example.com/foo",
-                    "a=b",
-                    "Content-Type:application/json",
-                ],
+                vec!["example.com/foo", "a=b", "Content-Type:application/json"],
                 "POST /foo HTTP/1.1\r\nContent-Type: application/json\r\naccept: application/json\r\ncontent-length: 9\r\n\r\n{\"a\":\"b\"}",
             ),
             (
-                vec![
-                    "example.com/foo",
-                    "a=b",
-                ],
+                vec!["example.com/foo", "a=b"],
                 "POST /foo HTTP/1.1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 9\r\n\r\n{\"a\":\"b\"}",
             ),
             (
-                vec![
-                    "example.com/foo",
-                    "x-a:1",
-                    "a=b",
-                ],
+                vec!["example.com/foo", "x-a:1", "a=b"],
                 "POST /foo HTTP/1.1\r\nx-a: 1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 9\r\n\r\n{\"a\":\"b\"}",
             ),
             (
-                vec![
-                    "put",
-                    "example.com/foo?a=2",
-                    "x-a:1",
-                    "a:=42",
-                    "a==3"
-                ],
+                vec!["put", "example.com/foo?a=2", "x-a:1", "a:=42", "a==3"],
                 "PUT /foo?a=2&a=3 HTTP/1.1\r\nx-a: 1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 8\r\n\r\n{\"a\":42}",
             ),
             (
-                vec![
-                    ":3000",
-                    "Cookie:foo=bar",
-                ],
+                vec![":3000", "Cookie:foo=bar"],
                 "GET / HTTP/1.1\r\nCookie: foo=bar\r\n\r\n",
             ),
             (
-                vec![
-                    ":/foo",
-                    "search==rama",
-                ],
+                vec![":/foo", "search==rama"],
                 "GET /foo?search=rama HTTP/1.1\r\n\r\n",
             ),
             (
-                vec![
-                    "example.com",
-                    "description='CLI HTTP client'",
-                ],
+                vec!["example.com", "description='CLI HTTP client'"],
                 "POST / HTTP/1.1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 35\r\n\r\n{\"description\":\"'CLI HTTP client'\"}",
             ),
             (
-                vec![
-                    "example.com",
-                    "x-cfg:a=1&foo=bar&foo=baz",
-                ],
+                vec!["example.com", "x-cfg:a=1&foo=bar&foo=baz"],
                 "GET / HTTP/1.1\r\nx-cfg: a=1&foo=bar&foo=baz\r\n\r\n",
             ),
         ] {
@@ -570,15 +535,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_args_builder_form_happy() {
-        for (args, expected_request_str) in [
-            (
-                vec![
-                    "example.com/foo",
-                    "c=d",
-                ],
-                "POST /foo HTTP/1.1\r\ncontent-type: application/x-www-form-urlencoded\r\ncontent-length: 3\r\n\r\nc=d",
-            ),
-        ] {
+        for (args, expected_request_str) in [(
+            vec!["example.com/foo", "c=d"],
+            "POST /foo HTTP/1.1\r\ncontent-type: application/x-www-form-urlencoded\r\ncontent-length: 3\r\n\r\nc=d",
+        )] {
             let mut builder = RequestArgsBuilder::new_form();
             for arg in args {
                 builder.parse_arg(arg.to_owned());
@@ -594,15 +554,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_request_args_builder_json_happy() {
-        for (args, expected_request_str) in [
-            (
-                vec![
-                    "example.com/foo",
-                    "a=b",
-                ],
-                "POST /foo HTTP/1.1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 9\r\n\r\n{\"a\":\"b\"}",
-            ),
-        ] {
+        for (args, expected_request_str) in [(
+            vec!["example.com/foo", "a=b"],
+            "POST /foo HTTP/1.1\r\ncontent-type: application/json\r\naccept: application/json\r\ncontent-length: 9\r\n\r\n{\"a\":\"b\"}",
+        )] {
             let mut builder = RequestArgsBuilder::new();
             for arg in args {
                 builder.parse_arg(arg.to_owned());

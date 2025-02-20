@@ -1,7 +1,7 @@
-use super::{eq_origin, Action, Attempt, Policy};
+use super::{Action, Attempt, Policy, eq_origin};
 use crate::{
-    header::{self, HeaderName},
     Request,
+    header::{self, HeaderName},
 };
 use rama_core::Context;
 
@@ -162,9 +162,11 @@ mod tests {
             location: &same_origin,
             previous: request.uri(),
         };
-        assert!(Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
-            .unwrap()
-            .is_follow());
+        assert!(
+            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+                .unwrap()
+                .is_follow()
+        );
 
         let mut request = Request::builder()
             .uri(same_origin)
@@ -179,9 +181,11 @@ mod tests {
             location: &cross_origin,
             previous: request.uri(),
         };
-        assert!(Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
-            .unwrap()
-            .is_follow());
+        assert!(
+            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+                .unwrap()
+                .is_follow()
+        );
 
         let mut request = Request::builder()
             .uri(cross_origin)

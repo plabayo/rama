@@ -1,7 +1,7 @@
-use crate::protocol::{v1, v2, HeaderResult, PartialResult};
+use crate::protocol::{HeaderResult, PartialResult, v1, v2};
 use rama_core::{
-    error::{BoxError, ErrorExt},
     Context, Layer, Service,
+    error::{BoxError, ErrorExt},
 };
 use rama_net::{
     forwarded::{Forwarded, ForwardedElement},
@@ -65,10 +65,13 @@ impl<State, S, IO> Service<State, IO> for HaProxyService<S>
 where
     State: Clone + Send + Sync + 'static,
     S: Service<
-        State,
-        tokio::io::Join<ChainReader<HeapReader, tokio::io::ReadHalf<IO>>, tokio::io::WriteHalf<IO>>,
-        Error: Into<BoxError>,
-    >,
+            State,
+            tokio::io::Join<
+                ChainReader<HeapReader, tokio::io::ReadHalf<IO>>,
+                tokio::io::WriteHalf<IO>,
+            >,
+            Error: Into<BoxError>,
+        >,
     IO: Stream + Unpin,
 {
     type Response = S::Response;

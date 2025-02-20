@@ -107,11 +107,7 @@ impl super::ForwardHeader for Via {
                 })
             })
             .collect();
-        if vec.is_empty() {
-            None
-        } else {
-            Some(Via(vec))
-        }
+        if vec.is_empty() { None } else { Some(Via(vec)) }
     }
 }
 

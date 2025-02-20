@@ -174,7 +174,7 @@ where
 mod test {
     use super::*;
     use crate::{Body, Response};
-    use rama_core::{service::service_fn, Layer, Service};
+    use rama_core::{Layer, Service, service::service_fn};
     use std::convert::Infallible;
 
     #[tokio::test]

@@ -1,7 +1,7 @@
 use rama_core::{
+    Context,
     combinators::Either,
     error::{BoxError, ErrorContext, OpaqueError},
-    Context,
 };
 use rama_dns::{DnsOverwrite, DnsResolver, HickoryDns};
 use rama_net::address::{Authority, Domain, Host};
@@ -11,16 +11,16 @@ use std::{
     net::{IpAddr, SocketAddr},
     ops::Deref,
     sync::{
-        atomic::{AtomicBool, Ordering},
         Arc,
+        atomic::{AtomicBool, Ordering},
     },
     time::Duration,
 };
 use tokio::{
     net::TcpStream,
     sync::{
-        mpsc::{channel, Sender},
         Semaphore,
+        mpsc::{Sender, channel},
     },
 };
 
@@ -291,11 +291,15 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
 
         let sem = match (ip.is_ipv4(), connect_mode) {
             (true, ConnectIpMode::Ipv6) => {
-                tracing::trace!("[{ip_kind:?}] #{index}: abort connect loop to {addr} (IPv4 address is not allowed)");
+                tracing::trace!(
+                    "[{ip_kind:?}] #{index}: abort connect loop to {addr} (IPv4 address is not allowed)"
+                );
                 continue;
             }
             (false, ConnectIpMode::Ipv4) => {
-                tracing::trace!("[{ip_kind:?}] #{index}: abort connect loop to {addr} (IPv6 address is not allowed)");
+                tracing::trace!(
+                    "[{ip_kind:?}] #{index}: abort connect loop to {addr} (IPv6 address is not allowed)"
+                );
                 continue;
             }
             _ => sem.clone(),
@@ -314,7 +318,9 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
         }
 
         if connected.load(Ordering::Acquire) {
-            tracing::trace!("[{ip_kind:?}] #{index}: abort connect loop to {addr} (connection already established)");
+            tracing::trace!(
+                "[{ip_kind:?}] #{index}: abort connect loop to {addr} (connection already established)"
+            );
             return;
         }
 
@@ -322,7 +328,9 @@ async fn tcp_connect_inner_branch<Dns, Connector>(
         tokio::spawn(async move {
             let _permit = sem.acquire().await.unwrap();
             if connected.load(Ordering::Acquire) {
-                tracing::trace!("[{ip_kind:?}] #{index}: abort spawned attempt to {addr} (connection already established)");
+                tracing::trace!(
+                    "[{ip_kind:?}] #{index}: abort spawned attempt to {addr} (connection already established)"
+                );
                 return;
             }
 

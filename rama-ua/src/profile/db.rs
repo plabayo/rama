@@ -192,7 +192,7 @@ impl FromIterator<UserAgentProfile> for UserAgentDatabase {
 
 #[cfg(test)]
 mod tests {
-    use rama_http_types::{header::USER_AGENT, proto::h1::Http1HeaderMap, HeaderValue};
+    use rama_http_types::{HeaderValue, header::USER_AGENT, proto::h1::Http1HeaderMap};
 
     use super::*;
 
@@ -220,7 +220,17 @@ mod tests {
         assert_eq!(profile.ua_kind, UserAgentKind::Chromium);
         assert_eq!(profile.ua_version, Some(120));
         assert_eq!(profile.platform, Some(PlatformKind::Windows));
-        assert_eq!(profile.http.headers.navigate.get(USER_AGENT).unwrap().to_str().unwrap(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0");
+        assert_eq!(
+            profile
+                .http
+                .headers
+                .navigate
+                .get(USER_AGENT)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+        );
     }
 
     #[test]
@@ -254,10 +264,12 @@ mod tests {
         for (ua_str, ua_kind, device) in test_cases {
             let profile = db.get(&UserAgent::new(ua_str)).expect(ua_str);
             assert_eq!(profile.ua_kind, ua_kind);
-            assert!(profile
-                .platform
-                .map(|p| p.device() == device)
-                .unwrap_or_default());
+            assert!(
+                profile
+                    .platform
+                    .map(|p| p.device() == device)
+                    .unwrap_or_default()
+            );
         }
     }
 

@@ -1,8 +1,8 @@
 use std::fmt;
 
+use crate::Body;
 use crate::dep::http::StatusCode;
 use crate::response::{IntoResponse, Response};
-use crate::Body;
 use headers::ContentType;
 use rama_error::OpaqueError;
 use rama_utils::macros::impl_deref;

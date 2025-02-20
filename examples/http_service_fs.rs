@@ -17,11 +17,11 @@
 //! You should see a response with `HTTP/1.1 200 OK` and the content of the `index.html` file.
 
 use rama::{
+    Layer,
     http::{server::HttpServer, service::fs::ServeDir},
     layer::TraceErrLayer,
     rt::Executor,
     tcp::server::TcpListener,
-    Layer,
 };
 
 #[tokio::main]

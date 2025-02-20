@@ -6,8 +6,8 @@ use crate::boring::dep::boring::{
     pkey::{PKey, Private},
     rsa::Rsa,
     x509::{
+        X509, X509NameBuilder,
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
-        X509NameBuilder, X509,
     },
 };
 use boring::{
@@ -20,12 +20,12 @@ use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::{
     address::{Domain, Host},
     tls::{
+        ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion,
         client::ClientHello as RamaClientHello,
         server::{
             CacheKind, ClientVerifyMode, DynamicIssuer, SelfSignedData, ServerAuth, ServerAuthData,
             ServerCertIssuerKind,
         },
-        ApplicationProtocol, DataEncoding, KeyLogIntent, ProtocolVersion,
     },
 };
 use std::{sync::Arc, time::Duration};
@@ -257,10 +257,11 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
             // no client auth
             ClientVerifyMode::Auto | ClientVerifyMode::Disable => None,
             // client auth enabled
-            ClientVerifyMode::ClientAuth(DataEncoding::Der(bytes)) => Some(vec![X509::from_der(
-                &bytes[..],
-            )
-            .context("boring/TlsAcceptorData: parse x509 client cert from DER content")?]),
+            ClientVerifyMode::ClientAuth(DataEncoding::Der(bytes)) => {
+                Some(vec![X509::from_der(&bytes[..]).context(
+                    "boring/TlsAcceptorData: parse x509 client cert from DER content",
+                )?])
+            }
             ClientVerifyMode::ClientAuth(DataEncoding::DerStack(bytes_list)) => Some(
                 bytes_list
                     .into_iter()
@@ -390,8 +391,10 @@ fn server_auth_data_to_private_key_and_ca_chain(
     };
 
     let cert_chain = match &data.cert_chain {
-        DataEncoding::Der(raw_data) => vec![X509::from_der(&raw_data[..])
-            .context("boring/TlsAcceptorData: parse x509 server cert from DER content")?],
+        DataEncoding::Der(raw_data) => vec![
+            X509::from_der(&raw_data[..])
+                .context("boring/TlsAcceptorData: parse x509 server cert from DER content")?,
+        ],
         DataEncoding::DerStack(raw_data_list) => raw_data_list
             .iter()
             .map(|raw_data| {

@@ -1,4 +1,4 @@
-use super::{Latency, DEFAULT_MESSAGE_LEVEL};
+use super::{DEFAULT_MESSAGE_LEVEL, Latency};
 use crate::header::HeaderMap;
 use crate::layer::classify::grpc_errors_as_failures::ParsedGrpcStatus;
 use rama_utils::latency::LatencyUnit;

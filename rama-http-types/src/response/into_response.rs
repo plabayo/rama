@@ -1,13 +1,13 @@
 use super::{IntoResponseParts, Response, ResponseParts};
+use crate::Body;
 use crate::dep::http_body::{Frame, SizeHint};
 use crate::dep::mime;
-use crate::Body;
 use crate::{
+    StatusCode,
     dep::http::Extensions,
     header::{self, HeaderMap, HeaderName, HeaderValue},
-    StatusCode,
 };
-use bytes::{buf::Chain, Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut, buf::Chain};
 use rama_error::BoxError;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{

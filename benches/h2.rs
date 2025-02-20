@@ -1,14 +1,13 @@
-use rama::http::core::h2::{
-    client,
-    server::{self, SendResponse},
-    RecvStream,
-};
 use rama::http::Request;
+use rama::http::core::h2::{
+    RecvStream, client,
+    server::{self, SendResponse},
+};
 
 use bytes::Bytes;
 use tokio::net::{TcpListener, TcpStream};
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use std::{
     error::Error,

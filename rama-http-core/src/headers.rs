@@ -1,7 +1,7 @@
 use bytes::BytesMut;
 use rama_http_types::{
-    header::{OccupiedEntry, ValueIter, CONTENT_LENGTH, TRANSFER_ENCODING},
     HeaderMap, HeaderValue, Method,
+    header::{CONTENT_LENGTH, OccupiedEntry, TRANSFER_ENCODING, ValueIter},
 };
 
 pub(super) fn connection_keep_alive(value: &HeaderValue) -> bool {

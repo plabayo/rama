@@ -2,8 +2,8 @@
 
 use crate::DnsResolver;
 use hickory_resolver::{
-    proto::rr::rdata::{A, AAAA},
     Name, TokioAsyncResolver,
+    proto::rr::rdata::{A, AAAA},
 };
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::Domain;

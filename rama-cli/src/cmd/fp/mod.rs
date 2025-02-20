@@ -1,13 +1,14 @@
 //! Echo service that echos the http request and tls client config
 
-use base64::engine::general_purpose::STANDARD as ENGINE;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as ENGINE;
 use clap::Args;
 use rama::{
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, OpaqueError},
     http::{
+        HeaderName, HeaderValue, IntoResponse,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
@@ -18,17 +19,16 @@ use rama::{
         response::Redirect,
         server::HttpServer,
         service::web::match_service,
-        HeaderName, HeaderValue, IntoResponse,
     },
     layer::{
-        limit::policy::ConcurrentPolicy, ConsumeErrLayer, HijackLayer, Layer, LimitLayer,
-        TimeoutLayer,
+        ConsumeErrLayer, HijackLayer, Layer, LimitLayer, TimeoutLayer,
+        limit::policy::ConcurrentPolicy,
     },
     net::{
         stream::layer::http::BodyLimitLayer,
         tls::{
-            server::{ServerAuth, ServerAuthData, ServerConfig},
             ApplicationProtocol, DataEncoding,
+            server::{ServerAuth, ServerAuthData, ServerConfig},
         },
     },
     proxy::haproxy::server::HaProxyLayer,
@@ -40,7 +40,7 @@ use rama::{
 };
 use std::{convert::Infallible, str::FromStr, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 mod data;
 mod endpoints;
@@ -360,7 +360,7 @@ impl FromStr for HttpVersion {
             version => {
                 return Err(OpaqueError::from_display(format!(
                     "unsupported http version: {version}"
-                )))
+                )));
             }
         })
     }

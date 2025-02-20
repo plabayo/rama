@@ -1,6 +1,6 @@
+use futures::Stream;
 use futures::future;
 use futures::stream::FuturesUnordered;
-use futures::Stream;
 use rama_http_types::{Method, Request};
 use std::future::Future;
 use std::io;
@@ -10,7 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 struct MockIo<'a> {
     input: &'a [u8],
@@ -27,7 +27,7 @@ impl MockIo<'_> {
     }
 
     fn next_u32(&mut self) -> u32 {
-        (self.next_byte().unwrap_or(0) as u32) << 8 | self.next_byte().unwrap_or(0) as u32
+        ((self.next_byte().unwrap_or(0) as u32) << 8) | self.next_byte().unwrap_or(0) as u32
     }
 }
 

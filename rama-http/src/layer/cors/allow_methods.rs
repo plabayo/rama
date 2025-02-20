@@ -1,12 +1,12 @@
 use std::{array, fmt};
 
 use crate::dep::http::{
+    Method,
     header::{self, HeaderName, HeaderValue},
     request::Parts as RequestParts,
-    Method,
 };
 
-use super::{separated_by_commas, Any, WILDCARD};
+use super::{Any, WILDCARD, separated_by_commas};
 
 /// Holds configuration for how to set the [`Access-Control-Allow-Methods`][mdn] header.
 ///

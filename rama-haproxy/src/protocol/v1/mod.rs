@@ -11,7 +11,7 @@ pub use model::{Addresses, Header, SEPARATOR, TCP4, TCP6, UNKNOWN};
 pub use model::{PROTOCOL_PREFIX, PROTOCOL_SUFFIX};
 use std::borrow::Cow;
 use std::net::{AddrParseError, Ipv4Addr, Ipv6Addr};
-use std::str::{from_utf8, FromStr};
+use std::str::{FromStr, from_utf8};
 
 const ZERO: &str = "0";
 const NEWLINE: &str = "\n";
@@ -72,14 +72,14 @@ fn parse_header(header: &str) -> Result<Header, ParseError> {
             Addresses::Unknown
         }
         Some(protocol) if protocol.is_empty() && iterator.peek().is_none() => {
-            return Err(ParseError::MissingProtocol)
+            return Err(ParseError::MissingProtocol);
         }
         Some(protocol)
             if !protocol.is_empty()
                 && header.ends_with(protocol)
                 && (TCP4.starts_with(protocol) || UNKNOWN.starts_with(protocol)) =>
         {
-            return Err(ParseError::Partial)
+            return Err(ParseError::Partial);
         }
         Some(_) => return Err(ParseError::InvalidProtocol),
         None => return Err(ParseError::MissingProtocol),
@@ -292,7 +292,10 @@ mod tests {
         let ip: Ipv6Addr = "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff".parse().unwrap();
         let port = 65535;
         let text = "PROXY TCP6 ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff 65535 65535\r\nHi!";
-        let expected = Header::new("PROXY TCP6 ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff 65535 65535\r\n", Addresses::new_tcp6(ip, ip, port, port));
+        let expected = Header::new(
+            "PROXY TCP6 ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff 65535 65535\r\n",
+            Addresses::new_tcp6(ip, ip, port, port),
+        );
 
         assert_eq!(Header::try_from(text), Ok(expected.to_owned()));
         assert_eq!(Header::try_from(text.as_bytes()), Ok(expected));

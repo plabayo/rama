@@ -21,8 +21,9 @@
 
 use bytes::Bytes;
 use rama::{
+    Context, Layer,
     http::{
-        header,
+        IntoResponse, Request, header,
         layer::{
             compression::CompressionLayer,
             sensitive_headers::{
@@ -32,22 +33,20 @@ use rama::{
         },
         response::Html,
         server::HttpServer,
-        IntoResponse, Request,
     },
     layer::{MapResponseLayer, TimeoutLayer, TraceErrLayer},
     net::stream::{
-        layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
         SocketInfo,
+        layer::{BytesRWTrackerHandle, IncomingBytesTrackerLayer},
     },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     utils::latency::LatencyUnit,
-    Context, Layer,
 };
 use std::{sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {

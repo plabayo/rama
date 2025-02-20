@@ -1,5 +1,5 @@
 use crate::Request;
-use rama_core::{context::Extensions, Context};
+use rama_core::{Context, context::Extensions};
 use rama_net::address::{Domain, Host};
 use rama_net::http::RequestContext;
 

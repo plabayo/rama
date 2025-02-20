@@ -59,8 +59,8 @@ use crate::layer::validate_request::{
     ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer,
 };
 use crate::{
-    header::{self, HeaderValue},
     Request, Response, StatusCode,
+    header::{self, HeaderValue},
 };
 use rama_core::Context;
 
@@ -336,7 +336,7 @@ mod tests {
     use super::*;
 
     use crate::layer::validate_request::ValidateRequestHeaderLayer;
-    use crate::{header, Body};
+    use crate::{Body, header};
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
     use rama_core::{Context, Layer, Service};

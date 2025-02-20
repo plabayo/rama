@@ -1,4 +1,4 @@
-use super::{parse_utils, Domain};
+use super::{Domain, parse_utils};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{
     fmt,

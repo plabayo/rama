@@ -1,8 +1,8 @@
 //! Builder pattern to generate both valid and invalid PROXY protocol v2 headers.
 
 use crate::protocol::v2::{
-    Addresses, Protocol, Type, TypeLengthValue, TypeLengthValues, LENGTH, MINIMUM_LENGTH,
-    MINIMUM_TLV_LENGTH, PROTOCOL_PREFIX,
+    Addresses, LENGTH, MINIMUM_LENGTH, MINIMUM_TLV_LENGTH, PROTOCOL_PREFIX, Protocol, Type,
+    TypeLengthValue, TypeLengthValues,
 };
 use std::io::{self, Write};
 

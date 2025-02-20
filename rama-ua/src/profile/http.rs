@@ -1,6 +1,6 @@
 use rama_http_types::{
-    proto::{h1::Http1HeaderMap, h2::PseudoHeader},
     HeaderName,
+    proto::{h1::Http1HeaderMap, h2::PseudoHeader},
 };
 use serde::{Deserialize, Serialize};
 

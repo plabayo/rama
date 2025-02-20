@@ -2,7 +2,7 @@ use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
 
 #[cfg(feature = "http")]
-use rama_http_types::{headers::authorization, HeaderValue};
+use rama_http_types::{HeaderValue, headers::authorization};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Bearer credentials.

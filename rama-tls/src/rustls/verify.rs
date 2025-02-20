@@ -5,8 +5,8 @@
 use crate::rustls::dep::{
     pki_types::{CertificateDer, ServerName, UnixTime},
     rustls::{
-        client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
         DigitallySignedStruct, SignatureScheme,
+        client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     },
 };
 

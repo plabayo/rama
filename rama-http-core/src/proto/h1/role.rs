@@ -9,7 +9,7 @@ use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
-use smallvec::{smallvec, smallvec_inline, SmallVec};
+use smallvec::{SmallVec, smallvec, smallvec_inline};
 use tracing::{debug, error, trace, trace_span, warn};
 
 use crate::body::DecodedLength;
@@ -28,11 +28,7 @@ const AVERAGE_HEADER_SIZE: usize = 30; // totally scientific
 const MAX_URI_LEN: usize = (u16::MAX - 1) as usize;
 
 macro_rules! header_value {
-    ($bytes:expr) => {{
-        {
-            unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) }
-        }
-    }};
+    ($bytes:expr) => {{ { unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) } } }};
 }
 
 pub(super) fn parse_headers<T>(
@@ -301,9 +297,7 @@ impl Http1Transaction for Server {
     fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
             "Server::encode status={:?}, body={:?}, req_method={:?}",
-            msg.head.subject,
-            msg.body,
-            msg.req_method
+            msg.head.subject, msg.body, msg.req_method
         );
 
         let mut wrote_len = false;
@@ -567,11 +561,11 @@ impl Server {
                                 if let Some(len) = headers::content_length_parse(&value) {
                                     if msg.req_method != &Some(Method::HEAD) || known_len != 0 {
                                         assert!(
-                                        len == known_len,
-                                        "payload claims content-length of {}, custom content-length header claims {}",
-                                        known_len,
-                                        len,
-                                    );
+                                            len == known_len,
+                                            "payload claims content-length of {}, custom content-length header claims {}",
+                                            known_len,
+                                            len,
+                                        );
                                     }
                                 }
                             }
@@ -774,8 +768,7 @@ impl Server {
         if !Server::can_have_body(msg.req_method, msg.head.subject) {
             trace!(
                 "server body forced to 0; method={:?}, status={:?}",
-                msg.req_method,
-                msg.head.subject
+                msg.req_method, msg.head.subject
             );
             encoder = Encoder::length(0);
         }
@@ -956,6 +949,12 @@ impl Http1Transaction for Client {
                 }));
             }
 
+            if head.subject.is_informational() {
+                if let Some(callback) = ctx.on_informational {
+                    callback.call(head.into_response(()));
+                }
+            }
+
             // Parsing a 1xx response could have consumed the buffer, check if
             // it is empty now...
             if buf.is_empty() {
@@ -967,8 +966,7 @@ impl Http1Transaction for Client {
     fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
             "Client::encode method={:?}, body={:?}",
-            msg.head.subject.0,
-            msg.body
+            msg.head.subject.0, msg.body
         );
 
         *msg.req_method = Some(msg.head.subject.0.clone());
@@ -1430,6 +1428,7 @@ mod tests {
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: &mut None,
             },
         )
         .unwrap()
@@ -1451,6 +1450,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1468,6 +1468,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         Server::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1482,6 +1483,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: true,
+            on_informational: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw, H09_RESPONSE);
@@ -1498,6 +1500,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
         assert_eq!(raw, H09_RESPONSE);
@@ -1518,6 +1521,7 @@ mod tests {
             h1_parser_config,
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1535,6 +1539,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1548,6 +1553,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
         let mut orig_headers = parsed_message
@@ -1572,6 +1578,7 @@ mod tests {
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect("parse ok")
@@ -1587,6 +1594,7 @@ mod tests {
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect_err(comment)
@@ -1804,17 +1812,20 @@ mod tests {
 
         fn parse_ignores(s: &str) {
             let mut bytes = BytesMut::from(s);
-            assert!(Client::parse(
-                &mut bytes,
-                ParseContext {
-                    req_method: &mut Some(Method::GET),
-                    h1_parser_config: Default::default(),
-                    h1_max_headers: None,
-                    h09_responses: false,
-                }
+            assert!(
+                Client::parse(
+                    &mut bytes,
+                    ParseContext {
+                        req_method: &mut Some(Method::GET),
+                        h1_parser_config: Default::default(),
+                        h1_max_headers: None,
+                        h09_responses: false,
+                        on_informational: &mut None,
+                    }
+                )
+                .expect("parse ok")
+                .is_none()
             )
-            .expect("parse ok")
-            .is_none())
         }
 
         fn parse_with_method(s: &str, m: Method) -> ParsedMessage<StatusCode> {
@@ -1826,6 +1837,7 @@ mod tests {
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect("parse ok")
@@ -1841,6 +1853,7 @@ mod tests {
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect_err("parse should err")
@@ -2433,6 +2446,7 @@ mod tests {
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: &mut None,
             },
         )
         .expect("parse ok")
@@ -2470,6 +2484,7 @@ mod tests {
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
                         h09_responses: false,
+                        on_informational: &mut None,
                     },
                 );
                 if should_success {
@@ -2488,6 +2503,7 @@ mod tests {
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
                         h09_responses: false,
+                        on_informational: &mut None,
                     },
                 );
                 if should_success {

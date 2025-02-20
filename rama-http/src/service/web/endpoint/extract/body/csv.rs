@@ -1,8 +1,8 @@
 use super::BytesRejection;
+use crate::Request;
 use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::{composite_http_rejection, define_http_rejection};
-use crate::Request;
 use bytes::Buf;
 
 pub use crate::response::Csv;
@@ -74,8 +74,8 @@ where
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::service::web::WebService;
     use crate::StatusCode;
+    use crate::service::web::WebService;
     use rama_core::{Context, Service};
 
     #[tokio::test]

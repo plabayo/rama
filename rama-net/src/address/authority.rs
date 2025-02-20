@@ -1,4 +1,4 @@
-use super::{parse_utils, Domain, DomainAddress, Host};
+use super::{Domain, DomainAddress, Host, parse_utils};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::{

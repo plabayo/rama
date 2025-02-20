@@ -1,24 +1,24 @@
 use std::fmt;
 
 use rama_core::{
-    error::{BoxError, ErrorContext, OpaqueError},
     Context, Service,
+    error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_http_types::{
+    HeaderMap, HeaderName, Method, Request, Version,
     conn::Http1ClientContextParams,
     header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, COOKIE, REFERER, USER_AGENT},
     proto::{
         h1::{
-            headers::{original::OriginalHttp1Headers, HeaderMapValueRemover},
             Http1HeaderMap,
+            headers::{HeaderMapValueRemover, original::OriginalHttp1Headers},
         },
         h2::PseudoHeaderOrder,
     },
-    HeaderMap, HeaderName, Method, Request, Version,
 };
 use rama_utils::macros::match_ignore_ascii_case_str;
 
-use crate::{HttpAgent, RequestInitiator, UserAgent, UserAgentProfile, CUSTOM_HEADER_MARKER};
+use crate::{CUSTOM_HEADER_MARKER, HttpAgent, RequestInitiator, UserAgent, UserAgentProfile};
 
 use super::{UserAgentProvider, UserAgentSelectFallback};
 

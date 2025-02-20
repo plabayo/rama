@@ -3,17 +3,16 @@
 //! [`Layer`]: rama_core::Layer
 
 use crate::{
-    headers::{HeaderMapExt, UserAgent},
     IntoResponse, Request, Response,
+    headers::{HeaderMapExt, UserAgent},
 };
 use rama_core::telemetry::opentelemetry::{
-    global,
+    AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, ServiceInfo, global,
     metrics::{Counter, Histogram, Meter},
     semantic_conventions::{
         self,
         resource::{SERVICE_NAME, SERVICE_VERSION},
     },
-    AttributesFactory, InstrumentationScope, KeyValue, MeterOptions, ServiceInfo,
 };
 use rama_core::{Context, Layer, Service};
 use rama_net::http::RequestContext;
@@ -350,15 +349,21 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&mut ctx, &req);
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == SERVICE_NAME));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == SERVICE_VERSION));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == HTTP_REQUEST_HOST));
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == SERVICE_NAME)
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == SERVICE_VERSION)
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == HTTP_REQUEST_HOST)
+        );
     }
 
     #[test]
@@ -379,15 +384,21 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&mut ctx, &req);
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test"));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42"));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == HTTP_REQUEST_HOST));
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == HTTP_REQUEST_HOST)
+        );
     }
 
     #[test]
@@ -409,18 +420,26 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&mut ctx, &req);
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test"));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42"));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == HTTP_REQUEST_HOST));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == "test" && attr.value.as_str() == "attribute_fn"));
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == HTTP_REQUEST_HOST)
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == "test" && attr.value.as_str() == "attribute_fn")
+        );
     }
 
     #[test]
@@ -446,17 +465,25 @@ mod tests {
             .unwrap();
 
         let attributes = svc.compute_attributes(&mut ctx, &req);
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test"));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42"));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == HTTP_REQUEST_HOST));
-        assert!(attributes
-            .iter()
-            .any(|attr| attr.key.as_str() == "test" && attr.value.as_str() == "attribute_fn"));
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == SERVICE_NAME && attr.value.as_str() == "test")
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == SERVICE_VERSION && attr.value.as_str() == "42")
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == HTTP_REQUEST_HOST)
+        );
+        assert!(
+            attributes
+                .iter()
+                .any(|attr| attr.key.as_str() == "test" && attr.value.as_str() == "attribute_fn")
+        );
     }
 }

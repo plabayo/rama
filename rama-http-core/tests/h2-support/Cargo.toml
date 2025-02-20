@@ -3,7 +3,7 @@ name = "h2-support"
 version = "0.1.0"
 authors = ["Carl Lerche <me@carllerche.com>"]
 publish = false
-edition = "2021"
+edition = "2024"
 license = "MIT OR Apache-2.0"
 
 [dependencies]

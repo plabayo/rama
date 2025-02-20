@@ -1,10 +1,12 @@
 #![allow(dead_code)]
 
 use rama::{
+    Layer, Service,
     error::BoxError,
     http::client::proxy::layer::SetProxyAuthHttpHeaderLayer,
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::{
+        Request, Response,
         client::HttpClient,
         layer::{
             follow_redirect::FollowRedirectLayer,
@@ -12,12 +14,10 @@ use rama::{
             retry::{ManagedPolicy, RetryLayer},
             trace::TraceLayer,
         },
-        Request, Response,
     },
     layer::MapResultLayer,
     service::BoxService,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
-    Layer, Service,
 };
 use std::{
     process::{Child, ExitStatus},
@@ -25,15 +25,15 @@ use std::{
     time::Duration,
 };
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[cfg(feature = "compression")]
 use rama::http::layer::decompression::DecompressionLayer;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama::net::tls::{
-    client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
     ApplicationProtocol,
+    client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
 };
 
 pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxError>;

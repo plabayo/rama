@@ -60,8 +60,8 @@
 use std::fmt;
 
 use crate::{
-    header::{HeaderName, HeaderValue},
     Request, Response,
+    header::{HeaderName, HeaderValue},
 };
 use nanoid::nanoid;
 use rama_core::{Context, Layer, Service};
@@ -401,13 +401,13 @@ impl MakeRequestId for MakeRequestNanoid {
 mod tests {
     use crate::layer::set_header;
     use crate::{Body, Response};
-    use rama_core::service::service_fn;
     use rama_core::Layer;
+    use rama_core::service::service_fn;
     use std::{
         convert::Infallible,
         sync::{
-            atomic::{AtomicU64, Ordering},
             Arc,
+            atomic::{AtomicU64, Ordering},
         },
     };
 

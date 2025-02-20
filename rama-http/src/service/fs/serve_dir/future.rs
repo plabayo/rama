@@ -1,13 +1,13 @@
 use super::open_file::{FileOpened, FileRequestExtent, OpenFileOutput};
 use crate::{
+    Body, HeaderValue, Request, Response, StatusCode,
     dep::http_body_util::BodyExt,
     header::{self, ALLOW},
     layer::util::content_encoding::Encoding,
     service::fs::AsyncReadBody,
-    Body, HeaderValue, Request, Response, StatusCode,
 };
 use bytes::Bytes;
-use rama_core::{error::BoxError, Context, Service};
+use rama_core::{Context, Service, error::BoxError};
 use std::{convert::Infallible, io};
 
 pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(

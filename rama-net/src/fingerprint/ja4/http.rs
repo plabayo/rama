@@ -19,9 +19,9 @@ use std::{
 };
 
 use rama_http_types::{
+    Method, Request, Version,
     header::{ACCEPT_LANGUAGE, COOKIE, REFERER},
     proto::h1::Http1HeaderMap,
-    Method, Request, Version,
 };
 
 #[derive(Clone)]

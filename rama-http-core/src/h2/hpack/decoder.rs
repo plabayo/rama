@@ -1,4 +1,4 @@
-use super::{header::BytesStr, huffman, Header};
+use super::{Header, header::BytesStr, huffman};
 use crate::h2::frame;
 
 use bytes::{Buf, Bytes, BytesMut};

@@ -35,7 +35,7 @@ pub use {bytes, futures, http, tokio::io as tokio_io, tracing, tracing_subscribe
 pub use futures::{Future, Sink, Stream};
 
 // And our Future extensions
-pub use super::future_ext::{join, join3, join4, join_all, select, try_join, TestFuture};
+pub use super::future_ext::{TestFuture, join, join_all, join3, join4, select, try_join};
 
 // Our client_ext helpers
 pub use super::client_ext::SendRequestExt;
@@ -43,7 +43,7 @@ pub use super::client_ext::SendRequestExt;
 // Re-export HTTP types
 pub use bytes::{Buf, BufMut, Bytes, BytesMut};
 pub use rama_http_types::{
-    dep::http::uri, HeaderMap, Method, Request, Response, StatusCode, Version,
+    HeaderMap, Method, Request, Response, StatusCode, Version, dep::http::uri,
 };
 
 pub use tokio::io::{AsyncRead, AsyncWrite};
@@ -57,8 +57,8 @@ pub static MAGIC_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 // TODO: work on deleting this code
 
 use futures::future;
-pub use futures::future::poll_fn;
 use futures::future::Either::*;
+pub use futures::future::poll_fn;
 use std::pin::Pin;
 
 pub trait MockH2 {

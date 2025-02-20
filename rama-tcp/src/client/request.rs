@@ -1,9 +1,9 @@
 use rama_core::Context;
 use rama_http_types::Version;
 use rama_net::{
+    Protocol,
     address::Authority,
     transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext},
-    Protocol,
 };
 use std::convert::Infallible;
 

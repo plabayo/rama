@@ -1,10 +1,10 @@
-use base64::engine::general_purpose::STANDARD as ENGINE;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as ENGINE;
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
 
 #[cfg(feature = "http")]
-use rama_http_types::{headers::authorization, HeaderValue};
+use rama_http_types::{HeaderValue, headers::authorization};
 
 #[derive(Debug, Clone)]
 /// Basic credentials.

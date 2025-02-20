@@ -10,9 +10,9 @@ use bytes::Bytes;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
 
+use rama::http::Response;
 use rama::http::core::server::conn::http1;
 use rama::http::dep::http_body_util::Full;
-use rama::http::Response;
 use rama::service::service_fn;
 
 #[global_allocator]

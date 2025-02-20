@@ -1,5 +1,5 @@
 use super::FromRequestContextRefPair;
-use crate::{dep::http::request::Parts, Method};
+use crate::{Method, dep::http::request::Parts};
 use rama_core::Context;
 use std::convert::Infallible;
 

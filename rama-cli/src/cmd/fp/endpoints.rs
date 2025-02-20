@@ -1,17 +1,17 @@
 use super::{
-    data::{
-        get_http_info, get_ja4h_info, get_request_info, get_tls_display_info, get_user_agent_info,
-        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo, UserAgentInfo,
-    },
     State,
+    data::{
+        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo, UserAgentInfo,
+        get_http_info, get_ja4h_info, get_request_info, get_tls_display_info, get_user_agent_info,
+    },
 };
 use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
 use rama::{
-    http::{
-        response::Json, service::web::extract::Path, Body, IntoResponse, Request, Response,
-        StatusCode,
-    },
     Context,
+    http::{
+        Body, IntoResponse, Request, Response, StatusCode, response::Json,
+        service::web::extract::Path,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;

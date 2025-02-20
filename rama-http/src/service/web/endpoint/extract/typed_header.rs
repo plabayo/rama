@@ -157,9 +157,9 @@ impl std::error::Error for TypedHeaderRejection {
 #[cfg(test)]
 mod tests {
     use crate::{
+        Body, Request,
         headers::ContentType,
         service::web::extract::{FromRequestContextRefPair, TypedHeader},
-        Body, Request,
     };
     use rama_core::Context;
 

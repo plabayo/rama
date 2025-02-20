@@ -1,13 +1,13 @@
 use crate::forwarded::Forwarded;
 use crate::transport::{TransportContext, TransportProtocol, TryRefIntoTransportContext};
 use crate::{
-    address::{Authority, Host},
     Protocol,
+    address::{Authority, Host},
 };
-use rama_core::error::OpaqueError;
 use rama_core::Context;
+use rama_core::error::OpaqueError;
 use rama_http_types::Method;
-use rama_http_types::{dep::http::request::Parts, Request, Uri, Version};
+use rama_http_types::{Request, Uri, Version, dep::http::request::Parts};
 use tracing::{trace, warn};
 
 #[cfg(feature = "tls")]

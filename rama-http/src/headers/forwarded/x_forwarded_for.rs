@@ -140,9 +140,9 @@ mod tests {
     test_header!(
         test1,
         vec!["2001:db8:85a3:8d3:1319:8a2e:370:7348"],
-        Some(XForwardedFor(vec!["2001:db8:85a3:8d3:1319:8a2e:370:7348"
-            .parse()
-            .unwrap(),]))
+        Some(XForwardedFor(vec![
+            "2001:db8:85a3:8d3:1319:8a2e:370:7348".parse().unwrap(),
+        ]))
     );
     test_header!(
         test2,

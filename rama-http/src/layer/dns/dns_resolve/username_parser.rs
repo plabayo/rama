@@ -2,7 +2,7 @@ use super::DnsResolveMode;
 use rama_core::username::{UsernameLabelParser, UsernameLabelState};
 use rama_core::{
     context::Extensions,
-    error::{error, ErrorContext, OpaqueError},
+    error::{ErrorContext, OpaqueError, error},
 };
 use rama_utils::macros::str::eq_ignore_ascii_case;
 

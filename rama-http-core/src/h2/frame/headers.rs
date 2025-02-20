@@ -1,14 +1,14 @@
-use super::{util, StreamDependency, StreamId};
+use super::{StreamDependency, StreamId, util};
 use crate::h2::ext::Protocol;
 use crate::h2::frame::{Error, Frame, Head, Kind};
 use crate::h2::hpack::{self, BytesStr};
 
 use rama_http_types::dep::http::uri;
-use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
-use rama_http_types::proto::h1::headers::Http1HeaderMapIntoIter;
 use rama_http_types::proto::h1::Http1HeaderMap;
+use rama_http_types::proto::h1::headers::Http1HeaderMapIntoIter;
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
-use rama_http_types::{header, HeaderMap, HeaderName, Method, Request, StatusCode, Uri};
+use rama_http_types::{HeaderMap, HeaderName, Method, Request, StatusCode, Uri, header};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 

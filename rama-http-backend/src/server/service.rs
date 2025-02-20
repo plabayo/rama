@@ -1,7 +1,7 @@
 //! Rama HTTP server module.
 
-use super::hyper_conn::HttpCoreConnServer;
 use super::HttpServeResult;
+use super::hyper_conn::HttpCoreConnServer;
 use rama_core::error::BoxError;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;

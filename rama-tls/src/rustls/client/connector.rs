@@ -1,5 +1,5 @@
 use super::TlsConnectorData;
-use crate::rustls::dep::tokio_rustls::{client::TlsStream, TlsConnector as RustlsConnector};
+use crate::rustls::dep::tokio_rustls::{TlsConnector as RustlsConnector, client::TlsStream};
 use crate::types::TlsTunnel;
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
@@ -9,8 +9,9 @@ use rama_core::{Context, Layer, Service};
 use rama_net::address::Host;
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_net::stream::Stream;
-use rama_net::tls::client::{ClientConfig, NegotiatedTlsParameters};
 use rama_net::tls::ApplicationProtocol;
+use rama_net::tls::client::ClientConfig;
+use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
 use std::sync::Arc;

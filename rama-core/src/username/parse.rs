@@ -145,7 +145,7 @@ macro_rules! username_label_parser_tuple_impl {
             type Error = OpaqueError;
 
             fn parse_label(&mut self, label: &str) -> UsernameLabelState {
-                let ($(ref mut $T,)+) = self;
+                let ($($T,)+) = self;
                 let mut state = UsernameLabelState::Ignored;
                 $(
                     match $T.parse_label(label) {

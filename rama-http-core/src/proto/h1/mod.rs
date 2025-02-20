@@ -68,6 +68,7 @@ pub(crate) struct ParseContext<'a> {
     h1_parser_config: ParserConfig,
     h1_max_headers: Option<usize>,
     h09_responses: bool,
+    on_informational: &'a mut Option<crate::ext::OnInformational>,
 }
 
 struct EncodeHead<'a, S> {

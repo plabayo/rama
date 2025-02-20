@@ -1,5 +1,5 @@
 use crate::context::Extensions;
-use crate::{matcher::Matcher, Context};
+use crate::{Context, matcher::Matcher};
 use std::marker::PhantomData;
 
 /// Create a [`MatchFn`] from a function.

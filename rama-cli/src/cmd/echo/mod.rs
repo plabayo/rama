@@ -2,25 +2,25 @@
 
 use clap::Args;
 use rama::{
-    cli::{service::echo::EchoServiceBuilder, ForwardKind},
+    Service,
+    cli::{ForwardKind, service::echo::EchoServiceBuilder},
     error::BoxError,
-    http::{matcher::HttpMatcher, IntoResponse, Request, Response},
+    http::{IntoResponse, Request, Response, matcher::HttpMatcher},
     layer::HijackLayer,
     net::tls::{
-        server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
         ApplicationProtocol, DataEncoding,
+        server::{SelfSignedData, ServerAuth, ServerAuthData, ServerConfig},
     },
     rt::Executor,
     tcp::server::TcpListener,
-    Service,
 };
 
-use base64::engine::general_purpose::STANDARD as ENGINE;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as ENGINE;
 
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama echo service (echos the http request and tls client config)
@@ -85,7 +85,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
                         ApplicationProtocol::HTTP_11,
                     ]),
                     ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()))
-                }
+                };
             }
         };
         let tls_key_pem_raw = std::str::from_utf8(

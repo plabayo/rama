@@ -190,10 +190,11 @@ where
         // The order of these calls don't really matter too much
         ready!(self.inner.ping_pong.send_pending_pong(cx, &mut self.codec))?;
         ready!(self.inner.ping_pong.send_pending_ping(cx, &mut self.codec))?;
-        ready!(self
-            .inner
-            .settings
-            .poll_send(cx, &mut self.codec, &mut self.inner.streams))?;
+        ready!(
+            self.inner
+                .settings
+                .poll_send(cx, &mut self.codec, &mut self.inner.streams)
+        )?;
         ready!(self.inner.streams.send_pending_refusal(cx, &mut self.codec))?;
 
         Poll::Ready(Ok(()))

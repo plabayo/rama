@@ -1,4 +1,4 @@
-use crate::h2::frame::{util, Error, Frame, Head, Kind, StreamId};
+use crate::h2::frame::{Error, Frame, Head, Kind, StreamId, util};
 use bytes::{Buf, BufMut, Bytes};
 
 use std::fmt;

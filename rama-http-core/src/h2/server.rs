@@ -1534,7 +1534,7 @@ impl proto::Peer for Peer {
         field_order: OriginalHttp1Headers,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error> {
-        use rama_http_types::{dep::http::uri, Version};
+        use rama_http_types::{Version, dep::http::uri};
 
         let mut b = Request::builder();
 

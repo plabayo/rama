@@ -5,9 +5,9 @@
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_http_core::{client::conn::http1, upgrade};
 use rama_http_types::{
+    Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version,
     header::{HOST, USER_AGENT},
     headers::{Header, HeaderMapExt},
-    Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version,
 };
 use rama_net::{address::Authority, stream::Stream};
 

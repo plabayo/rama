@@ -2,42 +2,42 @@
 
 use clap::Args;
 use rama::{
+    Context, Layer, Service,
     cli::args::RequestArgsBuilder,
-    error::{error, BoxError, ErrorContext, OpaqueError},
+    error::{BoxError, ErrorContext, OpaqueError, error},
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
+        IntoResponse, Request, Response, StatusCode,
         client::{
-            proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
             HttpClient,
+            proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         layer::{
             auth::AddAuthorizationLayer,
             decompression::DecompressionLayer,
-            follow_redirect::{policy::Limited, FollowRedirectLayer},
+            follow_redirect::{FollowRedirectLayer, policy::Limited},
             required_header::AddRequiredRequestHeadersLayer,
             timeout::TimeoutLayer,
             traffic_writer::WriterMode,
         },
-        IntoResponse, Request, Response, StatusCode,
     },
     layer::{HijackLayer, MapResultLayer},
     net::{
         address::ProxyAddress,
         tls::{
-            client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
             ApplicationProtocol,
+            client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
         },
         user::ProxyCredential,
     },
     rt::Executor,
     service::service_fn,
-    Context, Layer, Service,
 };
 use std::{io::IsTerminal, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 use crate::error::ErrorWithExitCode;
 

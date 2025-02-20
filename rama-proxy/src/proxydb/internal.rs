@@ -176,7 +176,7 @@ impl Proxy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxydb::csv::{parse_csv_row, ProxyCsvRowReader};
+    use crate::proxydb::csv::{ProxyCsvRowReader, parse_csv_row};
     use crate::proxydb::internal::{ProxyDB, ProxyDBErrorKind};
     use itertools::Itertools;
 
@@ -347,7 +347,9 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_db_invalid_row_cases() {
         let mut db = ProxyDB::new();
-        let mut reader = ProxyCsvRowReader::raw("id1,1,,,,,,,,,authority,,,,,,,\nid2,,1,,,,,,,,authority,,,,,,,\nid3,,1,1,,,,,,,authority,,,,,,,\nid4,,1,1,,,,,1,,authority,,,,,,,\nid5,,1,1,,,,,1,,authority,,,,,,,");
+        let mut reader = ProxyCsvRowReader::raw(
+            "id1,1,,,,,,,,,authority,,,,,,,\nid2,,1,,,,,,,,authority,,,,,,,\nid3,,1,1,,,,,,,authority,,,,,,,\nid4,,1,1,,,,,1,,authority,,,,,,,\nid5,,1,1,,,,,1,,authority,,,,,,,",
+        );
         while let Some(proxy) = reader.next().await.unwrap() {
             assert_eq!(
                 ProxyDBErrorKind::InvalidRow,

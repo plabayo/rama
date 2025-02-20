@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::keylog::{new_key_log_file_handle, KeyLogFileHandle};
+use crate::keylog::{KeyLogFileHandle, new_key_log_file_handle};
 use crate::rustls::dep::rustls::KeyLog;
 use rama_core::error::OpaqueError;
 

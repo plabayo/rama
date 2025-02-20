@@ -61,27 +61,31 @@ mod tests {
     #[tokio::test]
     async fn test_empty_chain_vec() {
         let v = Vec::<InMemoryDns>::new();
-        assert!(v
-            .ipv4_lookup(Domain::from_static("plabayo.tech"))
-            .await
-            .is_err());
-        assert!(v
-            .ipv6_lookup(Domain::from_static("plabayo.tech"))
-            .await
-            .is_err());
+        assert!(
+            v.ipv4_lookup(Domain::from_static("plabayo.tech"))
+                .await
+                .is_err()
+        );
+        assert!(
+            v.ipv6_lookup(Domain::from_static("plabayo.tech"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn test_empty_chain_array() {
         let a: [InMemoryDns; 0] = [];
-        assert!(a
-            .ipv4_lookup(Domain::from_static("plabayo.tech"))
-            .await
-            .is_err());
-        assert!(a
-            .ipv6_lookup(Domain::from_static("plabayo.tech"))
-            .await
-            .is_err());
+        assert!(
+            a.ipv4_lookup(Domain::from_static("plabayo.tech"))
+                .await
+                .is_err()
+        );
+        assert!(
+            a.ipv6_lookup(Domain::from_static("plabayo.tech"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -161,9 +165,10 @@ mod tests {
     #[tokio::test]
     async fn test_chain_err_err_ipv4() {
         let v = vec![DenyAllDns::new(), DenyAllDns::new()];
-        assert!(v
-            .ipv4_lookup(Domain::from_static("example.com"))
-            .await
-            .is_err());
+        assert!(
+            v.ipv4_lookup(Domain::from_static("example.com"))
+                .await
+                .is_err()
+        );
     }
 }

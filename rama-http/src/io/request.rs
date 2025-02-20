@@ -1,6 +1,6 @@
 use crate::{
-    dep::{http_body, http_body_util::BodyExt},
     Body, Request,
+    dep::{http_body, http_body_util::BodyExt},
 };
 use bytes::Bytes;
 use rama_core::error::BoxError;

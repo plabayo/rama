@@ -1,6 +1,6 @@
-use futures::future::{ready, Either};
-use futures::stream::FuturesUnordered;
 use futures::StreamExt;
+use futures::future::{Either, ready};
+use futures::stream::FuturesUnordered;
 use h2_support::prelude::*;
 use std::pin::Pin;
 use std::task::Context;

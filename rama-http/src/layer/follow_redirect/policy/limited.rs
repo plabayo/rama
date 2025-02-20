@@ -87,9 +87,11 @@ mod tests {
                 location: &uri,
                 previous: &uri,
             };
-            assert!(Policy::<(), (), ()>::redirect(policy, ctx, &attempt)
-                .unwrap()
-                .is_follow());
+            assert!(
+                Policy::<(), (), ()>::redirect(policy, ctx, &attempt)
+                    .unwrap()
+                    .is_follow()
+            );
         }
 
         let mut request = Request::builder().uri(uri.clone()).body(()).unwrap();
@@ -100,8 +102,10 @@ mod tests {
             location: &uri,
             previous: &uri,
         };
-        assert!(Policy::<(), (), ()>::redirect(policy, ctx, &attempt)
-            .unwrap()
-            .is_stop());
+        assert!(
+            Policy::<(), (), ()>::redirect(policy, ctx, &attempt)
+                .unwrap()
+                .is_stop()
+        );
     }
 }

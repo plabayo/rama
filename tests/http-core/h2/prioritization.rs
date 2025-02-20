@@ -1,7 +1,7 @@
-use futures::{pin_mut, FutureExt, StreamExt};
+use futures::{FutureExt, StreamExt, pin_mut};
 
-use h2_support::prelude::*;
 use h2_support::DEFAULT_WINDOW_SIZE;
+use h2_support::prelude::*;
 use std::task::Context;
 
 #[tokio::test]

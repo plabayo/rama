@@ -1,12 +1,12 @@
 use rama_core::{
-    error::{BoxError, ErrorContext, OpaqueError},
     Context, Service,
+    error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_http_types::{
+    Method, Request, Response, Version,
     dep::{http::uri::PathAndQuery, http_body},
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
     headers::HeaderMapExt,
-    Method, Request, Response, Version,
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
 

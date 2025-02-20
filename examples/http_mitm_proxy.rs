@@ -39,8 +39,10 @@
 //! ```
 
 use rama::{
+    Layer, Service,
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
+        Body, IntoResponse, Request, Response, StatusCode,
         client::HttpClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
@@ -53,26 +55,24 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
-        Body, IntoResponse, Request, Response, StatusCode,
     },
     layer::ConsumeErrLayer,
     net::http::RequestContext,
     net::stream::layer::http::BodyLimitLayer,
     net::tls::{
+        ApplicationProtocol,
         client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
         server::{SelfSignedData, ServerAuth, ServerConfig},
-        ApplicationProtocol,
     },
     net::user::Basic,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
-    Layer, Service,
 };
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Clone)]
 struct State {

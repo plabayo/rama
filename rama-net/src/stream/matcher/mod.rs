@@ -26,7 +26,7 @@ pub mod ip;
 #[doc(inline)]
 pub use ip::IpNetMatcher;
 
-use rama_core::{context::Extensions, matcher::IteratorMatcherExt, Context};
+use rama_core::{Context, context::Extensions, matcher::IteratorMatcherExt};
 use std::{fmt, sync::Arc};
 
 #[cfg(feature = "http")]
@@ -474,11 +474,7 @@ where
         req: &Request<Body>,
     ) -> bool {
         let result = self.kind.matches(ext, ctx, req);
-        if self.negate {
-            !result
-        } else {
-            result
-        }
+        if self.negate { !result } else { result }
     }
 }
 
@@ -508,11 +504,7 @@ where
 {
     fn matches(&self, ext: Option<&mut Extensions>, ctx: &Context<State>, stream: &Socket) -> bool {
         let result = self.kind.matches(ext, ctx, stream);
-        if self.negate {
-            !result
-        } else {
-            result
-        }
+        if self.negate { !result } else { result }
     }
 }
 

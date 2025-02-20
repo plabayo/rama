@@ -66,8 +66,8 @@ fn map_http_core_err_to_result(err: rama_http_core::Error) -> HttpServeResult {
 }
 
 mod private {
-    use crate::server::hyper_conn::{map_boxed_http_core_result, map_http_core_result};
     use crate::server::HttpServeResult;
+    use crate::server::hyper_conn::{map_boxed_http_core_result, map_http_core_result};
     use rama_core::{Context, Service};
     use rama_http_core::service::RamaHttpService;
     use rama_http_types::{IntoResponse, Request};

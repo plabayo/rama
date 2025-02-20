@@ -1,5 +1,5 @@
 use crate::{Request, Version};
-use rama_core::{context::Extensions, Context};
+use rama_core::{Context, context::Extensions};
 use std::fmt::{self, Debug, Formatter};
 
 /// A matcher that matches one or more HTTP methods.

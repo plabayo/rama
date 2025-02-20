@@ -1,7 +1,7 @@
 use super::utils;
-use rama::http::layer::retry::managed::DoNotRetry;
-use rama::http::BodyExtractExt;
 use rama::Context;
+use rama::http::BodyExtractExt;
+use rama::http::layer::retry::managed::DoNotRetry;
 
 #[tokio::test]
 #[ignore]

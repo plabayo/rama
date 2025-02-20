@@ -1,4 +1,4 @@
-use rama_core::{error::BoxError, Context, Service};
+use rama_core::{Context, Service, error::BoxError};
 use std::{fmt, future::Future, net::SocketAddr};
 
 /// The established connection to a server returned for the http client to be used.
@@ -59,17 +59,17 @@ pub trait ConnectorService<State, Request>: Send + Sync + 'static {
     ) -> impl Future<
         Output = Result<EstablishedClientConnection<Self::Connection, State, Request>, Self::Error>,
     > + Send
-           + '_;
+    + '_;
 }
 
 impl<S, State, Request, Connection> ConnectorService<State, Request> for S
 where
     S: Service<
-        State,
-        Request,
-        Response = EstablishedClientConnection<Connection, State, Request>,
-        Error: Into<BoxError>,
-    >,
+            State,
+            Request,
+            Response = EstablishedClientConnection<Connection, State, Request>,
+            Error: Into<BoxError>,
+        >,
 {
     type Connection = Connection;
     type Error = S::Error;
@@ -81,7 +81,7 @@ where
     ) -> impl Future<
         Output = Result<EstablishedClientConnection<Self::Connection, State, Request>, Self::Error>,
     > + Send
-           + '_ {
+    + '_ {
         self.serve(ctx, req)
     }
 }

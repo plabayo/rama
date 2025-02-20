@@ -1,8 +1,8 @@
 use bytes::Bytes;
-use serde::{de::Error, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error};
 use std::{fmt, str::FromStr};
 
-use crate::{header::InvalidHeaderName, HeaderName};
+use crate::{HeaderName, header::InvalidHeaderName};
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
 pub struct Http1HeaderName {

@@ -24,8 +24,10 @@
 //! you'll need to first import and trust the generated certificate.
 
 use rama::{
+    Context, Layer, Service,
     graceful::Shutdown,
     http::{
+        Body, IntoResponse, Request, Response, StatusCode,
         client::HttpClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
@@ -34,26 +36,24 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
-        Body, IntoResponse, Request, Response, StatusCode,
     },
     net::http::RequestContext,
     net::stream::layer::http::BodyLimitLayer,
     net::tls::{
-        server::{SelfSignedData, ServerAuth, ServerConfig},
         ApplicationProtocol, SecureTransport,
+        server::{SelfSignedData, ServerAuth, ServerConfig},
     },
     net::user::Basic,
     rt::Executor,
     service::service_fn,
     tcp::{client::default_tcp_connect, server::TcpListener, utils::is_connection_error},
     tls::std::server::TlsAcceptorLayer,
-    Context, Layer, Service,
 };
 
 use std::convert::Infallible;
 use std::time::Duration;
 use tracing::metadata::LevelFilter;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {

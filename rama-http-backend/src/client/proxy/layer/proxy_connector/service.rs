@@ -2,9 +2,9 @@ use crate::client::proxy::layer::HttpProxyError;
 
 use super::InnerHttpProxyConnector;
 use rama_core::{
+    Context, Service,
     combinators::Either,
     error::{BoxError, ErrorExt, OpaqueError},
-    Context, Service,
 };
 use rama_http_core::upgrade;
 use rama_http_types::headers::ProxyAuthorization;
@@ -144,7 +144,9 @@ where
                 return if self.required {
                     Err("http proxy required but none is defined".into())
                 } else {
-                    tracing::trace!("http proxy connector: no proxy required or set: proceed with direct connection");
+                    tracing::trace!(
+                        "http proxy connector: no proxy required or set: proceed with direct connection"
+                    );
                     let EstablishedClientConnection {
                         ctx,
                         req,

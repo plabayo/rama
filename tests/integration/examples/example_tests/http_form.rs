@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{http::BodyExtractExt, Context};
+use rama::{Context, http::BodyExtractExt};
 use serde::Serialize;
 
 #[tokio::test]
