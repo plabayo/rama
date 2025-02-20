@@ -59,6 +59,7 @@ where
                 date_header: true,
                 title_case_headers: false,
                 h09_responses: false,
+                on_informational: None,
                 notify_read: false,
                 reading: Reading::Init,
                 writing: Writing::Init,
@@ -203,6 +204,7 @@ where
                 h1_parser_config: self.state.h1_parser_config.clone(),
                 h1_max_headers: self.state.h1_max_headers,
                 h09_responses: self.state.h09_responses,
+                on_informational: &mut self.state.on_informational,
             },
         ) {
             Poll::Ready(Ok(msg)) => msg,
@@ -235,6 +237,9 @@ where
 
         // Prevent accepting HTTP/0.9 responses after the initial one, if any.
         self.state.h09_responses = false;
+
+        // Drop any OnInformational callbacks, we're done there!
+        self.state.on_informational = None;
 
         self.state.busy();
         self.state.keep_alive &= msg.keep_alive;
@@ -579,7 +584,11 @@ where
             },
             buf,
         ) {
-            Ok(encoder) => Some(encoder),
+            Ok(encoder) => {
+                self.state.on_informational =
+                    head.extensions.remove::<crate::ext::OnInformational>();
+                Some(encoder)
+            }
             Err(err) => {
                 self.state.error = Some(err);
                 self.state.writing = Writing::Closed;
@@ -861,6 +870,10 @@ struct State {
     date_header: bool,
     title_case_headers: bool,
     h09_responses: bool,
+    /// If set, called with each 1xx informational response received for
+    /// the current request. MUST be unset after a non-1xx response is
+    /// received.
+    on_informational: Option<crate::ext::OnInformational>,
     /// Set to true when the Dispatcher should poll read operations
     /// again. See the `maybe_notify` method for more.
     notify_read: bool,
@@ -1037,6 +1050,13 @@ impl State {
         // should try the poll loop one more time, so as to poll the
         // pending requests stream.
         if !T::should_read_first() {
+            self.notify_read = true;
+        }
+
+        if self.h1_header_read_timeout.is_some() {
+            // Next read will start and poll the header read timeout,
+            // so we can close the connection if another header isn't
+            // received in a timely manner.
             self.notify_read = true;
         }
     }

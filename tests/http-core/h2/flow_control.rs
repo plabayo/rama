@@ -601,6 +601,7 @@ async fn recv_window_update_on_stream_closed_by_data_frame() {
         // i know this is kind of evil, but it's necessary to
         // ensure that the stream is closed by the EOS frame,
         // and not by the RST_STREAM.
+        #[allow(clippy::mem_forget)]
         std::mem::forget(stream);
 
         // Wait for the connection to close

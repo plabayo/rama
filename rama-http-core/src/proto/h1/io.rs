@@ -180,6 +180,7 @@ where
                     h1_parser_config: parse_ctx.h1_parser_config.clone(),
                     h1_max_headers: parse_ctx.h1_max_headers,
                     h09_responses: parse_ctx.h09_responses,
+                    on_informational: parse_ctx.on_informational,
                 },
             )? {
                 Some(msg) => {
@@ -690,6 +691,7 @@ mod tests {
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: &mut None,
             };
             assert!(buffered
                 .parse::<ClientTransaction>(cx, parse_ctx)

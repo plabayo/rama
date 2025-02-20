@@ -956,6 +956,12 @@ impl Http1Transaction for Client {
                 }));
             }
 
+            if head.subject.is_informational() {
+                if let Some(callback) = ctx.on_informational {
+                    callback.call(head.into_response(()));
+                }
+            }
+
             // Parsing a 1xx response could have consumed the buffer, check if
             // it is empty now...
             if buf.is_empty() {
@@ -1430,6 +1436,7 @@ mod tests {
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: &mut None,
             },
         )
         .unwrap()
@@ -1451,6 +1458,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1468,6 +1476,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         Server::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1482,6 +1491,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: true,
+            on_informational: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw, H09_RESPONSE);
@@ -1498,6 +1508,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
         assert_eq!(raw, H09_RESPONSE);
@@ -1518,6 +1529,7 @@ mod tests {
             h1_parser_config,
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1535,6 +1547,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1548,6 +1561,7 @@ mod tests {
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
         let mut orig_headers = parsed_message
@@ -1572,6 +1586,7 @@ mod tests {
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect("parse ok")
@@ -1587,6 +1602,7 @@ mod tests {
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect_err(comment)
@@ -1811,6 +1827,7 @@ mod tests {
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 }
             )
             .expect("parse ok")
@@ -1826,6 +1843,7 @@ mod tests {
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect("parse ok")
@@ -1841,6 +1859,7 @@ mod tests {
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect_err("parse should err")
@@ -2433,6 +2452,7 @@ mod tests {
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: &mut None,
             },
         )
         .expect("parse ok")
@@ -2470,6 +2490,7 @@ mod tests {
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
                         h09_responses: false,
+                        on_informational: &mut None,
                     },
                 );
                 if should_success {
@@ -2488,6 +2509,7 @@ mod tests {
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
                         h09_responses: false,
+                        on_informational: &mut None,
                     },
                 );
                 if should_success {

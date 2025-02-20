@@ -1494,7 +1494,6 @@ async fn header_read_timeout_slow_writes() {
         tcp.write_all(
             b"\
             Something: 1\r\n\
-            \r\n\
         ",
         )
         .expect("write 2");
@@ -1502,6 +1501,7 @@ async fn header_read_timeout_slow_writes() {
         tcp.write_all(
             b"\
             Works: 0\r\n\
+            \r\n
         ",
         )
         .expect_err("write 3");
@@ -1545,7 +1545,7 @@ async fn header_read_timeout_starts_immediately() {
             socket,
             RamaHttpService::new(rama::Context::default(), unreachable_service()),
         );
-    conn.await.expect_err("header timeout");
+    assert!(conn.await.unwrap_err().is_timeout());
 }
 
 #[tokio::test]
@@ -1593,7 +1593,6 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
             b"\
             GET / HTTP/1.1\r\n\
             Something: 1\r\n\
-            \r\n\
         ",
         )
         .expect("write 5");
@@ -1601,6 +1600,7 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
         tcp.write_all(
             b"\
             Works: 0\r\n\
+            \r\n\
         ",
         )
         .expect_err("write 6");
@@ -1622,7 +1622,52 @@ async fn header_read_timeout_slow_writes_multiple_requests() {
                 }),
             ),
         );
-    conn.without_shutdown().await.expect_err("header timeout");
+    assert!(conn.without_shutdown().await.unwrap_err().is_timeout());
+}
+
+#[tokio::test]
+async fn header_read_timeout_as_idle_timeout() {
+    let (listener, addr) = setup_tcp_listener();
+
+    thread::spawn(move || {
+        let mut tcp = connect(&addr);
+
+        tcp.write_all(
+            b"\
+            GET / HTTP/1.1\r\n\
+            \r\n\
+        ",
+        )
+        .expect("request 1");
+
+        thread::sleep(Duration::from_secs(6));
+
+        tcp.write_all(
+            b"\
+            GET / HTTP/1.1\r\n\
+            \r\n\
+        ",
+        )
+        .expect_err("request 2");
+    });
+
+    let (socket, _) = listener.accept().await.unwrap();
+    let conn = http1::Builder::new()
+        .header_read_timeout(Duration::from_secs(3))
+        .serve_connection(
+            socket,
+            RamaHttpService::new(
+                rama::Context::default(),
+                service_fn(|_| {
+                    let res = Response::builder()
+                        .status(200)
+                        .body(Empty::<Bytes>::new())
+                        .unwrap();
+                    future::ready(Ok::<_, Infallible>(res))
+                }),
+            ),
+        );
+    assert!(conn.without_shutdown().await.unwrap_err().is_timeout());
 }
 
 #[tokio::test]
