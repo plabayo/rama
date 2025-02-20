@@ -234,26 +234,29 @@ fn emulate_http_settings<Body, State>(
 ) {
     match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
-            tracing::trace!(
-                ua_kind = %profile.ua_kind,
-                ua_version = ?profile.ua_version,
-                platform = ?profile.platform,
-                "UA emulation add http1-specific settings",
-            );
-            ctx.insert(Http1ClientContextParams {
-                title_header_case: profile.http.h1.title_case_headers,
-            });
+            if let Some(h1) = &profile.http.h1 {
+                tracing::trace!(
+                    ua_kind = %profile.ua_kind,
+                    ua_version = ?profile.ua_version,
+                    platform = ?profile.platform,
+                    "UA emulation add http1-specific settings",
+                );
+                ctx.insert(Http1ClientContextParams {
+                    title_header_case: h1.title_case_headers,
+                });
+            }
         }
         Version::HTTP_2 => {
-            tracing::trace!(
-                ua_kind = %profile.ua_kind,
-                ua_version = ?profile.ua_version,
-                platform = ?profile.platform,
-                "UA emulation add h2-specific settings",
-            );
-            req.extensions_mut().insert(PseudoHeaderOrder::from_iter(
-                profile.http.h2.http_pseudo_headers.iter(),
-            ));
+            if let Some(h2) = &profile.http.h2 {
+                tracing::trace!(
+                    ua_kind = %profile.ua_kind,
+                    ua_version = ?profile.ua_version,
+                    platform = ?profile.platform,
+                    "UA emulation add h2-specific settings",
+                );
+                req.extensions_mut()
+                    .insert(PseudoHeaderOrder::from_iter(h2.http_pseudo_headers.iter()));
+            }
         }
         Version::HTTP_3 => tracing::debug!(
             "UA emulation not yet supported for h3: not applying anything h3-specific"
@@ -371,7 +374,7 @@ fn get_original_http_header_order<Body, State>(
         }
         return Ok(Some(headers));
     }
-    Ok(ctx.get().cloned())
+    Ok(ctx.get().or_else(|| req.extensions().get()).cloned())
 }
 
 fn merge_http_headers(
@@ -429,8 +432,8 @@ fn merge_http_headers(
     Ok(Http1HeaderMap::from_iter(
         output_headers_a
             .into_iter()
-            .chain(original_headers.into_iter()) // add all remaining original headers in any order within the right loc
-            .chain(output_headers_b.into_iter()),
+            .chain(original_headers) // add all remaining original headers in any order within the right loc
+            .chain(output_headers_b),
     ))
 }
 

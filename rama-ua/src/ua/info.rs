@@ -147,6 +147,14 @@ impl UserAgent {
         }
     }
 
+    /// returns the version of the [`UserAgent`], if known.
+    pub fn ua_version(&self) -> Option<usize> {
+        match &self.data {
+            UserAgentData::Standard { info, .. } => info.version,
+            _ => None,
+        }
+    }
+
     /// returns the [`PlatformKind`] used by the [`UserAgent`], if known.
     ///
     /// This is the platform the [`UserAgent`] is running on.
