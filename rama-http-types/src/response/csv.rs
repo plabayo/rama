@@ -1,10 +1,10 @@
 use crate::response::{IntoResponse, Response};
-use crate::{dep::http::StatusCode, Body};
+use crate::{Body, dep::http::StatusCode};
 use bytes::{BufMut, BytesMut};
 use csv;
 use headers::ContentType;
-use http::header::CONTENT_TYPE;
 use http::HeaderValue;
+use http::header::CONTENT_TYPE;
 use rama_error::OpaqueError;
 use rama_utils::macros::impl_deref;
 use serde::Serialize;

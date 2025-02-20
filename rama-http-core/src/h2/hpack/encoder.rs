@@ -1,5 +1,5 @@
 use super::table::{Index, Table};
-use super::{huffman, Header};
+use super::{Header, huffman};
 
 use bytes::{BufMut, BytesMut};
 use rama_http_types::dep::http::header::{HeaderName, HeaderValue};
@@ -330,7 +330,7 @@ mod test {
 
         let res = encode(&mut encoder, vec![method("PATCH")]);
 
-        assert_eq!(1 << 7 | 62, res[0]);
+        assert_eq!((1 << 7) | 62, res[0]);
         assert_eq!(1, res.len());
     }
 

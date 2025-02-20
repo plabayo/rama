@@ -3,7 +3,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use bytes::Bytes;
 use httparse::ParserConfig;
@@ -185,7 +185,7 @@ where
     pub fn send_request(
         &self,
         req: Request<B>,
-    ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
+    ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> + use<B> {
         let sent = self.dispatch.send(req);
 
         async move {

@@ -1,12 +1,12 @@
 use super::*;
-use crate::{response::IntoResponse, BodyExtractExt};
+use crate::{BodyExtractExt, response::IntoResponse};
 use crate::{Request, Response};
 use parking_lot::Mutex;
-use rama_core::error::{error, OpaqueError};
+use rama_core::error::{OpaqueError, error};
 use rama_core::{Layer, Service};
 use std::sync::{
-    atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 #[tokio::test]

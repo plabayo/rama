@@ -35,17 +35,17 @@
 //! and fill the form in the browser, you should see a response page after submitting the form,
 //! stating your name and age.
 
+use rama::Layer;
 use rama::http::layer::trace::TraceLayer;
 use rama::http::matcher::HttpMatcher;
 use rama::http::response::Html;
-use rama::http::service::web::{extract::Form, WebService};
+use rama::http::service::web::{WebService, extract::Form};
 use rama::http::{IntoResponse, Response};
-use rama::Layer;
 use rama::{http::server::HttpServer, rt::Executor};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Payload {

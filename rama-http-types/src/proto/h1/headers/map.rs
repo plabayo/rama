@@ -1,15 +1,15 @@
 use std::collections::{self, HashMap};
 
 use super::{
+    Http1HeaderName,
     name::{IntoHttp1HeaderName, IntoSealed as _, TryIntoHttp1HeaderName},
     original::{self, OriginalHttp1Headers},
-    Http1HeaderName,
 };
 
 use crate::{
+    HeaderMap, HeaderName, HeaderValue, Request,
     dep::http::Extensions,
     header::{self, InvalidHeaderName},
-    HeaderMap, HeaderName, HeaderValue, Request,
 };
 
 #[derive(Debug, Clone, Default)]

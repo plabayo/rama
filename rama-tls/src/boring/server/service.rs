@@ -9,13 +9,13 @@ use crate::{
 };
 use parking_lot::Mutex;
 use rama_core::{
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     Context, Service,
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::{
     http::RequestContext,
     stream::Stream,
-    tls::{client::NegotiatedTlsParameters, ApplicationProtocol, DataEncoding},
+    tls::{ApplicationProtocol, DataEncoding, client::NegotiatedTlsParameters},
     transport::TransportContext,
 };
 use rama_utils::macros::define_inner_service_accessors;
@@ -239,7 +239,7 @@ where
                 return Err(OpaqueError::from_display(
                     "boring ssl acceptor: failed to establish session...",
                 )
-                .into_boxed())
+                .into_boxed());
             }
         }
 

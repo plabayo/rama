@@ -2,7 +2,7 @@
 //!
 //! See [request] and [response] for more details.
 
-use crate::{header, HeaderMap, HeaderName};
+use crate::{HeaderMap, HeaderName, header};
 
 pub mod request;
 pub mod response;

@@ -1,4 +1,4 @@
-use crate::{header::AsHeaderName, HeaderMap, Request, Response};
+use crate::{HeaderMap, Request, Response, header::AsHeaderName};
 
 /// Utility trait for getting header values from a request or response.
 pub trait HeaderValueGetter {

@@ -1,5 +1,5 @@
 use super::{Authority, Host};
-use crate::{proto::try_to_extract_protocol_from_uri_scheme, user::ProxyCredential, Protocol};
+use crate::{Protocol, proto::try_to_extract_protocol_from_uri_scheme, user::ProxyCredential};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{fmt::Display, str::FromStr};
 

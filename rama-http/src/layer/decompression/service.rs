@@ -1,14 +1,14 @@
 use std::fmt;
 
-use super::{body::BodyInner, DecompressionBody};
+use super::{DecompressionBody, body::BodyInner};
 use crate::dep::http_body::Body;
 use crate::layer::util::{
     compression::{AcceptEncoding, CompressionLevel, WrapBody},
     content_encoding::SupportedEncodings,
 };
 use crate::{
-    header::{self, ACCEPT_ENCODING},
     Request, Response,
+    header::{self, ACCEPT_ENCODING},
 };
 use rama_core::{Context, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -150,7 +150,7 @@ where
                         return Ok(Response::from_parts(
                             parts,
                             DecompressionBody::new(BodyInner::identity(body)),
-                        ))
+                        ));
                     }
                 };
 

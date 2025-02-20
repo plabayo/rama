@@ -4,7 +4,7 @@ use std::{
     fmt,
     io::Cursor,
     pin::Pin,
-    task::{ready, Context, Poll},
+    task::{Context, Poll, ready},
 };
 use tokio::io::{self, AsyncBufRead, AsyncRead, ReadBuf};
 

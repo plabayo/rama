@@ -1,10 +1,11 @@
 use super::utils::{self, ClientService};
 use rama::{
+    Context, Layer, Service,
     error::{BoxError, OpaqueError},
     layer::MapResultLayer,
-    Context, Layer, Service,
 };
 use rama_http::{
+    Request, Response,
     dep::http_body,
     layer::{
         decompression::DecompressionLayer,
@@ -13,15 +14,14 @@ use rama_http::{
         retry::{ManagedPolicy, RetryLayer},
         trace::TraceLayer,
     },
-    Request, Response,
 };
 use rama_http_backend::client::HttpConnector;
 use rama_net::{
     address::{Domain, Host},
     client::{ConnectorService, EstablishedClientConnection},
     tls::{
-        client::{ClientConfig, ClientHelloExtension, NegotiatedTlsParameters, ServerVerifyMode},
         ApplicationProtocol, DataEncoding,
+        client::{ClientConfig, ClientHelloExtension, NegotiatedTlsParameters, ServerVerifyMode},
     },
 };
 use rama_tcp::client::service::TcpConnector;

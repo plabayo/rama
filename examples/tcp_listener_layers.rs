@@ -19,16 +19,16 @@
 //! This is because of the `TimeoutLayer` that was added to the server.
 
 use rama::{
+    Layer,
     layer::{HijackLayer, TimeoutLayer, TraceErrLayer},
     net::stream::{matcher::SocketMatcher, service::EchoService},
     service::service_fn,
     tcp::server::TcpListener,
-    Layer,
 };
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {

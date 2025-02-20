@@ -262,7 +262,7 @@ pub use proxydb::layer::{ProxyDBLayer, ProxyDBService, ProxyFilterMode, Username
 
 #[cfg(feature = "live-update")]
 #[doc(inline)]
-pub use proxydb::{proxy_db_updater, LiveUpdateProxyDB, LiveUpdateProxyDBSetter};
+pub use proxydb::{LiveUpdateProxyDB, LiveUpdateProxyDBSetter, proxy_db_updater};
 
 #[cfg(feature = "memory-db")]
 #[doc(inline)]

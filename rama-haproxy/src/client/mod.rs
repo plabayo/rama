@@ -4,4 +4,4 @@
 
 mod layer;
 #[doc(inline)]
-pub use layer::{protocol, version, HaProxyLayer, HaProxyService};
+pub use layer::{HaProxyLayer, HaProxyService, protocol, version};

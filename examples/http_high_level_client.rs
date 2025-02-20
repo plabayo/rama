@@ -13,9 +13,11 @@
 // rama provides everything out of the box to build a complete web service.
 
 use rama::{
+    Context, Layer, Service,
     http::{
+        Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
         client::HttpClient,
-        headers::{authorization::Basic, Accept, Authorization, HeaderMapExt},
+        headers::{Accept, Authorization, HeaderMapExt, authorization::Basic},
         layer::{
             auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
             compression::CompressionLayer,
@@ -27,11 +29,9 @@ use rama::{
         server::HttpServer,
         service::client::HttpClientExt,
         service::web::WebService,
-        Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
     },
     rt::Executor,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
-    Context, Layer, Service,
 };
 
 // Everything else we need is provided by the standard library, community crates or tokio.
@@ -41,7 +41,7 @@ use std::time::Duration;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 const ADDRESS: &str = "127.0.0.1:62004";
 

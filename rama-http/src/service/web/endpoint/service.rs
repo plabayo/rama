@@ -124,7 +124,7 @@ mod private {
         /// It is expected to do so by extracting the desired data from the context and/or request,
         /// and then calling the function with the extracted data.
         fn call(&self, ctx: Context<S>, req: Request)
-            -> impl Future<Output = Response> + Send + '_;
+        -> impl Future<Output = Response> + Send + '_;
     }
 
     impl<F, R, O, S> Sealed<S, (F, R, O)> for F

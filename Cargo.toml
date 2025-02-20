@@ -27,13 +27,13 @@ members = [
 [workspace.package]
 version = "0.2.0-alpha.7"
 license = "MIT OR Apache-2.0"
-edition = "2021"
+edition = "2024"
 repository = "https://github.com/plabayo/rama"
 homepage = "https://ramaproxy.org"
 keywords = ["io", "async", "non-blocking", "service", "rama"]
 categories = ["asynchronous", "network-programming", "web-programming", "web-programming::http-client", "web-programming::http-server"]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.84.0"
+rust-version = "1.85.0"
 
 [workspace.dependencies]
 async-compression = "0.4"

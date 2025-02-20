@@ -6,7 +6,7 @@ use bytes::BytesMut;
 use quickcheck::{Arbitrary, Gen, QuickCheck, TestResult};
 use rand::distr::slice::Choose;
 use rand::rngs::StdRng;
-use rand::{rng, Rng, SeedableRng};
+use rand::{Rng, SeedableRng, rng};
 
 use std::io::Cursor;
 

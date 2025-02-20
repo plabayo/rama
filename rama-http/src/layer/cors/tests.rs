@@ -1,5 +1,5 @@
 use crate::layer::cors::{AllowOrigin, CorsLayer};
-use crate::{header, Body, HeaderValue, Request, Response};
+use crate::{Body, HeaderValue, Request, Response, header};
 use rama_core::service::service_fn;
 use rama_core::{Context, Layer, Service};
 use std::convert::Infallible;

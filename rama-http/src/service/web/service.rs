@@ -1,14 +1,14 @@
-use super::{endpoint::Endpoint, IntoEndpointService};
+use super::{IntoEndpointService, endpoint::Endpoint};
 use crate::{
+    Body, IntoResponse, Request, Response, StatusCode, Uri,
     matcher::{HttpMatcher, UriParams},
     service::fs::ServeDir,
-    Body, IntoResponse, Request, Response, StatusCode, Uri,
 };
 use rama_core::{
+    Context,
     context::Extensions,
     matcher::Matcher,
-    service::{service_fn, BoxService, Service},
-    Context,
+    service::{BoxService, Service, service_fn},
 };
 use std::{convert::Infallible, fmt, future::Future, marker::PhantomData, sync::Arc};
 
@@ -320,7 +320,7 @@ where
 /// As you can see it is pretty much the same, except that you need to explicitly ensure
 /// that each service is an actual Endpoint service.
 macro_rules! __match_service {
-    ($($M:expr => $S:expr),+, _ => $F:expr $(,)?) => {{
+    ($($M:expr_2021 => $S:expr_2021),+, _ => $F:expr $(,)?) => {{
         use $crate::service::web::IntoEndpointService;
         ($(($M, $S.into_endpoint_service())),+, $F.into_endpoint_service())
     }};
@@ -331,9 +331,9 @@ pub use crate::__match_service as match_service;
 
 #[cfg(test)]
 mod test {
+    use crate::Body;
     use crate::dep::http_body_util::BodyExt;
     use crate::matcher::MethodMatcher;
-    use crate::Body;
 
     use super::*;
 

@@ -3,9 +3,9 @@
 //! See [`TransportContext`] for the centerpiece of this module.
 
 use crate::http::RequestContext;
-use crate::{address::Authority, Protocol};
-use rama_core::{error::OpaqueError, Context};
-use rama_http_types::{dep::http::request::Parts as HttpParts, Request, Version};
+use crate::{Protocol, address::Authority};
+use rama_core::{Context, error::OpaqueError};
+use rama_http_types::{Request, Version, dep::http::request::Parts as HttpParts};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// The context as relevant to the transport layer,

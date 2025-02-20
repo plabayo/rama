@@ -171,12 +171,12 @@ mod compression_tests {
 
 #[cfg(test)]
 mod tests {
+    use crate::Body;
+    use crate::Method;
     use crate::dep::http_body_util::BodyExt;
     use crate::dep::mime::Mime;
     use crate::header;
     use crate::service::fs::ServeFile;
-    use crate::Body;
-    use crate::Method;
     use crate::{Request, StatusCode};
     use brotli::BrotliDecompress;
     use flate2::bufread::DeflateDecoder;

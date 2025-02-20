@@ -1,8 +1,8 @@
 use std::array;
 
 use crate::{
-    header::{self, HeaderName},
     HeaderValue,
+    header::{self, HeaderName},
 };
 
 use super::preflight_request_headers;

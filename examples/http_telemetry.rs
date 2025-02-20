@@ -38,6 +38,7 @@
 
 use opentelemetry_otlp::{ExportConfig, Protocol, WithExportConfig};
 use rama::{
+    Context, Layer,
     http::{
         layer::{opentelemetry::RequestMetricsLayer, trace::TraceLayer},
         response::Html,
@@ -48,23 +49,21 @@ use rama::{
     rt::Executor,
     tcp::server::TcpListener,
     telemetry::opentelemetry::{
-        self,
+        self, InstrumentationScope, KeyValue,
         metrics::UpDownCounter,
         sdk::{
-            metrics::{PeriodicReader, SdkMeterProvider},
             Resource,
+            metrics::{PeriodicReader, SdkMeterProvider},
         },
         semantic_conventions::{
             self,
             resource::{HOST_ARCH, OS_NAME},
         },
-        InstrumentationScope, KeyValue,
     },
-    Context, Layer,
 };
 use std::{sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug)]
 struct Metrics {

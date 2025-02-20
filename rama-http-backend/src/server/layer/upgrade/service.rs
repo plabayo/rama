@@ -3,7 +3,7 @@
 //! See [`UpgradeService`] for more details.
 
 use super::Upgraded;
-use rama_core::{context::Extensions, matcher::Matcher, service::BoxService, Context, Service};
+use rama_core::{Context, Service, context::Extensions, matcher::Matcher, service::BoxService};
 use rama_http_types::Request;
 use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt, sync::Arc};

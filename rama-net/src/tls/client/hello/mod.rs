@@ -1,7 +1,7 @@
 use crate::address::Host;
 use crate::tls::{
-    enums::CompressionAlgorithm, ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId,
-    ProtocolVersion, SignatureScheme, SupportedGroup,
+    ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme,
+    SupportedGroup, enums::CompressionAlgorithm,
 };
 
 #[cfg(feature = "rustls")]
@@ -52,7 +52,7 @@ impl ClientHello {
     /// See [`ClientHelloExtension::ServerName`] for more information about the server name.
     pub fn ext_server_name(&self) -> Option<&Host> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::ServerName(ref host) = ext {
+            if let ClientHelloExtension::ServerName(host) = ext {
                 return host.as_ref();
             }
         }
@@ -65,7 +65,7 @@ impl ClientHello {
     /// See [`ClientHelloExtension::SupportedGroups`] for more information about these curves.
     pub fn ext_supported_groups(&self) -> Option<&[SupportedGroup]> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::SupportedGroups(ref groups) = ext {
+            if let ClientHelloExtension::SupportedGroups(groups) = ext {
                 return Some(&groups[..]);
             }
         }
@@ -78,7 +78,7 @@ impl ClientHello {
     /// See [`ClientHelloExtension::ECPointFormats`] for more information about this.
     pub fn ext_ec_point_formats(&self) -> Option<&[ECPointFormat]> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::ECPointFormats(ref formats) = ext {
+            if let ClientHelloExtension::ECPointFormats(formats) = ext {
                 return Some(&formats[..]);
             }
         }
@@ -91,7 +91,7 @@ impl ClientHello {
     /// See [`ClientHelloExtension::SignatureAlgorithms`] for more information about these algorithms
     pub fn ext_signature_algorithms(&self) -> Option<&[SignatureScheme]> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::SignatureAlgorithms(ref algos) = ext {
+            if let ClientHelloExtension::SignatureAlgorithms(algos) = ext {
                 return Some(&algos[..]);
             }
         }
@@ -104,7 +104,7 @@ impl ClientHello {
     /// See [`ClientHelloExtension::ApplicationLayerProtocolNegotiation`] for more information about these protocols (ALPN).
     pub fn ext_alpn(&self) -> Option<&[ApplicationProtocol]> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::ApplicationLayerProtocolNegotiation(ref alpns) = ext {
+            if let ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpns) = ext {
                 return Some(&alpns[..]);
             }
         }
@@ -117,7 +117,7 @@ impl ClientHello {
     /// See [`ClientHelloExtension::SupportedVersions`] for more information about these versions
     pub fn supported_versions(&self) -> Option<&[ProtocolVersion]> {
         for ext in &self.extensions {
-            if let ClientHelloExtension::SupportedVersions(ref versions) = ext {
+            if let ClientHelloExtension::SupportedVersions(versions) = ext {
                 return Some(&versions[..]);
             }
         }

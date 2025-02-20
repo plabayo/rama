@@ -1,9 +1,9 @@
 use crate::rustls::dep::pemfile;
 use crate::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::rustls::dep::rcgen::{self, KeyPair};
-use crate::rustls::dep::rustls::client::danger::ServerCertVerifier;
 use crate::rustls::dep::rustls::RootCertStore;
-use crate::rustls::dep::rustls::{ClientConfig, SupportedProtocolVersion, ALL_VERSIONS};
+use crate::rustls::dep::rustls::client::danger::ServerCertVerifier;
+use crate::rustls::dep::rustls::{ALL_VERSIONS, ClientConfig, SupportedProtocolVersion};
 use crate::rustls::key_log::KeyLogFile;
 use crate::rustls::verify::NoServerCertVerifier;
 use rama_core::error::{ErrorContext, OpaqueError};
@@ -326,8 +326,8 @@ pub(super) fn client_root_certs() -> Arc<RootCertStore> {
         .clone()
 }
 
-fn self_signed_client_auth(
-) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
+fn self_signed_client_auth()
+-> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
     // Create a client end entity cert.
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;
     let client_key_pair =

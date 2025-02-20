@@ -1,4 +1,4 @@
-use super::{Latency, DEFAULT_MESSAGE_LEVEL};
+use super::{DEFAULT_MESSAGE_LEVEL, Latency};
 use crate::Response;
 use rama_utils::latency::LatencyUnit;
 use std::time::Duration;

@@ -6,8 +6,8 @@ use std::io;
 use std::{
     net::SocketAddr,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
 };
 use tokio::net::{TcpListener, TcpStream};

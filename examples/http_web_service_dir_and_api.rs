@@ -25,6 +25,7 @@
 
 // rama provides everything out of the box to build a complete web service.
 use rama::{
+    Context, Layer,
     http::{
         layer::{compression::CompressionLayer, trace::TraceLayer},
         matcher::HttpMatcher,
@@ -32,19 +33,18 @@ use rama::{
         server::HttpServer,
         service::web::WebService,
     },
-    net::stream::{matcher::SocketMatcher, SocketInfo},
+    net::stream::{SocketInfo, matcher::SocketMatcher},
     rt::Executor,
-    Context, Layer,
 };
 
+use std::sync::Arc;
 /// Everything else we need is provided by the standard library, community crates or tokio.
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
-use std::sync::Arc;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Default)]
 struct AppState {

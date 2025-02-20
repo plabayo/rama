@@ -8,9 +8,9 @@ use std::{fmt, net::SocketAddr};
 
 #[cfg(feature = "http")]
 use rama_http_types::{
+    HeaderName, HeaderValue,
     header::FORWARDED,
     headers::{self, Header},
-    HeaderName, HeaderValue,
 };
 
 mod obfuscated;
@@ -386,10 +386,12 @@ mod tests {
                 r##"for=192.0.2.43,for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com"##,
                 Forwarded {
                     first: ForwardedElement::forwarded_for(NodeId::try_from("192.0.2.43").unwrap()),
-                    others: vec![ForwardedElement::try_from(
-                        "for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com",
-                    )
-                    .unwrap()],
+                    others: vec![
+                        ForwardedElement::try_from(
+                            "for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com",
+                        )
+                        .unwrap(),
+                    ],
                 },
             ),
             (
@@ -398,10 +400,12 @@ mod tests {
                     first: ForwardedElement::forwarded_for(
                         NodeId::try_from("192.0.2.43:4000").unwrap(),
                     ),
-                    others: vec![ForwardedElement::try_from(
-                        "for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com",
-                    )
-                    .unwrap()],
+                    others: vec![
+                        ForwardedElement::try_from(
+                            "for=198.51.100.17;by=203.0.113.60;proto=http;host=example.com",
+                        )
+                        .unwrap(),
+                    ],
                 },
             ),
         ] {

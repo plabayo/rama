@@ -3,10 +3,10 @@
 //! the header with the given [`HeaderName`] is present
 //! and has a bool-like value.
 
-use crate::{utils::HeaderValueGetter, HeaderName, Request};
+use crate::{HeaderName, Request, utils::HeaderValueGetter};
 use rama_core::{
-    error::{BoxError, ErrorExt, OpaqueError},
     Context, Layer, Service,
+    error::{BoxError, ErrorExt, OpaqueError},
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::{fmt, marker::PhantomData};

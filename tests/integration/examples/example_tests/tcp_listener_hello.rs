@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{http::BodyExtractExt, Context};
+use rama::{Context, http::BodyExtractExt};
 
 const EXPECTED_FILE_CONTENT: &str = include_str!("../../../../examples/tcp_listener_hello.rs");
 

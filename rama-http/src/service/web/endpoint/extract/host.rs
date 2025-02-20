@@ -45,11 +45,11 @@ where
 mod tests {
     use super::*;
 
+    use crate::StatusCode;
     use crate::dep::http_body_util::BodyExt as _;
     use crate::header::X_FORWARDED_HOST;
     use crate::layer::forwarded::GetForwardedHeadersService;
     use crate::service::web::WebService;
-    use crate::StatusCode;
     use crate::{Body, HeaderName, Request};
     use rama_core::Service;
 

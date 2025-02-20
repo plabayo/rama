@@ -9,7 +9,7 @@ use rama_http_types::header::Entry;
 use rama_http_types::header::{self, HeaderMap, HeaderValue};
 use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
-use smallvec::{smallvec, smallvec_inline, SmallVec};
+use smallvec::{SmallVec, smallvec, smallvec_inline};
 use tracing::{debug, error, trace, trace_span, warn};
 
 use crate::body::DecodedLength;
@@ -28,11 +28,7 @@ const AVERAGE_HEADER_SIZE: usize = 30; // totally scientific
 const MAX_URI_LEN: usize = (u16::MAX - 1) as usize;
 
 macro_rules! header_value {
-    ($bytes:expr) => {{
-        {
-            unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) }
-        }
-    }};
+    ($bytes:expr) => {{ { unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) } } }};
 }
 
 pub(super) fn parse_headers<T>(
@@ -301,9 +297,7 @@ impl Http1Transaction for Server {
     fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
             "Server::encode status={:?}, body={:?}, req_method={:?}",
-            msg.head.subject,
-            msg.body,
-            msg.req_method
+            msg.head.subject, msg.body, msg.req_method
         );
 
         let mut wrote_len = false;
@@ -567,11 +561,11 @@ impl Server {
                                 if let Some(len) = headers::content_length_parse(&value) {
                                     if msg.req_method != &Some(Method::HEAD) || known_len != 0 {
                                         assert!(
-                                        len == known_len,
-                                        "payload claims content-length of {}, custom content-length header claims {}",
-                                        known_len,
-                                        len,
-                                    );
+                                            len == known_len,
+                                            "payload claims content-length of {}, custom content-length header claims {}",
+                                            known_len,
+                                            len,
+                                        );
                                     }
                                 }
                             }
@@ -774,8 +768,7 @@ impl Server {
         if !Server::can_have_body(msg.req_method, msg.head.subject) {
             trace!(
                 "server body forced to 0; method={:?}, status={:?}",
-                msg.req_method,
-                msg.head.subject
+                msg.req_method, msg.head.subject
             );
             encoder = Encoder::length(0);
         }
@@ -973,8 +966,7 @@ impl Http1Transaction for Client {
     fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
             "Client::encode method={:?}, body={:?}",
-            msg.head.subject.0,
-            msg.body
+            msg.head.subject.0, msg.body
         );
 
         *msg.req_method = Some(msg.head.subject.0.clone());
@@ -1820,18 +1812,20 @@ mod tests {
 
         fn parse_ignores(s: &str) {
             let mut bytes = BytesMut::from(s);
-            assert!(Client::parse(
-                &mut bytes,
-                ParseContext {
-                    req_method: &mut Some(Method::GET),
-                    h1_parser_config: Default::default(),
-                    h1_max_headers: None,
-                    h09_responses: false,
-                    on_informational: &mut None,
-                }
+            assert!(
+                Client::parse(
+                    &mut bytes,
+                    ParseContext {
+                        req_method: &mut Some(Method::GET),
+                        h1_parser_config: Default::default(),
+                        h1_max_headers: None,
+                        h09_responses: false,
+                        on_informational: &mut None,
+                    }
+                )
+                .expect("parse ok")
+                .is_none()
             )
-            .expect("parse ok")
-            .is_none())
         }
 
         fn parse_with_method(s: &str, m: Method) -> ParsedMessage<StatusCode> {

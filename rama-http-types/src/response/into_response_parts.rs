@@ -1,8 +1,8 @@
 use crate::{
+    StatusCode,
     dep::http::Extensions,
     header::{HeaderMap, HeaderName, HeaderValue},
     response::{IntoResponse, Response},
-    StatusCode,
 };
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{convert::Infallible, fmt};

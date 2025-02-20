@@ -1,8 +1,8 @@
+use rama_core::Context;
+use rama_core::Service;
 use rama_core::error::BoxError;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
-use rama_core::Context;
-use rama_core::Service;
 use rama_net::address::SocketAddress;
 use rama_net::stream::SocketInfo;
 use std::fmt;

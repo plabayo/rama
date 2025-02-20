@@ -1,7 +1,7 @@
 use super::utils;
 use rama::{
-    http::{BodyExtractExt, StatusCode},
     Context,
+    http::{BodyExtractExt, StatusCode},
 };
 
 #[tokio::test]

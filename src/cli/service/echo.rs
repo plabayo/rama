@@ -6,10 +6,12 @@
 //! [`tls`]: crate::tls
 
 use crate::{
+    Context, Layer, Service,
     cli::ForwardKind,
     combinators::{Either3, Either7},
     error::{BoxError, OpaqueError},
     http::{
+        IntoResponse, Request, Response, Version,
         dep::http_body_util::BodyExt,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
@@ -22,16 +24,14 @@ use crate::{
         proto::h2::PseudoHeaderOrder,
         response::Json,
         server::HttpServer,
-        IntoResponse, Request, Response, Version,
     },
-    layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
+    layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::fingerprint::Ja4H,
     net::forwarded::Forwarded,
     net::http::RequestContext,
-    net::stream::{layer::http::BodyLimitLayer, SocketInfo},
+    net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
-    Context, Layer, Service,
 };
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
@@ -42,7 +42,7 @@ use crate::{
     net::fingerprint::{Ja3, Ja4},
     net::tls::server::ServerConfig,
     tls::std::server::TlsAcceptorLayer,
-    tls::types::{client::ClientHelloExtension, SecureTransport},
+    tls::types::{SecureTransport, client::ClientHelloExtension},
 };
 
 #[derive(Debug, Clone)]
@@ -284,7 +284,7 @@ where
                 Either3::B(HttpServer::http1().service(http_service))
             }
             Some(_) => {
-                return Err(OpaqueError::from_display("unsupported http version").into_boxed())
+                return Err(OpaqueError::from_display("unsupported http version").into_boxed());
             }
             None => Either3::C(HttpServer::auto(executor).service(http_service)),
         };

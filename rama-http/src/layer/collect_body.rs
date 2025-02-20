@@ -1,10 +1,10 @@
 //! Collect the http `Body`
 
 use crate::dep::http_body_util::BodyExt;
-use crate::{dep::http_body::Body, Request, Response};
+use crate::{Request, Response, dep::http_body::Body};
 use rama_core::{
-    error::{BoxError, ErrorContext, OpaqueError},
     Context, Layer, Service,
+    error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;

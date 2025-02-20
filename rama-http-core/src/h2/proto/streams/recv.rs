@@ -1,6 +1,6 @@
 use super::*;
 use crate::h2::codec::UserError;
-use crate::h2::frame::{PushPromiseHeaderError, Reason, DEFAULT_INITIAL_WINDOW_SIZE};
+use crate::h2::frame::{DEFAULT_INITIAL_WINDOW_SIZE, PushPromiseHeaderError, Reason};
 use crate::h2::proto;
 
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
@@ -193,7 +193,7 @@ impl Recv {
                     && frame
                         .pseudo()
                         .status
-                        .map_or(true, |status| status != 204 && status != 304)
+                        .is_none_or(|status| status != 204 && status != 304)
                 {
                     proto_err!(stream: "recv_headers with END_STREAM: content-length is not zero; stream={:?};", stream.id);
                     return Err(Error::library_reset(stream.id, Reason::PROTOCOL_ERROR).into());

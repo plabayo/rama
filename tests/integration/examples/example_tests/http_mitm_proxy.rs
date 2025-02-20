@@ -1,18 +1,18 @@
 use super::utils;
 use rama::{
-    http::{response::Json, server::HttpServer, BodyExtractExt, Request},
+    Context, Layer,
+    http::{BodyExtractExt, Request, response::Json, server::HttpServer},
     net::address::ProxyAddress,
     net::tls::{
-        server::{SelfSignedData, ServerAuth, ServerConfig},
         ApplicationProtocol,
+        server::{SelfSignedData, ServerAuth, ServerConfig},
     },
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
     tls::rustls::server::TlsAcceptorLayer,
-    Context, Layer,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[tokio::test]
 #[ignore]

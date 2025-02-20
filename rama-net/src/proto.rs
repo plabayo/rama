@@ -482,7 +482,10 @@ mod tests {
             ("example.com", Some((None, 0))),
             ("127.0.0.1", Some((None, 0))),
             ("127.0.0.1:8080", Some((None, 0))),
-            ("longlonglongwaytoolongforsomethingusefulorvaliddontyouthinkmydearreader://example.com", None),
+            (
+                "longlonglongwaytoolongforsomethingusefulorvaliddontyouthinkmydearreader://example.com",
+                None,
+            ),
         ] {
             let result = try_to_extract_protocol_from_uri_scheme(s.as_bytes());
             match expected {

@@ -2,8 +2,10 @@
 
 use clap::Args;
 use rama::{
+    Context, Layer, Service,
     error::BoxError,
     http::{
+        Body, IntoResponse, Request, Response, StatusCode,
         client::HttpClient,
         layer::{
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -12,19 +14,17 @@ use rama::{
         },
         matcher::MethodMatcher,
         server::HttpServer,
-        Body, IntoResponse, Request, Response, StatusCode,
     },
-    layer::{limit::policy::ConcurrentPolicy, LimitLayer, TimeoutLayer},
+    layer::{LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::http::RequestContext,
     net::stream::layer::http::BodyLimitLayer,
     rt::Executor,
     service::service_fn,
     tcp::{client::default_tcp_connect, server::TcpListener, utils::is_connection_error},
-    Context, Layer, Service,
 };
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama proxy server

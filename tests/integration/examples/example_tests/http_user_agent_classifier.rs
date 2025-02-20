@@ -1,7 +1,7 @@
 use super::utils;
-use rama::http::{headers, BodyExtractExt};
-use rama::ua::{HttpAgent, TlsAgent, UserAgentOverwrites};
 use rama::Context;
+use rama::http::{BodyExtractExt, headers};
+use rama::ua::{HttpAgent, TlsAgent, UserAgentOverwrites};
 
 #[tokio::test]
 #[ignore]

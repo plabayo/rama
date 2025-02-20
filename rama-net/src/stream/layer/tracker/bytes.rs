@@ -13,8 +13,8 @@ use std::{
     fmt, io,
     pin::Pin,
     sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     },
     task::{Context, Poll},
 };
@@ -119,7 +119,8 @@ where
                 }
                 std::cmp::Ordering::Less => {
                     tracing::error!(
-                        "BytesRWTracker: poll_read returned Ok(()) with filled buffer smaller then before");
+                        "BytesRWTracker: poll_read returned Ok(()) with filled buffer smaller then before"
+                    );
                 }
                 std::cmp::Ordering::Equal => {
                     tracing::trace!("BytesRWTracker: poll_read returned Ok(()) with nothing read");

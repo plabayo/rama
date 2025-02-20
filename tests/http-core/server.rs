@@ -20,7 +20,7 @@ use rama::error::{BoxError, OpaqueError};
 use rama::http::core::h2::client::SendRequest;
 use rama::http::core::h2::{RecvStream, SendStream};
 use rama::http::core::service::RamaHttpService;
-use rama::http::dep::http_body_util::{combinators::BoxBody, BodyExt, Empty, Full, StreamBody};
+use rama::http::dep::http_body_util::{BodyExt, Empty, Full, StreamBody, combinators::BoxBody};
 use rama::http::header::{HeaderMap, HeaderName, HeaderValue};
 use rama::rt::Executor;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
@@ -29,7 +29,7 @@ use tokio::net::{TcpListener as TkTcpListener, TcpListener, TcpStream as TkTcpSt
 use rama::http::core::body::{Body, Incoming as IncomingBody};
 use rama::http::core::server::conn::{http1, http2};
 use rama::http::{Method, Request, Response, StatusCode, Uri, Version};
-use rama::service::{service_fn, Service};
+use rama::service::{Service, service_fn};
 use tokio::pin;
 
 use super::support;
@@ -2033,8 +2033,8 @@ async fn h2_connect() {
 
 #[tokio::test]
 async fn h2_connect_multiplex() {
-    use futures_util::stream::FuturesUnordered;
     use futures_util::StreamExt;
+    use futures_util::stream::FuturesUnordered;
 
     let (listener, addr) = setup_tcp_listener();
     let conn = connect_async(addr).await;
@@ -3192,8 +3192,8 @@ impl Service<(), Request> for HelloWorld {
     }
 }
 
-fn unreachable_service(
-) -> impl Service<(), rama::http::Request, Response = rama::http::Response, Error = Infallible> + Clone
+fn unreachable_service()
+-> impl Service<(), rama::http::Request, Response = rama::http::Response, Error = Infallible> + Clone
 {
     service_fn(|_req| async move { unreachable!() })
 }

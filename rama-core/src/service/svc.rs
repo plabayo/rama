@@ -1,7 +1,7 @@
 //! [`Service`] and [`BoxService`] traits.
 
-use crate::error::BoxError;
 use crate::Context;
+use crate::error::BoxError;
 use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;

@@ -1,5 +1,5 @@
-use crate::{matcher::HttpMatcher, Body, IntoResponse, Request, Response};
-use rama_core::{layer::MapResponseLayer, service::BoxService, Context, Layer, Service};
+use crate::{Body, IntoResponse, Request, Response, matcher::HttpMatcher};
+use rama_core::{Context, Layer, Service, layer::MapResponseLayer, service::BoxService};
 use std::future::Future;
 use std::{convert::Infallible, fmt};
 
@@ -178,7 +178,7 @@ mod private {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{dep::http_body_util::BodyExt, Body, Method, Request, StatusCode};
+    use crate::{Body, Method, Request, StatusCode, dep::http_body_util::BodyExt};
     use extract::*;
 
     fn assert_into_endpoint_service<T, I>(_: I)

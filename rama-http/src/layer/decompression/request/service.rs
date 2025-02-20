@@ -1,14 +1,14 @@
 use std::fmt;
 
 use crate::dep::http_body::Body;
-use crate::dep::http_body_util::{combinators::UnsyncBoxBody, BodyExt, Empty};
+use crate::dep::http_body_util::{BodyExt, Empty, combinators::UnsyncBoxBody};
 use crate::layer::{
-    decompression::body::BodyInner,
     decompression::DecompressionBody,
+    decompression::body::BodyInner,
     util::compression::{AcceptEncoding, CompressionLevel, WrapBody},
     util::content_encoding::SupportedEncodings,
 };
-use crate::{header, HeaderValue, Request, Response, StatusCode};
+use crate::{HeaderValue, Request, Response, StatusCode, header};
 use bytes::Buf;
 use rama_core::error::BoxError;
 use rama_core::{Context, Service};
@@ -54,11 +54,11 @@ impl<S: Clone> Clone for RequestDecompression<S> {
 impl<S, State, ReqBody, ResBody, D> Service<State, Request<ReqBody>> for RequestDecompression<S>
 where
     S: Service<
-        State,
-        Request<DecompressionBody<ReqBody>>,
-        Response = Response<ResBody>,
-        Error: Into<BoxError>,
-    >,
+            State,
+            Request<DecompressionBody<ReqBody>>,
+            Response = Response<ResBody>,
+            Error: Into<BoxError>,
+        >,
     State: Clone + Send + Sync + 'static,
     ReqBody: Body + Send + 'static,
     ResBody: Body<Data = D, Error: Into<BoxError>> + Send + 'static,

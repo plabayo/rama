@@ -26,18 +26,18 @@
 //! connection index and count of requests within that connection.
 
 use rama::{
-    http::{response::Html, server::HttpServer, Request},
+    Context, Layer,
+    http::{Request, response::Html, server::HttpServer},
     layer::MapStateLayer,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    Context, Layer,
 };
 use std::{
     convert::Infallible,
     sync::{
-        atomic::{AtomicBool, AtomicUsize},
         Arc,
+        atomic::{AtomicBool, AtomicUsize},
     },
     time::Duration,
 };

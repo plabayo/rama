@@ -232,7 +232,7 @@ macro_rules! enum_builder {
             fn from(e: &$enum_name) -> Self {
                 match e {
                     $($enum_name::$enum_var => $enum_val.to_vec()),*
-                    , $enum_name::Unknown(ref v) => v.clone(),
+                    , $enum_name::Unknown(v) => v.clone(),
                 }
             }
         }

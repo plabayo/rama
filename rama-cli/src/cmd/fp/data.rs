@@ -1,11 +1,12 @@
 use super::State;
 use rama::{
+    Context,
     error::{BoxError, ErrorContext},
     http::{
-        dep::http::{request::Parts, Extensions},
+        HeaderMap, Request,
+        dep::http::{Extensions, request::Parts},
         headers::Forwarded,
         proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
-        HeaderMap, Request,
     },
     net::{
         fingerprint::{Ja3, Ja4, Ja4H},
@@ -13,11 +14,10 @@ use rama::{
         stream::SocketInfo,
     },
     tls::types::{
-        client::{ClientHello, ClientHelloExtension},
         SecureTransport,
+        client::{ClientHello, ClientHelloExtension},
     },
     ua::UserAgent,
-    Context,
 };
 use serde::Serialize;
 use std::{str::FromStr, sync::Arc};

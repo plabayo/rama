@@ -8,7 +8,7 @@ use std::{fmt, future::Future};
 mod update;
 #[cfg(feature = "live-update")]
 #[doc(inline)]
-pub use update::{proxy_db_updater, LiveUpdateProxyDB, LiveUpdateProxyDBSetter};
+pub use update::{LiveUpdateProxyDB, LiveUpdateProxyDBSetter, proxy_db_updater};
 
 mod context;
 pub use context::ProxyContext;
@@ -1033,22 +1033,30 @@ mod memdb {
             ] {
                 let proxy = db.get_proxy(ctx.clone(), filter.clone()).await.unwrap();
                 assert!(filter.id.map(|id| proxy.id == id).unwrap_or(true));
-                assert!(filter
-                    .pool_id
-                    .map(|pool_id| pool_id.contains(proxy.pool_id.as_ref().unwrap()))
-                    .unwrap_or(true));
-                assert!(filter
-                    .country
-                    .map(|country| country.contains(proxy.country.as_ref().unwrap()))
-                    .unwrap_or(true));
-                assert!(filter
-                    .city
-                    .map(|city| city.contains(proxy.city.as_ref().unwrap()))
-                    .unwrap_or(true));
-                assert!(filter
-                    .carrier
-                    .map(|carrier| carrier.contains(proxy.carrier.as_ref().unwrap()))
-                    .unwrap_or(true));
+                assert!(
+                    filter
+                        .pool_id
+                        .map(|pool_id| pool_id.contains(proxy.pool_id.as_ref().unwrap()))
+                        .unwrap_or(true)
+                );
+                assert!(
+                    filter
+                        .country
+                        .map(|country| country.contains(proxy.country.as_ref().unwrap()))
+                        .unwrap_or(true)
+                );
+                assert!(
+                    filter
+                        .city
+                        .map(|city| city.contains(proxy.city.as_ref().unwrap()))
+                        .unwrap_or(true)
+                );
+                assert!(
+                    filter
+                        .carrier
+                        .map(|carrier| carrier.contains(proxy.carrier.as_ref().unwrap()))
+                        .unwrap_or(true)
+                );
             }
         }
 

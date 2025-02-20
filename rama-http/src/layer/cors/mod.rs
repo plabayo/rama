@@ -47,8 +47,8 @@
 #![allow(clippy::enum_variant_names)]
 
 use crate::dep::http::{
-    header::{self, HeaderName},
     HeaderMap, HeaderValue, Method, Request, Response,
+    header::{self, HeaderName},
 };
 use bytes::{BufMut, BytesMut};
 use rama_core::{Context, Layer, Service};

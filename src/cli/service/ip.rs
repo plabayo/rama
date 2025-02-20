@@ -3,24 +3,24 @@
 //! [`Service`]: crate::Service
 
 use crate::{
+    Context, Layer, Service,
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, OpaqueError},
     http::{
+        IntoResponse, Request, Response, StatusCode,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
             forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
             trace::TraceLayer, ua::UserAgentClassifierLayer,
         },
         server::HttpServer,
-        IntoResponse, Request, Response, StatusCode,
     },
-    layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
+    layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
     net::forwarded::Forwarded,
-    net::stream::{layer::http::BodyLimitLayer, SocketInfo, Stream},
+    net::stream::{SocketInfo, Stream, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
-    Context, Layer, Service,
 };
 use std::{convert::Infallible, marker::PhantomData, time::Duration};
 use tokio::{io::AsyncWriteExt, net::TcpStream};
@@ -272,7 +272,7 @@ impl IpServiceBuilder<mode::Transport> {
                 return Err(OpaqueError::from_display(format!(
                     "invalid forward kind for Transport mode: {other:?}"
                 ))
-                .into())
+                .into());
             }
         };
 

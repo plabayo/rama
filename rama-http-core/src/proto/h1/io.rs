@@ -693,9 +693,11 @@ mod tests {
                 h09_responses: false,
                 on_informational: &mut None,
             };
-            assert!(buffered
-                .parse::<ClientTransaction>(cx, parse_ctx)
-                .is_pending());
+            assert!(
+                buffered
+                    .parse::<ClientTransaction>(cx, parse_ctx)
+                    .is_pending()
+            );
             Poll::Ready(())
         })
         .await;

@@ -2,8 +2,8 @@ use std::{fmt, marker::PhantomData, net::IpAddr};
 
 use crate::protocol::{v1, v2};
 use rama_core::{
-    error::{BoxError, ErrorContext, OpaqueError},
     Context, Layer, Service,
+    error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
@@ -247,7 +247,7 @@ where
                 return Err(OpaqueError::from_display(
                     "PROXY client (v1): IP version mismatch between src and dest",
                 )
-                .into())
+                .into());
             }
         };
 
@@ -267,11 +267,11 @@ where
 impl<S, P, State, Request, T> Service<State, Request> for HaProxyService<S, P, version::Two>
 where
     S: Service<
-        State,
-        Request,
-        Response = EstablishedClientConnection<T, State, Request>,
-        Error: Into<BoxError>,
-    >,
+            State,
+            Request,
+            Response = EstablishedClientConnection<T, State, Request>,
+            Error: Into<BoxError>,
+        >,
     P: protocol::Protocol + Send + 'static,
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
@@ -315,7 +315,7 @@ where
                 return Err(OpaqueError::from_display(
                     "PROXY client (v2): IP version mismatch between src and dest",
                 )
-                .into())
+                .into());
             }
         };
 
@@ -400,7 +400,7 @@ pub mod protocol {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::{service::service_fn, Layer};
+    use rama_core::{Layer, service::service_fn};
     use rama_net::forwarded::{ForwardedElement, NodeId};
     use std::convert::Infallible;
     use tokio_test::io::Builder;
@@ -421,8 +421,15 @@ mod tests {
                 "PROXY TCP4 127.0.1.2 192.168.1.101 80 443\r\n",
                 {
                     let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(None, "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443".parse().unwrap()));
-                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(NodeId::try_from("127.0.1.2:80").unwrap())));
+                    ctx.insert(SocketInfo::new(
+                        None,
+                        "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
+                            .parse()
+                            .unwrap(),
+                    ));
+                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                        NodeId::try_from("127.0.1.2:80").unwrap(),
+                    )));
                     ctx
                 },
                 "192.168.1.101:443",
@@ -431,7 +438,12 @@ mod tests {
                 "PROXY TCP6 1234:5678:90ab:cdef:fedc:ba09:8765:4321 4321:8765:ba09:fedc:cdef:90ab:5678:1234 443 65535\r\n",
                 {
                     let mut ctx = Context::default();
-                    ctx.insert(SocketInfo::new(None, "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443".parse().unwrap()));
+                    ctx.insert(SocketInfo::new(
+                        None,
+                        "[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443"
+                            .parse()
+                            .unwrap(),
+                    ));
                     ctx
                 },
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
@@ -441,13 +453,16 @@ mod tests {
                 {
                     let mut ctx = Context::default();
                     ctx.insert(SocketInfo::new(None, "127.0.1.2:80".parse().unwrap()));
-                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443").unwrap())));
+                    ctx.insert(Forwarded::new(ForwardedElement::forwarded_for(
+                        NodeId::try_from("[1234:5678:90ab:cdef:fedc:ba09:8765:4321]:443").unwrap(),
+                    )));
                     ctx
                 },
                 "[4321:8765:ba09:fedc:cdef:90ab:5678:1234]:65535",
             ),
         ] {
-            let svc = HaProxyLayer::tcp().v1()
+            let svc = HaProxyLayer::tcp()
+                .v1()
                 .layer(service_fn(move |ctx, req| async move {
                     Ok::<_, Infallible>(EstablishedClientConnection {
                         ctx,

@@ -311,7 +311,7 @@ impl Opts {
             Http2(rama::http::core::client::conn::http2::SendRequest<BoxedBody>),
         }
 
-        let mut client = rt.block_on(async {
+        let client = rt.block_on(async {
             if self.http2 {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
                 let (tx, conn) =
@@ -371,20 +371,15 @@ impl Opts {
             req
         };
 
-        let mut send_request = |req| {
-            let fut = match client {
-                Client::Http1(ref mut tx) => {
-                    futures_util::future::Either::Left(tx.send_request(req))
-                }
-                Client::Http2(ref mut tx) => {
-                    futures_util::future::Either::Right(tx.send_request(req))
-                }
+        let client_ref = &client;
+
+        let send_request = async |req| {
+            let res = match client_ref {
+                Client::Http1(tx) => tx.send_request(req).await.expect("client wait h1"),
+                Client::Http2(tx) => tx.send_request(req).await.expect("client wait h2"),
             };
-            async {
-                let res = fut.await.expect("client wait");
-                let mut body = res.into_body();
-                while let Some(_chunk) = body.frame().await {}
-            }
+            let mut body = res.into_body();
+            while let Some(_chunk) = body.frame().await {}
         };
 
         let bytes_per_iter = (req_len + self.response_body.len() as u64) * self.parallel_cnt as u64;

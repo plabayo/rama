@@ -1,6 +1,6 @@
 use crate::{
-    matcher::{Extensions, Matcher},
     Context,
+    matcher::{Extensions, Matcher},
 };
 
 use std::marker::PhantomData;

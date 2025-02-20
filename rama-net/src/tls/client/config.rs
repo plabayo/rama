@@ -1,4 +1,4 @@
-use super::{merge_client_hello_lists, ClientHelloExtension};
+use super::{ClientHelloExtension, merge_client_hello_lists};
 use crate::tls::{CipherSuite, CompressionAlgorithm, DataEncoding, KeyLogIntent};
 
 #[derive(Debug, Clone, Default)]

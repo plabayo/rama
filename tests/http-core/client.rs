@@ -406,9 +406,7 @@ macro_rules! test {
 }
 
 macro_rules! __client_req_prop {
-    ($req_builder:ident, $body:ident, $addr:ident, headers: $map:tt) => {{
-        __client_req_header!($req_builder, $map)
-    }};
+    ($req_builder:ident, $body:ident, $addr:ident, headers: $map:tt) => {{ __client_req_header!($req_builder, $map) }};
 
     ($req_builder:ident, $body:ident, $addr:ident, method: $method:ident) => {{
         $req_builder = $req_builder.method(Method::$method);
@@ -1493,7 +1491,7 @@ mod conn {
 
     use bytes::{Buf, Bytes};
     use futures_channel::{mpsc, oneshot};
-    use futures_util::future::{self, poll_fn, FutureExt, TryFutureExt};
+    use futures_util::future::{self, FutureExt, TryFutureExt, poll_fn};
     use tokio::io::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _, ReadBuf};
     use tokio::net::{TcpListener as TkTcpListener, TcpStream};
 
@@ -1506,7 +1504,7 @@ mod conn {
     use rama::http::{Method, Request, Response, StatusCode};
     use rama::rt::Executor;
 
-    use super::{concat, s, support, tcp_connect, FutureHyperExt};
+    use super::{FutureHyperExt, concat, s, support, tcp_connect};
 
     async fn setup_tk_test_server() -> (TkTcpListener, SocketAddr) {
         let listener = TkTcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
@@ -2092,8 +2090,8 @@ mod conn {
 
     #[tokio::test]
     async fn client_on_informational_ext() {
-        use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
         let (server, addr) = setup_std_test_server();
 
         thread::spawn(move || {
@@ -2164,14 +2162,16 @@ mod conn {
             let mut fut1 =
                 std::pin::pin!(client.send_request(rama::http::Request::new(Empty::new())));
             #[allow(clippy::never_loop)]
-            let _res1 = future::poll_fn(|cx| loop {
-                if let Poll::Ready(res) = fut1.as_mut().poll(cx) {
-                    return Poll::Ready(res);
+            let _res1 = future::poll_fn(|cx| {
+                loop {
+                    if let Poll::Ready(res) = fut1.as_mut().poll(cx) {
+                        return Poll::Ready(res);
+                    }
+                    return match Pin::new(&mut conn).poll(cx) {
+                        Poll::Ready(_) => panic!("ruh roh"),
+                        Poll::Pending => Poll::Pending,
+                    };
                 }
-                return match Pin::new(&mut conn).poll(cx) {
-                    Poll::Ready(_) => panic!("ruh roh"),
-                    Poll::Pending => Poll::Pending,
-                };
             })
             .await
             .expect("resp 1");

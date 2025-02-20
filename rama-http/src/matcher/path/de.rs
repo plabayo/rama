@@ -1,6 +1,7 @@
 use serde::{
+    Deserializer,
     de::{self, DeserializeSeed, EnumAccess, Error, MapAccess, SeqAccess, VariantAccess, Visitor},
-    forward_to_deserialize_any, Deserializer,
+    forward_to_deserialize_any,
 };
 use std::{any::type_name, fmt};
 
@@ -144,7 +145,10 @@ impl fmt::Display for ErrorKind {
                 )?;
 
                 if *expected == 1 {
-                    write!(f, ". Note that multiple parameters must be extracted with a tuple `Path<(_, _)>` or a struct `Path<YourParams>`")?;
+                    write!(
+                        f,
+                        ". Note that multiple parameters must be extracted with a tuple `Path<(_, _)>` or a struct `Path<YourParams>`"
+                    )?;
                 }
 
                 Ok(())

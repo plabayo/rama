@@ -17,11 +17,11 @@
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the user agent info exposed by Rama.
 
 use rama::{
+    Context, Layer,
     http::layer::ua::{UserAgent, UserAgentClassifierLayer},
-    http::{response::Json, server::HttpServer, HeaderName, IntoResponse, Request, Response},
+    http::{HeaderName, IntoResponse, Request, Response, response::Json, server::HttpServer},
     rt::Executor,
     service::service_fn,
-    Context, Layer,
 };
 use serde_json::json;
 use std::convert::Infallible;

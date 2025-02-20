@@ -5,9 +5,9 @@ use std::task::{Context, Poll};
 
 use bytes::Bytes;
 use futures_channel::{mpsc, oneshot};
-use futures_util::{stream::FusedStream, Stream}; // for mpsc::Receiver
-use rama_http_types::dep::http_body::{Body, Frame, SizeHint};
+use futures_util::{Stream, stream::FusedStream}; // for mpsc::Receiver
 use rama_http_types::HeaderMap;
+use rama_http_types::dep::http_body::{Body, Frame, SizeHint};
 use std::task::ready;
 
 use super::DecodedLength;

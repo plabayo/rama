@@ -1,8 +1,8 @@
 //! Middleware for retrying "failed" requests.
 
+use crate::Request;
 use crate::dep::http_body::Body as HttpBody;
 use crate::dep::http_body_util::BodyExt;
-use crate::Request;
 use rama_core::error::BoxError;
 use rama_core::{Context, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -146,7 +146,7 @@ where
                                 return result.map_err(|e| RetryError {
                                     kind: RetryErrorKind::Service,
                                     inner: Some(e.into()),
-                                })
+                                });
                             }
                             PolicyResult::Retry { ctx, req } => (ctx, req),
                         };
@@ -160,7 +160,7 @@ where
                     return resp.map_err(|e| RetryError {
                         kind: RetryErrorKind::Service,
                         inner: Some(e.into()),
-                    })
+                    });
                 }
             }
         }
@@ -171,12 +171,12 @@ where
 mod test {
     use super::*;
     use crate::{
-        layer::retry::managed::DoNotRetry, BodyExtractExt, IntoResponse, Response, StatusCode,
+        BodyExtractExt, IntoResponse, Response, StatusCode, layer::retry::managed::DoNotRetry,
     };
-    use rama_core::{service::service_fn, Context, Layer};
+    use rama_core::{Context, Layer, service::service_fn};
     use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
     use std::{
-        sync::{atomic::AtomicUsize, Arc},
+        sync::{Arc, atomic::AtomicUsize},
         time::Duration,
     };
 

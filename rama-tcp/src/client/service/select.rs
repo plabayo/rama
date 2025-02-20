@@ -1,5 +1,5 @@
-use rama_core::error::BoxError;
 use rama_core::Context;
+use rama_core::error::BoxError;
 use std::fmt;
 use std::{convert::Infallible, future::Future, sync::Arc};
 
@@ -67,8 +67,8 @@ pub trait TcpStreamConnectorFactory<State>: Send + Sync + 'static {
         &self,
         ctx: Context<State>,
     ) -> impl Future<Output = Result<CreatedTcpStreamConnector<State, Self::Connector>, Self::Error>>
-           + Send
-           + '_;
+    + Send
+    + '_;
 }
 
 impl<State: Send + Sync + 'static> TcpStreamConnectorFactory<State> for () {
@@ -79,8 +79,8 @@ impl<State: Send + Sync + 'static> TcpStreamConnectorFactory<State> for () {
         &self,
         ctx: Context<State>,
     ) -> impl Future<Output = Result<CreatedTcpStreamConnector<State, Self::Connector>, Self::Error>>
-           + Send
-           + '_ {
+    + Send
+    + '_ {
         std::future::ready(Ok(CreatedTcpStreamConnector { ctx, connector: () }))
     }
 }
@@ -125,8 +125,8 @@ where
         &self,
         ctx: Context<State>,
     ) -> impl Future<Output = Result<CreatedTcpStreamConnector<State, Self::Connector>, Self::Error>>
-           + Send
-           + '_ {
+    + Send
+    + '_ {
         std::future::ready(Ok(CreatedTcpStreamConnector {
             ctx,
             connector: self.0.clone(),
@@ -146,8 +146,8 @@ where
         &self,
         ctx: Context<State>,
     ) -> impl Future<Output = Result<CreatedTcpStreamConnector<State, Self::Connector>, Self::Error>>
-           + Send
-           + '_ {
+    + Send
+    + '_ {
         (**self).make_connector(ctx)
     }
 }

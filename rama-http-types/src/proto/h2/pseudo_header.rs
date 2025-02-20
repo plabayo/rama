@@ -1,4 +1,4 @@
-use serde::{de::Error, Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Error};
 use smallvec::SmallVec;
 use std::{fmt, str::FromStr};
 

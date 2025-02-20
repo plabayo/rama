@@ -37,7 +37,7 @@ pub(crate) trait Dispatch {
         cx: &mut Context<'_>,
     ) -> Poll<Option<Result<(Self::PollItem, Self::PollBody), Self::PollError>>>;
     fn recv_msg(&mut self, msg: crate::Result<(Self::RecvItem, IncomingBody)>)
-        -> crate::Result<()>;
+    -> crate::Result<()>;
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), ()>>;
     fn should_poll(&self) -> bool;
 }
@@ -496,9 +496,9 @@ impl<T> Drop for OptGuard<'_, T> {
 // ===== impl Server =====
 
 impl<
-        S: HttpService<B>,
-        B: Body<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
-    > Server<S, B>
+    S: HttpService<B>,
+    B: Body<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
+> Server<S, B>
 {
     pub(crate) fn new(service: S) -> Server<S, B> {
         Server {
@@ -515,9 +515,9 @@ impl<
 
 // Service is never pinned
 impl<
-        S: HttpService<B>,
-        B: Body<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
-    > Unpin for Server<S, B>
+    S: HttpService<B>,
+    B: Body<Data: Send + 'static, Error: Into<BoxError> + Send + 'static + Unpin>,
+> Unpin for Server<S, B>
 {
 }
 

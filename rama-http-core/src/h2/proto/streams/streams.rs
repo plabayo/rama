@@ -4,7 +4,7 @@ use super::{Buffer, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
 use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::ext::Protocol;
 use crate::h2::frame::{self, Frame, Reason};
-use crate::h2::proto::{peer, Error, Initiator, Open, Peer, WindowSize};
+use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
 use bytes::{Buf, Bytes};
@@ -905,10 +905,11 @@ impl Inner {
         //
         // TODO: It would probably be better to interleave updates w/ data
         // frames.
-        ready!(self
-            .actions
-            .recv
-            .poll_complete(cx, &mut self.store, &mut self.counts, dst))?;
+        ready!(
+            self.actions
+                .recv
+                .poll_complete(cx, &mut self.store, &mut self.counts, dst)
+        )?;
 
         // Send any other pending frames
         ready!(self.actions.send.poll_complete(

@@ -7,8 +7,8 @@ use std::time::Duration;
 
 use tokio::sync::oneshot;
 
-use rama::http::core::server::conn::http1;
 use rama::http::Response;
+use rama::http::core::server::conn::http1;
 use rama::service::service_fn;
 
 #[global_allocator]

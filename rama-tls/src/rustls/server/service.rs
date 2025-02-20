@@ -1,17 +1,17 @@
 use crate::{
     rustls::dep::{
         rustls::server::Acceptor,
-        tokio_rustls::{server::TlsStream, LazyConfigAcceptor},
+        tokio_rustls::{LazyConfigAcceptor, server::TlsStream},
     },
     types::SecureTransport,
 };
 use rama_core::{
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     Context, Service,
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::{
     stream::Stream,
-    tls::{client::NegotiatedTlsParameters, ApplicationProtocol},
+    tls::{ApplicationProtocol, client::NegotiatedTlsParameters},
 };
 use rama_utils::macros::define_inner_service_accessors;
 

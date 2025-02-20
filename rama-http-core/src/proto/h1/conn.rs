@@ -3,7 +3,7 @@ use std::future::Future;
 use std::io;
 use std::marker::{PhantomData, Unpin};
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use bytes::{Buf, Bytes};
@@ -476,7 +476,7 @@ where
 
         match self.state.reading {
             Reading::Continue(..) | Reading::Body(..) | Reading::KeepAlive | Reading::Closed => {
-                return
+                return;
             }
             Reading::Init => (),
         };

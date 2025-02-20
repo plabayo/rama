@@ -1,6 +1,6 @@
 use super::{
-    store, Buffer, Codec, Config, Counts, Frame, Prioritize, Prioritized, Store, Stream, StreamId,
-    StreamIdOverflow, WindowSize,
+    Buffer, Codec, Config, Counts, Frame, Prioritize, Prioritized, Store, Stream, StreamId,
+    StreamIdOverflow, WindowSize, store,
 };
 use crate::h2::codec::UserError;
 use crate::h2::frame::{self, Reason};

@@ -1,9 +1,9 @@
-use super::{svc::SendRequest, HttpClientService};
+use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
-    error::{BoxError, OpaqueError},
     Context, Layer, Service,
+    error::{BoxError, OpaqueError},
 };
-use rama_http_types::{dep::http_body, Request, Version};
+use rama_http_types::{Request, Version, dep::http_body};
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     stream::Stream,
@@ -14,7 +14,7 @@ use std::fmt;
 use tracing::trace;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_net::tls::{client::NegotiatedTlsParameters, ApplicationProtocol};
+use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
 
 /// A [`Service`] which establishes an HTTP Connection.
 pub struct HttpConnector<S> {

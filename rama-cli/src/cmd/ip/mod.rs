@@ -2,7 +2,7 @@
 
 use clap::Args;
 use rama::{
-    cli::{service::ip::IpServiceBuilder, ForwardKind},
+    cli::{ForwardKind, service::ip::IpServiceBuilder},
     combinators::Either,
     error::BoxError,
     rt::Executor,
@@ -10,7 +10,7 @@ use rama::{
 };
 use std::time::Duration;
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Args)]
 /// rama ip service (returns the ip address of the client)

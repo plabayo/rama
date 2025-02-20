@@ -5,7 +5,7 @@ use crate::dep::http::{
     request::Parts as RequestParts,
 };
 
-use super::{separated_by_commas, Any, WILDCARD};
+use super::{Any, WILDCARD, separated_by_commas};
 
 /// Holds configuration for how to set the [`Access-Control-Allow-Headers`][mdn] header.
 ///

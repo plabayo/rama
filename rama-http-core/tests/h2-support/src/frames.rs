@@ -2,7 +2,7 @@ use std::convert::TryInto;
 use std::fmt;
 
 use bytes::Bytes;
-use rama_http_types::{proto::h1::headers::original::OriginalHttp1Headers, HeaderMap, StatusCode};
+use rama_http_types::{HeaderMap, StatusCode, proto::h1::headers::original::OriginalHttp1Headers};
 
 use rama_http_core::h2::frame::{self, Frame, StreamId};
 

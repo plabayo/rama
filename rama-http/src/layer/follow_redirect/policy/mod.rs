@@ -10,11 +10,11 @@ mod same_origin;
 
 pub use self::{
     and::And,
-    clone_body_fn::{clone_body_fn, CloneBodyFn},
+    clone_body_fn::{CloneBodyFn, clone_body_fn},
     filter_credentials::FilterCredentials,
     limited::Limited,
     or::Or,
-    redirect_fn::{redirect_fn, RedirectFn},
+    redirect_fn::{RedirectFn, redirect_fn},
     same_origin::SameOrigin,
 };
 use crate::{Request, Scheme, StatusCode, Uri};

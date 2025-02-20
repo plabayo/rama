@@ -43,12 +43,12 @@
 //! }
 //! ```
 
-use crate::{header::AsHeaderName, HeaderName};
+use crate::{HeaderName, header::AsHeaderName};
 use crate::{
-    utils::{HeaderValueErr, HeaderValueGetter},
     Request,
+    utils::{HeaderValueErr, HeaderValueGetter},
 };
-use rama_core::{error::BoxError, Context, Layer, Service};
+use rama_core::{Context, Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
 use serde::de::DeserializeOwned;
 use std::{fmt, marker::PhantomData};

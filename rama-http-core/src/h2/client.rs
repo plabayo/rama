@@ -1222,7 +1222,7 @@ impl Builder {
     pub fn handshake<T, B>(
         &self,
         io: T,
-    ) -> impl Future<Output = Result<(SendRequest<B>, Connection<T, B>), crate::h2::Error>>
+    ) -> impl Future<Output = Result<(SendRequest<B>, Connection<T, B>), crate::h2::Error>> + use<T, B>
     where
         T: AsyncRead + AsyncWrite + Unpin,
         B: Buf,

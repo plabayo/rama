@@ -27,6 +27,7 @@
 
 // rama provides everything out of the box to build mtls web services and proxies
 use rama::{
+    Layer,
     graceful::Shutdown,
     http::{
         layer::trace::TraceLayer,
@@ -46,14 +47,13 @@ use rama::{
     tcp::server::TcpListener,
     tls::rustls::client::{TlsConnectorData, TlsConnectorLayer},
     tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
-    Layer,
 };
 
 // everything else is provided by the standard library, community crates or tokio
 use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
 use tracing::metadata::LevelFilter;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 const LOCALHOST: Host = Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
 const SERVER_AUTHORITY: Authority = Authority::new(LOCALHOST, 63014);

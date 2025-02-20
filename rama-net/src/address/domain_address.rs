@@ -1,4 +1,4 @@
-use crate::address::{parse_utils, Domain};
+use crate::address::{Domain, parse_utils};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::fmt;
 use std::str::FromStr;

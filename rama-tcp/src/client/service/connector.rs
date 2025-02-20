@@ -1,6 +1,6 @@
 use rama_core::{
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     Context, Service,
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_dns::{DnsResolver, HickoryDns};
 use rama_net::{

@@ -6,7 +6,7 @@
 //! [`http::Request`]: crate::Request
 //! [`service::matcher` module]: rama_core
 use crate::Request;
-use rama_core::{context::Extensions, matcher::IteratorMatcherExt, Context};
+use rama_core::{Context, context::Extensions, matcher::IteratorMatcherExt};
 use rama_net::{address::Domain, stream::matcher::SocketMatcher};
 use std::fmt;
 use std::sync::Arc;
@@ -688,11 +688,7 @@ where
         req: &Request<Body>,
     ) -> bool {
         let matches = self.kind.matches(ext, ctx, req);
-        if self.negate {
-            !matches
-        } else {
-            matches
-        }
+        if self.negate { !matches } else { matches }
     }
 }
 

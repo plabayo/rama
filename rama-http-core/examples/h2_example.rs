@@ -23,8 +23,8 @@ use rama_http_core::h2::client;
 use rama_http_types::{Method, Request};
 
 use tokio::net::TcpStream;
-use tokio_rustls::rustls::{pki_types::ServerName, RootCertStore};
 use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::{RootCertStore, pki_types::ServerName};
 
 use std::net::ToSocketAddrs;
 

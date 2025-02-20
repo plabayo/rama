@@ -155,7 +155,7 @@ where
                     return match self.error_into_response.error_into_response(err) {
                         Ok(ok) => Ok(ok.into()),
                         Err(err) => Err(err.into()),
-                    }
+                    };
                 }
                 policy::PolicyOutput::Retry => (),
             }
@@ -168,7 +168,7 @@ mod tests {
     use super::policy::ConcurrentPolicy;
     use super::*;
 
-    use crate::{service::service_fn, Context, Layer, Service};
+    use crate::{Context, Layer, Service, service::service_fn};
     use std::convert::Infallible;
 
     use futures_lite::future::zip;

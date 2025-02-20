@@ -1,7 +1,7 @@
 use super::ProxyFilter;
 use rama_core::{
     context::Extensions,
-    error::{error, OpaqueError},
+    error::{OpaqueError, error},
     username::{UsernameLabelParser, UsernameLabelState, UsernameLabelWriter},
 };
 use rama_utils::macros::match_ignore_ascii_case_str;
@@ -267,25 +267,21 @@ mod tests {
     #[test]
     fn test_username_config() {
         let test_cases = [
-            (
-                "john",
-                String::from("john"),
-                None,
-            ),
+            ("john", String::from("john"), None),
             (
                 "john-datacenter",
                 String::from("john"),
                 Some(ProxyFilter {
                     datacenter: Some(true),
                     ..Default::default()
-                })
+                }),
             ),
             (
                 "john-!datacenter",
                 String::from("john"),
                 Some(ProxyFilter {
-                        datacenter: Some(false),
-                        ..Default::default()
+                    datacenter: Some(false),
+                    ..Default::default()
                 }),
             ),
             (
@@ -498,7 +494,10 @@ mod tests {
                 "john-continent-europe-continent-asia",
                 String::from("john"),
                 Some(ProxyFilter {
-                    continent: Some(vec![StringFilter::from("europe"), StringFilter::from("asia")]),
+                    continent: Some(vec![
+                        StringFilter::from("europe"),
+                        StringFilter::from("asia"),
+                    ]),
                     ..Default::default()
                 }),
             ),

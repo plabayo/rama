@@ -63,7 +63,7 @@ mod tests {
     /// for users that want to declare a Layer without implementing the Layer trait explicitly themselves.
     #[tokio::test]
     async fn test_layer_fn() {
-        use crate::{service::service_fn, Context, Service};
+        use crate::{Context, Service, service::service_fn};
         use std::convert::Infallible;
 
         struct ToUpper<S>(S);

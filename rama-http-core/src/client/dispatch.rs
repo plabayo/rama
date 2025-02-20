@@ -349,7 +349,7 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
-    use super::{channel, Callback, Receiver};
+    use super::{Callback, Receiver, channel};
 
     #[derive(Debug)]
     struct Custom(#[allow(dead_code)] i32);

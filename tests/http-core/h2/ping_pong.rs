@@ -1,5 +1,5 @@
-use futures::channel::oneshot;
 use futures::StreamExt;
+use futures::channel::oneshot;
 use h2_support::assert_ping;
 use h2_support::prelude::*;
 
