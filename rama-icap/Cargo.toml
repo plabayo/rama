@@ -16,7 +16,6 @@ bytes = "1.5.0"
 tokio = { version = "1.35.0", features = ["full"] }
 thiserror = "1.0.50"
 parking_lot = "0.12.1"
-httparse = "1.8.0"
 tracing = "0.1.40"
 futures-core = "0.3"
 futures-util = "0.3"
@@ -24,6 +23,9 @@ http-body = "1.0"
 http-body-util = "0.1"
 url = "2.5.4"
 futures.workspace = true
+icaparse = "0.2.0"
+smallvec.workspace = true
+futures-channel = "0.3.31"
 
 [dev-dependencies]
 tokio = { version = "1.35", features = ["full", "test-util"] }

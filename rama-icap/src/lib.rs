@@ -3,7 +3,12 @@
 //! This module provides support for the ICAP protocol, which allows HTTP messages to be 
 //! adapted/transformed by an ICAP server.
 
+pub mod body;
 pub mod proto;
+pub mod client;
+mod common;
+mod error;
+pub use self::error::{Error, Result};
 /* use thiserror::Error;
 use bytes::Bytes;
 use futures_core::Stream;

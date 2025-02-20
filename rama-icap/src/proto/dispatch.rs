@@ -1,7 +1,5 @@
-use std::pin::Pin;
 use std::task::{Context, Poll};
 use futures_core::Stream;
-use tokio::io::{AsyncRead, AsyncWrite};
 use rama_core::error::BoxError;
 
 use crate::{Error, Result};
@@ -15,23 +13,16 @@ pub(crate) struct Dispatcher<D> {
     conn: Conn,
     dispatch: D,
     message: Option<IcapMessage>,
-    body_stream: Option<Pin<Box<dyn Stream<Item = Result<Bytes, Error>> + Send>>>,
+    body_stream: Option<Box<dyn Stream<Item = Result<Bytes, Error>> + Send>>,
 }
 
-/// 分發特徵
 pub(crate) trait Dispatch {
-    /// 處理 ICAP 消息
     fn dispatch(&mut self, message: IcapMessage) -> Result<Option<IcapMessage>>;
-    
-    /// 處理錯誤
     fn on_error(&mut self, err: &Error) -> Option<IcapMessage>;
 }
 
-impl<D> Dispatcher<D>
-where
-    D: Dispatch,
+impl Dispatcher
 {
-    /// 創建新的分發器
     pub(crate) fn new(dispatch: D, conn: Conn) -> Self {
         Self {
             conn,
@@ -41,24 +32,19 @@ where
         }
     }
 
-    /// 輪詢讀取
     fn poll_read(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
         loop {
-            // 如果有消息正在處理中，先處理它
             if let Some(message) = self.message.take() {
                 match self.dispatch.dispatch(message)? {
                     Some(response) => {
-                        // 發送響應
                         self.conn.write_message(response)?;
                     }
                     None => {
-                        // 繼續讀取
                         continue;
                     }
                 }
             }
 
-            // 讀取新消息
             match self.conn.read_message(cx)? {
                 Poll::Ready(Some(message)) => {
                     self.message = Some(message);
@@ -73,16 +59,13 @@ where
         }
     }
 
-    /// 輪詢寫入
     fn poll_write(&mut self, cx: &mut Context<'_>) -> Poll<Result<()>> {
-        // 如果有消息體流，先處理它
         if let Some(stream) = self.body_stream.as_mut() {
             while let Poll::Ready(Some(chunk)) = Pin::new(stream).poll_next(cx) {
                 self.conn.write_chunk(chunk)?;
             }
         }
 
-        // 寫入緩衝區中的數據
         self.conn.poll_flush(cx)
     }
 }
