@@ -2411,6 +2411,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rama-icap"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "httparse",
+ "parking_lot",
+ "rama-core",
+ "rama-error",
+ "rama-http-core",
+ "rama-http-types",
+ "rama-net",
+ "thiserror",
+ "tokio",
+ "tokio-test",
+ "tracing",
+]
+
+[[package]]
 name = "rama-macros"
 version = "0.2.0-alpha.7"
 
