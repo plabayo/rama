@@ -26,6 +26,7 @@ pub struct UserAgentEmulateService<S, P> {
     inner: S,
     provider: P,
     optional: bool,
+    try_auto_detect_user_agent: bool,
     input_header_order: Option<HeaderName>,
     select_fallback: Option<UserAgentSelectFallback>,
 }
@@ -36,6 +37,10 @@ impl<S: fmt::Debug, P: fmt::Debug> fmt::Debug for UserAgentEmulateService<S, P> 
             .field("inner", &self.inner)
             .field("provider", &self.provider)
             .field("optional", &self.optional)
+            .field(
+                "try_auto_detect_user_agent",
+                &self.try_auto_detect_user_agent,
+            )
             .field("input_header_order", &self.input_header_order)
             .field("select_fallback", &self.select_fallback)
             .finish()
@@ -48,6 +53,7 @@ impl<S: Clone, P: Clone> Clone for UserAgentEmulateService<S, P> {
             inner: self.inner.clone(),
             provider: self.provider.clone(),
             optional: self.optional,
+            try_auto_detect_user_agent: self.try_auto_detect_user_agent,
             input_header_order: self.input_header_order.clone(),
             select_fallback: self.select_fallback,
         }
@@ -60,6 +66,7 @@ impl<S, P> UserAgentEmulateService<S, P> {
             inner,
             provider,
             optional: false,
+            try_auto_detect_user_agent: false,
             input_header_order: None,
             select_fallback: None,
         }
@@ -76,6 +83,22 @@ impl<S, P> UserAgentEmulateService<S, P> {
     /// See [`Self::optional`].
     pub fn set_optional(&mut self, optional: bool) -> &mut Self {
         self.optional = optional;
+        self
+    }
+
+    /// If true, the service will try to auto-detect the user agent from the request,
+    /// but only in case that info is not yet found in the context.
+    pub fn try_auto_detect_user_agent(mut self, try_auto_detect_user_agent: bool) -> Self {
+        self.try_auto_detect_user_agent = try_auto_detect_user_agent;
+        self
+    }
+
+    /// See [`Self::try_auto_detect_user_agent`].
+    pub fn set_try_auto_detect_user_agent(
+        &mut self,
+        try_auto_detect_user_agent: bool,
+    ) -> &mut Self {
+        self.try_auto_detect_user_agent = try_auto_detect_user_agent;
         self
     }
 
@@ -132,6 +155,29 @@ where
     ) -> Result<Self::Response, Self::Error> {
         if let Some(fallback) = self.select_fallback {
             ctx.insert(fallback);
+        }
+
+        if self.try_auto_detect_user_agent && !ctx.contains::<UserAgent>() {
+            match req
+                .headers()
+                .get(USER_AGENT)
+                .and_then(|ua| ua.to_str().ok())
+            {
+                Some(ua_str) => {
+                    let user_agent = UserAgent::new(ua_str);
+                    tracing::trace!(
+                        ua_str = %ua_str,
+                        %user_agent,
+                        "user agent auto-detected from request"
+                    );
+                    ctx.insert(user_agent);
+                }
+                None => {
+                    tracing::debug!(
+                        "user agent auto-detection not possible: no user agent header present"
+                    );
+                }
+            }
         }
 
         let profile = match self.provider.select_user_agent_profile(&ctx) {

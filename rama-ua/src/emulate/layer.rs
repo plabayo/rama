@@ -8,6 +8,7 @@ use super::UserAgentSelectFallback;
 pub struct UserAgentEmulateLayer<P> {
     provider: P,
     optional: bool,
+    try_auto_detect_user_agent: bool,
     input_header_order: Option<HeaderName>,
     select_fallback: Option<UserAgentSelectFallback>,
 }
@@ -17,6 +18,10 @@ impl<P: fmt::Debug> fmt::Debug for UserAgentEmulateLayer<P> {
         f.debug_struct("UserAgentEmulateLayer")
             .field("provider", &self.provider)
             .field("optional", &self.optional)
+            .field(
+                "try_auto_detect_user_agent",
+                &self.try_auto_detect_user_agent,
+            )
             .field("input_header_order", &self.input_header_order)
             .field("select_fallback", &self.select_fallback)
             .finish()
@@ -28,6 +33,7 @@ impl<P: Clone> Clone for UserAgentEmulateLayer<P> {
         Self {
             provider: self.provider.clone(),
             optional: self.optional,
+            try_auto_detect_user_agent: self.try_auto_detect_user_agent,
             input_header_order: self.input_header_order.clone(),
             select_fallback: self.select_fallback,
         }
@@ -39,6 +45,7 @@ impl<P> UserAgentEmulateLayer<P> {
         Self {
             provider,
             optional: false,
+            try_auto_detect_user_agent: false,
             input_header_order: None,
             select_fallback: None,
         }
@@ -55,6 +62,22 @@ impl<P> UserAgentEmulateLayer<P> {
     /// See [`Self::optional`].
     pub fn set_optional(&mut self, optional: bool) -> &mut Self {
         self.optional = optional;
+        self
+    }
+
+    /// If true, the layer will try to auto-detect the user agent from the request,
+    /// but only in case that info is not yet found in the context.
+    pub fn try_auto_detect_user_agent(mut self, try_auto_detect_user_agent: bool) -> Self {
+        self.try_auto_detect_user_agent = try_auto_detect_user_agent;
+        self
+    }
+
+    /// See [`Self::try_auto_detect_user_agent`].
+    pub fn set_try_auto_detect_user_agent(
+        &mut self,
+        try_auto_detect_user_agent: bool,
+    ) -> &mut Self {
+        self.try_auto_detect_user_agent = try_auto_detect_user_agent;
         self
     }
 
@@ -99,7 +122,8 @@ impl<S, P: Clone> Layer<S> for UserAgentEmulateLayer<P> {
 
     fn layer(&self, inner: S) -> Self::Service {
         let mut svc = super::UserAgentEmulateService::new(inner, self.provider.clone())
-            .optional(self.optional);
+            .optional(self.optional)
+            .try_auto_detect_user_agent(self.try_auto_detect_user_agent);
         if let Some(fb) = self.select_fallback {
             svc.set_select_fallback(fb);
         }
