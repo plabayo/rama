@@ -47,8 +47,8 @@ async fn handle(ctx: Context<()>, _req: Request) -> Result<Response, Infallible>
         "kind": ua.info().map(|info| info.kind.to_string()),
         "version": ua.info().and_then(|info| info.version),
         "platform": ua.platform().map(|p| p.to_string()),
-        "http_agent": ua.http_agent().to_string(),
-        "tls_agent": ua.tls_agent().to_string(),
+        "http_agent": ua.http_agent().as_ref().map(ToString::to_string),
+        "tls_agent": ua.tls_agent().as_ref().map(ToString::to_string),
     }))
     .into_response())
 }

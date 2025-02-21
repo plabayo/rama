@@ -1,6 +1,9 @@
 //! Rama HTTP client module,
 //! which provides the [`HttpClient`] type to serve HTTP requests.
 
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use std::sync::Arc;
+
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
     Context, Service,
@@ -14,7 +17,7 @@ use rama_tcp::client::service::TcpConnector;
 use rama_tls::std::client::{TlsConnector, TlsConnectorData};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_net::tls::client::ClientConfig;
+use rama_net::tls::client::{ClientConfig, ProxyClientConfig};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_core::error::ErrorContext;
@@ -118,15 +121,29 @@ where
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
         let connector = {
-            let proxy_tls_connector_data = match &self.proxy_tls_config {
-                Some(proxy_tls_config) => {
+            let proxy_tls_connector_data = match (
+                ctx.get::<ProxyClientConfig>(),
+                &self.proxy_tls_config,
+            ) {
+                (Some(proxy_tls_config), _) => {
+                    trace!("create proxy tls connector using rama tls client config from ontext");
+                    proxy_tls_config
+                        .0
+                        .as_ref()
+                        .clone()
+                        .try_into()
+                        .context(
+                        "HttpClient: create proxy tls connector data from tls config found in context",
+                    )?
+                }
+                (None, Some(proxy_tls_config)) => {
                     trace!("create proxy tls connector using pre-defined rama tls client config");
                     proxy_tls_config
                         .clone()
                         .try_into()
                         .context("HttpClient: create proxy tls connector data from tls config")?
                 }
-                None => {
+                (None, None) => {
                     trace!("create proxy tls connector using the 'new_http_auto' constructor");
                     TlsConnectorData::new().context(
                         "HttpClient: create proxy tls connector data with no application presets",
@@ -138,15 +155,20 @@ where
                 TlsConnector::tunnel(tcp_connector, None)
                     .with_connector_data(proxy_tls_connector_data),
             );
-            let tls_connector_data = match &self.tls_config {
-                Some(tls_config) => {
-                    trace!("create tls connector using pre-defined rama tls client config");
-                    tls_config
-                        .clone()
-                        .try_into()
-                        .context("HttpClient: create tls connector data from tls config")?
+            let tls_connector_data = match (ctx.get::<Arc<ClientConfig>>(), &self.tls_config) {
+                (Some(tls_config), _) => {
+                    trace!("create tls connector using rama tls client config from ontext");
+                    tls_config.as_ref().clone().try_into().context(
+                        "HttpClient: create tls connector data from tls config found in context",
+                    )?
                 }
-                None => {
+                (None, Some(tls_config)) => {
+                    trace!("create tls connector using pre-defined rama tls client config");
+                    tls_config.clone().try_into().context(
+                        "HttpClient: create tls connector data from pre-defined tls config",
+                    )?
+                }
+                (None, None) => {
                     trace!("create tls connector using the 'new_http_auto' constructor");
                     TlsConnectorData::new_http_auto()
                         .context("HttpClient: create tls connector data for http (auto)")?
