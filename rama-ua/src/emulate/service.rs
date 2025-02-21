@@ -7,7 +7,7 @@ use rama_core::{
 use rama_http_types::{
     HeaderMap, HeaderName, Method, Request, Version,
     conn::Http1ClientContextParams,
-    header::{ACCEPT, ACCEPT_LANGUAGE, CONTENT_TYPE, COOKIE, REFERER, USER_AGENT},
+    header::{ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE, COOKIE, REFERER, USER_AGENT},
     proto::{
         h1::{
             Http1HeaderMap,
@@ -445,7 +445,7 @@ fn merge_http_headers(
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
-            &REFERER | &COOKIE => {
+            &REFERER | &COOKIE | &AUTHORIZATION => {
                 if let Some(value) = original_value {
                     output_headers_ref.push((base_name, value));
                 }
