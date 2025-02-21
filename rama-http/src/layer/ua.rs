@@ -143,16 +143,16 @@ where
         if let Some(mut ua) = user_agent.take() {
             if let Some(overwrites) = overwrites {
                 if let Some(http_agent) = overwrites.http {
-                    ua.with_http_agent(http_agent);
+                    ua.set_http_agent(http_agent);
                 }
                 if let Some(tls_agent) = overwrites.tls {
-                    ua.with_tls_agent(tls_agent);
+                    ua.set_tls_agent(tls_agent);
                 }
                 if let Some(preserve_ua) = overwrites.preserve_ua {
-                    ua.with_preserve_ua_header(preserve_ua);
+                    ua.set_preserve_ua_header(preserve_ua);
                 }
                 if let Some(req_init) = overwrites.req_init {
-                    ua.with_request_initiator(req_init);
+                    ua.set_request_initiator(req_init);
                 }
             }
 

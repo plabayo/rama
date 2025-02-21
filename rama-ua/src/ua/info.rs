@@ -66,13 +66,25 @@ impl UserAgent {
     }
 
     /// Overwrite the [`HttpAgent`] advertised by the [`UserAgent`].
-    pub fn with_http_agent(&mut self, http_agent: HttpAgent) -> &mut Self {
+    pub fn with_http_agent(mut self, http_agent: HttpAgent) -> Self {
+        self.http_agent_overwrite = Some(http_agent);
+        self
+    }
+
+    /// Overwrite the [`HttpAgent`] advertised by the [`UserAgent`].
+    pub fn set_http_agent(&mut self, http_agent: HttpAgent) -> &mut Self {
         self.http_agent_overwrite = Some(http_agent);
         self
     }
 
     /// Overwrite the [`TlsAgent`] advertised by the [`UserAgent`].
-    pub fn with_tls_agent(&mut self, tls_agent: TlsAgent) -> &mut Self {
+    pub fn with_tls_agent(mut self, tls_agent: TlsAgent) -> Self {
+        self.tls_agent_overwrite = Some(tls_agent);
+        self
+    }
+
+    /// Overwrite the [`TlsAgent`] advertised by the [`UserAgent`].
+    pub fn set_tls_agent(&mut self, tls_agent: TlsAgent) -> &mut Self {
         self.tls_agent_overwrite = Some(tls_agent);
         self
     }
@@ -81,7 +93,16 @@ impl UserAgent {
     ///
     /// This is used to indicate to emulators that they should respect the User-Agent header
     /// attached to this [`UserAgent`], if possible.
-    pub fn with_preserve_ua_header(&mut self, preserve: bool) -> &mut Self {
+    pub fn with_preserve_ua_header(mut self, preserve: bool) -> Self {
+        self.preserve_ua_header = preserve;
+        self
+    }
+
+    /// Preserve the incoming `User-Agent` (header) value.
+    ///
+    /// This is used to indicate to emulators that they should respect the User-Agent header
+    /// attached to this [`UserAgent`], if possible.
+    pub fn set_preserve_ua_header(&mut self, preserve: bool) -> &mut Self {
         self.preserve_ua_header = preserve;
         self
     }
@@ -93,7 +114,13 @@ impl UserAgent {
     }
 
     /// Define the [`RequestInitiator`] hint.
-    pub fn with_request_initiator(&mut self, req_init: RequestInitiator) -> &mut Self {
+    pub fn with_request_initiator(mut self, req_init: RequestInitiator) -> Self {
+        self.request_initiator = Some(req_init);
+        self
+    }
+
+    /// Define the [`RequestInitiator`] hint.
+    pub fn set_request_initiator(&mut self, req_init: RequestInitiator) -> &mut Self {
         self.request_initiator = Some(req_init);
         self
     }

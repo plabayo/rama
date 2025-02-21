@@ -16,9 +16,11 @@ use rama_http_types::{
         h2::PseudoHeaderOrder,
     },
 };
-use rama_utils::macros::match_ignore_ascii_case_str;
 
-use crate::{CUSTOM_HEADER_MARKER, HttpAgent, RequestInitiator, UserAgent, UserAgentProfile};
+use crate::{
+    CUSTOM_HEADER_MARKER, HttpAgent, RequestInitiator, UserAgent, UserAgentProfile,
+    contains_ignore_ascii_case,
+};
 
 use super::{UserAgentProvider, UserAgentSelectFallback};
 
@@ -319,11 +321,7 @@ fn get_base_http_headers<'a, Body, State>(
     req: &Request<Body>,
     profile: &'a UserAgentProfile,
 ) -> &'a Http1HeaderMap {
-    match ctx
-        .get::<RequestInitiator>()
-        .copied()
-        .or_else(|| ctx.get::<UserAgent>().and_then(|ua| ua.request_initiator()))
-    {
+    match ctx.get::<UserAgent>().and_then(|ua| ua.request_initiator()) {
         Some(req_init) => {
             tracing::trace!(%req_init, "base http headers defined based on hint from UserAgent (overwrite)");
             get_base_http_headers_from_req_init(req_init, profile)
@@ -333,45 +331,58 @@ fn get_base_http_headers<'a, Body, State>(
         // and that they are cheap enough to check.
         None => match *req.method() {
             Method::GET => {
-                tracing::trace!("base http headers defined based on Get=Navigate assumption");
-                &profile.http.headers.navigate
+                let req_init = if headers_contains_partial_value(
+                    req.headers(),
+                    &X_REQUESTED_WITH,
+                    "XmlHttpRequest",
+                ) {
+                    RequestInitiator::Xhr
+                } else {
+                    RequestInitiator::Navigate
+                };
+                tracing::trace!(%req_init, "base http headers defined based on Get=NavigateOrXhr assumption");
+                get_base_http_headers_from_req_init(req_init, profile)
             }
             Method::POST => {
-                let req_init = req
-                    .headers()
-                    .get(CONTENT_TYPE)
-                    .and_then(|ct| ct.to_str().ok())
-                    .and_then(|s| {
-                        match_ignore_ascii_case_str! {
-                            match (s) {
-                                "form-" => Some(RequestInitiator::Form),
-                                _ => None,
-                            }
-                        }
-                    })
-                    .unwrap_or(RequestInitiator::Fetch);
+                let req_init = if headers_contains_partial_value(
+                    req.headers(),
+                    &X_REQUESTED_WITH,
+                    "XmlHttpRequest",
+                ) {
+                    RequestInitiator::Xhr
+                } else if headers_contains_partial_value(req.headers(), &CONTENT_TYPE, "form-") {
+                    RequestInitiator::Form
+                } else {
+                    RequestInitiator::Fetch
+                };
                 tracing::trace!(%req_init, "base http headers defined based on Post=FormOrFetch assumption");
                 get_base_http_headers_from_req_init(req_init, profile)
             }
             _ => {
-                let req_init = req
-                    .headers()
-                    .get(HeaderName::from_static("x-requested-with"))
-                    .and_then(|ct| ct.to_str().ok())
-                    .and_then(|s| {
-                        match_ignore_ascii_case_str! {
-                            match (s) {
-                                "XmlHttpRequest" => Some(RequestInitiator::Xhr),
-                                _ => None,
-                            }
-                        }
-                    })
-                    .unwrap_or(RequestInitiator::Fetch);
+                let req_init = if headers_contains_partial_value(
+                    req.headers(),
+                    &X_REQUESTED_WITH,
+                    "XmlHttpRequest",
+                ) {
+                    RequestInitiator::Xhr
+                } else {
+                    RequestInitiator::Fetch
+                };
                 tracing::trace!(%req_init, "base http headers defined based on XhrOrFetch assumption");
                 get_base_http_headers_from_req_init(req_init, profile)
             }
         },
     }
+}
+
+static X_REQUESTED_WITH: HeaderName = HeaderName::from_static("x-requested-with");
+
+fn headers_contains_partial_value(headers: &HeaderMap, name: &HeaderName, value: &str) -> bool {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(|s| contains_ignore_ascii_case(s, value).is_some())
+        .unwrap_or_default()
 }
 
 fn get_base_http_headers_from_req_init(
@@ -484,6 +495,547 @@ fn merge_http_headers(
 }
 
 // TODO: test:
-// - get_base_http_headers
-// - get_original_http_header_order
 // - merge_http_headers
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use std::{convert::Infallible, str::FromStr};
+
+    use itertools::Itertools as _;
+    use rama_core::service::service_fn;
+    use rama_http_types::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
+
+    use crate::{HttpHeadersProfile, HttpProfile};
+
+    #[test]
+    fn test_get_original_http_header_order() {
+        struct TestCase {
+            description: &'static str,
+            req: Request,
+            ctx: Option<Context<()>>,
+            expected_input_header_order: &'static str,
+        }
+
+        let test_cases = [
+            TestCase {
+                description: "empty request",
+                req: Request::new(Body::empty()),
+                ctx: None,
+                expected_input_header_order: "",
+            },
+            TestCase {
+                description: "request original header order in req extensions",
+                req: {
+                    let mut req = Request::new(Body::empty());
+                    req.extensions_mut()
+                        .insert(OriginalHttp1Headers::from_iter([
+                            Http1HeaderName::from_str("x-REQUESTED-with").unwrap(),
+                            Http1HeaderName::from_str("Accept").unwrap(),
+                        ]));
+                    req
+                },
+                ctx: None,
+                expected_input_header_order: "x-REQUESTED-with,Accept",
+            },
+            TestCase {
+                description: "request original header order in ctx",
+                req: {
+                    let mut req = Request::new(Body::empty());
+                    req.headers_mut().insert(
+                        HeaderName::from_static("foo"),
+                        HeaderValue::from_static("BAR"),
+                    );
+                    req
+                },
+                // ctx has precedence over req extensions
+                ctx: Some({
+                    let mut ctx = Context::default();
+                    ctx.insert(OriginalHttp1Headers::from_iter([
+                        Http1HeaderName::from_str("x-REQUESTED-with").unwrap(),
+                        Http1HeaderName::from_str("Accept").unwrap(),
+                    ]));
+                    ctx
+                }),
+                expected_input_header_order: "x-REQUESTED-with,Accept",
+            },
+            TestCase {
+                description: "request with headers but no original header order",
+                req: {
+                    let mut req = Request::new(Body::empty());
+                    req.headers_mut().insert(
+                        HeaderName::from_static("foo"),
+                        HeaderValue::from_static("BAR"),
+                    );
+                    req
+                },
+                ctx: None,
+                expected_input_header_order: "",
+            },
+        ];
+
+        for test_case in test_cases {
+            let input_header_order = get_original_http_header_order(
+                test_case.ctx.as_ref().unwrap_or(&Context::default()),
+                &test_case.req,
+                None,
+            )
+            .unwrap();
+            let input_header_order_str = input_header_order
+                .map(|headers| {
+                    headers
+                        .into_iter()
+                        .map(|header| header.to_string())
+                        .join(",")
+                })
+                .unwrap_or_default();
+            assert_eq!(
+                input_header_order_str, test_case.expected_input_header_order,
+                "{}",
+                test_case.description,
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_base_http_headers_profile_with_only_navigate_headers() {
+        let ua = UserAgent::new(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        );
+        let ua_profile = UserAgentProfile {
+            ua_kind: ua.ua_kind().unwrap(),
+            ua_version: ua.ua_version(),
+            platform: ua.platform(),
+            http: HttpProfile {
+                headers: HttpHeadersProfile {
+                    navigate: Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    ),
+                    xhr: None,
+                    fetch: None,
+                    form: None,
+                },
+                h1: None,
+                h2: None,
+            },
+            #[cfg(feature = "tls")]
+            tls: crate::TlsProfile {
+                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            },
+        };
+
+        let ua_service = UserAgentEmulateService::new(
+            service_fn(async |req: Request| {
+                Ok::<_, Infallible>(
+                    req.headers()
+                        .get(ETAG)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                )
+            }),
+            ua_profile,
+        );
+
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .body(Body::empty())
+            .unwrap();
+        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res, "navigate");
+    }
+
+    #[tokio::test]
+    async fn test_get_base_http_headers_profile_without_fetch_headers() {
+        let ua = UserAgent::new(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        );
+        let ua_profile = UserAgentProfile {
+            ua_kind: ua.ua_kind().unwrap(),
+            ua_version: ua.ua_version(),
+            platform: ua.platform(),
+            http: HttpProfile {
+                headers: HttpHeadersProfile {
+                    navigate: Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    ),
+                    xhr: Some(Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("xhr").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    )),
+                    fetch: None,
+                    form: Some(Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("form").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    )),
+                },
+                h1: None,
+                h2: None,
+            },
+            #[cfg(feature = "tls")]
+            tls: crate::TlsProfile {
+                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            },
+        };
+
+        let ua_service = UserAgentEmulateService::new(
+            service_fn(async |req: Request| {
+                Ok::<_, Infallible>(
+                    req.headers()
+                        .get(ETAG)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                )
+            }),
+            ua_profile,
+        );
+
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .body(Body::empty())
+            .unwrap();
+        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res, "xhr");
+    }
+
+    #[tokio::test]
+    async fn test_get_base_http_headers_profile_without_xhr_headers() {
+        let ua = UserAgent::new(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        );
+        let ua_profile = UserAgentProfile {
+            ua_kind: ua.ua_kind().unwrap(),
+            ua_version: ua.ua_version(),
+            platform: ua.platform(),
+            http: HttpProfile {
+                headers: HttpHeadersProfile {
+                    navigate: Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    ),
+                    fetch: Some(Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("fetch").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    )),
+                    xhr: None,
+                    form: Some(Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("form").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    )),
+                },
+                h1: None,
+                h2: None,
+            },
+            #[cfg(feature = "tls")]
+            tls: crate::TlsProfile {
+                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            },
+        };
+
+        let ua_service = UserAgentEmulateService::new(
+            service_fn(async |req: Request| {
+                Ok::<_, Infallible>(
+                    req.headers()
+                        .get(ETAG)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                )
+            }),
+            ua_profile,
+        );
+
+        let req = Request::builder()
+            .method(Method::DELETE)
+            .header(
+                HeaderName::from_static("x-requested-with"),
+                "XmlHttpRequest",
+            )
+            .body(Body::empty())
+            .unwrap();
+        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res, "fetch");
+    }
+
+    #[tokio::test]
+    async fn test_get_base_http_headers() {
+        let ua = UserAgent::new(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        );
+        let ua_profile = UserAgentProfile {
+            ua_kind: ua.ua_kind().unwrap(),
+            ua_version: ua.ua_version(),
+            platform: ua.platform(),
+            http: HttpProfile {
+                headers: HttpHeadersProfile {
+                    navigate: Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    ),
+                    fetch: Some(Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("fetch").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    )),
+                    xhr: Some(Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("xhr").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    )),
+                    form: Some(Http1HeaderMap::new(
+                        [(ETAG, HeaderValue::from_str("form").unwrap())]
+                            .into_iter()
+                            .collect(),
+                        None,
+                    )),
+                },
+                h1: None,
+                h2: None,
+            },
+            #[cfg(feature = "tls")]
+            tls: crate::TlsProfile {
+                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            },
+        };
+
+        let ua_service = UserAgentEmulateService::new(
+            service_fn(async |req: Request| {
+                Ok::<_, Infallible>(
+                    req.headers()
+                        .get(ETAG)
+                        .unwrap()
+                        .to_str()
+                        .unwrap()
+                        .to_owned(),
+                )
+            }),
+            ua_profile,
+        );
+
+        struct TestCase {
+            description: &'static str,
+            method: Option<Method>,
+            headers: Option<HeaderMap>,
+            ctx: Option<Context<()>>,
+            expected: &'static str,
+        }
+
+        let test_cases = [
+            TestCase {
+                description: "GET request",
+                method: None,
+                headers: None,
+                ctx: None,
+                expected: "navigate",
+            },
+            TestCase {
+                description: "GET request with XRW header",
+                method: None,
+                headers: Some(
+                    [(
+                        HeaderName::from_static("x-requested-with"),
+                        HeaderValue::from_static("XmlHttpRequest"),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ctx: None,
+                expected: "xhr",
+            },
+            TestCase {
+                description: "GET request with RequestInitiator hint Navigate",
+                method: None,
+                headers: None,
+                ctx: Some({
+                    let mut ctx = Context::default();
+                    ctx.insert(
+                        UserAgent::new("").with_request_initiator(RequestInitiator::Navigate),
+                    );
+                    ctx
+                }),
+                expected: "navigate",
+            },
+            TestCase {
+                description: "GET request with RequestInitiator hint Form",
+                method: None,
+                headers: None,
+                ctx: Some({
+                    let mut ctx = Context::default();
+                    ctx.insert(UserAgent::new("").with_request_initiator(RequestInitiator::Form));
+                    ctx
+                }),
+                expected: "form",
+            },
+            TestCase {
+                description: "explicit GET request",
+                method: Some(Method::GET),
+                headers: None,
+                ctx: None,
+                expected: "navigate",
+            },
+            TestCase {
+                description: "explicit POST request",
+                method: Some(Method::POST),
+                headers: None,
+                ctx: None,
+                expected: "fetch",
+            },
+            TestCase {
+                description: "explicit POST request with XRW header",
+                method: Some(Method::POST),
+                headers: Some(
+                    [(
+                        HeaderName::from_static("x-requested-with"),
+                        HeaderValue::from_static("XmlHttpRequest"),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ctx: None,
+                expected: "xhr",
+            },
+            TestCase {
+                description: "explicit POST request with multipart/form-data and XRW header",
+                method: Some(Method::POST),
+                headers: Some(
+                    [
+                        (
+                            CONTENT_TYPE,
+                            HeaderValue::from_static(
+                                "multipart/form-data; boundary=ExampleBoundaryString",
+                            ),
+                        ),
+                        (
+                            HeaderName::from_static("x-requested-with"),
+                            HeaderValue::from_static("XmlHttpRequest"),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                ctx: None,
+                expected: "xhr",
+            },
+            TestCase {
+                description: "explicit POST request with application/x-www-form-urlencoded and XRW header",
+                method: Some(Method::POST),
+                headers: Some(
+                    [
+                        (
+                            CONTENT_TYPE,
+                            HeaderValue::from_static("application/x-www-form-urlencoded"),
+                        ),
+                        (
+                            HeaderName::from_static("x-requested-with"),
+                            HeaderValue::from_static("XmlHttpRequest"),
+                        ),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ),
+                ctx: None,
+                expected: "xhr",
+            },
+            TestCase {
+                description: "explicit POST request with multipart/form-data",
+                method: Some(Method::POST),
+                headers: Some(
+                    [(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static(
+                            "multipart/form-data; boundary=ExampleBoundaryString",
+                        ),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ctx: None,
+                expected: "form",
+            },
+            TestCase {
+                description: "explicit POST request with application/x-www-form-urlencoded",
+                method: Some(Method::POST),
+                headers: Some(
+                    [(
+                        CONTENT_TYPE,
+                        HeaderValue::from_static("application/x-www-form-urlencoded"),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ctx: None,
+                expected: "form",
+            },
+            TestCase {
+                description: "explicit DELETE request with XRW header",
+                method: Some(Method::DELETE),
+                headers: Some(
+                    [(
+                        HeaderName::from_static("x-requested-with"),
+                        HeaderValue::from_static("XmlHttpRequest"),
+                    )]
+                    .into_iter()
+                    .collect(),
+                ),
+                ctx: None,
+                expected: "xhr",
+            },
+            TestCase {
+                description: "explicit DELETE request",
+                method: Some(Method::DELETE),
+                headers: None,
+                ctx: None,
+                expected: "fetch",
+            },
+            TestCase {
+                description: "explicit DELETE request with RequestInitiator hint",
+                method: Some(Method::DELETE),
+                headers: None,
+                ctx: Some({
+                    let mut ctx = Context::default();
+                    ctx.insert(UserAgent::new("").with_request_initiator(RequestInitiator::Xhr));
+                    ctx
+                }),
+                expected: "xhr",
+            },
+        ];
+
+        for test_case in test_cases {
+            let mut req = Request::builder()
+                .method(test_case.method.unwrap_or(Method::GET))
+                .body(Body::empty())
+                .unwrap();
+            if let Some(headers) = test_case.headers {
+                req.headers_mut().extend(headers);
+            }
+            let ctx = test_case.ctx.unwrap_or_default();
+            let res = ua_service.serve(ctx, req).await.unwrap();
+            assert_eq!(res, test_case.expected, "{}", test_case.description);
+        }
+    }
+}

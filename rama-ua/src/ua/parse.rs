@@ -186,7 +186,7 @@ fn parse_ua_version_safari(ua: &str) -> Option<usize> {
     })
 }
 
-fn contains_ignore_ascii_case(s: &str, sub: &str) -> Option<usize> {
+pub(crate) fn contains_ignore_ascii_case(s: &str, sub: &str) -> Option<usize> {
     let n = sub.len();
     if n > s.len() {
         return None;
