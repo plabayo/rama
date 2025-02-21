@@ -14,8 +14,8 @@
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
-[actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
-[actions-url]: https://github.com/plabayo/rama/actions
+[actions-badge]: https://github.com/plabayo/rama/actions/workflows/CI.yml/badge.svg?branch=main
+[actions-url]: https://github.com/plabayo/rama/actions/workflows/CI.yml
 
 [discord-badge]: https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white
 [discord-url]: https://discord.gg/29EetaSYCD
