@@ -356,7 +356,7 @@ mod tests {
         let db = get_dummy_ua_db();
 
         let mut set = std::collections::HashSet::new();
-        for _ in 0..db.len() * 100 {
+        for _ in 0..db.len() * 1000 {
             let rnd = db.rnd().unwrap();
             set.insert(
                 rnd.http
