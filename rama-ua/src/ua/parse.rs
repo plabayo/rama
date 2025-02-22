@@ -199,6 +199,17 @@ pub(crate) fn contains_ignore_ascii_case(s: &str, sub: &str) -> Option<usize> {
     })
 }
 
+pub(crate) fn starts_with_ignore_ascii_case(s: &str, sub: &str) -> bool {
+    let n = sub.len();
+    if n > s.len() {
+        return false;
+    }
+
+    s.get(..n)
+        .map(|s| s.eq_ignore_ascii_case(sub))
+        .unwrap_or_default()
+}
+
 fn contains_any_ignore_ascii_case(s: &str, subs: &[&str]) -> Option<usize> {
     let max = s.len();
     let smallest_length = subs.iter().map(|s| s.len()).min().unwrap_or(0);
@@ -228,7 +239,13 @@ fn contains_any_ignore_ascii_case(s: &str, subs: &[&str]) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    // test contains_ignore_ascii_case
+    use super::*;
+
+    #[test]
+    fn test_starts_with_ignore_ascii_case() {
+        assert!(starts_with_ignore_ascii_case("user-agent", "user"));
+        assert!(!starts_with_ignore_ascii_case("user-agent", "agent"));
+    }
 
     #[test]
     fn test_contains_ignore_ascii_case_empty_sub() {

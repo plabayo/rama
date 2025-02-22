@@ -7,7 +7,10 @@ use rama_core::{
 use rama_http_types::{
     HeaderMap, HeaderName, Method, Request, Version,
     conn::Http1ClientContextParams,
-    header::{ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_TYPE, COOKIE, REFERER, USER_AGENT},
+    header::{
+        ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
+        REFERER, USER_AGENT,
+    },
     proto::{
         h1::{
             Http1HeaderMap,
@@ -16,10 +19,11 @@ use rama_http_types::{
         h2::PseudoHeaderOrder,
     },
 };
+use rama_net::{Protocol, http::RequestContext};
 
 use crate::{
     CUSTOM_HEADER_MARKER, HttpAgent, RequestInitiator, UserAgent, UserAgentProfile,
-    contains_ignore_ascii_case,
+    contains_ignore_ascii_case, starts_with_ignore_ascii_case,
 };
 
 use super::{UserAgentProvider, UserAgentSelectFallback};
@@ -229,11 +233,21 @@ where
                 .map(|ua| ua.preserve_ua_header())
                 .unwrap_or_default();
 
+            let is_secure_request = match ctx.get::<RequestContext>() {
+                Some(request_ctx) => request_ctx.protocol.is_secure(),
+                None => req
+                    .uri()
+                    .scheme()
+                    .map(|s| Protocol::from(s.clone()).is_secure())
+                    .unwrap_or_default(),
+            };
+
             let output_headers = merge_http_headers(
                 base_http_headers,
                 original_http_header_order,
                 original_headers,
                 preserve_ua_header,
+                is_secure_request,
             );
 
             tracing::trace!(
@@ -439,6 +453,7 @@ fn merge_http_headers(
     original_http_header_order: Option<OriginalHttp1Headers>,
     original_headers: HeaderMap,
     preserve_ua_header: bool,
+    is_secure_request: bool,
 ) -> Http1HeaderMap {
     let mut original_headers = HeaderMapValueRemover::from(original_headers);
 
@@ -456,7 +471,7 @@ fn merge_http_headers(
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
-            &REFERER | &COOKIE | &AUTHORIZATION => {
+            &REFERER | &COOKIE | &AUTHORIZATION | &HOST | &ORIGIN | &CONTENT_LENGTH => {
                 if let Some(value) = original_value {
                     output_headers_ref.push((base_name, value));
                 }
@@ -472,6 +487,10 @@ fn merge_http_headers(
             _ => {
                 if base_header_name == CUSTOM_HEADER_MARKER {
                     output_headers_ref = &mut output_headers_b;
+                } else if starts_with_ignore_ascii_case(base_header_name.as_str(), "sec-fetch") {
+                    if is_secure_request {
+                        output_headers_ref.push((base_name, base_value));
+                    }
                 } else {
                     output_headers_ref.push((base_name, base_value));
                 }
@@ -514,6 +533,7 @@ mod tests {
             original_http_header_order: Option<Vec<&'static str>>,
             original_headers: Vec<(&'static str, &'static str)>,
             preserve_ua_header: bool,
+            is_secure_request: bool,
             expected: Vec<(&'static str, &'static str)>,
         }
 
@@ -524,6 +544,7 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![],
             },
             TestCase {
@@ -535,6 +556,7 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![
                     ("Accept", "text/html"),
                     ("Content-Type", "application/json"),
@@ -546,6 +568,7 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![("accept", "text/html")],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![("accept", "text/html")],
             },
             TestCase {
@@ -554,6 +577,7 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![("content-type", "application/json")],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![
                     ("accept", "text/html"),
                     ("user-agent", "python/3.10"),
@@ -573,6 +597,7 @@ mod tests {
                     ("user-agent", "php/8.0"),
                 ],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![
                     ("accept", "text/html"),
                     ("content-type", "application/json"),
@@ -592,6 +617,7 @@ mod tests {
                     ("user-agent", "php/8.0"),
                 ],
                 preserve_ua_header: true,
+                is_secure_request: false,
                 expected: vec![
                     ("accept", "text/html"),
                     ("content-type", "application/json"),
@@ -612,6 +638,7 @@ mod tests {
                     ("user-agent", "php/8.0"),
                 ],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![
                     ("accept", "text/html"),
                     ("content-type", "application/json"),
@@ -639,6 +666,7 @@ mod tests {
                     ("referer", "https://ramaproxy.org"),
                 ],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![
                     ("accept", "text/html"),
                     ("cookie", "foo=bar"),
@@ -670,6 +698,7 @@ mod tests {
                     ("authorization", "Bearer 42"),
                 ],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![
                     ("accept", "text/html"),
                     ("authorization", "Bearer 42"),
@@ -703,6 +732,7 @@ mod tests {
                     ("authorization", "Bearer 42"),
                 ],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![
                     ("accept", "text/html"),
                     ("authorization", "Bearer 42"),
@@ -751,10 +781,76 @@ mod tests {
                     ("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"),
                     ("cookie", "session=on; foo=bar"),
                     ("x-requested-with", "XMLHttpRequest"),
+                    ("host", "www.example.com"),
                 ],
                 preserve_ua_header: false,
+                is_secure_request: false,
                 expected: vec![
+                    ("Host", "www.example.com"),
+                    (
+                        "User-Agent",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ),
+                    (
+                        "Accept",
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    ),
+                    ("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"),
+                    ("Accept-Encoding", "gzip, deflate, br"),
+                    ("Connection", "keep-alive"),
+                    ("Upgrade-Insecure-Requests", "1"),
+                    ("x-show-price", "true"),
+                    ("x-show-price-currency", "USD"),
+                    ("x-requested-with", "XMLHttpRequest"),
+                    ("Cookie", "session=on; foo=bar"),
+                    ("DNT", "1"),
+                    ("Sec-GPC", "1"),
+                    ("Priority", "u=0, i"),
+                ],
+            },
+            TestCase {
+                description: "realistic browser example over tls",
+                base_http_headers: vec![
                     ("Host", "www.google.com"),
+                    (
+                        "User-Agent",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ),
+                    (
+                        "Accept",
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    ),
+                    ("Accept-Language", "en-US,en;q=0.9"),
+                    ("Accept-Encoding", "gzip, deflate, br"),
+                    ("Connection", "keep-alive"),
+                    ("Referer", "https://www.google.com/"),
+                    ("Upgrade-Insecure-Requests", "1"),
+                    ("x-rama-custom-header-marker", "1"),
+                    ("Cookie", "rama-ua-test=1"),
+                    ("Sec-Fetch-Dest", "document"),
+                    ("Sec-Fetch-Mode", "navigate"),
+                    ("Sec-Fetch-Site", "cross-site"),
+                    ("Sec-Fetch-User", "?1"),
+                    ("DNT", "1"),
+                    ("Sec-GPC", "1"),
+                    ("Priority", "u=0, i"),
+                ],
+                original_http_header_order: Some(vec![
+                    "x-show-price",
+                    "x-show-price-currency",
+                    "accept-language",
+                    "cookie",
+                ]),
+                original_headers: vec![
+                    ("x-show-price", "true"),
+                    ("x-show-price-currency", "USD"),
+                    ("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"),
+                    ("cookie", "session=on; foo=bar"),
+                    ("x-requested-with", "XMLHttpRequest"),
+                ],
+                preserve_ua_header: false,
+                is_secure_request: true,
+                expected: vec![
                     (
                         "User-Agent",
                         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -808,12 +904,14 @@ mod tests {
                 }),
             );
             let preserve_ua_header = test_case.preserve_ua_header;
+            let is_secure_request = test_case.is_secure_request;
 
             let output_headers = merge_http_headers(
                 &base_http_headers,
                 original_http_header_order,
                 original_headers,
                 preserve_ua_header,
+                is_secure_request,
             );
 
             let output_str = output_headers

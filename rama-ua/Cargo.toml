@@ -15,14 +15,14 @@ workspace = true
 
 [features]
 default = []
-tls = ["dep:rama-net", "rama-net/tls"]
+tls = ["rama-net/tls"]
 
 [dependencies]
 bytes = { workspace = true }
 itertools = { workspace = true }
 rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.7", path = "../rama-http-types" }
-rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", optional = true }
+rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", features = ["http"] }
 rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
