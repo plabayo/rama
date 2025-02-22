@@ -2437,6 +2437,7 @@ dependencies = [
  "rama-utils",
  "rustls",
  "serde",
+ "serde_json",
  "sha2",
  "socket2",
  "tokio",
@@ -2512,11 +2513,17 @@ dependencies = [
 name = "rama-ua"
 version = "0.2.0-alpha.7"
 dependencies = [
+ "bytes",
+ "itertools 0.14.0",
  "rama-core",
+ "rama-http-types",
+ "rama-net",
  "rama-utils",
+ "rand 0.9.0",
  "serde",
  "serde_json",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

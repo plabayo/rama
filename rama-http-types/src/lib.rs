@@ -35,7 +35,11 @@ pub use response::{IntoResponse, IntoResponseParts, Response};
 
 pub mod proto;
 
+pub mod compression;
+
 pub mod headers;
+
+pub mod conn;
 
 pub mod dep {
     //! Dependencies for rama http modules.
