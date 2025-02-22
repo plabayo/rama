@@ -23,8 +23,8 @@ use rama_http_types::{
 use rama_net::{Protocol, http::RequestContext};
 
 use crate::{
-    CUSTOM_HEADER_MARKER, HttpAgent, RequestInitiator, UserAgent, UserAgentProfile,
-    contains_ignore_ascii_case, starts_with_ignore_ascii_case,
+    CUSTOM_HEADER_MARKER, HttpAgent, HttpHeadersProfile, RequestInitiator, UserAgent,
+    UserAgentProfile, contains_ignore_ascii_case, starts_with_ignore_ascii_case,
 };
 
 use super::{UserAgentProvider, UserAgentSelectFallback};
@@ -229,50 +229,61 @@ where
             );
         } else {
             emulate_http_settings(&mut ctx, &mut req, profile);
-            let base_http_headers = get_base_http_headers(&ctx, &req, profile);
-            let original_http_header_order =
-                get_original_http_header_order(&ctx, &req, self.input_header_order.as_ref())
+            match get_base_http_headers(&ctx, &req, profile) {
+                Some(base_http_headers) => {
+                    let original_http_header_order = get_original_http_header_order(
+                        &ctx,
+                        &req,
+                        self.input_header_order.as_ref(),
+                    )
                     .context("collect original http header order")?;
 
-            let original_headers = req.headers().clone();
+                    let original_headers = req.headers().clone();
 
-            let preserve_ua_header = ctx
-                .get::<UserAgent>()
-                .map(|ua| ua.preserve_ua_header())
-                .unwrap_or_default();
+                    let preserve_ua_header = ctx
+                        .get::<UserAgent>()
+                        .map(|ua| ua.preserve_ua_header())
+                        .unwrap_or_default();
 
-            let is_secure_request = match ctx.get::<RequestContext>() {
-                Some(request_ctx) => request_ctx.protocol.is_secure(),
-                None => req
-                    .uri()
-                    .scheme()
-                    .map(|s| Protocol::from(s.clone()).is_secure())
-                    .unwrap_or_default(),
-            };
+                    let is_secure_request = match ctx.get::<RequestContext>() {
+                        Some(request_ctx) => request_ctx.protocol.is_secure(),
+                        None => req
+                            .uri()
+                            .scheme()
+                            .map(|s| Protocol::from(s.clone()).is_secure())
+                            .unwrap_or_default(),
+                    };
 
-            let requested_compression = original_headers.get(ACCEPT_ENCODING).is_some();
+                    let requested_compression = original_headers.get(ACCEPT_ENCODING).is_some();
 
-            let output_headers = merge_http_headers(
-                base_http_headers,
-                original_http_header_order,
-                original_headers,
-                preserve_ua_header,
-                is_secure_request,
-            );
+                    let output_headers = merge_http_headers(
+                        base_http_headers,
+                        original_http_header_order,
+                        original_headers,
+                        preserve_ua_header,
+                        is_secure_request,
+                    );
 
-            if !requested_compression && output_headers.contains_key(ACCEPT_ENCODING) {
-                decompression_marker = Some(DecompressIfPossible::default());
+                    if !requested_compression && output_headers.contains_key(ACCEPT_ENCODING) {
+                        decompression_marker = Some(DecompressIfPossible::default());
+                    }
+
+                    tracing::trace!(
+                        ua_kind = %profile.ua_kind,
+                        ua_version = ?profile.ua_version,
+                        platform = ?profile.platform,
+                        "user agent emulation: http settings and headers emulated"
+                    );
+                    let (output_headers, original_headers) = output_headers.into_parts();
+                    *req.headers_mut() = output_headers;
+                    req.extensions_mut().insert(original_headers);
+                }
+                None => {
+                    tracing::debug!(
+                        "user agent emulation: no http headers to emulate: no base http headers found"
+                    );
+                }
             }
-
-            tracing::trace!(
-                ua_kind = %profile.ua_kind,
-                ua_version = ?profile.ua_version,
-                platform = ?profile.platform,
-                "user agent emulation: http settings and headers emulated"
-            );
-            let (output_headers, original_headers) = output_headers.into_parts();
-            *req.headers_mut() = output_headers;
-            req.extensions_mut().insert(original_headers);
         }
 
         #[cfg(feature = "tls")]
@@ -321,29 +332,26 @@ fn emulate_http_settings<Body, State>(
 ) {
     match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
-            if let Some(h1) = &profile.http.h1 {
-                tracing::trace!(
-                    ua_kind = %profile.ua_kind,
-                    ua_version = ?profile.ua_version,
-                    platform = ?profile.platform,
-                    "UA emulation add http1-specific settings",
-                );
-                ctx.insert(Http1ClientContextParams {
-                    title_header_case: h1.title_case_headers,
-                });
-            }
+            tracing::trace!(
+                ua_kind = %profile.ua_kind,
+                ua_version = ?profile.ua_version,
+                platform = ?profile.platform,
+                "UA emulation add http1-specific settings",
+            );
+            ctx.insert(Http1ClientContextParams {
+                title_header_case: profile.http.h1.title_case_headers,
+            });
         }
         Version::HTTP_2 => {
-            if let Some(h2) = &profile.http.h2 {
-                tracing::trace!(
-                    ua_kind = %profile.ua_kind,
-                    ua_version = ?profile.ua_version,
-                    platform = ?profile.platform,
-                    "UA emulation add h2-specific settings",
-                );
-                req.extensions_mut()
-                    .insert(PseudoHeaderOrder::from_iter(h2.http_pseudo_headers.iter()));
-            }
+            tracing::trace!(
+            ua_kind = %profile.ua_kind,
+            ua_version = ?profile.ua_version,
+            platform = ?profile.platform,
+            "UA emulation add h2-specific settings",
+            );
+            req.extensions_mut().insert(PseudoHeaderOrder::from_iter(
+                profile.http.h2.http_pseudo_headers.iter(),
+            ));
         }
         Version::HTTP_3 => tracing::debug!(
             "UA emulation not yet supported for h3: not applying anything h3-specific"
@@ -359,59 +367,73 @@ fn get_base_http_headers<'a, Body, State>(
     ctx: &Context<State>,
     req: &Request<Body>,
     profile: &'a UserAgentProfile,
-) -> &'a Http1HeaderMap {
-    match ctx.get::<UserAgent>().and_then(|ua| ua.request_initiator()) {
-        Some(req_init) => {
-            tracing::trace!(%req_init, "base http headers defined based on hint from UserAgent (overwrite)");
-            get_base_http_headers_from_req_init(req_init, profile)
+) -> Option<&'a Http1HeaderMap> {
+    let headers_profile = match req.version() {
+        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => &profile.http.h1.headers,
+        Version::HTTP_2 => &profile.http.h2.headers,
+        _ => {
+            tracing::debug!(
+                version = ?req.version(),
+                "UA emulation not supported for unknown http version: not applying anything version-specific",
+            );
+            return None;
         }
-        // NOTE: the primitive checks below are pretty bad,
-        // feel free to help improve. Just need to make sure it has good enough fallbacks,
-        // and that they are cheap enough to check.
-        None => match *req.method() {
-            Method::GET => {
-                let req_init = if headers_contains_partial_value(
-                    req.headers(),
-                    &X_REQUESTED_WITH,
-                    "XmlHttpRequest",
-                ) {
-                    RequestInitiator::Xhr
-                } else {
-                    RequestInitiator::Navigate
-                };
-                tracing::trace!(%req_init, "base http headers defined based on Get=NavigateOrXhr assumption");
-                get_base_http_headers_from_req_init(req_init, profile)
+    };
+    Some(
+        match ctx.get::<UserAgent>().and_then(|ua| ua.request_initiator()) {
+            Some(req_init) => {
+                tracing::trace!(%req_init, "base http headers defined based on hint from UserAgent (overwrite)");
+                get_base_http_headers_from_req_init(req_init, headers_profile)
             }
-            Method::POST => {
-                let req_init = if headers_contains_partial_value(
-                    req.headers(),
-                    &X_REQUESTED_WITH,
-                    "XmlHttpRequest",
-                ) {
-                    RequestInitiator::Xhr
-                } else if headers_contains_partial_value(req.headers(), &CONTENT_TYPE, "form-") {
-                    RequestInitiator::Form
-                } else {
-                    RequestInitiator::Fetch
-                };
-                tracing::trace!(%req_init, "base http headers defined based on Post=FormOrFetch assumption");
-                get_base_http_headers_from_req_init(req_init, profile)
-            }
-            _ => {
-                let req_init = if headers_contains_partial_value(
-                    req.headers(),
-                    &X_REQUESTED_WITH,
-                    "XmlHttpRequest",
-                ) {
-                    RequestInitiator::Xhr
-                } else {
-                    RequestInitiator::Fetch
-                };
-                tracing::trace!(%req_init, "base http headers defined based on XhrOrFetch assumption");
-                get_base_http_headers_from_req_init(req_init, profile)
-            }
+            // NOTE: the primitive checks below are pretty bad,
+            // feel free to help improve. Just need to make sure it has good enough fallbacks,
+            // and that they are cheap enough to check.
+            None => match *req.method() {
+                Method::GET => {
+                    let req_init = if headers_contains_partial_value(
+                        req.headers(),
+                        &X_REQUESTED_WITH,
+                        "XmlHttpRequest",
+                    ) {
+                        RequestInitiator::Xhr
+                    } else {
+                        RequestInitiator::Navigate
+                    };
+                    tracing::trace!(%req_init, "base http headers defined based on Get=NavigateOrXhr assumption");
+                    get_base_http_headers_from_req_init(req_init, headers_profile)
+                }
+                Method::POST => {
+                    let req_init = if headers_contains_partial_value(
+                        req.headers(),
+                        &X_REQUESTED_WITH,
+                        "XmlHttpRequest",
+                    ) {
+                        RequestInitiator::Xhr
+                    } else if headers_contains_partial_value(req.headers(), &CONTENT_TYPE, "form-")
+                    {
+                        RequestInitiator::Form
+                    } else {
+                        RequestInitiator::Fetch
+                    };
+                    tracing::trace!(%req_init, "base http headers defined based on Post=FormOrFetch assumption");
+                    get_base_http_headers_from_req_init(req_init, headers_profile)
+                }
+                _ => {
+                    let req_init = if headers_contains_partial_value(
+                        req.headers(),
+                        &X_REQUESTED_WITH,
+                        "XmlHttpRequest",
+                    ) {
+                        RequestInitiator::Xhr
+                    } else {
+                        RequestInitiator::Fetch
+                    };
+                    tracing::trace!(%req_init, "base http headers defined based on XhrOrFetch assumption");
+                    get_base_http_headers_from_req_init(req_init, headers_profile)
+                }
+            },
         },
-    }
+    )
 }
 
 static X_REQUESTED_WITH: HeaderName = HeaderName::from_static("x-requested-with");
@@ -426,30 +448,21 @@ fn headers_contains_partial_value(headers: &HeaderMap, name: &HeaderName, value:
 
 fn get_base_http_headers_from_req_init(
     req_init: RequestInitiator,
-    profile: &UserAgentProfile,
+    headers: &HttpHeadersProfile,
 ) -> &Http1HeaderMap {
     match req_init {
-        RequestInitiator::Navigate => &profile.http.headers.navigate,
-        RequestInitiator::Form => profile
-            .http
-            .headers
-            .form
-            .as_ref()
-            .unwrap_or(&profile.http.headers.navigate),
-        RequestInitiator::Xhr => profile
-            .http
-            .headers
+        RequestInitiator::Navigate => &headers.navigate,
+        RequestInitiator::Form => headers.form.as_ref().unwrap_or(&headers.navigate),
+        RequestInitiator::Xhr => headers
             .xhr
             .as_ref()
-            .or(profile.http.headers.fetch.as_ref())
-            .unwrap_or(&profile.http.headers.navigate),
-        RequestInitiator::Fetch => profile
-            .http
-            .headers
+            .or(headers.fetch.as_ref())
+            .unwrap_or(&headers.navigate),
+        RequestInitiator::Fetch => headers
             .fetch
             .as_ref()
-            .or(profile.http.headers.xhr.as_ref())
-            .unwrap_or(&profile.http.headers.navigate),
+            .or(headers.xhr.as_ref())
+            .unwrap_or(&headers.navigate),
     }
 }
 
@@ -550,7 +563,7 @@ mod tests {
         Body, BodyExtractExt, HeaderValue, header::ETAG, proto::h1::Http1HeaderName,
     };
 
-    use crate::{HttpHeadersProfile, HttpProfile};
+    use crate::{Http1Profile, Http2Profile, HttpHeadersProfile, HttpProfile};
 
     #[test]
     fn test_merge_http_headers() {
@@ -1050,6 +1063,77 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_get_base_h2_headers() {
+        let ua = UserAgent::new(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        );
+
+        let ua_profile = UserAgentProfile {
+            ua_kind: ua.ua_kind().unwrap(),
+            ua_version: ua.ua_version(),
+            platform: ua.platform(),
+            http: HttpProfile {
+                h1: Http1Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::default(),
+                        fetch: None,
+                        xhr: None,
+                        form: None,
+                    },
+                    title_case_headers: false,
+                },
+                h2: Http2Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        ),
+                        fetch: None,
+                        xhr: None,
+                        form: None,
+                    },
+                    http_pseudo_headers: vec![],
+                },
+            },
+            #[cfg(feature = "tls")]
+            tls: crate::TlsProfile {
+                client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
+            },
+        };
+
+        let ua_service = UserAgentEmulateService::new(
+            service_fn(async |req: Request| {
+                Ok::<_, Infallible>(
+                    req.headers()
+                        .get(ETAG)
+                        .map(|header| header.to_str().unwrap().to_owned())
+                        .unwrap_or_default(),
+                )
+            }),
+            ua_profile,
+        );
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .body(Body::empty())
+            .unwrap();
+        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        let body = res.into_body().try_into_string().await.unwrap();
+        assert_eq!(body, "");
+
+        let req = Request::builder()
+            .method(Method::GET)
+            .version(Version::HTTP_2)
+            .body(Body::empty())
+            .unwrap();
+        let res = ua_service.serve(Context::default(), req).await.unwrap();
+        let body = res.into_body().try_into_string().await.unwrap();
+        assert_eq!(body, "navigate");
+    }
+
+    #[tokio::test]
     async fn test_get_base_http_headers_profile_with_only_navigate_headers() {
         let ua = UserAgent::new(
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -1059,19 +1143,29 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                headers: HttpHeadersProfile {
-                    navigate: Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("navigate").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    ),
-                    xhr: None,
-                    fetch: None,
-                    form: None,
+                h1: Http1Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        ),
+                        xhr: None,
+                        fetch: None,
+                        form: None,
+                    },
+                    title_case_headers: false,
                 },
-                h1: None,
-                h2: None,
+                h2: Http2Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::default(),
+                        fetch: None,
+                        xhr: None,
+                        form: None,
+                    },
+                    http_pseudo_headers: vec![],
+                },
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {
@@ -1112,29 +1206,39 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                headers: HttpHeadersProfile {
-                    navigate: Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("navigate").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    ),
-                    xhr: Some(Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("xhr").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    )),
-                    fetch: None,
-                    form: Some(Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("form").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    )),
+                h1: Http1Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        ),
+                        xhr: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("xhr").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        fetch: None,
+                        form: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("form").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                    },
+                    title_case_headers: false,
                 },
-                h1: None,
-                h2: None,
+                h2: Http2Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::default(),
+                        fetch: None,
+                        xhr: None,
+                        form: None,
+                    },
+                    http_pseudo_headers: vec![],
+                },
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {
@@ -1175,29 +1279,39 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                headers: HttpHeadersProfile {
-                    navigate: Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("navigate").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    ),
-                    fetch: Some(Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("fetch").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    )),
-                    xhr: None,
-                    form: Some(Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("form").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    )),
+                h1: Http1Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        ),
+                        fetch: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("fetch").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        xhr: None,
+                        form: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("form").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                    },
+                    title_case_headers: false,
                 },
-                h1: None,
-                h2: None,
+                h2: Http2Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::default(),
+                        fetch: None,
+                        xhr: None,
+                        form: None,
+                    },
+                    http_pseudo_headers: vec![],
+                },
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {
@@ -1242,34 +1356,44 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                headers: HttpHeadersProfile {
-                    navigate: Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("navigate").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    ),
-                    fetch: Some(Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("fetch").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    )),
-                    xhr: Some(Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("xhr").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    )),
-                    form: Some(Http1HeaderMap::new(
-                        [(ETAG, HeaderValue::from_str("form").unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    )),
+                h1: Http1Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("navigate").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        ),
+                        fetch: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("fetch").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        xhr: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("xhr").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                        form: Some(Http1HeaderMap::new(
+                            [(ETAG, HeaderValue::from_str("form").unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        )),
+                    },
+                    title_case_headers: false,
                 },
-                h1: None,
-                h2: None,
+                h2: Http2Profile {
+                    headers: HttpHeadersProfile {
+                        navigate: Http1HeaderMap::default(),
+                        fetch: None,
+                        xhr: None,
+                        form: None,
+                    },
+                    http_pseudo_headers: vec![],
+                },
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {

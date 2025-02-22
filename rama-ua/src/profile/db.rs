@@ -223,6 +223,19 @@ mod tests {
         assert_eq!(
             profile
                 .http
+                .h1
+                .headers
+                .navigate
+                .get(USER_AGENT)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0"
+        );
+        assert_eq!(
+            profile
+                .http
+                .h2
                 .headers
                 .navigate
                 .get(USER_AGENT)
@@ -360,6 +373,7 @@ mod tests {
             let rnd = db.rnd().unwrap();
             set.insert(
                 rnd.http
+                    .h1
                     .headers
                     .navigate
                     .get(USER_AGENT)
@@ -380,19 +394,34 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: crate::HttpProfile {
-                headers: crate::HttpHeadersProfile {
-                    navigate: Http1HeaderMap::new(
-                        [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
-                            .into_iter()
-                            .collect(),
-                        None,
-                    ),
-                    fetch: None,
-                    xhr: None,
-                    form: None,
+                h1: crate::Http1Profile {
+                    headers: crate::HttpHeadersProfile {
+                        navigate: Http1HeaderMap::new(
+                            [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        ),
+                        fetch: None,
+                        xhr: None,
+                        form: None,
+                    },
+                    title_case_headers: false,
                 },
-                h1: None,
-                h2: None,
+                h2: crate::Http2Profile {
+                    headers: crate::HttpHeadersProfile {
+                        navigate: Http1HeaderMap::new(
+                            [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
+                                .into_iter()
+                                .collect(),
+                            None,
+                        ),
+                        fetch: None,
+                        xhr: None,
+                        form: None,
+                    },
+                    http_pseudo_headers: vec![],
+                },
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {

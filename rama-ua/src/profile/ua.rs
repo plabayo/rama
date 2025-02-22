@@ -22,10 +22,26 @@ pub struct UserAgentProfile {
 
 impl UserAgentProfile {
     pub fn ua_str(&self) -> Option<&str> {
-        self.http
+        if let Some(ua) = self
+            .http
+            .h1
             .headers
             .navigate
             .get(USER_AGENT)
             .and_then(|v| v.to_str().ok())
+        {
+            Some(ua)
+        } else if let Some(ua) = self
+            .http
+            .h2
+            .headers
+            .navigate
+            .get(USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+        {
+            Some(ua)
+        } else {
+            None
+        }
     }
 }

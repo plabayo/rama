@@ -9,9 +9,8 @@ pub static CUSTOM_HEADER_MARKER: HeaderName =
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct HttpProfile {
-    pub headers: HttpHeadersProfile,
-    pub h1: Option<Http1Profile>,
-    pub h2: Option<Http2Profile>,
+    pub h1: Http1Profile,
+    pub h2: Http2Profile,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -24,10 +23,12 @@ pub struct HttpHeadersProfile {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Http1Profile {
+    pub headers: HttpHeadersProfile,
     pub title_case_headers: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Http2Profile {
+    pub headers: HttpHeadersProfile,
     pub http_pseudo_headers: Vec<PseudoHeader>,
 }
