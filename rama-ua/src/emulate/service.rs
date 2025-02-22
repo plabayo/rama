@@ -234,7 +234,7 @@ where
                 original_http_header_order,
                 original_headers,
                 preserve_ua_header,
-            )?;
+            );
 
             tracing::trace!(
                 ua_kind = %profile.ua_kind,
@@ -439,7 +439,7 @@ fn merge_http_headers(
     original_http_header_order: Option<OriginalHttp1Headers>,
     original_headers: HeaderMap,
     preserve_ua_header: bool,
-) -> Result<Http1HeaderMap, OpaqueError> {
+) -> Http1HeaderMap {
     let mut original_headers = HeaderMapValueRemover::from(original_headers);
 
     let mut output_headers_a = Vec::new();
@@ -463,10 +463,10 @@ fn merge_http_headers(
             }
             &USER_AGENT => {
                 if preserve_ua_header {
-                    output_headers_ref.push((base_name, base_value));
-                } else {
                     let value = original_value.unwrap_or(base_value);
                     output_headers_ref.push((base_name, value));
+                } else {
+                    output_headers_ref.push((base_name, base_value));
                 }
             }
             _ => {
@@ -486,16 +486,13 @@ fn merge_http_headers(
         }
     }
 
-    Ok(Http1HeaderMap::from_iter(
+    Http1HeaderMap::from_iter(
         output_headers_a
             .into_iter()
             .chain(original_headers) // add all remaining original headers in any order within the right loc
             .chain(output_headers_b),
-    ))
+    )
 }
-
-// TODO: test:
-// - merge_http_headers
 
 #[cfg(test)]
 mod tests {
@@ -508,6 +505,335 @@ mod tests {
     use rama_http_types::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
 
     use crate::{HttpHeadersProfile, HttpProfile};
+
+    #[test]
+    fn test_merge_http_headers() {
+        struct TestCase {
+            description: &'static str,
+            base_http_headers: Vec<(&'static str, &'static str)>,
+            original_http_header_order: Option<Vec<&'static str>>,
+            original_headers: Vec<(&'static str, &'static str)>,
+            preserve_ua_header: bool,
+            expected: Vec<(&'static str, &'static str)>,
+        }
+
+        let test_cases = [
+            TestCase {
+                description: "empty",
+                base_http_headers: vec![],
+                original_http_header_order: None,
+                original_headers: vec![],
+                preserve_ua_header: false,
+                expected: vec![],
+            },
+            TestCase {
+                description: "base headers only",
+                base_http_headers: vec![
+                    ("Accept", "text/html"),
+                    ("Content-Type", "application/json"),
+                ],
+                original_http_header_order: None,
+                original_headers: vec![],
+                preserve_ua_header: false,
+                expected: vec![
+                    ("Accept", "text/html"),
+                    ("Content-Type", "application/json"),
+                ],
+            },
+            TestCase {
+                description: "original headers only",
+                base_http_headers: vec![],
+                original_http_header_order: None,
+                original_headers: vec![("accept", "text/html")],
+                preserve_ua_header: false,
+                expected: vec![("accept", "text/html")],
+            },
+            TestCase {
+                description: "original and base headers, no conflicts",
+                base_http_headers: vec![("accept", "text/html"), ("user-agent", "python/3.10")],
+                original_http_header_order: None,
+                original_headers: vec![("content-type", "application/json")],
+                preserve_ua_header: false,
+                expected: vec![
+                    ("accept", "text/html"),
+                    ("user-agent", "python/3.10"),
+                    ("content-type", "application/json"),
+                ],
+            },
+            TestCase {
+                description: "original and base headers, with conflicts",
+                base_http_headers: vec![
+                    ("accept", "text/html"),
+                    ("content-type", "text/html"),
+                    ("user-agent", "python/3.10"),
+                ],
+                original_http_header_order: Some(vec!["content-type", "user-agent"]),
+                original_headers: vec![
+                    ("content-type", "application/json"),
+                    ("user-agent", "php/8.0"),
+                ],
+                preserve_ua_header: false,
+                expected: vec![
+                    ("accept", "text/html"),
+                    ("content-type", "application/json"),
+                    ("user-agent", "python/3.10"),
+                ],
+            },
+            TestCase {
+                description: "original and base headers, with conflicts, preserve ua header",
+                base_http_headers: vec![
+                    ("accept", "text/html"),
+                    ("content-type", "text/html"),
+                    ("user-agent", "python/3.10"),
+                ],
+                original_http_header_order: Some(vec!["content-type", "user-agent"]),
+                original_headers: vec![
+                    ("content-type", "application/json"),
+                    ("user-agent", "php/8.0"),
+                ],
+                preserve_ua_header: true,
+                expected: vec![
+                    ("accept", "text/html"),
+                    ("content-type", "application/json"),
+                    ("user-agent", "php/8.0"),
+                ],
+            },
+            TestCase {
+                description: "no opt-in base headers defined",
+                base_http_headers: vec![
+                    ("accept", "text/html"),
+                    ("authorization", "Bearer 1234567890"),
+                    ("cookie", "session=1234567890"),
+                    ("referer", "https://example.com"),
+                ],
+                original_http_header_order: Some(vec!["content-type", "user-agent"]),
+                original_headers: vec![
+                    ("content-type", "application/json"),
+                    ("user-agent", "php/8.0"),
+                ],
+                preserve_ua_header: false,
+                expected: vec![
+                    ("accept", "text/html"),
+                    ("content-type", "application/json"),
+                    ("user-agent", "php/8.0"),
+                ],
+            },
+            TestCase {
+                description: "some opt-in base headers defined",
+                base_http_headers: vec![
+                    ("accept", "text/html"),
+                    ("authorization", "Bearer 1234567890"),
+                    ("cookie", "session=1234567890"),
+                    ("referer", "https://example.com"),
+                ],
+                original_http_header_order: Some(vec![
+                    "content-type",
+                    "cookie",
+                    "user-agent",
+                    "referer",
+                ]),
+                original_headers: vec![
+                    ("content-type", "application/json"),
+                    ("cookie", "foo=bar"),
+                    ("user-agent", "php/8.0"),
+                    ("referer", "https://ramaproxy.org"),
+                ],
+                preserve_ua_header: false,
+                expected: vec![
+                    ("accept", "text/html"),
+                    ("cookie", "foo=bar"),
+                    ("referer", "https://ramaproxy.org"),
+                    ("content-type", "application/json"),
+                    ("user-agent", "php/8.0"),
+                ],
+            },
+            TestCase {
+                description: "all opt-in base headers defined",
+                base_http_headers: vec![
+                    ("accept", "text/html"),
+                    ("authorization", "Bearer 1234567890"),
+                    ("cookie", "session=1234567890"),
+                    ("referer", "https://example.com"),
+                ],
+                original_http_header_order: Some(vec![
+                    "content-type",
+                    "cookie",
+                    "user-agent",
+                    "referer",
+                    "authorization",
+                ]),
+                original_headers: vec![
+                    ("content-type", "application/json"),
+                    ("cookie", "foo=bar"),
+                    ("user-agent", "php/8.0"),
+                    ("referer", "https://ramaproxy.org"),
+                    ("authorization", "Bearer 42"),
+                ],
+                preserve_ua_header: false,
+                expected: vec![
+                    ("accept", "text/html"),
+                    ("authorization", "Bearer 42"),
+                    ("cookie", "foo=bar"),
+                    ("referer", "https://ramaproxy.org"),
+                    ("content-type", "application/json"),
+                    ("user-agent", "php/8.0"),
+                ],
+            },
+            TestCase {
+                description: "all opt-in base headers defined, with custom header marker",
+                base_http_headers: vec![
+                    ("accept", "text/html"),
+                    ("authorization", "Bearer 1234567890"),
+                    ("x-rama-custom-header-marker", "1"),
+                    ("cookie", "session=1234567890"),
+                    ("referer", "https://example.com"),
+                ],
+                original_http_header_order: Some(vec![
+                    "content-type",
+                    "cookie",
+                    "user-agent",
+                    "referer",
+                    "authorization",
+                ]),
+                original_headers: vec![
+                    ("content-type", "application/json"),
+                    ("cookie", "foo=bar"),
+                    ("user-agent", "php/8.0"),
+                    ("referer", "https://ramaproxy.org"),
+                    ("authorization", "Bearer 42"),
+                ],
+                preserve_ua_header: false,
+                expected: vec![
+                    ("accept", "text/html"),
+                    ("authorization", "Bearer 42"),
+                    ("content-type", "application/json"),
+                    ("user-agent", "php/8.0"),
+                    ("cookie", "foo=bar"),
+                    ("referer", "https://ramaproxy.org"),
+                ],
+            },
+            TestCase {
+                description: "realistic browser example",
+                base_http_headers: vec![
+                    ("Host", "www.google.com"),
+                    (
+                        "User-Agent",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ),
+                    (
+                        "Accept",
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    ),
+                    ("Accept-Language", "en-US,en;q=0.9"),
+                    ("Accept-Encoding", "gzip, deflate, br"),
+                    ("Connection", "keep-alive"),
+                    ("Referer", "https://www.google.com/"),
+                    ("Upgrade-Insecure-Requests", "1"),
+                    ("x-rama-custom-header-marker", "1"),
+                    ("Cookie", "rama-ua-test=1"),
+                    ("Sec-Fetch-Dest", "document"),
+                    ("Sec-Fetch-Mode", "navigate"),
+                    ("Sec-Fetch-Site", "cross-site"),
+                    ("Sec-Fetch-User", "?1"),
+                    ("DNT", "1"),
+                    ("Sec-GPC", "1"),
+                    ("Priority", "u=0, i"),
+                ],
+                original_http_header_order: Some(vec![
+                    "x-show-price",
+                    "x-show-price-currency",
+                    "accept-language",
+                    "cookie",
+                ]),
+                original_headers: vec![
+                    ("x-show-price", "true"),
+                    ("x-show-price-currency", "USD"),
+                    ("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"),
+                    ("cookie", "session=on; foo=bar"),
+                    ("x-requested-with", "XMLHttpRequest"),
+                ],
+                preserve_ua_header: false,
+                expected: vec![
+                    ("Host", "www.google.com"),
+                    (
+                        "User-Agent",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ),
+                    (
+                        "Accept",
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    ),
+                    ("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"),
+                    ("Accept-Encoding", "gzip, deflate, br"),
+                    ("Connection", "keep-alive"),
+                    ("Upgrade-Insecure-Requests", "1"),
+                    ("x-show-price", "true"),
+                    ("x-show-price-currency", "USD"),
+                    ("x-requested-with", "XMLHttpRequest"),
+                    ("Cookie", "session=on; foo=bar"),
+                    ("Sec-Fetch-Dest", "document"),
+                    ("Sec-Fetch-Mode", "navigate"),
+                    ("Sec-Fetch-Site", "cross-site"),
+                    ("Sec-Fetch-User", "?1"),
+                    ("DNT", "1"),
+                    ("Sec-GPC", "1"),
+                    ("Priority", "u=0, i"),
+                ],
+            },
+        ];
+
+        for test_case in test_cases {
+            let base_http_headers =
+                Http1HeaderMap::from_iter(test_case.base_http_headers.into_iter().map(
+                    |(name, value)| {
+                        (
+                            Http1HeaderName::from_str(name).unwrap(),
+                            HeaderValue::from_static(value),
+                        )
+                    },
+                ));
+            let original_http_header_order = test_case.original_http_header_order.map(|headers| {
+                OriginalHttp1Headers::from_iter(
+                    headers
+                        .into_iter()
+                        .map(|header| Http1HeaderName::from_str(header).unwrap()),
+                )
+            });
+            let original_headers = HeaderMap::from_iter(
+                test_case.original_headers.into_iter().map(|(name, value)| {
+                    (
+                        HeaderName::from_static(name),
+                        HeaderValue::from_static(value),
+                    )
+                }),
+            );
+            let preserve_ua_header = test_case.preserve_ua_header;
+
+            let output_headers = merge_http_headers(
+                &base_http_headers,
+                original_http_header_order,
+                original_headers,
+                preserve_ua_header,
+            );
+
+            let output_str = output_headers
+                .into_iter()
+                .map(|(name, value)| format!("{}: {}\r\n", name, value.to_str().unwrap()))
+                .join("");
+
+            let expected_str = test_case
+                .expected
+                .iter()
+                .map(|(name, value)| format!("{}: {}\r\n", name, value))
+                .join("");
+
+            assert_eq!(
+                output_str, expected_str,
+                "test case '{}' failed",
+                test_case.description
+            );
+        }
+    }
 
     #[test]
     fn test_get_original_http_header_order() {
