@@ -403,10 +403,6 @@ criteria = "safe-to-deploy"
 version = "0.8.3"
 criteria = "safe-to-deploy"
 
-[[exemptions.ring]]
-version = "0.17.8"
-criteria = "safe-to-deploy"
-
 [[exemptions.rustc-demangle]]
 version = "0.1.24"
 criteria = "safe-to-deploy"
