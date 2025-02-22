@@ -17,7 +17,6 @@ workspace = true
 default = []
 rustls = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:rcgen", "dep:tokio-rustls", "rama-net/rustls"]
 boring = ["dep:boring", "dep:tokio-boring", "rama-net/boring", "dep:moka"]
-rustls-ring = ["rustls", "tokio-rustls/ring", "rustls/ring", "rama-net/rustls-ring"]
 
 [dependencies]
 boring = { workspace = true, optional = true }
