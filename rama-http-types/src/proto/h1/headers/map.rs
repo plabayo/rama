@@ -61,6 +61,11 @@ impl Http1HeaderMap {
         self.headers.get(key)
     }
 
+    #[inline]
+    pub fn contains_key(&self, key: impl AsHeaderName) -> bool {
+        self.headers.contains_key(key)
+    }
+
     pub fn into_headers(self) -> HeaderMap {
         self.headers
     }

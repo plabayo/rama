@@ -5,11 +5,12 @@ use rama_core::{
     error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_http_types::{
-    HeaderMap, HeaderName, Method, Request, Version,
+    HeaderMap, HeaderName, IntoResponse, Method, Request, Response, Version,
+    compression::DecompressIfPossible,
     conn::Http1ClientContextParams,
     header::{
-        ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
-        REFERER, USER_AGENT,
+        ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE,
+        COOKIE, HOST, ORIGIN, REFERER, USER_AGENT,
     },
     proto::{
         h1::{
@@ -148,10 +149,10 @@ impl<State, Body, S, P> Service<State, Request<Body>> for UserAgentEmulateServic
 where
     State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    S: Service<State, Request<Body>, Error: Into<BoxError>>,
+    S: Service<State, Request<Body>, Response: IntoResponse, Error: Into<BoxError>>,
     P: UserAgentProvider<State>,
 {
-    type Response = S::Response;
+    type Response = Response;
     type Error = BoxError;
 
     async fn serve(
@@ -190,7 +191,12 @@ where
             Some(profile) => profile,
             None => {
                 return if self.optional {
-                    self.inner.serve(ctx, req).await.map_err(Into::into)
+                    Ok(self
+                        .inner
+                        .serve(ctx, req)
+                        .await
+                        .map_err(Into::into)?
+                        .into_response())
                 } else {
                     Err(OpaqueError::from_display(
                         "requirement not fulfilled: user agent profile could not be selected",
@@ -211,6 +217,8 @@ where
             ctx.get::<UserAgent>().and_then(|ua| ua.http_agent()),
             Some(HttpAgent::Preserve),
         );
+
+        let mut decompression_marker = None;
 
         if preserve_http {
             tracing::trace!(
@@ -242,6 +250,8 @@ where
                     .unwrap_or_default(),
             };
 
+            let requested_compression = original_headers.get(ACCEPT_ENCODING).is_some();
+
             let output_headers = merge_http_headers(
                 base_http_headers,
                 original_http_header_order,
@@ -249,6 +259,10 @@ where
                 preserve_ua_header,
                 is_secure_request,
             );
+
+            if !requested_compression && output_headers.contains_key(ACCEPT_ENCODING) {
+                decompression_marker = Some(DecompressIfPossible::default());
+            }
 
             tracing::trace!(
                 ua_kind = %profile.ua_kind,
@@ -285,7 +299,18 @@ where
         }
 
         // serve emulated http(s) request via inner service
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+        let mut res = self
+            .inner
+            .serve(ctx, req)
+            .await
+            .map_err(Into::into)?
+            .into_response();
+
+        if let Some(marker) = decompression_marker {
+            res.extensions_mut().insert(marker);
+        }
+
+        Ok(res)
     }
 }
 
@@ -467,7 +492,7 @@ fn merge_http_headers(
         let base_header_name = base_name.header_name();
         let original_value = original_headers.remove(base_header_name);
         match base_header_name {
-            &ACCEPT | &ACCEPT_LANGUAGE | &CONTENT_TYPE => {
+            &ACCEPT | &ACCEPT_LANGUAGE | &CONTENT_TYPE | &ACCEPT_ENCODING => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
@@ -521,7 +546,9 @@ mod tests {
 
     use itertools::Itertools as _;
     use rama_core::service::service_fn;
-    use rama_http_types::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
+    use rama_http_types::{
+        Body, BodyExtractExt, HeaderValue, header::ETAG, proto::h1::Http1HeaderName,
+    };
 
     use crate::{HttpHeadersProfile, HttpProfile};
 
@@ -1071,7 +1098,8 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = ua_service.serve(Context::default(), req).await.unwrap();
-        assert_eq!(res, "navigate");
+        let body = res.into_body().try_into_string().await.unwrap();
+        assert_eq!(body, "navigate");
     }
 
     #[tokio::test]
@@ -1133,7 +1161,8 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = ua_service.serve(Context::default(), req).await.unwrap();
-        assert_eq!(res, "xhr");
+        let body = res.into_body().try_into_string().await.unwrap();
+        assert_eq!(body, "xhr");
     }
 
     #[tokio::test]
@@ -1199,7 +1228,8 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = ua_service.serve(Context::default(), req).await.unwrap();
-        assert_eq!(res, "fetch");
+        let body = res.into_body().try_into_string().await.unwrap();
+        assert_eq!(body, "fetch");
     }
 
     #[tokio::test]
@@ -1459,7 +1489,8 @@ mod tests {
             }
             let ctx = test_case.ctx.unwrap_or_default();
             let res = ua_service.serve(ctx, req).await.unwrap();
-            assert_eq!(res, test_case.expected, "{}", test_case.description);
+            let body = res.into_body().try_into_string().await.unwrap();
+            assert_eq!(body, test_case.expected, "{}", test_case.description);
         }
     }
 }
