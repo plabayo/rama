@@ -85,10 +85,10 @@ mod test {
             assert_eq!(body.alive, None);
         });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
             .header(
-                http::header::CONTENT_TYPE,
+                rama_http_types::header::CONTENT_TYPE,
                 "application/json; charset=utf-8",
             )
             .body(r#"{"name": "glen", "age": 42}"#.into())
@@ -109,9 +109,9 @@ mod test {
         let service =
             WebService::default().post("/", |Json(_): Json<Input>| async move { StatusCode::OK });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
-            .header(http::header::CONTENT_TYPE, "text/plain")
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, "text/plain")
             .body(r#"{"name": "glen", "age": 42}"#.into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
@@ -130,10 +130,10 @@ mod test {
         let service =
             WebService::default().post("/", |Json(_): Json<Input>| async move { StatusCode::OK });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
             .header(
-                http::header::CONTENT_TYPE,
+                rama_http_types::header::CONTENT_TYPE,
                 "application/json; charset=utf-8",
             )
             .body(r#"deal with it, or not?!"#.into())

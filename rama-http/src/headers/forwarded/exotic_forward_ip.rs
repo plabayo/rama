@@ -91,7 +91,7 @@ macro_rules! exotic_forward_ip_headers {
 
                 fn decode<'i, I: Iterator<Item = &'i HeaderValue>>(
                     values: &mut I,
-                ) -> Result<Self, headers::Error> {
+                ) -> Result<Self, crate::headers::Error> {
                     Ok($name(
                         values
                             .next()

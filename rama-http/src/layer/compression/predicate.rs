@@ -13,7 +13,7 @@ use std::{fmt, sync::Arc};
 /// Predicate used to determine if a response should be compressed or not.
 pub trait Predicate: Clone {
     /// Should this response be compressed or not?
-    fn should_compress<B>(&self, response: &http::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
         B: Body;
 
@@ -36,7 +36,7 @@ impl<F> Predicate for F
 where
     F: Fn(StatusCode, Version, &HeaderMap, &Extensions) -> bool + Clone,
 {
-    fn should_compress<B>(&self, response: &http::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
         B: Body,
     {
@@ -52,7 +52,7 @@ impl<T> Predicate for Option<T>
 where
     T: Predicate,
 {
-    fn should_compress<B>(&self, response: &http::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
         B: Body,
     {
@@ -76,7 +76,7 @@ where
     Lhs: Predicate,
     Rhs: Predicate,
 {
-    fn should_compress<B>(&self, response: &http::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
         B: Body,
     {
@@ -136,7 +136,7 @@ impl Default for DefaultPredicate {
 }
 
 impl Predicate for DefaultPredicate {
-    fn should_compress<B>(&self, response: &http::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
         B: Body,
     {
@@ -168,7 +168,7 @@ impl Default for SizeAbove {
 }
 
 impl Predicate for SizeAbove {
-    fn should_compress<B>(&self, response: &http::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
         B: Body,
     {
@@ -225,7 +225,7 @@ impl NotForContentType {
 }
 
 impl Predicate for NotForContentType {
-    fn should_compress<B>(&self, response: &http::Response<B>) -> bool
+    fn should_compress<B>(&self, response: &rama_http_types::Response<B>) -> bool
     where
         B: Body,
     {
@@ -263,7 +263,7 @@ impl fmt::Debug for Str {
     }
 }
 
-fn content_type<B>(response: &http::Response<B>) -> &str {
+fn content_type<B>(response: &rama_http_types::Response<B>) -> &str {
     response
         .headers()
         .get(header::CONTENT_TYPE)

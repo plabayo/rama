@@ -171,7 +171,7 @@ fn status<B>(res: &Response<B>) -> Option<i32> {
     // For simplicity, we simply check that the content type starts with "application/grpc".
     let is_grpc = res
         .headers()
-        .get(http::header::CONTENT_TYPE)
+        .get(rama_http_types::header::CONTENT_TYPE)
         .is_some_and(|value| value.as_bytes().starts_with("application/grpc".as_bytes()));
 
     if is_grpc {

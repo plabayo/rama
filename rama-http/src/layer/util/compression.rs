@@ -1,7 +1,5 @@
 //! Types used by compression and decompression middleware.
 
-use super::content_encoding::SupportedEncodings;
-use crate::HeaderValue;
 use crate::dep::http_body::{Body, Frame};
 use bytes::{Buf, Bytes, BytesMut};
 use futures_lite::Stream;
@@ -15,88 +13,6 @@ use std::{
 };
 use tokio::io::AsyncRead;
 use tokio_util::io::StreamReader;
-
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct AcceptEncoding {
-    pub(crate) gzip: bool,
-    pub(crate) deflate: bool,
-    pub(crate) br: bool,
-    pub(crate) zstd: bool,
-}
-
-impl AcceptEncoding {
-    #[allow(dead_code)]
-    pub(crate) fn to_header_value(self) -> Option<HeaderValue> {
-        let accept = match (self.gzip(), self.deflate(), self.br(), self.zstd()) {
-            (true, true, true, false) => "gzip,deflate,br",
-            (true, true, false, false) => "gzip,deflate",
-            (true, false, true, false) => "gzip,br",
-            (true, false, false, false) => "gzip",
-            (false, true, true, false) => "deflate,br",
-            (false, true, false, false) => "deflate",
-            (false, false, true, false) => "br",
-            (true, true, true, true) => "zstd,gzip,deflate,br",
-            (true, true, false, true) => "zstd,gzip,deflate",
-            (true, false, true, true) => "zstd,gzip,br",
-            (true, false, false, true) => "zstd,gzip",
-            (false, true, true, true) => "zstd,deflate,br",
-            (false, true, false, true) => "zstd,deflate",
-            (false, false, true, true) => "zstd,br",
-            (false, false, false, true) => "zstd",
-            (false, false, false, false) => return None,
-        };
-        Some(HeaderValue::from_static(accept))
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn set_gzip(&mut self, enable: bool) {
-        self.gzip = enable;
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn set_deflate(&mut self, enable: bool) {
-        self.deflate = enable;
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn set_br(&mut self, enable: bool) {
-        self.br = enable;
-    }
-
-    #[allow(dead_code)]
-    pub(crate) fn set_zstd(&mut self, enable: bool) {
-        self.zstd = enable;
-    }
-}
-
-impl SupportedEncodings for AcceptEncoding {
-    fn gzip(&self) -> bool {
-        self.gzip
-    }
-
-    fn deflate(&self) -> bool {
-        self.deflate
-    }
-
-    fn br(&self) -> bool {
-        self.br
-    }
-
-    fn zstd(&self) -> bool {
-        self.zstd
-    }
-}
-
-impl Default for AcceptEncoding {
-    fn default() -> Self {
-        AcceptEncoding {
-            gzip: true,
-            deflate: true,
-            br: true,
-            zstd: true,
-        }
-    }
-}
 
 /// A `Body` that has been converted into an `AsyncRead`.
 pub(crate) type AsyncReadBody<B> =
@@ -329,7 +245,7 @@ where
     }
 
     #[inline]
-    fn size_hint(&self) -> http_body::SizeHint {
+    fn size_hint(&self) -> rama_http_types::dep::http_body::SizeHint {
         self.body.size_hint()
     }
 }

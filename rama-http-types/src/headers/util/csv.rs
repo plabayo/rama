@@ -8,7 +8,7 @@ use crate::HeaderValue;
 use crate::headers::Error;
 
 /// Reads a comma-delimited raw header into a Vec.
-pub(crate) fn from_comma_delimited<'i, I, T, E>(values: &mut I) -> Result<E, Error>
+pub fn from_comma_delimited<'i, I, T, E>(values: &mut I) -> Result<E, Error>
 where
     I: Iterator<Item = &'i HeaderValue>,
     T: ::std::str::FromStr,
@@ -30,7 +30,7 @@ where
 }
 
 /// Format an array into a comma-delimited string.
-pub(crate) fn fmt_comma_delimited<T: fmt::Display>(
+pub fn fmt_comma_delimited<T: fmt::Display>(
     f: &mut fmt::Formatter,
     mut iter: impl Iterator<Item = T>,
 ) -> fmt::Result {

@@ -1,4 +1,5 @@
 use bytes::Bytes;
+use rama_http_types::dep::http_body;
 
 #[derive(Debug, Clone)]
 /// A body that can be clone and used for requests that have to be rertried.

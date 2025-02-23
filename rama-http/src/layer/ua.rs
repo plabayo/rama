@@ -28,7 +28,7 @@
 //!
 //! let _ = service
 //!     .get("http://www.example.com")
-//!     .typed_header(headers::UserAgent::from_static(UA))
+//!     .typed_header(rama_http_types::headers::UserAgent::from_static(UA))
 //!     .send(Context::default())
 //!     .await
 //!     .unwrap();

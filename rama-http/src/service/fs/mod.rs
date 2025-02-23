@@ -2,8 +2,8 @@
 
 use bytes::Bytes;
 use futures_lite::Stream;
-use http_body::{Body, Frame};
 use pin_project_lite::pin_project;
+use rama_http_types::dep::http_body::{Body, Frame};
 use std::{
     fmt, io,
     pin::Pin,

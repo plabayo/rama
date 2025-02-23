@@ -20,12 +20,13 @@
 //!
 //! ```rust
 //! use rama_http::{headers::Header, HeaderName, HeaderValue};
+//! use rama_http_types::{header, headers};
 //!
 //! struct Dnt(bool);
 //!
 //! impl Header for Dnt {
 //!     fn name() -> &'static HeaderName {
-//!          &http::header::DNT
+//!          &header::DNT
 //!     }
 //!
 //!     fn decode<'i, I>(values: &mut I) -> Result<Self, headers::Error>
@@ -67,7 +68,7 @@ pub use rama_http_types::headers::{Header, HeaderMapExt};
 
 #[doc(inline)]
 pub use rama_http_types::headers::{
-    AcceptRanges, AccessControlAllowCredentials, AccessControlAllowHeaders,
+    Accept, AcceptRanges, AccessControlAllowCredentials, AccessControlAllowHeaders,
     AccessControlAllowMethods, AccessControlAllowOrigin, AccessControlExposeHeaders,
     AccessControlMaxAge, AccessControlRequestHeaders, AccessControlRequestMethod, Age, Allow,
     Authorization, CacheControl, Connection, ContentDisposition, ContentEncoding, ContentLength,
@@ -78,9 +79,11 @@ pub use rama_http_types::headers::{
     StrictTransportSecurity, Te, TransferEncoding, Upgrade, UserAgent, Vary,
 };
 
-mod common;
 #[doc(inline)]
-pub use common::Accept;
+pub use rama_http_types::headers::specifier::{Quality, QualityValue};
+
+#[doc(inline)]
+pub use rama_http_types::headers::util;
 
 mod forwarded;
 #[doc(inline)]
@@ -93,13 +96,10 @@ pub mod authorization {
     //! Authorization header and types.
 
     #[doc(inline)]
-    pub use ::headers::authorization::Credentials;
+    pub use rama_http_types::headers::authorization::Credentials;
     #[doc(inline)]
-    pub use ::headers::authorization::{Authorization, Basic, Bearer};
+    pub use rama_http_types::headers::authorization::{Authorization, Basic, Bearer};
 }
 
 #[doc(inline)]
 pub use ::rama_http_types::headers::HeaderExt;
-
-pub(crate) mod util;
-pub use util::quality_value::{Quality, QualityValue};

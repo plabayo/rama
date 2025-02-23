@@ -4,9 +4,10 @@ use super::body::BodyInner;
 use super::predicate::{DefaultPredicate, Predicate};
 use crate::dep::http_body::Body;
 use crate::layer::util::compression::WrapBody;
-use crate::layer::util::{compression::AcceptEncoding, content_encoding::Encoding};
 use crate::{Request, Response, header};
 use rama_core::{Context, Service};
+use rama_http_types::HeaderValue;
+use rama_http_types::headers::encoding::{AcceptEncoding, Encoding};
 use rama_utils::macros::define_inner_service_accessors;
 
 /// Compress response bodies of the underlying service.
@@ -192,7 +193,7 @@ where
         ctx: Context<State>,
         req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        let encoding = Encoding::from_headers(req.headers(), self.accept);
+        let encoding = Encoding::from_accept_encoding_headers(req.headers(), self.accept);
 
         let res = self.inner.serve(ctx, req).await?;
 
@@ -259,7 +260,7 @@ where
 
         parts
             .headers
-            .insert(header::CONTENT_ENCODING, encoding.into_header_value());
+            .insert(header::CONTENT_ENCODING, HeaderValue::from(encoding));
 
         let res = Response::from_parts(parts, body);
         Ok(res)

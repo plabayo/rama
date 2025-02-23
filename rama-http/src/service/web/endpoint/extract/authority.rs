@@ -1,7 +1,7 @@
 use super::FromRequestContextRefPair;
-use crate::dep::http::request::Parts;
 use crate::utils::macros::define_http_rejection;
 use rama_core::Context;
+use rama_http_types::dep::http::request::Parts;
 use rama_net::address;
 use rama_net::http::RequestContext;
 use rama_utils::macros::impl_deref;
@@ -80,7 +80,7 @@ mod tests {
         test_authority_from_request(
             "/",
             "some-domain:123",
-            vec![(&http::header::HOST, "some-domain:123")],
+            vec![(&rama_http_types::header::HOST, "some-domain:123")],
         )
         .await;
     }
@@ -102,7 +102,7 @@ mod tests {
             "some-domain:456",
             vec![
                 (&X_FORWARDED_HOST, "some-domain:456"),
-                (&http::header::HOST, "some-domain:123"),
+                (&rama_http_types::header::HOST, "some-domain:123"),
             ],
         )
         .await;

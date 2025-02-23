@@ -3,11 +3,12 @@ use crate::{
     Body, HeaderValue, Request, Response, StatusCode,
     dep::http_body_util::BodyExt,
     header::{self, ALLOW},
-    layer::util::content_encoding::Encoding,
     service::fs::AsyncReadBody,
 };
 use bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
+use rama_http_types::dep::http_body;
+use rama_http_types::headers::encoding::Encoding;
 use std::{convert::Infallible, io};
 
 pub(super) async fn consume_open_file_result<State, ReqBody, ResBody, F>(
@@ -25,7 +26,8 @@ where
 
         Ok(OpenFileOutput::Redirect { location }) => {
             let mut res = response_with_status(StatusCode::TEMPORARY_REDIRECT);
-            res.headers_mut().insert(http::header::LOCATION, location);
+            res.headers_mut()
+                .insert(rama_http_types::header::LOCATION, location);
             Ok(res)
         }
 
@@ -123,7 +125,7 @@ fn build_response(output: FileOpened) -> Response {
         .maybe_encoding
         .filter(|encoding| *encoding != Encoding::Identity)
     {
-        builder = builder.header(header::CONTENT_ENCODING, encoding.into_header_value());
+        builder = builder.header(header::CONTENT_ENCODING, HeaderValue::from(encoding));
     }
 
     if let Some(last_modified) = output.last_modified {

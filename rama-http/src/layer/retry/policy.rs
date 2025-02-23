@@ -191,7 +191,7 @@ macro_rules! impl_retry_policy_either {
             async fn retry(
                 &self,
                 ctx: Context<State>,
-                req: http::Request<RetryBody>,
+                req: rama_http_types::Request<RetryBody>,
                 result: Result<Response, Error>,
             ) -> PolicyResult<State, Response, Error> {
                 match self {
@@ -204,8 +204,8 @@ macro_rules! impl_retry_policy_either {
             fn clone_input(
                 &self,
                 ctx: &Context<State>,
-                req: &http::Request<RetryBody>,
-            ) -> Option<(Context<State>, http::Request<RetryBody>)> {
+                req: &rama_http_types::Request<RetryBody>,
+            ) -> Option<(Context<State>, rama_http_types::Request<RetryBody>)> {
                 match self {
                     $(
                         rama_core::combinators::$id::$param(policy) => policy.clone_input(ctx, req),

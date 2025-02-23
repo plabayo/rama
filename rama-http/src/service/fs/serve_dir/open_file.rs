@@ -2,9 +2,9 @@ use super::{
     ServeVariant,
     headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
 };
-use crate::layer::util::content_encoding::{Encoding, QValue};
 use crate::{HeaderValue, Method, Request, Uri, header};
 use http_range_header::RangeUnsatisfiableError;
+use rama_http_types::headers::{encoding::Encoding, specifier::QualityValue};
 use std::{
     ffi::OsStr,
     fs::Metadata,
@@ -40,7 +40,7 @@ pub(super) async fn open_file(
     variant: ServeVariant,
     mut path_to_file: PathBuf,
     req: Request,
-    negotiated_encodings: Vec<(Encoding, QValue)>,
+    negotiated_encodings: Vec<QualityValue<Encoding>>,
     range_header: Option<String>,
     buf_chunk_size: usize,
 ) -> io::Result<OpenFileOutput> {
@@ -172,9 +172,10 @@ fn check_modified_headers(
 // to the corresponding file extension for the encoding.
 fn preferred_encoding(
     path: &mut PathBuf,
-    negotiated_encoding: &[(Encoding, QValue)],
+    negotiated_encoding: &[QualityValue<Encoding>],
 ) -> Option<Encoding> {
-    let preferred_encoding = Encoding::preferred_encoding(negotiated_encoding.iter().copied());
+    let preferred_encoding =
+        Encoding::maybe_preferred_encoding(negotiated_encoding.iter().copied());
 
     if let Some(file_extension) =
         preferred_encoding.and_then(|encoding| encoding.to_file_extension())
@@ -199,7 +200,7 @@ fn preferred_encoding(
 // file the uncompressed file is used as a fallback.
 async fn open_file_with_fallback(
     mut path: PathBuf,
-    mut negotiated_encoding: Vec<(Encoding, QValue)>,
+    mut negotiated_encoding: Vec<QualityValue<Encoding>>,
 ) -> io::Result<(File, Option<Encoding>)> {
     let (file, encoding) = loop {
         // Get the preferred encoding among the negotiated ones.
@@ -211,8 +212,7 @@ async fn open_file_with_fallback(
                 // to reset the path before the next iteration.
                 path.set_extension(OsStr::new(""));
                 // Remove the encoding from the negotiated_encodings since the file doesn't exist
-                negotiated_encoding
-                    .retain(|(negotiated_encoding, _)| *negotiated_encoding != encoding);
+                negotiated_encoding.retain(|qv| qv.value != encoding);
                 continue;
             }
             (Err(err), _) => return Err(err),
@@ -226,7 +226,7 @@ async fn open_file_with_fallback(
 // file the uncompressed file is used as a fallback.
 async fn file_metadata_with_fallback(
     mut path: PathBuf,
-    mut negotiated_encoding: Vec<(Encoding, QValue)>,
+    mut negotiated_encoding: Vec<QualityValue<Encoding>>,
 ) -> io::Result<(Metadata, Option<Encoding>)> {
     let (file, encoding) = loop {
         // Get the preferred encoding among the negotiated ones.
@@ -238,8 +238,7 @@ async fn file_metadata_with_fallback(
                 // to reset the path before the next iteration.
                 path.set_extension(OsStr::new(""));
                 // Remove the encoding from the negotiated_encodings since the file doesn't exist
-                negotiated_encoding
-                    .retain(|(negotiated_encoding, _)| *negotiated_encoding != encoding);
+                negotiated_encoding.retain(|qv| qv.value != encoding);
                 continue;
             }
             (Err(err), _) => return Err(err),
@@ -288,7 +287,7 @@ async fn is_dir(path_to_file: &Path) -> bool {
 }
 
 fn append_slash_on_path(uri: Uri) -> Uri {
-    let http::uri::Parts {
+    let rama_http_types::dep::http::uri::Parts {
         scheme,
         authority,
         path_and_query,

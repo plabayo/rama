@@ -271,7 +271,7 @@ mod tests {
             let authorized = request
                 .headers()
                 .get(header::AUTHORIZATION)
-                .and_then(|it: &http::HeaderValue| it.to_str().ok())
+                .and_then(|it: &rama_http_types::HeaderValue| it.to_str().ok())
                 .and_then(|it| it.strip_prefix("Bearer "))
                 .map(|it| it == "69420")
                 .unwrap_or(false);

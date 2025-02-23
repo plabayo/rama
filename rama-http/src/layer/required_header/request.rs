@@ -228,7 +228,7 @@ mod test {
             |_ctx: Context<()>, req: Request| async move {
                 assert!(req.headers().contains_key(HOST));
                 assert!(req.headers().contains_key(USER_AGENT));
-                Ok::<_, Infallible>(http::Response::new(Body::empty()))
+                Ok::<_, Infallible>(rama_http_types::Response::new(Body::empty()))
             },
         ));
 
@@ -252,7 +252,7 @@ mod test {
                     req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),
                     Some("foo")
                 );
-                Ok::<_, Infallible>(http::Response::new(Body::empty()))
+                Ok::<_, Infallible>(rama_http_types::Response::new(Body::empty()))
             }));
 
         let req = Request::builder()
@@ -275,7 +275,7 @@ mod test {
                     req.headers().get(USER_AGENT).unwrap(),
                     RAMA_ID_HEADER_VALUE.to_str().unwrap()
                 );
-                Ok::<_, Infallible>(http::Response::new(Body::empty()))
+                Ok::<_, Infallible>(rama_http_types::Response::new(Body::empty()))
             }));
 
         let req = Request::builder()
@@ -302,7 +302,7 @@ mod test {
                     req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),
                     Some("foo")
                 );
-                Ok::<_, Infallible>(http::Response::new(Body::empty()))
+                Ok::<_, Infallible>(rama_http_types::Response::new(Body::empty()))
             }));
 
         let req = Request::builder()

@@ -117,9 +117,9 @@ mod tests {
     struct Always;
 
     impl Predicate for Always {
-        fn should_compress<B>(&self, _: &http::Response<B>) -> bool
+        fn should_compress<B>(&self, _: &rama_http_types::Response<B>) -> bool
         where
-            B: http_body::Body,
+            B: rama_http_types::dep::http_body::Body,
         {
             true
         }
@@ -295,9 +295,9 @@ mod tests {
 
         #[allow(clippy::dbg_macro)]
         impl Predicate for EveryOtherResponse {
-            fn should_compress<B>(&self, _: &http::Response<B>) -> bool
+            fn should_compress<B>(&self, _: &rama_http_types::Response<B>) -> bool
             where
-                B: http_body::Body,
+                B: rama_http_types::dep::http_body::Body,
             {
                 let mut guard = self.0.write().unwrap();
                 let should_compress = *guard % 2 != 0;
