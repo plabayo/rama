@@ -9,9 +9,10 @@ use rama_http_types::{
     compression::DecompressIfPossible,
     conn::Http1ClientContextParams,
     header::{
-        ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE,
-        COOKIE, HOST, ORIGIN, REFERER, USER_AGENT,
+        ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
+        REFERER, USER_AGENT,
     },
+    headers::encoding::{Encoding, parse_accept_encoding_headers},
     proto::{
         h1::{
             Http1HeaderMap,
@@ -218,7 +219,7 @@ where
             Some(HttpAgent::Preserve),
         );
 
-        let mut decompression_marker = None;
+        let mut original_requested_encodings = None;
 
         if preserve_http {
             tracing::trace!(
@@ -254,7 +255,11 @@ where
                             .unwrap_or_default(),
                     };
 
-                    let requested_compression = original_headers.get(ACCEPT_ENCODING).is_some();
+                    original_requested_encodings = Some(
+                        parse_accept_encoding_headers(&original_headers, true)
+                            .map(|qv| qv.value)
+                            .collect::<Vec<_>>(),
+                    );
 
                     let output_headers = merge_http_headers(
                         base_http_headers,
@@ -263,10 +268,6 @@ where
                         preserve_ua_header,
                         is_secure_request,
                     );
-
-                    if !requested_compression && output_headers.contains_key(ACCEPT_ENCODING) {
-                        decompression_marker = Some(DecompressIfPossible::default());
-                    }
 
                     tracing::trace!(
                         ua_kind = %profile.ua_kind,
@@ -317,8 +318,17 @@ where
             .map_err(Into::into)?
             .into_response();
 
-        if let Some(marker) = decompression_marker {
-            res.extensions_mut().insert(marker);
+        if let Some(original_requested_encodings) = original_requested_encodings {
+            if let Some(content_encoding) =
+                Encoding::maybe_from_content_encoding_header(res.headers(), true)
+            {
+                if !original_requested_encodings.contains(&content_encoding) {
+                    // Only request decompression if the server used a content-encoding
+                    // not listed in the original request's Accept-Encoding header
+                    // or because the callee didn't set this header at all.
+                    res.extensions_mut().insert(DecompressIfPossible::default());
+                }
+            }
         }
 
         Ok(res)
@@ -505,7 +515,7 @@ fn merge_http_headers(
         let base_header_name = base_name.header_name();
         let original_value = original_headers.remove(base_header_name);
         match base_header_name {
-            &ACCEPT | &ACCEPT_LANGUAGE | &CONTENT_TYPE | &ACCEPT_ENCODING => {
+            &ACCEPT | &ACCEPT_LANGUAGE | &CONTENT_TYPE => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
