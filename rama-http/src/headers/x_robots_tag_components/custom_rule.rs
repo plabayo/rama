@@ -7,8 +7,8 @@ pub(super) struct CustomRule {
 }
 
 impl CustomRule {
-    pub(super) fn as_tuple(&self) -> (&HeaderValueString, &Option<HeaderValueString>) {
-        (&self.key, &self.value)
+    pub(super) fn as_tuple(&self) -> (&HeaderValueString, Option<&HeaderValueString>) {
+        (&self.key, self.value.as_ref())
     }
 }
 

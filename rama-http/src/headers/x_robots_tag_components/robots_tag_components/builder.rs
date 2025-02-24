@@ -131,7 +131,7 @@ impl Builder<NoTag> {
 
     /// Transforms the `Builder<NoTag>` into a `Builder<RobotsTag>` by calling the
     /// [`Builder<RobotsTag>::add_field()`] function (see for more detailed documentation)
-    pub fn add_field(self, s: &str) -> Result<Builder<RobotsTag>, OpaqueError> {
+    pub(super) fn add_field(self, s: &str) -> Result<Builder<RobotsTag>, OpaqueError> {
         let mut builder = Builder(RobotsTag::new_with_bot_name(self.0.bot_name));
         builder.add_field(s)?;
         Ok(builder)
@@ -192,27 +192,9 @@ impl Builder<RobotsTag> {
     ///         - when the field was valid and successfully added
     ///         - returns `&mut Self` wrapped inside for easier chaining of functions
     ///     - `Err(OpaqueError)`
-    ///         - is of type [`headers::Error`] when the field name is not valid
+    ///         - is of type [`Error`] when the field name is not valid
     ///         - for composite rules (key + value), wraps the conversion error for the value
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use std::num::ParseIntError;
-    /// # use rama_http::headers::x_robots_tag_components::RobotsTag;
-    /// let mut builder = RobotsTag::builder().no_follow();
-    ///
-    /// assert!(builder.add_field("nosnippet").is_ok());
-    /// assert!(builder.add_field("max-snippet: 8").is_ok());
-    /// assert!(builder.add_field("nonexistent").is_err_and(|e| e.is::<headers::Error>()));
-    /// assert!(builder.add_field("max-video-preview: not_a_number").is_err_and(|e| e.is::<ParseIntError>()));
-    ///
-    /// let robots_tag = builder.build();
-    ///
-    /// assert_eq!(robots_tag.no_snippet(), true);
-    /// assert_eq!(robots_tag.max_snippet(), 8);
-    /// ```
-    pub fn add_field(&mut self, s: &str) -> Result<&mut Self, OpaqueError> {
+    pub(super) fn add_field(&mut self, s: &str) -> Result<&mut Self, OpaqueError> {
         if let Some((key, value)) = s.split_once(':') {
             let key = key.trim();
             let value = value.trim();

@@ -11,7 +11,8 @@ impl<'a> Parser<'a> {
     pub(crate) fn new(remaining: &'a str) -> Self {
         let remaining = match remaining.trim() {
             "" => None,
-            text => Some(text),
+            text if text.is_ascii() => Some(text),
+            _ => None,
         };
 
         Self { remaining }
@@ -59,12 +60,12 @@ impl<'a> Iterator for Parser<'_> {
 impl Parser<'_> {
     fn parse_first(remaining: &mut &str) -> Result<Builder<RobotsTag>, OpaqueError> {
         match remaining.find(&[':', ',']) {
-            Some(index) if remaining.chars().nth(index) == Some(',') => {
+            Some(index) if remaining.as_bytes()[index] == b',' => {
                 let builder = RobotsTag::builder().add_field(&remaining[..index])?;
                 *remaining = &remaining[index + 1..];
                 Ok(builder)
             }
-            Some(colon_index) if remaining.chars().nth(colon_index) == Some(':') => {
+            Some(colon_index) if remaining.as_bytes()[colon_index] == b':' => {
                 let (field, rest) = if let Some((before, after)) = remaining.split_once(',') {
                     (before, after)
                 } else {

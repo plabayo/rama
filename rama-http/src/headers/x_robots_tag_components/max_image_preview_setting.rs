@@ -8,20 +8,14 @@ use MaxImagePreviewSetting::*;
 /// If you don't want search engines to use larger thumbnail images,
 /// specify a max-image-preview value of standard or none. [^source]
 ///
-/// # Values
-///
-/// - `none`
-///     - No image preview is to be shown.
-/// - `standard`
-///     - A default image preview may be shown.
-/// - `large`
-///     - A larger image preview, up to the width of the viewport, may be shown.
-///
 /// [^source]: https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/X-Robots-Tag#max-image-preview_setting
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MaxImagePreviewSetting {
+    /// No image preview is to be shown.
     None,
+    /// A default image preview may be shown.
     Standard,
+    /// A larger image preview, up to the width of the viewport, may be shown.
     Large,
 }
 

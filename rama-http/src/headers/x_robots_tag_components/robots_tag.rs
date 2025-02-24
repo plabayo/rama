@@ -75,7 +75,7 @@ impl RobotsTag {
 
     pub fn custom_rules(
         &self,
-    ) -> impl Iterator<Item = (&HeaderValueString, &Option<HeaderValueString>)> {
+    ) -> impl Iterator<Item = (&HeaderValueString, Option<&HeaderValueString>)> {
         self.custom_rules.iter().map(|x| x.as_tuple())
     }
 
