@@ -12,7 +12,10 @@ use rama_http_types::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
         REFERER, USER_AGENT,
     },
-    headers::encoding::{Encoding, parse_accept_encoding_headers},
+    headers::{
+        ClientHint,
+        encoding::{Encoding, parse_accept_encoding_headers},
+    },
     proto::{
         h1::{
             Http1HeaderMap,
@@ -219,6 +222,10 @@ where
             Some(HttpAgent::Preserve),
         );
 
+        let requested_client_hints = ctx
+            .get::<UserAgent>()
+            .map(|ua| ua.requested_client_hints().copied().collect::<Vec<_>>());
+
         let mut original_requested_encodings = None;
 
         if preserve_http {
@@ -267,6 +274,7 @@ where
                         original_headers,
                         preserve_ua_header,
                         is_secure_request,
+                        requested_client_hints.as_deref(),
                     );
 
                     tracing::trace!(
@@ -502,6 +510,7 @@ fn merge_http_headers(
     original_headers: HeaderMap,
     preserve_ua_header: bool,
     is_secure_request: bool,
+    requested_client_hints: Option<&[ClientHint]>,
 ) -> Http1HeaderMap {
     let mut original_headers = HeaderMapValueRemover::from(original_headers);
 
@@ -509,6 +518,18 @@ fn merge_http_headers(
     let mut output_headers_b = Vec::new();
 
     let mut output_headers_ref = &mut output_headers_a;
+
+    let is_header_allowed = |header_name: &HeaderName| {
+        if let Some(hint) = ClientHint::match_header_name(header_name) {
+            is_secure_request
+                && (hint.is_low_entropy()
+                    || requested_client_hints
+                        .map(|hints| hints.contains(&hint))
+                        .unwrap_or_default())
+        } else {
+            is_secure_request || !starts_with_ignore_ascii_case(header_name.as_str(), "sec-fetch")
+        }
+    };
 
     // put all "base" headers in correct order, and with proper name casing
     for (base_name, base_value) in base_http_headers.clone().into_iter() {
@@ -535,11 +556,7 @@ fn merge_http_headers(
             _ => {
                 if base_header_name == CUSTOM_HEADER_MARKER {
                     output_headers_ref = &mut output_headers_b;
-                } else if starts_with_ignore_ascii_case(base_header_name.as_str(), "sec-fetch") {
-                    if is_secure_request {
-                        output_headers_ref.push((base_name, base_value));
-                    }
-                } else {
+                } else if is_header_allowed(base_header_name) {
                     output_headers_ref.push((base_name, base_value));
                 }
             }
@@ -549,14 +566,20 @@ fn merge_http_headers(
     // respect original header order of original headers where possible
     for header_name in original_http_header_order.into_iter().flatten() {
         if let Some(value) = original_headers.remove(header_name.header_name()) {
-            output_headers_a.push((header_name, value));
+            if is_header_allowed(header_name.header_name()) {
+                output_headers_a.push((header_name, value));
+            }
         }
     }
+
+    let original_headers_iter = original_headers
+        .into_iter()
+        .filter(|(header_name, _)| is_header_allowed(header_name.header_name()));
 
     Http1HeaderMap::from_iter(
         output_headers_a
             .into_iter()
-            .chain(original_headers) // add all remaining original headers in any order within the right loc
+            .chain(original_headers_iter) // add all remaining original headers in any order within the right loc
             .chain(output_headers_b),
     )
 }
@@ -584,6 +607,7 @@ mod tests {
             original_headers: Vec<(&'static str, &'static str)>,
             preserve_ua_header: bool,
             is_secure_request: bool,
+            requested_client_hints: Option<Vec<&'static str>>,
             expected: Vec<(&'static str, &'static str)>,
         }
 
@@ -595,6 +619,7 @@ mod tests {
                 original_headers: vec![],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![],
             },
             TestCase {
@@ -607,6 +632,7 @@ mod tests {
                 original_headers: vec![],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![
                     ("Accept", "text/html"),
                     ("Content-Type", "application/json"),
@@ -619,6 +645,7 @@ mod tests {
                 original_headers: vec![("accept", "text/html")],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![("accept", "text/html")],
             },
             TestCase {
@@ -628,6 +655,7 @@ mod tests {
                 original_headers: vec![("content-type", "application/json")],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
                     ("user-agent", "python/3.10"),
@@ -648,6 +676,7 @@ mod tests {
                 ],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
                     ("content-type", "application/json"),
@@ -668,6 +697,7 @@ mod tests {
                 ],
                 preserve_ua_header: true,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
                     ("content-type", "application/json"),
@@ -689,6 +719,7 @@ mod tests {
                 ],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
                     ("content-type", "application/json"),
@@ -717,6 +748,7 @@ mod tests {
                 ],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
                     ("cookie", "foo=bar"),
@@ -749,6 +781,7 @@ mod tests {
                 ],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
                     ("authorization", "Bearer 42"),
@@ -783,6 +816,7 @@ mod tests {
                 ],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
                     ("authorization", "Bearer 42"),
@@ -835,6 +869,7 @@ mod tests {
                 ],
                 preserve_ua_header: false,
                 is_secure_request: false,
+                requested_client_hints: None,
                 expected: vec![
                     ("Host", "www.example.com"),
                     (
@@ -900,6 +935,7 @@ mod tests {
                 ],
                 preserve_ua_header: false,
                 is_secure_request: true,
+                requested_client_hints: None,
                 expected: vec![
                     (
                         "User-Agent",
@@ -921,6 +957,102 @@ mod tests {
                     ("Sec-Fetch-Mode", "navigate"),
                     ("Sec-Fetch-Site", "cross-site"),
                     ("Sec-Fetch-User", "?1"),
+                    ("DNT", "1"),
+                    ("Sec-GPC", "1"),
+                    ("Priority", "u=0, i"),
+                ],
+            },
+            TestCase {
+                description: "realistic browser example over tls with requested client hints",
+                base_http_headers: vec![
+                    ("Host", "www.google.com"),
+                    (
+                        "User-Agent",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ),
+                    (
+                        "Accept",
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    ),
+                    ("Accept-Language", "en-US,en;q=0.9"),
+                    ("Accept-Encoding", "gzip, deflate, br"),
+                    ("Connection", "keep-alive"),
+                    ("Referer", "https://www.google.com/"),
+                    ("Upgrade-Insecure-Requests", "1"),
+                    ("x-rama-custom-header-marker", "1"),
+                    ("Cookie", "rama-ua-test=1"),
+                    ("Sec-Fetch-Dest", "document"),
+                    ("Sec-Fetch-Mode", "navigate"),
+                    ("Sec-Fetch-Site", "cross-site"),
+                    ("Sec-Fetch-User", "?1"),
+                    ("Sec-CH-Downlink", "100"),
+                    ("Sec-CH-Ect", "4g"),
+                    ("Sec-CH-RTT", "100"),
+                    ("Sec-CH-UA-Arch", "arm"),
+                    ("Sec-CH-UA-Bitness", "64"),
+                    ("Sec-CH-UA-Full-Version", "120.0.0.0"),
+                    ("Sec-CH-UA-Full-Version-List", "Chrome 120.0.0.0"),
+                    ("Sec-CH-UA-Mobile", "?0"),
+                    ("Sec-CH-UA-Platform", "macOS"),
+                    ("Sec-CH-UA-Platform-Version", "10.15.7"),
+                    ("DNT", "1"),
+                    ("Sec-GPC", "1"),
+                    ("Priority", "u=0, i"),
+                ],
+                original_http_header_order: Some(vec![
+                    "x-show-price",
+                    "x-show-price-currency",
+                    "accept-language",
+                    "cookie",
+                    "Sec-CH-UA-Model",
+                ]),
+                original_headers: vec![
+                    ("x-show-price", "true"),
+                    ("x-show-price-currency", "USD"),
+                    ("accept-language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"),
+                    ("cookie", "session=on; foo=bar"),
+                    ("x-requested-with", "XMLHttpRequest"),
+                    ("sec-ch-ua-model", "Macintosh"),
+                ],
+                preserve_ua_header: false,
+                is_secure_request: true,
+                requested_client_hints: Some(vec![
+                    "Downlink",
+                    "Ect",
+                    "RTT",
+                    "Sec-CH-UA-Arch",
+                    "Sec-CH-UA-Bitness",
+                    "Sec-CH-UA-Model",
+                ]),
+                expected: vec![
+                    (
+                        "User-Agent",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ),
+                    (
+                        "Accept",
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    ),
+                    ("Accept-Language", "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7"),
+                    ("Accept-Encoding", "gzip, deflate, br"),
+                    ("Connection", "keep-alive"),
+                    ("Upgrade-Insecure-Requests", "1"),
+                    ("x-show-price", "true"),
+                    ("x-show-price-currency", "USD"),
+                    ("Sec-CH-UA-Model", "Macintosh"),
+                    ("x-requested-with", "XMLHttpRequest"),
+                    ("Cookie", "session=on; foo=bar"),
+                    ("Sec-Fetch-Dest", "document"),
+                    ("Sec-Fetch-Mode", "navigate"),
+                    ("Sec-Fetch-Site", "cross-site"),
+                    ("Sec-Fetch-User", "?1"),
+                    ("Sec-CH-Downlink", "100"),
+                    ("Sec-CH-Ect", "4g"),
+                    ("Sec-CH-RTT", "100"),
+                    ("Sec-CH-UA-Arch", "arm"),
+                    ("Sec-CH-UA-Bitness", "64"),
+                    ("Sec-CH-UA-Mobile", "?0"), // not requested, but low entropy
+                    ("Sec-CH-UA-Platform", "macOS"), // not requested, but low entropy
                     ("DNT", "1"),
                     ("Sec-GPC", "1"),
                     ("Priority", "u=0, i"),
@@ -955,6 +1087,12 @@ mod tests {
             );
             let preserve_ua_header = test_case.preserve_ua_header;
             let is_secure_request = test_case.is_secure_request;
+            let requested_client_hints = test_case.requested_client_hints.map(|hints| {
+                hints
+                    .into_iter()
+                    .map(|hint| ClientHint::from_str(hint).unwrap())
+                    .collect::<Vec<_>>()
+            });
 
             let output_headers = merge_http_headers(
                 &base_http_headers,
@@ -962,6 +1100,7 @@ mod tests {
                 original_headers,
                 preserve_ua_header,
                 is_secure_request,
+                requested_client_hints.as_deref(),
             );
 
             let output_str = output_headers

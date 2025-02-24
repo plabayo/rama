@@ -1,4 +1,5 @@
 use rama_core::error::OpaqueError;
+use rama_http_types::headers::ClientHint;
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{fmt, str::FromStr};
@@ -31,6 +32,8 @@ pub struct UserAgentOverwrites {
     pub tls: Option<TlsAgent>,
     /// Preserve the original [`UserAgent`] header of the http `Request`.
     pub preserve_ua: Option<bool>,
+    /// Requested (High-Entropy) Client Hints.
+    pub req_client_hints: Option<Vec<ClientHint>>,
     /// Hint a specific request intiator for UA Emulation. A related
     /// or default initiator might be chosen in case the hinted one is not available.
     ///

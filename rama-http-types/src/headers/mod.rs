@@ -98,3 +98,6 @@ pub mod util;
 
 mod common;
 pub use common::Accept;
+
+mod client_hints;
+pub use client_hints::ClientHint;

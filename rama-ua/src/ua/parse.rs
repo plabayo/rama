@@ -36,6 +36,7 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserA
                     tls_agent_overwrite: None,
                     preserve_ua_header: false,
                     request_initiator: None,
+                    requested_client_hints: None,
                 };
             }
         }
@@ -134,6 +135,7 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserA
             tls_agent_overwrite: None,
             preserve_ua_header: false,
             request_initiator: None,
+            requested_client_hints: None,
         },
         (None, _, Some(platform), _) => UserAgent {
             header,
@@ -142,6 +144,7 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserA
             tls_agent_overwrite: None,
             preserve_ua_header: false,
             request_initiator: None,
+            requested_client_hints: None,
         },
         (None, _, None, Some(device)) => UserAgent {
             header,
@@ -150,6 +153,7 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserA
             tls_agent_overwrite: None,
             preserve_ua_header: false,
             request_initiator: None,
+            requested_client_hints: None,
         },
         (None, _, None, None) => UserAgent {
             header,
@@ -158,6 +162,7 @@ pub(crate) fn parse_http_user_agent_header(header: impl Into<Arc<str>>) -> UserA
             tls_agent_overwrite: None,
             preserve_ua_header: false,
             request_initiator: None,
+            requested_client_hints: None,
         },
     }
 }

@@ -154,6 +154,9 @@ where
                 if let Some(req_init) = overwrites.req_init {
                     ua.set_request_initiator(req_init);
                 }
+                if let Some(req_client_hints) = overwrites.req_client_hints {
+                    ua.set_requested_client_hints(req_client_hints);
+                }
             }
 
             ctx.insert(ua);
@@ -208,8 +211,10 @@ mod tests {
     use crate::layer::required_header::AddRequiredRequestHeadersLayer;
     use crate::service::client::HttpClientExt;
     use crate::{IntoResponse, Response, StatusCode, headers};
+    use itertools::Itertools;
     use rama_core::Context;
     use rama_core::service::service_fn;
+    use rama_http_types::headers::ClientHint;
     use rama_ua::RequestInitiator;
     use std::convert::Infallible;
 
@@ -307,6 +312,10 @@ mod tests {
             assert_eq!(ua_info.kind, UserAgentKind::Chromium);
             assert_eq!(ua_info.version, Some(124));
             assert_eq!(ua.platform(), Some(PlatformKind::Windows));
+            assert_eq!(
+                ua.requested_client_hints().join(", "),
+                "Sec-CH-Downlink, Sec-CH-ECT"
+            );
 
             Ok(StatusCode::OK.into_response())
         }
@@ -321,6 +330,7 @@ mod tests {
                 "x-proxy-ua",
                 serde_html_form::to_string(&UserAgentOverwrites {
                     ua: Some(UA.to_owned()),
+                    req_client_hints: Some(vec![ClientHint::Downlink, ClientHint::Ect]),
                     ..Default::default()
                 })
                 .unwrap(),
@@ -362,6 +372,7 @@ mod tests {
                     tls: Some(TlsAgent::Boringssl),
                     preserve_ua: Some(true),
                     req_init: Some(RequestInitiator::Xhr),
+                    req_client_hints: Some(vec![ClientHint::Downlink]),
                 })
                 .unwrap(),
             )

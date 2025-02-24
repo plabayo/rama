@@ -1,5 +1,6 @@
 use super::{RequestInitiator, parse_http_user_agent_header};
 use rama_core::error::OpaqueError;
+use rama_http_types::headers::ClientHint;
 use rama_utils::macros::match_ignore_ascii_case_str;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::{convert::Infallible, fmt, str::FromStr, sync::Arc};
@@ -15,6 +16,7 @@ pub struct UserAgent {
     pub(super) tls_agent_overwrite: Option<TlsAgent>,
     pub(super) preserve_ua_header: bool,
     pub(super) request_initiator: Option<RequestInitiator>,
+    pub(super) requested_client_hints: Option<Vec<ClientHint>>,
 }
 
 impl fmt::Display for UserAgent {
@@ -128,6 +130,42 @@ impl UserAgent {
     /// returns the [`RequestInitiator`] hint if available.
     pub fn request_initiator(&self) -> Option<RequestInitiator> {
         self.request_initiator
+    }
+
+    /// Define the requested (High-Entropy) Client Hints.
+    pub fn with_requested_client_hints(mut self, req_client_hints: Vec<ClientHint>) -> Self {
+        self.requested_client_hints = Some(req_client_hints);
+        self
+    }
+
+    /// Define the requested (High-Entropy) Client Hints.
+    pub fn set_requested_client_hints(&mut self, req_client_hints: Vec<ClientHint>) -> &mut Self {
+        self.requested_client_hints = Some(req_client_hints);
+        self
+    }
+
+    /// Append a requested (High-Entropy) Client Hint.
+    pub fn append_requested_client_hint(&mut self, hint: ClientHint) -> &mut Self {
+        self.requested_client_hints
+            .get_or_insert_default()
+            .push(hint);
+        self
+    }
+
+    /// Extend the requested (High-Entropy) Client Hints.
+    pub fn extend_requested_client_hints(
+        &mut self,
+        hints: impl IntoIterator<Item = ClientHint>,
+    ) -> &mut Self {
+        self.requested_client_hints
+            .get_or_insert_default()
+            .extend(hints);
+        self
+    }
+
+    /// returns the requested (High-Entropy) Client Hints.
+    pub fn requested_client_hints(&self) -> impl Iterator<Item = &ClientHint> {
+        self.requested_client_hints.iter().flatten()
     }
 
     /// returns the `User-Agent` (header) value used by the [`UserAgent`].

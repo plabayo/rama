@@ -69,6 +69,7 @@ async fn test_http_user_agent_classifier() {
                 tls: Some(TlsAgent::Boringssl),
                 preserve_ua: Some(false),
                 req_init: None,
+                req_client_hints: None,
             })
             .unwrap(),
         )
