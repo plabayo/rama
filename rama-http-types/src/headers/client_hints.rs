@@ -119,6 +119,20 @@ macro_rules! client_hint {
                 Self::try_from(s.as_ref()).map_err(D::Error::custom)
             }
         }
+
+        #[doc = "Returns an iterator over all client hint header name strings."]
+        pub fn all_client_hint_header_name_strings() -> impl Iterator<Item = &'static str> {
+            [
+                $(
+                    $($str,)+
+                )+
+            ].into_iter()
+        }
+
+        #[doc = "Returns an iterator over all client hint header names."]
+        pub fn all_client_hint_header_names() -> impl Iterator<Item = $crate::HeaderName> {
+            all_client_hint_header_name_strings().map($crate::HeaderName::from_static)
+        }
     };
 }
 

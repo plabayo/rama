@@ -23,6 +23,7 @@ base64 = { workspace = true }
 bytes = { workspace = true }
 clap = { workspace = true }
 hex = { workspace = true }
+itertools = { workspace = true }
 jemallocator = { workspace = true, optional = true }
 mimalloc = { workspace = true, optional = true }
 rama = { version = "0.2.0-alpha.7", path = "..", features = ["full"] }

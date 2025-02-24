@@ -3,13 +3,17 @@
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 use clap::Args;
+use itertools::Itertools;
 use rama::{
     cli::ForwardKind,
     combinators::Either7,
     error::{BoxError, OpaqueError},
     http::{
         HeaderName, HeaderValue, IntoResponse,
-        headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
+        headers::{
+            CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp,
+            client_hints::all_client_hint_header_name_strings,
+        },
         layer::{
             catch_panic::CatchPanicLayer, compression::CompressionLayer,
             forwarded::GetForwardedHeadersLayer, required_header::AddRequiredResponseHeadersLayer,
@@ -199,28 +203,10 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     };
 
     let address = format!("{}:{}", cfg.interface, cfg.port);
-    let ch_headers = [
-        "Width",
-        "Downlink",
-        "Sec-CH-UA",
-        "Sec-CH-UA-Mobile",
-        "Sec-CH-UA-Full-Version",
-        "ETC",
-        "Save-Data",
-        "Sec-CH-UA-Platform",
-        "Sec-CH-Prefers-Reduced-Motion",
-        "Sec-CH-UA-Arch",
-        "Sec-CH-UA-Bitness",
-        "Sec-CH-UA-Model",
-        "Sec-CH-UA-Platform-Version",
-        "Sec-CH-UA-Prefers-Color-Scheme",
-        "Device-Memory",
-        "RTT",
-        "Sec-GPC",
-    ]
-    .join(", ")
-    .parse::<HeaderValue>()
-    .expect("parse header value");
+    let ch_headers = all_client_hint_header_name_strings()
+        .join(", ")
+        .parse::<HeaderValue>()
+        .expect("parse header value");
 
     graceful.spawn_task_fn(move |guard| async move {
         let inner_http_service = HijackLayer::new(

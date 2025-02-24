@@ -85,6 +85,18 @@ pub use rama_http_types::headers::specifier::{Quality, QualityValue};
 #[doc(inline)]
 pub use rama_http_types::headers::util;
 
+#[doc(inline)]
+pub use rama_http_types::headers::ClientHint;
+
+pub mod client_hints {
+    //! Http (UA) Client Hints
+
+    #[doc(inline)]
+    pub use rama_http_types::headers::{
+        all_client_hint_header_name_strings, all_client_hint_header_names,
+    };
+}
+
 mod forwarded;
 #[doc(inline)]
 pub use forwarded::{

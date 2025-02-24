@@ -100,4 +100,6 @@ mod common;
 pub use common::Accept;
 
 mod client_hints;
-pub use client_hints::ClientHint;
+pub use client_hints::{
+    ClientHint, all_client_hint_header_name_strings, all_client_hint_header_names,
+};

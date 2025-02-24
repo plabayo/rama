@@ -2205,6 +2205,7 @@ dependencies = [
  "bytes",
  "clap",
  "hex",
+ "itertools 0.14.0",
  "mimalloc",
  "rama",
  "serde",
