@@ -314,7 +314,7 @@ mod tests {
             assert_eq!(ua.platform(), Some(PlatformKind::Windows));
             assert_eq!(
                 ua.requested_client_hints().join(", "),
-                "Sec-CH-Downlink, Sec-CH-ECT"
+                "sec-ch-downlink, sec-ch-ect"
             );
 
             Ok(StatusCode::OK.into_response())

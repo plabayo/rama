@@ -144,57 +144,57 @@ client_hint! {
     #[doc = "Client Hints are a set of HTTP Headers and a JavaScript API that allow web browsers to send detailed information about the client device and browser to web servers. They are designed to be a successor to User-Agent, and provide a standardized way for web servers to optimize content for the client without relying on unreliable user-agent string-based detection or browser fingerprinting techniques."]
     pub enum ClientHint {
         /// Sec-CH-UA represents a user agent's branding and version.
-        Ua("Sec-CH-UA"),
+        Ua("sec-ch-ua"),
         /// Sec-CH-UA-Full-Version represents the user agent's full version.
-        FullVersion("Sec-CH-UA-Full-Version"),
+        FullVersion("sec-ch-ua-full-version"),
         /// Sec-CH-UA-Full-Version-List represents the full version for each brand in its brands list.
-        FullVersionList("Sec-CH-UA-Full-Version-List"),
+        FullVersionList("sec-ch-ua-full-version-list"),
         /// Sec-CH-UA-Platform represents the platform on which a given user agent is executing.
-        Platform("Sec-CH-UA-Platform"),
+        Platform("sec-ch-ua-platform"),
         /// Sec-CH-UA-Platform-Version represents the platform version on which a given user agent is executing.
-        PlatformVersion("Sec-CH-UA-Platform-Version"),
+        PlatformVersion("sec-ch-ua-platform-version"),
         /// Sec-CH-UA-Arch represents the architecture of the platform on which a given user agent is executing.
-        Arch("Sec-CH-UA-Arch"),
+        Arch("sec-ch-ua-arch"),
         /// Sec-CH-UA-Bitness represents the bitness of the architecture of the platform on which a given user agent is executing.
-        Bitness("Sec-CH-UA-Bitness"),
+        Bitness("sec-ch-ua-bitness"),
         /// Sec-CH-UA-WoW64 is used to detect whether or not a user agent binary is running in 32-bit mode on 64-bit Windows.
-        Wow64("Sec-CH-UA-WoW64"),
+        Wow64("sec-ch-ua-wow64"),
         /// Sec-CH-UA-Model represents the device on which a given user agent is executing.
-        Model("Sec-CH-UA-Model"),
+        Model("sec-ch-ua-model"),
         /// Sec-CH-UA-Mobile is used to detect whether or not a user agent prefers a «mobile» user experience.
-        Mobile("Sec-CH-UA-Mobile"),
+        Mobile("sec-ch-ua-mobile"),
         /// Sec-CH-UA-Form-Factors represents the form-factors of a device, historically represented as a <deviceCompat> token in the User-Agent string.
-        FormFactor("Sec-CH-UA-Form-Factors"),
+        FormFactor("sec-ch-ua-form-factors"),
         /// Sec-CH-Lang  (or Lang) represents the user's language preference.
-        Lang("Sec-CH-Lang", "Lang"),
+        Lang("sec-ch-lang", "lang"),
         /// Sec-CH-Save-Data (or Save-Data) represents the user agent's preference for reduced data usage.
-        SaveData("Sec-CH-Save-Data", "Save-Data"),
+        SaveData("sec-ch-save-data", "save-data"),
         /// Sec-CH-Width gives a server the layout width of the image.
-        Width("Sec-CH-Width"),
+        Width("sec-ch-width"),
         /// Sec-CH-Viewport-Width (or Viewport-Width) is the width of the user's viewport in CSS pixels.
-        ViewportWidth("Sec-CH-Viewport-Width", "Viewport-Width"),
+        ViewportWidth("sec-ch-viewport-width", "viewport-width"),
         /// Sec-CH-Viewport-Height represents the user-agent's current viewport height.
-        ViewportHeight("Sec-CH-Viewport-Height"),
+        ViewportHeight("sec-ch-viewport-height"),
         /// Sec-CH-DPR (or DPR) reports the ratio of physical pixels to CSS pixels of the user's screen.
-        Dpr("Sec-CH-DPR", "DPR"),
+        Dpr("sec-ch-dpr", "dpr"),
         /// Sec-CH-Device-Memory (or Device-Memory) reveals the approximate amount of memory the current device has in GiB. Because this information could be used to fingerprint users, the value of Device-Memory is intentionally coarse. Valid values are 0.25, 0.5, 1, 2, 4, and 8.
-        DeviceMemory("Sec-CH-Device-Memory", "Device-Memory"),
+        DeviceMemory("sec-ch-device-memory", "device-memory"),
         /// Sec-CH-RTT (or RTT) provides the approximate Round Trip Time, in milliseconds, on the application layer. The RTT hint, unlike transport layer RTT, includes server processing time. The value of RTT is rounded to the nearest 25 milliseconds to prevent fingerprinting.
-        Rtt("Sec-CH-RTT", "RTT"),
+        Rtt("sec-ch-rtt", "rtt"),
         /// Sec-CH-Downlink (or Downlink) expressed in megabits per second (Mbps), reveals the approximate downstream speed of the user's connection. The value is rounded to the nearest multiple of 25 kilobits per second. Because again, fingerprinting.
-        Downlink("Sec-CH-Downlink", "Downlink"),
+        Downlink("sec-ch-downlink", "downlink"),
         /// Sec-CH-ECT (or ECT) stands for Effective Connection Type. Its value is one of an enumerated list of connection types, each of which describes a connection within specified ranges of both RTT and Downlink values. Valid values for ECT are 4g, 3g, 2g, and slow-2g.
-        Ect("Sec-CH-ECT", "ECT"),
+        Ect("sec-ch-ect", "ect"),
         /// Sec-CH-Prefers-Color-Scheme represents the user's preferred color scheme.
-        PrefersColorScheme("Sec-CH-Prefers-Color-Scheme"),
+        PrefersColorScheme("sec-ch-prefers-color-scheme"),
         /// Sec-CH-Prefers-Reduced-Motion is used to detect if the user has requested the system minimize the amount of animation or motion it uses.
-        PrefersReducedMotion("Sec-CH-Prefers-Reduced-Motion"),
+        PrefersReducedMotion("sec-ch-prefers-reduced-motion"),
         /// Sec-CH-Prefers-Reduced-Transparency is used to detect if the user has requested the system minimize the amount of transparent or translucent layer effects it uses.
-        PrefersReducedTransparency("Sec-CH-Prefers-Reduced-Transparency"),
+        PrefersReducedTransparency("sec-ch-prefers-reduced-transparency"),
         /// Sec-CH-Prefers-Contrast is used to detect if the user has requested that the web content is presented with a higher (or lower) contrast.
-        PrefersContrast("Sec-CH-Prefers-Contrast"),
+        PrefersContrast("sec-ch-prefers-contrast"),
         /// Sec-CH-Forced-Colors is used to detect if the user agent has enabled a forced colors mode where it enforces a user-chosen limited color palette on the page.
-        ForcedColors("Sec-CH-Forced-Colors"),
+        ForcedColors("sec-ch-forced-colors"),
     }
 }
 
@@ -271,6 +271,22 @@ mod tests {
         for hint in hints {
             let hint = ClientHint::try_from(hint).expect(hint);
             assert!(!hint.is_low_entropy());
+        }
+    }
+
+    #[test]
+    fn test_all_client_hint_header_name_strings_contains_some_hints() {
+        let strings = all_client_hint_header_name_strings().collect::<Vec<_>>();
+        assert!(strings.contains(&"sec-ch-ua"), "{:?}", strings);
+    }
+
+    #[test]
+    fn test_all_client_hint_header_names() {
+        let names = all_client_hint_header_names().collect::<Vec<_>>();
+        let strings = all_client_hint_header_name_strings().collect::<Vec<_>>();
+        assert_eq!(names.len(), strings.len());
+        for (name, string) in names.iter().zip(strings.iter()) {
+            assert_eq!(name.as_str(), *string);
         }
     }
 }
