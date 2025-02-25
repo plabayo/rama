@@ -53,8 +53,7 @@
 //! Custom validation can be made by implementing [`ValidateRequest`].
 
 use base64::Engine as _;
-use std::{fmt, marker::PhantomData};
-
+use std::{fmt, marker::PhantomData, sync::Arc};
 use crate::layer::validate_request::{
     ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer,
 };
@@ -199,13 +198,13 @@ impl<ResBody> fmt::Debug for Bearer<ResBody> {
     }
 }
 
-impl<S, B, ResBody> ValidateRequest<S, B> for AuthorizeContext<Bearer<ResBody>>
+impl<S, B, C> ValidateRequest<S, B> for AuthorizeContext<C>
 where
-    ResBody: Default + Send + 'static,
+    C: Authorizer,
     B: Send + 'static,
     S: Clone + Send + Sync + 'static,
 {
-    type ResponseBody = ResBody;
+    type ResponseBody = C::ResBody;
 
     async fn validate(
         &self,
@@ -213,15 +212,17 @@ where
         request: Request<B>,
     ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
         match request.headers().get(header::AUTHORIZATION) {
-            Some(actual) if actual == self.credential.header_value => Ok((ctx, request)),
+            Some(header_value) if self.credential.is_valid(header_value) => Ok((ctx, request)),
             None if self.allow_anonymous => {
                 let mut ctx = ctx;
                 ctx.insert(UserId::Anonymous);
                 Ok((ctx, request))
             }
             _ => {
-                let mut res = Response::new(ResBody::default());
+                let mut res = Response::new(Self::ResponseBody::default());
                 *res.status_mut() = StatusCode::UNAUTHORIZED;
+                res.headers_mut()
+                    .insert(header::WWW_AUTHENTICATE, "Bearer".parse().unwrap());
                 Err(res)
             }
         }
@@ -267,34 +268,82 @@ impl<ResBody> fmt::Debug for Basic<ResBody> {
     }
 }
 
-impl<S, B, ResBody> ValidateRequest<S, B> for AuthorizeContext<Basic<ResBody>>
-where
-    ResBody: Default + Send + 'static,
-    B: Send + 'static,
-    S: Clone + Send + Sync + 'static,
-{
-    type ResponseBody = ResBody;
+/// Trait for authorizing requests.
+pub trait Authorizer: Send + Sync + 'static {
+    type ResBody: Default + Send + 'static;
 
-    async fn validate(
-        &self,
-        ctx: Context<S>,
-        request: Request<B>,
-    ) -> Result<(Context<S>, Request<B>), Response<Self::ResponseBody>> {
-        match request.headers().get(header::AUTHORIZATION) {
-            Some(actual) if actual == self.credential.header_value => Ok((ctx, request)),
-            None if self.allow_anonymous => {
-                let mut ctx = ctx;
-                ctx.insert(UserId::Anonymous);
-                Ok((ctx, request))
-            }
-            _ => {
-                let mut res = Response::new(ResBody::default());
-                *res.status_mut() = StatusCode::UNAUTHORIZED;
-                res.headers_mut()
-                    .insert(header::WWW_AUTHENTICATE, "Basic".parse().unwrap());
-                Err(res)
-            }
-        }
+    /// Check if the given header value is valid for this authorizer.
+    fn is_valid(&self, header_value: &HeaderValue) -> bool;
+    
+    /// Return the WWW-Authenticate header value if applicable.
+    fn www_authenticate_header(&self) -> Option<HeaderValue>;
+}
+
+impl<ResBody: Default + Send + 'static> Authorizer for Basic<ResBody> {
+    type ResBody = ResBody;
+
+    fn is_valid(&self, header_value: &HeaderValue) -> bool {
+        header_value == &self.header_value
+    }
+
+    fn www_authenticate_header(&self) -> Option<HeaderValue> {
+        Some("Basic".parse().unwrap())
+    }
+}
+
+impl<ResBody: Default + Send + 'static> Authorizer for Bearer<ResBody> {
+    type ResBody = ResBody;
+    fn is_valid(&self, header_value: &HeaderValue) -> bool {
+        header_value == &self.header_value
+    }
+
+    fn www_authenticate_header(&self) -> Option<HeaderValue> {
+        None
+    }
+}
+
+impl<T, const N: usize> Authorizer for [T; N]
+where
+    T: Authorizer,
+{
+    type ResBody = T::ResBody;
+
+    fn is_valid(&self, header_value: &HeaderValue) -> bool {
+        self.iter().any(|auth| auth.is_valid(header_value))
+    }
+
+    fn www_authenticate_header(&self) -> Option<HeaderValue> {
+        None
+    }
+}
+
+impl<T> Authorizer for Vec<T>
+where
+    T: Authorizer,
+{
+    type ResBody = T::ResBody;
+
+    fn is_valid(&self, header_value: &HeaderValue) -> bool {
+        self.iter().any(|auth| auth.is_valid(header_value))
+    }
+
+    fn www_authenticate_header(&self) -> Option<HeaderValue> {
+        None
+    }
+}
+
+impl<T> Authorizer for Arc<T>
+where
+    T: Authorizer,
+{
+    type ResBody = T::ResBody;
+
+    fn is_valid(&self, header_value: &HeaderValue) -> bool {
+        (**self).is_valid(header_value)
+    }
+
+    fn www_authenticate_header(&self) -> Option<HeaderValue> {
+        (**self).www_authenticate_header()
     }
 }
 
@@ -304,10 +353,41 @@ pub struct AuthorizeContext<C> {
 }
 
 impl<C> AuthorizeContext<C> {
-    pub(crate) fn new(credential: C) -> Self {
+    /// Create a new [`AuthorizeContext`] with the given credential.
+    pub fn new(credential: C) -> Self {
         Self {
             credential,
             allow_anonymous: false,
+        }
+    }
+
+    /// Convert this authorizer into a vector of authorizers.
+    pub fn into_vec(self) -> AuthorizeContext<Vec<C>>
+    where
+        C: Authorizer,
+    {
+        AuthorizeContext {
+            credential: vec![self.credential],
+            allow_anonymous: self.allow_anonymous,
+        }
+    }
+
+    /// Convert this authorizer into an array of authorizers.
+    pub fn into_array<const N: usize>(self) -> AuthorizeContext<[C; N]>
+    where
+        C: Authorizer + Copy,
+    {
+        AuthorizeContext {
+            credential: [self.credential; N],
+            allow_anonymous: self.allow_anonymous,
+        }
+    }
+
+    /// Convert this authorizer into an Arc for shared ownership.
+    pub fn into_arc(self) -> AuthorizeContext<Arc<C>> {
+        AuthorizeContext {
+            credential: Arc::new(self.credential),
+            allow_anonymous: self.allow_anonymous,
         }
     }
 }
@@ -332,11 +412,8 @@ impl<C: fmt::Debug> fmt::Debug for AuthorizeContext<C> {
 
 #[cfg(test)]
 mod tests {
-    #[allow(unused_imports)]
     use super::*;
-
-    use crate::layer::validate_request::ValidateRequestHeaderLayer;
-    use crate::{header, Body};
+    use crate::Body;
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
     use rama_core::{Context, Layer, Service};
@@ -468,8 +545,116 @@ mod tests {
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
-    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, BoxError> {
-        Ok(Response::new(req.into_body()))
+    #[tokio::test]
+    async fn multiple_basic_auth_vec() {
+        let auth1 = Basic::new("user1", "pass1");
+        let auth2 = Basic::new("user2", "pass2");
+        let auth_vec = vec![auth1, auth2];
+        let auth_context = AuthorizeContext::new(auth_vec);
+        let service = ValidateRequestHeader::new(service_fn(echo), auth_context);
+
+        // Test first credential
+        let request = Request::builder()
+            .header(
+                AUTHORIZATION,
+                format!("Basic {}", BASE64.encode("user1:pass1")),
+            )
+            .body(Body::default())
+            .unwrap();
+        let response = service
+            .serve(Context::default(), request)
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::OK, response.status());
+
+        // Test second credential
+        let request = Request::builder()
+            .header(
+                AUTHORIZATION,
+                format!("Basic {}", BASE64.encode("user2:pass2")),
+            )
+            .body(Body::default())
+            .unwrap();
+        let response = service
+            .serve(Context::default(), request)
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::OK, response.status());
+
+        // Test invalid credential
+        let request = Request::builder()
+            .header(
+                AUTHORIZATION,
+                format!("Basic {}", BASE64.encode("invalid:invalid")),
+            )
+            .body(Body::default())
+            .unwrap();
+        let response = service
+            .serve(Context::default(), request)
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::UNAUTHORIZED, response.status());
+    }
+
+    #[tokio::test]
+    async fn multiple_basic_auth_array() {
+        let auth1 = Basic::new("user1", "pass1");
+        let auth_array = [auth1; 2];
+        let auth_context = AuthorizeContext::new(auth_array);
+        let service = ValidateRequestHeader::new(service_fn(echo), auth_context);
+
+        // Test valid credential
+        let request = Request::builder()
+            .header(
+                AUTHORIZATION,
+                format!("Basic {}", BASE64.encode("user1:pass1")),
+            )
+            .body(Body::default())
+            .unwrap();
+        let response = service
+            .serve(Context::default(), request)
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::OK, response.status());
+    }
+
+    #[tokio::test]
+    async fn arc_basic_auth() {
+        let auth = Basic::new("user", "pass");
+        let arc_auth = Arc::new(auth);
+        let auth_context = AuthorizeContext::new(arc_auth);
+        let service = ValidateRequestHeader::new(service_fn(echo), auth_context);
+
+        let request = Request::builder()
+            .header(
+                AUTHORIZATION,
+                format!("Basic {}", BASE64.encode("user:pass")),
+            )
+            .body(Body::default())
+            .unwrap();
+        let response = service
+            .serve(Context::default(), request)
+            .await
+            .unwrap();
+        assert_eq!(StatusCode::OK, response.status());
+    }
+
+    #[tokio::test]
+    async fn conversion_methods() {
+        let auth = Basic::new("user", "pass");
+        let auth_context = AuthorizeContext::new(auth);
+
+        // Test into_vec
+        let vec_context = auth_context.clone().into_vec();
+        assert_eq!(vec_context.credential.len(), 1);
+
+        // Test into_array
+        let array_context = auth_context.clone().into_array();
+        assert_eq!(array_context.credential.len(), 2);
+
+        // Test into_arc
+        let arc_context = auth_context.into_arc();
+        assert_eq!(Arc::strong_count(&arc_context.credential), 1);
     }
 
     #[tokio::test]
@@ -531,5 +716,9 @@ mod tests {
         let res = service.serve(Context::default(), request).await.unwrap();
 
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    async fn echo<Body>(req: Request<Body>) -> Result<Response<Body>, BoxError> {
+        Ok(Response::new(req.into_body()))
     }
 }
