@@ -554,8 +554,9 @@ impl From<TlsDisplayInfo> for Vec<Table> {
                     (
                         "Data".to_owned(),
                         match extension.data {
-                            TlsDisplayInfoExtensionData::Single(s) => s,
-                            TlsDisplayInfoExtensionData::Multi(v) => v.join(", "),
+                            Some(TlsDisplayInfoExtensionData::Single(s)) => s,
+                            Some(TlsDisplayInfoExtensionData::Multi(v)) => v.join(", "),
+                            _ => "".to_owned(),
                         },
                     ),
                 ],

@@ -416,7 +416,11 @@ impl Service<(), Request> for EchoService {
                         }),
                         ClientHelloExtension::Opaque { id, data } => json!({
                             "id": id.to_string(),
-                            "data": format!("0x{}", hex::encode(data)),
+                            "data": if data.is_empty() {
+                                "".to_owned()
+                            } else {
+                                format!("0x{}", hex::encode(data))
+                            },
                         }),
                     }).collect::<Vec<_>>(),
                     "ja3": ja3,
