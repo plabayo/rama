@@ -414,14 +414,16 @@ impl Service<(), Request> for EchoService {
                             "id": extension.id().to_string(),
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
-                        ClientHelloExtension::Opaque { id, data } => json!({
-                            "id": id.to_string(),
-                            "data": if data.is_empty() {
-                                "".to_owned()
-                            } else {
-                                format!("0x{}", hex::encode(data))
-                            },
-                        }),
+                        ClientHelloExtension::Opaque { id, data } => if data.is_empty() {
+                            json!({
+                                "id": id.to_string()
+                            })
+                        } else {
+                            json!({
+                                "id": id.to_string(),
+                                "data": format!("0x{}", hex::encode(data))
+                            })
+                        },
                     }).collect::<Vec<_>>(),
                     "ja3": ja3,
                     "ja4": ja4,

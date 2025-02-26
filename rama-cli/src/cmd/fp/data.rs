@@ -306,12 +306,7 @@ pub(super) fn get_tls_display_info(ctx: &Context<Arc<State>>) -> Option<TlsDispl
             .map(|extension| match extension {
                 ClientHelloExtension::ServerName(domain) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: match domain {
-                        Some(domain) => {
-                            Some(TlsDisplayInfoExtensionData::Single(domain.to_string()))
-                        }
-                        None => None,
-                    },
+                    data: domain.as_ref().map(|d| TlsDisplayInfoExtensionData::Single(d.to_string())),
                 },
                 ClientHelloExtension::SignatureAlgorithms(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
