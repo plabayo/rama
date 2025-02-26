@@ -547,18 +547,19 @@ impl From<TlsDisplayInfo> for Vec<Table> {
             ],
         });
         for extension in info.extensions {
+            let mut rows = vec![("ID".to_owned(), extension.id)];
+            if let Some(data) = extension.data {
+                rows.push((
+                    "Data".to_owned(),
+                    match data {
+                        TlsDisplayInfoExtensionData::Single(s) => s,
+                        TlsDisplayInfoExtensionData::Multi(v) => v.join(", "),
+                    },
+                ));
+            }
             vec.push(Table {
                 title: "🔒 TLS Client Hello — Extension".to_owned(),
-                rows: vec![
-                    ("ID".to_owned(), extension.id),
-                    (
-                        "Data".to_owned(),
-                        match extension.data {
-                            TlsDisplayInfoExtensionData::Single(s) => s,
-                            TlsDisplayInfoExtensionData::Multi(v) => v.join(", "),
-                        },
-                    ),
-                ],
+                rows,
             });
         }
         vec
