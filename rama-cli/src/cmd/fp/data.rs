@@ -258,7 +258,7 @@ pub(super) struct Ja3DisplayInfo {
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct TlsDisplayInfoExtension {
     pub(super) id: String,
-    pub(super) data: TlsDisplayInfoExtensionData,
+    pub(super) data: Option<TlsDisplayInfoExtensionData>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -306,50 +306,52 @@ pub(super) fn get_tls_display_info(ctx: &Context<Arc<State>>) -> Option<TlsDispl
             .map(|extension| match extension {
                 ClientHelloExtension::ServerName(domain) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: TlsDisplayInfoExtensionData::Single(match domain {
-                        Some(domain) => domain.to_string(),
-                        None => "".to_owned(),
-                    }),
+                    data: domain
+                        .as_ref()
+                        .map(|d| TlsDisplayInfoExtensionData::Single(d.to_string())),
                 },
                 ClientHelloExtension::SignatureAlgorithms(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: TlsDisplayInfoExtensionData::Multi(
+                    data: Some(TlsDisplayInfoExtensionData::Multi(
                         v.iter().map(|s| s.to_string()).collect(),
-                    ),
+                    )),
                 },
                 ClientHelloExtension::SupportedVersions(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: TlsDisplayInfoExtensionData::Multi(
+                    data: Some(TlsDisplayInfoExtensionData::Multi(
                         v.iter().map(|s| s.to_string()).collect(),
-                    ),
+                    )),
                 },
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(v) => {
                     TlsDisplayInfoExtension {
                         id: extension.id().to_string(),
-                        data: TlsDisplayInfoExtensionData::Multi(
+                        data: Some(TlsDisplayInfoExtensionData::Multi(
                             v.iter().map(|s| s.to_string()).collect(),
-                        ),
+                        )),
                     }
                 }
                 ClientHelloExtension::SupportedGroups(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: TlsDisplayInfoExtensionData::Multi(
+                    data: Some(TlsDisplayInfoExtensionData::Multi(
                         v.iter().map(|s| s.to_string()).collect(),
-                    ),
+                    )),
                 },
                 ClientHelloExtension::ECPointFormats(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
-                    data: TlsDisplayInfoExtensionData::Multi(
+                    data: Some(TlsDisplayInfoExtensionData::Multi(
                         v.iter().map(|s| s.to_string()).collect(),
-                    ),
+                    )),
                 },
                 ClientHelloExtension::Opaque { id, data } => TlsDisplayInfoExtension {
                     id: id.to_string(),
-                    data: TlsDisplayInfoExtensionData::Single(if data.is_empty() {
-                        "EMPTY".to_owned()
+                    data: if data.is_empty() {
+                        None
                     } else {
-                        format!("0x{}", hex::encode(data))
-                    }),
+                        Some(TlsDisplayInfoExtensionData::Single(format!(
+                            "0x{}",
+                            hex::encode(data)
+                        )))
+                    },
                 },
             })
             .collect::<Vec<_>>(),
