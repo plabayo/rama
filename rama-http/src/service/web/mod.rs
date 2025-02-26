@@ -2,11 +2,11 @@
 
 mod service;
 #[doc(inline)]
-pub use service::{match_service, WebService};
+pub use service::{WebService, match_service};
 
 mod endpoint;
 #[doc(inline)]
-pub use endpoint::{extract, EndpointServiceFn, IntoEndpointService};
+pub use endpoint::{EndpointServiceFn, IntoEndpointService, extract};
 
 pub mod k8s;
 #[doc(inline)]

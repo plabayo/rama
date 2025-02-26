@@ -4,6 +4,7 @@ use crate::h2::proto::{self, WindowSize};
 
 use bytes::{Buf, Bytes};
 use rama_http_types::HeaderMap;
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 
 use std::fmt;
 use std::pin::Pin;
@@ -343,8 +344,14 @@ impl<B: Buf> SendStream<B> {
     ///
     /// Sending trailers implicitly closes the send stream. Once the send stream
     /// is closed, no more data can be sent.
-    pub fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), crate::h2::Error> {
-        self.inner.send_trailers(trailers).map_err(Into::into)
+    pub fn send_trailers(
+        &mut self,
+        trailers: HeaderMap,
+        trailer_order: OriginalHttp1Headers,
+    ) -> Result<(), crate::h2::Error> {
+        self.inner
+            .send_trailers(trailers, trailer_order)
+            .map_err(Into::into)
     }
 
     /// Resets the stream.

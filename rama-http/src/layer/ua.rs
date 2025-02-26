@@ -36,8 +36,8 @@
 //! ```
 
 use crate::{
-    headers::{self, HeaderMapExt},
     HeaderName, Request,
+    headers::{self, HeaderMapExt},
 };
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -203,9 +203,9 @@ mod tests {
     use super::*;
     use crate::layer::required_header::AddRequiredRequestHeadersLayer;
     use crate::service::client::HttpClientExt;
-    use crate::{headers, IntoResponse, Response, StatusCode};
-    use rama_core::service::service_fn;
+    use crate::{IntoResponse, Response, StatusCode, headers};
     use rama_core::Context;
+    use rama_core::service::service_fn;
     use std::convert::Infallible;
 
     #[tokio::test]

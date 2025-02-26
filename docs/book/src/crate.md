@@ -1,6 +1,6 @@
 # 📦 Rama Crate
 
-Rama is a modular service framework distributed as a Rust crate at <https://crates.io/crates/rama/0.2.0-alpha.3>. You can add it to your project as follows:
+Rama is a modular service framework distributed as a Rust crate at <https://crates.io/crates/rama>. You can add it to your project as follows:
 
 ```
 cargo add rama
@@ -8,7 +8,7 @@ cargo add rama
 
 ## Quick Links
 
-* Crates Page: <https://crates.io/crates/rama/0.2.0-alpha.3>
+* Crates Page: <https://crates.io/crates/rama>
 * Official Docs Page (for releases): <https://docs.rs/rama>
     * Edge (main branch): <https://ramaproxy.org/docs/rama/index.html>
 * Github repo: <https://github.com/plabayo/rama>
@@ -49,6 +49,21 @@ Examples to help you get started can be found in
 [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to know how to use rama for your purposes.
 
+## 💪 | Performance
+
+`rama`'s default http implementation is forked from [`hyper`] and adds very little
+overhead. So `rama`'s performance is comparable to [`hyper`] and frameworks that built on top of that.
+
+[`hyper`]: https://github.com/hyperium/hyper
+
+Here's a list of external benchmarks:
+
+- http server benchmark @ <https://web-frameworks-benchmark.netlify.app/result>
+
+Please [open an issue](https://github.com/plabayo/rama/issues) or Pull Request (PR) in case
+you are aware of any other benchmarks of interest in regards to http(s) servers,
+http(s) clients or proxies such as Man-In-The-Middle (MITM) proxies.
+
 ## ⛨ | Safety
 
 The rama crates avoid `unsafe_code`, but do make use of it for some low level primitives (e.g. http core)
@@ -73,7 +88,7 @@ support as many as we reasonably can.
 
 ### Minimum supported Rust version
 
-Rama's MSRV is `1.80`.
+Rama's MSRV is `1.85`.
 
 [Using GitHub Actions we also test](https://github.com/plabayo/rama/blob/main/.github/workflows/CI.yml) if `rama` on that version still works on
 the stable and beta versions of _rust_ as well.

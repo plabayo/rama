@@ -1,12 +1,12 @@
 use crate::rustls::dep::pemfile;
 use crate::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::rustls::dep::rcgen::{self, KeyPair};
-use crate::rustls::dep::rustls::{self, server::WebPkiClientVerifier, RootCertStore};
+use crate::rustls::dep::rustls::{self, RootCertStore, server::WebPkiClientVerifier};
 use crate::rustls::key_log::KeyLogFile;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::{Domain, Host};
-use rama_net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth};
 use rama_net::tls::DataEncoding;
+use rama_net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth};
 use std::io::BufReader;
 use std::sync::Arc;
 
@@ -187,7 +187,9 @@ impl TryFrom<rama_net::tls::server::ServerConfig> for TlsAcceptorData {
             }
 
             ServerAuth::CertIssuer { .. } => {
-                return Err(OpaqueError::from_display("CertIssuer not supported for Rustls (open an PR with a patch to add support for it if you want this or use boring instead)"));
+                return Err(OpaqueError::from_display(
+                    "CertIssuer not supported for Rustls (open an PR with a patch to add support for it if you want this or use boring instead)",
+                ));
             }
         };
 

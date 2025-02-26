@@ -122,7 +122,7 @@ where
                     ctx,
                     request,
                     output: PolicyOutput::Ready(guard),
-                }
+                };
             }
             Err(err) => err,
         };

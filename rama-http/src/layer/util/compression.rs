@@ -1,11 +1,11 @@
 //! Types used by compression and decompression middleware.
 
 use super::content_encoding::SupportedEncodings;
-use crate::dep::http_body::{Body, Frame};
 use crate::HeaderValue;
+use crate::dep::http_body::{Body, Frame};
 use bytes::{Buf, Bytes, BytesMut};
-use futures_lite::ready;
 use futures_lite::Stream;
+use futures_lite::ready;
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use std::{

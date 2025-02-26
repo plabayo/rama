@@ -1,6 +1,6 @@
 use rama_core::{
-    error::{ErrorContext, OpaqueError},
     Context, Layer, Service,
+    error::{ErrorContext, OpaqueError},
 };
 use rama_net::address::ProxyAddress;
 use std::{fmt, future::Future};
@@ -48,11 +48,7 @@ impl HttpProxyAddressLayer {
         let env_result = std::env::var(key.as_ref()).ok();
         let env_result_mapped = env_result.as_ref().and_then(|v| {
             let v = v.trim();
-            if v.is_empty() {
-                None
-            } else {
-                Some(v)
-            }
+            if v.is_empty() { None } else { Some(v) }
         });
 
         let proxy_address = match env_result_mapped {
@@ -146,11 +142,7 @@ impl<S> HttpProxyAddressService<S> {
         let env_result = std::env::var(key.as_ref()).ok();
         let env_result_mapped = env_result.as_ref().and_then(|v| {
             let v = v.trim();
-            if v.is_empty() {
-                None
-            } else {
-                Some(v)
-            }
+            if v.is_empty() { None } else { Some(v) }
         });
 
         let proxy_address = match env_result_mapped {

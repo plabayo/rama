@@ -1,7 +1,7 @@
+use crate::Request;
 use crate::dep::http_body_util::BodyExt;
 use crate::service::web::extract::FromRequest;
 use crate::utils::macros::define_http_rejection;
-use crate::Request;
 use rama_utils::macros::impl_deref;
 
 /// Extractor to get the response body, collected as [`Bytes`].

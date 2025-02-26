@@ -142,6 +142,8 @@ use crate::h2::{FlowControl, PingPong, RecvStream, SendStream};
 
 use bytes::{Buf, Bytes};
 use rama_http_types::dep::http::{request, uri};
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
 use std::fmt;
 use std::future::Future;
@@ -497,7 +499,7 @@ where
     ///     header::HeaderName::from_bytes(b"my-trailer").unwrap(),
     ///     header::HeaderValue::from_bytes(b"hello").unwrap());
     ///
-    /// send_stream.send_trailers(trailers).unwrap();
+    /// send_stream.send_trailers(trailers, Default::default()).unwrap();
     ///
     /// let response = response.await.unwrap();
     /// // Process the response
@@ -1220,7 +1222,7 @@ impl Builder {
     pub fn handshake<T, B>(
         &self,
         io: T,
-    ) -> impl Future<Output = Result<(SendRequest<B>, Connection<T, B>), crate::h2::Error>>
+    ) -> impl Future<Output = Result<(SendRequest<B>, Connection<T, B>), crate::h2::Error>> + use<T, B>
     where
         T: AsyncRead + AsyncWrite + Unpin,
         B: Buf,
@@ -1439,8 +1441,14 @@ where
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         self.inner.maybe_close_connection_if_no_streams();
+        let had_streams_or_refs = self.inner.has_streams_or_other_references();
         let result = self.inner.poll(cx).map_err(Into::into);
-        if result.is_pending() && !self.inner.has_streams_or_other_references() {
+        // if we had streams/refs, and don't anymore, wake up one more time to
+        // ensure proper shutdown
+        if result.is_pending()
+            && had_streams_or_refs
+            && !self.inner.has_streams_or_other_references()
+        {
             tracing::trace!("last stream closed during poll, wake again");
             cx.waker().wake_by_ref();
         }
@@ -1594,6 +1602,7 @@ impl Peer {
                 uri,
                 headers,
                 version,
+                mut extensions,
                 ..
             },
             _,
@@ -1604,6 +1613,15 @@ impl Peer {
         // Build the set pseudo header set. All requests will include `method`
         // and `path`.
         let mut pseudo = Pseudo::request(method, uri, protocol);
+
+        // reuse order if defined
+        if let Some(order) = extensions.remove::<PseudoHeaderOrder>() {
+            if !order.is_empty() {
+                pseudo.order = order;
+            }
+        }
+
+        let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
 
         if pseudo.scheme.is_none() {
             // If the scheme is not set, then there are a two options.
@@ -1634,7 +1652,7 @@ impl Peer {
         }
 
         // Create the HEADERS frame
-        let mut frame = Headers::new(id, pseudo, headers);
+        let mut frame = Headers::new(id, pseudo, headers, header_order);
 
         if end_of_stream {
             frame.set_end_stream()
@@ -1662,6 +1680,7 @@ impl proto::Peer for Peer {
     fn convert_poll_message(
         pseudo: Pseudo,
         fields: HeaderMap,
+        field_order: OriginalHttp1Headers,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error> {
         let mut b = Response::builder();
@@ -1680,6 +1699,14 @@ impl proto::Peer for Peer {
                 return Err(Error::library_reset(stream_id, Reason::PROTOCOL_ERROR));
             }
         };
+
+        if !pseudo.order.is_empty() {
+            response.extensions_mut().insert(pseudo.order);
+        }
+
+        if !field_order.is_empty() {
+            response.extensions_mut().insert(field_order);
+        }
 
         *response.headers_mut() = fields;
 

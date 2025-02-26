@@ -159,19 +159,23 @@ mod tests {
                 .unwrap(),
             Ipv4Addr::new(127, 0, 0, 1)
         );
-        assert!(dns_overwrite
-            .ipv6_lookup(Domain::from_static("example.com"))
-            .await
-            .is_err());
+        assert!(
+            dns_overwrite
+                .ipv6_lookup(Domain::from_static("example.com"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn test_dns_overwrite_deserialize_ipv6() {
         let dns_overwrite: DnsOverwrite = serde_html_form::from_str("example.com=::1").unwrap();
-        assert!(dns_overwrite
-            .ipv4_lookup(Domain::from_static("example.com"))
-            .await
-            .is_err());
+        assert!(
+            dns_overwrite
+                .ipv4_lookup(Domain::from_static("example.com"))
+                .await
+                .is_err()
+        );
         assert_eq!(
             dns_overwrite
                 .ipv6_lookup(Domain::from_static("example.com"))
@@ -196,10 +200,12 @@ mod tests {
         assert_eq!(ipv4_it.next().unwrap(), Ipv4Addr::new(127, 0, 0, 1));
         assert_eq!(ipv4_it.next().unwrap(), Ipv4Addr::new(127, 0, 0, 2));
         assert!(ipv4_it.next().is_none());
-        assert!(dns_overwrite
-            .ipv6_lookup(Domain::from_static("example.com"))
-            .await
-            .is_err());
+        assert!(
+            dns_overwrite
+                .ipv6_lookup(Domain::from_static("example.com"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
@@ -232,26 +238,34 @@ mod tests {
     async fn test_dns_overwrite_deserialize_not_found() {
         let dns_overwrite: DnsOverwrite =
             serde_html_form::from_str("example.com=127.0.0.1").unwrap();
-        assert!(dns_overwrite
-            .ipv4_lookup(Domain::from_static("plabayo.tech"))
-            .await
-            .is_err());
-        assert!(dns_overwrite
-            .ipv6_lookup(Domain::from_static("plabayo.tech"))
-            .await
-            .is_err());
+        assert!(
+            dns_overwrite
+                .ipv4_lookup(Domain::from_static("plabayo.tech"))
+                .await
+                .is_err()
+        );
+        assert!(
+            dns_overwrite
+                .ipv6_lookup(Domain::from_static("plabayo.tech"))
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn test_dns_overwrite_deserialize_empty() {
         let dns_overwrite: DnsOverwrite = serde_html_form::from_str("").unwrap();
-        assert!(dns_overwrite
-            .ipv4_lookup(Domain::from_static("example.com"))
-            .await
-            .is_err());
-        assert!(dns_overwrite
-            .ipv6_lookup(Domain::from_static("example.com"))
-            .await
-            .is_err());
+        assert!(
+            dns_overwrite
+                .ipv4_lookup(Domain::from_static("example.com"))
+                .await
+                .is_err()
+        );
+        assert!(
+            dns_overwrite
+                .ipv6_lookup(Domain::from_static("example.com"))
+                .await
+                .is_err()
+        );
     }
 }

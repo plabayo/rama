@@ -14,7 +14,7 @@
 
 use std::sync::Arc;
 
-use super::{context::Extensions, Context};
+use super::{Context, context::Extensions};
 use crate::Service;
 use paste::paste;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
@@ -33,7 +33,7 @@ pub use op_not::Not;
 
 mod mfn;
 #[doc(inline)]
-pub use mfn::{match_fn, MatchFn};
+pub use mfn::{MatchFn, match_fn};
 
 mod iter;
 #[doc(inline)]

@@ -17,7 +17,6 @@ workspace = true
 default = []
 rustls = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:rcgen", "dep:tokio-rustls", "rama-net/rustls"]
 boring = ["dep:boring", "dep:tokio-boring", "rama-net/boring", "dep:moka"]
-rustls-ring = ["rustls", "tokio-rustls/ring", "rustls/ring", "rama-net/rustls-ring"]
 
 [dependencies]
 boring = { workspace = true, optional = true }
@@ -25,10 +24,10 @@ flume = { workspace = true, features = ["async"] }
 moka = { workspace = true, features = ["sync"], optional = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.4", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.4", path = "../rama-http-types" }
-rama-net = { version = "0.2.0-alpha.4", path = "../rama-net", features = ["http", "tls"] }
-rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.7", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", features = ["http", "tls"] }
+rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }

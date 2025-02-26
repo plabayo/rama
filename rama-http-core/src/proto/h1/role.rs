@@ -6,57 +6,29 @@ use bytes::Bytes;
 use bytes::BytesMut;
 use rama_http_types::dep::http;
 use rama_http_types::header::Entry;
-use rama_http_types::header::ValueIter;
-use rama_http_types::header::{self, HeaderMap, HeaderName, HeaderValue};
+use rama_http_types::header::{self, HeaderMap, HeaderValue};
+use rama_http_types::proto::h1::{Http1HeaderMap, Http1HeaderName};
 use rama_http_types::{Method, StatusCode, Version};
-use smallvec::{smallvec, smallvec_inline, SmallVec};
+use smallvec::{SmallVec, smallvec, smallvec_inline};
 use tracing::{debug, error, trace, trace_span, warn};
 
 use crate::body::DecodedLength;
 use crate::common::date;
 use crate::error::Parse;
-use crate::ext::HeaderCaseMap;
-use crate::ext::OriginalHeaderOrder;
 use crate::headers;
 use crate::proto::h1::{
     Encode, Encoder, Http1Transaction, ParseContext, ParseResult, ParsedMessage,
 };
-use crate::proto::RequestHead;
 use crate::proto::{BodyLength, MessageHead, RequestLine};
+
+use super::EncodeHead;
 
 pub(crate) const DEFAULT_MAX_HEADERS: usize = 100;
 const AVERAGE_HEADER_SIZE: usize = 30; // totally scientific
 const MAX_URI_LEN: usize = (u16::MAX - 1) as usize;
 
-macro_rules! header_name {
-    ($bytes:expr) => {{
-        {
-            match HeaderName::from_bytes($bytes) {
-                Ok(name) => name,
-                Err(e) => maybe_panic!(e),
-            }
-        }
-    }};
-}
-
 macro_rules! header_value {
-    ($bytes:expr) => {{
-        {
-            unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) }
-        }
-    }};
-}
-
-macro_rules! maybe_panic {
-    ($($arg:tt)*) => ({
-        let _err = ($($arg)*);
-        if cfg!(debug_assertions) {
-            panic!("{:?}", _err);
-        } else {
-            error!("Internal rama_http_core error, please report {:?}", _err);
-            return Err(Parse::Internal)
-        }
-    })
+    ($bytes:expr) => {{ { unsafe { HeaderValue::from_maybe_shared_unchecked($bytes) } } }};
 }
 
 pub(super) fn parse_headers<T>(
@@ -220,20 +192,19 @@ impl Http1Transaction for Server {
         let mut is_te_chunked = false;
         let mut wants_upgrade = subject.0 == Method::CONNECT;
 
-        let mut header_case_map = HeaderCaseMap::default();
-        let mut header_order = OriginalHeaderOrder::default();
-
-        let mut headers = ctx.cached_headers.take().unwrap_or_default();
-
-        headers.reserve(headers_len);
+        let mut headers = Http1HeaderMap::with_capacity(headers_len);
 
         for header in &headers_indices[..headers_len] {
             // SAFETY: array is valid up to `headers_len`
             let header = unsafe { header.assume_init_ref() };
-            let name = header_name!(&slice[header.name.0..header.name.1]);
+            let name = Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
+                .inspect_err(|err| {
+                    tracing::debug!("invalid http1 header: {err:?}");
+                })
+                .map_err(|_| crate::error::Parse::Internal)?;
             let value = header_value!(slice.slice(header.value.0..header.value.1));
 
-            match name {
+            match *name.header_name() {
                 header::TRANSFER_ENCODING => {
                     // https://tools.ietf.org/html/rfc7230#section-3.3.3
                     // If Transfer-Encoding header is present, and 'chunked' is
@@ -295,9 +266,6 @@ impl Http1Transaction for Server {
                 _ => (),
             }
 
-            header_case_map.append(&name, slice.slice(header.name.0..header.name.1));
-            header_order.append(&name);
-
             headers.append(name, value);
         }
 
@@ -308,8 +276,7 @@ impl Http1Transaction for Server {
 
         let mut extensions = http::Extensions::default();
 
-        extensions.insert(header_case_map);
-        extensions.insert(header_order);
+        let headers = headers.consume(&mut extensions);
 
         *ctx.req_method = Some(subject.0.clone());
 
@@ -330,9 +297,7 @@ impl Http1Transaction for Server {
     fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
             "Server::encode status={:?}, body={:?}, req_method={:?}",
-            msg.head.subject,
-            msg.body,
-            msg.req_method
+            msg.head.subject, msg.body, msg.req_method
         );
 
         let mut wrote_len = false;
@@ -350,7 +315,6 @@ impl Http1Transaction for Server {
             (Ok(()), true)
         } else if msg.head.subject.is_informational() {
             warn!("response with 1xx status code not supported");
-            *msg.head = MessageHead::default();
             msg.head.subject = StatusCode::INTERNAL_SERVER_ERROR;
             msg.body = None;
             (Err(crate::Error::new_user_unsupported_status_code()), true)
@@ -404,28 +368,9 @@ impl Http1Transaction for Server {
             extend(dst, b"\r\n");
         }
 
-        let orig_headers;
-        let extensions = std::mem::take(&mut msg.head.extensions);
-        let orig_headers = match extensions.get::<HeaderCaseMap>() {
-            None if msg.title_case_headers => {
-                orig_headers = HeaderCaseMap::default();
-                Some(&orig_headers)
-            }
-            orig_headers => orig_headers,
-        };
-        let encoder = if let Some(orig_headers) = orig_headers {
-            Self::encode_headers_with_original_case(
-                msg,
-                dst,
-                is_last,
-                orig_len,
-                wrote_len,
-                orig_headers,
-            )?
-        } else {
-            Self::encode_headers_with_lower_case(msg, dst, is_last, orig_len, wrote_len)?
-        };
-
+        let mut extensions = std::mem::take(msg.head.extensions);
+        let encoder =
+            Self::encode_h1_headers(msg, &mut extensions, dst, is_last, orig_len, wrote_len)?;
         ret.map(|()| encoder)
     }
 
@@ -485,119 +430,68 @@ impl Server {
         Server::can_have_content_length(method, status) && method != &Some(Method::HEAD)
     }
 
-    fn encode_headers_with_lower_case(
-        msg: Encode<'_, StatusCode>,
-        dst: &mut Vec<u8>,
-        is_last: bool,
-        orig_len: usize,
-        wrote_len: bool,
-    ) -> crate::Result<Encoder> {
-        struct LowercaseWriter;
-
-        impl HeaderNameWriter for LowercaseWriter {
-            #[inline]
-            fn write_full_header_line(
-                &mut self,
-                dst: &mut Vec<u8>,
-                line: &str,
-                _: (HeaderName, &str),
-            ) {
-                extend(dst, line.as_bytes())
-            }
-
-            #[inline]
-            fn write_header_name_with_colon(
-                &mut self,
-                dst: &mut Vec<u8>,
-                name_with_colon: &str,
-                _: HeaderName,
-            ) {
-                extend(dst, name_with_colon.as_bytes())
-            }
-
-            #[inline]
-            fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &HeaderName) {
-                extend(dst, name.as_str().as_bytes())
-            }
-        }
-
-        Self::encode_headers(msg, dst, is_last, orig_len, wrote_len, LowercaseWriter)
-    }
-
     #[cold]
     #[inline(never)]
-    fn encode_headers_with_original_case(
+    fn encode_h1_headers(
         msg: Encode<'_, StatusCode>,
+        ext: &mut http::Extensions,
         dst: &mut Vec<u8>,
         is_last: bool,
         orig_len: usize,
         wrote_len: bool,
-        orig_headers: &HeaderCaseMap,
     ) -> crate::Result<Encoder> {
-        struct OrigCaseWriter<'map> {
-            map: &'map HeaderCaseMap,
-            current: Option<(HeaderName, ValueIter<'map, Bytes>)>,
+        struct OrigCaseWriter {
             title_case_headers: bool,
         }
 
-        impl HeaderNameWriter for OrigCaseWriter<'_> {
+        impl HeaderNameWriter for OrigCaseWriter {
             #[inline]
             fn write_full_header_line(
                 &mut self,
                 dst: &mut Vec<u8>,
-                _: &str,
-                (name, rest): (HeaderName, &str),
+                (name, rest): (Http1HeaderName, &str),
             ) {
                 self.write_header_name(dst, &name);
                 extend(dst, rest.as_bytes());
             }
 
             #[inline]
-            fn write_header_name_with_colon(
-                &mut self,
-                dst: &mut Vec<u8>,
-                _: &str,
-                name: HeaderName,
-            ) {
-                self.write_header_name(dst, &name);
+            fn write_header_name_with_colon(&mut self, dst: &mut Vec<u8>, name: &Http1HeaderName) {
+                self.write_header_name(dst, name);
                 extend(dst, b": ");
             }
 
             #[inline]
-            fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &HeaderName) {
-                let Self {
-                    map,
-                    ref mut current,
-                    title_case_headers,
-                } = *self;
-                if current.as_ref().map_or(true, |(last, _)| last != name) {
-                    *current = None;
-                }
-                let (_, values) =
-                    current.get_or_insert_with(|| (name.clone(), map.get_all_internal(name)));
+            fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &Http1HeaderName) {
+                let Self { title_case_headers } = *self;
 
-                if let Some(orig_name) = values.next() {
-                    extend(dst, orig_name);
-                } else if title_case_headers {
-                    title_case(dst, name.as_str().as_bytes());
+                if title_case_headers {
+                    title_case(dst, name.as_bytes());
                 } else {
-                    extend(dst, name.as_str().as_bytes());
+                    extend(dst, name.as_bytes());
                 }
             }
         }
 
         let header_name_writer = OrigCaseWriter {
-            map: orig_headers,
-            current: None,
             title_case_headers: msg.title_case_headers,
         };
 
-        Self::encode_headers(msg, dst, is_last, orig_len, wrote_len, header_name_writer)
+        Self::encode_headers(
+            msg,
+            ext,
+            dst,
+            is_last,
+            orig_len,
+            wrote_len,
+            header_name_writer,
+        )
     }
 
     #[inline]
     fn encode_headers<W>(
         msg: Encode<'_, StatusCode>,
+        ext: &mut http::Extensions,
         dst: &mut Vec<u8>,
         mut is_last: bool,
         orig_len: usize,
@@ -617,7 +511,6 @@ impl Server {
         let mut encoder = Encoder::length(0);
         let mut allowed_trailer_fields: Option<Vec<HeaderValue>> = None;
         let mut wrote_date = false;
-        let mut cur_name = None;
         let mut is_name_written = false;
         let mut must_write_chunked = false;
         let mut prev_con_len = None;
@@ -641,14 +534,13 @@ impl Server {
             }};
         }
 
-        'headers: for (opt_name, value) in msg.head.headers.drain() {
-            if let Some(n) = opt_name {
-                cur_name = Some(n);
-                handle_is_name_written!();
-                is_name_written = false;
-            }
-            let name = cur_name.as_ref().expect("current header name");
-            match *name {
+        let h1_headers = Http1HeaderMap::new(msg.head.headers, Some(ext));
+
+        'headers: for (name, value) in h1_headers {
+            handle_is_name_written!();
+            is_name_written = false;
+
+            match *name.header_name() {
                 header::CONTENT_LENGTH => {
                     if wrote_len && !is_name_written {
                         warn!("unexpected content-length found, canceling");
@@ -669,22 +561,18 @@ impl Server {
                                 if let Some(len) = headers::content_length_parse(&value) {
                                     if msg.req_method != &Some(Method::HEAD) || known_len != 0 {
                                         assert!(
-                                        len == known_len,
-                                        "payload claims content-length of {}, custom content-length header claims {}",
-                                        known_len,
-                                        len,
-                                    );
+                                            len == known_len,
+                                            "payload claims content-length of {}, custom content-length header claims {}",
+                                            known_len,
+                                            len,
+                                        );
                                     }
                                 }
                             }
 
                             if !is_name_written {
                                 encoder = Encoder::length(known_len);
-                                header_name_writer.write_header_name_with_colon(
-                                    dst,
-                                    "content-length: ",
-                                    header::CONTENT_LENGTH,
-                                );
+                                header_name_writer.write_header_name_with_colon(dst, &name);
                                 extend(dst, value.as_bytes());
                                 wrote_len = true;
                                 is_name_written = true;
@@ -712,11 +600,7 @@ impl Server {
                                 } else {
                                     // we haven't written content-length yet!
                                     encoder = Encoder::length(len);
-                                    header_name_writer.write_header_name_with_colon(
-                                        dst,
-                                        "content-length: ",
-                                        header::CONTENT_LENGTH,
-                                    );
+                                    header_name_writer.write_header_name_with_colon(dst, &name);
                                     extend(dst, value.as_bytes());
                                     wrote_len = true;
                                     is_name_written = true;
@@ -771,11 +655,7 @@ impl Server {
                     if !is_name_written {
                         encoder = Encoder::chunked();
                         is_name_written = true;
-                        header_name_writer.write_header_name_with_colon(
-                            dst,
-                            "transfer-encoding: ",
-                            header::TRANSFER_ENCODING,
-                        );
+                        header_name_writer.write_header_name_with_colon(dst, &name);
                         extend(dst, value.as_bytes());
                     } else {
                         extend(dst, b", ");
@@ -789,11 +669,7 @@ impl Server {
                     }
                     if !is_name_written {
                         is_name_written = true;
-                        header_name_writer.write_header_name_with_colon(
-                            dst,
-                            "connection: ",
-                            header::CONNECTION,
-                        );
+                        header_name_writer.write_header_name_with_colon(dst, &name);
                         extend(dst, value.as_bytes());
                     } else {
                         extend(dst, b", ");
@@ -814,11 +690,7 @@ impl Server {
 
                     if !is_name_written {
                         is_name_written = true;
-                        header_name_writer.write_header_name_with_colon(
-                            dst,
-                            "trailer: ",
-                            header::TRAILER,
-                        );
+                        header_name_writer.write_header_name_with_colon(dst, &name);
                         extend(dst, value.as_bytes());
                     } else {
                         extend(dst, b", ");
@@ -847,8 +719,7 @@ impl Server {
                 "{:?} set is_name_written and didn't continue loop",
                 name,
             );
-            header_name_writer.write_header_name(dst, name);
-            extend(dst, b": ");
+            header_name_writer.write_header_name_with_colon(dst, &name);
             extend(dst, value.as_bytes());
             extend(dst, b"\r\n");
         }
@@ -865,8 +736,7 @@ impl Server {
                     } else {
                         header_name_writer.write_full_header_line(
                             dst,
-                            "transfer-encoding: chunked\r\n",
-                            (header::TRANSFER_ENCODING, ": chunked\r\n"),
+                            (header::TRANSFER_ENCODING.into(), ": chunked\r\n"),
                         );
                         Encoder::chunked()
                     }
@@ -876,11 +746,8 @@ impl Server {
                         msg.req_method,
                         msg.head.subject,
                     ) {
-                        header_name_writer.write_full_header_line(
-                            dst,
-                            "content-length: 0\r\n",
-                            (header::CONTENT_LENGTH, ": 0\r\n"),
-                        )
+                        header_name_writer
+                            .write_full_header_line(dst, (header::CONTENT_LENGTH.into(), ": 0\r\n"))
                     }
                     Encoder::length(0)
                 }
@@ -888,11 +755,8 @@ impl Server {
                     if !Server::can_have_content_length(msg.req_method, msg.head.subject) {
                         Encoder::length(0)
                     } else {
-                        header_name_writer.write_header_name_with_colon(
-                            dst,
-                            "content-length: ",
-                            header::CONTENT_LENGTH,
-                        );
+                        header_name_writer
+                            .write_header_name_with_colon(dst, &header::CONTENT_LENGTH.into());
                         extend(dst, ::itoa::Buffer::new().format(len).as_bytes());
                         extend(dst, b"\r\n");
                         Encoder::length(len)
@@ -904,8 +768,7 @@ impl Server {
         if !Server::can_have_body(msg.req_method, msg.head.subject) {
             trace!(
                 "server body forced to 0; method={:?}, status={:?}",
-                msg.req_method,
-                msg.head.subject
+                msg.req_method, msg.head.subject
             );
             encoder = Encoder::length(0);
         }
@@ -914,7 +777,7 @@ impl Server {
         // don't force the write if disabled
         if !wrote_date && msg.date_header {
             dst.reserve(date::DATE_VALUE_LENGTH + 8);
-            header_name_writer.write_header_name_with_colon(dst, "date: ", header::DATE);
+            header_name_writer.write_header_name_with_colon(dst, &header::DATE.into());
             date::extend(dst);
             extend(dst, b"\r\n\r\n");
         } else {
@@ -944,16 +807,10 @@ trait HeaderNameWriter {
     fn write_full_header_line(
         &mut self,
         dst: &mut Vec<u8>,
-        line: &str,
-        name_value_pair: (HeaderName, &str),
+        name_value_pair: (Http1HeaderName, &str),
     );
-    fn write_header_name_with_colon(
-        &mut self,
-        dst: &mut Vec<u8>,
-        name_with_colon: &str,
-        name: HeaderName,
-    );
-    fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &HeaderName);
+    fn write_header_name_with_colon(&mut self, dst: &mut Vec<u8>, name: &Http1HeaderName);
+    fn write_header_name(&mut self, dst: &mut Vec<u8>, name: &Http1HeaderName);
 }
 
 impl Http1Transaction for Client {
@@ -1034,21 +891,22 @@ impl Http1Transaction for Client {
 
             let slice = slice.freeze();
 
-            let mut headers = ctx.cached_headers.take().unwrap_or_default();
-
             let mut keep_alive = version == Version::HTTP_11;
 
-            let mut header_case_map = HeaderCaseMap::default();
-            let mut header_order = OriginalHeaderOrder::default();
+            let mut headers = Http1HeaderMap::with_capacity(headers_len);
 
-            headers.reserve(headers_len);
             for header in &headers_indices[..headers_len] {
                 // SAFETY: array is valid up to `headers_len`
                 let header = unsafe { header.assume_init_ref() };
-                let name = header_name!(&slice[header.name.0..header.name.1]);
+                let name =
+                    Http1HeaderName::try_copy_from_slice(&slice[header.name.0..header.name.1])
+                        .inspect_err(|err| {
+                            tracing::debug!("invalid http1 header: {err:?}");
+                        })
+                        .map_err(|_| crate::error::Parse::Internal)?;
                 let value = header_value!(slice.slice(header.value.0..header.value.1));
 
-                if let header::CONNECTION = name {
+                if header::CONNECTION == name.header_name() {
                     // keep_alive was previously set to default for Version
                     if keep_alive {
                         // HTTP/1.1
@@ -1059,16 +917,12 @@ impl Http1Transaction for Client {
                     }
                 }
 
-                header_case_map.append(&name, slice.slice(header.name.0..header.name.1));
-                header_order.append(&name);
-
                 headers.append(name, value);
             }
 
             let mut extensions = http::Extensions::default();
 
-            extensions.insert(header_case_map);
-            extensions.insert(header_order);
+            let headers = headers.consume(&mut extensions);
 
             if let Some(reason) = reason {
                 // Safety: httparse ensures that only valid reason phrase bytes are present in this
@@ -1095,6 +949,12 @@ impl Http1Transaction for Client {
                 }));
             }
 
+            if head.subject.is_informational() {
+                if let Some(callback) = ctx.on_informational {
+                    callback.call(head.into_response(()));
+                }
+            }
+
             // Parsing a 1xx response could have consumed the buffer, check if
             // it is empty now...
             if buf.is_empty() {
@@ -1103,16 +963,15 @@ impl Http1Transaction for Client {
         }
     }
 
-    fn encode(msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
+    fn encode(mut msg: Encode<'_, Self::Outgoing>, dst: &mut Vec<u8>) -> crate::Result<Encoder> {
         trace!(
             "Client::encode method={:?}, body={:?}",
-            msg.head.subject.0,
-            msg.body
+            msg.head.subject.0, msg.body
         );
 
         *msg.req_method = Some(msg.head.subject.0.clone());
 
-        let body = Client::set_length(msg.head, msg.body);
+        let body = Client::set_length(&mut msg.head, msg.body);
 
         let init_cap = 30 + msg.head.headers.len() * AVERAGE_HEADER_SIZE;
         dst.reserve(init_cap);
@@ -1133,21 +992,14 @@ impl Http1Transaction for Client {
         }
         extend(dst, b"\r\n");
 
-        if let Some(orig_headers) = msg.head.extensions.get::<HeaderCaseMap>() {
-            write_headers_original_case(
-                &msg.head.headers,
-                orig_headers,
-                dst,
-                msg.title_case_headers,
-            );
-        } else if msg.title_case_headers {
-            write_headers_title_case(&msg.head.headers, dst);
-        } else {
-            write_headers(&msg.head.headers, dst);
-        }
+        write_h1_headers(
+            msg.head.headers,
+            msg.title_case_headers,
+            msg.head.extensions,
+            dst,
+        );
 
         extend(dst, b"\r\n");
-        msg.head.headers.clear(); //TODO: remove when switching to drain()
 
         Ok(body)
     }
@@ -1229,7 +1081,7 @@ impl Client {
             Ok(Some((DecodedLength::CLOSE_DELIMITED, false)))
         }
     }
-    fn set_length(head: &mut RequestHead, body: Option<BodyLength>) -> Encoder {
+    fn set_length(head: &mut EncodeHead<'_, RequestLine>, body: Option<BodyLength>) -> Encoder {
         let body = if let Some(body) = body {
             body
         } else {
@@ -1513,37 +1365,27 @@ pub(crate) fn write_headers(headers: &HeaderMap, dst: &mut Vec<u8>) {
 }
 
 #[cold]
-fn write_headers_original_case(
-    headers: &HeaderMap,
-    orig_case: &HeaderCaseMap,
-    dst: &mut Vec<u8>,
+fn write_h1_headers(
+    headers: HeaderMap,
     title_case_headers: bool,
+    ext: &mut http::Extensions,
+    dst: &mut Vec<u8>,
 ) {
-    // For each header name/value pair, there may be a value in the casemap
-    // that corresponds to the HeaderValue. So, we iterator all the keys,
-    // and for each one, try to pair the originally cased name with the value.
-    //
-    // TODO: consider adding http::HeaderMap::entries() iterator
-    for name in headers.keys() {
-        let mut names = orig_case.get_all(name);
+    let h1_headers = Http1HeaderMap::new(headers, Some(ext));
+    for (name, value) in h1_headers {
+        if title_case_headers {
+            title_case(dst, name.as_bytes());
+        } else {
+            extend(dst, name.as_bytes());
+        }
 
-        for value in headers.get_all(name) {
-            if let Some(orig_name) = names.next() {
-                extend(dst, orig_name.as_ref());
-            } else if title_case_headers {
-                title_case(dst, name.as_str().as_bytes());
-            } else {
-                extend(dst, name.as_str().as_bytes());
-            }
-
-            // Wanted for curl test cases that send `X-Custom-Header:\r\n`
-            if value.is_empty() {
-                extend(dst, b":\r\n");
-            } else {
-                extend(dst, b": ");
-                extend(dst, value.as_bytes());
-                extend(dst, b"\r\n");
-            }
+        // Wanted for curl test cases that send `X-Custom-Header:\r\n`
+        if value.is_empty() {
+            extend(dst, b":\r\n");
+        } else {
+            extend(dst, b": ");
+            extend(dst, value.as_bytes());
+            extend(dst, b"\r\n");
         }
     }
 }
@@ -1571,6 +1413,7 @@ fn extend(dst: &mut Vec<u8>, data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use bytes::BytesMut;
+    use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 
     use super::*;
 
@@ -1581,11 +1424,11 @@ mod tests {
         let msg = Server::parse(
             &mut raw,
             ParseContext {
-                cached_headers: &mut None,
                 req_method: &mut method,
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: &mut None,
             },
         )
         .unwrap()
@@ -1603,11 +1446,11 @@ mod tests {
     fn test_parse_response() {
         let mut raw = BytesMut::from("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1621,11 +1464,11 @@ mod tests {
     fn test_parse_request_errors() {
         let mut raw = BytesMut::from("GET htt:p// HTTP/1.1\r\nHost: ramaproxy.org\r\n\r\n");
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut None,
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         Server::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1636,11 +1479,11 @@ mod tests {
     fn test_parse_response_h09_allowed() {
         let mut raw = BytesMut::from(H09_RESPONSE);
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: true,
+            on_informational: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw, H09_RESPONSE);
@@ -1653,11 +1496,11 @@ mod tests {
     fn test_parse_response_h09_rejected() {
         let mut raw = BytesMut::from(H09_RESPONSE);
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
         assert_eq!(raw, H09_RESPONSE);
@@ -1674,11 +1517,11 @@ mod tests {
         let mut h1_parser_config = ParserConfig::default();
         h1_parser_config.allow_spaces_after_header_name_in_responses(true);
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config,
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         let msg = Client::parse(&mut raw, ctx).unwrap().unwrap();
         assert_eq!(raw.len(), 0);
@@ -1692,11 +1535,11 @@ mod tests {
     fn test_parse_reject_response_with_spaces_before_colons() {
         let mut raw = BytesMut::from(RESPONSE_WITH_WHITESPACE_BETWEEN_HEADER_NAME_AND_COLON);
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut Some(Method::GET),
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         Client::parse(&mut raw, ctx).unwrap_err();
     }
@@ -1706,30 +1549,22 @@ mod tests {
         let mut raw =
             BytesMut::from("GET / HTTP/1.1\r\nHost: ramaproxy.org\r\nX-PASTA: noodles\r\n\r\n");
         let ctx = ParseContext {
-            cached_headers: &mut None,
             req_method: &mut None,
             h1_parser_config: Default::default(),
             h1_max_headers: None,
             h09_responses: false,
+            on_informational: &mut None,
         };
         let parsed_message = Server::parse(&mut raw, ctx).unwrap().unwrap();
-        let orig_headers = parsed_message
+        let mut orig_headers = parsed_message
             .head
             .extensions
-            .get::<HeaderCaseMap>()
-            .unwrap();
-        assert_eq!(
-            orig_headers
-                .get_all_internal(&HeaderName::from_static("host"))
-                .collect::<Vec<_>>(),
-            vec![&Bytes::from("Host")]
-        );
-        assert_eq!(
-            orig_headers
-                .get_all_internal(&HeaderName::from_static("x-pasta"))
-                .collect::<Vec<_>>(),
-            vec![&Bytes::from("X-PASTA")]
-        );
+            .get::<OriginalHttp1Headers>()
+            .unwrap()
+            .clone()
+            .into_iter();
+        assert_eq!("Host", orig_headers.next().unwrap().as_str());
+        assert_eq!("X-PASTA", orig_headers.next().unwrap().as_str());
     }
 
     #[test]
@@ -1739,11 +1574,11 @@ mod tests {
             Server::parse(
                 &mut bytes,
                 ParseContext {
-                    cached_headers: &mut None,
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect("parse ok")
@@ -1755,11 +1590,11 @@ mod tests {
             Server::parse(
                 &mut bytes,
                 ParseContext {
-                    cached_headers: &mut None,
                     req_method: &mut None,
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect_err(comment)
@@ -1977,18 +1812,20 @@ mod tests {
 
         fn parse_ignores(s: &str) {
             let mut bytes = BytesMut::from(s);
-            assert!(Client::parse(
-                &mut bytes,
-                ParseContext {
-                    cached_headers: &mut None,
-                    req_method: &mut Some(Method::GET),
-                    h1_parser_config: Default::default(),
-                    h1_max_headers: None,
-                    h09_responses: false,
-                }
+            assert!(
+                Client::parse(
+                    &mut bytes,
+                    ParseContext {
+                        req_method: &mut Some(Method::GET),
+                        h1_parser_config: Default::default(),
+                        h1_max_headers: None,
+                        h09_responses: false,
+                        on_informational: &mut None,
+                    }
+                )
+                .expect("parse ok")
+                .is_none()
             )
-            .expect("parse ok")
-            .is_none())
         }
 
         fn parse_with_method(s: &str, m: Method) -> ParsedMessage<StatusCode> {
@@ -1996,11 +1833,11 @@ mod tests {
             Client::parse(
                 &mut bytes,
                 ParseContext {
-                    cached_headers: &mut None,
                     req_method: &mut Some(m),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect("parse ok")
@@ -2012,11 +1849,11 @@ mod tests {
             Client::parse(
                 &mut bytes,
                 ParseContext {
-                    cached_headers: &mut None,
                     req_method: &mut Some(Method::GET),
                     h1_parser_config: Default::default(),
                     h1_max_headers: None,
                     h09_responses: false,
+                    on_informational: &mut None,
                 },
             )
             .expect_err("parse should err")
@@ -2314,7 +2151,12 @@ mod tests {
         let mut vec = Vec::new();
         Client::encode(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body: Some(BodyLength::Known(10)),
                 keep_alive: true,
                 req_method: &mut None,
@@ -2331,7 +2173,7 @@ mod tests {
     #[test]
     fn test_client_request_encode_orig_case() {
         use crate::proto::BodyLength;
-        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::HeaderValue;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2339,14 +2181,19 @@ mod tests {
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
 
-        let mut orig_headers = HeaderCaseMap::default();
-        orig_headers.insert(CONTENT_LENGTH, "CONTENT-LENGTH".into());
+        let mut orig_headers = OriginalHttp1Headers::default();
+        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
         head.extensions.insert(orig_headers);
 
         let mut vec = Vec::new();
         Client::encode(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body: Some(BodyLength::Known(10)),
                 keep_alive: true,
                 req_method: &mut None,
@@ -2366,7 +2213,7 @@ mod tests {
     #[test]
     fn test_client_request_encode_orig_and_title_case() {
         use crate::proto::BodyLength;
-        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::HeaderValue;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2374,14 +2221,19 @@ mod tests {
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
 
-        let mut orig_headers = HeaderCaseMap::default();
-        orig_headers.insert(CONTENT_LENGTH, "CONTENT-LENGTH".into());
+        let mut orig_headers = OriginalHttp1Headers::default();
+        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
         head.extensions.insert(orig_headers);
 
         let mut vec = Vec::new();
         Client::encode(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body: Some(BodyLength::Known(10)),
                 keep_alive: true,
                 req_method: &mut None,
@@ -2406,7 +2258,12 @@ mod tests {
         let mut vec = Vec::new();
         let encoder = Server::encode(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body: None,
                 keep_alive: true,
                 req_method: &mut Some(Method::CONNECT),
@@ -2436,7 +2293,12 @@ mod tests {
         let mut vec = Vec::new();
         Server::encode(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body: Some(BodyLength::Known(10)),
                 keep_alive: true,
                 req_method: &mut None,
@@ -2456,7 +2318,7 @@ mod tests {
     #[test]
     fn test_server_response_encode_orig_case() {
         use crate::proto::BodyLength;
-        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::HeaderValue;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2464,14 +2326,19 @@ mod tests {
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
 
-        let mut orig_headers = HeaderCaseMap::default();
-        orig_headers.insert(CONTENT_LENGTH, "CONTENT-LENGTH".into());
+        let mut orig_headers = OriginalHttp1Headers::default();
+        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
         head.extensions.insert(orig_headers);
 
         let mut vec = Vec::new();
         Server::encode(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body: Some(BodyLength::Known(10)),
                 keep_alive: true,
                 req_method: &mut None,
@@ -2491,7 +2358,7 @@ mod tests {
     #[test]
     fn test_server_response_encode_orig_and_title_case() {
         use crate::proto::BodyLength;
-        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::HeaderValue;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2499,14 +2366,19 @@ mod tests {
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
 
-        let mut orig_headers = HeaderCaseMap::default();
-        orig_headers.insert(CONTENT_LENGTH, "CONTENT-LENGTH".into());
+        let mut orig_headers = OriginalHttp1Headers::default();
+        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
         head.extensions.insert(orig_headers);
 
         let mut vec = Vec::new();
         Server::encode(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body: Some(BodyLength::Known(10)),
                 keep_alive: true,
                 req_method: &mut None,
@@ -2527,7 +2399,7 @@ mod tests {
     #[test]
     fn test_disabled_date_header() {
         use crate::proto::BodyLength;
-        use rama_http_types::header::{HeaderValue, CONTENT_LENGTH};
+        use rama_http_types::header::HeaderValue;
 
         let mut head = MessageHead::default();
         head.headers
@@ -2535,14 +2407,19 @@ mod tests {
         head.headers
             .insert("content-type", HeaderValue::from_static("application/json"));
 
-        let mut orig_headers = HeaderCaseMap::default();
-        orig_headers.insert(CONTENT_LENGTH, "CONTENT-LENGTH".into());
+        let mut orig_headers = OriginalHttp1Headers::default();
+        orig_headers.push("CONTENT-LENGTH".parse().unwrap());
         head.extensions.insert(orig_headers);
 
         let mut vec = Vec::new();
         Server::encode(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body: Some(BodyLength::Known(10)),
                 keep_alive: true,
                 req_method: &mut None,
@@ -2565,11 +2442,11 @@ mod tests {
         let parsed = Client::parse(
             &mut bytes,
             ParseContext {
-                cached_headers: &mut None,
                 req_method: &mut Some(Method::GET),
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: &mut None,
             },
         )
         .expect("parse ok")
@@ -2603,11 +2480,11 @@ mod tests {
                 let result = Server::parse(
                     &mut bytes,
                     ParseContext {
-                        cached_headers: &mut None,
                         req_method: &mut None,
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
                         h09_responses: false,
+                        on_informational: &mut None,
                     },
                 );
                 if should_success {
@@ -2622,11 +2499,11 @@ mod tests {
                 let result = Client::parse(
                     &mut bytes,
                     ParseContext {
-                        cached_headers: &mut None,
                         req_method: &mut None,
                         h1_parser_config: Default::default(),
                         h1_max_headers: max_headers,
                         h09_responses: false,
+                        on_informational: &mut None,
                     },
                 );
                 if should_success {
@@ -2724,11 +2601,15 @@ mod tests {
         let mut headers = HeaderMap::new();
         let name = http::header::HeaderName::from_static("x-empty");
         headers.insert(&name, "".parse().expect("parse empty"));
-        let mut orig_cases = HeaderCaseMap::default();
-        orig_cases.insert(name, Bytes::from_static(b"X-EmptY"));
+        let mut orig_cases = OriginalHttp1Headers::default();
+        orig_cases.push("X-EmptY".parse().unwrap());
+
+        let mut ext = http::Extensions::new();
+        ext.insert(orig_cases);
 
         let mut dst = Vec::new();
-        super::write_headers_original_case(&headers, &orig_cases, &mut dst, false);
+
+        super::write_h1_headers(headers, false, &mut ext, &mut dst);
 
         assert_eq!(
             dst, b"X-EmptY:\r\n",
@@ -2743,12 +2624,16 @@ mod tests {
         headers.insert(&name, "a".parse().unwrap());
         headers.append(&name, "b".parse().unwrap());
 
-        let mut orig_cases = HeaderCaseMap::default();
-        orig_cases.insert(name.clone(), Bytes::from_static(b"X-Empty"));
-        orig_cases.append(name, Bytes::from_static(b"X-EMPTY"));
+        let mut orig_cases = OriginalHttp1Headers::default();
+        orig_cases.push("X-Empty".parse().unwrap());
+        orig_cases.push("X-EMPTY".parse().unwrap());
+
+        let mut ext = http::Extensions::new();
+        ext.insert(orig_cases);
 
         let mut dst = Vec::new();
-        super::write_headers_original_case(&headers, &orig_cases, &mut dst, false);
+
+        super::write_h1_headers(headers, false, &mut ext, &mut dst);
 
         assert_eq!(dst, b"X-Empty: a\r\nX-EMPTY: b\r\n");
     }

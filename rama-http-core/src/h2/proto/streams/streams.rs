@@ -4,10 +4,13 @@ use super::{Buffer, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
 use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::ext::Protocol;
 use crate::h2::frame::{self, Frame, Reason};
-use crate::h2::proto::{peer, Error, Initiator, Open, Peer, WindowSize};
+use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
 use bytes::{Buf, Bytes};
+use rama_http_types::dep::http::Extensions;
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Request, Response};
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
@@ -99,6 +102,21 @@ struct Actions {
 #[derive(Debug)]
 struct SendBuffer<B> {
     inner: Mutex<Buffer<Frame<B>>>,
+}
+
+fn clear_extensions_safely(ext: &mut Extensions) {
+    let pseudo_order: Option<PseudoHeaderOrder> = ext.remove();
+    let field_order: Option<OriginalHttp1Headers> = ext.remove();
+
+    ext.clear();
+
+    if let Some(pseudo_order) = pseudo_order {
+        ext.insert(pseudo_order);
+    }
+
+    if let Some(field_order) = field_order {
+        ext.insert(field_order);
+    }
 }
 
 // ===== impl Streams =====
@@ -230,7 +248,7 @@ where
         let protocol = request.extensions_mut().remove::<Protocol>();
 
         // Clear before taking lock, incase extensions contain a StreamRef.
-        request.extensions_mut().clear();
+        clear_extensions_safely(request.extensions_mut());
 
         // TODO: There is a hazard with assigning a stream ID before the
         // prioritize layer. If prioritization reorders new streams, this
@@ -887,10 +905,11 @@ impl Inner {
         //
         // TODO: It would probably be better to interleave updates w/ data
         // frames.
-        ready!(self
-            .actions
-            .recv
-            .poll_complete(cx, &mut self.store, &mut self.counts, dst))?;
+        ready!(
+            self.actions
+                .recv
+                .poll_complete(cx, &mut self.store, &mut self.counts, dst)
+        )?;
 
         // Send any other pending frames
         ready!(self.actions.send.poll_complete(
@@ -1092,7 +1111,11 @@ impl<B> StreamRef<B> {
         })
     }
 
-    pub(crate) fn send_trailers(&mut self, trailers: HeaderMap) -> Result<(), UserError> {
+    pub(crate) fn send_trailers(
+        &mut self,
+        trailers: HeaderMap,
+        trailer_order: OriginalHttp1Headers,
+    ) -> Result<(), UserError> {
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1103,7 +1126,7 @@ impl<B> StreamRef<B> {
 
         me.counts.transition(stream, |counts, stream| {
             // Create the trailers frame
-            let frame = frame::Headers::trailers(stream.id, trailers);
+            let frame = frame::Headers::trailers(stream.id, trailers, trailer_order);
 
             // Send the trailers frame
             actions
@@ -1130,7 +1153,7 @@ impl<B> StreamRef<B> {
         end_of_stream: bool,
     ) -> Result<(), UserError> {
         // Clear before taking lock, incase extensions contain a StreamRef.
-        response.extensions_mut().clear();
+        clear_extensions_safely(response.extensions_mut());
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1153,7 +1176,7 @@ impl<B> StreamRef<B> {
         mut request: Request<()>,
     ) -> Result<StreamRef<B>, UserError> {
         // Clear before taking lock, incase extensions contain a StreamRef.
-        request.extensions_mut().clear();
+        clear_extensions_safely(request.extensions_mut());
         let mut me = self.opaque.inner.lock().unwrap();
         let me = &mut *me;
 
@@ -1272,10 +1295,7 @@ impl<B> StreamRef<B> {
 
         let mut stream = me.store.resolve(self.opaque.key);
 
-        me.actions
-            .send
-            .poll_reset(cx, &mut stream, mode)
-            .map_err(From::from)
+        me.actions.send.poll_reset(cx, &mut stream, mode)
     }
 
     pub(crate) fn clone_to_opaque(&self) -> OpaqueStreamRef {

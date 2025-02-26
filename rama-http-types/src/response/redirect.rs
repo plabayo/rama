@@ -1,5 +1,5 @@
 use super::IntoResponse;
-use crate::{header, HeaderValue, Response, StatusCode};
+use crate::{HeaderValue, Response, StatusCode, header};
 
 #[derive(Debug, Clone)]
 /// Utility struct to easily create a redirect response.

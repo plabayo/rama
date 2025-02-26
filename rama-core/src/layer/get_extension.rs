@@ -148,7 +148,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{service::service_fn, Context};
+    use crate::{Context, service::service_fn};
     use std::{convert::Infallible, sync::Arc};
 
     #[derive(Debug, Clone)]

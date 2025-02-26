@@ -1,11 +1,11 @@
-use super::body::BodyInner;
-use super::predicate::{DefaultPredicate, Predicate};
 use super::CompressionBody;
 use super::CompressionLevel;
+use super::body::BodyInner;
+use super::predicate::{DefaultPredicate, Predicate};
 use crate::dep::http_body::Body;
 use crate::layer::util::compression::WrapBody;
 use crate::layer::util::{compression::AcceptEncoding, content_encoding::Encoding};
-use crate::{header, Request, Response};
+use crate::{Request, Response, header};
 use rama_core::{Context, Service};
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -216,7 +216,7 @@ where
                 return Ok(Response::from_parts(
                     parts,
                     CompressionBody::new(BodyInner::identity(body)),
-                ))
+                ));
             }
 
             (_, Encoding::Gzip) => {

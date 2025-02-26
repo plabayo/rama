@@ -1,10 +1,10 @@
-use base64::engine::general_purpose::STANDARD as ENGINE;
 use base64::Engine;
+use base64::engine::general_purpose::STANDARD as ENGINE;
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
 
 #[cfg(feature = "http")]
-use rama_http_types::{headers::authorization, HeaderValue};
+use rama_http_types::{HeaderValue, headers::authorization};
 
 #[derive(Debug, Clone)]
 /// Basic credentials.
@@ -43,7 +43,7 @@ impl Basic {
     pub fn try_from_header_str(s: impl AsRef<str>) -> Result<Self, OpaqueError> {
         let value = s.as_ref();
 
-        if value.as_bytes().len() <= BASIC_SCHEME.len() + 1 {
+        if value.len() <= BASIC_SCHEME.len() + 1 {
             return Err(OpaqueError::from_display(
                 "invalid scheme length in basic str",
             ));

@@ -12,6 +12,7 @@ use rama_core::error::BoxError;
 use rama_http_types::header::{
     CONNECTION, KEEP_ALIVE, PROXY_CONNECTION, TE, TRANSFER_ENCODING, UPGRADE,
 };
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, HeaderName};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tracing::{debug, trace, warn};
@@ -47,7 +48,7 @@ fn strip_connection_headers(headers: &mut HeaderMap, is_request: bool) {
     if is_request {
         if headers
             .get(TE)
-            .map_or(false, |te_header| te_header != "trailers")
+            .is_some_and(|te_header| te_header != "trailers")
         {
             warn!("TE headers not set to \"trailers\" are illegal in HTTP/2 requests");
             headers.remove(TE);
@@ -168,7 +169,11 @@ where
                         // no more DATA, so give any capacity back
                         me.body_tx.reserve_capacity(0);
                         me.body_tx
-                            .send_trailers(frame.into_trailers().unwrap_or_else(|_| unreachable!()))
+                            .send_trailers(
+                                frame.into_trailers().unwrap_or_else(|_| unreachable!()),
+                                // TODO: support trailer order...
+                                OriginalHttp1Headers::new(),
+                            )
                             .map_err(crate::Error::new_body_write)?;
                         return Poll::Ready(Ok(()));
                     } else {
@@ -281,7 +286,7 @@ where
                 match ready!(self.recv_stream.poll_data(cx)) {
                     None => return Poll::Ready(Ok(())),
                     Some(Ok(buf)) if buf.is_empty() && !self.recv_stream.is_end_stream() => {
-                        continue
+                        continue;
                     }
                     Some(Ok(buf)) => {
                         self.ping.record_data(buf.len());
@@ -294,7 +299,7 @@ where
                                 Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, e))
                             }
                             _ => Err(h2_to_io_error(e)),
-                        })
+                        });
                     }
                 }
             };
@@ -340,7 +345,7 @@ where
         Poll::Ready(Err(h2_to_io_error(
             match ready!(self.send_stream.poll_reset(cx)) {
                 Ok(Reason::NO_ERROR | Reason::CANCEL | Reason::STREAM_CLOSED) => {
-                    return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+                    return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
                 }
                 Ok(reason) => reason.into(),
                 Err(e) => e,
@@ -364,7 +369,7 @@ where
             match ready!(self.send_stream.poll_reset(cx)) {
                 Ok(Reason::NO_ERROR) => return Poll::Ready(Ok(())),
                 Ok(Reason::CANCEL | Reason::STREAM_CLOSED) => {
-                    return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()))
+                    return Poll::Ready(Err(std::io::ErrorKind::BrokenPipe.into()));
                 }
                 Ok(reason) => reason.into(),
                 Err(e) => e,
@@ -390,7 +395,7 @@ where
     unsafe fn new(inner: SendStream<SendBuf<B>>) -> Self {
         assert_eq!(mem::size_of::<B>(), mem::size_of::<Neutered<B>>());
         #[allow(clippy::missing_transmute_annotations)]
-        Self(mem::transmute(inner))
+        Self(unsafe { mem::transmute(inner) })
     }
 
     fn reserve_capacity(&mut self, cnt: usize) {
@@ -421,7 +426,7 @@ where
     }
 
     unsafe fn as_inner_unchecked(&mut self) -> &mut SendStream<SendBuf<B>> {
-        &mut *(&mut self.0 as *mut _ as *mut _)
+        unsafe { &mut *(&mut self.0 as *mut _ as *mut _) }
     }
 }
 

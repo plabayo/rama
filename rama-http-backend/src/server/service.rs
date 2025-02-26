@@ -1,7 +1,8 @@
 //! Rama HTTP server module.
 
-use super::hyper_conn::HttpCoreConnServer;
 use super::HttpServeResult;
+use super::hyper_conn::HttpCoreConnServer;
+use rama_core::error::BoxError;
 use rama_core::graceful::ShutdownGuard;
 use rama_core::rt::Executor;
 use rama_core::{Context, Service};
@@ -11,13 +12,13 @@ use rama_http_core::server::conn::auto::Http2Builder as InnerAutoHttp2Builder;
 use rama_http_core::server::conn::http1::Builder as Http1ConnBuilder;
 use rama_http_core::server::conn::http2::Builder as H2ConnBuilder;
 use rama_http_types::{IntoResponse, Request};
+use rama_net::address::SocketAddress;
 use rama_net::stream::Stream;
 use rama_tcp::server::TcpListener;
 use std::convert::Infallible;
 use std::fmt;
 use std::future::Future;
 use std::sync::Arc;
-use tokio::net::ToSocketAddrs;
 
 /// A builder for configuring and listening over HTTP using a [`Service`].
 ///
@@ -166,7 +167,7 @@ where
     where
         S: Service<(), Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
-        A: ToSocketAddrs,
+        A: TryInto<SocketAddress, Error: Into<BoxError>>,
     {
         let tcp = TcpListener::bind(addr).await?;
         let service = HttpService::new(self.builder, service);
@@ -193,7 +194,7 @@ where
         State: Clone + Send + Sync + 'static,
         S: Service<State, Request, Response = Response, Error = Infallible>,
         Response: IntoResponse + Send + 'static,
-        A: ToSocketAddrs,
+        A: TryInto<SocketAddress, Error: Into<BoxError>>,
     {
         let tcp = TcpListener::build_with_state(state).bind(addr).await?;
         let service = HttpService::new(self.builder, service);

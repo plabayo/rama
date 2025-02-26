@@ -6,10 +6,12 @@
 //! [`tls`]: crate::tls
 
 use crate::{
+    Context, Layer, Service,
     cli::ForwardKind,
-    combinators::Either7,
-    error::BoxError,
+    combinators::{Either3, Either7},
+    error::{BoxError, OpaqueError},
     http::{
+        IntoResponse, Request, Response, Version,
         dep::http_body_util::BodyExt,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
@@ -18,29 +20,29 @@ use crate::{
             trace::TraceLayer,
             ua::{UserAgent, UserAgentClassifierLayer},
         },
+        proto::h1::Http1HeaderMap,
+        proto::h2::PseudoHeaderOrder,
         response::Json,
         server::HttpServer,
-        IntoResponse, Request, Response, Version,
     },
-    layer::{limit::policy::ConcurrentPolicy, ConsumeErrLayer, LimitLayer, TimeoutLayer},
+    layer::{ConsumeErrLayer, LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    net::fingerprint::Ja4H,
     net::forwarded::Forwarded,
     net::http::RequestContext,
-    net::stream::{layer::http::BodyLimitLayer, SocketInfo},
+    net::stream::{SocketInfo, layer::http::BodyLimitLayer},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
-    Context, Layer, Service,
 };
-use rama_core::{combinators::Either3, error::OpaqueError};
-use rama_http_core::ext::OriginalHeaderOrder;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
+    net::fingerprint::{Ja3, Ja4},
     net::tls::server::ServerConfig,
     tls::std::server::TlsAcceptorLayer,
-    tls::types::{client::ClientHelloExtension, SecureTransport},
+    tls::types::{SecureTransport, client::ClientHelloExtension},
 };
 
 #[derive(Debug, Clone)]
@@ -282,7 +284,7 @@ where
                 Either3::B(HttpServer::http1().service(http_service))
             }
             Some(_) => {
-                return Err(OpaqueError::from_display("unsupported http version").into_boxed())
+                return Err(OpaqueError::from_display("unsupported http version").into_boxed());
             }
             None => Either3::C(HttpServer::auto(executor).service(http_service)),
         };
@@ -322,40 +324,34 @@ impl Service<(), Request> for EchoService {
         let authority = request_context.authority.to_string();
         let scheme = request_context.protocol.to_string();
 
-        // TODO: get in correct order
-        // TODO: get in correct case
-        // TODO: get also pseudo headers (or separate?!)
+        let pseudo_headers: Option<Vec<_>> = req
+            .extensions()
+            .get::<PseudoHeaderOrder>()
+            .map(|o| o.iter().collect());
 
-        // TODO: get cleaner API + also original casing
-        let headers: Vec<_> = match req.extensions().get::<OriginalHeaderOrder>() {
-            Some(original) => original
-                .get_in_order()
-                .map(|(name, idx)| {
-                    let value = req
-                        .headers()
-                        .get_all(name)
-                        .iter()
-                        .nth(*idx)
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or_default()
-                        .to_owned();
-                    let name = name.as_str().to_owned();
-                    (name, value)
+        let ja4h = Ja4H::compute(&req)
+            .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
+            .ok()
+            .map(|ja4h| {
+                json!({
+                    "hash": format!("{ja4h}"),
+                    "raw": format!("{ja4h:?}"),
                 })
-                .collect(),
-            None => req
-                .headers()
-                .iter()
-                .map(|(name, value)| {
-                    (
-                        name.as_str().to_owned(),
-                        value.to_str().map(|v| v.to_owned()).unwrap_or_default(),
-                    )
-                })
-                .collect(),
-        };
+            });
 
-        let (parts, body) = req.into_parts();
+        let (mut parts, body) = req.into_parts();
+
+        let headers: Vec<_> = Http1HeaderMap::new(parts.headers, Some(&mut parts.extensions))
+            .into_iter()
+            .map(|(name, value)| {
+                (
+                    name,
+                    std::str::from_utf8(value.as_bytes())
+                        .map(|s| s.to_owned())
+                        .unwrap_or_else(|_| format!("0x{:x?}", value.as_bytes())),
+                )
+            })
+            .collect();
 
         let body = body.collect().await.unwrap().to_bytes();
         let body = hex::encode(body.as_ref());
@@ -365,11 +361,34 @@ impl Service<(), Request> for EchoService {
             .get::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .map(|hello| {
+                let ja4 = Ja4::compute(ctx.extensions())
+                    .inspect_err(|err| tracing::trace!(?err, "ja4 computation"))
+                    .ok()
+                    .map(|ja4| {
+                        json!({
+                            "hash": format!("{ja4}"),
+                            "raw": format!("{ja4:?}"),
+                        })
+                    });
+
+                let ja3 = Ja3::compute(ctx.extensions())
+                    .inspect_err(|err| tracing::trace!(?err, "ja3 computation"))
+                    .ok()
+                    .map(|ja3| {
+                        json!({
+                            "full": format!("{ja3}"),
+                            "hash": format!("{ja3:x}"),
+                        })
+                    });
+
                 json!({
-                    "cipher_suites": hello
-                    .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
-                    "compression_algorithms": hello
-                    .compression_algorithms().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    "header": {
+                        "version": hello.protocol_version().to_string(),
+                        "cipher_suites": hello
+                        .cipher_suites().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                        "compression_algorithms": hello
+                        .compression_algorithms().iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+                    },
                     "extensions": hello.extensions().iter().map(|extension| match extension {
                         ClientHelloExtension::ServerName(domain) => json!({
                             "id": extension.id().to_string(),
@@ -395,11 +414,19 @@ impl Service<(), Request> for EchoService {
                             "id": extension.id().to_string(),
                             "data": v.iter().map(|s| s.to_string()).collect::<Vec<_>>(),
                         }),
-                        ClientHelloExtension::Opaque { id, data } => json!({
-                            "id": id.to_string(),
-                            "data": format!("0x{}", hex::encode(data)),
-                        }),
+                        ClientHelloExtension::Opaque { id, data } => if data.is_empty() {
+                            json!({
+                                "id": id.to_string()
+                            })
+                        } else {
+                            json!({
+                                "id": id.to_string(),
+                                "data": format!("0x{}", hex::encode(data))
+                            })
+                        },
                     }).collect::<Vec<_>>(),
+                    "ja3": ja3,
+                    "ja4": ja4,
                 })
             });
 
@@ -409,6 +436,7 @@ impl Service<(), Request> for EchoService {
         Ok(Json(json!({
             "ua": user_agent_info,
             "http": {
+                "ja4h": ja4h,
                 "version": format!("{:?}", parts.version),
                 "scheme": scheme,
                 "method": format!("{:?}", parts.method),
@@ -416,6 +444,7 @@ impl Service<(), Request> for EchoService {
                 "path": parts.uri.path().to_owned(),
                 "query": parts.uri.query().map(str::to_owned),
                 "headers": headers,
+                "pseudo_headers": pseudo_headers,
                 "payload": body,
             },
             "tls": tls_client_hello,

@@ -54,6 +54,18 @@ macro_rules! enum_builder {
                 }
             }
         }
+
+        impl ::std::fmt::LowerHex for $enum_name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::LowerHex::fmt(&u8::from(*self), f)
+            }
+        }
+
+        impl ::std::fmt::UpperHex for $enum_name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::UpperHex::fmt(&u8::from(*self), f)
+            }
+        }
     };
     (
         $(#[$comment:meta])*
@@ -67,6 +79,16 @@ macro_rules! enum_builder {
         $enum_vis enum $enum_name {
             $( $enum_var),*
             ,Unknown(u16)
+        }
+
+        impl $enum_name {
+            /// returns true if this id is a grease object
+            $enum_vis fn is_grease(&self) -> bool {
+                match self {
+                    $enum_name::Unknown(x) if x & 0x0f0f == 0x0a0a => true,
+                    _ => false,
+                }
+            }
         }
 
         impl From<u16> for $enum_name {
@@ -88,7 +110,7 @@ macro_rules! enum_builder {
         }
 
         impl ::std::fmt::Display for $enum_name {
-            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> ::std::fmt::Result {
                 match self {
                     $( $enum_name::$enum_var => write!(f, concat!(stringify!($enum_var), " ({:#06x})"), $enum_val)),*
                     ,$enum_name::Unknown(x) => if x & 0x0f0f == 0x0a0a {
@@ -97,6 +119,18 @@ macro_rules! enum_builder {
                         write!(f, "Unknown ({x:#06x})")
                         }
                 }
+            }
+        }
+
+        impl ::std::fmt::LowerHex for $enum_name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::LowerHex::fmt(&u16::from(*self), f)
+            }
+        }
+
+        impl ::std::fmt::UpperHex for $enum_name {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+                ::std::fmt::UpperHex::fmt(&u16::from(*self), f)
             }
         }
     };
@@ -198,7 +232,7 @@ macro_rules! enum_builder {
             fn from(e: &$enum_name) -> Self {
                 match e {
                     $($enum_name::$enum_var => $enum_val.to_vec()),*
-                    , $enum_name::Unknown(ref v) => v.clone(),
+                    , $enum_name::Unknown(v) => v.clone(),
                 }
             }
         }
@@ -658,13 +692,19 @@ enum_builder! {
     pub enum SignatureScheme {
         RSA_PKCS1_SHA1 => 0x0201,
         ECDSA_SHA1_Legacy => 0x0203,
+        SHA224_ECDSA => 0x0303,
+        SHA224_RSA => 0x0301,
+        SHA224_DSA => 0x0302,
         RSA_PKCS1_SHA256 => 0x0401,
+        SHA256_DSA => 0x0402,
         ECDSA_NISTP256_SHA256 => 0x0403,
         RSA_PKCS1_SHA256_LEGACY => 0x0420,
         RSA_PKCS1_SHA384 => 0x0501,
+        SHA384_DSA => 0x0502,
         ECDSA_NISTP384_SHA384 => 0x0503,  // also labeled as ecdsa_secp384r1_sha384
         RSA_PKCS1_SHA384_LEGACY => 0x0520,
         RSA_PKCS1_SHA512 => 0x0601,
+        SHA512_DSA => 0x0602,
         ECDSA_NISTP521_SHA512 => 0x0603,
         RSA_PKCS1_SHA512_LEGACY => 0x0620,
         ECCSI_SHA256 => 0x0704,
@@ -759,6 +799,7 @@ enum_builder! {
         DNSSEC_CHAIN => 59,
         SEQUENCE_NUMBER_ENCRYPTION_ALGORITHMS => 60,
         RRC => 61,
+        NEXT_PROTOCOL_NEGOTIATION => 13172,
         ECH_OUTER_EXTENSIONS => 64768,
         ENCRYPTED_CLIENT_HELLO => 65037,
         RENEGOTIATION_INFO => 65281,

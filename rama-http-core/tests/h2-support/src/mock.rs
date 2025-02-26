@@ -1,11 +1,11 @@
 use crate::SendFrame;
 
+use rama_http_core::h2::SendError;
 use rama_http_core::h2::frame::{self, Frame};
 use rama_http_core::h2::proto::Error;
-use rama_http_core::h2::SendError;
 
 use futures::future::poll_fn;
-use futures::{ready, Stream, StreamExt};
+use futures::{Stream, StreamExt, ready};
 
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 

@@ -1,12 +1,12 @@
 use super::utils;
 use rama::{
-    http::{response::Json, server::HttpServer, BodyExtractExt, Request},
+    Context,
+    http::{BodyExtractExt, Request, response::Json, server::HttpServer},
     net::address::ProxyAddress,
     rt::Executor,
     service::service_fn,
-    Context,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 #[tokio::test]
 #[ignore]

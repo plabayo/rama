@@ -132,16 +132,8 @@ detect-biggest-crates:
 mdbook-serve:
 	cd docs/book && mdbook serve
 
-rama-cli-release-build TARGET:
-	cargo build -p rama-cli --bin rama --release --target {{TARGET}}
-	VERSION="$(cat Cargo.toml | grep -E '^version = "' | cut -d\" -f2)" && \
-		cd target/{{TARGET}}/release && \
-		tar -czf rama-cli-${VERSION}-{{TARGET}}.tar.gz rama && \
-		shasum -a 256 rama-cli-${VERSION}-{{TARGET}}.tar.gz > rama-cli-${VERSION}-{{TARGET}}.tar.gz.sha256
-
-rama-cli-release-build-all:
-	just rama-cli-release-build x86_64-apple-darwin
-	just rama-cli-release-build aarch64-apple-darwin
+rama-cli-build:
+	rama-cli/scripts/build.sh
 
 publish:
     cargo publish -p rama-error
@@ -162,3 +154,4 @@ publish:
     cargo publish -p rama-udp
     cargo publish -p rama-socks5
     cargo publish -p rama
+    cargo publish -p rama-cli

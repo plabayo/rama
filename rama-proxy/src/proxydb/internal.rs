@@ -1,9 +1,5 @@
-use super::{ProxyFilter, StringFilter};
-use rama_net::{
-    address::ProxyAddress,
-    asn::Asn,
-    transport::{TransportContext, TransportProtocol},
-};
+use super::{ProxyContext, ProxyFilter, StringFilter};
+use rama_net::{address::ProxyAddress, asn::Asn, transport::TransportProtocol};
 use rama_utils::str::NonEmptyString;
 use serde::{Deserialize, Serialize};
 
@@ -87,8 +83,8 @@ fn proxydb_insert_validator(proxy: &Proxy) -> bool {
 }
 
 impl Proxy {
-    /// Check if the proxy is a match for the given[`TransportContext`] and [`ProxyFilter`].
-    pub fn is_match(&self, ctx: &TransportContext, filter: &ProxyFilter) -> bool {
+    /// Check if the proxy is a match for the given[`ProxyContext`] and [`ProxyFilter`].
+    pub fn is_match(&self, ctx: &ProxyContext, filter: &ProxyFilter) -> bool {
         if let Some(id) = &filter.id {
             if id != &self.id {
                 return false;
@@ -180,7 +176,7 @@ impl Proxy {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::proxydb::csv::{parse_csv_row, ProxyCsvRowReader};
+    use crate::proxydb::csv::{ProxyCsvRowReader, parse_csv_row};
     use crate::proxydb::internal::{ProxyDB, ProxyDBErrorKind};
     use itertools::Itertools;
 
@@ -351,7 +347,9 @@ mod tests {
     #[tokio::test]
     async fn test_proxy_db_invalid_row_cases() {
         let mut db = ProxyDB::new();
-        let mut reader = ProxyCsvRowReader::raw("id1,1,,,,,,,,,authority,,,,,,,\nid2,,1,,,,,,,,authority,,,,,,,\nid3,,1,1,,,,,,,authority,,,,,,,\nid4,,1,1,,,,,1,,authority,,,,,,,\nid5,,1,1,,,,,1,,authority,,,,,,,");
+        let mut reader = ProxyCsvRowReader::raw(
+            "id1,1,,,,,,,,,authority,,,,,,,\nid2,,1,,,,,,,,authority,,,,,,,\nid3,,1,1,,,,,,,authority,,,,,,,\nid4,,1,1,,,,,1,,authority,,,,,,,\nid5,,1,1,,,,,1,,authority,,,,,,,",
+        );
         while let Some(proxy) = reader.next().await.unwrap() {
             assert_eq!(
                 ProxyDBErrorKind::InvalidRow,

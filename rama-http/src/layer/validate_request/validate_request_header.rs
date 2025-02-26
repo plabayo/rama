@@ -185,8 +185,8 @@ mod tests {
     #[allow(unused_imports)]
     use super::*;
 
-    use crate::{header, Body, StatusCode};
-    use rama_core::{error::BoxError, service::service_fn, Layer};
+    use crate::{Body, StatusCode, header};
+    use rama_core::{Layer, error::BoxError, service::service_fn};
 
     #[tokio::test]
     async fn valid_accept_header() {

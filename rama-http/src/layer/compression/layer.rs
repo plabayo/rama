@@ -118,7 +118,7 @@ mod tests {
     use super::*;
 
     use crate::dep::http_body_util::BodyExt;
-    use crate::{header::ACCEPT_ENCODING, Body, Request, Response};
+    use crate::{Body, Request, Response, header::ACCEPT_ENCODING};
     use rama_core::service::service_fn;
     use rama_core::{Context, Service};
     use std::convert::Infallible;

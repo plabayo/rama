@@ -26,10 +26,7 @@ pub use self::{
 /// [`Error` type]: https://docs.rs/tower/latest/tower/trait.Service.html#associatedtype.Error
 pub trait MakeClassifier: Send + Sync + 'static {
     /// The response classifier produced.
-    type Classifier: ClassifyResponse<
-        FailureClass = Self::FailureClass,
-        ClassifyEos = Self::ClassifyEos,
-    >;
+    type Classifier: ClassifyResponse<FailureClass = Self::FailureClass, ClassifyEos = Self::ClassifyEos>;
 
     /// The type of failure classifications.
     ///

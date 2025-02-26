@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{http::BodyExtractExt, Context};
+use rama::{Context, http::BodyExtractExt};
 use regex::Regex;
 
 #[tokio::test]

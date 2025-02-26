@@ -6,16 +6,16 @@ use boring::{
     rsa::Rsa,
     ssl::{ConnectConfiguration, SslCurve, SslSignatureAlgorithm, SslVerifyMode, SslVersion},
     x509::{
-        extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
         X509,
+        extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     },
 };
 use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
+use rama_net::tls::{ApplicationProtocol, KeyLogIntent, openssl_cipher_list_str_from_cipher_list};
 use rama_net::tls::{
-    client::{ClientAuth, ClientHelloExtension},
     DataEncoding,
+    client::{ClientAuth, ClientHelloExtension},
 };
-use rama_net::tls::{openssl_cipher_list_str_from_cipher_list, ApplicationProtocol, KeyLogIntent};
 use rama_net::{address::Host, tls::client::ServerVerifyMode};
 use std::{fmt, sync::Arc};
 use tracing::trace;
@@ -352,15 +352,23 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                 ClientHelloExtension::ServerName(maybe_host) => {
                     server_name = match maybe_host {
                         Some(Host::Name(_)) => {
-                            trace!("TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}", maybe_host);
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: set server (domain) name from host: {:?}",
+                                maybe_host
+                            );
                             maybe_host.clone()
                         }
                         Some(Host::Address(_)) => {
-                            trace!("TlsConnectorData: builder: from std client config: set server (ip) name from host: {:?}", maybe_host);
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: set server (ip) name from host: {:?}",
+                                maybe_host
+                            );
                             maybe_host.clone()
                         }
                         None => {
-                            trace!("TlsConnectorData: builder: from std client config: ignore server null value");
+                            trace!(
+                                "TlsConnectorData: builder: from std client config: ignore server null value"
+                            );
                             None
                         }
                     };
@@ -391,7 +399,10 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                     }).collect());
                 }
                 ClientHelloExtension::SupportedVersions(versions) => {
-                    trace!("TlsConnectorData: builder: from std client config: supported versions: {:?}", versions);
+                    trace!(
+                        "TlsConnectorData: builder: from std client config: supported versions: {:?}",
+                        versions
+                    );
 
                     if let Some(min_ver) = versions.iter().min() {
                         trace!(
@@ -416,7 +427,10 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                     }
                 }
                 ClientHelloExtension::SignatureAlgorithms(schemes) => {
-                    trace!("TlsConnectorData: builder: from std client config: signature algorithms: {:?}", schemes);
+                    trace!(
+                        "TlsConnectorData: builder: from std client config: signature algorithms: {:?}",
+                        schemes
+                    );
                     verify_algorithm_prefs = Some(schemes.iter().filter_map(|s| match (*s).try_into() {
                         Ok(v) => Some(v),
                         Err(s) => {

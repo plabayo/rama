@@ -2,5 +2,5 @@
 
 #[doc(inline)]
 pub use ::tokio_graceful::{
-    default_signal, Shutdown, ShutdownBuilder, ShutdownGuard, WeakShutdownGuard,
+    Shutdown, ShutdownBuilder, ShutdownGuard, WeakShutdownGuard, default_signal,
 };

@@ -114,36 +114,44 @@ mod tests {
         let a = Taint::new(Action::Follow);
         let b = Taint::new(Action::Follow);
         let mut policy = Or::new::<(), (), ()>(a, b);
-        assert!(Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
-            .unwrap()
-            .is_follow());
+        assert!(
+            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+                .unwrap()
+                .is_follow()
+        );
         assert!(policy.a.used);
         assert!(!policy.b.used); // short-circuiting
 
         let a = Taint::new(Action::Stop);
         let b = Taint::new(Action::Follow);
         let mut policy = Or::new::<(), (), ()>(a, b);
-        assert!(Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
-            .unwrap()
-            .is_follow());
+        assert!(
+            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+                .unwrap()
+                .is_follow()
+        );
         assert!(policy.a.used);
         assert!(policy.b.used);
 
         let a = Taint::new(Action::Follow);
         let b = Taint::new(Action::Stop);
         let mut policy = Or::new::<(), (), ()>(a, b);
-        assert!(Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
-            .unwrap()
-            .is_follow());
+        assert!(
+            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+                .unwrap()
+                .is_follow()
+        );
         assert!(policy.a.used);
         assert!(!policy.b.used);
 
         let a = Taint::new(Action::Stop);
         let b = Taint::new(Action::Stop);
         let mut policy = Or::new::<(), (), ()>(a, b);
-        assert!(Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
-            .unwrap()
-            .is_stop());
+        assert!(
+            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+                .unwrap()
+                .is_stop()
+        );
         assert!(policy.a.used);
         assert!(policy.b.used);
     }

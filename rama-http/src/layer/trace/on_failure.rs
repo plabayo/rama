@@ -1,4 +1,4 @@
-use super::{Latency, DEFAULT_ERROR_LEVEL};
+use super::{DEFAULT_ERROR_LEVEL, Latency};
 use rama_utils::latency::LatencyUnit;
 use std::{fmt, time::Duration};
 use tracing::{Level, Span};

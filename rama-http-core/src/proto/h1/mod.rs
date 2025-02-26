@@ -1,6 +1,7 @@
 use bytes::BytesMut;
 use httparse::ParserConfig;
-use rama_http_types::{HeaderMap, Method};
+use rama_http_types::dep::http;
+use rama_http_types::{HeaderMap, Method, Version};
 
 use crate::body::DecodedLength;
 use crate::proto::{BodyLength, MessageHead};
@@ -63,16 +64,27 @@ pub(crate) struct ParsedMessage<T> {
 }
 
 pub(crate) struct ParseContext<'a> {
-    cached_headers: &'a mut Option<HeaderMap>,
     req_method: &'a mut Option<Method>,
     h1_parser_config: ParserConfig,
     h1_max_headers: Option<usize>,
     h09_responses: bool,
+    on_informational: &'a mut Option<crate::ext::OnInformational>,
+}
+
+struct EncodeHead<'a, S> {
+    /// HTTP version of the message.
+    pub(crate) version: Version,
+    /// Subject (request line or status line) of Incoming message.
+    pub(crate) subject: S,
+    /// Headers of the Incoming message.
+    pub(crate) headers: HeaderMap,
+    /// Extensions.
+    extensions: &'a mut http::Extensions,
 }
 
 /// Passed to Http1Transaction::encode
 pub(crate) struct Encode<'a, T> {
-    head: &'a mut MessageHead<T>,
+    head: EncodeHead<'a, T>,
     body: Option<BodyLength>,
     keep_alive: bool,
     req_method: &'a mut Option<Method>,

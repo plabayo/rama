@@ -1,13 +1,13 @@
-use super::{Proxy, ProxyDB, ProxyFilter, ProxyQueryPredicate};
+use super::{Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyQueryPredicate};
 use rama_core::{
-    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     Context, Layer, Service,
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
 };
 use rama_net::{
+    Protocol,
     address::ProxyAddress,
     transport::{TransportProtocol, TryRefIntoTransportContext},
     user::{Basic, ProxyCredential},
-    Protocol,
 };
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -212,18 +212,18 @@ where
         };
 
         if let Some(filter) = maybe_filter {
-            let transport_ctx = ctx
+            let proxy_ctx: ProxyContext = (&*ctx
                 .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
                 .map_err(|err| {
                     OpaqueError::from_boxed(err.into())
                         .context("proxydb: select proxy: get transport context")
-                })?
-                .clone();
-            let transport_protocol = transport_ctx.protocol.clone();
+                })?)
+                .into();
+            let transport_protocol = proxy_ctx.protocol;
 
             let proxy = self
                 .db
-                .get_proxy_if(transport_ctx, filter.clone(), self.predicate.clone())
+                .get_proxy_if(proxy_ctx, filter.clone(), self.predicate.clone())
                 .await
                 .map_err(|err| {
                     OpaqueError::from_std(ProxySelectError {
@@ -507,9 +507,9 @@ mod tests {
     use rama_core::service::service_fn;
     use rama_http_types::{Body, Request, Version};
     use rama_net::{
+        Protocol,
         address::{Authority, ProxyAddress},
         asn::Asn,
-        Protocol,
     };
     use rama_utils::str::NonEmptyString;
     use std::{convert::Infallible, str::FromStr, sync::Arc};
@@ -895,7 +895,11 @@ mod tests {
             }));
 
         for (filter, expected_addresses, req_info) in [
-            (None, "0.20.204.227:8373,104.207.92.167:9387,105.150.55.60:4898,106.213.197.28:9110,113.6.21.212:4525,115.29.251.35:5712,119.146.94.132:7851,129.204.152.130:6524,134.190.189.202:5772,136.186.95.10:7095,137.220.180.169:4929,140.249.154.18:5800,145.57.31.149:6304,151.254.135.9:6961,153.206.209.221:8696,162.97.174.152:1673,169.179.161.206:6843,171.174.56.89:5744,178.189.117.217:6496,182.34.76.182:2374,184.209.230.177:1358,193.188.239.29:3541,193.26.37.125:3780,204.168.216.113:1096,208.224.120.97:7118,209.176.177.182:4311,215.49.63.89:9458,223.234.242.63:7211,230.159.143.41:7296,233.22.59.115:1653,24.155.249.112:2645,247.118.71.100:1033,249.221.15.121:7434,252.69.242.136:4791,253.138.153.41:2640,28.139.151.127:2809,4.20.243.186:9155,42.54.35.118:6846,45.59.69.12:5934,46.247.45.238:3522,54.226.47.54:7442,61.112.212.160:3842,66.142.40.209:4251,66.171.139.181:4449,69.246.162.84:8964,75.43.123.181:7719,76.128.58.167:4797,85.14.163.105:8362,92.227.104.237:6161,97.192.206.72:6067", (Version::HTTP_11, "GET", "http://example.com")),
+            (
+                None,
+                "0.20.204.227:8373,104.207.92.167:9387,105.150.55.60:4898,106.213.197.28:9110,113.6.21.212:4525,115.29.251.35:5712,119.146.94.132:7851,129.204.152.130:6524,134.190.189.202:5772,136.186.95.10:7095,137.220.180.169:4929,140.249.154.18:5800,145.57.31.149:6304,151.254.135.9:6961,153.206.209.221:8696,162.97.174.152:1673,169.179.161.206:6843,171.174.56.89:5744,178.189.117.217:6496,182.34.76.182:2374,184.209.230.177:1358,193.188.239.29:3541,193.26.37.125:3780,204.168.216.113:1096,208.224.120.97:7118,209.176.177.182:4311,215.49.63.89:9458,223.234.242.63:7211,230.159.143.41:7296,233.22.59.115:1653,24.155.249.112:2645,247.118.71.100:1033,249.221.15.121:7434,252.69.242.136:4791,253.138.153.41:2640,28.139.151.127:2809,4.20.243.186:9155,42.54.35.118:6846,45.59.69.12:5934,46.247.45.238:3522,54.226.47.54:7442,61.112.212.160:3842,66.142.40.209:4251,66.171.139.181:4449,69.246.162.84:8964,75.43.123.181:7719,76.128.58.167:4797,85.14.163.105:8362,92.227.104.237:6161,97.192.206.72:6067",
+                (Version::HTTP_11, "GET", "http://example.com"),
+            ),
             (
                 Some(ProxyFilter {
                     country: Some(vec![StringFilter::new("BE")]),

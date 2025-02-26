@@ -15,15 +15,15 @@
 [crates-badge]: https://img.shields.io/crates/v/rama-http-core-core.svg
 [crates-url]: https://crates.io/crates/rama-http-core
 [docs-badge]: https://img.shields.io/docsrs/rama-http-core/latest
-[docs-url]: https://docs.rs/rama-http-core/latest/rama_http/index.html
+[docs-url]: https://docs.rs/rama-http-core/latest/rama_http_core/index.html
 [license-mit-badge]: https://img.shields.io/badge/license-MIT-blue.svg
 [license-mit-url]: https://github.com/plabayo/rama/blob/main/LICENSE-MIT
 [license-apache-badge]: https://img.shields.io/badge/license-APACHE-blue.svg
 [license-apache-url]: https://github.com/plabayo/rama/blob/main/LICENSE-APACHE
-[rust-version-badge]: https://img.shields.io/badge/rustc-1.80+-blue?style=flat-square&logo=rust
+[rust-version-badge]: https://img.shields.io/badge/rustc-1.85+-blue?style=flat-square&logo=rust
 [rust-version-url]: https://www.rust-lang.org
-[actions-badge]: https://github.com/plabayo/rama/workflows/CI/badge.svg
-[actions-url]: https://github.com/plabayo/rama/actions
+[actions-badge]: https://github.com/plabayo/rama/actions/workflows/CI.yml/badge.svg?branch=main
+[actions-url]: https://github.com/plabayo/rama/actions/workflows/CI.yml
 
 [discord-badge]: https://img.shields.io/badge/Discord-%235865F2.svg?style=for-the-badge&logo=discord&logoColor=white
 [discord-url]: https://discord.gg/29EetaSYCD

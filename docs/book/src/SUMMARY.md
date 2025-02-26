@@ -32,9 +32,10 @@
     - [🔎 MITM proxies](./proxies/mitm.md)
     - [🕵️‍♀️ Distortion proxies](./proxies/distort.md)
 
-# Binary
+# Deploy
 
-- [⌨️ `rama` binary](./binary/rama.md)
+- [Overview of deploying options](./deploy/overview.md)
+- [⌨️ `rama` binary](./deploy/rama-cli.md)
 
 # Appendices
 

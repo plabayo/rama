@@ -57,8 +57,10 @@
 //! ```
 
 use rama::{
+    Context, Layer, Service,
     context::Extensions,
     http::{
+        Body, IntoResponse, Request, Response, StatusCode,
         client::HttpClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
@@ -70,7 +72,6 @@ use rama::{
         response::Json,
         server::HttpServer,
         service::web::{extract::Path, match_service},
-        Body, IntoResponse, Request, Response, StatusCode,
     },
     layer::HijackLayer,
     net::http::RequestContext,
@@ -82,13 +83,12 @@ use rama::{
     username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },
-    Context, Layer, Service,
 };
 use serde::Deserialize;
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
-use tracing_subscriber::{fmt, layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]
 async fn main() {

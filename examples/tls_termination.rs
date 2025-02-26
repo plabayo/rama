@@ -43,6 +43,7 @@
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
+    Context, Layer,
     graceful::Shutdown,
     layer::ConsumeErrLayer,
     net::forwarded::Forwarded,
@@ -56,7 +57,6 @@ use rama::{
         server::TcpListener,
     },
     tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
-    Context, Layer,
 };
 use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
 
@@ -64,7 +64,7 @@ use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
 use std::{convert::Infallible, time::Duration};
 use tokio::io::AsyncWriteExt;
 use tracing::metadata::LevelFilter;
-use tracing_subscriber::{fmt, prelude::*, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 #[tokio::main]
 async fn main() {

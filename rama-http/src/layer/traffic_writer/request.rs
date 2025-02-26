@@ -10,8 +10,8 @@ use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt::Debug;
 use std::future::Future;
-use tokio::io::{stderr, stdout, AsyncWrite, AsyncWriteExt};
-use tokio::sync::mpsc::{channel, unbounded_channel, Sender, UnboundedSender};
+use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
+use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
 
 /// Layer that applies [`RequestWriterService`] which prints the http request in std format.
 pub struct RequestWriterLayer<W> {

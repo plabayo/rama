@@ -40,15 +40,15 @@ pub struct Trace<
 }
 
 impl<
-        S: fmt::Debug,
-        M: fmt::Debug,
-        MakeSpan: fmt::Debug,
-        OnRequest: fmt::Debug,
-        OnResponse: fmt::Debug,
-        OnBodyChunk: fmt::Debug,
-        OnEos: fmt::Debug,
-        OnFailure: fmt::Debug,
-    > fmt::Debug for Trace<S, M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
+    S: fmt::Debug,
+    M: fmt::Debug,
+    MakeSpan: fmt::Debug,
+    OnRequest: fmt::Debug,
+    OnResponse: fmt::Debug,
+    OnBodyChunk: fmt::Debug,
+    OnEos: fmt::Debug,
+    OnFailure: fmt::Debug,
+> fmt::Debug for Trace<S, M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("TraceLayer")
@@ -65,15 +65,15 @@ impl<
 }
 
 impl<
-        S: Clone,
-        M: Clone,
-        MakeSpan: Clone,
-        OnRequest: Clone,
-        OnResponse: Clone,
-        OnBodyChunk: Clone,
-        OnEos: Clone,
-        OnFailure: Clone,
-    > Clone for Trace<S, M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
+    S: Clone,
+    M: Clone,
+    MakeSpan: Clone,
+    OnRequest: Clone,
+    OnResponse: Clone,
+    OnBodyChunk: Clone,
+    OnEos: Clone,
+    OnFailure: Clone,
+> Clone for Trace<S, M, MakeSpan, OnRequest, OnResponse, OnBodyChunk, OnEos, OnFailure>
 {
     fn clone(&self) -> Self {
         Self {
@@ -298,18 +298,18 @@ impl<S>
 }
 
 impl<
-        S,
-        State,
-        ReqBody,
-        ResBody,
-        M,
-        OnRequestT,
-        OnResponseT,
-        OnFailureT,
-        OnBodyChunkT,
-        OnEosT,
-        MakeSpanT,
-    > Service<State, Request<ReqBody>>
+    S,
+    State,
+    ReqBody,
+    ResBody,
+    M,
+    OnRequestT,
+    OnResponseT,
+    OnFailureT,
+    OnBodyChunkT,
+    OnEosT,
+    MakeSpanT,
+> Service<State, Request<ReqBody>>
     for Trace<S, M, MakeSpanT, OnRequestT, OnResponseT, OnBodyChunkT, OnEosT, OnFailureT>
 where
     S: Service<State, Request<ReqBody>, Response = Response<ResBody>, Error: fmt::Display>,

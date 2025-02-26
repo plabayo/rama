@@ -20,6 +20,7 @@ pub mod address;
 pub mod asn;
 pub mod client;
 pub mod forwarded;
+pub mod mode;
 pub mod stream;
 pub mod user;
 
@@ -35,3 +36,9 @@ pub mod http;
 
 #[cfg(feature = "tls")]
 pub mod tls;
+
+#[cfg(any(feature = "tls", feature = "http"))]
+pub mod fingerprint;
+
+#[cfg(any(windows, unix))]
+pub use ::socket2 as socket;

@@ -2,7 +2,7 @@ use rama_core::error::{ErrorContext, OpaqueError};
 use std::borrow::Cow;
 
 #[cfg(feature = "http")]
-use rama_http_types::{headers::authorization, HeaderValue};
+use rama_http_types::{HeaderValue, headers::authorization};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Bearer credentials.
@@ -13,7 +13,7 @@ impl Bearer {
     pub fn try_from_header_str(value: impl AsRef<str>) -> Result<Self, OpaqueError> {
         let value = value.as_ref();
 
-        if value.as_bytes().len() <= BEARER_SCHEME.len() + 1 {
+        if value.len() <= BEARER_SCHEME.len() + 1 {
             return Err(OpaqueError::from_display("invalid bearer scheme length"));
         }
         if !value.as_bytes()[..BEARER_SCHEME.len()].eq_ignore_ascii_case(BEARER_SCHEME.as_bytes()) {

@@ -1,13 +1,15 @@
-use rama_core::graceful::ShutdownGuard;
-use rama_core::rt::Executor;
 use rama_core::Context;
 use rama_core::Service;
+use rama_core::error::BoxError;
+use rama_core::graceful::ShutdownGuard;
+use rama_core::rt::Executor;
+use rama_net::address::SocketAddress;
 use rama_net::stream::SocketInfo;
 use std::fmt;
 use std::pin::pin;
 use std::sync::Arc;
 use std::{io, net::SocketAddr};
-use tokio::net::{TcpListener as TokioTcpListener, TcpStream, ToSocketAddrs};
+use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 
 /// Builder for `TcpListener`.
 pub struct TcpListenerBuilder<S> {
@@ -93,8 +95,15 @@ where
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
-    pub async fn bind<A: ToSocketAddrs>(self, addr: A) -> io::Result<TcpListener<S>> {
-        let inner = TokioTcpListener::bind(addr).await?;
+    pub async fn bind<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
+        self,
+        addr: A,
+    ) -> Result<TcpListener<S>, BoxError> {
+        let socket_addr = addr.try_into().map_err(Into::<BoxError>::into)?;
+        let tokio_socket_addr: SocketAddr = socket_addr.into();
+        let inner = TokioTcpListener::bind(tokio_socket_addr)
+            .await
+            .map_err(Into::<BoxError>::into)?;
 
         if let Some(ttl) = self.ttl {
             inner.set_ttl(ttl)?;
@@ -149,7 +158,9 @@ impl TcpListener<()> {
     /// Binding with a port number of 0 will request that the OS assigns a port
     /// to this listener. The port allocated can be queried via the `local_addr`
     /// method.
-    pub async fn bind<A: ToSocketAddrs>(addr: A) -> io::Result<Self> {
+    pub async fn bind<A: TryInto<SocketAddress, Error: Into<BoxError>>>(
+        addr: A,
+    ) -> Result<TcpListener<()>, BoxError> {
         TcpListenerBuilder::default().bind(addr).await
     }
 }
@@ -180,6 +191,49 @@ impl<S> TcpListener<S> {
     /// Gets an exclusive reference to the listener's state.
     pub fn state_mut(&mut self) -> &mut S {
         &mut self.state
+    }
+}
+
+impl From<TokioTcpListener> for TcpListener<()> {
+    fn from(value: TokioTcpListener) -> Self {
+        Self {
+            inner: value,
+            state: (),
+        }
+    }
+}
+
+#[cfg(any(windows, unix))]
+impl TryFrom<rama_net::socket::Socket> for TcpListener<()> {
+    type Error = std::io::Error;
+
+    #[inline]
+    fn try_from(value: rama_net::socket::Socket) -> Result<Self, Self::Error> {
+        let listener = std::net::TcpListener::from(value);
+        listener.try_into()
+    }
+}
+
+impl TryFrom<std::net::TcpListener> for TcpListener<()> {
+    type Error = std::io::Error;
+
+    fn try_from(value: std::net::TcpListener) -> Result<Self, Self::Error> {
+        value.set_nonblocking(true)?;
+        Ok(Self {
+            inner: TokioTcpListener::from_std(value)?,
+            state: (),
+        })
+    }
+}
+
+impl TcpListener<()> {
+    /// Define the TcpListener's state after it was created,
+    /// useful in case it wasn't built using the builder.
+    pub fn with_state<S>(self, state: S) -> TcpListener<S> {
+        TcpListener {
+            inner: self.inner,
+            state,
+        }
     }
 }
 

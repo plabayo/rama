@@ -3,7 +3,7 @@ use std::future::Future;
 use std::io;
 use std::marker::{PhantomData, Unpin};
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use bytes::{Buf, Bytes};
@@ -19,6 +19,7 @@ use super::io::Buffered;
 use super::{Decoder, Encode, EncodedBuf, Encoder, Http1Transaction, ParseContext, Wants};
 use crate::body::DecodedLength;
 use crate::headers;
+use crate::proto::h1::EncodeHead;
 use crate::proto::{BodyLength, MessageHead};
 
 const H2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
@@ -47,7 +48,6 @@ where
             io: Buffered::new(io),
             state: State {
                 allow_half_close: false,
-                cached_headers: None,
                 error: None,
                 keep_alive: KA::Busy,
                 method: None,
@@ -59,6 +59,7 @@ where
                 date_header: true,
                 title_case_headers: false,
                 h09_responses: false,
+                on_informational: None,
                 notify_read: false,
                 reading: Reading::Init,
                 writing: Writing::Init,
@@ -199,11 +200,11 @@ where
         let msg = match self.io.parse::<T>(
             cx,
             ParseContext {
-                cached_headers: &mut self.state.cached_headers,
                 req_method: &mut self.state.method,
                 h1_parser_config: self.state.h1_parser_config.clone(),
                 h1_max_headers: self.state.h1_max_headers,
                 h09_responses: self.state.h09_responses,
+                on_informational: &mut self.state.on_informational,
             },
         ) {
             Poll::Ready(Ok(msg)) => msg,
@@ -236,6 +237,9 @@ where
 
         // Prevent accepting HTTP/0.9 responses after the initial one, if any.
         self.state.h09_responses = false;
+
+        // Drop any OnInformational callbacks, we're done there!
+        self.state.on_informational = None;
 
         self.state.busy();
         self.state.keep_alive &= msg.keep_alive;
@@ -276,7 +280,7 @@ where
             .head
             .headers
             .get(TE)
-            .map_or(false, |te_header| te_header == "trailers");
+            .is_some_and(|te_header| te_header == "trailers");
 
         Poll::Ready(Some(Ok((msg.head, msg.decode, wants))))
     }
@@ -472,7 +476,7 @@ where
 
         match self.state.reading {
             Reading::Continue(..) | Reading::Body(..) | Reading::KeepAlive | Reading::Closed => {
-                return
+                return;
             }
             Reading::Init => (),
         };
@@ -566,7 +570,12 @@ where
         let buf = self.io.headers_buf();
         match super::role::encode_headers::<T>(
             Encode {
-                head: &mut head,
+                head: EncodeHead {
+                    version: head.version,
+                    subject: head.subject,
+                    headers: head.headers,
+                    extensions: &mut head.extensions,
+                },
                 body,
                 keep_alive: self.state.wants_keep_alive(),
                 req_method: &mut self.state.method,
@@ -576,10 +585,8 @@ where
             buf,
         ) {
             Ok(encoder) => {
-                debug_assert!(self.state.cached_headers.is_none());
-                debug_assert!(head.headers.is_empty());
-                self.state.cached_headers = Some(head.headers);
-
+                self.state.on_informational =
+                    head.extensions.remove::<crate::ext::OnInformational>();
                 Some(encoder)
             }
             Err(err) => {
@@ -595,7 +602,7 @@ where
         let outgoing_is_keep_alive = head
             .headers
             .get(CONNECTION)
-            .map_or(false, headers::connection_keep_alive);
+            .is_some_and(headers::connection_keep_alive);
 
         if !outgoing_is_keep_alive {
             match head.version {
@@ -750,9 +757,6 @@ where
                 return Err(crate::Error::new_version_h2());
             }
             if let Some(msg) = T::on_error(&err) {
-                // Drop the cached headers so as to not trigger a debug
-                // assert in `write_head`...
-                self.state.cached_headers.take();
                 self.write_head(msg, None);
                 self.state.error = Some(err);
                 return Ok(());
@@ -848,8 +852,6 @@ impl<I: Unpin, B, T> Unpin for Conn<I, B, T> {}
 
 struct State {
     allow_half_close: bool,
-    /// Re-usable HeaderMap to reduce allocating new ones.
-    cached_headers: Option<HeaderMap>,
     /// If an error occurs when there wasn't a direct way to return it
     /// back to the user, this is set.
     error: Option<crate::Error>,
@@ -868,6 +870,10 @@ struct State {
     date_header: bool,
     title_case_headers: bool,
     h09_responses: bool,
+    /// If set, called with each 1xx informational response received for
+    /// the current request. MUST be unset after a non-1xx response is
+    /// received.
+    on_informational: Option<crate::ext::OnInformational>,
     /// Set to true when the Dispatcher should poll read operations
     /// again. See the `maybe_notify` method for more.
     notify_read: bool,
@@ -1044,6 +1050,13 @@ impl State {
         // should try the poll loop one more time, so as to poll the
         // pending requests stream.
         if !T::should_read_first() {
+            self.notify_read = true;
+        }
+
+        if self.h1_header_read_timeout.is_some() {
+            // Next read will start and poll the header read timeout,
+            // so we can close the connection if another header isn't
+            // received in a timely manner.
             self.notify_read = true;
         }
     }

@@ -1,12 +1,14 @@
-use super::{util, StreamDependency, StreamId};
+use super::{StreamDependency, StreamId, util};
 use crate::h2::ext::Protocol;
 use crate::h2::frame::{Error, Frame, Head, Kind};
 use crate::h2::hpack::{self, BytesStr};
 
 use rama_http_types::dep::http::uri;
-use rama_http_types::{
-    header, HeaderMap, HeaderName, HeaderValue, Method, Request, StatusCode, Uri,
-};
+use rama_http_types::proto::h1::Http1HeaderMap;
+use rama_http_types::proto::h1::headers::Http1HeaderMapIntoIter;
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
+use rama_http_types::proto::h2::{PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter};
+use rama_http_types::{HeaderMap, HeaderName, Method, Request, StatusCode, Uri, header};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -63,7 +65,7 @@ pub struct Continuation {
 }
 
 // TODO: These fields shouldn't be `pub`
-#[derive(Debug, Default, Eq, PartialEq)]
+#[derive(Debug, Default)]
 pub struct Pseudo {
     // Request
     pub method: Option<Method>,
@@ -74,24 +76,55 @@ pub struct Pseudo {
 
     // Response
     pub status: Option<StatusCode>,
+
+    // Order
+    pub order: PseudoHeaderOrder,
 }
+
+impl PartialEq for Pseudo {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            &self.method,
+            &self.scheme,
+            &self.authority,
+            &self.path,
+            &self.protocol,
+            &self.status,
+        ) == (
+            &other.method,
+            &other.scheme,
+            &other.authority,
+            &other.path,
+            &other.protocol,
+            &other.status,
+        )
+    }
+}
+
+impl Eq for Pseudo {}
 
 #[derive(Debug)]
 struct Iter {
     /// Pseudo headers
     pseudo: Option<Pseudo>,
 
+    /// Desired Pseudo header order
+    pseudo_order: PseudoHeaderOrderIter,
+
     /// Header fields
-    fields: header::IntoIter<HeaderValue>,
+    fields: Http1HeaderMapIntoIter,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct HeaderBlock {
     /// The decoded header fields
     fields: HeaderMap,
 
     /// Precomputed size of all of our header fields, for perf reasons
     field_size: usize,
+
+    /// Keeps track of header fields
+    field_order: OriginalHttp1Headers,
 
     /// Set to true if decoding went over the max header list size.
     is_over_size: bool,
@@ -100,6 +133,24 @@ struct HeaderBlock {
     /// headers frame.
     pseudo: Pseudo,
 }
+
+impl PartialEq for HeaderBlock {
+    fn eq(&self, other: &Self) -> bool {
+        (
+            &self.fields,
+            &self.field_size,
+            &self.is_over_size,
+            &self.pseudo,
+        ) == (
+            &other.fields,
+            &other.field_size,
+            &other.is_over_size,
+            &other.pseudo,
+        )
+    }
+}
+
+impl Eq for HeaderBlock {}
 
 #[derive(Debug)]
 struct EncodingHeaderBlock {
@@ -116,13 +167,19 @@ const ALL: u8 = END_STREAM | END_HEADERS | PADDED | PRIORITY;
 
 impl Headers {
     /// Create a new HEADERS frame
-    pub fn new(stream_id: StreamId, pseudo: Pseudo, fields: HeaderMap) -> Self {
+    pub fn new(
+        stream_id: StreamId,
+        pseudo: Pseudo,
+        fields: HeaderMap,
+        field_order: OriginalHttp1Headers,
+    ) -> Self {
         Headers {
             stream_id,
             stream_dep: None,
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
                 fields,
+                field_order,
                 is_over_size: false,
                 pseudo,
             },
@@ -130,7 +187,11 @@ impl Headers {
         }
     }
 
-    pub fn trailers(stream_id: StreamId, fields: HeaderMap) -> Self {
+    pub fn trailers(
+        stream_id: StreamId,
+        fields: HeaderMap,
+        field_order: OriginalHttp1Headers,
+    ) -> Self {
         let mut flags = HeadersFlag::default();
         flags.set_end_stream();
 
@@ -140,6 +201,7 @@ impl Headers {
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
                 fields,
+                field_order,
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -205,6 +267,7 @@ impl Headers {
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
                 field_size: 0,
+                field_order: OriginalHttp1Headers::new(),
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -247,8 +310,12 @@ impl Headers {
         self.header_block.is_over_size
     }
 
-    pub fn into_parts(self) -> (Pseudo, HeaderMap) {
-        (self.header_block.pseudo, self.header_block.fields)
+    pub fn into_parts(self) -> (Pseudo, HeaderMap, OriginalHttp1Headers) {
+        (
+            self.header_block.pseudo,
+            self.header_block.fields,
+            self.header_block.field_order,
+        )
     }
 
     #[cfg(feature = "unstable")]
@@ -359,12 +426,14 @@ impl PushPromise {
         promised_id: StreamId,
         pseudo: Pseudo,
         fields: HeaderMap,
+        field_order: OriginalHttp1Headers,
     ) -> Self {
         PushPromise {
             flags: PushPromiseFlag::default(),
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
                 fields,
+                field_order,
                 is_over_size: false,
                 pseudo,
             },
@@ -405,8 +474,8 @@ impl PushPromise {
     }
 
     #[cfg(feature = "unstable")]
-    pub fn into_fields(self) -> HeaderMap {
-        self.header_block.fields
+    pub fn into_fields(self) -> (HeaderMap, OriginalHttp1Headers) {
+        (self.header_block.fields, self.header_block.field_order)
     }
 
     /// Loads the push promise frame but doesn't actually do HPACK decoding.
@@ -455,6 +524,7 @@ impl PushPromise {
             header_block: HeaderBlock {
                 fields: HeaderMap::new(),
                 field_size: 0,
+                field_order: OriginalHttp1Headers::new(),
                 is_over_size: false,
                 pseudo: Pseudo::default(),
             },
@@ -516,8 +586,12 @@ impl PushPromise {
     }
 
     /// Consume `self`, returning the parts of the frame
-    pub fn into_parts(self) -> (Pseudo, HeaderMap) {
-        (self.header_block.pseudo, self.header_block.fields)
+    pub fn into_parts(self) -> (Pseudo, HeaderMap, OriginalHttp1Headers) {
+        (
+            self.header_block.pseudo,
+            self.header_block.fields,
+            self.header_block.field_order,
+        )
     }
 }
 
@@ -585,6 +659,7 @@ impl Pseudo {
             path,
             protocol,
             status: None,
+            order: PseudoHeaderOrder::default(),
         };
 
         // If the URI includes a scheme component, add it to the pseudo headers
@@ -609,6 +684,7 @@ impl Pseudo {
             path: None,
             protocol: None,
             status: Some(status),
+            order: PseudoHeaderOrder::default(),
         }
     }
 
@@ -637,8 +713,7 @@ impl Pseudo {
 
     /// Whether it has status 1xx
     pub(crate) fn is_informational(&self) -> bool {
-        self.status
-            .map_or(false, |status| status.is_informational())
+        self.status.is_some_and(|status| status.is_informational())
     }
 }
 
@@ -701,6 +776,41 @@ impl Iterator for Iter {
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Some(ref mut pseudo) = self.pseudo {
+            if let Some(order) = self.pseudo_order.next() {
+                match order {
+                    PseudoHeader::Method => {
+                        if let Some(method) = pseudo.method.take() {
+                            return Some(hpack::Header::Method(method));
+                        }
+                    }
+                    PseudoHeader::Scheme => {
+                        if let Some(scheme) = pseudo.scheme.take() {
+                            return Some(hpack::Header::Scheme(scheme));
+                        }
+                    }
+                    PseudoHeader::Authority => {
+                        if let Some(authority) = pseudo.authority.take() {
+                            return Some(hpack::Header::Authority(authority));
+                        }
+                    }
+                    PseudoHeader::Path => {
+                        if let Some(path) = pseudo.path.take() {
+                            return Some(hpack::Header::Path(path));
+                        }
+                    }
+                    PseudoHeader::Protocol => {
+                        if let Some(protocol) = pseudo.protocol.take() {
+                            return Some(hpack::Header::Protocol(protocol));
+                        }
+                    }
+                    PseudoHeader::Status => {
+                        if let Some(status) = pseudo.status.take() {
+                            return Some(hpack::Header::Status(status));
+                        }
+                    }
+                }
+            }
+
             if let Some(method) = pseudo.method.take() {
                 return Some(hpack::Header::Method(method));
             }
@@ -730,7 +840,10 @@ impl Iterator for Iter {
 
         self.fields
             .next()
-            .map(|(name, value)| hpack::Header::Field { name, value })
+            .map(|(name, value)| hpack::Header::Field {
+                name: Some(name.into()),
+                value,
+            })
     }
 }
 
@@ -908,6 +1021,7 @@ impl HeaderBlock {
                         if headers_size < max_header_list_size {
                             self.field_size +=
                                 decoded_header_size(name.as_str().len(), value.len());
+                            self.field_order.push(name.clone().into());
                             self.fields.append(name, value);
                         } else if !self.is_over_size {
                             tracing::trace!("load_hpack; header list size over max");
@@ -915,12 +1029,30 @@ impl HeaderBlock {
                         }
                     }
                 }
-                hpack::Header::Authority(v) => set_pseudo!(authority, v),
-                hpack::Header::Method(v) => set_pseudo!(method, v),
-                hpack::Header::Scheme(v) => set_pseudo!(scheme, v),
-                hpack::Header::Path(v) => set_pseudo!(path, v),
-                hpack::Header::Protocol(v) => set_pseudo!(protocol, v),
-                hpack::Header::Status(v) => set_pseudo!(status, v),
+                hpack::Header::Authority(v) => {
+                    self.pseudo.order.push(PseudoHeader::Authority);
+                    set_pseudo!(authority, v)
+                }
+                hpack::Header::Method(v) => {
+                    self.pseudo.order.push(PseudoHeader::Method);
+                    set_pseudo!(method, v)
+                }
+                hpack::Header::Scheme(v) => {
+                    self.pseudo.order.push(PseudoHeader::Scheme);
+                    set_pseudo!(scheme, v)
+                }
+                hpack::Header::Path(v) => {
+                    self.pseudo.order.push(PseudoHeader::Path);
+                    set_pseudo!(path, v)
+                }
+                hpack::Header::Protocol(v) => {
+                    self.pseudo.order.push(PseudoHeader::Protocol);
+                    set_pseudo!(protocol, v)
+                }
+                hpack::Header::Status(v) => {
+                    self.pseudo.order.push(PseudoHeader::Status);
+                    set_pseudo!(status, v)
+                }
             }
         });
 
@@ -940,8 +1072,9 @@ impl HeaderBlock {
     fn into_encoding(self, encoder: &mut hpack::Encoder) -> EncodingHeaderBlock {
         let mut hpack = BytesMut::new();
         let headers = Iter {
+            pseudo_order: self.pseudo.order.iter(),
             pseudo: Some(self.pseudo),
-            fields: self.fields.into_iter(),
+            fields: Http1HeaderMap::from_parts(self.fields, self.field_order).into_iter(),
         };
 
         encoder.encode(headers, &mut hpack);
@@ -991,68 +1124,6 @@ fn decoded_header_size(name: usize, value: usize) -> usize {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::h2::frame;
-    use crate::h2::hpack::{huffman, Encoder};
-
-    #[test]
-    fn test_nameless_header_at_resume() {
-        let mut encoder = Encoder::default();
-        let mut dst = BytesMut::new();
-
-        let headers = Headers::new(
-            StreamId::ZERO,
-            Default::default(),
-            HeaderMap::from_iter(vec![
-                (
-                    HeaderName::from_static("hello"),
-                    HeaderValue::from_static("world"),
-                ),
-                (
-                    HeaderName::from_static("hello"),
-                    HeaderValue::from_static("zomg"),
-                ),
-                (
-                    HeaderName::from_static("hello"),
-                    HeaderValue::from_static("sup"),
-                ),
-            ]),
-        );
-
-        let continuation = headers
-            .encode(&mut encoder, &mut (&mut dst).limit(frame::HEADER_LEN + 8))
-            .unwrap();
-
-        assert_eq!(17, dst.len());
-        assert_eq!([0, 0, 8, 1, 0, 0, 0, 0, 0], &dst[0..9]);
-        assert_eq!(&[0x40, 0x80 | 4], &dst[9..11]);
-        assert_eq!("hello", huff_decode(&dst[11..15]));
-        assert_eq!(0x80 | 4, dst[15]);
-
-        let mut world = dst[16..17].to_owned();
-
-        dst.clear();
-
-        assert!(continuation
-            .encode(&mut (&mut dst).limit(frame::HEADER_LEN + 16))
-            .is_none());
-
-        world.extend_from_slice(&dst[9..12]);
-        assert_eq!("world", huff_decode(&world));
-
-        assert_eq!(24, dst.len());
-        assert_eq!([0, 0, 15, 9, 4, 0, 0, 0, 0], &dst[0..9]);
-
-        // // Next is not indexed
-        assert_eq!(&[15, 47, 0x80 | 3], &dst[12..15]);
-        assert_eq!("zomg", huff_decode(&dst[15..18]));
-        assert_eq!(&[15, 47, 0x80 | 3], &dst[18..21]);
-        assert_eq!("sup", huff_decode(&dst[21..]));
-    }
-
-    fn huff_decode(src: &[u8]) -> BytesMut {
-        let mut buf = BytesMut::new();
-        huffman::decode(src, &mut buf).unwrap()
-    }
 
     #[test]
     fn test_connect_request_pseudo_headers_omits_path_and_scheme() {

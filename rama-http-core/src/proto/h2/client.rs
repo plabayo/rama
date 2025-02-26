@@ -16,21 +16,21 @@ use futures_util::stream::{StreamExt as _, StreamFuture};
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
-use rama_http_types::{dep::http_body, Method, Request, Response, StatusCode};
+use rama_http_types::{Method, Request, Response, StatusCode, dep::http_body};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, trace, warn};
 
 use super::ping::{Ponger, Recorder};
-use super::{ping, H2Upgraded, PipeToSendStream, SendBuf};
+use super::{H2Upgraded, PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::client::dispatch::{Callback, SendWhen, TrySendError};
 use crate::ext::Protocol;
+use crate::h2::SendStream;
 use crate::h2::client::ResponseFuture;
 use crate::h2::client::{Builder, Connection, SendRequest};
-use crate::h2::SendStream;
 use crate::headers;
-use crate::proto::h2::UpgradedSendStream;
 use crate::proto::Dispatched;
+use crate::proto::h2::UpgradedSendStream;
 use crate::upgrade::Upgraded;
 
 type ClientRx<B> = crate::client::dispatch::Receiver<Request<B>, Response<IncomingBody>>;
@@ -600,7 +600,7 @@ where
 
                 let content_length = headers::content_length_parse_all(res.headers());
                 if let (Some(mut send_stream), StatusCode::OK) = (send_stream, res.status()) {
-                    if content_length.map_or(false, |len| len != 0) {
+                    if content_length.is_some_and(|len| len != 0) {
                         warn!("h2 connect response with non-zero body not supported");
 
                         send_stream.send_reset(crate::h2::Reason::INTERNAL_ERROR);
@@ -693,7 +693,7 @@ where
 
                     if is_connect
                         && headers::content_length_parse_all(req.headers())
-                            .map_or(false, |len| len != 0)
+                            .is_some_and(|len| len != 0)
                     {
                         warn!("h2 connect request with non-zero body not supported");
                         cb.send(Err(TrySendError {

@@ -1,14 +1,14 @@
 //! Pieces pertaining to the HTTP message protocol.
 
-use rama_http_types::dep::http;
 use rama_http_types::HeaderMap;
 use rama_http_types::Version;
+use rama_http_types::dep::http;
 
 pub(crate) mod h1;
 
-pub(crate) use self::h1::dispatch;
 pub(crate) use self::h1::Conn;
 pub(crate) use self::h1::ServerTransaction;
+pub(crate) use self::h1::dispatch;
 
 pub(crate) mod h2;
 

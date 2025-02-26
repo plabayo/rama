@@ -9,8 +9,8 @@ as a distant relative.
 
 ### hyperium
 
-- <https://github.com/hyperium/h2/tree/v0.4.7>
-- <https://github.com/hyperium/hyper/tree/v1.5.2>
+- <https://github.com/hyperium/h2/tree/v0.4.8>
+- <https://github.com/hyperium/hyper/tree/v1.6.0>
 - <https://github.com/hyperium/hyper-util/tree/v0.1.10>
 
 ### tower-rs
@@ -26,9 +26,8 @@ as a distant relative.
 
 ## Relative Forks
 
-- <https://github.com/tokio-rs/axum/tree/3fda093806d43d64dd70cda0274cd3d73d29b6c7>
-  - FromRef (proc macro), we use it in a different form using `std::convert::AsRef` (to avoid clones);
+- <https://github.com/tokio-rs/axum/tree/e0b55d750390d810028caad0387058751611c1b4>
   - IntoResponse Code
-  - FromRequest/ FromRequestParts code
+  - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
   - web::extract inspiration + Path (param) deserializion code

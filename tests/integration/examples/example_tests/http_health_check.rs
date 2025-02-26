@@ -1,5 +1,5 @@
 use super::utils;
-use rama::{http::StatusCode, Context};
+use rama::{Context, http::StatusCode};
 
 #[tokio::test]
 #[ignore]

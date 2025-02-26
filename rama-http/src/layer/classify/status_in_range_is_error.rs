@@ -100,16 +100,20 @@ mod tests {
         let classifier = StatusInRangeAsFailures::new(400..=599);
 
         assert!(matches!(
-            dbg!(classifier
-                .clone()
-                .classify_response(&response_with_status(200))),
+            dbg!(
+                classifier
+                    .clone()
+                    .classify_response(&response_with_status(200))
+            ),
             ClassifiedResponse::Ready(Ok(())),
         ));
 
         assert!(matches!(
-            dbg!(classifier
-                .clone()
-                .classify_response(&response_with_status(400))),
+            dbg!(
+                classifier
+                    .clone()
+                    .classify_response(&response_with_status(400))
+            ),
             ClassifiedResponse::Ready(Err(StatusInRangeFailureClass::StatusCode(
                 StatusCode::BAD_REQUEST
             ))),

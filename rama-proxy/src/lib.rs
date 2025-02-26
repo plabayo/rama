@@ -253,14 +253,16 @@ pub use username::ProxyFilterUsernameParser;
 mod proxydb;
 
 #[doc(inline)]
-pub use proxydb::{Proxy, ProxyDB, ProxyFilter, ProxyID, ProxyQueryPredicate, StringFilter};
+pub use proxydb::{
+    Proxy, ProxyContext, ProxyDB, ProxyFilter, ProxyID, ProxyQueryPredicate, StringFilter,
+};
 
 #[doc(inline)]
 pub use proxydb::layer::{ProxyDBLayer, ProxyDBService, ProxyFilterMode, UsernameFormatter};
 
 #[cfg(feature = "live-update")]
 #[doc(inline)]
-pub use proxydb::{proxy_db_updater, LiveUpdateProxyDB, LiveUpdateProxyDBSetter};
+pub use proxydb::{LiveUpdateProxyDB, LiveUpdateProxyDBSetter, proxy_db_updater};
 
 #[cfg(feature = "memory-db")]
 #[doc(inline)]

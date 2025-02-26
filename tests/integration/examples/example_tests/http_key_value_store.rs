@@ -1,8 +1,8 @@
 use super::utils;
 use itertools::Itertools;
 use rama::{
-    http::{BodyExtractExt, StatusCode},
     Context,
+    http::{BodyExtractExt, StatusCode},
 };
 use serde_json::json;
 

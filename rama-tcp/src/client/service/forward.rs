@@ -1,8 +1,8 @@
 use super::TcpConnector;
 use crate::{client::Request as TcpRequest, utils::is_connection_error};
 use rama_core::{
-    error::{BoxError, ErrorExt, OpaqueError},
     Context, Layer, Service,
+    error::{BoxError, ErrorExt, OpaqueError},
 };
 use rama_net::{
     address::Authority,
@@ -137,11 +137,11 @@ where
     S: Clone + Send + Sync + 'static,
     T: Stream + Unpin,
     C: ConnectorService<
-        S,
-        crate::client::Request,
-        Connection: Stream + Unpin,
-        Error: Into<BoxError>,
-    >,
+            S,
+            crate::client::Request,
+            Connection: Stream + Unpin,
+            Error: Into<BoxError>,
+        >,
     L: Layer<
             ForwarderService<C::Connection>,
             Service: Service<S, T, Response = (), Error: Into<BoxError>>,

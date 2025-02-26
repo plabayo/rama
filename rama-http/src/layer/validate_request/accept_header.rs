@@ -1,7 +1,8 @@
 use super::ValidateRequest;
 use crate::{
+    Request, Response, StatusCode,
     dep::mime::{Mime, MimeIter},
-    header, Request, Response, StatusCode,
+    header,
 };
 use rama_core::Context;
 use std::{fmt, marker::PhantomData, sync::Arc};

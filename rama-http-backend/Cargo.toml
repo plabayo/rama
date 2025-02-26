@@ -18,18 +18,18 @@ default = []
 tls = ["dep:rama-tls", "rama-net/tls"]
 rustls = ["tls", "rama-net/rustls", "rama-tls/rustls"]
 boring = ["tls", "rama-net/boring", "rama-tls/boring"]
-rustls-ring = ["rustls", "rama-tls/rustls-ring"]
 
 [dependencies]
+const_format = { workspace = true }
 h2 = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.4", path = "../rama-core" }
-rama-http-core = { version = "0.2.0-alpha.4", path = "../rama-http-core" }
-rama-http-types = { version = "0.2.0-alpha.4", path = "../rama-http-types" }
-rama-net = { version = "0.2.0-alpha.4", path = "../rama-net", features = ["http"] }
-rama-tcp = { version = "0.2.0-alpha.4", path = "../rama-tcp", features = ["http"] }
-rama-tls = { version = "0.2.0-alpha.4", path = "../rama-tls", optional = true }
-rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }
+rama-http-core = { version = "0.2.0-alpha.7", path = "../rama-http-core" }
+rama-http-types = { version = "0.2.0-alpha.7", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", features = ["http"] }
+rama-tcp = { version = "0.2.0-alpha.7", path = "../rama-tcp", features = ["http"] }
+rama-tls = { version = "0.2.0-alpha.7", path = "../rama-tls", optional = true }
+rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
 tokio = { workspace = true, features = ["macros"] }
 tracing = { workspace = true }
 

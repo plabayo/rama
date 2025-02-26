@@ -28,8 +28,8 @@ impl<S> Layer<S> for DnsResolveModeLayer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{layer::dns::DnsResolveMode, Request};
-    use rama_core::{service::service_fn, Context, Service};
+    use crate::{Request, layer::dns::DnsResolveMode};
+    use rama_core::{Context, Service, service::service_fn};
     use std::convert::Infallible;
 
     #[tokio::test]

@@ -4,13 +4,13 @@
 //! as well as always a User-Agent for all versions.
 
 use crate::{
+    HeaderValue, Request, Response,
     header::{self, HOST, RAMA_ID_HEADER_VALUE, USER_AGENT},
     headers::HeaderMapExt,
-    HeaderValue, Request, Response,
 };
 use rama_core::{
-    error::{BoxError, ErrorContext},
     Context, Layer, Service,
+    error::{BoxError, ErrorContext},
 };
 use rama_net::http::RequestContext;
 use rama_utils::macros::define_inner_service_accessors;

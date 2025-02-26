@@ -374,8 +374,8 @@ impl<'de> serde::Deserialize<'de> for NodeId {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        s.try_into().map_err(serde::de::Error::custom)
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 
@@ -481,44 +481,73 @@ mod tests {
             "foo:_b+r",
             "😀",
             "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",
-
         ] {
             let node_result = s.parse::<NodeId>();
-            assert!(node_result.is_err(), "parse invalid: {}; parsed: {:?}", s, node_result);
+            assert!(
+                node_result.is_err(),
+                "parse invalid: {}; parsed: {:?}",
+                s,
+                node_result
+            );
         }
     }
 
     #[test]
     fn test_parse_node_id_lossy() {
         for (s, expected) in [
-            ("", NodeId {
-                name: NodeName::Obf(ObfNode::from_static("_")),
-                port: None,
-            }),
-            ("@", NodeId {
-                name: NodeName::Obf(ObfNode::from_static("_")),
-                port: None,
-            }),
-            ("2001:db8:3333:4444:5555:6666:7777:8888:80", NodeId {
-                name: NodeName::Obf(ObfNode::from_static("2001_db8_3333_4444_5555_6666_7777_8888_80")),
-                port: None,
-            }),
-            ("foo:bar", NodeId {
-                name: NodeName::Obf(ObfNode::from_static("foo")),
-                port: Some(NodePort::Obf(ObfPort::from_static("_bar"))),
-            }),
-            ("foo:_b+r", NodeId {
-                name: NodeName::Obf(ObfNode::from_static("foo")),
-                port: Some(NodePort::Obf(ObfPort::from_static("_b_r"))),
-            }),
-            ("😀", NodeId {
-                name: NodeName::Obf(ObfNode::from_static("____")),
-                port: None,
-            }),
-            ("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz", NodeId {
-                name: NodeName::Obf(ObfNode::from_static("abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv")),
-                port: None,
-            }),
+            (
+                "",
+                NodeId {
+                    name: NodeName::Obf(ObfNode::from_static("_")),
+                    port: None,
+                },
+            ),
+            (
+                "@",
+                NodeId {
+                    name: NodeName::Obf(ObfNode::from_static("_")),
+                    port: None,
+                },
+            ),
+            (
+                "2001:db8:3333:4444:5555:6666:7777:8888:80",
+                NodeId {
+                    name: NodeName::Obf(ObfNode::from_static(
+                        "2001_db8_3333_4444_5555_6666_7777_8888_80",
+                    )),
+                    port: None,
+                },
+            ),
+            (
+                "foo:bar",
+                NodeId {
+                    name: NodeName::Obf(ObfNode::from_static("foo")),
+                    port: Some(NodePort::Obf(ObfPort::from_static("_bar"))),
+                },
+            ),
+            (
+                "foo:_b+r",
+                NodeId {
+                    name: NodeName::Obf(ObfNode::from_static("foo")),
+                    port: Some(NodePort::Obf(ObfPort::from_static("_b_r"))),
+                },
+            ),
+            (
+                "😀",
+                NodeId {
+                    name: NodeName::Obf(ObfNode::from_static("____")),
+                    port: None,
+                },
+            ),
+            (
+                "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz",
+                NodeId {
+                    name: NodeName::Obf(ObfNode::from_static(
+                        "abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuv",
+                    )),
+                    port: None,
+                },
+            ),
         ] {
             let node_id = NodeId::from_str_lossy(s);
             assert_eq!(node_id, expected, "parse str: {}", s);

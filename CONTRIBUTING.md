@@ -48,10 +48,10 @@ just qa
 
 Before you can do this you do require the following to be installed:
 
-* `Rust`, version 1.80 or beyond: <https://www.rust-lang.org/tools/install>
+* `Rust`, version 1.85 or beyond: <https://www.rust-lang.org/tools/install>
 * `just` (to run _just_ (config) files): <https://just.systems/man/en/packages.html>
 * `cargo hack`: <https://github.com/taiki-e/cargo-hack?tab=readme-ov-file#installation>
 
 Once this is all done you should be able to run `just qa`.
-When all these pasts you can be pretty certain that all tests in the GitHub CI step
-will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV (`1.80`) and three platforms in total: MacOS, Linux and Windows.
+When all these pass you can be pretty certain that all tests in the GitHub CI step
+will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV (`1.85`) and three platforms in total: MacOS, Linux and Windows.

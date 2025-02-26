@@ -16,6 +16,7 @@ workspace = true
 [dependencies]
 bytes = { workspace = true }
 const_format = { workspace = true }
+csv = { workspace = true }
 futures-core = { workspace = true }
 futures-lite = { workspace = true }
 headers = { workspace = true }
@@ -26,11 +27,13 @@ mime = { workspace = true }
 mime_guess = { workspace = true }
 paste = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-error = { version = "0.2.0-alpha.4", path = "../rama-error" }
-rama-utils = { version = "0.2.0-alpha.4", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }
+rama-error = { version = "0.2.0-alpha.7", path = "../rama-error" }
+rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
+smallvec = { workspace = true }
 sync_wrapper = { workspace = true }
 tracing = { workspace = true }
 

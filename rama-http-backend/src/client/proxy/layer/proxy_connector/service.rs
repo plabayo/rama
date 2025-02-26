@@ -2,9 +2,11 @@ use crate::client::proxy::layer::HttpProxyError;
 
 use super::InnerHttpProxyConnector;
 use rama_core::{
-    error::{BoxError, ErrorExt, OpaqueError},
     Context, Service,
+    combinators::Either,
+    error::{BoxError, ErrorExt, OpaqueError},
 };
+use rama_http_core::upgrade;
 use rama_http_types::headers::ProxyAuthorization;
 use rama_net::{
     address::ProxyAddress,
@@ -77,7 +79,8 @@ where
         + Send
         + 'static,
 {
-    type Response = EstablishedClientConnection<S::Connection, State, Request>;
+    type Response =
+        EstablishedClientConnection<Either<S::Connection, upgrade::Upgraded>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -141,8 +144,21 @@ where
                 return if self.required {
                     Err("http proxy required but none is defined".into())
                 } else {
-                    tracing::trace!("http proxy connector: no proxy required or set: proceed with direct connection");
-                    Ok(established_conn)
+                    tracing::trace!(
+                        "http proxy connector: no proxy required or set: proceed with direct connection"
+                    );
+                    let EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn,
+                        addr,
+                    } = established_conn;
+                    return Ok(EstablishedClientConnection {
+                        ctx,
+                        req,
+                        conn: Either::A(conn),
+                        addr,
+                    });
                 };
             }
         };
@@ -173,12 +189,13 @@ where
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn,
+                conn: Either::A(conn),
                 addr,
             });
         }
 
-        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone());
+        let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
+
         if let Some(credential) = address.credential.clone() {
             match credential {
                 ProxyCredential::Basic(basic) => {
@@ -203,7 +220,7 @@ where
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn,
+            conn: Either::B(conn),
             addr,
         })
     }

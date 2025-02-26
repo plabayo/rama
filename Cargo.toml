@@ -25,24 +25,26 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0-alpha.4"
+version = "0.2.0-alpha.7"
 license = "MIT OR Apache-2.0"
-edition = "2021"
+edition = "2024"
 repository = "https://github.com/plabayo/rama"
 homepage = "https://ramaproxy.org"
 keywords = ["io", "async", "non-blocking", "service", "rama"]
 categories = ["asynchronous", "network-programming", "web-programming", "web-programming::http-client", "web-programming::http-server"]
 authors = ["Glen De Cauwsemaecker <glen@plabayo.tech>"]
-rust-version = "1.80.0"
+rust-version = "1.85.0"
 
 [workspace.dependencies]
 async-compression = "0.4"
 base64 = "0.22"
 bitflags = "2.4"
+md5 = "0.7.0"
 brotli = "7"
 bytes = "1"
 clap = { version = "4.5.15", features = ["derive"] }
 crossterm = "0.27"
+csv = "1.3.1"
 flate2 = "1.0"
 futures-lite = "2.3.0"
 futures-core = "0.3"
@@ -60,9 +62,8 @@ boring = "4.9.1"
 tokio-boring = "4.9.1"
 ipnet = "2.9.0"
 libfuzzer-sys = "0.4"
-atty = "0.2"
 honggfuzz = "0.5.56"
-itertools = "0.13.0"
+itertools = "0.14.0"
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
 paste = "1.0"
@@ -70,16 +71,17 @@ percent-encoding = "2.1"
 pin-project-lite = "0.2.13"
 rustls-pki-types = "^1"
 proc-macro2 = "1.0"
-opentelemetry = { version = "0.27.0", default-features = false, features = [
+socket2 = "0.5.8"
+opentelemetry = { version = "0.28.0", default-features = false, features = [
     "trace",
 ] }
-nom = "7.1.3"
-opentelemetry-otlp = { version = "0.27.0", features = ["tokio"] }
-opentelemetry_sdk = { version = "0.27.0", default-features = false, features = [
+nom = "8.0.0"
+opentelemetry-otlp = { version = "0.28.0", features = ["tokio"] }
+opentelemetry_sdk = { version = "0.28.0", default-features = false, features = [
     "trace",
     "rt-tokio",
 ] }
-opentelemetry-semantic-conventions = { version = "0.27", features = [
+opentelemetry-semantic-conventions = { version = "0.28", features = [
     "semconv_experimental",
 ] }
 quickcheck = "1.0"
@@ -92,7 +94,7 @@ rustls = { version = "0.23", default-features = false, features = [
     "tls12",
     "aws_lc_rs",
 ] }
-derive_more = "1.0.0"
+derive_more = "2.0.1"
 rustls-native-certs = "0.8.0"
 rustls-pemfile = "2.1"
 rustversion = "1.0.9"
@@ -114,9 +116,10 @@ tokio-test = "0.4.4"
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = "0.3.17"
-tracing-tree = "0.2"
+tracing-tree = "0.4.0"
 trybuild = "1.0.98"
 uuid = "1.6"
+nanoid = "0.4.0"
 zstd = "0.13"
 venndb = "0.5.0"
 unicode-normalization = "0.1.23"
@@ -137,15 +140,18 @@ futures-sink = "0.3"
 fnv = "1.0.5"
 slab = "0.4.2"
 indexmap = "2"
-rand = "0.8.4"
+rand = "0.9.0"
 walkdir = "2.3.2"
-env_logger = "0.10"
+env_logger = "0.11.6"
 httparse = "1.8"
 smallvec = { version = "1.12", features = ["const_generics", "const_new"] }
 itoa = "1"
 want = "0.3"
 futures-util = "0.3"
 futures-channel = "0.3"
+sha2 = "0.10.8"
+jemallocator = { package = "tikv-jemallocator", version = "0.6" }
+mimalloc = { version = "0.1.39", default-features = false }
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
@@ -195,6 +201,7 @@ keywords = { workspace = true }
 categories = { workspace = true }
 authors = { workspace = true }
 rust-version = { workspace = true }
+resolver = "3"
 
 [lints]
 workspace = true
@@ -215,7 +222,6 @@ telemetry = ["rama-core/telemetry", "rama-net/telemetry", "rama-http/telemetry"]
 compression = ["http", "rama-http/compression"]
 tls = ["net", "dep:rama-tls", "rama-net/tls", "rama-http/tls", "rama-http-backend/tls"]
 rustls = ["tls", "rama-tls/rustls", "rama-net/rustls", "rama-http-backend/rustls"]
-rustls-ring = ["tls", "rama-tls/rustls-ring"]
 boring = ["tls", "rama-tls/boring", "rama-net/boring", "rama-http-backend/boring"]
 cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
 net = ["dep:rama-net"]
@@ -238,18 +244,18 @@ rustversion = { workspace = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.4", path = "rama-core" }
-rama-dns = { version = "0.2.0-alpha.4", path = "rama-dns", optional = true }
-rama-haproxy = { version = "0.2.0-alpha.4", path = "rama-haproxy", optional = true }
-rama-http = { version = "0.2.0-alpha.4", path = "rama-http", optional = true }
-rama-http-backend = { version = "0.2.0-alpha.4", path = "rama-http-backend", optional = true }
-rama-http-core = { version = "0.2.0-alpha.4", path = "rama-http-core", optional = true }
-rama-net = { version = "0.2.0-alpha.4", path = "rama-net", optional = true }
-rama-proxy = { version = "0.2.0-alpha.4", path = "rama-proxy", optional = true }
-rama-tcp = { version = "0.2.0-alpha.4", path = "rama-tcp", optional = true }
-rama-tls = { version = "0.2.0-alpha.4", path = "rama-tls", optional = true }
-rama-ua = { version = "0.2.0-alpha.4", path = "rama-ua", optional = true }
-rama-utils = { version = "0.2.0-alpha.4", path = "rama-utils" }
+rama-core = { version = "0.2.0-alpha.7", path = "rama-core" }
+rama-dns = { version = "0.2.0-alpha.7", path = "rama-dns", optional = true }
+rama-haproxy = { version = "0.2.0-alpha.7", path = "rama-haproxy", optional = true }
+rama-http = { version = "0.2.0-alpha.7", path = "rama-http", optional = true }
+rama-http-backend = { version = "0.2.0-alpha.7", path = "rama-http-backend", optional = true }
+rama-http-core = { version = "0.2.0-alpha.7", path = "rama-http-core", optional = true }
+rama-net = { version = "0.2.0-alpha.7", path = "rama-net", optional = true }
+rama-proxy = { version = "0.2.0-alpha.7", path = "rama-proxy", optional = true }
+rama-tcp = { version = "0.2.0-alpha.7", path = "rama-tcp", optional = true }
+rama-tls = { version = "0.2.0-alpha.7", path = "rama-tls", optional = true }
+rama-ua = { version = "0.2.0-alpha.7", path = "rama-ua", optional = true }
+rama-utils = { version = "0.2.0-alpha.7", path = "rama-utils" }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }
@@ -266,7 +272,7 @@ futures-util = { workspace = true }
 h2-support = { path = "rama-http-core/tests/h2-support" }
 http = { workspace = true }
 itertools = { workspace = true }
-opentelemetry-otlp = { workspace = true }
+opentelemetry-otlp = { workspace = true, features = ["grpc-tonic"] }
 opentelemetry_sdk = { workspace = true }
 pin-project-lite = { workspace = true }
 regex = { workspace = true }
@@ -407,6 +413,10 @@ required-features = ["tcp"]
 [[example]]
 name = "tcp_listener_layers"
 required-features = ["tcp"]
+
+[[example]]
+name = "tls_boring_dynamic_certs"
+required-features = ["boring", "http-full"]
 
 [[example]]
 name = "tls_boring_termination"

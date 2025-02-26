@@ -270,9 +270,9 @@ impl<'de> Deserialize<'de> for HttpAgent {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         match_ignore_ascii_case_str! {
-            match (s.as_str()) {
+            match (s) {
                 "chrome" | "chromium" => Ok(HttpAgent::Chromium),
                 "Firefox" => Ok(HttpAgent::Firefox),
                 "Safari" => Ok(HttpAgent::Safari),
@@ -358,9 +358,9 @@ impl<'de> Deserialize<'de> for TlsAgent {
     where
         D: Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
         match_ignore_ascii_case_str! {
-            match (s.as_str()) {
+            match (s) {
                 "rustls" => Ok(TlsAgent::Rustls),
                 "boring" | "boringssl" => Ok(TlsAgent::Boringssl),
                 "nss" => Ok(TlsAgent::Nss),
@@ -394,7 +394,10 @@ mod tests {
     #[test]
     fn test_user_agent_new() {
         let ua = UserAgent::new("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".to_owned());
-        assert_eq!(ua.header_str(), "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        assert_eq!(
+            ua.header_str(),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        );
         assert_eq!(
             ua.info(),
             Some(UserAgentInfo {
@@ -411,7 +414,10 @@ mod tests {
     #[test]
     fn test_user_agent_parse() {
         let ua: UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".parse().unwrap();
-        assert_eq!(ua.header_str(), "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        assert_eq!(
+            ua.header_str(),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        );
         assert_eq!(
             ua.info(),
             Some(UserAgentInfo {
@@ -428,7 +434,10 @@ mod tests {
     #[test]
     fn test_user_agent_display() {
         let ua: UserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36".parse().unwrap();
-        assert_eq!(ua.to_string(), "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36");
+        assert_eq!(
+            ua.to_string(),
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        );
     }
 
     #[test]

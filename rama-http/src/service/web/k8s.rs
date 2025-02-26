@@ -1,9 +1,9 @@
 //! k8s web service
 
-use crate::{matcher::HttpMatcher, IntoResponse, Request, Response, StatusCode};
+use crate::{IntoResponse, Request, Response, StatusCode, matcher::HttpMatcher};
 use rama_core::{
-    service::{service_fn, BoxService},
     Context, Service,
+    service::{BoxService, service_fn},
 };
 use std::{convert::Infallible, fmt, marker::PhantomData, sync::Arc};
 

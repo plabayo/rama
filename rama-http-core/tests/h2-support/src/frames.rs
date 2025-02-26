@@ -2,7 +2,7 @@ use std::convert::TryInto;
 use std::fmt;
 
 use bytes::Bytes;
-use rama_http_types::{HeaderMap, StatusCode};
+use rama_http_types::{HeaderMap, StatusCode, proto::h1::headers::original::OriginalHttp1Headers};
 
 use rama_http_core::h2::frame::{self, Frame, StreamId};
 
@@ -19,6 +19,7 @@ where
         id.into(),
         frame::Pseudo::default(),
         HeaderMap::default(),
+        OriginalHttp1Headers::default(),
     ))
 }
 
@@ -41,6 +42,7 @@ where
         promised.into(),
         frame::Pseudo::default(),
         HeaderMap::default(),
+        OriginalHttp1Headers::default(),
     ))
 }
 
@@ -108,10 +110,10 @@ impl Mock<frame::Headers> {
     {
         let method = method.try_into().unwrap();
         let uri = uri.try_into().unwrap();
-        let (id, _, fields) = self.into_parts();
+        let (id, _, fields, field_order) = self.into_parts();
         let extensions = Default::default();
         let pseudo = frame::Pseudo::request(method, uri, extensions);
-        let frame = frame::Headers::new(id, pseudo, fields);
+        let frame = frame::Headers::new(id, pseudo, fields, field_order);
         Mock(frame)
     }
 
@@ -121,7 +123,7 @@ impl Mock<frame::Headers> {
         M::Error: fmt::Debug,
     {
         let method = method.try_into().unwrap();
-        let (id, pseudo, fields) = self.into_parts();
+        let (id, pseudo, fields, field_order) = self.into_parts();
         let frame = frame::Headers::new(
             id,
             frame::Pseudo {
@@ -129,13 +131,14 @@ impl Mock<frame::Headers> {
                 ..pseudo
             },
             fields,
+            field_order,
         );
         Mock(frame)
     }
 
     pub fn pseudo(self, pseudo: frame::Pseudo) -> Self {
-        let (id, _, fields) = self.into_parts();
-        let frame = frame::Headers::new(id, pseudo, fields);
+        let (id, _, fields, field_order) = self.into_parts();
+        let frame = frame::Headers::new(id, pseudo, fields, field_order);
         Mock(frame)
     }
 
@@ -145,14 +148,14 @@ impl Mock<frame::Headers> {
         S::Error: fmt::Debug,
     {
         let status = status.try_into().unwrap();
-        let (id, _, fields) = self.into_parts();
-        let frame = frame::Headers::new(id, frame::Pseudo::response(status), fields);
+        let (id, _, fields, field_order) = self.into_parts();
+        let frame = frame::Headers::new(id, frame::Pseudo::response(status), fields, field_order);
         Mock(frame)
     }
 
-    pub fn fields(self, fields: HeaderMap) -> Self {
-        let (id, pseudo, _) = self.into_parts();
-        let frame = frame::Headers::new(id, pseudo, fields);
+    pub fn fields(self, fields: HeaderMap, field_order: OriginalHttp1Headers) -> Self {
+        let (id, pseudo, _, _) = self.into_parts();
+        let frame = frame::Headers::new(id, pseudo, fields, field_order);
         Mock(frame)
     }
 
@@ -163,27 +166,29 @@ impl Mock<frame::Headers> {
         V: TryInto<http::header::HeaderValue>,
         V::Error: fmt::Debug,
     {
-        let (id, pseudo, mut fields) = self.into_parts();
-        fields.insert(key.try_into().unwrap(), value.try_into().unwrap());
-        let frame = frame::Headers::new(id, pseudo, fields);
+        let (id, pseudo, mut fields, mut field_order) = self.into_parts();
+        let name = key.try_into().unwrap();
+        field_order.push(name.clone().into());
+        fields.insert(name, value.try_into().unwrap());
+        let frame = frame::Headers::new(id, pseudo, fields, field_order);
         Mock(frame)
     }
 
     pub fn status(self, value: StatusCode) -> Self {
-        let (id, mut pseudo, fields) = self.into_parts();
+        let (id, mut pseudo, fields, field_order) = self.into_parts();
 
         pseudo.set_status(value);
 
-        Mock(frame::Headers::new(id, pseudo, fields))
+        Mock(frame::Headers::new(id, pseudo, fields, field_order))
     }
 
     pub fn scheme(self, value: &str) -> Self {
-        let (id, mut pseudo, fields) = self.into_parts();
+        let (id, mut pseudo, fields, field_order) = self.into_parts();
         let value = value.parse().unwrap();
 
         pseudo.set_scheme(value);
 
-        Mock(frame::Headers::new(id, pseudo, fields))
+        Mock(frame::Headers::new(id, pseudo, fields, field_order))
     }
 
     pub fn eos(mut self) -> Self {
@@ -195,12 +200,12 @@ impl Mock<frame::Headers> {
         self.0.into_parts().1
     }
 
-    fn into_parts(self) -> (StreamId, frame::Pseudo, HeaderMap) {
+    fn into_parts(self) -> (StreamId, frame::Pseudo, HeaderMap, OriginalHttp1Headers) {
         assert!(!self.0.is_end_stream(), "eos flag will be lost");
         assert!(self.0.is_end_headers(), "unset eoh will be lost");
         let id = self.0.stream_id();
         let parts = self.0.into_parts();
-        (id, parts.0, parts.1)
+        (id, parts.0, parts.1, parts.2)
     }
 }
 
@@ -236,16 +241,16 @@ impl Mock<frame::PushPromise> {
     {
         let method = method.try_into().unwrap();
         let uri = uri.try_into().unwrap();
-        let (id, promised, _, fields) = self.into_parts();
+        let (id, promised, _, fields, field_order) = self.into_parts();
         let extensions = Default::default();
         let pseudo = frame::Pseudo::request(method, uri, extensions);
-        let frame = frame::PushPromise::new(id, promised, pseudo, fields);
+        let frame = frame::PushPromise::new(id, promised, pseudo, fields, field_order);
         Mock(frame)
     }
 
-    pub fn fields(self, fields: HeaderMap) -> Self {
-        let (id, promised, pseudo, _) = self.into_parts();
-        let frame = frame::PushPromise::new(id, promised, pseudo, fields);
+    pub fn fields(self, fields: HeaderMap, field_order: OriginalHttp1Headers) -> Self {
+        let (id, promised, pseudo, _, _) = self.into_parts();
+        let frame = frame::PushPromise::new(id, promised, pseudo, fields, field_order);
         Mock(frame)
     }
 
@@ -256,18 +261,26 @@ impl Mock<frame::PushPromise> {
         V: TryInto<http::header::HeaderValue>,
         V::Error: fmt::Debug,
     {
-        let (id, promised, pseudo, mut fields) = self.into_parts();
+        let (id, promised, pseudo, mut fields, field_order) = self.into_parts();
         fields.insert(key.try_into().unwrap(), value.try_into().unwrap());
-        let frame = frame::PushPromise::new(id, promised, pseudo, fields);
+        let frame = frame::PushPromise::new(id, promised, pseudo, fields, field_order);
         Mock(frame)
     }
 
-    fn into_parts(self) -> (StreamId, StreamId, frame::Pseudo, HeaderMap) {
+    fn into_parts(
+        self,
+    ) -> (
+        StreamId,
+        StreamId,
+        frame::Pseudo,
+        HeaderMap,
+        OriginalHttp1Headers,
+    ) {
         assert!(self.0.is_end_headers(), "unset eoh will be lost");
         let id = self.0.stream_id();
         let promised = self.0.promised_id();
         let parts = self.0.into_parts();
-        (id, promised, parts.0, parts.1)
+        (id, promised, parts.0, parts.1, parts.2)
     }
 }
 
@@ -362,6 +375,11 @@ impl Mock<frame::Reset> {
 impl Mock<frame::Settings> {
     pub fn max_concurrent_streams(mut self, max: u32) -> Self {
         self.0.set_max_concurrent_streams(Some(max));
+        self
+    }
+
+    pub fn max_frame_size(mut self, val: u32) -> Self {
+        self.0.set_max_frame_size(Some(val));
         self
     }
 

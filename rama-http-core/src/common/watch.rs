@@ -5,8 +5,8 @@
 //! - The value `0` is reserved for closed.
 
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc,
+    atomic::{AtomicUsize, Ordering},
 };
 use std::task;
 

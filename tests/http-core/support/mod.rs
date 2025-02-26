@@ -3,17 +3,17 @@ use std::convert::Infallible;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
-    atomic::{AtomicUsize, Ordering},
     Arc, Mutex,
+    atomic::{AtomicUsize, Ordering},
 };
 
 use bytes::Bytes;
 use http::StatusCode;
+use rama::Context;
 use rama::http::core::server;
 use rama::http::core::service::RamaHttpService;
 use rama::http::dep::http_body_util::{BodyExt, Full};
 use rama::rt::Executor;
-use rama::Context;
 use tokio::net::{TcpListener, TcpStream};
 
 use rama::http::{Request, Response, Version};
@@ -21,7 +21,7 @@ use rama::service::service_fn;
 
 #[allow(unused_imports)]
 pub(crate) use futures_util::{
-    future, FutureExt as _, StreamExt as _, TryFutureExt as _, TryStreamExt as _,
+    FutureExt as _, StreamExt as _, TryFutureExt as _, TryStreamExt as _, future,
 };
 pub(crate) use rama::http::HeaderMap;
 pub(crate) use std::net::SocketAddr;

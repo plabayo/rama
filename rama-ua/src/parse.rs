@@ -1,8 +1,8 @@
 #![allow(dead_code)]
 
 use super::{
-    info::{UserAgentData, UserAgentInfo},
     DeviceKind, PlatformKind, UserAgent, UserAgentKind,
+    info::{UserAgentData, UserAgentInfo},
 };
 
 /// Maximum length of a User Agent string that we take into consideration.
@@ -32,7 +32,7 @@ pub(crate) fn parse_http_user_agent_header(header: String) -> UserAgent {
                     http_agent_overwrite: None,
                     tls_agent_overwrite: None,
                     preserve_ua_header: false,
-                }
+                };
             }
         }
     } else {

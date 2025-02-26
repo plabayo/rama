@@ -51,13 +51,32 @@ impl fmt::Display for ParseError {
             Self::MissingDestinationAddress => write!(f, "Header missing destination address."),
             Self::MissingSourcePort => write!(f, "Header missing source port."),
             Self::MissingDestinationPort => write!(f, "Header missing destination port."),
-            Self::HeaderTooLong => write!(f, "Header does not fit within the expected buffer size of 107 bytes (plus 1 byte for null-terminated strings)."),
+            Self::HeaderTooLong => write!(
+                f,
+                "Header does not fit within the expected buffer size of 107 bytes (plus 1 byte for null-terminated strings)."
+            ),
             Self::InvalidProtocol => write!(f, "Header has an invalid protocol."),
             Self::InvalidSuffix => write!(f, "Header must end in '\r\n'."),
-            Self::InvalidSourceAddress(source) => write!(f, "Header contains invalid IP address for the source: {}", source),
-            Self::InvalidDestinationAddress(destination) => write!(f, "Header contains invalid IP address for the destination: {}", destination),
-            Self::InvalidSourcePort(port) => write!(f, "Header contains invalid TCP port for the source: {}", port.as_ref().map(|e| e.to_string()).unwrap_or_default()),
-            Self::InvalidDestinationPort(port) => write!(f, "Header contains invalid TCP port for the destination: {}", port.as_ref().map(|e| e.to_string()).unwrap_or_default()),
+            Self::InvalidSourceAddress(source) => write!(
+                f,
+                "Header contains invalid IP address for the source: {}",
+                source
+            ),
+            Self::InvalidDestinationAddress(destination) => write!(
+                f,
+                "Header contains invalid IP address for the destination: {}",
+                destination
+            ),
+            Self::InvalidSourcePort(port) => write!(
+                f,
+                "Header contains invalid TCP port for the source: {}",
+                port.as_ref().map(|e| e.to_string()).unwrap_or_default()
+            ),
+            Self::InvalidDestinationPort(port) => write!(
+                f,
+                "Header contains invalid TCP port for the destination: {}",
+                port.as_ref().map(|e| e.to_string()).unwrap_or_default()
+            ),
         }
     }
 }

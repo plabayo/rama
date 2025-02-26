@@ -17,11 +17,14 @@
 //!
 //! You should see a response with `HTTP/1.1 200 OK` and a JSON body with the method and path of the request.
 
+use std::net::{IpAddr, Ipv4Addr};
+
 use rama::{
-    http::{response::Json, server::HttpServer, Request},
+    http::{Request, response::Json, server::HttpServer},
     rt::Executor,
     service::service_fn,
 };
+use rama_net::address::SocketAddress;
 use serde_json::json;
 
 #[tokio::main]
@@ -29,7 +32,9 @@ async fn main() {
     let exec = Executor::default();
     HttpServer::auto(exec)
         .listen(
-            "127.0.0.1:62007",
+            // The below string type will also work
+            // "127.0.0.1:62007",
+            SocketAddress::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 62007),
             service_fn(|req: Request| async move {
                 Ok(Json(json!({
                     "method": req.method().as_str(),

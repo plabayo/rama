@@ -170,8 +170,8 @@ fn normalize_trailing_slash(uri: &mut Uri) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rama_core::service::service_fn;
     use rama_core::Layer;
+    use rama_core::service::service_fn;
     use std::convert::Infallible;
 
     #[tokio::test]

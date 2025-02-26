@@ -41,11 +41,9 @@ mod tcp_listener_hello;
 #[cfg(feature = "tcp")]
 mod tcp_listener_layers;
 
-// TODO: enable again in future,
-// does not work for now, not sure why...
-// Running example manually does work via curl,
-// but automated test fails and not important enough for now
-// :shrug:
+#[cfg(all(feature = "boring", feature = "http-full"))]
+mod tls_boring_dynamic_certs;
+
 #[cfg(all(feature = "boring", feature = "haproxy", feature = "http-full"))]
 mod tls_boring_termination;
 

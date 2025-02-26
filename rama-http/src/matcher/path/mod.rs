@@ -1,5 +1,5 @@
 use crate::{IntoResponse, Request, StatusCode};
-use rama_core::{context::Extensions, Context};
+use rama_core::{Context, context::Extensions};
 use std::collections::HashMap;
 
 mod de;

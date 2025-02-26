@@ -9,6 +9,7 @@ use std::time::Duration;
 use crate::upgrade::Upgraded;
 use bytes::Bytes;
 use futures_util::ready;
+use httparse::ParserConfig;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::body::Incoming as IncomingBody;
@@ -63,6 +64,7 @@ pin_project_lite::pin_project! {
 /// to bind the built connection to a service.
 #[derive(Clone, Debug)]
 pub struct Builder {
+    h1_parser_config: ParserConfig,
     h1_half_close: bool,
     h1_keep_alive: bool,
     h1_title_case_headers: bool,
@@ -222,6 +224,7 @@ impl Builder {
     /// Create a new connection builder.
     pub fn new() -> Self {
         Self {
+            h1_parser_config: Default::default(),
             h1_half_close: false,
             h1_keep_alive: true,
             h1_title_case_headers: false,
@@ -260,6 +263,19 @@ impl Builder {
     /// Default is false.
     pub fn title_case_headers(&mut self, enabled: bool) -> &mut Self {
         self.h1_title_case_headers = enabled;
+        self
+    }
+
+    /// Set whether HTTP/1 connections will silently ignored malformed header lines.
+    ///
+    /// If this is enabled and a header line does not start with a valid header
+    /// name, or does not include a colon at all, the line will be silently ignored
+    /// and no error will be reported.
+    ///
+    /// Default is false.
+    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Builder {
+        self.h1_parser_config
+            .ignore_invalid_headers_in_requests(enabled);
         self
     }
 
@@ -363,6 +379,7 @@ impl Builder {
         I: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
         let mut conn = proto::Conn::new(io);
+        conn.set_h1_parser_config(self.h1_parser_config.clone());
         if !self.h1_keep_alive {
             conn.disable_keep_alive();
         }

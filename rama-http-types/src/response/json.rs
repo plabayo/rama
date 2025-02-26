@@ -1,5 +1,5 @@
 use crate::response::{IntoResponse, Response};
-use crate::{dep::http::StatusCode, Body};
+use crate::{Body, dep::http::StatusCode};
 use bytes::{BufMut, BytesMut};
 use headers::ContentType;
 use rama_error::OpaqueError;

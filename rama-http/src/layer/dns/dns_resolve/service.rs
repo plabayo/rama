@@ -1,6 +1,6 @@
 use super::DnsResolveMode;
 use crate::{HeaderName, Request};
-use rama_core::{error::OpaqueError, Context, Service};
+use rama_core::{Context, Service, error::OpaqueError};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 
@@ -49,10 +49,10 @@ where
     State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
     S: Service<
-        State,
-        Request<Body>,
-        Error: Into<rama_core::error::BoxError> + Send + Sync + 'static,
-    >,
+            State,
+            Request<Body>,
+            Error: Into<rama_core::error::BoxError> + Send + Sync + 'static,
+        >,
 {
     type Response = S::Response;
     type Error = OpaqueError;

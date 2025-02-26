@@ -38,7 +38,7 @@
 //! # }
 //! ```
 
-use crate::{header, HeaderName, Request, Response};
+use crate::{HeaderName, Request, Response, header};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::sync::Arc;
@@ -286,7 +286,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{header, HeaderValue, Request, Response};
+    use crate::{HeaderValue, Request, Response, header};
     use rama_core::service::service_fn;
 
     #[tokio::test]
@@ -326,11 +326,13 @@ mod tests {
 
         let resp = service.serve(Context::default(), req).await.unwrap();
 
-        assert!(!resp
-            .headers()
-            .get(header::CONTENT_TYPE)
-            .unwrap()
-            .is_sensitive());
+        assert!(
+            !resp
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .unwrap()
+                .is_sensitive()
+        );
 
         let mut iter = resp.headers().get_all(header::SET_COOKIE).iter().peekable();
 

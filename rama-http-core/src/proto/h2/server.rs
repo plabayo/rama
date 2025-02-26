@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 use std::time::Duration;
 
 use crate::h2::server::{Connection, Handshake, SendResponse};
@@ -9,18 +9,18 @@ use bytes::Bytes;
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
-use rama_http_types::{header, Method, Request, Response};
+use rama_http_types::{Method, Request, Response, header};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, trace, warn};
 
-use super::{ping, PipeToSendStream, SendBuf};
+use super::{PipeToSendStream, SendBuf, ping};
 use crate::body::{Body, Incoming as IncomingBody};
 use crate::common::date;
 use crate::ext::Protocol;
 use crate::headers;
+use crate::proto::Dispatched;
 use crate::proto::h2::ping::Recorder;
 use crate::proto::h2::{H2Upgraded, UpgradedSendStream};
-use crate::proto::Dispatched;
 use crate::service::HttpService;
 
 use crate::upgrade::{OnUpgrade, Pending, Upgraded};
@@ -254,7 +254,7 @@ where
                                 None,
                             )
                         } else {
-                            if content_length.map_or(false, |len| len != 0) {
+                            if content_length.is_some_and(|len| len != 0) {
                                 warn!("h2 connect request with non-zero body not supported");
                                 respond.send_reset(crate::h2::Reason::INTERNAL_ERROR);
                                 return Poll::Ready(Ok(()));
@@ -459,14 +459,18 @@ where
                     if let Some(connect_parts) = connect_parts.take() {
                         if res.status().is_success() {
                             if headers::content_length_parse_all(res.headers())
-                                .map_or(false, |len| len != 0)
+                                .is_some_and(|len| len != 0)
                             {
-                                warn!("h2 successful response to CONNECT request with body not supported");
+                                warn!(
+                                    "h2 successful response to CONNECT request with body not supported"
+                                );
                                 me.reply.send_reset(crate::h2::Reason::INTERNAL_ERROR);
                                 return Poll::Ready(Err(crate::Error::new_user_header()));
                             }
                             if res.headers_mut().remove(header::CONTENT_LENGTH).is_some() {
-                                warn!("successful response to CONNECT request disallows content-length header");
+                                warn!(
+                                    "successful response to CONNECT request disallows content-length header"
+                                );
                             }
                             let send_stream = reply!(me, res, false);
                             connect_parts.pending.fulfill(Upgraded::new(

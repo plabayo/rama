@@ -1,5 +1,5 @@
 use super::{Authority, Host};
-use crate::{proto::try_to_extract_protocol_from_uri_scheme, user::ProxyCredential, Protocol};
+use crate::{Protocol, proto::try_to_extract_protocol_from_uri_scheme, user::ProxyCredential};
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{fmt::Display, str::FromStr};
 
@@ -119,8 +119,8 @@ impl<'de> serde::Deserialize<'de> for ProxyAddress {
     where
         D: serde::Deserializer<'de>,
     {
-        let s = String::deserialize(deserializer)?;
-        s.try_into().map_err(serde::de::Error::custom)
+        let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
+        s.parse().map_err(serde::de::Error::custom)
     }
 }
 

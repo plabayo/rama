@@ -29,10 +29,10 @@
 //! # }
 //! ```
 
-use crate::dep::http_body_util::Limited;
 use crate::Request;
+use crate::dep::http_body_util::Limited;
 use bytes::Bytes;
-use rama_core::{error::BoxError, Context, Layer, Service};
+use rama_core::{Context, Layer, Service, error::BoxError};
 use rama_http_types::Body;
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;

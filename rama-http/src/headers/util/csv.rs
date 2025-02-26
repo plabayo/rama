@@ -4,8 +4,8 @@
 
 use std::fmt;
 
-use crate::headers::Error;
 use crate::HeaderValue;
+use crate::headers::Error;
 
 /// Reads a comma-delimited raw header into a Vec.
 pub(crate) fn from_comma_delimited<'i, I, T, E>(values: &mut I) -> Result<E, Error>

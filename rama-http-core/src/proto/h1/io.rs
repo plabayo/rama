@@ -176,11 +176,11 @@ where
                 &mut self.read_buf,
                 self.partial_len,
                 ParseContext {
-                    cached_headers: parse_ctx.cached_headers,
                     req_method: parse_ctx.req_method,
                     h1_parser_config: parse_ctx.h1_parser_config.clone(),
                     h1_max_headers: parse_ctx.h1_max_headers,
                     h09_responses: parse_ctx.h09_responses,
+                    on_informational: parse_ctx.on_informational,
                 },
             )? {
                 Some(msg) => {
@@ -687,15 +687,17 @@ mod tests {
         // Rather, this `poll_fn` will wrap the `Poll` result.
         std::future::poll_fn(|cx| {
             let parse_ctx = ParseContext {
-                cached_headers: &mut None,
                 req_method: &mut None,
                 h1_parser_config: Default::default(),
                 h1_max_headers: None,
                 h09_responses: false,
+                on_informational: &mut None,
             };
-            assert!(buffered
-                .parse::<ClientTransaction>(cx, parse_ctx)
-                .is_pending());
+            assert!(
+                buffered
+                    .parse::<ClientTransaction>(cx, parse_ctx)
+                    .is_pending()
+            );
             Poll::Ready(())
         })
         .await;

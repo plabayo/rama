@@ -1,13 +1,13 @@
 use super::{IntoResponseParts, Response, ResponseParts};
+use crate::Body;
 use crate::dep::http_body::{Frame, SizeHint};
 use crate::dep::mime;
-use crate::Body;
 use crate::{
+    StatusCode,
     dep::http::Extensions,
     header::{self, HeaderMap, HeaderName, HeaderValue},
-    StatusCode,
 };
-use bytes::{buf::Chain, Buf, Bytes, BytesMut};
+use bytes::{Buf, Bytes, BytesMut, buf::Chain};
 use rama_error::BoxError;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::{
@@ -422,3 +422,70 @@ macro_rules! impl_into_response {
 }
 
 all_the_tuples_no_last_special_case!(impl_into_response);
+
+macro_rules! impl_into_response_either {
+    ($id:ident, $($param:ident),+ $(,)?) => {
+        impl<$($param),+> IntoResponse for rama_core::combinators::$id<$($param),+>
+        where
+            $($param: IntoResponse),+
+        {
+            fn into_response(self) -> Response {
+                match self {
+                    $(
+                        rama_core::combinators::$id::$param(val) => val.into_response(),
+                    )+
+                }
+            }
+        }
+    };
+}
+
+rama_core::combinators::impl_either!(impl_into_response_either);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::combinators::Either;
+
+    #[test]
+    fn test_either_into_response() {
+        let left: Either<&'static str, Vec<u8>> = Either::A("hello");
+        let right: Either<&'static str, Vec<u8>> = Either::B(vec![1, 2, 3]);
+
+        let left_res = left.into_response();
+        assert_eq!(
+            left_res.headers().get(header::CONTENT_TYPE).unwrap(),
+            mime::TEXT_PLAIN_UTF_8.as_ref()
+        );
+
+        let right_res = right.into_response();
+        assert_eq!(
+            right_res.headers().get(header::CONTENT_TYPE).unwrap(),
+            mime::APPLICATION_OCTET_STREAM.as_ref()
+        );
+    }
+
+    #[test]
+    fn test_either3_into_response() {
+        use rama_core::combinators::Either3;
+
+        let a: Either3<&'static str, Vec<u8>, StatusCode> = Either3::A("hello");
+        let b: Either3<&'static str, Vec<u8>, StatusCode> = Either3::B(vec![1, 2, 3]);
+        let c: Either3<&'static str, Vec<u8>, StatusCode> = Either3::C(StatusCode::NOT_FOUND);
+
+        let a_res = a.into_response();
+        assert_eq!(
+            a_res.headers().get(header::CONTENT_TYPE).unwrap(),
+            mime::TEXT_PLAIN_UTF_8.as_ref()
+        );
+
+        let b_res = b.into_response();
+        assert_eq!(
+            b_res.headers().get(header::CONTENT_TYPE).unwrap(),
+            mime::APPLICATION_OCTET_STREAM.as_ref()
+        );
+
+        let c_res = c.into_response();
+        assert_eq!(c_res.status(), StatusCode::NOT_FOUND);
+    }
+}

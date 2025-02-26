@@ -1,7 +1,7 @@
 use crate::{HeaderName, HeaderValue, Request};
 use rama_core::Context;
 use std::{
-    future::{ready, Future},
+    future::{Future, ready},
     marker::PhantomData,
 };
 

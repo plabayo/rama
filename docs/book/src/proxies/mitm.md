@@ -37,3 +37,14 @@ digraph {
 
 A MITM proxy is typically setup as [an HTTP Proxy](./http.md), but in case you
 want it can be setup as [a SOCKS5 proxy](./socks5.md) instead.
+
+## Transparent Proxies
+
+Man-In-The-Middle (MITM) proxies that only wish to inspect the traffic without destructive modification,
+can (try to) mirror the incoming client on the various network layers (tcp, tls and http). This is a kind
+of User-Agent emulation but in function of the original User-Agent rather than a popular one with huge market share.
+
+Such proxies are also referred to as transparent proxies and you might be able to see
+some network inspection software expose an option called "transparent mode" or "hidden".
+If at that point they still are able to inspect your https traffic it is very well possible
+that they are acting like a "transparent proxy".

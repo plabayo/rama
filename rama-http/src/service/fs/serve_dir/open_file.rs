@@ -1,9 +1,9 @@
 use super::{
-    headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
     ServeVariant,
+    headers::{IfModifiedSince, IfUnmodifiedSince, LastModified},
 };
 use crate::layer::util::content_encoding::{Encoding, QValue};
-use crate::{header, HeaderValue, Method, Request, Uri};
+use crate::{HeaderValue, Method, Request, Uri, header};
 use http_range_header::RangeUnsatisfiableError;
 use std::{
     ffi::OsStr,
@@ -284,7 +284,7 @@ fn try_parse_range(
 async fn is_dir(path_to_file: &Path) -> bool {
     tokio::fs::metadata(path_to_file)
         .await
-        .map_or(false, |meta_data| meta_data.is_dir())
+        .is_ok_and(|meta_data| meta_data.is_dir())
 }
 
 fn append_slash_on_path(uri: Uri) -> Uri {

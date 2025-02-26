@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::{into_response::ErrorIntoResponseFn, policy::UnlimitedPolicy, Limit};
+use super::{Limit, into_response::ErrorIntoResponseFn, policy::UnlimitedPolicy};
 use crate::Layer;
 
 /// Limit requests based on a [`Policy`].

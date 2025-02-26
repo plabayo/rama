@@ -101,7 +101,7 @@
 
 pub mod policy;
 
-use crate::{dep::http_body::Body, header::LOCATION, Method, Request, Response, StatusCode, Uri};
+use crate::{Method, Request, Response, StatusCode, Uri, dep::http_body::Body, header::LOCATION};
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -287,7 +287,7 @@ where
                     location: &location,
                     previous: &uri,
                 };
-                match policy.redirect(&ctx, &attempt).map_err(Into::into)? {
+                match policy.redirect(&ctx, &attempt)? {
                     Action::Follow => {
                         uri = location;
                         body.try_clone_from(&ctx, &mut policy, &taken_body);
@@ -375,9 +375,9 @@ fn resolve_uri(relative: &str, base: &Uri) -> Option<Uri> {
 #[cfg(test)]
 mod tests {
     use super::{policy::*, *};
-    use crate::{header::LOCATION, Body};
-    use rama_core::service::service_fn;
+    use crate::{Body, header::LOCATION};
     use rama_core::Layer;
+    use rama_core::service::service_fn;
     use std::convert::Infallible;
 
     #[tokio::test]

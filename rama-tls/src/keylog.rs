@@ -7,7 +7,7 @@
 use parking_lot::RwLock;
 use rama_core::error::{ErrorContext, OpaqueError};
 use std::{
-    collections::{hash_map::Entry, HashMap},
+    collections::{HashMap, hash_map::Entry},
     fs::OpenOptions,
     io::Write,
     path::{Component, Path, PathBuf},

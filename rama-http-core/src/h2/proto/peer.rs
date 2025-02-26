@@ -2,6 +2,7 @@ use crate::h2::error::Reason;
 use crate::h2::frame::{Pseudo, StreamId};
 use crate::h2::proto::{Error, Open};
 
+use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::{HeaderMap, Request, Response};
 
 use std::fmt;
@@ -19,6 +20,7 @@ pub(crate) trait Peer {
     fn convert_poll_message(
         pseudo: Pseudo,
         fields: HeaderMap,
+        field_order: OriginalHttp1Headers,
         stream_id: StreamId,
     ) -> Result<Self::Poll, Error>;
 
@@ -61,13 +63,14 @@ impl Dyn {
         &self,
         pseudo: Pseudo,
         fields: HeaderMap,
+        field_order: OriginalHttp1Headers,
         stream_id: StreamId,
     ) -> Result<PollMessage, Error> {
         if self.is_server() {
-            crate::h2::server::Peer::convert_poll_message(pseudo, fields, stream_id)
+            crate::h2::server::Peer::convert_poll_message(pseudo, fields, field_order, stream_id)
                 .map(PollMessage::Server)
         } else {
-            crate::h2::client::Peer::convert_poll_message(pseudo, fields, stream_id)
+            crate::h2::client::Peer::convert_poll_message(pseudo, fields, field_order, stream_id)
                 .map(PollMessage::Client)
         }
     }

@@ -52,7 +52,9 @@
 //! ```
 
 use rama::{
+    Context, Layer,
     http::{
+        IntoResponse, Method, StatusCode,
         layer::{
             compression::CompressionLayer, trace::TraceLayer,
             validate_request::ValidateRequestHeaderLayer,
@@ -61,13 +63,11 @@ use rama::{
         response::Json,
         server::HttpServer,
         service::web::{
-            extract::{Bytes, Path},
             IntoEndpointService, WebService,
+            extract::{Bytes, Path},
         },
-        IntoResponse, Method, StatusCode,
     },
     rt::Executor,
-    Context, Layer,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -76,7 +76,7 @@ use tokio::sync::RwLock;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 #[derive(Debug, Default)]
 struct AppState {

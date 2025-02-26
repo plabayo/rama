@@ -61,7 +61,7 @@ where
 
     async fn get_proxy_if(
         &self,
-        ctx: rama_net::transport::TransportContext,
+        ctx: super::ProxyContext,
         filter: super::ProxyFilter,
         predicate: impl super::ProxyQueryPredicate,
     ) -> Result<super::Proxy, Self::Error> {
@@ -79,7 +79,7 @@ where
 
     async fn get_proxy(
         &self,
-        ctx: rama_net::transport::TransportContext,
+        ctx: super::ProxyContext,
         filter: super::ProxyFilter,
     ) -> Result<super::Proxy, Self::Error> {
         match self.0.load().deref().deref() {
@@ -118,11 +118,8 @@ impl<T: fmt::Debug> fmt::Debug for LiveUpdateProxyDBSetter<T> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Proxy, ProxyFilter};
-    use rama_net::{
-        asn::Asn,
-        transport::{TransportContext, TransportProtocol},
-    };
+    use crate::{Proxy, ProxyFilter, proxydb::ProxyContext};
+    use rama_net::{asn::Asn, transport::TransportProtocol};
     use rama_utils::str::NonEmptyString;
 
     use super::*;
@@ -130,36 +127,34 @@ mod tests {
     #[tokio::test]
     async fn test_empty_live_update_db() {
         let (reader, _) = proxy_db_updater::<Proxy>();
-        assert!(reader
-            .get_proxy(
-                TransportContext {
-                    protocol: TransportProtocol::Tcp,
-                    app_protocol: None,
-                    http_version: None,
-                    authority: "proxy.example.com:1080".parse().unwrap(),
-                },
-                ProxyFilter::default(),
-            )
-            .await
-            .is_err());
+        assert!(
+            reader
+                .get_proxy(
+                    ProxyContext {
+                        protocol: TransportProtocol::Tcp,
+                    },
+                    ProxyFilter::default(),
+                )
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
     async fn test_live_update_db_updated() {
         let (reader, writer) = proxy_db_updater();
 
-        assert!(reader
-            .get_proxy(
-                TransportContext {
-                    protocol: TransportProtocol::Tcp,
-                    app_protocol: None,
-                    http_version: None,
-                    authority: "proxy.example.com:1080".parse().unwrap(),
-                },
-                ProxyFilter::default(),
-            )
-            .await
-            .is_err());
+        assert!(
+            reader
+                .get_proxy(
+                    ProxyContext {
+                        protocol: TransportProtocol::Tcp,
+                    },
+                    ProxyFilter::default(),
+                )
+                .await
+                .is_err()
+        );
 
         writer.set(Proxy {
             id: NonEmptyString::from_static("id"),
@@ -186,11 +181,8 @@ mod tests {
             "id",
             reader
                 .get_proxy(
-                    TransportContext {
+                    ProxyContext {
                         protocol: TransportProtocol::Tcp,
-                        app_protocol: None,
-                        http_version: None,
-                        authority: "proxy.example.com:1080".parse().unwrap(),
                     },
                     ProxyFilter::default(),
                 )
@@ -199,28 +191,24 @@ mod tests {
                 .id
         );
 
-        assert!(reader
-            .get_proxy(
-                TransportContext {
-                    protocol: TransportProtocol::Udp,
-                    app_protocol: None,
-                    http_version: None,
-                    authority: "proxy.example.com:1080".parse().unwrap(),
-                },
-                ProxyFilter::default(),
-            )
-            .await
-            .is_err());
+        assert!(
+            reader
+                .get_proxy(
+                    ProxyContext {
+                        protocol: TransportProtocol::Udp,
+                    },
+                    ProxyFilter::default(),
+                )
+                .await
+                .is_err()
+        );
 
         assert_eq!(
             "id",
             reader
                 .get_proxy(
-                    TransportContext {
+                    ProxyContext {
                         protocol: TransportProtocol::Tcp,
-                        app_protocol: None,
-                        http_version: None,
-                        authority: "proxy.example.com:1080".parse().unwrap(),
                     },
                     ProxyFilter::default(),
                 )

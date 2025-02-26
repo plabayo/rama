@@ -1,17 +1,17 @@
 use super::{
-    data::{
-        get_http_info, get_request_info, get_tls_display_info, get_user_agent_info, DataSource,
-        FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo, UserAgentInfo,
-    },
     State,
+    data::{
+        DataSource, FetchMode, Initiator, RequestInfo, ResourceType, TlsDisplayInfo, UserAgentInfo,
+        get_http_info, get_ja4h_info, get_request_info, get_tls_display_info, get_user_agent_info,
+    },
 };
 use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
 use rama::{
-    http::{
-        response::Json, service::web::extract::Path, Body, IntoResponse, Request, Response,
-        StatusCode,
-    },
     Context,
+    http::{
+        Body, IntoResponse, Request, Response, StatusCode, response::Json,
+        service::web::extract::Path,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -79,9 +79,9 @@ pub(super) async fn get_report(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Html, Response> {
-    let http_info = get_http_info(&req);
+    let ja4h = get_ja4h_info(&req);
 
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -95,6 +95,8 @@ pub(super) async fn get_report(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
+
     let head = r#"<script src="/assets/script.js"></script>"#.to_owned();
 
     let mut tables = vec![
@@ -106,6 +108,23 @@ pub(super) async fn get_report(
             rows: http_info.headers,
         },
     ];
+
+    if let Some(ja4h) = ja4h {
+        tables.push(Table {
+            title: "🆔 Ja4H".to_owned(),
+            rows: vec![
+                ("HTTP Client Fingerprint".to_owned(), ja4h.hash),
+                ("Raw (Debug) String".to_owned(), ja4h.human_str),
+            ],
+        })
+    }
+
+    if let Some(pseudo) = http_info.pseudo_headers {
+        tables.push(Table {
+            title: "🚗 H2 Pseudo Headers".to_owned(),
+            rows: vec![("order".to_owned(), pseudo.join(", "))],
+        });
+    }
 
     let tls_info = get_tls_display_info(&ctx);
     if let Some(tls_info) = tls_info {
@@ -160,9 +179,9 @@ pub(super) async fn get_api_fetch_number(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
-    let http_info = get_http_info(&req);
+    let ja4h = get_ja4h_info(&req);
 
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -176,6 +195,8 @@ pub(super) async fn get_api_fetch_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
+
     let tls_info = get_tls_display_info(&ctx);
 
     Ok(Json(json!({
@@ -184,7 +205,11 @@ pub(super) async fn get_api_fetch_number(
             "user_agent_info": user_agent_info,
             "request_info": request_info,
             "tls_info": tls_info,
-            "http_info": http_info,
+            "http_info": json!({
+                "headers": http_info.headers,
+                "pseudo_headers": http_info.pseudo_headers,
+                "ja4h": ja4h,
+            }),
         }
     })))
 }
@@ -194,9 +219,9 @@ pub(super) async fn post_api_fetch_number(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
-    let http_info = get_http_info(&req);
+    let ja4h = get_ja4h_info(&req);
 
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -209,6 +234,8 @@ pub(super) async fn post_api_fetch_number(
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
 
     let tls_info = get_tls_display_info(&ctx);
 
@@ -218,7 +245,11 @@ pub(super) async fn post_api_fetch_number(
             "user_agent_info": user_agent_info,
             "request_info": request_info,
             "tls_info": tls_info,
-            "http_info": http_info,
+            "http_info": json!({
+                "headers": http_info.headers,
+                "pseudo_headers": http_info.pseudo_headers,
+                "ja4h": ja4h,
+            }),
         }
     })))
 }
@@ -227,9 +258,9 @@ pub(super) async fn get_api_xml_http_request_number(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
-    let http_info = get_http_info(&req);
+    let ja4h = get_ja4h_info(&req);
 
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -243,12 +274,21 @@ pub(super) async fn get_api_xml_http_request_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
+
+    let tls_info = get_tls_display_info(&ctx);
+
     Ok(Json(json!({
         "number": ctx.state().counter.fetch_add(1, std::sync::atomic::Ordering::AcqRel),
         "fp": {
-            "headers": http_info.headers,
             "user_agent_info": user_agent_info,
             "request_info": request_info,
+            "tls_info": tls_info,
+            "http_info": json!({
+                "headers": http_info.headers,
+                "pseudo_headers": http_info.pseudo_headers,
+                "ja4h": ja4h,
+            }),
         }
     })))
 }
@@ -258,9 +298,9 @@ pub(super) async fn post_api_xml_http_request_number(
     mut ctx: Context<Arc<State>>,
     req: Request,
 ) -> Result<Json<serde_json::Value>, Response> {
-    let http_info = get_http_info(&req);
+    let ja4h = get_ja4h_info(&req);
 
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -274,6 +314,8 @@ pub(super) async fn post_api_xml_http_request_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
+
     let tls_info = get_tls_display_info(&ctx);
 
     Ok(Json(json!({
@@ -282,7 +324,11 @@ pub(super) async fn post_api_xml_http_request_number(
             "user_agent_info": user_agent_info,
             "request_info": request_info,
             "tls_info": tls_info,
-            "http_info": http_info,
+            "http_info": json!({
+                "headers": http_info.headers,
+                "pseudo_headers": http_info.pseudo_headers,
+                "ja4h": ja4h,
+            }),
         }
     })))
 }
@@ -292,12 +338,9 @@ pub(super) async fn post_api_xml_http_request_number(
 //------------------------------------------
 
 pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<Html, Response> {
-    // TODO: get TLS Info (for https access only)
-    // TODO: support HTTP1, HTTP2 and AUTO (for now we are only doing auto)
+    let ja4h = get_ja4h_info(&req);
 
-    let http_info = get_http_info(&req);
-
-    let (parts, _) = req.into_parts();
+    let (mut parts, _) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -310,6 +353,8 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
     )
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
+
+    let http_info = get_http_info(parts.headers, &mut parts.extensions);
 
     let mut content = String::new();
 
@@ -339,6 +384,23 @@ pub(super) async fn form(mut ctx: Context<Arc<State>>, req: Request) -> Result<H
             rows: http_info.headers,
         },
     ];
+
+    if let Some(ja4h) = ja4h {
+        tables.push(Table {
+            title: "🆔 Ja4H".to_owned(),
+            rows: vec![
+                ("HTTP Client Fingerprint".to_owned(), ja4h.hash),
+                ("Raw (Debug) String".to_owned(), ja4h.human_str),
+            ],
+        })
+    }
+
+    if let Some(pseudo) = http_info.pseudo_headers {
+        tables.push(Table {
+            title: "🚗 H2 Pseudo Headers".to_owned(),
+            rows: vec![("order".to_owned(), pseudo.join(", "))],
+        });
+    }
 
     let tls_info = get_tls_display_info(&ctx);
     if let Some(tls_info) = tls_info {
@@ -389,7 +451,7 @@ fn render_report(title: &'static str, head: String, mut html: String, tables: Ve
         html.push_str("<table>");
         for (key, value) in table.rows {
             html.push_str(&format!(
-                r##"<tr><td class="key">{}</td><td>{}</td></tr>"##,
+                r##"<tr><td class="key">{}</td><td><code>{}</code></td></tr>"##,
                 key, value
             ));
         }
@@ -458,10 +520,25 @@ fn render_page(title: &'static str, head: String, content: String) -> Html {
 
 impl From<TlsDisplayInfo> for Vec<Table> {
     fn from(info: TlsDisplayInfo) -> Self {
-        let mut vec = Vec::with_capacity(info.extensions.len() + 1);
+        let mut vec = Vec::with_capacity(info.extensions.len() + 3);
+        vec.push(Table {
+            title: "🆔 Ja4".to_owned(),
+            rows: vec![
+                ("TLS Client Fingerprint".to_owned(), info.ja4.hash),
+                ("Raw (Debug) String".to_owned(), info.ja4.full),
+            ],
+        });
+        vec.push(Table {
+            title: "🆔 Ja3".to_owned(),
+            rows: vec![
+                ("hash".to_owned(), info.ja3.hash),
+                ("full".to_owned(), info.ja3.full),
+            ],
+        });
         vec.push(Table {
             title: "🔒 TLS Client Hello — Header".to_owned(),
             rows: vec![
+                ("Version".to_owned(), info.protocol_version),
                 ("Cipher Suites".to_owned(), info.cipher_suites.join(", ")),
                 (
                     "Compression Algorithms".to_owned(),
@@ -470,18 +547,19 @@ impl From<TlsDisplayInfo> for Vec<Table> {
             ],
         });
         for extension in info.extensions {
+            let mut rows = vec![("ID".to_owned(), extension.id)];
+            if let Some(data) = extension.data {
+                rows.push((
+                    "Data".to_owned(),
+                    match data {
+                        TlsDisplayInfoExtensionData::Single(s) => s,
+                        TlsDisplayInfoExtensionData::Multi(v) => v.join(", "),
+                    },
+                ));
+            }
             vec.push(Table {
                 title: "🔒 TLS Client Hello — Extension".to_owned(),
-                rows: vec![
-                    ("ID".to_owned(), extension.id),
-                    (
-                        "Data".to_owned(),
-                        match extension.data {
-                            TlsDisplayInfoExtensionData::Single(s) => s,
-                            TlsDisplayInfoExtensionData::Multi(v) => v.join(", "),
-                        },
-                    ),
-                ],
+                rows,
             });
         }
         vec

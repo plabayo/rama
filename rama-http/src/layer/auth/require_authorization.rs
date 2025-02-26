@@ -56,8 +56,8 @@ use crate::layer::validate_request::{
     ValidateRequest, ValidateRequestHeader, ValidateRequestHeaderLayer,
 };
 use crate::{
-    header::{self, HeaderValue},
     Request, Response, StatusCode,
+    header::{self, HeaderValue},
 };
 use base64::Engine as _;
 use rama_core::Context;
@@ -409,7 +409,10 @@ impl<C: fmt::Debug> fmt::Debug for AuthorizeContext<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Body;
+
+    use crate::layer::validate_request::ValidateRequestHeaderLayer;
+    use crate::{Body, header};
+
     use rama_core::error::BoxError;
     use rama_core::service::service_fn;
     use rama_core::{Context, Layer, Service};

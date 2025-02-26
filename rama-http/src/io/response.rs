@@ -1,9 +1,13 @@
 use crate::{
-    dep::{http_body, http_body_util::BodyExt},
     Body, Response,
+    dep::{http_body, http_body_util::BodyExt},
 };
 use bytes::Bytes;
 use rama_core::error::BoxError;
+use rama_http_types::proto::{
+    h1::Http1HeaderMap,
+    h2::{PseudoHeader, PseudoHeaderOrder},
+};
 use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// Write an HTTP response to a writer in std http format.
@@ -17,7 +21,7 @@ where
     W: AsyncWrite + Unpin + Send + Sync + 'static,
     B: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
 {
-    let (parts, body) = res.into_parts();
+    let (mut parts, body) = res.into_parts();
 
     if write_headers {
         w.write_all(
@@ -35,9 +39,53 @@ where
         )
         .await?;
 
-        for (key, value) in parts.headers.iter() {
-            w.write_all(format!("{}: {}\r\n", key, value.to_str()?).as_bytes())
-                .await?;
+        if let Some(pseudo_headers) = parts.extensions.get::<PseudoHeaderOrder>() {
+            for header in pseudo_headers.iter() {
+                match header {
+                    PseudoHeader::Method
+                    | PseudoHeader::Scheme
+                    | PseudoHeader::Authority
+                    | PseudoHeader::Path
+                    | PseudoHeader::Protocol => (), // not expected in response
+                    PseudoHeader::Status => {
+                        w.write_all(
+                            format!(
+                                "[{}: {} {}]\r\n",
+                                header,
+                                parts.status.as_u16(),
+                                parts
+                                    .status
+                                    .canonical_reason()
+                                    .map(|r| format!(" {}", r))
+                                    .unwrap_or_default(),
+                            )
+                            .as_bytes(),
+                        )
+                        .await?;
+                    }
+                }
+            }
+        }
+
+        let header_map = Http1HeaderMap::new(parts.headers, Some(&mut parts.extensions));
+        // put a clone of this data back into parts as we don't really want to consume it, just trace it
+        parts.headers = header_map.clone().consume(&mut parts.extensions);
+
+        for (name, value) in header_map {
+            match parts.version {
+                http::Version::HTTP_2 | http::Version::HTTP_3 => {
+                    // write lower-case for H2/H3
+                    w.write_all(
+                        format!("{}: {}\r\n", name.header_name().as_str(), value.to_str()?)
+                            .as_bytes(),
+                    )
+                    .await?;
+                }
+                _ => {
+                    w.write_all(format!("{}: {}\r\n", name, value.to_str()?).as_bytes())
+                        .await?;
+                }
+            }
         }
     }
 

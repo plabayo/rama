@@ -3,7 +3,7 @@
 use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
-use std::task::{ready, Context, Poll};
+use std::task::{Context, Poll, ready};
 
 use bytes::Bytes;
 use httparse::ParserConfig;
@@ -185,7 +185,7 @@ where
     pub fn send_request(
         &self,
         req: Request<B>,
-    ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
+    ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> + use<B> {
         let sent = self.dispatch.send(req);
 
         async move {
@@ -390,7 +390,7 @@ impl Builder {
     /// and no error will be reported.
     ///
     /// Default is false.
-    pub fn ignore_invalid_headers_in_responses(&mut self, enabled: bool) -> &mut Builder {
+    pub fn ignore_invalid_headers(&mut self, enabled: bool) -> &mut Builder {
         self.h1_parser_config
             .ignore_invalid_headers_in_responses(enabled);
         self

@@ -3,9 +3,9 @@
 //! For now this only sets `Server` and `Date` heades.
 
 use crate::{
+    HeaderValue, Request, Response,
     header::{self, DATE, RAMA_ID_HEADER_VALUE, SERVER},
     headers::{Date, HeaderMapExt},
-    HeaderValue, Request, Response,
 };
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -206,7 +206,7 @@ where
 mod tests {
     use super::*;
     use crate::Body;
-    use rama_core::{service::service_fn, Layer};
+    use rama_core::{Layer, service::service_fn};
     use std::convert::Infallible;
 
     #[tokio::test]

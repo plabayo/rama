@@ -150,9 +150,9 @@
 //! ```
 
 use crate::{
+    HeaderValue, Request, Response,
     header::HeaderName,
     headers::{Header, HeaderExt},
-    HeaderValue, Request, Response,
 };
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
@@ -428,7 +428,7 @@ where
 mod tests {
     use super::*;
 
-    use crate::{header, Body, HeaderValue, Request, Response};
+    use crate::{Body, HeaderValue, Request, Response, header};
     use rama_core::service::service_fn;
     use std::convert::Infallible;
 

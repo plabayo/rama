@@ -1,4 +1,4 @@
-use super::{eq_origin, Action, Attempt, Policy};
+use super::{Action, Attempt, Policy, eq_origin};
 use rama_core::Context;
 use std::fmt;
 
@@ -54,9 +54,11 @@ mod tests {
             location: &same_origin,
             previous: request.uri(),
         };
-        assert!(Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
-            .unwrap()
-            .is_follow());
+        assert!(
+            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+                .unwrap()
+                .is_follow()
+        );
 
         let mut request = Request::builder().uri(same_origin).body(()).unwrap();
         Policy::<(), (), ()>::on_request(&mut policy, &mut ctx, &mut request);
@@ -66,8 +68,10 @@ mod tests {
             location: &cross_origin,
             previous: request.uri(),
         };
-        assert!(Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
-            .unwrap()
-            .is_stop());
+        assert!(
+            Policy::<(), (), ()>::redirect(&mut policy, &ctx, &attempt)
+                .unwrap()
+                .is_stop()
+        );
     }
 }

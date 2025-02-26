@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use rama_core::{error::BoxError, Context, Service};
+use rama_core::{Context, Service, error::BoxError};
 use rama_http_types::{Request, Response};
 use std::{convert::Infallible, fmt, future::Future};
 

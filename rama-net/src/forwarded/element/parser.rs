@@ -140,7 +140,9 @@ fn parse_next_forwarded_element(
         // >
         // > remark: we do not apply any validation here
         if !quoted && value.contains(['[', ']', ':']) {
-            return Err(OpaqueError::from_display(format!("Forwarded Element pair's value was expected to be a quoted string due to the chars it contains: {value}")));
+            return Err(OpaqueError::from_display(format!(
+                "Forwarded Element pair's value was expected to be a quoted string due to the chars it contains: {value}"
+            )));
         }
 
         match_ignore_ascii_case_str! {

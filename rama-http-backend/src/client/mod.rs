@@ -3,10 +3,10 @@
 
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
-    error::{BoxError, ErrorExt, OpaqueError},
     Context, Service,
+    error::{BoxError, ErrorExt, OpaqueError},
 };
-use rama_http_types::{dep::http_body, Request, Response};
+use rama_http_types::{Request, Response, dep::http_body};
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_tcp::client::service::TcpConnector;
 

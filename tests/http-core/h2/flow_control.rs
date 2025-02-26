@@ -5,7 +5,6 @@ use h2_support::util::yield_once;
 // In this case, the stream & connection both have capacity, but capacity is not
 // explicitly requested.
 #[tokio::test]
-#[ignore]
 async fn send_data_without_requesting_capacity() {
     h2_support::trace_init!();
 
@@ -52,7 +51,6 @@ async fn send_data_without_requesting_capacity() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn release_capacity_sends_window_update() {
     h2_support::trace_init!();
 
@@ -120,7 +118,6 @@ async fn release_capacity_sends_window_update() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn release_capacity_of_small_amount_does_not_send_window_update() {
     h2_support::trace_init!();
 
@@ -176,7 +173,6 @@ fn expand_window_sends_window_update() {}
 fn expand_window_calls_are_coalesced() {}
 
 #[tokio::test]
-#[ignore]
 async fn recv_data_overflows_connection_window() {
     h2_support::trace_init!();
 
@@ -239,7 +235,6 @@ async fn recv_data_overflows_connection_window() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_data_overflows_stream_window() {
     // this tests for when streams have smaller windows than their connection
     h2_support::trace_init!();
@@ -298,7 +293,6 @@ fn recv_window_update_causes_overflow() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn stream_error_release_connection_capacity() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -375,7 +369,6 @@ async fn stream_error_release_connection_capacity() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn stream_close_by_data_frame_releases_capacity() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -448,7 +441,6 @@ async fn stream_close_by_data_frame_releases_capacity() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn stream_close_by_trailers_frame_releases_capacity() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -491,7 +483,8 @@ async fn stream_close_by_trailers_frame_releases_capacity() {
 
         // Closing the previous stream by sending a trailers frame will
         // release the capacity to s2
-        s1.send_trailers(Default::default()).unwrap();
+        s1.send_trailers(Default::default(), Default::default())
+            .unwrap();
 
         // The capacity should be available
         assert_eq!(s2.capacity(), 5);
@@ -522,7 +515,6 @@ async fn stream_close_by_trailers_frame_releases_capacity() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn stream_close_by_send_reset_frame_releases_capacity() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -582,7 +574,6 @@ async fn stream_close_by_send_reset_frame_releases_capacity() {
 fn stream_close_by_recv_reset_frame_releases_capacity() {}
 
 #[tokio::test]
-#[ignore]
 async fn recv_window_update_on_stream_closed_by_data_frame() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -629,7 +620,6 @@ async fn recv_window_update_on_stream_closed_by_data_frame() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn reserved_capacity_assigned_in_multi_window_updates() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -693,7 +683,6 @@ async fn reserved_capacity_assigned_in_multi_window_updates() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn connection_notified_on_released_capacity() {
     use tokio::sync::{mpsc, oneshot};
 
@@ -805,7 +794,6 @@ async fn connection_notified_on_released_capacity() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_settings_removes_available_capacity() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -853,7 +841,6 @@ async fn recv_settings_removes_available_capacity() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_settings_keeps_assigned_capacity() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -899,7 +886,6 @@ async fn recv_settings_keeps_assigned_capacity() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_no_init_window_then_receive_some_init_window() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -953,7 +939,6 @@ async fn recv_no_init_window_then_receive_some_init_window() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn settings_lowered_capacity_returns_capacity_to_connection() {
     use futures::channel::oneshot;
 
@@ -1061,7 +1046,6 @@ async fn settings_lowered_capacity_returns_capacity_to_connection() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn client_increase_target_window_size() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1082,7 +1066,6 @@ async fn client_increase_target_window_size() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn increase_target_window_size_after_using_some() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1124,7 +1107,6 @@ async fn increase_target_window_size_after_using_some() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn decrease_target_window_size() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1170,7 +1152,6 @@ async fn decrease_target_window_size() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn client_update_initial_window_size() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1246,7 +1227,6 @@ async fn client_update_initial_window_size() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn client_decrease_initial_window_size() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1372,7 +1352,6 @@ async fn client_decrease_initial_window_size() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn server_target_window_size() {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
@@ -1394,7 +1373,6 @@ async fn server_target_window_size() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn recv_settings_increase_window_size_after_using_some() {
     // See https://github.com/hyperium/h2/issues/208
     h2_support::trace_init!();
@@ -1437,7 +1415,6 @@ async fn recv_settings_increase_window_size_after_using_some() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn reserve_capacity_after_peer_closes() {
     // See https://github.com/hyperium/h2/issues/300
     h2_support::trace_init!();
@@ -1474,7 +1451,6 @@ async fn reserve_capacity_after_peer_closes() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn reset_stream_waiting_for_capacity() {
     // This tests that receiving a reset on a stream that has some available
     // connection-level window reassigns that window to another stream.
@@ -1538,7 +1514,6 @@ async fn reset_stream_waiting_for_capacity() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn data_padding() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1589,7 +1564,6 @@ async fn data_padding() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn poll_capacity_after_send_data_and_reserve() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1640,7 +1614,6 @@ async fn poll_capacity_after_send_data_and_reserve() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn poll_capacity_after_send_data_and_reserve_with_max_send_buffer_size() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1696,7 +1669,6 @@ async fn poll_capacity_after_send_data_and_reserve_with_max_send_buffer_size() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn max_send_buffer_size_overflow() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1754,7 +1726,6 @@ async fn max_send_buffer_size_overflow() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn max_send_buffer_size_poll_capacity_wakes_task() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1829,7 +1800,6 @@ async fn max_send_buffer_size_poll_capacity_wakes_task() {
 }
 
 #[tokio::test]
-#[ignore]
 async fn poll_capacity_wakeup_after_window_update() {
     h2_support::trace_init!();
     let (io, mut srv) = mock::new();
@@ -1891,138 +1861,133 @@ async fn poll_capacity_wakeup_after_window_update() {
 }
 
 #[tokio::test]
-#[ignore]
-async fn window_size_decremented_past_zero() {
+async fn window_size_does_not_underflow() {
     h2_support::trace_init!();
     let (io, mut client) = mock::new();
 
     let client = async move {
-        // let _ = client.assert_server_handshake().await;
+        let settings = client.assert_server_handshake().await;
+        assert_default_settings!(settings);
 
-        // preface
-        client.write_preface().await;
+        // Invalid HEADERS frame (missing mandatory fields).
+        client.send_bytes(&[0, 0, 0, 1, 5, 0, 0, 0, 1]).await;
 
-        // the following http 2 bytes are fuzzer-generated
-        client.send_bytes(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await;
         client
-            .send_bytes(&[
-                0, 0, 23, 1, 1, 0, 249, 255, 191, 131, 1, 1, 1, 70, 1, 1, 1, 1, 65, 1, 1, 65, 1, 1,
-                65, 1, 1, 1, 1, 1, 1, 190,
-            ])
-            .await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client
-            .send_bytes(&[
-                0, 0, 9, 247, 0, 121, 255, 255, 184, 1, 65, 1, 1, 1, 1, 1, 1, 190,
-            ])
-            .await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client
-            .send_bytes(&[0, 0, 3, 0, 1, 0, 249, 255, 191, 1, 1, 190])
-            .await;
-        client
-            .send_bytes(&[0, 0, 2, 50, 107, 0, 0, 0, 1, 0, 0])
-            .await;
-        client
-            .send_bytes(&[0, 0, 5, 2, 0, 0, 0, 0, 1, 128, 0, 55, 0, 0])
-            .await;
-        client
-            .send_bytes(&[
-                0, 0, 12, 4, 0, 0, 0, 0, 0, 126, 4, 39, 184, 171, 125, 33, 0, 3, 107, 50, 98,
-            ])
-            .await;
-        client
-            .send_bytes(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 3, 4, 76, 255, 71, 131])
-            .await;
-        client
-            .send_bytes(&[
-                0, 0, 12, 4, 0, 0, 0, 0, 0, 0, 4, 39, 184, 171, 74, 33, 0, 3, 107, 50, 98,
-            ])
-            .await;
-        client
-            .send_bytes(&[
-                0, 0, 30, 4, 0, 0, 0, 0, 0, 0, 4, 56, 184, 171, 125, 65, 0, 35, 65, 65, 65, 61,
-                232, 87, 115, 89, 116, 0, 4, 0, 58, 33, 125, 33, 79, 3, 107, 49, 98,
-            ])
-            .await;
-        client
-            .send_bytes(&[
-                0, 0, 12, 4, 0, 0, 0, 0, 0, 0, 4, 39, 184, 171, 125, 33, 0, 3, 107, 50, 98,
-            ])
-            .await;
-        client.send_bytes(&[0, 0, 0, 4, 0, 0, 0, 0, 0]).await;
-        client
-            .send_bytes(&[
-                0, 0, 12, 4, 0, 0, 0, 0, 0, 126, 4, 39, 184, 171, 125, 33, 0, 3, 107, 50, 98,
-            ])
-            .await;
-        client
-            .send_bytes(&[
-                0, 0, 177, 1, 44, 0, 0, 0, 1, 67, 67, 67, 67, 67, 67, 131, 134, 5, 61, 67, 67, 67,
-                67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67,
-                67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67,
-                67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 115, 102, 1, 3, 48, 43,
-                101, 64, 31, 37, 99, 99, 97, 97, 97, 97, 49, 97, 54, 97, 97, 97, 97, 49, 97, 54,
-                97, 99, 54, 53, 53, 51, 53, 99, 99, 97, 97, 99, 97, 97, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0,
-            ])
-            .await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client
-            .send_bytes(&[
-                0, 0, 12, 4, 0, 0, 0, 0, 0, 0, 4, 0, 58, 171, 125, 33, 79, 3, 107, 49, 98,
-            ])
-            .await;
-        client
-            .send_bytes(&[0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 4, 87, 115, 89, 116])
-            .await;
-        client
-            .send_bytes(&[
-                0, 0, 12, 4, 0, 0, 0, 0, 0, 126, 4, 39, 184, 171, 125, 33, 0, 3, 107, 50, 98,
-            ])
-            .await;
-        client
-            .send_bytes(&[
-                0, 0, 129, 1, 44, 0, 0, 0, 1, 67, 67, 67, 67, 67, 67, 131, 134, 5, 18, 67, 67, 61,
-                67, 67, 67, 67, 67, 67, 67, 67, 67, 67, 48, 54, 53, 55, 114, 1, 4, 97, 49, 51, 116,
-                64, 2, 117, 115, 4, 103, 101, 110, 116, 64, 8, 57, 111, 110, 116, 101, 110, 115,
-                102, 7, 43, 43, 49, 48, 48, 43, 101, 192, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            ])
-            .await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client.send_bytes(&[0, 0, 0, 0, 0, 0, 0, 0, 1]).await;
-        client
-            .send_bytes(&[
-                0, 0, 12, 4, 0, 0, 0, 0, 0, 0, 4, 0, 58, 171, 125, 33, 79, 3, 107, 49, 98,
-            ])
+            .send_frame(frames::settings().initial_window_size(1329018135))
             .await;
 
-        // TODO: is CANCEL the right error code to expect here?
-        // client.recv_frame(frames::reset(1).protocol_error()).await;
+        client
+            .send_frame(frames::settings().initial_window_size(3809661))
+            .await;
+
+        client
+            .send_frame(frames::settings().initial_window_size(1467177332))
+            .await;
+
+        client
+            .send_frame(frames::settings().initial_window_size(3844989))
+            .await;
     };
 
     let srv = async move {
         let builder = server::Builder::new();
         let mut srv = builder.handshake::<_, Bytes>(io).await.expect("handshake");
 
-        // just keep it open
-        let res = poll_fn(move |cx| srv.poll_closed(cx)).await;
-        tracing::debug!("{:?}", res);
+        poll_fn(move |cx| srv.poll_closed(cx)).await.unwrap();
     };
 
     join(client, srv).await;
+}
+
+#[tokio::test]
+async fn reclaim_reserved_capacity() {
+    use futures::channel::oneshot;
+
+    h2_support::trace_init!();
+
+    let (io, mut srv) = mock::new();
+    let (depleted_tx, depleted_rx) = oneshot::channel();
+
+    let mock = async move {
+        let settings = srv.assert_client_handshake().await;
+        assert_default_settings!(settings);
+
+        srv.recv_frame(frames::headers(1).request("POST", "https://www.example.com/"))
+            .await;
+        srv.send_frame(frames::headers(1).response(200)).await;
+
+        srv.recv_frame(frames::data(1, vec![0; 16384])).await;
+        srv.recv_frame(frames::data(1, vec![0; 16384])).await;
+        srv.recv_frame(frames::data(1, vec![0; 16384])).await;
+        srv.recv_frame(frames::data(1, vec![0; 16383])).await;
+        depleted_tx.send(()).unwrap();
+
+        // By now, this peer's connection window is completely depleted.
+
+        srv.recv_frame(frames::headers(3).request("POST", "https://www.example.com/"))
+            .await;
+        srv.send_frame(frames::headers(3).response(200)).await;
+
+        srv.recv_frame(frames::reset(1).cancel()).await;
+    };
+
+    let h2 = async move {
+        let (mut client, mut h2) = client::handshake(io).await.unwrap();
+
+        let mut depleting_stream = {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("https://www.example.com/")
+                .body(())
+                .unwrap();
+
+            let (resp, stream) = client.send_request(request, false).unwrap();
+
+            {
+                let resp = h2.drive(resp).await.unwrap();
+                assert_eq!(resp.status(), StatusCode::OK);
+            }
+
+            stream
+        };
+
+        depleting_stream
+            .send_data(vec![0; 65535].into(), false)
+            .unwrap();
+        h2.drive(depleted_rx).await.unwrap();
+
+        // By now, the client knows it has completely depleted the server's
+        // connection window.
+
+        depleting_stream.reserve_capacity(1);
+
+        let mut starved_stream = {
+            let request = Request::builder()
+                .method(Method::POST)
+                .uri("https://www.example.com/")
+                .body(())
+                .unwrap();
+
+            let (resp, stream) = client.send_request(request, false).unwrap();
+
+            {
+                let resp = h2.drive(resp).await.unwrap();
+                assert_eq!(resp.status(), StatusCode::OK);
+            }
+
+            stream
+        };
+
+        // The following call puts starved_stream in pending_send, as the
+        // server's connection window is completely empty.
+        starved_stream.send_data(vec![0; 1].into(), false).unwrap();
+
+        // This drop should change nothing, as it didn't actually reserve
+        // any available connection window, only requested it.
+        drop(depleting_stream);
+
+        h2.await.unwrap();
+    };
+
+    join(mock, h2).await;
 }

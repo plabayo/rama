@@ -27,8 +27,8 @@
 //! [`Extensions`]: crate::context::Extensions
 //! [`http_listener_hello.rs`]: https://github.com/plabayo/rama/blob/main/examples/http_rate_limit.rs
 
-use crate::error::BoxError;
 use crate::Context;
+use crate::error::BoxError;
 use std::{convert::Infallible, fmt, sync::Arc};
 
 mod concurrent;
@@ -104,8 +104,8 @@ pub trait Policy<State, Request>: Send + Sync + 'static {
         ctx: Context<State>,
         request: Request,
     ) -> impl std::future::Future<Output = PolicyResult<State, Request, Self::Guard, Self::Error>>
-           + Send
-           + '_;
+    + Send
+    + '_;
 }
 
 impl<State, Request, P> Policy<State, Request> for Option<P>
