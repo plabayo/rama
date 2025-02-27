@@ -178,8 +178,7 @@ where
             TlsConnector::auto(tcp_connector).with_connector_data(tls_connector_data),
         );
 
-        let EstablishedClientConnection { ctx, req, conn, .. } =
-            connector.connect(ctx, req).await?;
+        let EstablishedClientConnection { ctx, req, conn } = connector.connect(ctx, req).await?;
 
         // Extra logic to extract certificates
         let params = ctx.get::<NegotiatedTlsParameters>().unwrap();

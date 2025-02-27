@@ -186,7 +186,7 @@ where
         // so that the other end can read it... This might however give issues in
         // case switching http versions requires more work than version. If so,
         // your first place will be to check here and/or in the [`HttpConnector`].
-        let EstablishedClientConnection { ctx, req, conn, .. } = connector
+        let EstablishedClientConnection { ctx, req, conn } = connector
             .connect(ctx, req)
             .await
             .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;

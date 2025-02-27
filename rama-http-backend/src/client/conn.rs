@@ -70,7 +70,6 @@ where
             #[cfg(not(any(feature = "rustls", feature = "boring")))]
             req,
             conn,
-            addr,
         } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -120,7 +119,6 @@ where
                     ctx,
                     req,
                     conn: svc,
-                    addr,
                 })
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
@@ -143,7 +141,6 @@ where
                     ctx,
                     req,
                     conn: svc,
-                    addr,
                 })
             }
             version => Err(OpaqueError::from_display(format!(
