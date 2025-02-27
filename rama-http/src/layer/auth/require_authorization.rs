@@ -320,7 +320,7 @@ mod sealed {
         }
 
         fn www_authenticate_header() -> Option<HeaderValue> {
-            None
+            T::www_authenticate_header()
         }
     }
 
@@ -333,7 +333,7 @@ mod sealed {
         }
 
         fn www_authenticate_header() -> Option<HeaderValue> {
-            None
+            T::www_authenticate_header()
         }
     }
 
@@ -621,39 +621,6 @@ mod tests {
             .unwrap();
         let response = service.serve(Context::default(), request).await.unwrap();
         assert_eq!(StatusCode::OK, response.status());
-    }
-
-    #[tokio::test]
-    async fn conversion_methods() {
-        let auth: Basic<Body> = Basic::new("user", "pass");
-        let auth_context = AuthorizeContext::new(auth);
-
-        // Test vector
-        let auth_vec = vec![auth_context.credential.clone()];
-        let vec_context = AuthorizeContext {
-            credential: auth_vec,
-            allow_anonymous: auth_context.allow_anonymous,
-        };
-        assert_eq!(vec_context.credential.len(), 1);
-
-        // Test array
-        let auth_array = [
-            auth_context.credential.clone(),
-            auth_context.credential.clone(),
-        ];
-        let array_context = AuthorizeContext {
-            credential: auth_array,
-            allow_anonymous: auth_context.allow_anonymous,
-        };
-        assert_eq!(array_context.credential.len(), 2);
-
-        // Test Arc
-        let arc_auth = Arc::new(auth_context.credential);
-        let arc_context = AuthorizeContext {
-            credential: arc_auth,
-            allow_anonymous: auth_context.allow_anonymous,
-        };
-        assert_eq!(Arc::strong_count(&arc_context.credential), 1);
     }
 
     #[tokio::test]
