@@ -147,33 +147,21 @@ where
                     tracing::trace!(
                         "http proxy connector: no proxy required or set: proceed with direct connection"
                     );
-                    let EstablishedClientConnection {
-                        ctx,
-                        req,
-                        conn,
-                        addr,
-                    } = established_conn;
+                    let EstablishedClientConnection { ctx, req, conn } = established_conn;
                     return Ok(EstablishedClientConnection {
                         ctx,
                         req,
                         conn: Either::A(conn),
-                        addr,
                     });
                 };
             }
         };
         // and do the handshake otherwise...
 
-        let EstablishedClientConnection {
-            ctx,
-            req,
-            conn,
-            addr,
-        } = established_conn;
+        let EstablishedClientConnection { ctx, req, conn } = established_conn;
 
         tracing::trace!(
             authority = %transport_ctx.authority,
-            proxy_addr = %addr,
             "http proxy connector: connected to proxy",
         );
 
@@ -190,7 +178,6 @@ where
                 ctx,
                 req,
                 conn: Either::A(conn),
-                addr,
             });
         }
 
@@ -214,14 +201,12 @@ where
 
         tracing::trace!(
             authority = %transport_ctx.authority,
-            proxy_addr = %addr,
             "http proxy connector: connected to proxy: ready secure request",
         );
         Ok(EstablishedClientConnection {
             ctx,
             req,
             conn: Either::B(conn),
-            addr,
         })
     }
 }
