@@ -59,21 +59,12 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection {
-            mut ctx,
-            req,
-            conn,
-            addr,
-        } = self.inner.connect(ctx, req).await?;
+        let EstablishedClientConnection { mut ctx, req, conn } =
+            self.inner.connect(ctx, req).await?;
         let conn = BytesRWTracker::new(conn);
         let handle = conn.handle();
         ctx.insert(handle);
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn,
-            addr,
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
 

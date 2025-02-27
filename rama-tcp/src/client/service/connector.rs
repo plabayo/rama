@@ -107,7 +107,7 @@ where
             .map_err(Into::into)?;
 
         if let Some(proxy) = ctx.get::<ProxyAddress>() {
-            let (conn, addr) = crate::client::tcp_connect(
+            let (conn, _addr) = crate::client::tcp_connect(
                 &ctx,
                 proxy.authority.clone(),
                 true,
@@ -116,12 +116,7 @@ where
             )
             .await
             .context("tcp connector: conncept to proxy")?;
-            return Ok(EstablishedClientConnection {
-                ctx,
-                req,
-                conn,
-                addr,
-            });
+            return Ok(EstablishedClientConnection { ctx, req, conn });
         }
 
         let transport_ctx = ctx
@@ -143,16 +138,11 @@ where
         }
 
         let authority = transport_ctx.authority.clone();
-        let (conn, addr) =
+        let (conn, _addr) =
             crate::client::tcp_connect(&ctx, authority, false, self.dns.clone(), connector)
                 .await
                 .context("tcp connector: connect to server")?;
 
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn,
-            addr,
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }

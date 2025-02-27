@@ -229,12 +229,8 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection {
-            mut ctx,
-            req,
-            conn,
-            addr,
-        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection { mut ctx, req, conn } =
+            self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -260,7 +256,6 @@ where
                 conn: AutoTlsStream {
                     inner: AutoTlsStreamData::Plain { inner: conn },
                 },
-                addr,
             });
         }
 
@@ -282,7 +277,6 @@ where
             conn: AutoTlsStream {
                 inner: AutoTlsStreamData::Secure { inner: stream },
             },
-            addr,
         })
     }
 }
@@ -303,12 +297,8 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection {
-            mut ctx,
-            req,
-            conn,
-            addr,
-        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection { mut ctx, req, conn } =
+            self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let transport_ctx = ctx
             .get_or_try_insert_with_ctx(|ctx| req.try_ref_into_transport_ctx(ctx))
@@ -328,12 +318,7 @@ where
         let (conn, negotiated_params) = self.handshake(connector_data, host, conn).await?;
         ctx.insert(negotiated_params);
 
-        Ok(EstablishedClientConnection {
-            ctx,
-            req,
-            conn,
-            addr,
-        })
+        Ok(EstablishedClientConnection { ctx, req, conn })
     }
 }
 
@@ -351,12 +336,8 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection {
-            mut ctx,
-            req,
-            conn,
-            addr,
-        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection { mut ctx, req, conn } =
+            self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let host = match ctx
             .get::<TlsTunnel>()
@@ -375,7 +356,6 @@ where
                     conn: AutoTlsStream {
                         inner: AutoTlsStreamData::Plain { inner: conn },
                     },
-                    addr,
                 });
             }
         };
@@ -391,7 +371,6 @@ where
             conn: AutoTlsStream {
                 inner: AutoTlsStreamData::Secure { inner: stream },
             },
-            addr,
         })
     }
 }

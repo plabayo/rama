@@ -1,5 +1,5 @@
 use rama_core::{Context, Service, error::BoxError};
-use std::{fmt, future::Future, net::SocketAddr};
+use std::{fmt, future::Future};
 
 /// The established connection to a server returned for the http client to be used.
 pub struct EstablishedClientConnection<S, State, Request> {
@@ -9,8 +9,6 @@ pub struct EstablishedClientConnection<S, State, Request> {
     pub req: Request,
     /// The established connection stream/service/... to the server.
     pub conn: S,
-    /// The target address connected to.
-    pub addr: SocketAddr,
 }
 
 impl<S: fmt::Debug, State: fmt::Debug, Request: fmt::Debug> fmt::Debug
@@ -21,7 +19,6 @@ impl<S: fmt::Debug, State: fmt::Debug, Request: fmt::Debug> fmt::Debug
             .field("ctx", &self.ctx)
             .field("req", &self.req)
             .field("conn", &self.conn)
-            .field("addr", &self.addr)
             .finish()
     }
 }
@@ -34,7 +31,6 @@ impl<S: Clone, State: Clone, Request: Clone> Clone
             ctx: self.ctx.clone(),
             req: self.req.clone(),
             conn: self.conn.clone(),
-            addr: self.addr,
         }
     }
 }
