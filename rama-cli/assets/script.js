@@ -65,12 +65,20 @@ function makeRequestWithXHR(url, method, number) {
 // Main function to execute the requests
 async function main() {
     try {
+        // Generate random numbers for the requests
+        const number = Math.floor(Math.random() * 1000) + 1;
+        const number2 = Math.floor(Math.random() * 1000) + 1;
+        
+        console.log('Generated random numbers:', number, number2);
+
         // Fetch POST request
         const response2 = await makePostRequest(`/api/fetch/number/${number}`, number);
+        console.log('Fetch POST request response:', response2);
         const result = await response2.json();
 
         // XMLHttpRequest POST request
         const response4 = await makeRequestWithXHR(`/api/xml/number/${number2}`, 'POST', number2);
+        console.log('XMLHttpRequest POST request response:', response4);
         const result2 = JSON.parse(response4);
 
         console.log('Requests completed successfully');

@@ -30,7 +30,7 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h1 headers for UA '{ua}': {headers:?}");
+        tracing::info!("store h1 navigateheaders for UA '{ua}': {headers:?}");
         Ok(())
     }
 
@@ -39,7 +39,7 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h1 headers for UA '{ua}': {headers:?}");
+        tracing::info!("store h1 fetch headers for UA '{ua}': {headers:?}");
         Ok(())
     }
 
@@ -48,7 +48,7 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h1 headers for UA '{ua}': {headers:?}");
+        tracing::info!("store h1 xhr headers for UA '{ua}': {headers:?}");
         Ok(())
     }
 
@@ -57,7 +57,7 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h1 headers for UA '{ua}': {headers:?}");
+        tracing::info!("store h1 form headers for UA '{ua}': {headers:?}");
         Ok(())
     }
 
@@ -75,7 +75,7 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h2 headers for UA '{ua}': {headers:?}");
+        tracing::info!("store h2 navigate headers for UA '{ua}': {headers:?}");
         Ok(())
     }
 
@@ -84,7 +84,7 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h2 headers for UA '{ua}': {headers:?}");
+        tracing::info!("store h2 fetch headers for UA '{ua}': {headers:?}");
         Ok(())
     }
 
@@ -93,7 +93,7 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h2 headers for UA '{ua}': {headers:?}");
+        tracing::info!("store h2 xhr headers for UA '{ua}': {headers:?}");
         Ok(())
     }
 
@@ -102,7 +102,7 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h2 headers for UA '{ua}': {headers:?}");
+        tracing::info!("store h2 form headers for UA '{ua}': {headers:?}");
         Ok(())
     }
 
