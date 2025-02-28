@@ -406,7 +406,7 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    title_case_headers: false,
+                    settings: crate::Http1Settings::default(),
                 },
                 h2: crate::Http2Profile {
                     headers: crate::HttpHeadersProfile {
@@ -420,7 +420,7 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    http_pseudo_headers: vec![],
+                    settings: crate::Http2Settings::default(),
                 },
             },
             #[cfg(feature = "tls")]

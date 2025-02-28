@@ -22,20 +22,6 @@ async function fetchWithBackoff(url, options) {
     throw new Error('Max retries exceeded');
 }
 
-// Function to make a GET request
-async function makeGetRequest(url) {
-    const headers = {
-        'x-RAMA-custom-header-marker': `rama-fp${Date.now()}`,
-    };
-
-    const options = {
-        method: 'GET',
-        headers
-    };
-
-    return fetchWithBackoff(url, options);
-}
-
 // Function to make a POST request
 async function makePostRequest(url, number) {
     const headers = {
@@ -79,17 +65,9 @@ function makeRequestWithXHR(url, method, number) {
 // Main function to execute the requests
 async function main() {
     try {
-        // Fetch GET request
-        const response1 = await makeGetRequest('/api/fetch/number');
-        const { number } = await response1.json();
-
         // Fetch POST request
         const response2 = await makePostRequest(`/api/fetch/number/${number}`, number);
         const result = await response2.json();
-
-        // XMLHttpRequest GET request
-        const response3 = await makeRequestWithXHR('/api/xml/number', 'GET');
-        const { number: number2 } = JSON.parse(response3);
 
         // XMLHttpRequest POST request
         const response4 = await makeRequestWithXHR(`/api/xml/number/${number2}`, 'POST', number2);

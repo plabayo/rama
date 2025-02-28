@@ -357,7 +357,7 @@ fn emulate_http_settings<Body, State>(
                 "UA emulation add http1-specific settings",
             );
             ctx.insert(Http1ClientContextParams {
-                title_header_case: profile.http.h1.title_case_headers,
+                title_header_case: profile.http.h1.settings.title_case_headers,
             });
         }
         Version::HTTP_2 => {
@@ -368,7 +368,13 @@ fn emulate_http_settings<Body, State>(
             "UA emulation add h2-specific settings",
             );
             req.extensions_mut().insert(PseudoHeaderOrder::from_iter(
-                profile.http.h2.http_pseudo_headers.iter(),
+                profile
+                    .http
+                    .h2
+                    .settings
+                    .http_pseudo_headers
+                    .iter()
+                    .flatten(),
             ));
         }
         Version::HTTP_3 => tracing::debug!(
@@ -536,11 +542,12 @@ fn merge_http_headers(
         let base_header_name = base_name.header_name();
         let original_value = original_headers.remove(base_header_name);
         match base_header_name {
-            &ACCEPT | &ACCEPT_LANGUAGE | &CONTENT_TYPE => {
+            &ACCEPT | &ACCEPT_LANGUAGE => {
                 let value = original_value.unwrap_or(base_value);
                 output_headers_ref.push((base_name, value));
             }
-            &REFERER | &COOKIE | &AUTHORIZATION | &HOST | &ORIGIN | &CONTENT_LENGTH => {
+            &REFERER | &COOKIE | &AUTHORIZATION | &HOST | &ORIGIN | &CONTENT_LENGTH
+            | &CONTENT_TYPE => {
                 if let Some(value) = original_value {
                     output_headers_ref.push((base_name, value));
                 }
@@ -596,7 +603,9 @@ mod tests {
         Body, BodyExtractExt, HeaderValue, header::ETAG, proto::h1::Http1HeaderName,
     };
 
-    use crate::{Http1Profile, Http2Profile, HttpHeadersProfile, HttpProfile};
+    use crate::{
+        Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile, HttpProfile,
+    };
 
     #[test]
     fn test_merge_http_headers() {
@@ -633,10 +642,20 @@ mod tests {
                 preserve_ua_header: false,
                 is_secure_request: false,
                 requested_client_hints: None,
-                expected: vec![
+                expected: vec![("Accept", "text/html")],
+            },
+            TestCase {
+                description: "base headers only with content-type",
+                base_http_headers: vec![
                     ("Accept", "text/html"),
                     ("Content-Type", "application/json"),
                 ],
+                original_http_header_order: None,
+                original_headers: vec![("content-type", "text/xml")],
+                preserve_ua_header: false,
+                is_secure_request: false,
+                requested_client_hints: None,
+                expected: vec![("Accept", "text/html"), ("Content-Type", "text/xml")],
             },
             TestCase {
                 description: "original headers only",
@@ -1229,7 +1248,7 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    title_case_headers: false,
+                    settings: Http1Settings::default(),
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
@@ -1243,7 +1262,7 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    http_pseudo_headers: vec![],
+                    settings: Http2Settings::default(),
                 },
             },
             #[cfg(feature = "tls")]
@@ -1304,7 +1323,7 @@ mod tests {
                         fetch: None,
                         form: None,
                     },
-                    title_case_headers: false,
+                    settings: Http1Settings::default(),
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
@@ -1313,7 +1332,7 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    http_pseudo_headers: vec![],
+                    settings: Http2Settings::default(),
                 },
             },
             #[cfg(feature = "tls")]
@@ -1377,7 +1396,7 @@ mod tests {
                             None,
                         )),
                     },
-                    title_case_headers: false,
+                    settings: Http1Settings::default(),
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
@@ -1386,7 +1405,7 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    http_pseudo_headers: vec![],
+                    settings: Http2Settings::default(),
                 },
             },
             #[cfg(feature = "tls")]
@@ -1450,7 +1469,7 @@ mod tests {
                             None,
                         )),
                     },
-                    title_case_headers: false,
+                    settings: Http1Settings::default(),
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
@@ -1459,7 +1478,7 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    http_pseudo_headers: vec![],
+                    settings: Http2Settings::default(),
                 },
             },
             #[cfg(feature = "tls")]
@@ -1532,7 +1551,7 @@ mod tests {
                             None,
                         )),
                     },
-                    title_case_headers: false,
+                    settings: Http1Settings::default(),
                 },
                 h2: Http2Profile {
                     headers: HttpHeadersProfile {
@@ -1541,7 +1560,7 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    http_pseudo_headers: vec![],
+                    settings: Http2Settings::default(),
                 },
             },
             #[cfg(feature = "tls")]

@@ -24,11 +24,21 @@ pub struct HttpHeadersProfile {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Http1Profile {
     pub headers: HttpHeadersProfile,
+    pub settings: Http1Settings,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Http1Settings {
     pub title_case_headers: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Http2Profile {
     pub headers: HttpHeadersProfile,
-    pub http_pseudo_headers: Vec<PseudoHeader>,
+    pub settings: Http2Settings,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
+pub struct Http2Settings {
+    pub http_pseudo_headers: Option<Vec<PseudoHeader>>,
 }

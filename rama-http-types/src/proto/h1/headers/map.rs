@@ -61,6 +61,12 @@ impl Http1HeaderMap {
         self.headers.get(key)
     }
 
+    pub fn get_original_name(&self, key: &HeaderName) -> Option<&Http1HeaderName> {
+        self.original_headers
+            .iter()
+            .find(|header| header.header_name() == key)
+    }
+
     #[inline]
     pub fn contains_key(&self, key: impl AsHeaderName) -> bool {
         self.headers.contains_key(key)
