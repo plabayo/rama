@@ -16,6 +16,15 @@ pub struct UserAgentDatabase {
 }
 
 impl UserAgentDatabase {
+    /// Load the profiles embedded with the rama-ua crate.
+    ///
+    /// This function is only available if the `embed-profiles` feature is enabled.
+    #[cfg(feature = "embed-profiles")]
+    pub fn embedded() -> Self {
+        let profiles = crate::load_embedded_profiles();
+        Self::from_iter(profiles)
+    }
+
     #[inline]
     pub fn len(&self) -> usize {
         self.profiles.len()
@@ -468,5 +477,12 @@ mod tests {
         db.insert(dummy_ua_profile_from_str("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Safari/605.1.15"));
 
         db
+    }
+
+    #[cfg(feature = "embed-profiles")]
+    #[test]
+    fn test_ua_db_embedded() {
+        let db = UserAgentDatabase::embedded();
+        assert!(!db.is_empty());
     }
 }

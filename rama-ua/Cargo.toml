@@ -15,6 +15,7 @@ workspace = true
 
 [features]
 default = []
+embed-profiles = ["dep:serde_json"]
 tls = ["rama-net/tls"]
 
 [dependencies]
@@ -26,6 +27,7 @@ rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", features = ["http"
 rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true, optional = true }
 tracing = { workspace = true }
 
 [dev-dependencies]

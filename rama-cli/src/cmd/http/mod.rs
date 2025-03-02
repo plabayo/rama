@@ -32,8 +32,9 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
+    ua::{UserAgentDatabase, UserAgentEmulateLayer, UserAgentSelectFallback},
 };
-use std::{io::IsTerminal, time::Duration};
+use std::{io::IsTerminal, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
 use tokio::sync::oneshot;
 use tracing::level_filters::LevelFilter;
@@ -136,6 +137,10 @@ pub struct CliCommandHttp {
     #[arg(long)]
     /// print debug info
     debug: bool,
+
+    #[arg(long, short = 'E')]
+    /// emulate user agent
+    emulate: bool,
 
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
     /// positional arguments to populate request headers and body
@@ -347,6 +352,7 @@ where
         None
     };
 
+    // TODO: get these somehow merged?
     inner_client.set_tls_config(ClientConfig {
         server_verify_mode,
         extensions: Some(vec![
@@ -358,6 +364,10 @@ where
         ..Default::default()
     });
 
+    // TODO: need to insert TLS separate from http:
+    // - first tls is needed
+    // - but http only is to be selected after handshake is done...
+
     inner_client.set_proxy_tls_config(ClientConfig {
         server_verify_mode,
         ..Default::default()
@@ -365,6 +375,11 @@ where
 
     let client_builder = (
         MapResultLayer::new(map_internal_client_error),
+        cfg.emulate.then(|| {
+            UserAgentEmulateLayer::new(Arc::new(UserAgentDatabase::embedded()))
+                .try_auto_detect_user_agent(true)
+                .select_fallback(UserAgentSelectFallback::Random)
+        }),
         (TimeoutLayer::new(if cfg.timeout > 0 {
             Duration::from_secs(cfg.timeout)
         } else {
