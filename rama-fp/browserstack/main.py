@@ -14,14 +14,17 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.common.by import By
 
 # capability source:
-# > https://www.browserstack.com/docs/automate/capabilities
+# > <https://www.browserstack.com/docs/automate/capabilities>
+
+# availability list:
+# > <https://www.browserstack.com/list-of-browsers-and-platforms/automate>
 
 desktop_permutations = [
     ["latest", "latest-1", "latest-2"],
     ["Chrome", "Edge", "Firefox", "Safari"],
     (
         [["Windows", v] for v in ["10", "11"]]
-        + [["OS X", v] for v in ["Monterey", "Ventura", "Sonoma"]]
+        + [["OS X", v] for v in ["Ventura", "Sonoma", "Sequoia"]]
     ),
 ]
 
@@ -34,6 +37,9 @@ mobile_configs = [
     ("Samsung Galaxy Tab S8", "12.0", "chrome"),
     ("Samsung Galaxy A52", "11.0", "chrome"),
     ("Samsung Galaxy M52", "11.0", "chrome"),
+    ("Google Pixel 9 Pro XL", "15.0", "chrome"),
+    ("Google Pixel 9 Pro", "15.0", "chrome"),
+    ("Google Pixel 9", "15.0", "chrome"),
     ("Google Pixel 8 Pro", "14.0", "chrome"),
     ("Google Pixel 8", "14.0", "chrome"),
     ("Google Pixel 7 Pro", "13.0", "chrome"),
@@ -43,16 +49,17 @@ mobile_configs = [
     ("Google Pixel 6", "12.0", "chrome"),
     ("Google Pixel 5", "12.0", "chrome"),
     ("OnePlus 11R", "13.0", "chrome"),
-    ("OnePlus 9", "11.0", "chrome"),
+    ("OnePlus 12R", "14.0", "chrome"),
     ("Huawei P30", "9.0", "chrome"),
+    ("iPhone 16e", "18", "safari"),
+    ("iPhone 16 Pro Max", "18", "safari"),
+    ("iPhone 16 Pro", "18", "safari"),
+    ("iPhone 16 Plus", "18", "safari"),
+    ("iPhone 16", "18", "safari"),
     ("iPhone 15 Pro Max", "17", "safari"),
     ("iPhone 15 Pro", "17", "safari"),
     ("iPhone 15 Plus", "17", "safari"),
     ("iPhone 15", "17", "safari"),
-    ("iPhone 13", "17", "safari"),
-    ("iPhone 12 Pro", "17", "safari"),
-    ("iPhone 12", "17", "safari"),
-    ("iPhone 11 Pro", "17", "safari"),
     ("iPhone 14 Pro Max", "16", "safari"),
     ("iPhone 14 Pro", "16", "safari"),
     ("iPhone 14 Plus", "16", "safari"),
