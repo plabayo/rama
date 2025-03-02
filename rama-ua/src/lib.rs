@@ -35,22 +35,16 @@
 //!
 //! User Agent versions are parsed only their most significant version number (e.g. `124` for `Chrome/124.0.0`
 //! and `1704` for `Safari Version/17.4`). We do not parse the version for platforms as
-//! these are no longer advertised in contemporary User Agents.
+//! these are no longer advertised in contemporary User Agents. Nor do we currently use these versions
+//! for UA profile selection.
 //!
 //! For UA Classification one can overwrite the [`HttpAgent`] and [`TlsAgent`] advertised by the [`UserAgent`],
 //! using the [`UserAgent::with_http_agent`] and [`UserAgent::with_tls_agent`] methods.
 //!
-//! UA Emulators are advised to interpret the [`UserAgent`] in the following order:
-//!
-//! 1. first try to find an emulation match using [`UserAgent::header_str`];
-//! 2. otherwise try to find an emulation match using [`UserAgent::info`]: where the [`UserAgentKind`] and [`PlatformKind`] should be matched,
-//!    and the version should be as close as possible to the version of the [`UserAgent`].
-//! 3. otherwise match the [`DeviceKind`] using [`UserAgent::device`].
-//! 4. final fallback is to find emulation data for [`DeviceKind::Desktop`].
-//!
 //! Please open an [issue](https://github.com/plabayo/rama/issues) in case you need support for more User Agents,
 //! and have a good case to make for it. For example we might also support the default user agents used by mobile
-//! application SDKs. This makes however only sense if we can provide Http and Tls emulation for it.
+//! application SDKs. This makes however only sense if we can provide Http and Tls emulation for it. Also contributions
+//! are welcome in case you think we can improve or expand our data coverage for each profile.
 
 #![doc(
     html_favicon_url = "https://raw.githubusercontent.com/plabayo/rama/main/docs/img/old_logo.png"
