@@ -16,7 +16,7 @@ pub(super) struct Storage {
 
 impl Storage {
     pub(super) async fn new(pg_url: String) -> Result<Self, OpaqueError> {
-        tracing::info!("create new storage with PG URL: {}", pg_url);
+        tracing::debug!("create new storage with PG URL: {}", pg_url);
         let pool = postgres::new_pool(pg_url).await?;
         Ok(Self { pool })
     }
@@ -32,7 +32,7 @@ impl Storage {
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h1_settings (ua, h1_settings) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h1_settings = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h1_settings) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h1_settings = $2",
             &[&ua, &types::Json(settings)],
         ).await.context("store h1 settings in postgres")?;
 
@@ -50,11 +50,11 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h1 navigateheaders for UA '{ua}': {headers:?}");
+        tracing::debug!("store h1 navigateheaders for UA '{ua}': {headers:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h1_headers_navigate (ua, h1_headers_navigate) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h1_headers_navigate = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h1_headers_navigate) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h1_headers_navigate = $2",
             &[&ua, &types::Json(headers)],
         ).await.context("store h1 navigate headers in postgres")?;
 
@@ -72,11 +72,11 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h1 fetch headers for UA '{ua}': {headers:?}");
+        tracing::debug!("store h1 fetch headers for UA '{ua}': {headers:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h1_headers_fetch (ua, h1_headers_fetch) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h1_headers_fetch = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h1_headers_fetch) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h1_headers_fetch = $2",
             &[&ua, &types::Json(headers)],
         ).await.context("store h1 fetch headers in postgres")?;
 
@@ -94,11 +94,11 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h1 xhr headers for UA '{ua}': {headers:?}");
+        tracing::debug!("store h1 xhr headers for UA '{ua}': {headers:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h1_headers_xhr (ua, h1_headers_xhr) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h1_headers_xhr = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h1_headers_xhr) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h1_headers_xhr = $2",
             &[&ua, &types::Json(headers)],
         ).await.context("store h1 xhr headers in postgres")?;
 
@@ -116,11 +116,11 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h1 form headers for UA '{ua}': {headers:?}");
+        tracing::debug!("store h1 form headers for UA '{ua}': {headers:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h1_headers_form (ua, h1_headers_form) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h1_headers_form = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h1_headers_form) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h1_headers_form = $2",
             &[&ua, &types::Json(headers)],
         ).await.context("store h1 form headers in postgres")?;
 
@@ -138,11 +138,11 @@ impl Storage {
         ua: String,
         settings: Http2Settings,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h2 settings for UA '{ua}': {settings:?}");
+        tracing::debug!("store h2 settings for UA '{ua}': {settings:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h2_settings (ua, h2_settings) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h2_settings = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h2_settings) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h2_settings = $2",
             &[&ua, &types::Json(settings)],
         ).await.context("store h2 settings in postgres")?;
 
@@ -160,11 +160,11 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h2 navigate headers for UA '{ua}': {headers:?}");
+        tracing::debug!("store h2 navigate headers for UA '{ua}': {headers:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h2_headers_navigate (ua, h2_headers_navigate) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h2_headers_navigate = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h2_headers_navigate) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h2_headers_navigate = $2",
             &[&ua, &types::Json(headers)],
         ).await.context("store h2 navigate headers in postgres")?;
 
@@ -182,11 +182,11 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h2 fetch headers for UA '{ua}': {headers:?}");
+        tracing::debug!("store h2 fetch headers for UA '{ua}': {headers:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h2_headers_fetch (ua, h2_headers_fetch) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h2_headers_fetch = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h2_headers_fetch) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h2_headers_fetch = $2",
             &[&ua, &types::Json(headers)],
         ).await.context("store h2 fetch headers in postgres")?;
 
@@ -204,11 +204,11 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h2 xhr headers for UA '{ua}': {headers:?}");
+        tracing::debug!("store h2 xhr headers for UA '{ua}': {headers:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h2_headers_xhr (ua, h2_headers_xhr) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h2_headers_xhr = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h2_headers_xhr) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h2_headers_xhr = $2",
             &[&ua, &types::Json(headers)],
         ).await.context("store h2 xhr headers in postgres")?;
 
@@ -226,11 +226,11 @@ impl Storage {
         ua: String,
         headers: Http1HeaderMap,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store h2 form headers for UA '{ua}': {headers:?}");
+        tracing::debug!("store h2 form headers for UA '{ua}': {headers:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO h2_headers_form (ua, h2_headers_form) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET h2_headers_form = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, h2_headers_form) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET h2_headers_form = $2",
             &[&ua, &types::Json(headers)],
         ).await.context("store h2 form headers in postgres")?;
 
@@ -248,11 +248,11 @@ impl Storage {
         ua: String,
         tls_client_hello: ClientHello,
     ) -> Result<(), OpaqueError> {
-        tracing::info!("store tls client hello for UA '{ua}': {tls_client_hello:?}");
+        tracing::debug!("store tls client hello for UA '{ua}': {tls_client_hello:?}");
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO tls_client_hello (ua, tls_client_hello) VALUES ($1, $2) ON CONFLICT (ua) DO UPDATE SET tls_client_hello = $2",
+            "INSERT INTO \"ua-profiles\" (uastr, tls_client_hello) VALUES ($1, $2) ON CONFLICT (uastr) DO UPDATE SET tls_client_hello = $2",
             &[&ua, &types::Json(tls_client_hello)],
         ).await.context("store tls client hello in postgres")?;
 

@@ -21,6 +21,7 @@ pub(super) use deadpool_postgres::Pool;
 pub(super) async fn new_pool(url: String) -> Result<Pool, OpaqueError> {
     Config {
         url: Some(url),
+        dbname: Some("fp".to_owned()),
         ..Default::default()
     }
     .create_pool(None, MakeBoringTlsConnector)
