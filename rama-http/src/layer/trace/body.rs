@@ -96,7 +96,7 @@ where
         self.inner.is_end_stream()
     }
 
-    fn size_hint(&self) -> http_body::SizeHint {
+    fn size_hint(&self) -> rama_http_types::dep::http_body::SizeHint {
         self.inner.size_hint()
     }
 }

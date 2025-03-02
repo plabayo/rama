@@ -287,7 +287,7 @@ where
                     .map_err(|err| OpaqueError::from_boxed(err.into()))
                     .context("printer prepare: collect response body")?
                     .to_bytes();
-                let resp: http::Response<Body> =
+                let resp: rama_http_types::Response<Body> =
                     Response::from_parts(parts.clone(), Body::from(body_bytes.clone()));
                 self.writer.write_response(resp).await;
                 Response::from_parts(parts, Body::from(body_bytes))

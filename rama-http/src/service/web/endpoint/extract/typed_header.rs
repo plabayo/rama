@@ -128,7 +128,7 @@ impl TypedHeaderRejectionReason {
 
 impl IntoResponse for TypedHeaderRejection {
     fn into_response(self) -> Response {
-        (http::StatusCode::BAD_REQUEST, self.to_string()).into_response()
+        (rama_http_types::StatusCode::BAD_REQUEST, self.to_string()).into_response()
     }
 }
 

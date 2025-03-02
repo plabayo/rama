@@ -64,7 +64,6 @@ use rama_core::Context;
 use std::{fmt, marker::PhantomData, sync::Arc};
 
 use rama_net::user::UserId;
-use sealed::AuthorizerSeal;
 
 const BASE64: base64::engine::GeneralPurpose = base64::engine::general_purpose::STANDARD;
 
@@ -283,7 +282,7 @@ mod sealed {
     use super::*;
 
     /// Private trait that contains the actual authorization logic
-    pub(super) trait AuthorizerSeal: Send + Sync + 'static {
+    pub trait AuthorizerSeal: Send + Sync + 'static {
         /// Check if the given header value is valid for this authorizer.
         fn is_valid(&self, header_value: &HeaderValue) -> bool;
 
@@ -293,7 +292,7 @@ mod sealed {
 
     impl<ResBody: Default + Send + 'static> AuthorizerSeal for Basic<ResBody> {
         fn is_valid(&self, header_value: &HeaderValue) -> bool {
-            header_value == &self.header_value
+            header_value == self.header_value
         }
 
         fn www_authenticate_header() -> Option<HeaderValue> {
@@ -303,7 +302,7 @@ mod sealed {
 
     impl<ResBody: Default + Send + 'static> AuthorizerSeal for Bearer<ResBody> {
         fn is_valid(&self, header_value: &HeaderValue) -> bool {
-            header_value == &self.header_value
+            header_value == self.header_value
         }
 
         fn www_authenticate_header() -> Option<HeaderValue> {

@@ -1,4 +1,10 @@
-use std::collections::{self, HashMap};
+use std::{
+    borrow::Cow,
+    collections::{self, HashMap},
+};
+
+use http::header::AsHeaderName;
+use serde::{Deserialize, Serialize, de::Error as _, ser::Error as _};
 
 use super::{
     Http1HeaderName,
@@ -48,6 +54,22 @@ impl Http1HeaderMap {
             headers,
             original_headers,
         }
+    }
+
+    #[inline]
+    pub fn get(&self, key: impl AsHeaderName) -> Option<&HeaderValue> {
+        self.headers.get(key)
+    }
+
+    pub fn get_original_name(&self, key: &HeaderName) -> Option<&Http1HeaderName> {
+        self.original_headers
+            .iter()
+            .find(|header| header.header_name() == key)
+    }
+
+    #[inline]
+    pub fn contains_key(&self, key: impl AsHeaderName) -> bool {
+        self.headers.contains_key(key)
     }
 
     pub fn into_headers(self) -> HeaderMap {
@@ -132,6 +154,41 @@ impl IntoIterator for Http1HeaderMap {
     }
 }
 
+impl Serialize for Http1HeaderMap {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        let headers: Result<Vec<_>, _> = self
+            .clone()
+            .into_iter()
+            .map(|(name, value)| {
+                let value = value.to_str().map_err(S::Error::custom)?;
+                Ok::<_, S::Error>((name, value.to_owned()))
+            })
+            .collect();
+        headers?.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for Http1HeaderMap {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let headers = <Vec<(Http1HeaderName, Cow<'de, str>)>>::deserialize(deserializer)?;
+        headers
+            .into_iter()
+            .map(|(name, value)| {
+                Ok::<_, D::Error>((
+                    name,
+                    HeaderValue::from_str(&value).map_err(D::Error::custom)?,
+                ))
+            })
+            .collect()
+    }
+}
+
 #[derive(Debug)]
 pub struct Http1HeaderMapIntoIter {
     state: Http1HeaderMapIntoIterState,
@@ -186,7 +243,9 @@ impl Iterator for Http1HeaderMapIntoIter {
 }
 
 #[derive(Debug)]
-struct HeaderMapValueRemover {
+/// Utility that can be used to be able to remove
+/// headers from an [`HeaderMap`] in random order, one by one.
+pub struct HeaderMapValueRemover {
     header_map: HeaderMap,
     removed_values: Option<HashMap<HeaderName, std::vec::IntoIter<HeaderValue>>>,
 }
@@ -201,7 +260,7 @@ impl From<HeaderMap> for HeaderMapValueRemover {
 }
 
 impl HeaderMapValueRemover {
-    fn remove(&mut self, header: &HeaderName) -> Option<HeaderValue> {
+    pub fn remove(&mut self, header: &HeaderName) -> Option<HeaderValue> {
         match self.header_map.entry(header) {
             header::Entry::Occupied(occupied_entry) => {
                 let (k, mut values) = occupied_entry.remove_entry_mult();
@@ -244,7 +303,8 @@ impl IntoIterator for HeaderMapValueRemover {
 }
 
 #[derive(Debug)]
-struct HeaderMapValueRemoverIntoIter {
+/// Porduced by the [`IntoIterator`] implementation for [`HeaderMapValueRemover`].
+pub struct HeaderMapValueRemoverIntoIter {
     cached_header_name: Option<HeaderName>,
     cached_headers: Option<std::iter::Peekable<std::vec::IntoIter<HeaderValue>>>,
     removed_headers:

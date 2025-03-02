@@ -1,18 +1,41 @@
-//! Types and functions for handling content encoding.
+//! Utility types and functions that can be used in context of encoding headers.
 
 use rama_utils::macros::match_ignore_ascii_case_str;
+use std::fmt;
 
-pub(crate) trait SupportedEncodings: Copy {
+mod accept_encoding;
+pub use accept_encoding::AcceptEncoding;
+
+use super::specifier::{Quality, QualityValue};
+
+pub trait SupportedEncodings: Copy {
     fn gzip(&self) -> bool;
     fn deflate(&self) -> bool;
     fn br(&self) -> bool;
     fn zstd(&self) -> bool;
 }
 
-// This enum's variants are ordered from least to most preferred.
+impl SupportedEncodings for bool {
+    fn gzip(&self) -> bool {
+        *self
+    }
+
+    fn deflate(&self) -> bool {
+        *self
+    }
+
+    fn br(&self) -> bool {
+        *self
+    }
+
+    fn zstd(&self) -> bool {
+        *self
+    }
+}
+
 #[derive(Copy, Clone, Debug, Ord, PartialOrd, PartialEq, Eq, Hash)]
-pub(crate) enum Encoding {
-    #[allow(dead_code)]
+/// This enum's variants are ordered from least to most preferred.
+pub enum Encoding {
     Identity,
     Deflate,
     Gzip,
@@ -20,9 +43,21 @@ pub(crate) enum Encoding {
     Zstd,
 }
 
+impl fmt::Display for Encoding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+impl From<Encoding> for http::HeaderValue {
+    #[inline]
+    fn from(encoding: Encoding) -> Self {
+        http::HeaderValue::from_static(encoding.as_str())
+    }
+}
+
 impl Encoding {
-    #[allow(dead_code)]
-    fn to_str(self) -> &'static str {
+    fn as_str(self) -> &'static str {
         match self {
             Encoding::Identity => "identity",
             Encoding::Gzip => "gzip",
@@ -32,8 +67,7 @@ impl Encoding {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn to_file_extension(self) -> Option<&'static std::ffi::OsStr> {
+    pub fn to_file_extension(self) -> Option<&'static std::ffi::OsStr> {
         match self {
             Encoding::Gzip => Some(std::ffi::OsStr::new(".gz")),
             Encoding::Deflate => Some(std::ffi::OsStr::new(".zz")),
@@ -43,122 +77,72 @@ impl Encoding {
         }
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn into_header_value(self) -> http::HeaderValue {
-        http::HeaderValue::from_static(self.to_str())
-    }
-
-    fn parse(s: &str, _supported_encoding: impl SupportedEncodings) -> Option<Encoding> {
+    fn parse(s: &str, supported_encoding: impl SupportedEncodings) -> Option<Encoding> {
         match_ignore_ascii_case_str! {
             match (s) {
-                "gzip" | "x-gzip" if _supported_encoding.gzip() => Some(Encoding::Gzip),
-                "deflate" if _supported_encoding.deflate() => Some(Encoding::Deflate),
-                "br" if _supported_encoding.br() => Some(Encoding::Brotli),
-                "zstd" if _supported_encoding.zstd() => Some(Encoding::Zstd),
+                "gzip" | "x-gzip" if supported_encoding.gzip() => Some(Encoding::Gzip),
+                "deflate" if supported_encoding.deflate() => Some(Encoding::Deflate),
+                "br" if supported_encoding.br() => Some(Encoding::Brotli),
+                "zstd" if supported_encoding.zstd() => Some(Encoding::Zstd),
                 "identity" => Some(Encoding::Identity),
                 _ => None,
             }
         }
     }
 
-    #[cfg(feature = "compression")]
-    // based on https://github.com/http-rs/accept-encoding
-    #[allow(dead_code)]
-    pub(crate) fn from_headers(
+    pub fn maybe_from_content_encoding_header(
+        headers: &http::HeaderMap,
+        supported_encoding: impl SupportedEncodings,
+    ) -> Option<Self> {
+        headers
+            .get(http::header::CONTENT_ENCODING)
+            .and_then(|hval| hval.to_str().ok())
+            .and_then(|s| Encoding::parse(s, supported_encoding))
+    }
+
+    #[inline]
+    pub fn from_content_encoding_header(
         headers: &http::HeaderMap,
         supported_encoding: impl SupportedEncodings,
     ) -> Self {
-        Encoding::preferred_encoding(encodings(headers, supported_encoding))
+        Encoding::maybe_from_content_encoding_header(headers, supported_encoding)
             .unwrap_or(Encoding::Identity)
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn preferred_encoding(
-        accepted_encodings: impl Iterator<Item = (Encoding, QValue)>,
+    pub fn maybe_from_accept_encoding_headers(
+        headers: &http::HeaderMap,
+        supported_encoding: impl SupportedEncodings,
+    ) -> Option<Self> {
+        Encoding::maybe_preferred_encoding(parse_accept_encoding_headers(
+            headers,
+            supported_encoding,
+        ))
+    }
+
+    #[inline]
+    pub fn from_accept_encoding_headers(
+        headers: &http::HeaderMap,
+        supported_encoding: impl SupportedEncodings,
+    ) -> Self {
+        Encoding::maybe_from_accept_encoding_headers(headers, supported_encoding)
+            .unwrap_or(Encoding::Identity)
+    }
+
+    pub fn maybe_preferred_encoding(
+        accepted_encodings: impl Iterator<Item = QualityValue<Encoding>>,
     ) -> Option<Self> {
         accepted_encodings
-            .filter(|(_, qvalue)| qvalue.0 > 0)
-            .max_by_key(|&(encoding, qvalue)| (qvalue, encoding))
-            .map(|(encoding, _)| encoding)
+            .filter(|qval| qval.quality.as_u16() > 0)
+            .max_by_key(|qval| (qval.quality, qval.value))
+            .map(|qval| qval.value)
     }
 }
 
-// Allowed q-values are numbers between 0 and 1 with at most 3 digits in the fractional part. They
-// are presented here as an unsigned integer between 0 and 1000.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) struct QValue(u16);
-
-impl QValue {
-    #[inline]
-    fn one() -> Self {
-        Self(1000)
-    }
-
-    // Parse a q-value as specified in RFC 7231 section 5.3.1.
-    fn parse(s: &str) -> Option<Self> {
-        let mut c = s.chars();
-        // Parse "q=" (case-insensitively).
-        match c.next() {
-            Some('q' | 'Q') => (),
-            _ => return None,
-        };
-        match c.next() {
-            Some('=') => (),
-            _ => return None,
-        };
-
-        // Parse leading digit. Since valid q-values are between 0.000 and 1.000, only "0" and "1"
-        // are allowed.
-        let mut value = match c.next() {
-            Some('0') => 0,
-            Some('1') => 1000,
-            _ => return None,
-        };
-
-        // Parse optional decimal point.
-        match c.next() {
-            Some('.') => (),
-            None => return Some(Self(value)),
-            _ => return None,
-        };
-
-        // Parse optional fractional digits. The value of each digit is multiplied by `factor`.
-        // Since the q-value is represented as an integer between 0 and 1000, `factor` is `100` for
-        // the first digit, `10` for the next, and `1` for the digit after that.
-        let mut factor = 100;
-        loop {
-            match c.next() {
-                Some(n @ '0'..='9') => {
-                    // If `factor` is less than `1`, three digits have already been parsed. A
-                    // q-value having more than 3 fractional digits is invalid.
-                    if factor < 1 {
-                        return None;
-                    }
-                    // Add the digit's value multiplied by `factor` to `value`.
-                    value += factor * (n as u16 - '0' as u16);
-                }
-                None => {
-                    // No more characters to parse. Check that the value representing the q-value is
-                    // in the valid range.
-                    return if value <= 1000 {
-                        Some(Self(value))
-                    } else {
-                        None
-                    };
-                }
-                _ => return None,
-            };
-            factor /= 10;
-        }
-    }
-}
-
-// based on https://github.com/http-rs/accept-encoding
-#[allow(dead_code)]
-pub(crate) fn encodings<'a>(
+/// based on https://github.com/http-rs/accept-encoding
+pub fn parse_accept_encoding_headers<'a>(
     headers: &'a http::HeaderMap,
     supported_encoding: impl SupportedEncodings + 'a,
-) -> impl Iterator<Item = (Encoding, QValue)> + 'a {
+) -> impl Iterator<Item = QualityValue<Encoding>> + 'a {
     headers
         .get_all(http::header::ACCEPT_ENCODING)
         .iter()
@@ -173,16 +157,16 @@ pub(crate) fn encodings<'a>(
             };
 
             let qval = if let Some(qval) = v.next() {
-                QValue::parse(qval.trim())?
+                qval.trim().parse::<Quality>().ok()?
             } else {
-                QValue::one()
+                Quality::one()
             };
 
-            Some((encoding, qval))
+            Some(QualityValue::new(encoding, qval))
         })
 }
 
-#[cfg(all(test, feature = "compression"))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -209,7 +193,8 @@ mod tests {
 
     #[test]
     fn no_accept_encoding_header() {
-        let encoding = Encoding::from_headers(&http::HeaderMap::new(), SupportedEncodingsAll);
+        let encoding =
+            Encoding::from_accept_encoding_headers(&http::HeaderMap::new(), SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
     }
 
@@ -220,7 +205,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Gzip, encoding);
     }
 
@@ -231,7 +216,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip,br"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -242,7 +227,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip,x-gzip"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Gzip, encoding);
     }
 
@@ -253,7 +238,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("deflate,x-gzip"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Gzip, encoding);
     }
 
@@ -264,7 +249,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip,deflate,br"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -275,7 +260,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.5,br"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -286,7 +271,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.5,deflate,br"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -301,7 +286,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("br"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -316,7 +301,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("br"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -335,7 +320,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("br"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -346,7 +331,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.5,br;q=0.8"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -354,7 +339,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.8,br;q=0.5"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Gzip, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -362,7 +347,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.995,br;q=0.999"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -373,7 +358,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.5,deflate;q=0.6,br;q=0.8"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -381,7 +366,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.8,deflate;q=0.6,br;q=0.5"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Gzip, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -389,7 +374,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.6,deflate;q=0.8,br;q=0.5"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Deflate, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -397,7 +382,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.995,deflate;q=0.997,br;q=0.999"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -408,7 +393,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("invalid,gzip"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Gzip, encoding);
     }
 
@@ -419,7 +404,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -427,7 +412,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0."),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -435,7 +420,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0,br;q=0.5"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -446,7 +431,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gZiP"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Gzip, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -454,7 +439,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.5,br;Q=0.8"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -465,7 +450,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static(" gzip\t; q=0.5 ,\tbr ;\tq=0.8\t"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Brotli, encoding);
     }
 
@@ -476,7 +461,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q =0.5"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -484,7 +469,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q= 0.5"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
     }
 
@@ -495,7 +480,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=-0.1"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -503,7 +488,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=00.5"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -511,7 +496,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=0.5000"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -519,7 +504,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=.5"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -527,7 +512,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=1.01"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
 
         let mut headers = http::HeaderMap::new();
@@ -535,7 +520,7 @@ mod tests {
             http::header::ACCEPT_ENCODING,
             http::HeaderValue::from_static("gzip;q=1.001"),
         );
-        let encoding = Encoding::from_headers(&headers, SupportedEncodingsAll);
+        let encoding = Encoding::from_accept_encoding_headers(&headers, SupportedEncodingsAll);
         assert_eq!(Encoding::Identity, encoding);
     }
 }

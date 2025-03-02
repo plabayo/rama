@@ -57,7 +57,7 @@ async fn test_allow_origin_async_predicate() {
     });
 
     let valid_origin = HeaderValue::from_static("http://example.com");
-    let parts = http::Request::new("hello world").into_parts().0;
+    let parts = rama_http_types::Request::new("hello world").into_parts().0;
 
     let header = allow_origin
         .to_future(Some(&valid_origin), &parts)
@@ -67,7 +67,7 @@ async fn test_allow_origin_async_predicate() {
     assert_eq!(header.1, valid_origin);
 
     let invalid_origin = HeaderValue::from_static("http://example.org");
-    let parts = http::Request::new("hello world").into_parts().0;
+    let parts = rama_http_types::Request::new("hello world").into_parts().0;
 
     let res = allow_origin.to_future(Some(&invalid_origin), &parts).await;
     assert!(res.is_none());

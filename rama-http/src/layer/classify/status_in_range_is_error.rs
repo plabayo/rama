@@ -53,7 +53,7 @@ impl ClassifyResponse for StatusInRangeAsFailures {
 
     fn classify_response<B>(
         self,
-        res: &http::Response<B>,
+        res: &rama_http_types::Response<B>,
     ) -> ClassifiedResponse<Self::FailureClass, Self::ClassifyEos> {
         if self.range.contains(&res.status().as_u16()) {
             let class = StatusInRangeFailureClass::StatusCode(res.status());

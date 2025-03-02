@@ -24,6 +24,80 @@ use self::internal::IntoQuality;
 #[derive(Copy, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Hash)]
 pub struct Quality(u16);
 
+impl Quality {
+    #[inline]
+    pub fn one() -> Self {
+        Self(1000)
+    }
+
+    #[inline]
+    pub fn as_u16(&self) -> u16 {
+        self.0
+    }
+}
+
+impl str::FromStr for Quality {
+    type Err = crate::headers::Error;
+
+    // Parse a q-value as specified in RFC 7231 section 5.3.1.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut c = s.chars();
+        // Parse "q=" (case-insensitively).
+        match c.next() {
+            Some('q' | 'Q') => (),
+            _ => return Err(crate::headers::Error::invalid()),
+        };
+        match c.next() {
+            Some('=') => (),
+            _ => return Err(crate::headers::Error::invalid()),
+        };
+
+        // Parse leading digit. Since valid q-values are between 0.000 and 1.000, only "0" and "1"
+        // are allowed.
+        let mut value = match c.next() {
+            Some('0') => 0,
+            Some('1') => 1000,
+            _ => return Err(crate::headers::Error::invalid()),
+        };
+
+        // Parse optional decimal point.
+        match c.next() {
+            Some('.') => (),
+            None => return Ok(Self(value)),
+            _ => return Err(crate::headers::Error::invalid()),
+        };
+
+        // Parse optional fractional digits. The value of each digit is multiplied by `factor`.
+        // Since the q-value is represented as an integer between 0 and 1000, `factor` is `100` for
+        // the first digit, `10` for the next, and `1` for the digit after that.
+        let mut factor = 100;
+        loop {
+            match c.next() {
+                Some(n @ '0'..='9') => {
+                    // If `factor` is less than `1`, three digits have already been parsed. A
+                    // q-value having more than 3 fractional digits is invalid.
+                    if factor < 1 {
+                        return Err(crate::headers::Error::invalid());
+                    }
+                    // Add the digit's value multiplied by `factor` to `value`.
+                    value += factor * (n as u16 - '0' as u16);
+                }
+                None => {
+                    // No more characters to parse. Check that the value representing the q-value is
+                    // in the valid range.
+                    return if value <= 1000 {
+                        Ok(Self(value))
+                    } else {
+                        Err(crate::headers::Error::invalid())
+                    };
+                }
+                _ => return Err(crate::headers::Error::invalid()),
+            };
+            factor /= 10;
+        }
+    }
+}
+
 impl Default for Quality {
     fn default() -> Quality {
         Quality(1000)
@@ -39,6 +113,8 @@ pub struct QualityValue<T> {
     /// The quality (client or server preference) for the value.
     pub quality: Quality,
 }
+
+impl<T: Copy> Copy for QualityValue<T> {}
 
 impl<T> QualityValue<T> {
     /// Creates a new `QualityValue` from an item and a quality.
@@ -92,7 +168,7 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
     fn from_str(s: &str) -> Result<QualityValue<T>, crate::headers::Error> {
         // Set defaults used if parsing fails.
         let mut raw_item = s;
-        let mut quality = 1f32;
+        let mut quality = Quality::one();
 
         let mut parts = s.rsplitn(2, ';').map(|x| x.trim());
         if let (Some(first), Some(second), None) = (parts.next(), parts.next(), parts.next()) {
@@ -100,26 +176,13 @@ impl<T: str::FromStr> str::FromStr for QualityValue<T> {
                 return Err(crate::headers::Error::invalid());
             }
             if first.starts_with("q=") || first.starts_with("Q=") {
-                let q_part = &first[2..];
-                if q_part.len() > 5 {
-                    return Err(crate::headers::Error::invalid());
-                }
-                match q_part.parse::<f32>() {
-                    Ok(q_value) => {
-                        if (0f32..=1f32).contains(&q_value) {
-                            quality = q_value;
-                            raw_item = second;
-                        } else {
-                            return Err(crate::headers::Error::invalid());
-                        }
-                    }
-                    Err(_) => return Err(crate::headers::Error::invalid()),
-                }
+                quality = Quality::from_str(first)?;
+                raw_item = second;
             }
         }
         match raw_item.parse::<T>() {
             // we already checked above that the quality is within range
-            Ok(item) => Ok(QualityValue::new(item, from_f32(quality))),
+            Ok(item) => Ok(QualityValue::new(item, quality)),
             Err(_) => Err(crate::headers::Error::invalid()),
         }
     }

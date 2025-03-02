@@ -1,5 +1,6 @@
 use crate::dep::mime::{self, Mime};
-use crate::headers::{self, Header, QualityValue};
+use crate::headers::specifier::QualityValue;
+use crate::headers::{self, Header};
 use crate::{HeaderName, HeaderValue};
 use std::iter::FromIterator;
 
@@ -35,10 +36,10 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// # Examples
 /// ```
 /// use std::iter::FromIterator;
-/// use rama_http::headers::{Accept, QualityValue, HeaderMapExt};
-/// use rama_http::dep::mime;
+/// use rama_http_types::headers::{Accept, specifier::QualityValue, HeaderMapExt};
+/// use rama_http_types::dep::mime;
 ///
-/// let mut headers = rama_http::HeaderMap::new();
+/// let mut headers = rama_http_types::HeaderMap::new();
 ///
 /// headers.typed_insert(
 ///     Accept::from_iter(vec![
@@ -49,10 +50,10 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 ///
 /// ```
 /// use std::iter::FromIterator;
-/// use rama_http::headers::{Accept, QualityValue, HeaderMapExt};
-/// use rama_http::dep::mime;
+/// use rama_http_types::headers::{Accept, specifier::QualityValue, HeaderMapExt};
+/// use rama_http_types::dep::mime;
 ///
-/// let mut headers = rama_http::HeaderMap::new();
+/// let mut headers = rama_http_types::HeaderMap::new();
 /// headers.typed_insert(
 ///     Accept::from_iter(vec![
 ///         QualityValue::new(mime::APPLICATION_JSON, Default::default()),
@@ -61,10 +62,10 @@ fn qitem(mime: Mime) -> QualityValue<Mime> {
 /// ```
 /// ```
 /// use std::iter::FromIterator;
-/// use rama_http::headers::{Accept, QualityValue, HeaderMapExt};
-/// use rama_http::dep::mime;
+/// use rama_http_types::headers::{Accept, specifier::QualityValue, HeaderMapExt};
+/// use rama_http_types::dep::mime;
 ///
-/// let mut headers = rama_http::HeaderMap::new();
+/// let mut headers = rama_http_types::HeaderMap::new();
 ///
 /// headers.typed_insert(
 ///     Accept::from_iter(vec![
@@ -161,7 +162,7 @@ mod tests {
         mime::{TEXT_HTML, TEXT_PLAIN, TEXT_PLAIN_UTF_8},
     };
 
-    use crate::headers::Quality;
+    use crate::headers::specifier::Quality;
 
     macro_rules! test_header {
         ($name: ident, $input: expr, $expected: expr) => {

@@ -280,7 +280,7 @@ impl ResponseForPanic for DefaultResponseForPanic {
         #[allow(clippy::declare_interior_mutable_const)]
         const TEXT_PLAIN: HeaderValue = HeaderValue::from_static("text/plain; charset=utf-8");
         res.headers_mut()
-            .insert(http::header::CONTENT_TYPE, TEXT_PLAIN);
+            .insert(rama_http_types::header::CONTENT_TYPE, TEXT_PLAIN);
 
         res
     }

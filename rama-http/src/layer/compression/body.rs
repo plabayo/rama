@@ -143,11 +143,11 @@ where
         }
     }
 
-    fn size_hint(&self) -> http_body::SizeHint {
+    fn size_hint(&self) -> rama_http_types::dep::http_body::SizeHint {
         if let BodyInner::Identity { inner } = &self.inner {
             inner.size_hint()
         } else {
-            http_body::SizeHint::new()
+            rama_http_types::dep::http_body::SizeHint::new()
         }
     }
 

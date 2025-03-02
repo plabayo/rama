@@ -8,22 +8,22 @@ fn test_parse_desktop_ua() {
     let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), Some(DeviceKind::Desktop));
     assert!(ua.info().is_none());
     assert_eq!(ua.platform(), None);
 
-    // Http/Tls agents do have defaults
-    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-    assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
+    // Http/Tls agents do not have defaults
+    assert_eq!(ua.http_agent(), None);
+    assert_eq!(ua.tls_agent(), None);
 
     // Overwrite http agent
-    ua.with_http_agent(HttpAgent::Firefox);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_http_agent(HttpAgent::Firefox);
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 
     // Overwrite tls agent
-    ua.with_tls_agent(TlsAgent::Nss);
-    assert_eq!(ua.tls_agent(), TlsAgent::Nss);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_tls_agent(TlsAgent::Nss);
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Nss));
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 }
 
 #[test]
@@ -32,22 +32,22 @@ fn test_parse_too_long_ua() {
     let mut ua = UserAgent::new(ua_str.clone());
 
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), None);
     assert_eq!(ua.info(), None);
     assert_eq!(ua.platform(), None);
 
-    // Http/Tls agents do have defaults
-    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-    assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
+    // Http/Tls agents do not have defaults
+    assert_eq!(ua.http_agent(), None);
+    assert_eq!(ua.tls_agent(), None);
 
     // Overwrite http agent
-    ua.with_http_agent(HttpAgent::Firefox);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_http_agent(HttpAgent::Firefox);
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 
     // Overwrite tls agent
-    ua.with_tls_agent(TlsAgent::Nss);
-    assert_eq!(ua.tls_agent(), TlsAgent::Nss);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_tls_agent(TlsAgent::Nss);
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Nss));
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 }
 
 #[test]
@@ -56,22 +56,22 @@ fn test_parse_windows() {
     let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), Some(DeviceKind::Desktop));
     assert_eq!(ua.info(), None);
     assert_eq!(ua.platform(), Some(PlatformKind::Windows));
 
-    // Http/Tls agents do have defaults
-    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-    assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
+    // Http/Tls agents have defaults for platforms
+    assert_eq!(ua.http_agent(), None);
+    assert_eq!(ua.tls_agent(), None);
 
     // Overwrite http agent
-    ua.with_http_agent(HttpAgent::Firefox);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_http_agent(HttpAgent::Firefox);
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 
     // Overwrite tls agent
-    ua.with_tls_agent(TlsAgent::Nss);
-    assert_eq!(ua.tls_agent(), TlsAgent::Nss);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_tls_agent(TlsAgent::Nss);
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Nss));
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn test_parse_chrome() {
     let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), None);
     assert_eq!(
         ua.info(),
         Some(UserAgentInfo {
@@ -90,18 +90,18 @@ fn test_parse_chrome() {
     );
     assert_eq!(ua.platform(), None);
 
-    // Http/Tls agents do have defaults
-    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-    assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+    // Http/Tls agents can be linked to found UA Info
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Chromium));
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Boringssl));
 
     // Overwrite http agent
-    ua.with_http_agent(HttpAgent::Firefox);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_http_agent(HttpAgent::Firefox);
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 
     // Overwrite tls agent
-    ua.with_tls_agent(TlsAgent::Nss);
-    assert_eq!(ua.tls_agent(), TlsAgent::Nss);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_tls_agent(TlsAgent::Nss);
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Nss));
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 }
 
 #[test]
@@ -110,7 +110,7 @@ fn test_parse_windows_chrome() {
     let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), Some(DeviceKind::Desktop));
     assert_eq!(
         ua.info(),
         Some(UserAgentInfo {
@@ -120,18 +120,18 @@ fn test_parse_windows_chrome() {
     );
     assert_eq!(ua.platform(), Some(PlatformKind::Windows));
 
-    // Http/Tls agents do have defaults
-    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-    assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+    // Http/Tls agents can be linked to found UA Info
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Chromium));
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Boringssl));
 
     // Overwrite http agent
-    ua.with_http_agent(HttpAgent::Firefox);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_http_agent(HttpAgent::Firefox);
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 
     // Overwrite tls agent
-    ua.with_tls_agent(TlsAgent::Nss);
-    assert_eq!(ua.tls_agent(), TlsAgent::Nss);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_tls_agent(TlsAgent::Nss);
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Nss));
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 }
 
 #[test]
@@ -140,7 +140,7 @@ fn test_parse_desktop_chrome() {
     let ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), Some(DeviceKind::Desktop));
     assert_eq!(
         ua.info(),
         Some(UserAgentInfo {
@@ -152,12 +152,12 @@ fn test_parse_desktop_chrome() {
 }
 
 #[test]
-fn test_parse_desktop_chrome_with_version() {
+fn test_parse_desktop_chrome_set_version() {
     let ua_str = "desktop chrome/124";
     let ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), Some(DeviceKind::Desktop));
     assert_eq!(
         ua.info(),
         Some(UserAgentInfo {
@@ -169,12 +169,12 @@ fn test_parse_desktop_chrome_with_version() {
 }
 
 #[test]
-fn test_parse_windows_chrome_with_version() {
+fn test_parse_windows_chrome_set_version() {
     let ua_str = "windows chrome/124";
     let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), Some(DeviceKind::Desktop));
     assert_eq!(
         ua.info(),
         Some(UserAgentInfo {
@@ -184,18 +184,18 @@ fn test_parse_windows_chrome_with_version() {
     );
     assert_eq!(ua.platform(), Some(PlatformKind::Windows));
 
-    // Http/Tls agents do have defaults
-    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-    assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+    // Http/Tls agents can be linked to found UA Info
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Chromium));
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Boringssl));
 
     // Overwrite http agent
-    ua.with_http_agent(HttpAgent::Firefox);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_http_agent(HttpAgent::Firefox);
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 
     // Overwrite tls agent
-    ua.with_tls_agent(TlsAgent::Nss);
-    assert_eq!(ua.tls_agent(), TlsAgent::Nss);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_tls_agent(TlsAgent::Nss);
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Nss));
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 }
 
 #[test]
@@ -204,22 +204,22 @@ fn test_parse_mobile_ua() {
         let mut ua = UserAgent::new(*ua_str);
 
         assert_eq!(ua.header_str(), *ua_str);
-        assert_eq!(ua.device(), DeviceKind::Mobile);
+        assert_eq!(ua.device(), Some(DeviceKind::Mobile));
         assert_eq!(ua.info(), None);
         assert_eq!(ua.platform(), None);
 
-        // Http/Tls agents do have defaults
-        assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-        assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
+        // Http/Tls agents do not have defaults
+        assert_eq!(ua.http_agent(), None);
+        assert_eq!(ua.tls_agent(), None);
 
         // Overwrite http agent
-        ua.with_http_agent(HttpAgent::Firefox);
-        assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+        ua.set_http_agent(HttpAgent::Firefox);
+        assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 
         // Overwrite tls agent
-        ua.with_tls_agent(TlsAgent::Nss);
-        assert_eq!(ua.tls_agent(), TlsAgent::Nss);
-        assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+        ua.set_tls_agent(TlsAgent::Nss);
+        assert_eq!(ua.tls_agent(), Some(TlsAgent::Nss));
+        assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
     }
 }
 
@@ -230,24 +230,24 @@ fn test_parse_happy_path_unknown_ua() {
 
     // UA Is always stored as is.
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), None);
 
     // No information should be known about the UA.
     assert!(ua.info().is_none());
     assert!(ua.platform().is_none());
 
-    // Http/Tls agents do have defaults
-    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-    assert_eq!(ua.tls_agent(), TlsAgent::Rustls);
+    // Http/Tls agents do not have defaults
+    assert_eq!(ua.http_agent(), None);
+    assert_eq!(ua.tls_agent(), None);
 
     // Overwrite http agent
-    ua.with_http_agent(HttpAgent::Firefox);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_http_agent(HttpAgent::Firefox);
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 
     // Overwrite tls agent
-    ua.with_tls_agent(TlsAgent::Nss);
-    assert_eq!(ua.tls_agent(), TlsAgent::Nss);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_tls_agent(TlsAgent::Nss);
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Nss));
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn test_parse_happy_path_ua_macos_chrome() {
     let mut ua = UserAgent::new(ua_str);
 
     assert_eq!(ua.header_str(), ua_str);
-    assert_eq!(ua.device(), DeviceKind::Desktop);
+    assert_eq!(ua.device(), Some(DeviceKind::Desktop));
     assert_eq!(
         ua.info(),
         Some(UserAgentInfo {
@@ -266,18 +266,18 @@ fn test_parse_happy_path_ua_macos_chrome() {
     );
     assert_eq!(ua.platform(), Some(PlatformKind::MacOS));
 
-    // Http/Tls
-    assert_eq!(ua.http_agent(), HttpAgent::Chromium);
-    assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+    // Http/Tls agents can be linked to found UA Info
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Chromium));
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Boringssl));
 
     // Overwrite http agent
-    ua.with_http_agent(HttpAgent::Firefox);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_http_agent(HttpAgent::Firefox);
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 
     // Overwrite tls agent
-    ua.with_tls_agent(TlsAgent::Nss);
-    assert_eq!(ua.tls_agent(), TlsAgent::Nss);
-    assert_eq!(ua.http_agent(), HttpAgent::Firefox);
+    ua.set_tls_agent(TlsAgent::Nss);
+    assert_eq!(ua.tls_agent(), Some(TlsAgent::Nss));
+    assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
 }
 
 #[test]

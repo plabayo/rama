@@ -33,10 +33,6 @@ bytes = { workspace = true }
 const_format = { workspace = true }
 csv = { workspace = true }
 futures-lite = { workspace = true }
-headers = { workspace = true }
-http = { workspace = true }
-http-body = { workspace = true }
-http-body-util = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }

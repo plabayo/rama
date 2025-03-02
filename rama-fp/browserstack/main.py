@@ -70,6 +70,8 @@ BROWSERSTACK_USERNAME = env("BROWSERSTACK_USERNAME")
 BROWSERSTACK_ACCESS_KEY = env("BROWSERSTACK_ACCESS_KEY")
 URL = os.environ.get("URL") or "https://hub.browserstack.com/wd/hub"
 
+RAMA_FP_STORAGE_COOKIE = env("RAMA_FP_STORAGE_COOKIE")
+
 
 def get_browser_option(browser):
     switcher = {
@@ -153,6 +155,11 @@ def run_session(cap):
                 command_executor=URL,
                 options=options,
             )
+
+            driver.set_cookie({
+                'name': 'rama-storage-auth',
+                'value': RAMA_FP_STORAGE_COOKIE,
+            })
 
             driver.get(entrypoint)
             print("ua", driver.execute_script("return navigator.userAgent;"))

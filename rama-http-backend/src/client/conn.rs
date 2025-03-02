@@ -3,7 +3,7 @@ use rama_core::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
 };
-use rama_http_types::{Request, Version, dep::http_body};
+use rama_http_types::{Request, Version, conn::Http1ClientContextParams, dep::http_body};
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     stream::Stream,
@@ -123,7 +123,11 @@ where
             }
             Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09 => {
                 trace!(uri = %req.uri(), "create ~h1 client executor");
-                let (sender, conn) = rama_http_core::client::conn::http1::handshake(io).await?;
+                let mut builder = rama_http_core::client::conn::http1::Builder::new();
+                if let Some(params) = ctx.get::<Http1ClientContextParams>() {
+                    builder.title_case_headers(params.title_header_case);
+                }
+                let (sender, conn) = builder.handshake(io).await?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {

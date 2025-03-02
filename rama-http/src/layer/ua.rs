@@ -28,7 +28,7 @@
 //!
 //! let _ = service
 //!     .get("http://www.example.com")
-//!     .typed_header(headers::UserAgent::from_static(UA))
+//!     .typed_header(rama_http_types::headers::UserAgent::from_static(UA))
 //!     .send(Context::default())
 //!     .await
 //!     .unwrap();
@@ -123,35 +123,42 @@ where
         mut ctx: Context<State>,
         req: Request<Body>,
     ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
-        let mut user_agent = req
-            .headers()
-            .typed_get::<headers::UserAgent>()
-            .map(|ua| UserAgent::new(ua.to_string()));
-
-        if let Some(overwrites) = self
+        let overwrites = self
             .overwrite_header
             .as_ref()
             .and_then(|header| req.headers().get(header))
             .map(|header| header.as_bytes())
-            .and_then(|value| serde_html_form::from_bytes::<UserAgentOverwrites>(value).ok())
-        {
-            if let Some(ua) = overwrites.ua {
-                user_agent = Some(UserAgent::new(ua));
-            }
-            if let Some(ref mut ua) = user_agent {
+            .and_then(|value| serde_html_form::from_bytes::<UserAgentOverwrites>(value).ok());
+
+        let mut user_agent = overwrites
+            .as_ref()
+            .and_then(|o| o.ua.as_deref())
+            .map(UserAgent::new)
+            .or_else(|| {
+                req.headers()
+                    .typed_get::<headers::UserAgent>()
+                    .map(|ua| UserAgent::new(ua.to_string()))
+            });
+
+        if let Some(mut ua) = user_agent.take() {
+            if let Some(overwrites) = overwrites {
                 if let Some(http_agent) = overwrites.http {
-                    ua.with_http_agent(http_agent);
+                    ua.set_http_agent(http_agent);
                 }
                 if let Some(tls_agent) = overwrites.tls {
-                    ua.with_tls_agent(tls_agent);
+                    ua.set_tls_agent(tls_agent);
                 }
                 if let Some(preserve_ua) = overwrites.preserve_ua {
-                    ua.with_preserve_ua_header(preserve_ua);
+                    ua.set_preserve_ua_header(preserve_ua);
+                }
+                if let Some(req_init) = overwrites.req_init {
+                    ua.set_request_initiator(req_init);
+                }
+                if let Some(req_client_hints) = overwrites.req_client_hints {
+                    ua.set_requested_client_hints(req_client_hints);
                 }
             }
-        }
 
-        if let Some(ua) = user_agent.take() {
             ctx.insert(ua);
         }
 
@@ -204,8 +211,11 @@ mod tests {
     use crate::layer::required_header::AddRequiredRequestHeadersLayer;
     use crate::service::client::HttpClientExt;
     use crate::{IntoResponse, Response, StatusCode, headers};
+    use itertools::Itertools;
     use rama_core::Context;
     use rama_core::service::service_fn;
+    use rama_http_types::headers::ClientHint;
+    use rama_ua::RequestInitiator;
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -231,6 +241,34 @@ mod tests {
 
         let _ = service
             .get("http://www.example.com")
+            .send(Context::default())
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_user_agent_classifier_layer_ua_iphone_app() {
+        const UA: &str = "iPhone App/1.0";
+
+        async fn handle<S>(ctx: Context<S>, _req: Request) -> Result<Response, Infallible> {
+            let ua: &UserAgent = ctx.get().unwrap();
+
+            assert_eq!(ua.header_str(), UA);
+            assert!(ua.info().is_none());
+            assert_eq!(ua.platform(), Some(PlatformKind::IOS));
+            assert_eq!(ua.http_agent(), None);
+            assert_eq!(ua.tls_agent(), None);
+            assert!(!ua.preserve_ua_header());
+            assert!(ua.request_initiator().is_none());
+
+            Ok(StatusCode::OK.into_response())
+        }
+
+        let service = UserAgentClassifierLayer::new().layer(service_fn(handle));
+
+        let _ = service
+            .get("http://www.example.com")
+            .typed_header(headers::UserAgent::from_static(UA))
             .send(Context::default())
             .await
             .unwrap();
@@ -274,6 +312,10 @@ mod tests {
             assert_eq!(ua_info.kind, UserAgentKind::Chromium);
             assert_eq!(ua_info.version, Some(124));
             assert_eq!(ua.platform(), Some(PlatformKind::Windows));
+            assert_eq!(
+                ua.requested_client_hints().join(", "),
+                "sec-ch-downlink, sec-ch-ect"
+            );
 
             Ok(StatusCode::OK.into_response())
         }
@@ -288,6 +330,7 @@ mod tests {
                 "x-proxy-ua",
                 serde_html_form::to_string(&UserAgentOverwrites {
                     ua: Some(UA.to_owned()),
+                    req_client_hints: Some(vec![ClientHint::Downlink, ClientHint::Ect]),
                     ..Default::default()
                 })
                 .unwrap(),
@@ -306,10 +349,11 @@ mod tests {
 
             assert_eq!(ua.header_str(), UA);
             assert!(ua.info().is_none());
-            assert!(ua.platform().is_none());
-            assert_eq!(ua.http_agent(), HttpAgent::Safari);
-            assert_eq!(ua.tls_agent(), TlsAgent::Boringssl);
+            assert_eq!(ua.platform(), Some(PlatformKind::IOS));
+            assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
+            assert_eq!(ua.tls_agent(), Some(TlsAgent::Boringssl));
             assert!(ua.preserve_ua_header());
+            assert_eq!(ua.request_initiator(), Some(RequestInitiator::Xhr));
 
             Ok(StatusCode::OK.into_response())
         }
@@ -324,9 +368,11 @@ mod tests {
                 "x-proxy-ua",
                 serde_html_form::to_string(&UserAgentOverwrites {
                     ua: Some(UA.to_owned()),
-                    http: Some(HttpAgent::Safari),
+                    http: Some(HttpAgent::Firefox),
                     tls: Some(TlsAgent::Boringssl),
                     preserve_ua: Some(true),
+                    req_init: Some(RequestInitiator::Xhr),
+                    req_client_hints: Some(vec![ClientHint::Downlink]),
                 })
                 .unwrap(),
             )

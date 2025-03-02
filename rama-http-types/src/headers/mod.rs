@@ -90,3 +90,16 @@ pub mod authorization {
 mod ext;
 #[doc(inline)]
 pub use ext::HeaderExt;
+
+pub mod encoding;
+pub mod specifier;
+
+pub mod util;
+
+mod common;
+pub use common::Accept;
+
+mod client_hints;
+pub use client_hints::{
+    ClientHint, all_client_hint_header_name_strings, all_client_hint_header_names,
+};

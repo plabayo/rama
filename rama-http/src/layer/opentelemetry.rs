@@ -267,11 +267,11 @@ impl<S, F> RequestMetricsService<S, F> {
 
         attributes.push(KeyValue::new(HTTP_REQUEST_METHOD, req.method().to_string()));
         if let Some(http_version) = request_ctx.as_ref().and_then(|rc| match rc.http_version {
-            http::Version::HTTP_09 => Some("0.9"),
-            http::Version::HTTP_10 => Some("1.0"),
-            http::Version::HTTP_11 => Some("1.1"),
-            http::Version::HTTP_2 => Some("2"),
-            http::Version::HTTP_3 => Some("3"),
+            rama_http_types::Version::HTTP_09 => Some("0.9"),
+            rama_http_types::Version::HTTP_10 => Some("1.0"),
+            rama_http_types::Version::HTTP_11 => Some("1.1"),
+            rama_http_types::Version::HTTP_2 => Some("2"),
+            rama_http_types::Version::HTTP_3 => Some("3"),
             _ => None,
         }) {
             attributes.push(KeyValue::new(NETWORK_PROTOCOL_VERSION, http_version));

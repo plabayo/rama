@@ -35,6 +35,10 @@ impl OriginalHttp1Headers {
     pub fn is_empty(&self) -> bool {
         self.ordered_headers.is_empty()
     }
+
+    pub fn iter(&self) -> impl Iterator<Item = &Http1HeaderName> {
+        self.ordered_headers.iter()
+    }
 }
 
 impl OriginalHttp1Headers {

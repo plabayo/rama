@@ -66,6 +66,27 @@ macro_rules! enum_builder {
                 ::std::fmt::UpperHex::fmt(&u8::from(*self), f)
             }
         }
+
+        impl ::serde::Serialize for $enum_name {
+            #[inline]
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                u8::from(*self).serialize(serializer)
+            }
+        }
+
+        impl<'de> ::serde::Deserialize<'de> for $enum_name {
+            #[inline]
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                let n = u8::deserialize(deserializer)?;
+                Ok(n.into())
+            }
+        }
     };
     (
         $(#[$comment:meta])*
@@ -133,6 +154,27 @@ macro_rules! enum_builder {
                 ::std::fmt::UpperHex::fmt(&u16::from(*self), f)
             }
         }
+
+        impl ::serde::Serialize for $enum_name {
+            #[inline]
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                u16::from(*self).serialize(serializer)
+            }
+        }
+
+        impl<'de> ::serde::Deserialize<'de> for $enum_name {
+            #[inline]
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                let n = u16::deserialize(deserializer)?;
+                Ok(n.into())
+            }
+        }
     };
     (
         $(#[$comment:meta])*
@@ -142,7 +184,7 @@ macro_rules! enum_builder {
     ) => {
         $(#[$comment])*
         #[non_exhaustive]
-        #[derive(Debug, PartialEq, Eq, Clone)]
+        #[derive(Debug, PartialEq, Eq, Clone, Hash)]
         $enum_vis enum $enum_name {
             $( $enum_var),*
             ,Unknown(Vec<u8>)
@@ -254,6 +296,34 @@ macro_rules! enum_builder {
                             }
                         }
                 }
+            }
+        }
+
+        impl ::serde::Serialize for $enum_name {
+            #[inline]
+            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                match self {
+                    $( $enum_name::$enum_var => {
+                        $enum_val.serialize(serializer)
+                    }),*
+                    ,$enum_name::Unknown(x) => {
+                        x.serialize(serializer)
+                    }
+                }
+            }
+        }
+
+        impl<'de> ::serde::Deserialize<'de> for $enum_name {
+            #[inline]
+            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                let b = <::std::borrow::Cow<'de, [u8]>>::deserialize(deserializer)?;
+                Ok(b.as_ref().into())
             }
         }
     };
@@ -1027,5 +1097,46 @@ mod tests {
         );
         assert_eq!(12, r.position());
         assert_eq!(&INPUT.as_bytes()[3..12], b"\x08http/1.1");
+    }
+
+    #[test]
+    fn test_enum_u8_serialize_deserialize() {
+        let p: ECPointFormat = serde_json::from_str(
+            &serde_json::to_string(&ECPointFormat::ANSIX962CompressedChar2).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ECPointFormat::ANSIX962CompressedChar2, p);
+
+        let p: ECPointFormat =
+            serde_json::from_str(&serde_json::to_string(&ECPointFormat::from(42u8)).unwrap())
+                .unwrap();
+        assert_eq!(ECPointFormat::from(42u8), p);
+    }
+
+    #[test]
+    fn test_enum_u16_serialize_deserialize() {
+        let p: SupportedGroup =
+            serde_json::from_str(&serde_json::to_string(&SupportedGroup::BRAINPOOLP384R1).unwrap())
+                .unwrap();
+        assert_eq!(SupportedGroup::BRAINPOOLP384R1, p);
+
+        let p: SupportedGroup =
+            serde_json::from_str(&serde_json::to_string(&SupportedGroup::from(0xffffu16)).unwrap())
+                .unwrap();
+        assert_eq!(SupportedGroup::from(0xffffu16), p);
+    }
+
+    #[test]
+    fn test_enum_bytes_serialize_deserialize() {
+        let p: ApplicationProtocol =
+            serde_json::from_str(&serde_json::to_string(&ApplicationProtocol::HTTP_3).unwrap())
+                .unwrap();
+        assert_eq!(ApplicationProtocol::HTTP_3, p);
+
+        let p: ApplicationProtocol = serde_json::from_str(
+            &serde_json::to_string(&ApplicationProtocol::from(b"foobar")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(ApplicationProtocol::from(b"foobar"), p);
     }
 }

@@ -1,9 +1,9 @@
-//! [`service::Matcher`]s implementations to match on [`http::Request`]s.
+//! [`service::Matcher`]s implementations to match on [`rama_http_types::Request`]s.
 //!
 //! See [`service::matcher` module] for more information.
 //!
 //! [`service::Matcher`]: rama_core::matcher::Matcher
-//! [`http::Request`]: crate::Request
+//! [`rama_http_types::Request`]: crate::Request
 //! [`service::matcher` module]: rama_core
 use crate::Request;
 use rama_core::{Context, context::Extensions, matcher::IteratorMatcherExt};
@@ -455,7 +455,10 @@ impl<State, Body> HttpMatcher<State, Body> {
     }
 
     /// Create a [`HeaderMatcher`] matcher.
-    pub fn header(name: http::header::HeaderName, value: http::header::HeaderValue) -> Self {
+    pub fn header(
+        name: rama_http_types::header::HeaderName,
+        value: rama_http_types::header::HeaderValue,
+    ) -> Self {
         Self {
             kind: HttpMatcherKind::Header(HeaderMatcher::is(name, value)),
             negate: false,
@@ -467,8 +470,8 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// See [`HeaderMatcher`] for more information.
     pub fn and_header(
         self,
-        name: http::header::HeaderName,
-        value: http::header::HeaderValue,
+        name: rama_http_types::header::HeaderName,
+        value: rama_http_types::header::HeaderValue,
     ) -> Self {
         self.and(Self::header(name, value))
     }
@@ -478,15 +481,15 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// See [`HeaderMatcher`] for more information.
     pub fn or_header(
         self,
-        name: http::header::HeaderName,
-        value: http::header::HeaderValue,
+        name: rama_http_types::header::HeaderName,
+        value: rama_http_types::header::HeaderValue,
     ) -> Self {
         self.or(Self::header(name, value))
     }
 
     /// Create a [`HeaderMatcher`] matcher when the given header exists
     /// to match on the existence of a header.
-    pub fn header_exists(name: http::header::HeaderName) -> Self {
+    pub fn header_exists(name: rama_http_types::header::HeaderName) -> Self {
         Self {
             kind: HttpMatcherKind::Header(HeaderMatcher::exists(name)),
             negate: false,
@@ -497,7 +500,7 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// on top of the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
-    pub fn and_header_exists(self, name: http::header::HeaderName) -> Self {
+    pub fn and_header_exists(self, name: rama_http_types::header::HeaderName) -> Self {
         self.and(Self::header_exists(name))
     }
 
@@ -505,14 +508,14 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// as an alternative to the existing set of [`HttpMatcher`] matchers.
     ///
     /// See [`HeaderMatcher`] for more information.
-    pub fn or_header_exists(self, name: http::header::HeaderName) -> Self {
+    pub fn or_header_exists(self, name: rama_http_types::header::HeaderName) -> Self {
         self.or(Self::header_exists(name))
     }
 
     /// Create a [`HeaderMatcher`] matcher to match on it containing the given value.
     pub fn header_contains(
-        name: http::header::HeaderName,
-        value: http::header::HeaderValue,
+        name: rama_http_types::header::HeaderName,
+        value: rama_http_types::header::HeaderValue,
     ) -> Self {
         Self {
             kind: HttpMatcherKind::Header(HeaderMatcher::contains(name, value)),
@@ -526,8 +529,8 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// See [`HeaderMatcher`] for more information.
     pub fn and_header_contains(
         self,
-        name: http::header::HeaderName,
-        value: http::header::HeaderValue,
+        name: rama_http_types::header::HeaderName,
+        value: rama_http_types::header::HeaderValue,
     ) -> Self {
         self.and(Self::header_contains(name, value))
     }
@@ -538,8 +541,8 @@ impl<State, Body> HttpMatcher<State, Body> {
     /// See [`HeaderMatcher`] for more information.
     pub fn or_header_contains(
         self,
-        name: http::header::HeaderName,
-        value: http::header::HeaderValue,
+        name: rama_http_types::header::HeaderName,
+        value: rama_http_types::header::HeaderValue,
     ) -> Self {
         self.or(Self::header_contains(name, value))
     }

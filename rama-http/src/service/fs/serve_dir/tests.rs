@@ -395,7 +395,7 @@ async fn redirect_to_trailing_slash_on_dir() {
 
     assert_eq!(res.status(), StatusCode::TEMPORARY_REDIRECT);
 
-    let location = &res.headers()[http::header::LOCATION];
+    let location = &res.headers()[rama_http_types::header::LOCATION];
     assert_eq!(location, "/src/");
 }
 

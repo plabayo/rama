@@ -100,9 +100,12 @@ mod test {
             StatusCode::OK
         });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
-            .header(http::header::CONTENT_TYPE, "text/csv; charset=utf-8")
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(
+                rama_http_types::header::CONTENT_TYPE,
+                "text/csv; charset=utf-8",
+            )
             .body("name,age,alive\nglen,42,\nadr,40,true\n".into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
@@ -122,9 +125,9 @@ mod test {
         let service = WebService::default()
             .post("/", |Csv(_): Csv<Vec<Input>>| async move { StatusCode::OK });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
-            .header(http::header::CONTENT_TYPE, "text/plain")
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(rama_http_types::header::CONTENT_TYPE, "text/plain")
             .body(r#"{"name": "glen", "age": 42}"#.into())
             .unwrap();
         let resp = service.serve(Context::default(), req).await.unwrap();
@@ -143,9 +146,12 @@ mod test {
         let service = WebService::default()
             .post("/", |Csv(_): Csv<Vec<Input>>| async move { StatusCode::OK });
 
-        let req = http::Request::builder()
-            .method(http::Method::POST)
-            .header(http::header::CONTENT_TYPE, "text/csv; charset=utf-8")
+        let req = rama_http_types::Request::builder()
+            .method(rama_http_types::Method::POST)
+            .header(
+                rama_http_types::header::CONTENT_TYPE,
+                "text/csv; charset=utf-8",
+            )
             // the missing column last line should trigger an error
             .body("name,age,alive\nglen,42,\nadr,40\n".into())
             .unwrap();

@@ -85,7 +85,10 @@ impl<S, State, ReqBody> Service<State, Request<ReqBody>> for BodyLimitService<S>
 where
     S: Service<State, Request<Body>>,
     State: Clone + Send + Sync + 'static,
-    ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
+    ReqBody: rama_http_types::dep::http_body::Body<Data = Bytes, Error: Into<BoxError>>
+        + Send
+        + Sync
+        + 'static,
 {
     type Response = S::Response;
     type Error = S::Error;

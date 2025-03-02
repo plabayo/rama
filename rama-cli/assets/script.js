@@ -22,26 +22,10 @@ async function fetchWithBackoff(url, options) {
     throw new Error('Max retries exceeded');
 }
 
-// Function to make a GET request
-async function makeGetRequest(url) {
-    const headers = {
-        'x-CusToM-HEADER': `rama-fp${Date.now()}`,
-        'x-CusToM-HEADER-eXtRa': `rama-fpeXtRa-${Date.now()}`,
-    };
-
-    const options = {
-        method: 'GET',
-        headers
-    };
-
-    return fetchWithBackoff(url, options);
-}
-
 // Function to make a POST request
 async function makePostRequest(url, number) {
     const headers = {
-        'x-CusToM-HEADER': `rama-fp${Date.now()}`,
-        'x-CusToM-HEADER-eXtRa': `rama-fpeXtRa-${Date.now()}`,
+        'x-RAMA-custom-header-marker': `rama-fp${Date.now()}`,
     };
 
     const body = JSON.stringify({ number });
@@ -60,8 +44,7 @@ function makeRequestWithXHR(url, method, number) {
     return new Promise((resolve, reject) => {
         const xhr = new XMLHttpRequest();
         xhr.open(method, url);
-        xhr.setRequestHeader('x-CusToM-HEADER', `rama-fp${Date.now()}`);
-        xhr.setRequestHeader('x-CusToM-HEADER-eXtRa', `rama-fpeXtRa-${Date.now()}`);
+        xhr.setRequestHeader('x-RAMA-custom-header-marker', `rama-fp${Date.now()}`);
 
         xhr.onload = function () {
             if (xhr.status >= 200 && xhr.status < 300) {
@@ -82,20 +65,20 @@ function makeRequestWithXHR(url, method, number) {
 // Main function to execute the requests
 async function main() {
     try {
-        // Fetch GET request
-        const response1 = await makeGetRequest('/api/fetch/number');
-        const { number } = await response1.json();
+        // Generate random numbers for the requests
+        const number = Math.floor(Math.random() * 1000) + 1;
+        const number2 = Math.floor(Math.random() * 1000) + 1;
+        
+        console.log('Generated random numbers:', number, number2);
 
         // Fetch POST request
         const response2 = await makePostRequest(`/api/fetch/number/${number}`, number);
+        console.log('Fetch POST request response:', response2);
         const result = await response2.json();
-
-        // XMLHttpRequest GET request
-        const response3 = await makeRequestWithXHR('/api/xml/number', 'GET');
-        const { number: number2 } = JSON.parse(response3);
 
         // XMLHttpRequest POST request
         const response4 = await makeRequestWithXHR(`/api/xml/number/${number2}`, 'POST', number2);
+        console.log('XMLHttpRequest POST request response:', response4);
         const result2 = JSON.parse(response4);
 
         console.log('Requests completed successfully');
