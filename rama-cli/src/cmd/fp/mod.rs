@@ -289,7 +289,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         let pg_url = std::env::var("DATABASE_URL").ok();
         let storage_auth = std::env::var("RAMA_FP_STORAGE_COOKIE").ok();
 
-        let tcp_listener = TcpListener::build_with_state(Arc::new(State::new(acme_data, pg_url.as_deref(), storage_auth.as_deref()).await.expect("create state")))
+        let tcp_listener = TcpListener::build_with_state(Arc::new(State::new(acme_data, pg_url, storage_auth.as_deref()).await.expect("create state")))
             .bind(&address)
             .await
             .expect("bind TCP Listener");

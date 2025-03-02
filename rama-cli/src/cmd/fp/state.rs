@@ -17,7 +17,7 @@ impl State {
     /// Create a new instance of [`State`].
     pub(super) async fn new(
         acme: ACMEData,
-        pg_url: Option<&str>,
+        pg_url: Option<String>,
         storage_auth: Option<&str>,
     ) -> Result<Self, OpaqueError> {
         let storage = match pg_url {

@@ -1,6 +1,3 @@
-use super::TlsConnectorData;
-use crate::types::TlsTunnel;
-use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
 use rama_core::error::{BoxError, ErrorContext, ErrorExt, OpaqueError};
 use rama_core::{Context, Layer, Service};
@@ -12,8 +9,10 @@ use rama_net::tls::client::{ClientConfig, NegotiatedTlsParameters};
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
 use std::sync::Arc;
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_boring::SslStream;
+
+use super::{AutoTlsStream, TlsConnectorData, TlsStream};
+use crate::types::TlsTunnel;
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
 ///
@@ -254,9 +253,7 @@ where
             return Ok(EstablishedClientConnection {
                 ctx,
                 req,
-                conn: AutoTlsStream {
-                    inner: AutoTlsStreamData::Plain { inner: conn },
-                },
+                conn: AutoTlsStream::plain(conn),
             });
         }
 
@@ -289,9 +286,7 @@ where
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: AutoTlsStream {
-                inner: AutoTlsStreamData::Secure { inner: stream },
-            },
+            conn: AutoTlsStream::secure(stream),
         })
     }
 }
@@ -304,7 +299,7 @@ where
         + Send
         + 'static,
 {
-    type Response = EstablishedClientConnection<SslStream<S::Connection>, State, Request>;
+    type Response = EstablishedClientConnection<TlsStream<S::Connection>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -345,6 +340,7 @@ where
         };
 
         let (conn, negotiated_params) = self.handshake(connector_data, host, conn).await?;
+        let conn = TlsStream::new(conn);
         ctx.insert(negotiated_params);
 
         Ok(EstablishedClientConnection { ctx, req, conn })
@@ -382,9 +378,7 @@ where
                 return Ok(EstablishedClientConnection {
                     ctx,
                     req,
-                    conn: AutoTlsStream {
-                        inner: AutoTlsStreamData::Plain { inner: conn },
-                    },
+                    conn: AutoTlsStream::plain(conn),
                 });
             }
         };
@@ -411,11 +405,37 @@ where
         Ok(EstablishedClientConnection {
             ctx,
             req,
-            conn: AutoTlsStream {
-                inner: AutoTlsStreamData::Secure { inner: stream },
-            },
+            conn: AutoTlsStream::secure(stream),
         })
     }
+}
+
+pub async fn tls_connect<T>(
+    server_host: Host,
+    stream: T,
+    connector_data: Option<&TlsConnectorData>,
+) -> Result<TlsStream<T>, OpaqueError>
+where
+    T: Stream + Unpin,
+{
+    let client_config_data = match connector_data {
+        Some(connector_data) => connector_data.try_to_build_config()?,
+        None => TlsConnectorData::new()?.try_to_build_config()?,
+    };
+    let server_host = client_config_data.server_name.unwrap_or(server_host);
+    let stream = tokio_boring::connect(
+        client_config_data.config,
+        server_host.to_string().as_str(),
+        stream,
+    )
+    .await
+    .map_err(|err| match err.as_io_error() {
+        Some(err) => OpaqueError::from_display(err.to_string())
+            .context("boring ssl connector: connect")
+            .into_boxed(),
+        None => OpaqueError::from_display("boring ssl connector: connect").into_boxed(),
+    })?;
+    Ok(TlsStream::new(stream))
 }
 
 impl<S, K> TlsConnector<S, K> {
@@ -429,23 +449,8 @@ impl<S, K> TlsConnector<S, K> {
         T: Stream + Unpin,
     {
         let connector_data = connector_data.as_ref().or(self.connector_data.as_ref());
-        let client_config_data = match connector_data {
-            Some(connector_data) => connector_data.try_to_build_config()?,
-            None => TlsConnectorData::new()?.try_to_build_config()?,
-        };
-        let server_host = client_config_data.server_name.unwrap_or(server_host);
-        let stream = tokio_boring::connect(
-            client_config_data.config,
-            server_host.to_string().as_str(),
-            stream,
-        )
-        .await
-        .map_err(|err| match err.as_io_error() {
-            Some(err) => OpaqueError::from_display(err.to_string())
-                .context("boring ssl connector: connect")
-                .into_boxed(),
-            None => OpaqueError::from_display("boring ssl connector: connect").into_boxed(),
-        })?;
+
+        let TlsStream { inner: stream } = tls_connect(server_host, stream, connector_data).await?;
 
         let params = match stream.ssl().session() {
             Some(ssl_session) => {
@@ -487,94 +492,6 @@ impl<S, K> TlsConnector<S, K> {
         };
 
         Ok((stream, params))
-    }
-}
-
-pin_project! {
-    /// A stream which can be either a secure or a plain stream.
-    pub struct AutoTlsStream<S> {
-        #[pin]
-        inner: AutoTlsStreamData<S>,
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for AutoTlsStream<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AutoTlsStream")
-            .field("inner", &self.inner)
-            .finish()
-    }
-}
-
-pin_project! {
-    #[project = AutoTlsStreamDataProj]
-    /// A stream which can be either a secure or a plain stream.
-    enum AutoTlsStreamData<S> {
-        /// A secure stream.
-        Secure{ #[pin] inner: SslStream<S> },
-        /// A plain stream.
-        Plain { #[pin] inner: S },
-    }
-}
-
-impl<S: fmt::Debug> fmt::Debug for AutoTlsStreamData<S> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            AutoTlsStreamData::Secure { inner } => f.debug_tuple("Secure").field(inner).finish(),
-            AutoTlsStreamData::Plain { inner } => f.debug_tuple("Plain").field(inner).finish(),
-        }
-    }
-}
-
-impl<S> AsyncRead for AutoTlsStream<S>
-where
-    S: Stream + Unpin,
-{
-    fn poll_read(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> std::task::Poll<std::io::Result<()>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_read(cx, buf),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_read(cx, buf),
-        }
-    }
-}
-
-impl<S> AsyncWrite for AutoTlsStream<S>
-where
-    S: Stream + Unpin,
-{
-    fn poll_write(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_write(cx, buf),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_write(cx, buf),
-        }
-    }
-
-    fn poll_flush(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_flush(cx),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_flush(cx),
-        }
-    }
-
-    fn poll_shutdown(
-        self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Result<(), std::io::Error>> {
-        match self.project().inner.project() {
-            AutoTlsStreamDataProj::Secure { inner } => inner.poll_shutdown(cx),
-            AutoTlsStreamDataProj::Plain { inner } => inner.poll_shutdown(cx),
-        }
     }
 }
 
