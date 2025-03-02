@@ -3,6 +3,7 @@ from datetime import datetime
 import os
 import platform
 import itertools
+from urllib.parse import urlparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options as ChromeOptions
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
@@ -119,12 +120,16 @@ desired_caps = desktop_desired_caps + mobile_desired_caps
 # desired_caps = desktop_desired_caps
 # desired_caps = mobile_desired_caps
 
-
+# ensure auto comes last, so we get h2
+# as tls profile... even though rama emulate
+# should be able to adapt stuff like ALPN on the fly,
+# doesn't hurt to make sure the default is also the UA
+# default...
 entrypoints = [
-    "http://fp.ramaproxy.org:80/",
-    "https://fp.ramaproxy.org:443/",
     "http://h1.fp.ramaproxy.org:80/",
     "https://h1.fp.ramaproxy.org:443/",
+    "http://fp.ramaproxy.org:80/",
+    "https://fp.ramaproxy.org:443/",
 ]
 
 
@@ -156,14 +161,18 @@ def run_session(cap):
                 options=options,
             )
 
-            driver.set_cookie({
-                'name': 'rama-storage-auth',
-                'value': RAMA_FP_STORAGE_COOKIE,
-            })
-
             driver.get(entrypoint)
             print("ua", driver.execute_script("return navigator.userAgent;"))
             print("loc", driver.execute_script("return document.location.href;"))
+
+            domain = urlparse(entrypoint).netloc.split(":")[0]
+            print("add storage cookie for domain", domain)
+            driver.add_cookie({
+                "name": "rama-storage-auth",
+                "value": RAMA_FP_STORAGE_COOKIE,
+                "domain": domain,
+                "path": "/",
+            })
 
             WebDriverWait(driver, 10).until(
                 EC.visibility_of_element_located(
