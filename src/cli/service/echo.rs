@@ -105,16 +105,12 @@ impl<H> EchoServiceBuilder<H> {
     }
 
     /// set the body limit in bytes for each request
-    ///
-    /// (0 = no limit)
     pub fn body_limit(mut self, limit: usize) -> Self {
         self.body_limit = limit;
         self
     }
 
     /// set the body limit in bytes for each request
-    ///
-    /// (0 = no limit)
     pub fn set_body_limit(&mut self, limit: usize) -> &mut Self {
         self.body_limit = limit;
         self
