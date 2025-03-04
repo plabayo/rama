@@ -2,8 +2,11 @@
 //!
 //! As defined in <https://www.ietf.org/rfc/rfc2068.txt>.
 
+use super::HttpProxyError;
 use rama_core::error::{ErrorContext, OpaqueError};
-use rama_http_core::{client::conn::http1, upgrade};
+use rama_core::rt::Executor;
+use rama_http_core::client::conn::{http1, http2};
+use rama_http_core::upgrade;
 use rama_http_types::{
     Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version,
     header::{HOST, USER_AGENT},
@@ -11,14 +14,24 @@ use rama_http_types::{
 };
 use rama_net::{address::Authority, stream::Stream};
 
-use super::HttpProxyError;
-
 #[derive(Debug)]
 /// Connector for HTTP proxies.
 ///
 /// Used to connect as a client to a HTTP proxy server.
 pub(super) struct InnerHttpProxyConnector {
     req: Request,
+    http_version: HttpProxyVersion,
+}
+
+/// Protocol version selection for proxy connections
+#[derive(Debug, Clone, Copy)]
+pub(super) enum HttpProxyVersion {
+    /// Automatically determine version from request or fallback to H1
+    Auto,
+    /// Force HTTP/1.1 protocol
+    H1,
+    /// Force HTTP/2 protocol
+    H2,
 }
 
 impl InnerHttpProxyConnector {
@@ -43,7 +56,17 @@ impl InnerHttpProxyConnector {
             .body(Body::empty())
             .context("build http request")?;
 
-        Ok(Self { req })
+        Ok(Self {
+            req,
+            http_version: HttpProxyVersion::Auto, // Default to auto-detection
+        })
+    }
+
+    #[expect(unused)]
+    /// Configure the HTTP protocol version to use
+    pub(super) fn with_http_version(&mut self, version: HttpProxyVersion) -> &mut Self {
+        self.http_version = version;
+        self
     }
 
     #[expect(unused)]
@@ -64,23 +87,57 @@ impl InnerHttpProxyConnector {
         self,
         stream: S,
     ) -> Result<upgrade::Upgraded, HttpProxyError> {
-        let (tx, conn) = http1::Builder::default()
-            .ignore_invalid_headers(true)
-            .handshake(stream)
-            .await
-            .map_err(|err| HttpProxyError::Transport(err.into()))?;
-
-        tokio::spawn(async move {
-            if let Err(err) = conn.with_upgrades().await {
-                tracing::debug!(?err, "http upgrade proxy client conn failed");
+        let version = match self.http_version {
+            HttpProxyVersion::Auto => {
+                if self.req.version() == Version::HTTP_2 {
+                    HttpProxyVersion::H2
+                } else {
+                    HttpProxyVersion::H1
+                }
             }
-        });
+            v => v,
+        };
 
-        let response = tx
-            .send_request(self.req)
-            .await
-            .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed()))?;
+        let response = match version {
+            HttpProxyVersion::H1 => {
+                // Handle HTTP/1
+                let (tx, conn) = http1::Builder::default()
+                    .ignore_invalid_headers(true)
+                    .handshake(stream)
+                    .await
+                    .map_err(|err| HttpProxyError::Transport(err.into()))?;
 
+                tokio::spawn(async move {
+                    if let Err(err) = conn.with_upgrades().await {
+                        tracing::debug!(?err, "http upgrade proxy client conn failed");
+                    }
+                });
+
+                tx.send_request(self.req).await.map_err(|err| {
+                    HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed())
+                })?
+            }
+            HttpProxyVersion::H2 => {
+                // Handle HTTP/2
+                let (tx, conn) = http2::Builder::new(Executor::new())
+                    .handshake(stream)
+                    .await
+                    .map_err(|err| HttpProxyError::Transport(err.into()))?;
+
+                tokio::spawn(async move {
+                    if let Err(err) = conn.await {
+                        tracing::debug!(?err, "http2 proxy client conn failed");
+                    }
+                });
+
+                tx.send_request(self.req).await.map_err(|err| {
+                    HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed())
+                })?
+            }
+            HttpProxyVersion::Auto => unreachable!(), // Handled by previous match
+        };
+
+        // Handle response
         match response.status() {
             StatusCode::OK => upgrade::on(response)
                 .await
