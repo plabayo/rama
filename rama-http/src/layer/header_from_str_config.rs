@@ -6,35 +6,29 @@
 //! # Example
 //!
 //! ```rust
-//! use rama_http::layer::header_config::{HeaderConfigLayer, HeaderConfigService};
+//! use rama_http::layer::header_from_str_config::HeaderFromStrConfigLayer;
 //! use rama_http::service::web::{WebService};
 //! use rama_http::{Body, Request, StatusCode, HeaderName};
 //! use rama_core::{Context, Service, Layer};
 //! use serde::Deserialize;
 //!
-//! #[derive(Debug, Deserialize, Clone)]
-//! struct Config {
-//!     s: String,
-//!     n: i32,
-//!     m: Option<i32>,
-//!     b: bool,
-//! }
-//!
 //! #[tokio::main]
 //! async fn main() {
-//!     let service = HeaderConfigLayer::<Config>::required(HeaderName::from_static("x-proxy-config"))
+//!     let service = HeaderFromStrConfigLayer::<String>::required(HeaderName::from_static("x-proxy-labels"))
+//!         .with_repeat(true)
 //!         .layer(WebService::default()
 //!             .get("/", |ctx: Context<()>| async move {
-//!                 let cfg = ctx.get::<Config>().unwrap();
-//!                 assert_eq!(cfg.s, "E&G");
-//!                 assert_eq!(cfg.n, 1);
-//!                 assert!(cfg.m.is_none());
-//!                 assert!(cfg.b);
+//!                 // For production-like code you should prefer a custom type
+//!                 // to avoid possible conflicts. Ideally these are also as
+//!                 // cheap as possible to allocate.
+//!                 let labels: &Vec<String> = ctx.get().unwrap();
+//!                 assert_eq!("a+b+c", labels.join("+"));
 //!             }),
 //!         );
 //!
 //!     let request = Request::builder()
-//!         .header("x-proxy-config", "s=E%26G&n=1&b=true")
+//!         .header("x-proxy-labels", "a, b")
+//!         .header("x-proxy-labels", "c")
 //!         .body(Body::empty())
 //!         .unwrap();
 //!
