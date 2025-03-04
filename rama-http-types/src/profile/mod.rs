@@ -8,6 +8,9 @@
 //     proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
 // };
 
+mod runtime_hints;
+pub use runtime_hints::*;
+
 mod types;
 pub use types::*;
 
