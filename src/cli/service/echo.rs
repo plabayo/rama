@@ -50,6 +50,7 @@ use crate::{
 /// echo'ing back information about that request and its underlying transport / presentation layers.
 pub struct EchoServiceBuilder<H> {
     concurrent_limit: usize,
+    body_limit: usize,
     timeout: Duration,
     forward: Option<ForwardKind>,
 
@@ -65,6 +66,7 @@ impl Default for EchoServiceBuilder<()> {
     fn default() -> Self {
         Self {
             concurrent_limit: 0,
+            body_limit: 1024 * 1024,
             timeout: Duration::ZERO,
             forward: None,
 
@@ -99,6 +101,22 @@ impl<H> EchoServiceBuilder<H> {
     /// (0 = no limit)
     pub fn set_concurrent(&mut self, limit: usize) -> &mut Self {
         self.concurrent_limit = limit;
+        self
+    }
+
+    /// set the body limit in bytes for each request
+    /// 
+    /// (0 = no limit)
+    pub fn body_limit(mut self, limit: usize) -> Self {
+        self.body_limit = limit;
+        self
+    }
+
+    /// set the body limit in bytes for each request
+    /// 
+    /// (0 = no limit)
+    pub fn set_body_limit(&mut self, limit: usize) -> &mut Self {
+        self.body_limit = limit;
         self
     }
 
@@ -195,6 +213,7 @@ impl<H> EchoServiceBuilder<H> {
     pub fn http_layer<H2>(self, layer: H2) -> EchoServiceBuilder<(H, H2)> {
         EchoServiceBuilder {
             concurrent_limit: self.concurrent_limit,
+            body_limit: self.body_limit,
             timeout: self.timeout,
             forward: self.forward,
 
@@ -263,8 +282,7 @@ where
                 .then(|| LimitLayer::new(ConcurrentPolicy::max(self.concurrent_limit))),
             (!self.timeout.is_zero()).then(|| TimeoutLayer::new(self.timeout)),
             tcp_forwarded_layer,
-            // Limit the body size to 1MB for requests
-            BodyLimitLayer::request_only(1024 * 1024),
+            BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
         );
