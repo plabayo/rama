@@ -1,5 +1,6 @@
 use super::HttpProxyConnector;
 use rama_core::Layer;
+use rama_http_types::Version;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which wraps the given service with a [`HttpProxyConnector`].
@@ -7,6 +8,7 @@ use rama_core::Layer;
 /// See [`HttpProxyConnector`] for more information.
 pub struct HttpProxyConnectorLayer {
     required: bool,
+    version: Option<Version>,
 }
 
 impl HttpProxyConnectorLayer {
@@ -17,7 +19,10 @@ impl HttpProxyConnectorLayer {
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn optional() -> Self {
-        Self { required: false }
+        Self {
+            required: false,
+            version: None,
+        }
     }
 
     /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnector`]
@@ -27,7 +32,10 @@ impl HttpProxyConnectorLayer {
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn required() -> Self {
-        Self { required: true }
+        Self {
+            required: true,
+            version: None,
+        }
     }
 }
 
@@ -35,6 +43,10 @@ impl<S> Layer<S> for HttpProxyConnectorLayer {
     type Service = HttpProxyConnector<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        HttpProxyConnector::new(inner, self.required)
+        let mut svc = HttpProxyConnector::new(inner, self.required);
+        self.version.inspect(|version| {
+            svc.with_version(*version);
+        });
+        svc
     }
 }

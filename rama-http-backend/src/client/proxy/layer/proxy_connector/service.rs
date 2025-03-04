@@ -7,7 +7,7 @@ use rama_core::{
     error::{BoxError, ErrorExt, OpaqueError},
 };
 use rama_http_core::upgrade;
-use rama_http_types::headers::ProxyAuthorization;
+use rama_http_types::{Version, headers::ProxyAuthorization};
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
@@ -26,6 +26,7 @@ use rama_net::tls::TlsTunnel;
 /// This behaviour is optional and only triggered in case there
 /// is a [`ProxyAddress`] found in the [`Context`].
 pub struct HttpProxyConnector<S> {
+    version: Option<Version>,
     inner: S,
     required: bool,
 }
@@ -42,6 +43,7 @@ impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
 impl<S: Clone> Clone for HttpProxyConnector<S> {
     fn clone(&self) -> Self {
         Self {
+            version: self.version,
             inner: self.inner.clone(),
             required: self.required,
         }
@@ -51,7 +53,17 @@ impl<S: Clone> Clone for HttpProxyConnector<S> {
 impl<S> HttpProxyConnector<S> {
     /// Creates a new [`HttpProxyConnector`].
     pub(super) fn new(inner: S, required: bool) -> Self {
-        Self { inner, required }
+        Self {
+            inner,
+            required,
+            version: None,
+        }
+    }
+
+    /// Set the HTTP version to use for the proxy connection.
+    pub(super) fn with_version(&mut self, version: Version) -> &mut Self {
+        self.version = Some(version);
+        self
     }
 
     /// Create a new [`HttpProxyConnector`]
@@ -182,6 +194,9 @@ where
         }
 
         let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
+        self.version.inspect(|version| {
+            connector.with_version(*version);
+        });
 
         if let Some(credential) = address.credential.clone() {
             match credential {
