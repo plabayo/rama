@@ -31,6 +31,10 @@ mod conn;
 pub use conn::{HttpConnector, HttpConnectorLayer};
 use tracing::trace;
 
+mod http_modifier;
+#[doc(inline)]
+pub use http_modifier::HttpModifier;
+
 pub mod proxy;
 
 #[derive(Debug, Clone, Default)]
