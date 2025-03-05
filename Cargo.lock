@@ -2657,6 +2657,7 @@ dependencies = [
  "md5",
  "nom 8.0.0",
  "opentelemetry",
+ "parking_lot",
  "pin-project-lite",
  "quickcheck",
  "rama-core",

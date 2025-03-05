@@ -6,4 +6,4 @@ pub use conn::{ConnectorService, EstablishedClientConnection};
 
 mod pool;
 #[doc(inline)]
-pub use pool::{Pool, PooledConnector, ReqToConnHasher};
+pub use pool::{Pool, PooledConnector, ReqToConnId};

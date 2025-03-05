@@ -1,5 +1,6 @@
 use super::conn::{ConnectorService, EstablishedClientConnection};
 use crate::stream::Socket;
+use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::{Context, Service};
 use std::collections::VecDeque;
@@ -8,7 +9,6 @@ use std::num::NonZeroU16;
 use std::ops::{Deref, DerefMut};
 use std::pin::Pin;
 use std::sync::{Arc, Weak};
-use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 use std::{future::Future, net::SocketAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -32,9 +32,12 @@ struct PoolSlot(OwnedSemaphorePermit);
 /// A connection which is stored in a pool. A hash is used to determine
 /// which connections can be used for a request. This hash encodes
 /// all the details that make a connection unique/suitable for a request.
-struct PooledConnection<C> {
-    hash: String,
+struct PooledConnection<C, ConnId> {
+    /// Actual raw connection that is stored in pool
     conn: C,
+    /// ID is not unique but is used to group connections that can be used for the same request
+    id: ConnId,
+    /// Slot this connection takes up in the pool
     slot: PoolSlot,
 }
 
@@ -44,14 +47,14 @@ struct PooledConnection<C> {
 /// take ownership of the connection `C` with [`LeasedConnection::conn_to_owned()`].
 /// [`LeasedConnection`]s are considered active pool connections until dropped or
 /// ownership is taken of the internal connection.
-pub struct LeasedConnection<C> {
-    pooled_conn: Option<PooledConnection<C>>,
+pub struct LeasedConnection<C, ConnId> {
+    pooled_conn: Option<PooledConnection<C, ConnId>>,
     /// Weak reference to pool so we can return connections on drop
-    pool: Weak<PoolInner<C>>,
+    pool: Weak<PoolInner<C, ConnId>>,
     _slot: ActiveSlot,
 }
 
-impl<C> LeasedConnection<C> {
+impl<C, ConnId> LeasedConnection<C, ConnId> {
     /// Take ownership of the internal connection. This will remove it from the pool.
     pub fn take(mut self) -> C {
         let conn = self.pooled_conn.take().expect("only None after drop").conn;
@@ -59,7 +62,7 @@ impl<C> LeasedConnection<C> {
     }
 }
 
-impl<C> Deref for LeasedConnection<C> {
+impl<C, ConnId> Deref for LeasedConnection<C, ConnId> {
     type Target = C;
 
     fn deref(&self) -> &Self::Target {
@@ -71,7 +74,7 @@ impl<C> Deref for LeasedConnection<C> {
     }
 }
 
-impl<C> DerefMut for LeasedConnection<C> {
+impl<C, ConnId> DerefMut for LeasedConnection<C, ConnId> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self
             .pooled_conn
@@ -81,27 +84,22 @@ impl<C> DerefMut for LeasedConnection<C> {
     }
 }
 
-impl<C> AsRef<C> for LeasedConnection<C> {
+impl<C, ConnId> AsRef<C> for LeasedConnection<C, ConnId> {
     fn as_ref(&self) -> &C {
         self
     }
 }
 
-impl<C> AsMut<C> for LeasedConnection<C> {
+impl<C, ConnId> AsMut<C> for LeasedConnection<C, ConnId> {
     fn as_mut(&mut self) -> &mut C {
         self
     }
 }
 
-impl<C> Drop for LeasedConnection<C> {
+impl<C, ConnId> Drop for LeasedConnection<C, ConnId> {
     fn drop(&mut self) {
         if let (Some(pool), Some(pooled_conn)) = (self.pool.upgrade(), self.pooled_conn.take()) {
-            match pool.return_pooled_conn(pooled_conn) {
-                Ok(_) => (),
-                Err(err) => {
-                    tracing::error!(error = %err, "error returning connection to pool (dropping instead)")
-                }
-            }
+            pool.return_pooled_conn(pooled_conn);
         }
     }
 }
@@ -109,7 +107,7 @@ impl<C> Drop for LeasedConnection<C> {
 // We want to be able to use LeasedConnection as a transparent wrapper around our connection.
 // To achieve that we conditially implement all traits that are used by our Connectors
 
-impl<C: Socket> Socket for LeasedConnection<C> {
+impl<C: Socket, ConnId: Sync + Send + 'static> Socket for LeasedConnection<C, ConnId> {
     fn local_addr(&self) -> std::io::Result<SocketAddr> {
         self.as_ref().local_addr()
     }
@@ -119,41 +117,44 @@ impl<C: Socket> Socket for LeasedConnection<C> {
     }
 }
 
-impl<C: AsyncWrite + Unpin> AsyncWrite for LeasedConnection<C> {
+impl<C: AsyncWrite + Unpin, ConnId: Unpin> AsyncWrite for LeasedConnection<C, ConnId> {
     fn poll_write(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        Pin::new(&mut self).poll_write(cx, buf)
+        // let x = self.deref_mut().deref_mut();
+        Pin::new(self.deref_mut().as_mut()).poll_write(cx, buf)
     }
 
     fn poll_flush(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
-        Pin::new(&mut self).poll_flush(cx)
+        Pin::new(self.deref_mut().as_mut()).poll_flush(cx)
     }
 
     fn poll_shutdown(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), std::io::Error>> {
-        Pin::new(&mut self).poll_shutdown(cx)
+        Pin::new(self.deref_mut().as_mut()).poll_shutdown(cx)
     }
 }
 
-impl<C: AsyncRead + Unpin> AsyncRead for LeasedConnection<C> {
+impl<C: AsyncRead + Unpin, R: Unpin> AsyncRead for LeasedConnection<C, R> {
     fn poll_read(
         mut self: Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
-        Pin::new(&mut self).poll_read(cx, buf)
+        Pin::new(self.deref_mut().as_mut()).poll_read(cx, buf)
     }
 }
 
-impl<State, Request, C: Service<State, Request>> Service<State, Request> for LeasedConnection<C> {
+impl<State, Request, C: Service<State, Request>, ConnId: Send + Sync + 'static>
+    Service<State, Request> for LeasedConnection<C, ConnId>
+{
     type Response = C::Response;
     type Error = C::Error;
 
@@ -166,61 +167,37 @@ impl<State, Request, C: Service<State, Request>> Service<State, Request> for Lea
     }
 }
 
-/// [`ReqToConnHasher`] is used to convert a `Request` to a hash. This hash
-/// is then used to group connections that can be reused for other `Requests`
-/// that have the same hash
-pub trait ReqToConnHasher<Request>: Sized + Send + Sync + 'static
-where
-    Request: Send + 'static,
-{
-    fn hash(&self, request: Request) -> (Request, String);
-}
-
-impl<Request, F> ReqToConnHasher<Request> for F
-where
-    F: Fn(Request) -> (Request, String) + Send + Sync + 'static,
-    Request: Send + 'static,
-{
-    fn hash(&self, request: Request) -> (Request, String) {
-        self(request)
-    }
-}
-
-struct PoolInner<C> {
+struct PoolInner<C, ConnId> {
     total_slots: Arc<Semaphore>,
     active_slots: Arc<Semaphore>,
-    connections: Mutex<VecDeque<PooledConnection<C>>>,
+    connections: Mutex<VecDeque<PooledConnection<C, ConnId>>>,
     // TODO support different modes, right now use LIFO to get connection
     // and LRU to evict. In other words we always insert in front, start
     // searching in front and always drop the back if needed.
 }
 
-impl<C> PoolInner<C> {
-    fn return_pooled_conn(&self, conn: PooledConnection<C>) -> Result<(), OpaqueError> {
-        self.connections()?.push_front(conn);
-        Ok(())
-    }
-
-    fn connections(&self) -> Result<MutexGuard<'_, VecDeque<PooledConnection<C>>>, OpaqueError> {
-        self.connections
-            .lock()
-            .map_err(|_| OpaqueError::from_display("failed to lock connections"))
+impl<C, ConnId> PoolInner<C, ConnId> {
+    fn return_pooled_conn(&self, conn: PooledConnection<C, ConnId>) {
+        self.connections.lock().push_front(conn);
     }
 }
 
-impl<C> Debug for PoolInner<C> {
+impl<C, ConnId: Debug> Debug for PoolInner<C, ConnId> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let connection_hashes: Vec<String> = self
-            .connections()
-            .map_err(|_| std::fmt::Error)?
-            .iter()
-            .map(|conn| conn.hash.clone())
-            .collect();
+        let connection_id = f
+            .debug_list()
+            .entries(
+                self.connections
+                    .lock()
+                    .iter()
+                    .map(|item| (&item.id, &item.slot)),
+            )
+            .finish();
 
         f.debug_struct("PoolInner")
             .field("total_slots", &self.total_slots)
             .field("active_slots", &self.active_slots)
-            .field("connections", &connection_hashes)
+            .field("connections", &connection_id)
             .finish()
     }
 }
@@ -228,11 +205,11 @@ impl<C> Debug for PoolInner<C> {
 #[derive(Clone)]
 /// Connection pool which can be used to store and reuse existing connection.
 /// This struct can be copied and passed around as needed
-pub struct Pool<C> {
-    inner: Arc<PoolInner<C>>,
+pub struct Pool<C, ConnId> {
+    inner: Arc<PoolInner<C, ConnId>>,
 }
 
-impl<C> Default for Pool<C> {
+impl<C, ConnId> Default for Pool<C, ConnId> {
     fn default() -> Self {
         Self {
             inner: Arc::new(PoolInner {
@@ -245,12 +222,12 @@ impl<C> Default for Pool<C> {
 }
 
 /// Return type of [`Pool::get_connection_or_create_cb()`] to support advanced use cases
-pub enum GetConnectionOrCreate<C, F>
+pub enum GetConnectionOrCreate<C, F, ConnId>
 where
-    F: FnOnce(C) -> LeasedConnection<C>,
+    F: FnOnce(C) -> LeasedConnection<C, ConnId>,
 {
     /// Connection was found in pool for given hash and is ready to be used
-    LeasedConnection(LeasedConnection<C>),
+    LeasedConnection(LeasedConnection<C, ConnId>),
     /// Pool doesn't have connection for hash but instead returns a function
     /// which should be called by the external user to put a new connection
     /// inside the pool. This fn also instantly returns a [`LeasedConnection`]
@@ -258,7 +235,7 @@ where
     AddConnection(F),
 }
 
-impl<C> Pool<C> {
+impl<C, ConnId: Clone + PartialEq> Pool<C, ConnId> {
     pub fn new(max_active: NonZeroU16, max_total: NonZeroU16) -> Result<Self, OpaqueError> {
         if max_active > max_total {
             return Err(OpaqueError::from_display(
@@ -277,16 +254,16 @@ impl<C> Pool<C> {
     }
 
     /// Get connection or create a new using provided async fn if we don't find one inside pool
-    pub async fn get_connection_or_create<F, Fut, E>(
+    pub async fn get_connection_or_create<F, Fut>(
         &self,
-        hash: &str,
+        id: &ConnId,
         create_conn: F,
-    ) -> Result<LeasedConnection<C>, OpaqueError>
+    ) -> Result<LeasedConnection<C, ConnId>, OpaqueError>
     where
         F: FnOnce() -> Fut,
         Fut: Future<Output = Result<C, OpaqueError>>,
     {
-        match self.get_connection_or_create_cb(hash).await? {
+        match self.get_connection_or_create_cb(id).await? {
             GetConnectionOrCreate::LeasedConnection(leased_connection) => Ok(leased_connection),
             GetConnectionOrCreate::AddConnection(add) => {
                 let conn = create_conn().await?;
@@ -298,8 +275,11 @@ impl<C> Pool<C> {
     /// Get connection from pool or return fn to add a new one. See [`GetConnectionOrCreate`] for more info
     pub async fn get_connection_or_create_cb(
         &self,
-        hash: &str,
-    ) -> Result<GetConnectionOrCreate<C, impl FnOnce(C) -> LeasedConnection<C>>, OpaqueError> {
+        id: &ConnId,
+    ) -> Result<
+        GetConnectionOrCreate<C, impl FnOnce(C) -> LeasedConnection<C, ConnId>, ConnId>,
+        OpaqueError,
+    > {
         let active_permit = self
             .inner
             .active_slots
@@ -309,14 +289,14 @@ impl<C> Pool<C> {
             .context("failed to acquire active slot permit")?;
 
         let active_slot = ActiveSlot(active_permit);
-        let pool = Arc::<PoolInner<C>>::downgrade(&self.inner);
+        let pool = Arc::<PoolInner<C, ConnId>>::downgrade(&self.inner);
 
         // Check if we can reuse stored connection
         let pooled_conn = {
-            let mut connections = self.inner.connections()?;
+            let mut connections = self.inner.connections.lock();
             connections
                 .iter()
-                .position(|stored| stored.hash == hash)
+                .position(|stored| &stored.id == id)
                 .map(|idx| connections.remove(idx))
                 .flatten()
         };
@@ -335,7 +315,7 @@ impl<C> Pool<C> {
         let pool_slot = match self.inner.total_slots.clone().try_acquire_owned() {
             Ok(pool_permit) => PoolSlot(pool_permit),
             Err(_) => {
-                let pooled_conn = self.inner.connections()?.pop_back().context(
+                let pooled_conn = self.inner.connections.lock().pop_back().context(
                     "connections vec cannot be empty if total slots doesn't have permit available",
                 )?;
                 pooled_conn.slot
@@ -348,7 +328,7 @@ impl<C> Pool<C> {
                 pool,
                 pooled_conn: Some(PooledConnection {
                     conn,
-                    hash: hash.to_string(),
+                    id: id.clone(),
                     slot: pool_slot,
                 }),
             }
@@ -356,22 +336,52 @@ impl<C> Pool<C> {
     }
 }
 
+/// [`ReqToConnId`] is used to convert a `Request` to a connection ID. These IDs are
+/// not unique and multiple connections can have the same ID. IDs are used to filter
+/// which connections can be used for a specific Request in a way that is indepent of
+/// what a Request is.
+pub trait ReqToConnId<Request>: Sized + Send + Sync + 'static
+where
+    Request: Send + 'static,
+{
+    type ConnId: Send + Sync + PartialEq + Clone;
+
+    fn id(&self, request: Request) -> (Request, Self::ConnId);
+}
+
+impl<Request, ConnId, F> ReqToConnId<Request> for F
+where
+    F: Fn(Request) -> (Request, ConnId) + Send + Sync + 'static,
+    Request: Send + 'static,
+    ConnId: Send + Sync + PartialEq + Clone,
+{
+    type ConnId = ConnId;
+
+    fn id(&self, request: Request) -> (Request, Self::ConnId) {
+        self(request)
+    }
+}
+
 /// [`PooledConnector`] is a connector that will keep connections around in a local pool
-/// so they can be reused later. If no connections are available for a specifc `hash`
-/// it will create a new one. A `hasher` is used to map requests to a connections.
-pub struct PooledConnector<S, C, R> {
+/// so they can be reused later. If no connections are available for a specifc `id`
+/// it will create a new one.
+pub struct PooledConnector<S, C, Request: Send + 'static, R: ReqToConnId<Request>> {
     inner: S,
-    pool: Pool<C>,
-    hasher: R,
+    pool: Pool<C, R::ConnId>,
+    req_to_conn_id: R,
     wait_for_pool_timeout: Option<Duration>,
 }
 
-impl<S, C, H> PooledConnector<S, C, H> {
-    pub fn new(inner: S, pool: Pool<C>, hasher: H) -> PooledConnector<S, C, H> {
+impl<S, C, Request: Send + 'static, R: ReqToConnId<Request>> PooledConnector<S, C, Request, R> {
+    pub fn new(
+        inner: S,
+        pool: Pool<C, R::ConnId>,
+        req_to_conn_id: R,
+    ) -> PooledConnector<S, C, Request, R> {
         PooledConnector {
             inner,
-            hasher,
             pool,
+            req_to_conn_id,
             wait_for_pool_timeout: None,
         }
     }
@@ -382,14 +392,15 @@ impl<S, C, H> PooledConnector<S, C, H> {
     }
 }
 
-impl<State, Request, S, H> Service<State, Request> for PooledConnector<S, S::Connection, H>
+impl<State, Request, S, R> Service<State, Request> for PooledConnector<S, S::Connection, Request, R>
 where
     S: ConnectorService<State, Request, Connection: Send, Error: Send + Sync + 'static>,
     State: Clone + Send + Sync + 'static,
     Request: Send + 'static,
-    H: ReqToConnHasher<Request>,
+    R: ReqToConnId<Request>,
 {
-    type Response = EstablishedClientConnection<LeasedConnection<S::Connection>, State, Request>;
+    type Response =
+        EstablishedClientConnection<LeasedConnection<S::Connection, R::ConnId>, State, Request>;
     type Error = BoxError;
 
     async fn serve(
@@ -397,14 +408,14 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let (req, hash) = self.hasher.hash(req);
+        let (req, conn_id) = self.req_to_conn_id.id(req);
 
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-            timeout(duration, self.pool.get_connection_or_create_cb(&hash))
+            timeout(duration, self.pool.get_connection_or_create_cb(&conn_id))
                 .await
                 .map_err(|err| OpaqueError::from_std(err))?
         } else {
-            self.pool.get_connection_or_create_cb(&hash).await
+            self.pool.get_connection_or_create_cb(&conn_id).await
         }?;
 
         let (ctx, req, leased_conn) = match pool_result {
@@ -426,26 +437,25 @@ where
 }
 
 #[cfg(test)]
-
 mod tests {
     use super::*;
     use crate::client::EstablishedClientConnection;
     use rama_core::{Context, Service};
+    use rama_utils::macros::nz;
     use std::{
         convert::Infallible,
-        ops::Add,
-        sync::{Arc, Mutex},
+        sync::atomic::{AtomicI16, Ordering},
     };
     use tokio_test::assert_err;
 
     struct TestService {
-        pub created_connection: Arc<Mutex<u32>>,
+        pub created_connection: AtomicI16,
     }
 
     impl Default for TestService {
         fn default() -> Self {
             Self {
-                created_connection: Arc::new(Mutex::new(0)),
+                created_connection: AtomicI16::new(0),
             }
         }
     }
@@ -463,27 +473,32 @@ mod tests {
             ctx: Context<State>,
             req: Request,
         ) -> Result<Self::Response, Self::Error> {
-            let mut counter = self.created_connection.lock().expect("mutex not poisened");
-            *counter = counter.add(1);
-
             let conn = vec![];
+            self.created_connection.fetch_add(1, Ordering::Relaxed);
             Ok(EstablishedClientConnection { ctx, req, conn })
         }
     }
 
-    struct StringRequestHasher;
+    /// [`StringRequestLengthID`] will map Requests of type String, to usize id representing their
+    /// chars length. In practise this will mean that Requests of the same char length will be
+    /// able to reuse the same connections
+    struct StringRequestLengthID;
 
-    impl ReqToConnHasher<String> for StringRequestHasher {
-        fn hash(&self, req: String) -> (String, String) {
-            let count = req.chars().count().to_string();
+    impl ReqToConnId<String> for StringRequestLengthID {
+        type ConnId = usize;
+
+        fn id(&self, req: String) -> (String, Self::ConnId) {
+            let count = req.chars().count();
             return (req, count);
         }
     }
 
     #[tokio::test]
     async fn test_should_reuse_connections() {
-        let pool = Pool::new(NonZeroU16::new(1).unwrap(), NonZeroU16::new(1).unwrap()).unwrap();
-        let svc = PooledConnector::new(TestService::default(), pool, |req| (req, String::new()));
+        let pool = Pool::default();
+        // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
+        // acting like like a global connection pool (eg database connection pool where all connections can be used).
+        let svc = PooledConnector::new(TestService::default(), pool, |req| (req, ()));
 
         let iterations = 10;
         for _i in 0..iterations {
@@ -493,14 +508,14 @@ mod tests {
                 .unwrap();
         }
 
-        let created_connection = *svc.inner.created_connection.lock().unwrap();
+        let created_connection = svc.inner.created_connection.load(Ordering::Relaxed);
         assert_eq!(created_connection, 1);
     }
 
     #[tokio::test]
     async fn test_hashing_to_separate() {
         let pool = Pool::default();
-        let svc = PooledConnector::new(TestService::default(), pool, StringRequestHasher {});
+        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
         {
             let mut conn = svc
@@ -511,7 +526,7 @@ mod tests {
 
             conn.push(1);
             assert_eq!(conn.as_ref(), &vec![1]);
-            assert_eq!(*svc.inner.created_connection.lock().unwrap(), 1);
+            assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         }
 
         // Should reuse the same connections
@@ -524,7 +539,7 @@ mod tests {
 
             conn.push(2);
             assert_eq!(conn.as_ref(), &vec![1, 2]);
-            assert_eq!(*svc.inner.created_connection.lock().unwrap(), 1);
+            assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 1);
         }
 
         // Should make a new one
@@ -537,7 +552,7 @@ mod tests {
 
             conn.push(3);
             assert_eq!(conn.as_ref(), &vec![3]);
-            assert_eq!(*svc.inner.created_connection.lock().unwrap(), 2);
+            assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         }
 
         // Should reuse
@@ -550,14 +565,14 @@ mod tests {
 
             conn.push(4);
             assert_eq!(conn.as_ref(), &vec![3, 4]);
-            assert_eq!(*svc.inner.created_connection.lock().unwrap(), 2);
+            assert_eq!(svc.inner.created_connection.load(Ordering::Relaxed), 2);
         }
     }
 
     #[tokio::test]
     async fn test_pool_max_size() {
-        let pool = Pool::new(NonZeroU16::new(1).unwrap(), NonZeroU16::new(1).unwrap()).unwrap();
-        let svc = PooledConnector::new(TestService::default(), pool, StringRequestHasher)
+        let pool = Pool::new(nz!(1), nz!(1)).unwrap();
+        let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {})
             .with_wait_for_pool_timeout(Some(Duration::from_millis(50)));
 
         let conn1 = svc
