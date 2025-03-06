@@ -3,6 +3,7 @@ use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::{Context, Service};
+use rama_utils::macros::{impl_deref, nz};
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::num::NonZeroU16;
@@ -28,7 +29,6 @@ struct ActiveSlot(OwnedSemaphorePermit);
 /// to track the 'total' connections inside the pool
 struct PoolSlot(OwnedSemaphorePermit);
 
-#[derive(Debug)]
 /// A connection which is stored in a pool. A hash is used to determine
 /// which connections can be used for a request. This hash encodes
 /// all the details that make a connection unique/suitable for a request.
@@ -41,7 +41,16 @@ struct PooledConnection<C, ConnId> {
     slot: PoolSlot,
 }
 
-#[derive(Debug)]
+impl<C: Debug, ConnId: Debug> Debug for PooledConnection<C, ConnId> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PooledConnection")
+            .field("conn", &self.conn)
+            .field("id", &self.id)
+            .field("slot", &self.slot)
+            .finish()
+    }
+}
+
 /// [`LeasedConnection`] is a connection that is temporarily leased from
 /// a pool and that will be returned to the pool once dropped if user didn't
 /// take ownership of the connection `C` with [`LeasedConnection::conn_to_owned()`].
@@ -52,6 +61,16 @@ pub struct LeasedConnection<C, ConnId> {
     /// Weak reference to pool so we can return connections on drop
     pool: Weak<PoolInner<C, ConnId>>,
     _slot: ActiveSlot,
+}
+
+impl<C: Debug, ConnId: Debug> Debug for LeasedConnection<C, ConnId> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LeasedConnection")
+            .field("pooled_conn", &self.pooled_conn)
+            .field("pool", &self.pool)
+            .field("_slot", &self._slot)
+            .finish()
+    }
 }
 
 impl<C, ConnId> LeasedConnection<C, ConnId> {
@@ -170,7 +189,7 @@ impl<State, Request, C: Service<State, Request>, ConnId: Send + Sync + 'static>
 struct PoolInner<C, ConnId> {
     total_slots: Arc<Semaphore>,
     active_slots: Arc<Semaphore>,
-    connections: Mutex<VecDeque<PooledConnection<C, ConnId>>>,
+    connections: Mutex<ConnectionStore<C, ConnId>>,
     // TODO support different modes, right now use LIFO to get connection
     // and LRU to evict. In other words we always insert in front, start
     // searching in front and always drop the back if needed.
@@ -184,20 +203,29 @@ impl<C, ConnId> PoolInner<C, ConnId> {
 
 impl<C, ConnId: Debug> Debug for PoolInner<C, ConnId> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let connection_id = f
-            .debug_list()
-            .entries(
-                self.connections
-                    .lock()
-                    .iter()
-                    .map(|item| (&item.id, &item.slot)),
-            )
-            .finish();
-
         f.debug_struct("PoolInner")
             .field("total_slots", &self.total_slots)
             .field("active_slots", &self.active_slots)
-            .field("connections", &connection_id)
+            .field("connections", &self.connections.lock())
+            .finish()
+    }
+}
+
+/// Connections are stored here. Wrapper around VecDeque so we can implement
+/// proper debug printing
+struct ConnectionStore<C, ConnId>(VecDeque<PooledConnection<C, ConnId>>);
+impl_deref!(ConnectionStore<C, ConnId>: VecDeque<PooledConnection<C, ConnId>>);
+
+impl<C, ConnId> ConnectionStore<C, ConnId> {
+    fn new(capacity: usize) -> Self {
+        Self(VecDeque::with_capacity(capacity))
+    }
+}
+
+impl<C, ConnId: Debug> Debug for ConnectionStore<C, ConnId> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_list()
+            .entries(self.iter().map(|item| &item.id))
             .finish()
     }
 }
@@ -209,15 +237,15 @@ pub struct Pool<C, ConnId> {
     inner: Arc<PoolInner<C, ConnId>>,
 }
 
-impl<C, ConnId> Default for Pool<C, ConnId> {
+impl<C, ConnId: Debug> Debug for Pool<C, ConnId> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Pool").field("inner", &self.inner).finish()
+    }
+}
+
+impl<C, ConnId: Clone + PartialEq> Default for Pool<C, ConnId> {
     fn default() -> Self {
-        Self {
-            inner: Arc::new(PoolInner {
-                total_slots: Arc::new(Semaphore::new(20)),
-                active_slots: Arc::new(Semaphore::new(10)),
-                connections: Default::default(),
-            }),
-        }
+        Self::new(nz!(10), nz!(20)).unwrap()
     }
 }
 
@@ -242,13 +270,12 @@ impl<C, ConnId: Clone + PartialEq> Pool<C, ConnId> {
                 "max_active should be <= then max_total connection",
             ));
         }
+        let max_total: usize = Into::<u16>::into(max_total).into();
         Ok(Self {
             inner: Arc::new(PoolInner {
-                total_slots: Arc::new(Semaphore::new(Into::<u16>::into(max_total).into())),
+                total_slots: Arc::new(Semaphore::new(max_total)),
                 active_slots: Arc::new(Semaphore::new(Into::<u16>::into(max_active).into())),
-                connections: Mutex::new(VecDeque::with_capacity(
-                    Into::<u16>::into(max_total).into(),
-                )),
+                connections: Mutex::new(ConnectionStore::new(max_total)),
             }),
         })
     }
@@ -344,7 +371,7 @@ pub trait ReqToConnId<Request>: Sized + Send + Sync + 'static
 where
     Request: Send + 'static,
 {
-    type ConnId: Send + Sync + PartialEq + Clone;
+    type ConnId: Send + Sync + PartialEq + Clone + 'static;
 
     fn id(&self, request: Request) -> (Request, Self::ConnId);
 }
@@ -353,7 +380,7 @@ impl<Request, ConnId, F> ReqToConnId<Request> for F
 where
     F: Fn(Request) -> (Request, ConnId) + Send + Sync + 'static,
     Request: Send + 'static,
-    ConnId: Send + Sync + PartialEq + Clone,
+    ConnId: Send + Sync + PartialEq + Clone + 'static,
 {
     type ConnId = ConnId;
 
@@ -441,7 +468,6 @@ mod tests {
     use super::*;
     use crate::client::EstablishedClientConnection;
     use rama_core::{Context, Service};
-    use rama_utils::macros::nz;
     use std::{
         convert::Infallible,
         sync::atomic::{AtomicI16, Ordering},
