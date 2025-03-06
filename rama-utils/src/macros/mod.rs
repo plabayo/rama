@@ -176,6 +176,24 @@ macro_rules! __impl_deref {
             }
         }
     };
+
+    ($ident:ident< $($gen:ident),* >: $ty:ty) => {
+        impl<$($gen),*> std::ops::Deref for $ident<$($gen),*> {
+            type Target = $ty;
+
+            #[inline]
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl<$($gen),*> std::ops::DerefMut for $ident<$($gen),*> {
+            #[inline]
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+    };
 }
 #[doc(inline)]
 pub use crate::__impl_deref as impl_deref;
