@@ -52,17 +52,25 @@ impl<S: Clone> Clone for HttpProxyConnector<S> {
 
 impl<S> HttpProxyConnector<S> {
     /// Creates a new [`HttpProxyConnector`].
+    ///
+    /// Protocol version is set to HTTP/1.1 by default.
     pub(super) fn new(inner: S, required: bool) -> Self {
         Self {
             inner,
             required,
-            version: None,
+            version: Some(Version::HTTP_11),
         }
     }
 
-    /// Set the HTTP version to use for the proxy connection.
-    pub(super) fn with_version(&mut self, version: Version) -> &mut Self {
+    /// Set the HTTP version to use for the CONNECT request.
+    pub(super) fn set_version(&mut self, version: Version) -> &mut Self {
         self.version = Some(version);
+        self
+    }
+
+    /// Set the HTTP version to auto detect for the CONNECT request.
+    pub(super) fn set_auto_version(&mut self) -> &mut Self {
+        self.version = None;
         self
     }
 
@@ -194,9 +202,10 @@ where
         }
 
         let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
-        self.version.inspect(|version| {
-            connector.with_version(*version);
-        });
+        match self.version {
+            Some(version) => connector.set_version(version),
+            None => connector.set_auto_version(),
+        };
 
         if let Some(credential) = address.credential.clone() {
             match credential {

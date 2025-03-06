@@ -49,13 +49,17 @@ impl InnerHttpProxyConnector {
 
         Ok(Self {
             req,
-            version: None, // Default to auto-detection
+            version: Some(Version::HTTP_11),
         })
     }
 
-    /// Configure the HTTP protocol version to use
-    pub(super) fn with_version(&mut self, version: Version) -> &mut Self {
+    pub(super) fn set_version(&mut self, version: Version) -> &mut Self {
         self.version = Some(version);
+        self
+    }
+
+    pub(super) fn set_auto_version(&mut self) -> &mut Self {
+        self.version = None;
         self
     }
 

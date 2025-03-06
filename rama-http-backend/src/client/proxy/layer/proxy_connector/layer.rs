@@ -37,6 +37,14 @@ impl HttpProxyConnectorLayer {
             version: None,
         }
     }
+
+    /// Set the HTTP version to use for the CONNECT request.
+    ///
+    /// By default, this is auto detected.
+    pub fn with_version(mut self, version: Version) -> Self {
+        self.version = Some(version);
+        self
+    }
 }
 
 impl<S> Layer<S> for HttpProxyConnectorLayer {
@@ -44,9 +52,10 @@ impl<S> Layer<S> for HttpProxyConnectorLayer {
 
     fn layer(&self, inner: S) -> Self::Service {
         let mut svc = HttpProxyConnector::new(inner, self.required);
-        self.version.inspect(|version| {
-            svc.with_version(*version);
-        });
+        match self.version {
+            Some(version) => svc.set_version(version),
+            None => svc.set_auto_version(),
+        };
         svc
     }
 }
