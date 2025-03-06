@@ -3,7 +3,7 @@ use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_core::{Context, Service};
-use rama_utils::macros::{impl_deref, nz};
+use rama_utils::macros::{generate_field_setters, impl_deref, nz};
 use std::collections::VecDeque;
 use std::fmt::Debug;
 use std::num::NonZeroU16;
@@ -29,8 +29,8 @@ struct ActiveSlot(OwnedSemaphorePermit);
 /// to track the 'total' connections inside the pool
 struct PoolSlot(OwnedSemaphorePermit);
 
-/// A connection which is stored in a pool. A hash is used to determine
-/// which connections can be used for a request. This hash encodes
+/// A connection which is stored in a pool. A ConnId is used to determine
+/// which connections can be used for a request. This ConnId encodes
 /// all the details that make a connection unique/suitable for a request.
 struct PooledConnection<C, ConnId> {
     /// Actual raw connection that is stored in pool
@@ -76,8 +76,7 @@ impl<C: Debug, ConnId: Debug> Debug for LeasedConnection<C, ConnId> {
 impl<C, ConnId> LeasedConnection<C, ConnId> {
     /// Take ownership of the internal connection. This will remove it from the pool.
     pub fn take(mut self) -> C {
-        let conn = self.pooled_conn.take().expect("only None after drop").conn;
-        conn
+        self.pooled_conn.take().expect("only None after drop").conn
     }
 }
 
@@ -142,7 +141,6 @@ impl<C: AsyncWrite + Unpin, ConnId: Unpin> AsyncWrite for LeasedConnection<C, Co
         cx: &mut std::task::Context<'_>,
         buf: &[u8],
     ) -> std::task::Poll<Result<usize, std::io::Error>> {
-        // let x = self.deref_mut().deref_mut();
         Pin::new(self.deref_mut().as_mut()).poll_write(cx, buf)
     }
 
@@ -159,6 +157,18 @@ impl<C: AsyncWrite + Unpin, ConnId: Unpin> AsyncWrite for LeasedConnection<C, Co
     ) -> std::task::Poll<Result<(), std::io::Error>> {
         Pin::new(self.deref_mut().as_mut()).poll_shutdown(cx)
     }
+
+    fn is_write_vectored(&self) -> bool {
+        self.deref().is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        bufs: &[std::io::IoSlice<'_>],
+    ) -> std::task::Poll<Result<usize, std::io::Error>> {
+        Pin::new(self.deref_mut().as_mut()).poll_write_vectored(cx, bufs)
+    }
 }
 
 impl<C: AsyncRead + Unpin, R: Unpin> AsyncRead for LeasedConnection<C, R> {
@@ -171,8 +181,10 @@ impl<C: AsyncRead + Unpin, R: Unpin> AsyncRead for LeasedConnection<C, R> {
     }
 }
 
-impl<State, Request, C: Service<State, Request>, ConnId: Send + Sync + 'static>
-    Service<State, Request> for LeasedConnection<C, ConnId>
+impl<State, Request, C, ConnId> Service<State, Request> for LeasedConnection<C, ConnId>
+where
+    C: Service<State, Request>,
+    ConnId: Send + Sync + 'static,
 {
     type Response = C::Response;
     type Error = C::Error;
@@ -230,11 +242,18 @@ impl<C, ConnId: Debug> Debug for ConnectionStore<C, ConnId> {
     }
 }
 
-#[derive(Clone)]
 /// Connection pool which can be used to store and reuse existing connection.
 /// This struct can be copied and passed around as needed
 pub struct Pool<C, ConnId> {
     inner: Arc<PoolInner<C, ConnId>>,
+}
+
+impl<C, ConnId> Clone for Pool<C, ConnId> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: self.inner.clone(),
+        }
+    }
 }
 
 impl<C, ConnId: Debug> Debug for Pool<C, ConnId> {
@@ -254,9 +273,9 @@ pub enum GetConnectionOrCreate<C, F, ConnId>
 where
     F: FnOnce(C) -> LeasedConnection<C, ConnId>,
 {
-    /// Connection was found in pool for given hash and is ready to be used
+    /// Connection was found in pool for given ConnId and is ready to be used
     LeasedConnection(LeasedConnection<C, ConnId>),
-    /// Pool doesn't have connection for hash but instead returns a function
+    /// Pool doesn't have connection for ConnId but instead returns a function
     /// which should be called by the external user to put a new connection
     /// inside the pool. This fn also instantly returns a [`LeasedConnection`]
     /// that is ready to be used
@@ -278,6 +297,10 @@ impl<C, ConnId: Clone + PartialEq> Pool<C, ConnId> {
                 connections: Mutex::new(ConnectionStore::new(max_total)),
             }),
         })
+    }
+
+    pub fn new_single_connection_pool() -> Self {
+        Self::new(nz!(1), nz!(1)).unwrap()
     }
 
     /// Get connection or create a new using provided async fn if we don't find one inside pool
@@ -367,24 +390,20 @@ impl<C, ConnId: Clone + PartialEq> Pool<C, ConnId> {
 /// not unique and multiple connections can have the same ID. IDs are used to filter
 /// which connections can be used for a specific Request in a way that is indepent of
 /// what a Request is.
-pub trait ReqToConnId<Request>: Sized + Send + Sync + 'static
-where
-    Request: Send + 'static,
-{
+pub trait ReqToConnId<Request>: Sized + Send + Sync + 'static {
     type ConnId: Send + Sync + PartialEq + Clone + 'static;
 
-    fn id(&self, request: Request) -> (Request, Self::ConnId);
+    fn id(&self, request: &Request) -> Self::ConnId;
 }
 
 impl<Request, ConnId, F> ReqToConnId<Request> for F
 where
-    F: Fn(Request) -> (Request, ConnId) + Send + Sync + 'static,
-    Request: Send + 'static,
+    F: Fn(&Request) -> ConnId + Send + Sync + 'static,
     ConnId: Send + Sync + PartialEq + Clone + 'static,
 {
     type ConnId = ConnId;
 
-    fn id(&self, request: Request) -> (Request, Self::ConnId) {
+    fn id(&self, request: &Request) -> Self::ConnId {
         self(request)
     }
 }
@@ -413,10 +432,7 @@ impl<S, C, Request: Send + 'static, R: ReqToConnId<Request>> PooledConnector<S, 
         }
     }
 
-    pub fn with_wait_for_pool_timeout(mut self, timeout: Option<Duration>) -> Self {
-        self.wait_for_pool_timeout = timeout;
-        self
-    }
+    generate_field_setters!(wait_for_pool_timeout, Duration);
 }
 
 impl<State, Request, S, R> Service<State, Request> for PooledConnector<S, S::Connection, Request, R>
@@ -435,7 +451,7 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let (req, conn_id) = self.req_to_conn_id.id(req);
+        let conn_id = self.req_to_conn_id.id(&req);
 
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
             timeout(duration, self.pool.get_connection_or_create_cb(&conn_id))
@@ -513,9 +529,8 @@ mod tests {
     impl ReqToConnId<String> for StringRequestLengthID {
         type ConnId = usize;
 
-        fn id(&self, req: String) -> (String, Self::ConnId) {
-            let count = req.chars().count();
-            return (req, count);
+        fn id(&self, req: &String) -> Self::ConnId {
+            req.chars().count()
         }
     }
 
@@ -524,7 +539,7 @@ mod tests {
         let pool = Pool::default();
         // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
         // acting like like a global connection pool (eg database connection pool where all connections can be used).
-        let svc = PooledConnector::new(TestService::default(), pool, |req| (req, ()));
+        let svc = PooledConnector::new(TestService::default(), pool, |req| String::new());
 
         let iterations = 10;
         for _i in 0..iterations {
@@ -539,7 +554,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_hashing_to_separate() {
+    async fn test_conn_id_to_separate() {
         let pool = Pool::default();
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {});
 
@@ -599,7 +614,7 @@ mod tests {
     async fn test_pool_max_size() {
         let pool = Pool::new(nz!(1), nz!(1)).unwrap();
         let svc = PooledConnector::new(TestService::default(), pool, StringRequestLengthID {})
-            .with_wait_for_pool_timeout(Some(Duration::from_millis(50)));
+            .with_wait_for_pool_timeout(Duration::from_millis(50));
 
         let conn1 = svc
             .connect(Context::default(), String::from("a"))
