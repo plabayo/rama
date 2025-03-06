@@ -1,3 +1,4 @@
+use rama_utils::macros::define_inner_service_accessors;
 use std::{convert::Infallible, fmt};
 
 use crate::{Context, Layer, Service};
@@ -8,16 +9,18 @@ use crate::{Context, Layer, Service};
 /// Useful in case you want to explicitly
 /// restrict this acccess or because the Response would
 /// anyway not yet be produced at the point this inspector would be layered.
-pub trait RequestInspector<State, Request>: Send + Sync + 'static {
+pub trait RequestInspector<StateIn, RequestIn>: Send + Sync + 'static {
     /// The type of error returned by the service.
     type Error: Send + Sync + 'static;
+    type RequestOut: Send + 'static;
+    type StateOut: Clone + Send + Sync + 'static;
 
     /// Inspect the request, modify it if needed or desired, and return it.
     fn inspect_request(
         &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> impl Future<Output = Result<(Context<State>, Request), Self::Error>> + Send + '_;
+        ctx: Context<StateIn>,
+        req: RequestIn,
+    ) -> impl Future<Output = Result<(Context<Self::StateOut>, Self::RequestOut), Self::Error>> + Send + '_;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -49,22 +52,41 @@ where
     }
 }
 
-impl<S, State, Request> RequestInspector<State, Request> for S
+impl<S, StateIn, StateOut, RequestIn, RequestOut> RequestInspector<StateIn, RequestIn> for S
 where
-    S: Service<State, Request, Response = (Context<State>, Request)>,
+    S: Service<StateIn, RequestIn, Response = (Context<StateOut>, RequestOut)>,
+    RequestIn: Send + 'static,
+    RequestOut: Send + 'static,
+    StateIn: Clone + Send + Sync + 'static,
+    StateOut: Clone + Send + Sync + 'static,
 {
     type Error = S::Error;
+    type RequestOut = RequestOut;
+    type StateOut = StateOut;
 
     fn inspect_request(
         &self,
-        ctx: Context<State>,
-        req: Request,
-    ) -> impl Future<Output = Result<(Context<State>, Request), Self::Error>> + Send + '_ {
+        ctx: Context<StateIn>,
+        req: RequestIn,
+    ) -> impl Future<Output = Result<(Context<Self::StateOut>, Self::RequestOut), Self::Error>> + Send + '_
+    {
         self.serve(ctx, req)
     }
 }
 
 pub struct RequestInspectorLayer<I>(I);
+
+impl<I> RequestInspectorLayer<I> {
+    pub fn new(inspector: I) -> Self {
+        Self(inspector)
+    }
+}
+
+impl<I> From<I> for RequestInspectorLayer<I> {
+    fn from(inspector: I) -> Self {
+        Self(inspector)
+    }
+}
 
 impl<I: fmt::Debug> fmt::Debug for RequestInspectorLayer<I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -96,6 +118,10 @@ pub struct RequestInspectorLayerService<I, S> {
     inner: S,
 }
 
+impl<I, S> RequestInspectorLayerService<I, S> {
+    define_inner_service_accessors!();
+}
+
 impl<I: fmt::Debug, S: fmt::Debug> fmt::Debug for RequestInspectorLayerService<I, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("RequestInspectorLayerService")
@@ -114,26 +140,22 @@ impl<I: Clone, S: Clone> Clone for RequestInspectorLayerService<I, S> {
     }
 }
 
-impl<I, S, State, Request> Service<State, Request> for RequestInspectorLayerService<I, S>
+impl<I, S, StateIn, RequestIn> Service<StateIn, RequestIn> for RequestInspectorLayerService<I, S>
 where
-    I: RequestInspector<State, Request, Error: Into<S::Error>>,
-    S: Service<State, Request>,
-    State: Clone + Send + Sync + 'static,
-    Request: Send + 'static,
+    I: RequestInspector<StateIn, RequestIn>,
+    S: Service<I::StateOut, I::RequestOut, Error: Into<I::Error>>,
+    StateIn: Clone + Send + Sync + 'static,
+    RequestIn: Send + 'static,
 {
     type Response = S::Response;
-    type Error = S::Error;
+    type Error = I::Error;
 
     async fn serve(
         &self,
-        ctx: Context<State>,
-        req: Request,
+        ctx: Context<StateIn>,
+        req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let (ctx, req) = self
-            .request_inspector
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        self.inner.serve(ctx, req).await
+        let (ctx, req) = self.request_inspector.inspect_request(ctx, req).await?;
+        self.inner.serve(ctx, req).await.map_err(Into::into)
     }
 }

@@ -321,8 +321,8 @@
 
 #[doc(inline)]
 pub use ::rama_core::{
-    Context, Layer, Service, combinators, context, error, graceful, layer, matcher, rt, service,
-    username,
+    Context, Layer, Service, combinators, context, error, graceful, inspect, layer, matcher, rt,
+    service, username,
 };
 
 #[cfg(feature = "tcp")]
