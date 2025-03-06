@@ -41,10 +41,7 @@ use crate::{
 };
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{
-    fmt::{self, Debug},
-    future::Future,
-};
+use std::fmt::{self, Debug};
 
 pub use rama_ua::{
     DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentInfo, UserAgentKind,

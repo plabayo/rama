@@ -3,7 +3,6 @@
 
 use std::convert::Infallible;
 use std::fmt;
-use std::future::Future;
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::pin::Pin;
@@ -2130,7 +2129,6 @@ mod conn {
 
     #[tokio::test]
     async fn test_try_send_request() {
-        use std::future::Future;
         let (done_tx, done_rx) = tokio::sync::oneshot::channel::<()>();
         let (io_srv, io_cli) = tokio_test::io::Builder::new()
             .write(b"GET / HTTP/1.1\r\n\r\n")

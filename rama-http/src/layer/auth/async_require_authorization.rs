@@ -119,7 +119,6 @@
 use crate::{Request, Response};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::future::Future;
 
 /// Layer that applies [`AsyncRequireAuthorization`] which authorizes all requests using the
 /// [`Authorization`] header.
@@ -214,7 +213,7 @@ pub trait AsyncAuthorizeRequest<S, B> {
         &self,
         ctx: Context<S>,
         request: Request<B>,
-    ) -> impl std::future::Future<
+    ) -> impl Future<
         Output = Result<(Context<S>, Request<Self::RequestBody>), Response<Self::ResponseBody>>,
     > + Send
     + '_;

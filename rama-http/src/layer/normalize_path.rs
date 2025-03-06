@@ -42,7 +42,6 @@ use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::borrow::Cow;
 use std::fmt;
-use std::future::Future;
 
 /// Layer that applies [`NormalizePath`] which normalizes paths.
 ///

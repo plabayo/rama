@@ -155,7 +155,7 @@ where
         &self,
         mut ctx: Context<State>,
         req: Request,
-    ) -> impl std::future::Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         ctx.insert(self.value.clone());
         self.inner.serve(ctx, req)
     }

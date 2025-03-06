@@ -1,7 +1,6 @@
 use super::ValidateRequest;
 use crate::{Request, Response};
 use rama_core::Context;
-use std::future::Future;
 use std::marker::PhantomData;
 
 /// Trait for validating requests.

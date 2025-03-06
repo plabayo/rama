@@ -3,7 +3,7 @@ use rama_core::{
     error::{ErrorContext, OpaqueError},
 };
 use rama_net::address::ProxyAddress;
-use std::{fmt, future::Future};
+use std::fmt;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which allows you to add a [`ProxyAddress`]

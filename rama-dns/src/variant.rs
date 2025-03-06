@@ -47,7 +47,6 @@ mod tests {
     use rama_core::combinators::Either;
     use rama_core::error::BoxError;
     use rama_net::address::Domain;
-    use std::future::Future;
     use std::net::{Ipv4Addr, Ipv6Addr};
 
     // Mock DNS resolvers for testing

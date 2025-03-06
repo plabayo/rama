@@ -1,4 +1,3 @@
-use std::future::Future;
 use std::io::{Cursor, IoSlice};
 use std::mem;
 use std::pin::Pin;

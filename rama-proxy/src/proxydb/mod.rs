@@ -2,7 +2,7 @@ use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_net::asn::Asn;
 use rama_utils::str::NonEmptyString;
 use serde::{Deserialize, Serialize};
-use std::{fmt, future::Future};
+use std::fmt;
 
 #[cfg(feature = "live-update")]
 mod update;

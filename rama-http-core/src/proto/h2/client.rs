@@ -1,6 +1,5 @@
 use std::{
     convert::Infallible,
-    future::Future,
     marker::PhantomData,
     pin::Pin,
     task::{Context, Poll},

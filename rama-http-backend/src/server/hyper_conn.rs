@@ -83,7 +83,7 @@ mod private {
             ctx: Context<State>,
             io: IO,
             service: S,
-        ) -> impl std::future::Future<Output = HttpServeResult> + Send + '_
+        ) -> impl Future<Output = HttpServeResult> + Send + '_
         where
             IO: Stream,
             State: Clone + Send + Sync + 'static,

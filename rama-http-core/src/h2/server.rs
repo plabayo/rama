@@ -124,7 +124,6 @@ use bytes::{Buf, Bytes};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Method, Request, Response};
-use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;

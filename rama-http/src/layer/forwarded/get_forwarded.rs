@@ -7,7 +7,6 @@ use rama_net::forwarded::Forwarded;
 use rama_net::forwarded::ForwardedElement;
 use rama_utils::macros::all_the_tuples_no_last_special_case;
 use std::fmt;
-use std::future::Future;
 use std::marker::PhantomData;
 
 /// Layer to extract [`Forwarded`] information from the specified `T` headers.

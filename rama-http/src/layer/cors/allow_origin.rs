@@ -5,7 +5,6 @@ use crate::dep::http::{
 use pin_project_lite::pin_project;
 use std::{
     array, fmt,
-    future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},

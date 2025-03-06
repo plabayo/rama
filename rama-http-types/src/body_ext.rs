@@ -1,6 +1,5 @@
 use crate::dep::http_body_util::BodyExt;
 use rama_error::{BoxError, ErrorContext, OpaqueError};
-use std::future::Future;
 
 /// An extension trait for [`Body`] that provides methods to extract data from it.
 ///

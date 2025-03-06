@@ -8,7 +8,6 @@ use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::rt::Executor;
 use rama_core::{Context, Service};
 use std::fmt::Debug;
-use std::future::Future;
 use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
 

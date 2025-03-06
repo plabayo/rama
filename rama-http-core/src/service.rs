@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use rama_core::{Context, Service, error::BoxError};
 use rama_http_types::{Request, Response};
-use std::{convert::Infallible, fmt, future::Future};
+use std::{convert::Infallible, fmt};
 
 pub trait HttpService<ReqBody>: sealed::Sealed<ReqBody> {
     #[doc(hidden)]

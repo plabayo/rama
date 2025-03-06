@@ -7,7 +7,6 @@ use rama_dns::{DnsOverwrite, DnsResolver, HickoryDns};
 use rama_net::address::{Authority, Domain, Host};
 use rama_net::mode::{ConnectIpMode, DnsResolveIpMode};
 use std::{
-    future::Future,
     net::{IpAddr, SocketAddr},
     ops::Deref,
     sync::{

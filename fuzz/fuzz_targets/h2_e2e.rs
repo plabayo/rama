@@ -5,7 +5,6 @@ use futures::stream::FuturesUnordered;
 use futures::{Stream, future};
 use libfuzzer_sys::fuzz_target;
 
-use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};

@@ -4,7 +4,7 @@ use crate::{
 };
 use rama_core::error::OpaqueError;
 use serde::{Deserialize, Serialize};
-use std::{future::Future, num::NonZeroU64, pin::Pin, sync::Arc};
+use std::{num::NonZeroU64, pin::Pin, sync::Arc};
 
 #[derive(Debug, Clone)]
 /// Common API to configure a TLS Server

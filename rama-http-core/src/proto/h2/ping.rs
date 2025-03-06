@@ -19,7 +19,6 @@
 ///    3c. Calculate bdp as bytes/rtt.
 ///    3d. If bdp is over 2/3 max, set new max to bdp and update windows.
 use std::fmt;
-use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{self, Poll};

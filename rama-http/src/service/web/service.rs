@@ -10,7 +10,7 @@ use rama_core::{
     matcher::Matcher,
     service::{BoxService, Service, service_fn},
 };
-use std::{convert::Infallible, fmt, future::Future, marker::PhantomData, sync::Arc};
+use std::{convert::Infallible, fmt, marker::PhantomData, sync::Arc};
 
 /// A basic web service that can be used to serve HTTP requests.
 ///

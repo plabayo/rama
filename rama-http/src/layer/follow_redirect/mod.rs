@@ -105,7 +105,7 @@ use crate::{Method, Request, Response, StatusCode, Uri, dep::http_body::Body, he
 use iri_string::types::{UriAbsoluteString, UriReferenceStr};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{fmt, future::Future};
+use std::fmt;
 
 use self::policy::{Action, Attempt, Policy, Standard};
 

@@ -92,7 +92,7 @@
 
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
-use std::{fmt, future::Future};
+use std::fmt;
 use tokio::task::JoinHandle;
 
 mod extensions;

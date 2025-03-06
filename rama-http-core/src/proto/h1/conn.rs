@@ -1,5 +1,4 @@
 use std::fmt;
-use std::future::Future;
 use std::io;
 use std::marker::{PhantomData, Unpin};
 use std::pin::Pin;

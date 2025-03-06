@@ -1,6 +1,5 @@
 use crate::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::future::Future;
 
 /// Middleware that can be used to map the state,
 /// and pass it as the new state for the inner service.

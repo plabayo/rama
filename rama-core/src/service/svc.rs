@@ -2,7 +2,6 @@
 
 use crate::Context;
 use crate::error::BoxError;
-use std::future::Future;
 use std::pin::Pin;
 
 /// A [`Service`] that produces rama services,

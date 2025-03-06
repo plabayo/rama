@@ -20,7 +20,6 @@
 use rama_core::error::BoxError;
 use rama_net::address::Domain;
 use std::{
-    future::Future,
     net::{Ipv4Addr, Ipv6Addr},
     sync::Arc,
 };

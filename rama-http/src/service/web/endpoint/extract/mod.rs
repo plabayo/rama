@@ -2,7 +2,6 @@
 
 use crate::{HeaderMap, IntoResponse, dep::http::request::Parts, dep::mime, header};
 use rama_core::Context;
-use std::future::Future;
 
 mod host;
 #[doc(inline)]

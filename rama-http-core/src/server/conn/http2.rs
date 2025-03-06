@@ -1,7 +1,6 @@
 //! HTTP/2 Server Connections
 
 use std::fmt;
-use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;

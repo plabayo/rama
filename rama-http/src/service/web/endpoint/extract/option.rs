@@ -1,5 +1,3 @@
-use std::future::Future;
-
 use rama_core::Context;
 
 use crate::response::IntoResponse;

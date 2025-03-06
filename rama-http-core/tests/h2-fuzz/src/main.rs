@@ -2,7 +2,6 @@ use futures::Stream;
 use futures::future;
 use futures::stream::FuturesUnordered;
 use rama_http_types::{Method, Request};
-use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};

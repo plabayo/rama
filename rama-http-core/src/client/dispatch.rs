@@ -1,6 +1,6 @@
+use std::pin::Pin;
 use std::sync::atomic::{self, AtomicBool};
 use std::task::{Context, Poll};
-use std::{future::Future, pin::Pin};
 
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
@@ -345,7 +345,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::future::Future;
     use std::pin::Pin;
     use std::task::{Context, Poll};
 
