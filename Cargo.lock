@@ -2766,6 +2766,7 @@ name = "rama-utils"
 version = "0.2.0-alpha.7"
 dependencies = [
  "parking_lot",
+ "paste",
  "pin-project-lite",
  "quickcheck",
  "serde",
