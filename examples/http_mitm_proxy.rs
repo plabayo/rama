@@ -43,7 +43,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
-        client::HttpClient,
+        client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
@@ -220,7 +220,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let mut client = HttpClient::default();
+    let mut client = EasyHttpWebClient::default();
     client.set_tls_config(ClientConfig {
         server_verify_mode: Some(ServerVerifyMode::Disable),
         extensions: Some(vec![

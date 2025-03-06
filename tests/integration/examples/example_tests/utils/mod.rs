@@ -7,7 +7,7 @@ use rama::{
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::{
         Request, Response,
-        client::HttpClient,
+        client::EasyHttpWebClient,
         layer::{
             follow_redirect::FollowRedirectLayer,
             required_header::AddRequiredRequestHeadersLayer,
@@ -92,7 +92,7 @@ where
             .spawn()
             .unwrap();
 
-        let mut inner_client = HttpClient::default();
+        let mut inner_client = EasyHttpWebClient::default();
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
         {

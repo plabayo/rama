@@ -9,7 +9,7 @@ use rama::{
     http::{
         IntoResponse, Request, Response, StatusCode,
         client::{
-            HttpClient,
+            EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         layer::{
@@ -344,7 +344,7 @@ where
     )
     .await?;
 
-    let mut inner_client = HttpClient::default();
+    let mut inner_client = EasyHttpWebClient::default();
 
     let server_verify_mode = if cfg.insecure {
         Some(ServerVerifyMode::Disable)

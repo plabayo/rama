@@ -1,5 +1,5 @@
 //! Rama HTTP client module,
-//! which provides the [`HttpClient`] type to serve HTTP requests.
+//! which provides the [`EasyHttpWebClient`] type to serve HTTP requests.
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use std::sync::Arc;
@@ -31,10 +31,7 @@ mod conn;
 pub use conn::{HttpConnector, HttpConnectorLayer};
 use tracing::trace;
 
-mod http_modifier;
-#[doc(inline)]
-pub use http_modifier::HttpModifier;
-
+pub mod http_inspector;
 pub mod proxy;
 
 #[derive(Debug, Clone, Default)]
@@ -46,63 +43,63 @@ pub mod proxy;
 /// passed through your "connector" setup. All this and more is possible by defining your own
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
-pub struct HttpClient {
+pub struct EasyHttpWebClient {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_config: Option<ClientConfig>,
     #[cfg(any(feature = "rustls", feature = "boring"))]
     proxy_tls_config: Option<ClientConfig>,
 }
 
-impl HttpClient {
-    /// Create a new [`HttpClient`].
+impl EasyHttpWebClient {
+    /// Create a new [`EasyHttpWebClient`].
     pub fn new() -> Self {
         Self::default()
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`ClientConfig`] of this [`HttpClient`].
+    /// Set the [`ClientConfig`] of this [`EasyHttpWebClient`].
     pub fn set_tls_config(&mut self, cfg: ClientConfig) -> &mut Self {
         self.tls_config = Some(cfg);
         self
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`HttpClient`] with the [`ClientConfig`] set.
+    /// Replace this [`EasyHttpWebClient`] with the [`ClientConfig`] set.
     pub fn with_tls_config(mut self, cfg: ClientConfig) -> Self {
         self.tls_config = Some(cfg);
         self
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`HttpClient`] with an option of [`ClientConfig`] set.
+    /// Replace this [`EasyHttpWebClient`] with an option of [`ClientConfig`] set.
     pub fn maybe_with_tls_config(mut self, cfg: Option<ClientConfig>) -> Self {
         self.tls_config = cfg;
         self
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Set the [`ClientConfig`] for the https proxy tunnel if needed within this [`HttpClient`].
+    /// Set the [`ClientConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
     pub fn set_proxy_tls_config(&mut self, cfg: ClientConfig) -> &mut Self {
         self.proxy_tls_config = Some(cfg);
         self
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`HttpClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
+    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
     pub fn with_proxy_tls_config(mut self, cfg: ClientConfig) -> Self {
         self.proxy_tls_config = Some(cfg);
         self
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// Replace this [`HttpClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
+    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`ClientConfig`].
     pub fn maybe_proxy_with_tls_config(mut self, cfg: Option<ClientConfig>) -> Self {
         self.proxy_tls_config = cfg;
         self
     }
 }
 
-impl<State, Body> Service<State, Request<Body>> for HttpClient
+impl<State, Body> Service<State, Request<Body>> for EasyHttpWebClient
 where
     State: Clone + Send + Sync + 'static,
     Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
@@ -137,20 +134,19 @@ where
                         .clone()
                         .try_into()
                         .context(
-                        "HttpClient: create proxy tls connector data from tls config found in context",
+                        "EasyHttpWebClient: create proxy tls connector data from tls config found in context",
                     )?
                 }
                 (None, Some(proxy_tls_config)) => {
                     trace!("create proxy tls connector using pre-defined rama tls client config");
-                    proxy_tls_config
-                        .clone()
-                        .try_into()
-                        .context("HttpClient: create proxy tls connector data from tls config")?
+                    proxy_tls_config.clone().try_into().context(
+                        "EasyHttpWebClient: create proxy tls connector data from tls config",
+                    )?
                 }
                 (None, None) => {
                     trace!("create proxy tls connector using the 'new_http_auto' constructor");
                     TlsConnectorData::new().context(
-                        "HttpClient: create proxy tls connector data with no application presets",
+                        "EasyHttpWebClient: create proxy tls connector data with no application presets",
                     )?
                 }
             };
@@ -163,21 +159,22 @@ where
                 (Some(tls_config), _) => {
                     trace!("create tls connector using rama tls client config from ontext");
                     tls_config.as_ref().clone().try_into().context(
-                        "HttpClient: create tls connector data from tls config found in context",
+                        "EasyHttpWebClient: create tls connector data from tls config found in context",
                     )?
                 }
                 (None, Some(tls_config)) => {
                     trace!("create tls connector using pre-defined rama tls client config");
                     tls_config.clone().try_into().context(
-                        "HttpClient: create tls connector data from pre-defined tls config",
+                        "EasyHttpWebClient: create tls connector data from pre-defined tls config",
                     )?
                 }
                 (None, None) => {
                     trace!("create tls connector using the 'new_http_auto' constructor");
                     TlsConnectorData::new_http_auto()
-                        .context("HttpClient: create tls connector data for http (auto)")?
+                        .context("EasyHttpWebClient: create tls connector data for http (auto)")?
                 }
             };
+            // TODO: Use the Alpn modifier here
             HttpConnector::new(
                 TlsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
             )

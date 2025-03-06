@@ -1,0 +1,61 @@
+use rama_core::{
+    Context, Service,
+    error::{BoxError, OpaqueError},
+};
+use rama_http_types::Request;
+use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
+use tracing::trace;
+
+#[derive(Debug, Clone, Copy, Default)]
+#[non_exhaustive]
+/// Modifier that is used to adapt the http [`Request`]
+/// version based on agreed upon TLS ALPN.
+pub struct HttpsAlpnModifier;
+
+impl HttpsAlpnModifier {
+    #[inline]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<State, ReqBody> Service<State, Request<ReqBody>> for HttpsAlpnModifier
+where
+    State: Clone + Send + Sync + 'static,
+    ReqBody: Send + Sync + 'static,
+{
+    type Error = BoxError;
+    type Response = (Context<State>, Request<ReqBody>);
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        mut req: Request<ReqBody>,
+    ) -> Result<Self::Response, Self::Error> {
+        if let Some(proto) = ctx
+            .get::<NegotiatedTlsParameters>()
+            .and_then(|params| params.application_layer_protocol.as_ref())
+        {
+            let new_version = match proto {
+                ApplicationProtocol::HTTP_09 => rama_http_types::Version::HTTP_09,
+                ApplicationProtocol::HTTP_10 => rama_http_types::Version::HTTP_10,
+                ApplicationProtocol::HTTP_11 => rama_http_types::Version::HTTP_11,
+                ApplicationProtocol::HTTP_2 => rama_http_types::Version::HTTP_2,
+                ApplicationProtocol::HTTP_3 => rama_http_types::Version::HTTP_3,
+                _ => {
+                    return Err(OpaqueError::from_display(
+                        "HttpsAlpnModifier: unsupported negotiated ALPN: {proto}",
+                    )
+                    .into_boxed());
+                }
+            };
+            trace!(
+                "setting request version to {:?} based on negotiated APLN (was: {:?})",
+                new_version,
+                req.version(),
+            );
+            *req.version_mut() = new_version;
+        }
+        Ok((ctx, req))
+    }
+}
