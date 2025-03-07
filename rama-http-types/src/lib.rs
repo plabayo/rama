@@ -39,8 +39,6 @@ pub mod compression;
 
 pub mod headers;
 
-pub mod profile;
-
 pub mod conn;
 
 pub mod dep {
