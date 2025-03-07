@@ -4,6 +4,7 @@
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use std::sync::Arc;
 
+use http_inspector::HttpsAlpnModifier;
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
     Context, Service,
@@ -174,10 +175,10 @@ where
                         .context("EasyHttpWebClient: create tls connector data for http (auto)")?
                 }
             };
-            // TODO: Use the Alpn modifier here
             HttpConnector::new(
                 TlsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
             )
+            .with_inspector(HttpsAlpnModifier::default())
         };
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
         let connector = HttpConnector::new(HttpProxyConnector::optional(tcp_connector));

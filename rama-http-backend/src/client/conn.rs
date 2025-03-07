@@ -2,6 +2,7 @@ use super::{HttpClientService, svc::SendRequest};
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, OpaqueError},
+    inspect::RequestInspector,
 };
 use rama_http_types::{Request, Version, conn::Http1ClientContextParams, dep::http_body};
 use rama_net::{
@@ -13,18 +14,17 @@ use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
 use tracing::trace;
 
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_net::tls::{ApplicationProtocol, client::NegotiatedTlsParameters};
-
 /// A [`Service`] which establishes an HTTP Connection.
-pub struct HttpConnector<S> {
+pub struct HttpConnector<S, I = ()> {
     inner: S,
+    http_req_inspector: I,
 }
 
-impl<S: fmt::Debug> fmt::Debug for HttpConnector<S> {
+impl<S: fmt::Debug, I: fmt::Debug> fmt::Debug for HttpConnector<S, I> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpConnector")
             .field("inner", &self.inner)
+            .field("http_req_inspector", &self.http_req_inspector)
             .finish()
     }
 }
@@ -32,71 +32,67 @@ impl<S: fmt::Debug> fmt::Debug for HttpConnector<S> {
 impl<S> HttpConnector<S> {
     /// Create a new [`HttpConnector`].
     pub const fn new(inner: S) -> Self {
-        Self { inner }
+        Self {
+            inner,
+            http_req_inspector: (),
+        }
+    }
+}
+
+impl<S, I> HttpConnector<S, I> {
+    pub fn with_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, T> {
+        HttpConnector {
+            inner: self.inner,
+            http_req_inspector,
+        }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S> Clone for HttpConnector<S>
+impl<S, I> Clone for HttpConnector<S, I>
 where
     S: Clone,
+    I: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
+            http_req_inspector: self.http_req_inspector.clone(),
         }
     }
 }
 
-impl<S, State, Body> Service<State, Request<Body>> for HttpConnector<S>
+impl<S, I, State, BodyIn, BodyOut> Service<State, Request<BodyIn>> for HttpConnector<S, I>
 where
-    S: ConnectorService<State, Request<Body>, Connection: Stream + Unpin, Error: Into<BoxError>>,
+    I: RequestInspector<
+            State,
+            Request<BodyIn>,
+            Error: Into<BoxError>,
+            RequestOut = Request<BodyOut>,
+        >,
+    S: ConnectorService<State, Request<BodyIn>, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Clone + Send + Sync + 'static,
-    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    BodyIn: Send + 'static,
+    BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
-    type Response = EstablishedClientConnection<HttpClientService<Body>, State, Request<Body>>;
+    type Response =
+        EstablishedClientConnection<HttpClientService<BodyOut>, I::StateOut, I::RequestOut>;
     type Error = BoxError;
 
     async fn serve(
         &self,
         ctx: Context<State>,
-        req: Request<Body>,
+        req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
-        let EstablishedClientConnection {
-            ctx,
-            #[cfg(any(feature = "rustls", feature = "boring"))]
-            mut req,
-            #[cfg(not(any(feature = "rustls", feature = "boring")))]
-            req,
-            conn,
-        } = self.inner.connect(ctx, req).await.map_err(Into::into)?;
+        let EstablishedClientConnection { ctx, req, conn } =
+            self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
-        #[cfg(any(feature = "rustls", feature = "boring"))]
-        if let Some(proto) = ctx
-            .get::<NegotiatedTlsParameters>()
-            .and_then(|params| params.application_layer_protocol.as_ref())
-        {
-            let new_version = match proto {
-                ApplicationProtocol::HTTP_09 => rama_http_types::Version::HTTP_09,
-                ApplicationProtocol::HTTP_10 => rama_http_types::Version::HTTP_10,
-                ApplicationProtocol::HTTP_11 => rama_http_types::Version::HTTP_11,
-                ApplicationProtocol::HTTP_2 => rama_http_types::Version::HTTP_2,
-                ApplicationProtocol::HTTP_3 => rama_http_types::Version::HTTP_3,
-                _ => {
-                    return Err(OpaqueError::from_display(
-                        "HttpConnector: unsupported negotiated ALPN: {proto}",
-                    )
-                    .into_boxed());
-                }
-            };
-            trace!(
-                "setting request version to {:?} based on negotiated APLN (was: {:?})",
-                new_version,
-                req.version(),
-            );
-            *req.version_mut() = new_version;
-        }
+        let (ctx, req) = self
+            .http_req_inspector
+            .inspect_request(ctx, req)
+            .await
+            .map_err(Into::into)?;
 
         let io = Box::pin(conn);
 
@@ -153,14 +149,41 @@ where
 }
 
 /// A [`Layer`] that produces an [`HttpConnector`].
-#[derive(Debug, Clone)]
-#[non_exhaustive]
-pub struct HttpConnectorLayer;
+pub struct HttpConnectorLayer<I = ()> {
+    http_req_inspector: I,
+}
 
 impl HttpConnectorLayer {
     /// Create a new [`HttpConnectorLayer`].
     pub const fn new() -> Self {
-        Self
+        Self {
+            http_req_inspector: (),
+        }
+    }
+}
+
+impl<I> HttpConnectorLayer<I> {
+    pub fn with_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<T> {
+        HttpConnectorLayer { http_req_inspector }
+    }
+}
+
+impl<I: fmt::Debug> fmt::Debug for HttpConnectorLayer<I> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HttpConnectorLayer")
+            .field("http_req_inspector", &self.http_req_inspector)
+            .finish()
+    }
+}
+
+impl<I> Clone for HttpConnectorLayer<I>
+where
+    I: Clone,
+{
+    fn clone(&self) -> Self {
+        Self {
+            http_req_inspector: self.http_req_inspector.clone(),
+        }
     }
 }
 
@@ -170,10 +193,13 @@ impl Default for HttpConnectorLayer {
     }
 }
 
-impl<S> Layer<S> for HttpConnectorLayer {
-    type Service = HttpConnector<S>;
+impl<I: Clone, S> Layer<S> for HttpConnectorLayer<I> {
+    type Service = HttpConnector<S, I>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        HttpConnector { inner }
+        HttpConnector {
+            inner,
+            http_req_inspector: self.http_req_inspector.clone(),
+        }
     }
 }

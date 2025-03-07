@@ -22,7 +22,7 @@ impl HttpsAlpnModifier {
 impl<State, ReqBody> Service<State, Request<ReqBody>> for HttpsAlpnModifier
 where
     State: Clone + Send + Sync + 'static,
-    ReqBody: Send + Sync + 'static,
+    ReqBody: Send + 'static,
 {
     type Error = BoxError;
     type Response = (Context<State>, Request<ReqBody>);
