@@ -4,7 +4,6 @@
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use std::sync::Arc;
 
-use http_inspector::HttpsAlpnModifier;
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
     Context, Service,
@@ -22,6 +21,9 @@ use rama_net::tls::client::{ClientConfig, ProxyClientConfig};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_core::error::ErrorContext;
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use http_inspector::HttpsAlpnModifier;
 
 mod svc;
 #[doc(inline)]
