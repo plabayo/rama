@@ -27,8 +27,8 @@ use rama_http_types::{
 use rama_net::{Protocol, http::RequestContext};
 
 use crate::{
-    CUSTOM_HEADER_MARKER, HttpAgent, HttpHeadersProfile, RequestInitiator, UserAgent,
-    UserAgentProfile, contains_ignore_ascii_case, starts_with_ignore_ascii_case,
+    CUSTOM_HEADER_MARKER, HttpAgent, HttpHeadersProfile, PreserveHeaderUserAgent, RequestInitiator,
+    UserAgent, UserAgentProfile, contains_ignore_ascii_case, starts_with_ignore_ascii_case,
 };
 
 use super::{UserAgentProvider, UserAgentSelectFallback};
@@ -222,9 +222,7 @@ where
             Some(HttpAgent::Preserve),
         );
 
-        let requested_client_hints = ctx
-            .get::<UserAgent>()
-            .map(|ua| ua.requested_client_hints().copied().collect::<Vec<_>>());
+        let requested_client_hints = ctx.get::<Vec<ClientHint>>().cloned();
 
         let mut original_requested_encodings = None;
 
@@ -248,10 +246,7 @@ where
 
                     let original_headers = req.headers().clone();
 
-                    let preserve_ua_header = ctx
-                        .get::<UserAgent>()
-                        .map(|ua| ua.preserve_ua_header())
-                        .unwrap_or_default();
+                    let preserve_ua_header = ctx.contains::<PreserveHeaderUserAgent>();
 
                     let is_secure_request = match ctx.get::<RequestContext>() {
                         Some(request_ctx) => request_ctx.protocol.is_secure(),
@@ -403,61 +398,58 @@ fn get_base_http_headers<'a, Body, State>(
             return None;
         }
     };
-    Some(
-        match ctx.get::<UserAgent>().and_then(|ua| ua.request_initiator()) {
-            Some(req_init) => {
-                tracing::trace!(%req_init, "base http headers defined based on hint from UserAgent (overwrite)");
+    Some(match ctx.get::<RequestInitiator>().copied() {
+        Some(req_init) => {
+            tracing::trace!(%req_init, "base http headers defined based on hint from UserAgent (overwrite)");
+            get_base_http_headers_from_req_init(req_init, headers_profile)
+        }
+        // NOTE: the primitive checks below are pretty bad,
+        // feel free to help improve. Just need to make sure it has good enough fallbacks,
+        // and that they are cheap enough to check.
+        None => match *req.method() {
+            Method::GET => {
+                let req_init = if headers_contains_partial_value(
+                    req.headers(),
+                    &X_REQUESTED_WITH,
+                    "XmlHttpRequest",
+                ) {
+                    RequestInitiator::Xhr
+                } else {
+                    RequestInitiator::Navigate
+                };
+                tracing::trace!(%req_init, "base http headers defined based on Get=NavigateOrXhr assumption");
                 get_base_http_headers_from_req_init(req_init, headers_profile)
             }
-            // NOTE: the primitive checks below are pretty bad,
-            // feel free to help improve. Just need to make sure it has good enough fallbacks,
-            // and that they are cheap enough to check.
-            None => match *req.method() {
-                Method::GET => {
-                    let req_init = if headers_contains_partial_value(
-                        req.headers(),
-                        &X_REQUESTED_WITH,
-                        "XmlHttpRequest",
-                    ) {
-                        RequestInitiator::Xhr
-                    } else {
-                        RequestInitiator::Navigate
-                    };
-                    tracing::trace!(%req_init, "base http headers defined based on Get=NavigateOrXhr assumption");
-                    get_base_http_headers_from_req_init(req_init, headers_profile)
-                }
-                Method::POST => {
-                    let req_init = if headers_contains_partial_value(
-                        req.headers(),
-                        &X_REQUESTED_WITH,
-                        "XmlHttpRequest",
-                    ) {
-                        RequestInitiator::Xhr
-                    } else if headers_contains_partial_value(req.headers(), &CONTENT_TYPE, "form-")
-                    {
-                        RequestInitiator::Form
-                    } else {
-                        RequestInitiator::Fetch
-                    };
-                    tracing::trace!(%req_init, "base http headers defined based on Post=FormOrFetch assumption");
-                    get_base_http_headers_from_req_init(req_init, headers_profile)
-                }
-                _ => {
-                    let req_init = if headers_contains_partial_value(
-                        req.headers(),
-                        &X_REQUESTED_WITH,
-                        "XmlHttpRequest",
-                    ) {
-                        RequestInitiator::Xhr
-                    } else {
-                        RequestInitiator::Fetch
-                    };
-                    tracing::trace!(%req_init, "base http headers defined based on XhrOrFetch assumption");
-                    get_base_http_headers_from_req_init(req_init, headers_profile)
-                }
-            },
+            Method::POST => {
+                let req_init = if headers_contains_partial_value(
+                    req.headers(),
+                    &X_REQUESTED_WITH,
+                    "XmlHttpRequest",
+                ) {
+                    RequestInitiator::Xhr
+                } else if headers_contains_partial_value(req.headers(), &CONTENT_TYPE, "form-") {
+                    RequestInitiator::Form
+                } else {
+                    RequestInitiator::Fetch
+                };
+                tracing::trace!(%req_init, "base http headers defined based on Post=FormOrFetch assumption");
+                get_base_http_headers_from_req_init(req_init, headers_profile)
+            }
+            _ => {
+                let req_init = if headers_contains_partial_value(
+                    req.headers(),
+                    &X_REQUESTED_WITH,
+                    "XmlHttpRequest",
+                ) {
+                    RequestInitiator::Xhr
+                } else {
+                    RequestInitiator::Fetch
+                };
+                tracing::trace!(%req_init, "base http headers defined based on XhrOrFetch assumption");
+                get_base_http_headers_from_req_init(req_init, headers_profile)
+            }
         },
-    )
+    })
 }
 
 static X_REQUESTED_WITH: HeaderName = HeaderName::from_static("x-requested-with");
@@ -1619,9 +1611,7 @@ mod tests {
                 headers: None,
                 ctx: Some({
                     let mut ctx = Context::default();
-                    ctx.insert(
-                        UserAgent::new("").with_request_initiator(RequestInitiator::Navigate),
-                    );
+                    ctx.insert(RequestInitiator::Navigate);
                     ctx
                 }),
                 expected: "navigate",
@@ -1632,7 +1622,7 @@ mod tests {
                 headers: None,
                 ctx: Some({
                     let mut ctx = Context::default();
-                    ctx.insert(UserAgent::new("").with_request_initiator(RequestInitiator::Form));
+                    ctx.insert(RequestInitiator::Form);
                     ctx
                 }),
                 expected: "form",
@@ -1764,7 +1754,7 @@ mod tests {
                 headers: None,
                 ctx: Some({
                     let mut ctx = Context::default();
-                    ctx.insert(UserAgent::new("").with_request_initiator(RequestInitiator::Xhr));
+                    ctx.insert(RequestInitiator::Xhr);
                     ctx
                 }),
                 expected: "xhr",

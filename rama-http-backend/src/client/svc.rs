@@ -31,8 +31,45 @@ where
     async fn serve(
         &self,
         mut ctx: Context<State>,
-        req: Request<Body>,
+        mut req: Request<Body>,
     ) -> Result<Self::Response, Self::Error> {
+        let original_http_version = req.version();
+
+        match self.0 {
+            SendRequest::Http1(_) => match original_http_version {
+                Version::HTTP_10 | Version::HTTP_11 => {
+                    tracing::trace!(
+                        ?original_http_version,
+                        "request version is already h1 compatible, it will remain unchanged",
+                    );
+                }
+                _ => {
+                    tracing::debug!(
+                        ?original_http_version,
+                        new_http_version = ?Version::HTTP_11,
+                        "modify request version to compatible h1 connection version",
+                    );
+                    *req.version_mut() = Version::HTTP_11;
+                }
+            },
+            SendRequest::Http2(_) => match original_http_version {
+                Version::HTTP_2 => {
+                    tracing::trace!(
+                        ?original_http_version,
+                        "request version is already h2 compatible, it will remain unchanged",
+                    );
+                }
+                _ => {
+                    tracing::debug!(
+                        ?original_http_version,
+                        new_http_version = ?Version::HTTP_2,
+                        "modify request version to compatible h2 connection version",
+                    );
+                    *req.version_mut() = Version::HTTP_2;
+                }
+            },
+        }
+
         // sanitize subject line request uri
         // because Hyper (http) writes the URI as-is
         //
@@ -43,10 +80,25 @@ where
         // directly instead of here...
         let req = sanitize_client_req_header(&mut ctx, req)?;
 
-        let resp = match &self.0 {
+        let mut resp = match &self.0 {
             SendRequest::Http1(sender) => sender.send_request(req).await,
             SendRequest::Http2(sender) => sender.send_request(req).await,
         }?;
+
+        let original_resp_http_version = resp.version();
+        if original_resp_http_version == original_http_version {
+            tracing::trace!(
+                ?original_http_version,
+                "response version matches original http request version, it will remain unchanged",
+            );
+        } else {
+            *resp.version_mut() = original_http_version;
+            tracing::trace!(
+                ?original_http_version,
+                ?original_resp_http_version,
+                "change the response http version into the original http request version",
+            );
+        }
 
         Ok(resp.map(rama_http_types::Body::new))
     }

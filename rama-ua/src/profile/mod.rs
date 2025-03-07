@@ -12,6 +12,9 @@ pub use ua::*;
 mod db;
 pub use db::*;
 
+mod runtime_hints;
+pub use runtime_hints::*;
+
 #[cfg(feature = "embed-profiles")]
 mod embedded_profiles;
 #[cfg(feature = "embed-profiles")]
