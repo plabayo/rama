@@ -360,7 +360,6 @@ where
         None
     };
 
-    // TODO: get these somehow merged?
     inner_client.set_tls_config(ClientConfig {
         server_verify_mode,
         extensions: Some(vec![

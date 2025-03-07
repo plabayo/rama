@@ -200,6 +200,27 @@ impl TlsConnectorData {
     }
 }
 
+impl TlsConnectorData {
+    pub fn try_from_multiple_client_configs<'a>(
+        mut cfg_it: impl Iterator<Item = &'a rama_net::tls::client::ClientConfig>,
+    ) -> Result<Self, OpaqueError> {
+        let mut client_cfg = match cfg_it.next() {
+            Some(cfg) => cfg.clone(),
+            None => return TlsConnectorData::new(),
+        };
+
+        // NOTE: if you care about this and this continues to exist,
+        // feel free to do it more performant for rustls :)
+        for cfg in cfg_it {
+            client_cfg.merge(cfg.clone());
+        }
+
+        client_cfg
+            .try_into()
+            .context("TlsConnectorData from merged chain")
+    }
+}
+
 impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
     type Error = OpaqueError;
 

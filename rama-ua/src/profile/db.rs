@@ -185,6 +185,7 @@ impl FromIterator<UserAgentProfile> for UserAgentDatabase {
     fn from_iter<T: IntoIterator<Item = UserAgentProfile>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let (lb, _) = iter.size_hint();
+        assert!(lb < usize::MAX);
 
         let mut db = UserAgentDatabase {
             profiles: Vec::with_capacity(lb),

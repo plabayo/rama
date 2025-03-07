@@ -298,7 +298,25 @@ where
                 // client_config's Arc is to be lazilly cloned by a tls connector
                 // only when a connection is to be made, as to play nicely
                 // with concepts such as connection pooling
-                ctx.insert(profile.tls.client_config.clone());
+                let host = match ctx.get::<RequestContext>() {
+                    Some(request_ctx) => Some(request_ctx.authority.host().clone()),
+                    None => match req.uri().host() {
+                        Some(s) => Some(s.parse().context("parse req uri host as rama net Host")?),
+                        None => None,
+                    },
+                };
+                rama_net::tls::client::append_all_client_configs_to_ctx(
+                    &mut ctx,
+                    [
+                        profile.tls.client_config.clone(),
+                        std::sync::Arc::new(rama_net::tls::client::ClientConfig {
+                            extensions: Some(vec![
+                                rama_net::tls::client::ClientHelloExtension::ServerName(host),
+                            ]),
+                            ..Default::default()
+                        }),
+                    ],
+                );
             }
         }
 
