@@ -81,5 +81,5 @@ async fn test_http_user_agent_classifier() {
     assert!(ua_app.version.is_none());
     assert_eq!(ua_app.platform, Some("iOS".to_owned()));
     assert_eq!(ua_app.http_agent, Some("Safari".to_owned()));
-    assert_eq!(ua_app.tls_agent, Some("Rustls".to_owned()));
+    assert_eq!(ua_app.tls_agent, Some("Boringssl".to_owned()));
 }

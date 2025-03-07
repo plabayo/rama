@@ -12,17 +12,14 @@ use rama_core::{
     inspect::RequestInspector,
 };
 use rama_http_types::{Request, Response, dep::http_body};
-use rama_net::{
-    client::{ConnectorService, EstablishedClientConnection},
-    tls::client::extract_client_config_from_ctx,
-};
+use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_tls::std::client::{TlsConnector, TlsConnectorData};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_net::tls::client::{ClientConfig, ProxyClientConfig};
+use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_core::error::ErrorContext;
