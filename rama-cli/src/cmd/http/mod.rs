@@ -33,8 +33,8 @@ use rama::{
     rt::Executor,
     service::service_fn,
     ua::{
-        UserAgentDatabase, UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
-        UserAgentSelectFallback,
+        UserAgentDatabase, UserAgentEmulateHttpConnectModifier,
+        UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer, UserAgentSelectFallback,
     },
 };
 use std::{io::IsTerminal, sync::Arc, time::Duration};
@@ -347,10 +347,12 @@ where
     )
     .await?;
 
-    let mut inner_client = EasyHttpWebClient::default().with_http_req_inspector((
-        UserAgentEmulateHttpRequestModifier::default(),
-        request_writer,
-    ));
+    let mut inner_client = EasyHttpWebClient::default()
+        .with_http_conn_req_inspector(UserAgentEmulateHttpConnectModifier::default())
+        .with_http_serve_req_inspector((
+            UserAgentEmulateHttpRequestModifier::default(),
+            request_writer,
+        ));
 
     let server_verify_mode = if cfg.insecure {
         Some(ServerVerifyMode::Disable)

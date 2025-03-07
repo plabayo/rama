@@ -46,51 +46,56 @@ pub mod proxy;
 /// passed through your "connector" setup. All this and more is possible by defining your own
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
-pub struct EasyHttpWebClient<I = ()> {
+pub struct EasyHttpWebClient<I1 = (), I2 = ()> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_config: Option<ClientConfig>,
     #[cfg(any(feature = "rustls", feature = "boring"))]
     proxy_tls_config: Option<ClientConfig>,
 
-    http_req_inspector: I,
+    http_req_inspector_jit: I1,
+    http_req_inspector_svc: I2,
 }
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-impl<I: fmt::Debug> fmt::Debug for EasyHttpWebClient<I> {
+impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EasyHttpWebClient")
             .field("tls_config", &self.tls_config)
             .field("proxy_tls_config", &self.proxy_tls_config)
-            .field("http_req_inspector", &self.http_req_inspector)
+            .field("http_req_inspector_jit", &self.http_req_inspector_jit)
+            .field("http_req_inspector_svc", &self.http_req_inspector_svc)
             .finish()
     }
 }
 
 #[cfg(not(any(feature = "rustls", feature = "boring")))]
-impl<I: fmt::Debug> fmt::Debug for EasyHttpWebClient<I> {
+impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EasyHttpWebClient")
-            .field("http_req_inspector", &self.http_req_inspector)
+            .field("http_req_inspector_jit", &self.http_req_inspector_jit)
+            .field("http_req_inspector_svc", &self.http_req_inspector_svc)
             .finish()
     }
 }
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-impl<I: Clone> Clone for EasyHttpWebClient<I> {
+impl<I1: Clone, I2: Clone> Clone for EasyHttpWebClient<I1, I2> {
     fn clone(&self) -> Self {
         Self {
             tls_config: self.tls_config.clone(),
             proxy_tls_config: self.proxy_tls_config.clone(),
-            http_req_inspector: self.http_req_inspector.clone(),
+            http_req_inspector_jit: self.http_req_inspector_jit.clone(),
+            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
     }
 }
 
 #[cfg(not(any(feature = "rustls", feature = "boring")))]
-impl<I: Clone> Clone for EasyHttpWebClient<I> {
+impl<I1: Clone, I2: Clone> Clone for EasyHttpWebClient<I1, I2> {
     fn clone(&self) -> Self {
         Self {
-            http_req_inspector: self.http_req_inspector.clone(),
+            http_req_inspector_jit: self.http_req_inspector_jit.clone(),
+            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
     }
 }
@@ -102,7 +107,8 @@ impl Default for EasyHttpWebClient {
             tls_config: None,
             #[cfg(any(feature = "rustls", feature = "boring"))]
             proxy_tls_config: None,
-            http_req_inspector: (),
+            http_req_inspector_jit: (),
+            http_req_inspector_svc: (),
         }
     }
 }
@@ -114,7 +120,7 @@ impl EasyHttpWebClient {
     }
 }
 
-impl<I> EasyHttpWebClient<I> {
+impl<I1, I2> EasyHttpWebClient<I1, I2> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Set the [`ClientConfig`] of this [`EasyHttpWebClient`].
     pub fn set_tls_config(&mut self, cfg: ClientConfig) -> &mut Self {
@@ -158,30 +164,70 @@ impl<I> EasyHttpWebClient<I> {
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    pub fn with_http_req_inspector<T>(self, http_req_inspector: T) -> EasyHttpWebClient<T> {
+    pub fn with_http_conn_req_inspector<T>(
+        self,
+        http_req_inspector: T,
+    ) -> EasyHttpWebClient<T, I2> {
         EasyHttpWebClient {
             tls_config: self.tls_config,
             proxy_tls_config: self.proxy_tls_config,
-            http_req_inspector,
+            http_req_inspector_jit: http_req_inspector,
+            http_req_inspector_svc: self.http_req_inspector_svc,
         }
     }
 
     #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    pub fn with_http_req_inspector<T>(self, http_req_inspector: T) -> EasyHttpWebClient<T> {
-        EasyHttpWebClient { http_req_inspector }
+    pub fn with_http_conn_req_inspector<T>(
+        self,
+        http_req_inspector: T,
+    ) -> EasyHttpWebClient<T, I2> {
+        EasyHttpWebClient {
+            http_req_inspector_jit: http_req_inspector,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+        }
+    }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    pub fn with_http_serve_req_inspector<T>(
+        self,
+        http_req_inspector: T,
+    ) -> EasyHttpWebClient<I1, T> {
+        EasyHttpWebClient {
+            tls_config: self.tls_config,
+            proxy_tls_config: self.proxy_tls_config,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: http_req_inspector,
+        }
+    }
+
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    pub fn with_http_serve_req_inspector<T>(
+        self,
+        http_req_inspector: T,
+    ) -> EasyHttpWebClient<I1, T> {
+        EasyHttpWebClient {
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: http_req_inspector,
+        }
     }
 }
 
-impl<State, BodyIn, BodyOut, I> Service<State, Request<BodyIn>> for EasyHttpWebClient<I>
+impl<State, BodyIn, BodyOut, I1, I2> Service<State, Request<BodyIn>> for EasyHttpWebClient<I1, I2>
 where
     State: Clone + Send + Sync + 'static,
     BodyIn: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
-    I: RequestInspector<
+    I1: RequestInspector<
             State,
             Request<BodyIn>,
             Error: Into<BoxError>,
             StateOut = State,
+            RequestOut = Request<BodyIn>,
+        > + Clone,
+    I2: RequestInspector<
+            State,
+            Request<BodyIn>,
+            Error: Into<BoxError>,
             RequestOut = Request<BodyOut>,
         > + Clone,
 {
@@ -260,7 +306,9 @@ where
         let connector = HttpConnector::new(HttpProxyConnector::optional(tcp_connector));
 
         // set the runtime http req inspector
-        let connector = connector.with_svc_req_inspector(self.http_req_inspector.clone());
+        let connector = connector
+            .with_svc_req_inspector(self.http_req_inspector_svc.clone())
+            .with_jit_req_inspector(self.http_req_inspector_jit.clone());
 
         // NOTE: stack might change request version based on connector data,
         // such as ALPN (tls), as such it is important to reset it back below,

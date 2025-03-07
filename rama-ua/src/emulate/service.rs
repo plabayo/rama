@@ -44,7 +44,7 @@ use super::{UserAgentProvider, UserAgentSelectFallback};
 /// Service to select a [`UserAgentProfile`] and inject its info into the input [`Context`].
 ///
 /// Note that actual http emulation is done by also ensuring a service
-/// such as [`UserAgentEmulateHttpRequestModifier`] is in use within your connector stack.
+/// such as [`UserAgentEmulateHttpRequestModifier`] and [`UserAgentEmulateHttpConnectModifier`] is in use within your connector stack.
 /// Tls emulation is facilitated by a tls client connector which respects
 /// the injected (tls) client profile.
 pub struct UserAgentEmulateService<S, P> {
@@ -332,6 +332,79 @@ where
 // a http RequestInspector which is to be used in combination
 // with the [`UserAgentEmulateService`] to facilitate the
 // http emulation based on the injected http profile.
+pub struct UserAgentEmulateHttpConnectModifier;
+
+impl UserAgentEmulateHttpConnectModifier {
+    #[inline]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<State, ReqBody> Service<State, Request<ReqBody>> for UserAgentEmulateHttpConnectModifier
+where
+    State: Clone + Send + Sync + 'static,
+    ReqBody: Send + 'static,
+{
+    type Error = BoxError;
+    type Response = (Context<State>, Request<ReqBody>);
+
+    async fn serve(
+        &self,
+        mut ctx: Context<State>,
+        mut req: Request<ReqBody>,
+    ) -> Result<Self::Response, Self::Error> {
+        match ctx.get().cloned() {
+            Some(http_profile) => {
+                tracing::trace!(
+                    http_version = ?req.version(),
+                    "http profile found in context to use for http connection emulation, proceed",
+                );
+                emulate_http_connect_settings(&mut ctx, &mut req, &http_profile);
+            }
+            None => {
+                tracing::trace!(
+                    http_version = ?req.version(),
+                    "no http profile found in context to use for http connection emulation, request is passed through as-is",
+                );
+            }
+        }
+        Ok((ctx, req))
+    }
+}
+
+fn emulate_http_connect_settings<Body, State>(
+    ctx: &mut Context<State>,
+    req: &mut Request<Body>,
+    profile: &HttpProfile,
+) {
+    match req.version() {
+        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
+            tracing::trace!("UA emulation add http1-specific settings",);
+            ctx.insert(Http1ClientContextParams {
+                title_header_case: profile.h1.settings.title_case_headers,
+            });
+        }
+        Version::HTTP_2 => {
+            tracing::trace!(
+                "UA emulation does not yet support h2 connection settings: not applying anything h2-specific"
+            );
+        }
+        Version::HTTP_3 => tracing::debug!(
+            "UA emulation not yet supported for h3: not applying anything h3-specific"
+        ),
+        _ => tracing::debug!(
+            version = ?req.version(),
+            "UA emulation not supported for unknown http version: not applying anything version-specific",
+        ),
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+// a http RequestInspector which is to be used in combination
+// with the [`UserAgentEmulateService`] to facilitate the
+// http emulation based on the injected http profile.
 pub struct UserAgentEmulateHttpRequestModifier;
 
 impl UserAgentEmulateHttpRequestModifier {
@@ -351,17 +424,16 @@ where
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
+        ctx: Context<State>,
         mut req: Request<ReqBody>,
     ) -> Result<Self::Response, Self::Error> {
-        match ctx.get().cloned() {
+        match ctx.get() {
             Some(http_profile) => {
                 tracing::trace!(
                     http_version = ?req.version(),
                     "http profile found in context to use for emulation, proceed",
                 );
-                emulate_http_settings(&mut ctx, &mut req, &http_profile);
-                match get_base_http_headers(&ctx, &req, &http_profile) {
+                match get_base_http_headers(&ctx, &req, http_profile) {
                     Some(base_http_headers) => {
                         let original_http_header_order =
                             ctx.get().or_else(|| req.extensions().get()).cloned();
@@ -398,6 +470,20 @@ where
                         );
                     }
                 }
+
+                if req.version() == Version::HTTP_2 {
+                    tracing::trace!(
+                        "user agent emulation: insert h2 pseudo header order into request extensions"
+                    );
+                    req.extensions_mut().insert(PseudoHeaderOrder::from_iter(
+                        http_profile
+                            .h2
+                            .settings
+                            .http_pseudo_headers
+                            .iter()
+                            .flatten(),
+                    ));
+                }
             }
             None => {
                 tracing::trace!(
@@ -407,34 +493,6 @@ where
             }
         }
         Ok((ctx, req))
-    }
-}
-
-fn emulate_http_settings<Body, State>(
-    ctx: &mut Context<State>,
-    req: &mut Request<Body>,
-    profile: &HttpProfile,
-) {
-    match req.version() {
-        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
-            tracing::trace!("UA emulation add http1-specific settings",);
-            ctx.insert(Http1ClientContextParams {
-                title_header_case: profile.h1.settings.title_case_headers,
-            });
-        }
-        Version::HTTP_2 => {
-            tracing::trace!("UA emulation add h2-specific settings",);
-            req.extensions_mut().insert(PseudoHeaderOrder::from_iter(
-                profile.h2.settings.http_pseudo_headers.iter().flatten(),
-            ));
-        }
-        Version::HTTP_3 => tracing::debug!(
-            "UA emulation not yet supported for h3: not applying anything h3-specific"
-        ),
-        _ => tracing::debug!(
-            version = ?req.version(),
-            "UA emulation not supported for unknown http version: not applying anything version-specific",
-        ),
     }
 }
 
