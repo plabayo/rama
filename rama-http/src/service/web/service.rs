@@ -297,15 +297,16 @@ where
 /// use rama_http::dep::http_body_util::BodyExt;
 /// use rama_http::service::web::IntoEndpointService;
 /// use rama_core::{Context, Service};
+/// use rama_core::matcher::MatcherRouter;
 ///
 /// #[tokio::main]
 /// async fn main() {
-///   let svc = (
+///   let svc = MatcherRouter((
 ///     (HttpMatcher::get("/hello"), "hello".into_endpoint_service()),
 ///     (HttpMatcher::post("/world"), "world".into_endpoint_service()),
 ///     (MethodMatcher::CONNECT, "connect".into_endpoint_service()),
 ///     StatusCode::NOT_FOUND.into_endpoint_service(),
-///   );
+///   ));
 ///
 ///   let resp = svc.serve(
 ///      Context::default(),
@@ -322,7 +323,8 @@ where
 macro_rules! __match_service {
     ($($M:expr_2021 => $S:expr_2021),+, _ => $F:expr $(,)?) => {{
         use $crate::service::web::IntoEndpointService;
-        ($(($M, $S.into_endpoint_service())),+, $F.into_endpoint_service())
+        use $crate::dep::core::matcher::MatcherRouter;
+        MatcherRouter(($(($M, $S.into_endpoint_service())),+, $F.into_endpoint_service()))
     }};
 }
 

@@ -15,16 +15,18 @@ use std::fmt;
 use tracing::trace;
 
 /// A [`Service`] which establishes an HTTP Connection.
-pub struct HttpConnector<S, I = ()> {
+pub struct HttpConnector<S, I1 = (), I2 = ()> {
     inner: S,
-    http_req_inspector: I,
+    http_req_inspector_jit: I1,
+    http_req_inspector_svc: I2,
 }
 
-impl<S: fmt::Debug, I: fmt::Debug> fmt::Debug for HttpConnector<S, I> {
+impl<S: fmt::Debug, I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for HttpConnector<S, I1, I2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpConnector")
             .field("inner", &self.inner)
-            .field("http_req_inspector", &self.http_req_inspector)
+            .field("http_req_inspector_jit", &self.http_req_inspector_jit)
+            .field("http_req_inspector_svc", &self.http_req_inspector_jit)
             .finish()
     }
 }
@@ -34,50 +36,69 @@ impl<S> HttpConnector<S> {
     pub const fn new(inner: S) -> Self {
         Self {
             inner,
-            http_req_inspector: (),
+            http_req_inspector_jit: (),
+            http_req_inspector_svc: (),
         }
     }
 }
 
-impl<S, I> HttpConnector<S, I> {
-    pub fn with_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, T> {
+impl<S, I1, I2> HttpConnector<S, I1, I2> {
+    pub fn with_jit_req_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, T, I2> {
         HttpConnector {
             inner: self.inner,
-            http_req_inspector,
+            http_req_inspector_jit: http_req_inspector,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+        }
+    }
+
+    pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnector<S, I1, T> {
+        HttpConnector {
+            inner: self.inner,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: http_req_inspector,
         }
     }
 
     define_inner_service_accessors!();
 }
 
-impl<S, I> Clone for HttpConnector<S, I>
+impl<S, I1, I2> Clone for HttpConnector<S, I1, I2>
 where
     S: Clone,
-    I: Clone,
+    I1: Clone,
+    I2: Clone,
 {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            http_req_inspector: self.http_req_inspector.clone(),
+            http_req_inspector_jit: self.http_req_inspector_jit.clone(),
+            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
     }
 }
 
-impl<S, I, State, BodyIn, BodyOut> Service<State, Request<BodyIn>> for HttpConnector<S, I>
+impl<S, I1, I2, State, BodyIn, BodyOut> Service<State, Request<BodyIn>> for HttpConnector<S, I1, I2>
 where
-    I: RequestInspector<
+    I1: RequestInspector<
+            State,
+            Request<BodyIn>,
+            Error: Into<BoxError>,
+            StateOut = State,
+            RequestOut = Request<BodyIn>,
+        >,
+    I2: RequestInspector<
             State,
             Request<BodyIn>,
             Error: Into<BoxError>,
             RequestOut = Request<BodyOut>,
-        >,
+        > + Clone,
     S: ConnectorService<State, Request<BodyIn>, Connection: Stream + Unpin, Error: Into<BoxError>>,
     State: Clone + Send + Sync + 'static,
-    BodyIn: Send + 'static,
+    BodyIn: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
 {
     type Response =
-        EstablishedClientConnection<HttpClientService<BodyOut>, I::StateOut, I::RequestOut>;
+        EstablishedClientConnection<HttpClientService<BodyOut, I2>, I1::StateOut, I1::RequestOut>;
     type Error = BoxError;
 
     async fn serve(
@@ -89,7 +110,7 @@ where
             self.inner.connect(ctx, req).await.map_err(Into::into)?;
 
         let (ctx, req) = self
-            .http_req_inspector
+            .http_req_inspector_jit
             .inspect_request(ctx, req)
             .await
             .map_err(Into::into)?;
@@ -109,7 +130,10 @@ where
                     }
                 });
 
-                let svc = HttpClientService(SendRequest::Http2(sender));
+                let svc = HttpClientService {
+                    sender: SendRequest::Http2(sender),
+                    http_req_inspector: self.http_req_inspector_svc.clone(),
+                };
 
                 Ok(EstablishedClientConnection {
                     ctx,
@@ -131,7 +155,10 @@ where
                     }
                 });
 
-                let svc = HttpClientService(SendRequest::Http1(sender));
+                let svc = HttpClientService {
+                    sender: SendRequest::Http1(sender),
+                    http_req_inspector: self.http_req_inspector_svc.clone(),
+                };
 
                 Ok(EstablishedClientConnection {
                     ctx,
@@ -149,40 +176,55 @@ where
 }
 
 /// A [`Layer`] that produces an [`HttpConnector`].
-pub struct HttpConnectorLayer<I = ()> {
-    http_req_inspector: I,
+pub struct HttpConnectorLayer<I1 = (), I2 = ()> {
+    http_req_inspector_jit: I1,
+    http_req_inspector_svc: I2,
 }
 
 impl HttpConnectorLayer {
     /// Create a new [`HttpConnectorLayer`].
     pub const fn new() -> Self {
         Self {
-            http_req_inspector: (),
+            http_req_inspector_jit: (),
+            http_req_inspector_svc: (),
         }
     }
 }
 
-impl<I> HttpConnectorLayer<I> {
-    pub fn with_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<T> {
-        HttpConnectorLayer { http_req_inspector }
+impl<I1, I2> HttpConnectorLayer<I1, I2> {
+    pub fn with_jit_req_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<T, I2> {
+        HttpConnectorLayer {
+            http_req_inspector_jit: http_req_inspector,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+        }
+    }
+
+    pub fn with_svc_req_inspector<T>(self, http_req_inspector: T) -> HttpConnectorLayer<I1, T> {
+        HttpConnectorLayer {
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: http_req_inspector,
+        }
     }
 }
 
-impl<I: fmt::Debug> fmt::Debug for HttpConnectorLayer<I> {
+impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for HttpConnectorLayer<I1, I2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("HttpConnectorLayer")
-            .field("http_req_inspector", &self.http_req_inspector)
+            .field("http_req_inspector_jit", &self.http_req_inspector_jit)
+            .field("http_req_inspector_svc", &self.http_req_inspector_svc)
             .finish()
     }
 }
 
-impl<I> Clone for HttpConnectorLayer<I>
+impl<I1, I2> Clone for HttpConnectorLayer<I1, I2>
 where
-    I: Clone,
+    I1: Clone,
+    I2: Clone,
 {
     fn clone(&self) -> Self {
         Self {
-            http_req_inspector: self.http_req_inspector.clone(),
+            http_req_inspector_jit: self.http_req_inspector_jit.clone(),
+            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
     }
 }
@@ -193,13 +235,14 @@ impl Default for HttpConnectorLayer {
     }
 }
 
-impl<I: Clone, S> Layer<S> for HttpConnectorLayer<I> {
-    type Service = HttpConnector<S, I>;
+impl<I1: Clone, I2: Clone, S> Layer<S> for HttpConnectorLayer<I1, I2> {
+    type Service = HttpConnector<S, I1, I2>;
 
     fn layer(&self, inner: S) -> Self::Service {
         HttpConnector {
             inner,
-            http_req_inspector: self.http_req_inspector.clone(),
+            http_req_inspector_jit: self.http_req_inspector_jit.clone(),
+            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
     }
 }

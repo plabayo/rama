@@ -1,6 +1,7 @@
 //! Rama HTTP client module,
 //! which provides the [`EasyHttpWebClient`] type to serve HTTP requests.
 
+use std::fmt;
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use std::sync::Arc;
 
@@ -8,6 +9,7 @@ use proxy::layer::HttpProxyConnector;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorExt, OpaqueError},
+    inspect::RequestInspector,
 };
 use rama_http_types::{Request, Response, dep::http_body};
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
@@ -37,8 +39,6 @@ use tracing::trace;
 pub mod http_inspector;
 pub mod proxy;
 
-#[derive(Debug, Clone, Default)]
-#[non_exhaustive]
 /// An opiniated http client that can be used to serve HTTP requests.
 ///
 /// You can fork this http client in case you have use cases not possible with this service example.
@@ -46,11 +46,65 @@ pub mod proxy;
 /// passed through your "connector" setup. All this and more is possible by defining your own
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
-pub struct EasyHttpWebClient {
+pub struct EasyHttpWebClient<I = ()> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_config: Option<ClientConfig>,
     #[cfg(any(feature = "rustls", feature = "boring"))]
     proxy_tls_config: Option<ClientConfig>,
+
+    http_req_inspector: I,
+}
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+impl<I: fmt::Debug> fmt::Debug for EasyHttpWebClient<I> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EasyHttpWebClient")
+            .field("tls_config", &self.tls_config)
+            .field("proxy_tls_config", &self.proxy_tls_config)
+            .field("http_req_inspector", &self.http_req_inspector)
+            .finish()
+    }
+}
+
+#[cfg(not(any(feature = "rustls", feature = "boring")))]
+impl<I: fmt::Debug> fmt::Debug for EasyHttpWebClient<I> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EasyHttpWebClient")
+            .field("http_req_inspector", &self.http_req_inspector)
+            .finish()
+    }
+}
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+impl<I: Clone> Clone for EasyHttpWebClient<I> {
+    fn clone(&self) -> Self {
+        Self {
+            tls_config: self.tls_config.clone(),
+            proxy_tls_config: self.proxy_tls_config.clone(),
+            http_req_inspector: self.http_req_inspector.clone(),
+        }
+    }
+}
+
+#[cfg(not(any(feature = "rustls", feature = "boring")))]
+impl<I: Clone> Clone for EasyHttpWebClient<I> {
+    fn clone(&self) -> Self {
+        Self {
+            http_req_inspector: self.http_req_inspector.clone(),
+        }
+    }
+}
+
+impl Default for EasyHttpWebClient {
+    fn default() -> Self {
+        Self {
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            tls_config: None,
+            #[cfg(any(feature = "rustls", feature = "boring"))]
+            proxy_tls_config: None,
+            http_req_inspector: (),
+        }
+    }
 }
 
 impl EasyHttpWebClient {
@@ -58,7 +112,9 @@ impl EasyHttpWebClient {
     pub fn new() -> Self {
         Self::default()
     }
+}
 
+impl<I> EasyHttpWebClient<I> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// Set the [`ClientConfig`] of this [`EasyHttpWebClient`].
     pub fn set_tls_config(&mut self, cfg: ClientConfig) -> &mut Self {
@@ -100,12 +156,34 @@ impl EasyHttpWebClient {
         self.proxy_tls_config = cfg;
         self
     }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    pub fn with_http_req_inspector<T>(self, http_req_inspector: T) -> EasyHttpWebClient<T> {
+        EasyHttpWebClient {
+            tls_config: self.tls_config,
+            proxy_tls_config: self.proxy_tls_config,
+            http_req_inspector,
+        }
+    }
+
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    pub fn with_http_req_inspector<T>(self, http_req_inspector: T) -> EasyHttpWebClient<T> {
+        EasyHttpWebClient { http_req_inspector }
+    }
 }
 
-impl<State, Body> Service<State, Request<Body>> for EasyHttpWebClient
+impl<State, BodyIn, BodyOut, I> Service<State, Request<BodyIn>> for EasyHttpWebClient<I>
 where
     State: Clone + Send + Sync + 'static,
-    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    BodyIn: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    I: RequestInspector<
+            State,
+            Request<BodyIn>,
+            Error: Into<BoxError>,
+            StateOut = State,
+            RequestOut = Request<BodyOut>,
+        > + Clone,
 {
     type Response = Response;
     type Error = OpaqueError;
@@ -113,13 +191,9 @@ where
     async fn serve(
         &self,
         ctx: Context<State>,
-        req: Request<Body>,
+        req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
         let uri = req.uri().clone();
-
-        // record original req version,
-        // so we can put the response back
-        let original_req_version = req.version();
 
         let tcp_connector = TcpConnector::new();
 
@@ -180,10 +254,13 @@ where
             HttpConnector::new(
                 TlsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
             )
-            .with_inspector(HttpsAlpnModifier::default())
+            .with_jit_req_inspector(HttpsAlpnModifier::default())
         };
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
         let connector = HttpConnector::new(HttpProxyConnector::optional(tcp_connector));
+
+        // set the runtime http req inspector
+        let connector = connector.with_svc_req_inspector(self.http_req_inspector.clone());
 
         // NOTE: stack might change request version based on connector data,
         // such as ALPN (tls), as such it is important to reset it back below,
@@ -196,20 +273,11 @@ where
             .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
 
         trace!(uri = %uri, "send http req to connector stack");
-        let mut resp = conn.serve(ctx, req).await.map_err(|err| {
+        let resp = conn.serve(ctx, req).await.map_err(|err| {
             OpaqueError::from_boxed(err)
                 .with_context(|| format!("http request failure for uri: {uri}"))
         })?;
         trace!(uri = %uri, "response received from connector stack");
-
-        trace!(
-            "incoming response version {:?}, normalizing to {:?}",
-            resp.version(),
-            original_req_version
-        );
-        // NOTE: in case http response writer does not handle possible conversion issues,
-        // we might need to do more complex normalization here... Worries for the future, maybe
-        *resp.version_mut() = original_req_version;
 
         Ok(resp)
     }

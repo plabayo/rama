@@ -1,27 +1,9 @@
-use std::fmt;
-
 use crate::error::BoxError;
 use crate::{Context, Service};
 
 use super::RequestInspector;
 
-/// Wrapper type that can be used to turn a tuple of [`RequestInspector`]
-/// into a single [`RequestInspector`].
-pub struct InspectorChain<N>(pub N);
-
-impl<N: fmt::Debug> fmt::Debug for InspectorChain<N> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("InspectorChain").field(&self.0).finish()
-    }
-}
-
-impl<N: Clone> Clone for InspectorChain<N> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl<I1, StateIn, RequestIn> Service<StateIn, RequestIn> for InspectorChain<(I1,)>
+impl<I1, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1,)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     StateIn: Clone + Send + Sync + 'static,
@@ -35,12 +17,11 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        chain.0.inspect_request(ctx, req).await.map_err(Into::into)
+        self.0.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
-impl<I1, I2, StateIn, RequestIn> Service<StateIn, RequestIn> for InspectorChain<(I1, I2)>
+impl<I1, I2, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1, I2)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -55,17 +36,12 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.1.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.1.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
-impl<I1, I2, I3, StateIn, RequestIn> Service<StateIn, RequestIn> for InspectorChain<(I1, I2, I3)>
+impl<I1, I2, I3, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1, I2, I3)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -81,23 +57,13 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.2.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.2.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
-impl<I1, I2, I3, I4, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for InspectorChain<(I1, I2, I3, I4)>
+impl<I1, I2, I3, I4, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1, I2, I3, I4)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -114,28 +80,14 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .2
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.3.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.3.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
-impl<I1, I2, I3, I4, I5, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for InspectorChain<(I1, I2, I3, I4, I5)>
+impl<I1, I2, I3, I4, I5, StateIn, RequestIn> Service<StateIn, RequestIn> for (I1, I2, I3, I4, I5)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -153,33 +105,16 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .2
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .3
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.4.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.4.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
 impl<I1, I2, I3, I4, I5, I6, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for InspectorChain<(I1, I2, I3, I4, I5, I6)>
+    for (I1, I2, I3, I4, I5, I6)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -198,38 +133,17 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .2
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .3
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .4
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.5.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.5.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
 impl<I1, I2, I3, I4, I5, I6, I7, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for InspectorChain<(I1, I2, I3, I4, I5, I6, I7)>
+    for (I1, I2, I3, I4, I5, I6, I7)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -249,43 +163,18 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .2
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .3
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .4
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .5
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.6.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.6.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
 impl<I1, I2, I3, I4, I5, I6, I7, I8, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for InspectorChain<(I1, I2, I3, I4, I5, I6, I7, I8)>
+    for (I1, I2, I3, I4, I5, I6, I7, I8)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -306,48 +195,19 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .2
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .3
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .4
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .5
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .6
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.7.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.7.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
 impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for InspectorChain<(I1, I2, I3, I4, I5, I6, I7, I8, I9)>
+    for (I1, I2, I3, I4, I5, I6, I7, I8, I9)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -369,53 +229,20 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .2
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .3
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .4
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .5
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .6
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .7
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.8.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.7.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.8.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
 impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for InspectorChain<(I1, I2, I3, I4, I5, I6, I7, I8, I9, I10)>
+    for (I1, I2, I3, I4, I5, I6, I7, I8, I9, I10)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -438,58 +265,21 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .2
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .3
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .4
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .5
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .6
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .7
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .8
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.9.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.7.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.8.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.9.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
 impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, StateIn, RequestIn> Service<StateIn, RequestIn>
-    for InspectorChain<(I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11)>
+    for (I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -513,64 +303,22 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .2
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .3
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .4
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .5
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .6
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .7
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .8
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .9
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        chain.10.inspect_request(ctx, req).await.map_err(Into::into)
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.7.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.8.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.9.inspect_request(ctx, req).await.map_err(Into::into)?;
+        self.10.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }
 
 impl<I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12, StateIn, RequestIn>
-    Service<StateIn, RequestIn>
-    for InspectorChain<(I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12)>
+    Service<StateIn, RequestIn> for (I1, I2, I3, I4, I5, I6, I7, I8, I9, I10, I11, I12)
 where
     I1: RequestInspector<StateIn, RequestIn, Error: Into<BoxError>>,
     I2: RequestInspector<I1::StateOut, I1::RequestOut, Error: Into<BoxError>>,
@@ -595,62 +343,21 @@ where
         ctx: Context<StateIn>,
         req: RequestIn,
     ) -> Result<Self::Response, Self::Error> {
-        let chain = &self.0;
-        let (ctx, req) = chain
-            .0
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .1
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .2
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .3
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .4
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .5
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .6
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .7
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .8
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
-            .9
-            .inspect_request(ctx, req)
-            .await
-            .map_err(Into::into)?;
-        let (ctx, req) = chain
+        let (ctx, req) = self.0.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.1.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.2.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.3.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.4.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.5.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.6.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.7.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.8.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self.9.inspect_request(ctx, req).await.map_err(Into::into)?;
+        let (ctx, req) = self
             .10
             .inspect_request(ctx, req)
             .await
             .map_err(Into::into)?;
-        chain.11.inspect_request(ctx, req).await.map_err(Into::into)
+        self.11.inspect_request(ctx, req).await.map_err(Into::into)
     }
 }

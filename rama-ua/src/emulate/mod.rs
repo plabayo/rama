@@ -5,4 +5,4 @@ mod layer;
 pub use layer::UserAgentEmulateLayer;
 
 mod service;
-pub use service::UserAgentEmulateService;
+pub use service::{UserAgentEmulateHttpRequestModifier, UserAgentEmulateService};

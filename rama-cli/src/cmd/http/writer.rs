@@ -5,7 +5,6 @@ use rama::{
         BidirectionalMessage, BidirectionalWriter, RequestWriterInspector, ResponseWriterLayer,
         WriterMode,
     },
-    inspect::RequestInspectorLayer,
     rt::Executor,
 };
 use std::path::PathBuf;
@@ -25,9 +24,7 @@ pub(super) async fn create_traffic_writers(
     response_mode: Option<WriterMode>,
 ) -> Result<
     (
-        RequestInspectorLayer<
-            RequestWriterInspector<BidirectionalWriter<Sender<BidirectionalMessage>>>,
-        >,
+        RequestWriterInspector<BidirectionalWriter<Sender<BidirectionalMessage>>>,
         ResponseWriterLayer<BidirectionalWriter<Sender<BidirectionalMessage>>>,
     ),
     BoxError,
@@ -50,7 +47,7 @@ pub(super) async fn create_traffic_writers(
     };
 
     Ok((
-        RequestWriterInspector::new(bidirectional_writer.clone()).into(),
+        RequestWriterInspector::new(bidirectional_writer.clone()),
         ResponseWriterLayer::new(bidirectional_writer),
     ))
 }

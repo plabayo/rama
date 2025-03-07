@@ -5,7 +5,15 @@ use rama_core::{
     error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_http_types::{
-    HeaderMap, HeaderName, IntoResponse, Method, Request, Response, Version,
+    HeaderMap,
+    HeaderName,
+    IntoResponse,
+    Method,
+    Request,
+    Response,
+    Version,
+    // TODO: replace with a proper CompressionAdapterLayer instead,
+    // which will also re-encode in case encoding was requested :)
     compression::DecompressIfPossible,
     conn::Http1ClientContextParams,
     header::{
@@ -27,12 +35,18 @@ use rama_http_types::{
 use rama_net::{Protocol, http::RequestContext};
 
 use crate::{
-    CUSTOM_HEADER_MARKER, HttpAgent, HttpHeadersProfile, PreserveHeaderUserAgent, RequestInitiator,
-    UserAgent, UserAgentProfile, contains_ignore_ascii_case, starts_with_ignore_ascii_case,
+    CUSTOM_HEADER_MARKER, HttpAgent, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
+    RequestInitiator, UserAgent, contains_ignore_ascii_case, starts_with_ignore_ascii_case,
 };
 
 use super::{UserAgentProvider, UserAgentSelectFallback};
 
+/// Service to select a [`UserAgentProfile`] and inject its info into the input [`Context`].
+///
+/// Note that actual http emulation is done by also ensuring a service
+/// such as [`UserAgentEmulateHttpRequestModifier`] is in use within your connector stack.
+/// Tls emulation is facilitated by a tls client connector which respects
+/// the injected (tls) client profile.
 pub struct UserAgentEmulateService<S, P> {
     inner: S,
     provider: P,
@@ -222,8 +236,6 @@ where
             Some(HttpAgent::Preserve),
         );
 
-        let requested_client_hints = ctx.get::<Vec<ClientHint>>().cloned();
-
         let mut original_requested_encodings = None;
 
         if preserve_http {
@@ -234,60 +246,37 @@ where
                 "user agent emulation: skip http settings as http is instructed to be preserved"
             );
         } else {
-            emulate_http_settings(&mut ctx, &mut req, profile);
-            match get_base_http_headers(&ctx, &req, profile) {
-                Some(base_http_headers) => {
-                    let original_http_header_order = get_original_http_header_order(
-                        &ctx,
-                        &req,
-                        self.input_header_order.as_ref(),
-                    )
-                    .context("collect original http header order")?;
+            tracing::trace!(
+                ua_kind = %profile.ua_kind,
+                ua_version = ?profile.ua_version,
+                platform = ?profile.platform,
+                "user agent emulation: inject http context data to prepare for HTTP emulation"
+            );
+            ctx.insert(profile.http.clone());
 
-                    let original_headers = req.headers().clone();
-
-                    let preserve_ua_header = ctx.contains::<PreserveHeaderUserAgent>();
-
-                    let is_secure_request = match ctx.get::<RequestContext>() {
-                        Some(request_ctx) => request_ctx.protocol.is_secure(),
-                        None => req
-                            .uri()
-                            .scheme()
-                            .map(|s| Protocol::from(s.clone()).is_secure())
-                            .unwrap_or_default(),
-                    };
-
-                    original_requested_encodings = Some(
-                        parse_accept_encoding_headers(&original_headers, true)
-                            .map(|qv| qv.value)
-                            .collect::<Vec<_>>(),
-                    );
-
-                    let output_headers = merge_http_headers(
-                        base_http_headers,
-                        original_http_header_order,
-                        original_headers,
-                        preserve_ua_header,
-                        is_secure_request,
-                        requested_client_hints.as_deref(),
-                    );
-
-                    tracing::trace!(
-                        ua_kind = %profile.ua_kind,
-                        ua_version = ?profile.ua_version,
-                        platform = ?profile.platform,
-                        "user agent emulation: http settings and headers emulated"
-                    );
-                    let (output_headers, original_headers) = output_headers.into_parts();
-                    *req.headers_mut() = output_headers;
-                    req.extensions_mut().insert(original_headers);
+            if let Some(header) = self
+                .input_header_order
+                .as_ref()
+                .and_then(|name| req.headers().get(name))
+            {
+                let s = header.to_str().context("interpret header as a utf-8 str")?;
+                let mut headers = OriginalHttp1Headers::with_capacity(s.matches(',').count());
+                for s in s.split(',') {
+                    let s = s.trim();
+                    if s.is_empty() {
+                        continue;
+                    }
+                    headers.push(s.parse().context("parse header part as h1 headern name")?);
                 }
-                None => {
-                    tracing::debug!(
-                        "user agent emulation: no http headers to emulate: no base http headers found"
-                    );
-                }
+                req.extensions_mut().insert(headers);
             }
+
+            // track original encoding in case prolonged http emulation did indeed modify http emulation :)
+            original_requested_encodings = Some(
+                parse_accept_encoding_headers(req.headers(), true)
+                    .map(|qv| qv.value)
+                    .collect::<Vec<_>>(),
+            );
         }
 
         #[cfg(feature = "tls")]
@@ -338,38 +327,105 @@ where
     }
 }
 
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+// a http RequestInspector which is to be used in combination
+// with the [`UserAgentEmulateService`] to facilitate the
+// http emulation based on the injected http profile.
+pub struct UserAgentEmulateHttpRequestModifier;
+
+impl UserAgentEmulateHttpRequestModifier {
+    #[inline]
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl<State, ReqBody> Service<State, Request<ReqBody>> for UserAgentEmulateHttpRequestModifier
+where
+    State: Clone + Send + Sync + 'static,
+    ReqBody: Send + 'static,
+{
+    type Error = BoxError;
+    type Response = (Context<State>, Request<ReqBody>);
+
+    async fn serve(
+        &self,
+        mut ctx: Context<State>,
+        mut req: Request<ReqBody>,
+    ) -> Result<Self::Response, Self::Error> {
+        match ctx.get().cloned() {
+            Some(http_profile) => {
+                tracing::trace!(
+                    http_version = ?req.version(),
+                    "http profile found in context to use for emulation, proceed",
+                );
+                emulate_http_settings(&mut ctx, &mut req, &http_profile);
+                match get_base_http_headers(&ctx, &req, &http_profile) {
+                    Some(base_http_headers) => {
+                        let original_http_header_order =
+                            ctx.get().or_else(|| req.extensions().get()).cloned();
+                        let original_headers = req.headers().clone();
+
+                        let preserve_ua_header = ctx.contains::<PreserveHeaderUserAgent>();
+
+                        let is_secure_request = match ctx.get::<RequestContext>() {
+                            Some(request_ctx) => request_ctx.protocol.is_secure(),
+                            None => req
+                                .uri()
+                                .scheme()
+                                .map(|s| Protocol::from(s.clone()).is_secure())
+                                .unwrap_or_default(),
+                        };
+
+                        let output_headers = merge_http_headers(
+                            base_http_headers,
+                            original_http_header_order,
+                            original_headers,
+                            preserve_ua_header,
+                            is_secure_request,
+                            ctx.get::<Vec<ClientHint>>().map(|v| v.as_slice()),
+                        );
+
+                        tracing::trace!("user agent emulation: http emulated");
+                        let (output_headers, original_headers) = output_headers.into_parts();
+                        *req.headers_mut() = output_headers;
+                        req.extensions_mut().insert(original_headers);
+                    }
+                    None => {
+                        tracing::debug!(
+                            "user agent emulation: no http headers to emulate: no base http headers found"
+                        );
+                    }
+                }
+            }
+            None => {
+                tracing::trace!(
+                    http_version = ?req.version(),
+                    "no http profile found in context to use for emulation, request is passed through as-is",
+                );
+            }
+        }
+        Ok((ctx, req))
+    }
+}
+
 fn emulate_http_settings<Body, State>(
     ctx: &mut Context<State>,
     req: &mut Request<Body>,
-    profile: &UserAgentProfile,
+    profile: &HttpProfile,
 ) {
     match req.version() {
         Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => {
-            tracing::trace!(
-                ua_kind = %profile.ua_kind,
-                ua_version = ?profile.ua_version,
-                platform = ?profile.platform,
-                "UA emulation add http1-specific settings",
-            );
+            tracing::trace!("UA emulation add http1-specific settings",);
             ctx.insert(Http1ClientContextParams {
-                title_header_case: profile.http.h1.settings.title_case_headers,
+                title_header_case: profile.h1.settings.title_case_headers,
             });
         }
         Version::HTTP_2 => {
-            tracing::trace!(
-            ua_kind = %profile.ua_kind,
-            ua_version = ?profile.ua_version,
-            platform = ?profile.platform,
-            "UA emulation add h2-specific settings",
-            );
+            tracing::trace!("UA emulation add h2-specific settings",);
             req.extensions_mut().insert(PseudoHeaderOrder::from_iter(
-                profile
-                    .http
-                    .h2
-                    .settings
-                    .http_pseudo_headers
-                    .iter()
-                    .flatten(),
+                profile.h2.settings.http_pseudo_headers.iter().flatten(),
             ));
         }
         Version::HTTP_3 => tracing::debug!(
@@ -385,11 +441,11 @@ fn emulate_http_settings<Body, State>(
 fn get_base_http_headers<'a, Body, State>(
     ctx: &Context<State>,
     req: &Request<Body>,
-    profile: &'a UserAgentProfile,
+    profile: &'a HttpProfile,
 ) -> Option<&'a Http1HeaderMap> {
     let headers_profile = match req.version() {
-        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => &profile.http.h1.headers,
-        Version::HTTP_2 => &profile.http.h2.headers,
+        Version::HTTP_09 | Version::HTTP_10 | Version::HTTP_11 => &profile.h1.headers,
+        Version::HTTP_2 => &profile.h2.headers,
         _ => {
             tracing::debug!(
                 version = ?req.version(),
@@ -482,26 +538,6 @@ fn get_base_http_headers_from_req_init(
     }
 }
 
-fn get_original_http_header_order<Body, State>(
-    ctx: &Context<State>,
-    req: &Request<Body>,
-    input_header_order: Option<&HeaderName>,
-) -> Result<Option<OriginalHttp1Headers>, OpaqueError> {
-    if let Some(header) = input_header_order.and_then(|name| req.headers().get(name)) {
-        let s = header.to_str().context("interpret header as a utf-8 str")?;
-        let mut headers = OriginalHttp1Headers::with_capacity(s.matches(',').count());
-        for s in s.split(',') {
-            let s = s.trim();
-            if s.is_empty() {
-                continue;
-            }
-            headers.push(s.parse().context("parse header part as h1 headern name")?);
-        }
-        return Ok(Some(headers));
-    }
-    Ok(ctx.get().or_else(|| req.extensions().get()).cloned())
-}
-
 fn merge_http_headers(
     base_http_headers: &Http1HeaderMap,
     original_http_header_order: Option<OriginalHttp1Headers>,
@@ -587,16 +623,17 @@ fn merge_http_headers(
 mod tests {
     use super::*;
 
-    use std::{convert::Infallible, str::FromStr};
+    use std::{convert::Infallible, str::FromStr, sync::Arc};
 
     use itertools::Itertools as _;
-    use rama_core::service::service_fn;
+    use rama_core::{Layer, inspect::RequestInspectorLayer, service::service_fn};
     use rama_http_types::{
         Body, BodyExtractExt, HeaderValue, header::ETAG, proto::h1::Http1HeaderName,
     };
 
     use crate::{
         Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile, HttpProfile,
+        UserAgentEmulateLayer, UserAgentProfile,
     };
 
     #[test]
@@ -1133,95 +1170,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_get_original_http_header_order() {
-        struct TestCase {
-            description: &'static str,
-            req: Request,
-            ctx: Option<Context<()>>,
-            expected_input_header_order: &'static str,
-        }
-
-        let test_cases = [
-            TestCase {
-                description: "empty request",
-                req: Request::new(Body::empty()),
-                ctx: None,
-                expected_input_header_order: "",
-            },
-            TestCase {
-                description: "request original header order in req extensions",
-                req: {
-                    let mut req = Request::new(Body::empty());
-                    req.extensions_mut()
-                        .insert(OriginalHttp1Headers::from_iter([
-                            Http1HeaderName::from_str("x-REQUESTED-with").unwrap(),
-                            Http1HeaderName::from_str("Accept").unwrap(),
-                        ]));
-                    req
-                },
-                ctx: None,
-                expected_input_header_order: "x-REQUESTED-with,Accept",
-            },
-            TestCase {
-                description: "request original header order in ctx",
-                req: {
-                    let mut req = Request::new(Body::empty());
-                    req.headers_mut().insert(
-                        HeaderName::from_static("foo"),
-                        HeaderValue::from_static("BAR"),
-                    );
-                    req
-                },
-                // ctx has precedence over req extensions
-                ctx: Some({
-                    let mut ctx = Context::default();
-                    ctx.insert(OriginalHttp1Headers::from_iter([
-                        Http1HeaderName::from_str("x-REQUESTED-with").unwrap(),
-                        Http1HeaderName::from_str("Accept").unwrap(),
-                    ]));
-                    ctx
-                }),
-                expected_input_header_order: "x-REQUESTED-with,Accept",
-            },
-            TestCase {
-                description: "request with headers but no original header order",
-                req: {
-                    let mut req = Request::new(Body::empty());
-                    req.headers_mut().insert(
-                        HeaderName::from_static("foo"),
-                        HeaderValue::from_static("BAR"),
-                    );
-                    req
-                },
-                ctx: None,
-                expected_input_header_order: "",
-            },
-        ];
-
-        for test_case in test_cases {
-            let input_header_order = get_original_http_header_order(
-                test_case.ctx.as_ref().unwrap_or(&Context::default()),
-                &test_case.req,
-                None,
-            )
-            .unwrap();
-            let input_header_order_str = input_header_order
-                .map(|headers| {
-                    headers
-                        .into_iter()
-                        .map(|header| header.to_string())
-                        .join(",")
-                })
-                .unwrap_or_default();
-            assert_eq!(
-                input_header_order_str, test_case.expected_input_header_order,
-                "{}",
-                test_case.description,
-            );
-        }
-    }
-
     #[tokio::test]
     async fn test_get_base_h2_headers() {
         let ua = UserAgent::new(
@@ -1233,7 +1181,7 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                h1: Http1Profile {
+                h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -1241,8 +1189,8 @@ mod tests {
                         form: None,
                     },
                     settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                }),
+                h2: Arc::new(Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_str("navigate").unwrap())]
@@ -1255,7 +1203,7 @@ mod tests {
                         form: None,
                     },
                     settings: Http2Settings::default(),
-                },
+                }),
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {
@@ -1263,17 +1211,18 @@ mod tests {
             },
         };
 
-        let ua_service = UserAgentEmulateService::new(
-            service_fn(async |req: Request| {
+        let ua_service = (
+            UserAgentEmulateLayer::new(ua_profile),
+            RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
+        )
+            .layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)
                         .map(|header| header.to_str().unwrap().to_owned())
                         .unwrap_or_default(),
                 )
-            }),
-            ua_profile,
-        );
+            }));
 
         let req = Request::builder()
             .method(Method::GET)
@@ -1303,7 +1252,7 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                h1: Http1Profile {
+                h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_str("navigate").unwrap())]
@@ -1316,8 +1265,8 @@ mod tests {
                         form: None,
                     },
                     settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                }),
+                h2: Arc::new(Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -1325,7 +1274,7 @@ mod tests {
                         form: None,
                     },
                     settings: Http2Settings::default(),
-                },
+                }),
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {
@@ -1333,19 +1282,18 @@ mod tests {
             },
         };
 
-        let ua_service = UserAgentEmulateService::new(
-            service_fn(async |req: Request| {
+        let ua_service = (
+            UserAgentEmulateLayer::new(ua_profile),
+            RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
+        )
+            .layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .to_owned(),
+                        .map(|header| header.to_str().unwrap().to_owned())
+                        .unwrap_or_default(),
                 )
-            }),
-            ua_profile,
-        );
+            }));
 
         let req = Request::builder()
             .method(Method::DELETE)
@@ -1366,7 +1314,7 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                h1: Http1Profile {
+                h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_str("navigate").unwrap())]
@@ -1389,8 +1337,8 @@ mod tests {
                         )),
                     },
                     settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                }),
+                h2: Arc::new(Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -1398,7 +1346,7 @@ mod tests {
                         form: None,
                     },
                     settings: Http2Settings::default(),
-                },
+                }),
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {
@@ -1406,19 +1354,18 @@ mod tests {
             },
         };
 
-        let ua_service = UserAgentEmulateService::new(
-            service_fn(async |req: Request| {
+        let ua_service = (
+            UserAgentEmulateLayer::new(ua_profile),
+            RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
+        )
+            .layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .to_owned(),
+                        .map(|header| header.to_str().unwrap().to_owned())
+                        .unwrap_or_default(),
                 )
-            }),
-            ua_profile,
-        );
+            }));
 
         let req = Request::builder()
             .method(Method::DELETE)
@@ -1439,7 +1386,7 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                h1: Http1Profile {
+                h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_str("navigate").unwrap())]
@@ -1462,8 +1409,8 @@ mod tests {
                         )),
                     },
                     settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                }),
+                h2: Arc::new(Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -1471,7 +1418,7 @@ mod tests {
                         form: None,
                     },
                     settings: Http2Settings::default(),
-                },
+                }),
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {
@@ -1479,19 +1426,18 @@ mod tests {
             },
         };
 
-        let ua_service = UserAgentEmulateService::new(
-            service_fn(async |req: Request| {
+        let ua_service = (
+            UserAgentEmulateLayer::new(ua_profile),
+            RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
+        )
+            .layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .to_owned(),
+                        .map(|header| header.to_str().unwrap().to_owned())
+                        .unwrap_or_default(),
                 )
-            }),
-            ua_profile,
-        );
+            }));
 
         let req = Request::builder()
             .method(Method::DELETE)
@@ -1516,7 +1462,7 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                h1: Http1Profile {
+                h1: Arc::new(Http1Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(ETAG, HeaderValue::from_str("navigate").unwrap())]
@@ -1544,8 +1490,8 @@ mod tests {
                         )),
                     },
                     settings: Http1Settings::default(),
-                },
-                h2: Http2Profile {
+                }),
+                h2: Arc::new(Http2Profile {
                     headers: HttpHeadersProfile {
                         navigate: Http1HeaderMap::default(),
                         fetch: None,
@@ -1553,7 +1499,7 @@ mod tests {
                         form: None,
                     },
                     settings: Http2Settings::default(),
-                },
+                }),
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {
@@ -1561,19 +1507,18 @@ mod tests {
             },
         };
 
-        let ua_service = UserAgentEmulateService::new(
-            service_fn(async |req: Request| {
+        let ua_service = (
+            UserAgentEmulateLayer::new(ua_profile),
+            RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
+        )
+            .layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)
-                        .unwrap()
-                        .to_str()
-                        .unwrap()
-                        .to_owned(),
+                        .map(|header| header.to_str().unwrap().to_owned())
+                        .unwrap_or_default(),
                 )
-            }),
-            ua_profile,
-        );
+            }));
 
         struct TestCase {
             description: &'static str,
