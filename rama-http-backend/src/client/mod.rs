@@ -300,15 +300,17 @@ where
             HttpConnector::new(
                 TlsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
             )
-            .with_jit_req_inspector(HttpsAlpnModifier::default())
+            .with_jit_req_inspector((
+                HttpsAlpnModifier::default(),
+                self.http_req_inspector_jit.clone(),
+            ))
         };
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        let connector = HttpConnector::new(HttpProxyConnector::optional(tcp_connector));
+        let connector = HttpConnector::new(HttpProxyConnector::optional(tcp_connector))
+            .with_jit_req_inspector(self.http_req_inspector_jit.clone());
 
         // set the runtime http req inspector
-        let connector = connector
-            .with_svc_req_inspector(self.http_req_inspector_svc.clone())
-            .with_jit_req_inspector(self.http_req_inspector_jit.clone());
+        let connector = connector.with_svc_req_inspector(self.http_req_inspector_svc.clone());
 
         // NOTE: stack might change request version based on connector data,
         // such as ALPN (tls), as such it is important to reset it back below,
