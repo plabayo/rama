@@ -1,0 +1,14 @@
+[package]
+name = "paste-test-suite"
+license = "MIT OR Apache-2.0"
+version = "0.0.0"
+authors = [
+    "David Tolnay <dtolnay@gmail.com>",
+    "Glen Henri J. De Cauwsemaecker <glen@plabayo.tech>",
+]
+edition = "2021"
+publish = false
+
+[lib]
+path = "lib.rs"
+proc-macro = true

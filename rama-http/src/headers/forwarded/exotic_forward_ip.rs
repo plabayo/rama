@@ -1,8 +1,8 @@
 use crate::header::{CF_CONNECTING_IP, CLIENT_IP, TRUE_CLIENT_IP, X_CLIENT_IP, X_REAL_IP};
 use crate::headers::Header;
 use crate::{HeaderName, HeaderValue};
-use paste::paste;
 use rama_core::error::{ErrorContext, OpaqueError};
+use rama_macros::paste;
 use rama_net::forwarded::{ForwardedElement, NodeId};
 use std::fmt;
 use std::net::{IpAddr, Ipv6Addr};

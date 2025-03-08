@@ -19,6 +19,9 @@ proc-macro = true
 [dependencies]
 
 [dev-dependencies]
+paste-test-suite = { version = "0", path = "tests/macros" }
+rustversion = { workspace = true }
+trybuild = { workspace = true, features = ["diff"] }
 
 [package.metadata.cargo-public-api-crates]
 allowed = []

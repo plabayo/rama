@@ -67,7 +67,6 @@ honggfuzz = "0.5.56"
 itertools = "0.14.0"
 mime = "0.3.17"
 mime_guess = { version = "2", default-features = false }
-paste = "1.0"
 percent-encoding = "2.1"
 pin-project-lite = "0.2.13"
 rustls-pki-types = "^1"

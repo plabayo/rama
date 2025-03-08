@@ -112,7 +112,7 @@ pub mod header {
     macro_rules! static_header {
         ($($name_bytes:literal),+ $(,)?) => {
             $(
-                paste::paste! {
+                rama_macros::paste! {
                     #[doc = concat!("header name constant for `", $name_bytes, "`.")]
                     pub static [<$name_bytes:snake:upper>]: super::HeaderName = super::HeaderName::from_static($name_bytes);
                 }

@@ -39,11 +39,11 @@ iri-string = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
 nanoid = { workspace = true }
-paste = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.7", path = "../rama-http-types" }
+rama-macros = { version = "0.2.0-alpha.7", path = "../rama-macros" }
 rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", features = ["http"] }
 rama-ua = { version = "0.2.0-alpha.7", path = "../rama-ua" }
 rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }

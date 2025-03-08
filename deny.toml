@@ -1,6 +1,8 @@
 [advisories]
 version = 2
 ignore = [
+    # can be removed once aws-ls-rc moved away from paste as well:
+    # <https://github.com/aws/aws-lc-rs/issues/722>
     "RUSTSEC-2024-0436",
 ]
 
