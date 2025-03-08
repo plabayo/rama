@@ -21,7 +21,7 @@ impl HttpProxyConnectorLayer {
     pub fn optional() -> Self {
         Self {
             required: false,
-            version: None,
+            version: Some(Version::HTTP_11),
         }
     }
 
@@ -34,7 +34,7 @@ impl HttpProxyConnectorLayer {
     pub fn required() -> Self {
         Self {
             required: true,
-            version: None,
+            version: Some(Version::HTTP_11),
         }
     }
 
@@ -43,6 +43,24 @@ impl HttpProxyConnectorLayer {
     /// By default, this is auto detected.
     pub fn with_version(mut self, version: Version) -> Self {
         self.version = Some(version);
+        self
+    }
+
+    /// Set the HTTP version to use for the CONNECT request.
+    pub fn set_version(&mut self, version: Version) -> &mut Self {
+        self.version = Some(version);
+        self
+    }
+
+    /// Set the HTTP version to auto detect for the CONNECT request.
+    pub fn with_auto_version(mut self) -> Self {
+        self.version = None;
+        self
+    }
+
+    /// Set the HTTP version to auto detect for the CONNECT request.
+    pub fn set_auto_version(&mut self) -> &mut Self {
+        self.version = None;
         self
     }
 }
