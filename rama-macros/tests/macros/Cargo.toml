@@ -9,7 +9,7 @@ authors = [
 edition = "2024"
 publish = false
 
-[lint]
+[lints]
 workspace = true
 
 [lib]
