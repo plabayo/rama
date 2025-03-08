@@ -103,9 +103,7 @@ pub trait Policy<State, Request>: Send + Sync + 'static {
         &self,
         ctx: Context<State>,
         request: Request,
-    ) -> impl std::future::Future<Output = PolicyResult<State, Request, Self::Guard, Self::Error>>
-    + Send
-    + '_;
+    ) -> impl Future<Output = PolicyResult<State, Request, Self::Guard, Self::Error>> + Send + '_;
 }
 
 impl<State, Request, P> Policy<State, Request> for Option<P>

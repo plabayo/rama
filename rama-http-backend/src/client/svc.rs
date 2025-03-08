@@ -1,6 +1,9 @@
+use std::fmt;
+
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
+    inspect::RequestInspector,
 };
 use rama_http_types::{
     Method, Request, Response, Version,
@@ -10,29 +13,90 @@ use rama_http_types::{
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
 
-#[derive(Debug)]
 pub(super) enum SendRequest<Body> {
     Http1(rama_http_core::client::conn::http1::SendRequest<Body>),
     Http2(rama_http_core::client::conn::http2::SendRequest<Body>),
 }
 
-#[derive(Debug)]
-/// Internal http sender used to send the actual requests.
-pub struct HttpClientService<Body>(pub(super) SendRequest<Body>);
+impl<Body: fmt::Debug> fmt::Debug for SendRequest<Body> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let mut f = f.debug_tuple("SendRequest");
+        match self {
+            SendRequest::Http1(send_request) => f.field(send_request).finish(),
+            SendRequest::Http2(send_request) => f.field(send_request).finish(),
+        }
+    }
+}
 
-impl<State, Body> Service<State, Request<Body>> for HttpClientService<Body>
+/// Internal http sender used to send the actual requests.
+pub struct HttpClientService<Body, I = ()> {
+    pub(super) sender: SendRequest<Body>,
+    pub(super) http_req_inspector: I,
+}
+
+impl<State, BodyIn, BodyOut, I> Service<State, Request<BodyIn>> for HttpClientService<BodyOut, I>
 where
     State: Clone + Send + Sync + 'static,
-    Body: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    BodyIn: Send + 'static,
+    BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    I: RequestInspector<
+            State,
+            Request<BodyIn>,
+            Error: Into<BoxError>,
+            RequestOut = Request<BodyOut>,
+        >,
 {
     type Response = Response;
     type Error = BoxError;
 
     async fn serve(
         &self,
-        mut ctx: Context<State>,
-        req: Request<Body>,
+        ctx: Context<State>,
+        mut req: Request<BodyIn>,
     ) -> Result<Self::Response, Self::Error> {
+        let original_http_version = req.version();
+
+        match self.sender {
+            SendRequest::Http1(_) => match original_http_version {
+                Version::HTTP_10 | Version::HTTP_11 => {
+                    tracing::trace!(
+                        ?original_http_version,
+                        "request version is already h1 compatible, it will remain unchanged",
+                    );
+                }
+                _ => {
+                    tracing::debug!(
+                        ?original_http_version,
+                        new_http_version = ?Version::HTTP_11,
+                        "modify request version to compatible h1 connection version",
+                    );
+                    *req.version_mut() = Version::HTTP_11;
+                }
+            },
+            SendRequest::Http2(_) => match original_http_version {
+                Version::HTTP_2 => {
+                    tracing::trace!(
+                        ?original_http_version,
+                        "request version is already h2 compatible, it will remain unchanged",
+                    );
+                }
+                _ => {
+                    tracing::debug!(
+                        ?original_http_version,
+                        new_http_version = ?Version::HTTP_2,
+                        "modify request version to compatible h2 connection version",
+                    );
+                    *req.version_mut() = Version::HTTP_2;
+                }
+            },
+        }
+
+        let (mut ctx, req) = self
+            .http_req_inspector
+            .inspect_request(ctx, req)
+            .await
+            .map_err(Into::into)?;
+
         // sanitize subject line request uri
         // because Hyper (http) writes the URI as-is
         //
@@ -43,10 +107,25 @@ where
         // directly instead of here...
         let req = sanitize_client_req_header(&mut ctx, req)?;
 
-        let resp = match &self.0 {
+        let mut resp = match &self.sender {
             SendRequest::Http1(sender) => sender.send_request(req).await,
             SendRequest::Http2(sender) => sender.send_request(req).await,
         }?;
+
+        let original_resp_http_version = resp.version();
+        if original_resp_http_version == original_http_version {
+            tracing::trace!(
+                ?original_http_version,
+                "response version matches original http request version, it will remain unchanged",
+            );
+        } else {
+            *resp.version_mut() = original_http_version;
+            tracing::trace!(
+                ?original_http_version,
+                ?original_resp_http_version,
+                "change the response http version into the original http request version",
+            );
+        }
 
         Ok(resp.map(rama_http_types::Body::new))
     }

@@ -39,6 +39,8 @@ pub mod dep {
     //!
     //! Exported for your convenience.
 
+    pub use rama_core as core;
+
     #[doc(inline)]
     pub use ::rama_http_types::dep::{http, http_body, http_body_util, mime, mime_guess};
 }

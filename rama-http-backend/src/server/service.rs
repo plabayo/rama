@@ -17,7 +17,6 @@ use rama_net::stream::Stream;
 use rama_tcp::server::TcpListener;
 use std::convert::Infallible;
 use std::fmt;
-use std::future::Future;
 use std::sync::Arc;
 
 /// A builder for configuring and listening over HTTP using a [`Service`].

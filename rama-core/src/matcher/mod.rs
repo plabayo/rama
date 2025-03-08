@@ -161,12 +161,28 @@ macro_rules! impl_matcher_either {
 
 crate::combinators::impl_either!(impl_matcher_either);
 
+/// Wrapper type that can be used to turn a tuple of ([`Matcher`], [`Service`]) tuples
+/// into a single [`Service`].
+pub struct MatcherRouter<N>(pub N);
+
+impl<N: std::fmt::Debug> std::fmt::Debug for MatcherRouter<N> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("MatcherRouter").field(&self.0).finish()
+    }
+}
+
+impl<N: Clone> Clone for MatcherRouter<N> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
 macro_rules! impl_matcher_service_tuple {
     ($($T:ident),+ $(,)?) => {
         paste!{
             #[allow(non_camel_case_types)]
             #[allow(non_snake_case)]
-            impl<State, $([<M_ $T>], $T),+, S, Request, Response, Error> Service<State, Request> for ($(([<M_ $T>], $T)),+, S)
+            impl<State, $([<M_ $T>], $T),+, S, Request, Response, Error> Service<State, Request> for MatcherRouter<($(([<M_ $T>], $T)),+, S)>
             where
                 State: Clone + Send + Sync + 'static,
                 Request: Send + 'static,
@@ -186,7 +202,7 @@ macro_rules! impl_matcher_service_tuple {
                     mut ctx: Context<State>,
                     req: Request,
                 ) -> Result<Self::Response, Self::Error> {
-                    let ($(([<M_ $T>], $T)),+, S) = self;
+                    let ($(([<M_ $T>], $T)),+, S) = &self.0;
                     let mut ext = Extensions::new();
                     $(
                         if [<M_ $T>].matches(Some(&mut ext), &ctx, &req) {

@@ -1,7 +1,6 @@
 use crate::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
-use std::future::Future;
 
 /// Composes a function *in front of* the service.
 ///

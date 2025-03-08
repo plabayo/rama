@@ -46,7 +46,7 @@ async fn test_http_echo_secure() {
         .unwrap();
 
     // same http test as the plain text version
-    assert!(lines.contains("HTTP/1.1 200 OK"), "lines: {:?}", lines);
+    assert!(lines.contains("HTTP/2.0 200 OK"), "lines: {:?}", lines);
     assert!(lines.contains(r##""method":"POST""##), "lines: {:?}", lines);
     assert!(lines.contains(r##""foo","bar""##), "lines: {:?}", lines);
     assert!(

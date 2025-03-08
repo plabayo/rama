@@ -2,44 +2,14 @@ use super::WriterMode;
 use crate::dep::http_body;
 use crate::dep::http_body_util::BodyExt;
 use crate::io::write_http_request;
-use crate::{Body, Request, Response};
+use crate::{Body, Request};
 use bytes::Bytes;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::rt::Executor;
-use rama_core::{Context, Layer, Service};
-use rama_utils::macros::define_inner_service_accessors;
+use rama_core::{Context, Service};
 use std::fmt::Debug;
-use std::future::Future;
 use tokio::io::{AsyncWrite, AsyncWriteExt, stderr, stdout};
 use tokio::sync::mpsc::{Sender, UnboundedSender, channel, unbounded_channel};
-
-/// Layer that applies [`RequestWriterService`] which prints the http request in std format.
-pub struct RequestWriterLayer<W> {
-    writer: W,
-}
-
-impl<W> Debug for RequestWriterLayer<W> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RequestWriterLayer")
-            .field("writer", &format_args!("{}", std::any::type_name::<W>()))
-            .finish()
-    }
-}
-
-impl<W: Clone> Clone for RequestWriterLayer<W> {
-    fn clone(&self) -> Self {
-        Self {
-            writer: self.writer.clone(),
-        }
-    }
-}
-
-impl<W> RequestWriterLayer<W> {
-    /// Create a new [`RequestWriterLayer`] with a custom [`RequestWriter`].
-    pub const fn new(writer: W) -> Self {
-        Self { writer }
-    }
-}
 
 /// A trait for writing http requests.
 pub trait RequestWriter: Send + Sync + 'static {
@@ -59,8 +29,38 @@ impl DoNotWriteRequest {
     }
 }
 
-impl RequestWriterLayer<UnboundedSender<Request>> {
-    /// Create a new [`RequestWriterLayer`] that prints requests to an [`AsyncWrite`]r
+/// Middleware to print Http request in std format.
+///
+/// See the [module docs](super) for more details.
+pub struct RequestWriterInspector<W> {
+    writer: W,
+}
+
+impl<W> RequestWriterInspector<W> {
+    /// Create a new [`RequestWriterInspector`] with a custom [`RequestWriter`].
+    pub const fn new(writer: W) -> Self {
+        Self { writer }
+    }
+}
+
+impl<W> Debug for RequestWriterInspector<W> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RequestWriterInspector")
+            .field("writer", &format_args!("{}", std::any::type_name::<W>()))
+            .finish()
+    }
+}
+
+impl<W: Clone> Clone for RequestWriterInspector<W> {
+    fn clone(&self) -> Self {
+        Self {
+            writer: self.writer.clone(),
+        }
+    }
+}
+
+impl RequestWriterInspector<UnboundedSender<Request>> {
+    /// Create a new [`RequestWriterInspector`] that prints requests to an [`AsyncWrite`]r
     /// over an unbounded channel
     pub fn writer_unbounded<W>(executor: &Executor, mut writer: W, mode: Option<WriterMode>) -> Self
     where
@@ -88,21 +88,21 @@ impl RequestWriterLayer<UnboundedSender<Request>> {
         Self { writer: tx }
     }
 
-    /// Create a new [`RequestWriterLayer`] that prints requests to stdout
+    /// Create a new [`RequestWriterInspector`] that prints requests to stdout
     /// over an unbounded channel.
     pub fn stdout_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
         Self::writer_unbounded(executor, stdout(), mode)
     }
 
-    /// Create a new [`RequestWriterLayer`] that prints requests to stderr
+    /// Create a new [`RequestWriterInspector`] that prints requests to stderr
     /// over an unbounded channel.
     pub fn stderr_unbounded(executor: &Executor, mode: Option<WriterMode>) -> Self {
         Self::writer_unbounded(executor, stderr(), mode)
     }
 }
 
-impl RequestWriterLayer<Sender<Request>> {
-    /// Create a new [`RequestWriterLayer`] that prints requests to an [`AsyncWrite`]r
+impl RequestWriterInspector<Sender<Request>> {
+    /// Create a new [`RequestWriterInspector`] that prints requests to an [`AsyncWrite`]r
     /// over a bounded channel with a fixed buffer size.
     pub fn writer<W>(
         executor: &Executor,
@@ -135,152 +135,33 @@ impl RequestWriterLayer<Sender<Request>> {
         Self { writer: tx }
     }
 
-    /// Create a new [`RequestWriterLayer`] that prints requests to stdout
+    /// Create a new [`RequestWriterInspector`] that prints requests to stdout
     /// over a bounded channel with a fixed buffer size.
     pub fn stdout(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
         Self::writer(executor, stdout(), buffer_size, mode)
     }
 
-    /// Create a new [`RequestWriterLayer`] that prints requests to stderr
+    /// Create a new [`RequestWriterInspector`] that prints requests to stderr
     /// over a bounded channel with a fixed buffer size.
     pub fn stderr(executor: &Executor, buffer_size: usize, mode: Option<WriterMode>) -> Self {
         Self::writer(executor, stderr(), buffer_size, mode)
     }
 }
 
-impl<S, W: Clone> Layer<S> for RequestWriterLayer<W> {
-    type Service = RequestWriterService<S, W>;
-
-    fn layer(&self, inner: S) -> Self::Service {
-        RequestWriterService {
-            inner,
-            writer: self.writer.clone(),
-        }
-    }
-}
-
-/// Middleware to print Http request in std format.
-///
-/// See the [module docs](super) for more details.
-pub struct RequestWriterService<S, W> {
-    inner: S,
-    writer: W,
-}
-
-impl<S, W> RequestWriterService<S, W> {
-    /// Create a new [`RequestWriterService`] with a custom [`RequestWriter`].
-    pub const fn new(writer: W, inner: S) -> Self {
-        Self { inner, writer }
-    }
-
-    define_inner_service_accessors!();
-}
-
-impl<S: Debug, W> Debug for RequestWriterService<S, W> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("RequestWriterService")
-            .field("inner", &self.inner)
-            .field("writer", &format_args!("{}", std::any::type_name::<W>()))
-            .finish()
-    }
-}
-
-impl<S: Clone, W: Clone> Clone for RequestWriterService<S, W> {
-    fn clone(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-            writer: self.writer.clone(),
-        }
-    }
-}
-
-impl<S> RequestWriterService<S, UnboundedSender<Request>> {
-    /// Create a new [`RequestWriterService`] that prints requests to an [`AsyncWrite`]r
-    /// over an unbounded channel
-    pub fn writer_unbounded<W>(
-        executor: &Executor,
-        writer: W,
-        mode: Option<WriterMode>,
-        inner: S,
-    ) -> Self
-    where
-        W: AsyncWrite + Unpin + Send + Sync + 'static,
-    {
-        let layer = RequestWriterLayer::writer_unbounded(executor, writer, mode);
-        layer.layer(inner)
-    }
-
-    /// Create a new [`RequestWriterService`] that prints requests to stdout
-    /// over an unbounded channel.
-    pub fn stdout_unbounded(executor: &Executor, mode: Option<WriterMode>, inner: S) -> Self {
-        Self::writer_unbounded(executor, stdout(), mode, inner)
-    }
-
-    /// Create a new [`RequestWriterService`] that prints requests to stderr
-    /// over an unbounded channel.
-    pub fn stderr_unbounded(executor: &Executor, mode: Option<WriterMode>, inner: S) -> Self {
-        Self::writer_unbounded(executor, stderr(), mode, inner)
-    }
-}
-
-impl<S> RequestWriterService<S, Sender<Request>> {
-    /// Create a new [`RequestWriterService`] that prints requests to an [`AsyncWrite`]r
-    /// over a bounded channel with a fixed buffer size.
-    pub fn writer<W>(
-        executor: &Executor,
-        writer: W,
-        buffer_size: usize,
-        mode: Option<WriterMode>,
-        inner: S,
-    ) -> Self
-    where
-        W: AsyncWrite + Unpin + Send + Sync + 'static,
-    {
-        let layer = RequestWriterLayer::writer(executor, writer, buffer_size, mode);
-        layer.layer(inner)
-    }
-
-    /// Create a new [`RequestWriterService`] that prints requests to stdout
-    /// over a bounded channel with a fixed buffer size.
-    pub fn stdout(
-        executor: &Executor,
-        buffer_size: usize,
-        mode: Option<WriterMode>,
-        inner: S,
-    ) -> Self {
-        Self::writer(executor, stdout(), buffer_size, mode, inner)
-    }
-
-    /// Create a new [`RequestWriterService`] that prints requests to stderr
-    /// over a bounded channel with a fixed buffer size.
-    pub fn stderr(
-        executor: &Executor,
-        buffer_size: usize,
-        mode: Option<WriterMode>,
-        inner: S,
-    ) -> Self {
-        Self::writer(executor, stderr(), buffer_size, mode, inner)
-    }
-}
-
-impl<S, W> RequestWriterService<S, W> {}
-
-impl<State, S, W, ReqBody, ResBody> Service<State, Request<ReqBody>> for RequestWriterService<S, W>
+impl<State, W, ReqBody> Service<State, Request<ReqBody>> for RequestWriterInspector<W>
 where
     State: Clone + Send + Sync + 'static,
-    S: Service<State, Request, Response = Response<ResBody>, Error: Into<BoxError>>,
     W: RequestWriter,
     ReqBody: http_body::Body<Data = Bytes, Error: Into<BoxError>> + Send + Sync + 'static,
-    ResBody: Send + 'static,
 {
-    type Response = Response<ResBody>;
     type Error = BoxError;
+    type Response = (Context<State>, Request);
 
     async fn serve(
         &self,
         ctx: Context<State>,
         req: Request<ReqBody>,
-    ) -> Result<Self::Response, Self::Error> {
+    ) -> Result<(Context<State>, Request), Self::Error> {
         let req = match ctx.get::<DoNotWriteRequest>() {
             Some(_) => req.map(Body::new),
             None => {
@@ -298,7 +179,7 @@ where
                 Request::from_parts(parts, Body::from(body_bytes))
             }
         };
-        self.inner.serve(ctx, req).await.map_err(Into::into)
+        Ok((ctx, req))
     }
 }
 

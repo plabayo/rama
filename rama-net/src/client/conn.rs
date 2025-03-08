@@ -1,5 +1,5 @@
 use rama_core::{Context, Service, error::BoxError};
-use std::{fmt, future::Future};
+use std::fmt;
 
 /// The established connection to a server returned for the http client to be used.
 pub struct EstablishedClientConnection<S, State, Request> {

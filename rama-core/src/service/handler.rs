@@ -1,6 +1,6 @@
 //! `async fn(...)` as [`crate`].
 
-use std::{future::Future, marker::PhantomData};
+use std::marker::PhantomData;
 
 use crate::{Context, Service};
 

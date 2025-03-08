@@ -43,28 +43,31 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
-        client::HttpClient,
+        client::EasyHttpWebClient,
         layer::{
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
             required_header::AddRequiredRequestHeadersLayer,
             trace::TraceLayer,
-            traffic_writer::{self, RequestWriterLayer},
+            traffic_writer::{self, RequestWriterInspector},
             upgrade::{UpgradeLayer, Upgraded},
         },
         matcher::MethodMatcher,
         server::HttpServer,
     },
+    inspect::RequestInspectorLayer,
     layer::ConsumeErrLayer,
-    net::http::RequestContext,
-    net::stream::layer::http::BodyLimitLayer,
-    net::tls::{
-        ApplicationProtocol,
-        client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
-        server::{SelfSignedData, ServerAuth, ServerConfig},
+    net::{
+        http::RequestContext,
+        stream::layer::http::BodyLimitLayer,
+        tls::{
+            ApplicationProtocol,
+            client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
+            server::{SelfSignedData, ServerAuth, ServerConfig},
+        },
+        user::Basic,
     },
-    net::user::Basic,
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
@@ -199,7 +202,14 @@ fn new_http_mitm_proxy(
         AddRequiredRequestHeadersLayer::new(),
         // these layers are for example purposes only,
         // best not to print requests like this in production...
-        RequestWriterLayer::stdout_unbounded(exec, Some(traffic_writer::WriterMode::Headers)),
+        //
+        // If you want to see the request that actually is send to the server
+        // you also usually do not want it as a layer, but instead plug the inspector
+        // directly JIT-style into your http (client) connector.
+        RequestInspectorLayer::new(RequestWriterInspector::stdout_unbounded(
+            exec,
+            Some(traffic_writer::WriterMode::Headers),
+        )),
     )
         .layer(service_fn(http_mitm_proxy))
 }
@@ -210,7 +220,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 
     // NOTE: use a custom connector (layers) in case you wish to add custom features,
     // such as upstream proxies or other configurations
-    let mut client = HttpClient::default();
+    let mut client = EasyHttpWebClient::default();
     client.set_tls_config(ClientConfig {
         server_verify_mode: Some(ServerVerifyMode::Disable),
         extensions: Some(vec![

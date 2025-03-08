@@ -2,7 +2,7 @@ use rama::{
     combinators::Either,
     error::BoxError,
     http::layer::traffic_writer::{
-        BidirectionalMessage, BidirectionalWriter, RequestWriterLayer, ResponseWriterLayer,
+        BidirectionalMessage, BidirectionalWriter, RequestWriterInspector, ResponseWriterLayer,
         WriterMode,
     },
     rt::Executor,
@@ -24,7 +24,7 @@ pub(super) async fn create_traffic_writers(
     response_mode: Option<WriterMode>,
 ) -> Result<
     (
-        RequestWriterLayer<BidirectionalWriter<Sender<BidirectionalMessage>>>,
+        RequestWriterInspector<BidirectionalWriter<Sender<BidirectionalMessage>>>,
         ResponseWriterLayer<BidirectionalWriter<Sender<BidirectionalMessage>>>,
     ),
     BoxError,
@@ -47,7 +47,7 @@ pub(super) async fn create_traffic_writers(
     };
 
     Ok((
-        RequestWriterLayer::new(bidirectional_writer.clone()),
+        RequestWriterInspector::new(bidirectional_writer.clone()),
         ResponseWriterLayer::new(bidirectional_writer),
     ))
 }

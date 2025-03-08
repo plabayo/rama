@@ -1,5 +1,4 @@
 use std::{
-    future::Future,
     marker::{PhantomData, Unpin},
     pin::Pin,
     task::{Context, Poll},

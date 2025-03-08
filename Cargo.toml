@@ -87,7 +87,7 @@ opentelemetry-semantic-conventions = { version = "0.28", features = [
 ] }
 quickcheck = "1.0"
 quote = "1.0"
-rcgen = "0.13.0"
+rcgen = { version = "0.13.2", default-features = false, features = ["pem", "aws_lc_rs"] }
 regex = "1.10.3"
 rustls = { version = "0.23", default-features = false, features = [
     "logging",

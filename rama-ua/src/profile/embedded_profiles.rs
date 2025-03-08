@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use rama_http_types::proto::h1::Http1HeaderMap;
 use serde::Deserialize;
 
@@ -17,7 +19,7 @@ pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: HttpProfile {
-                h1: Http1Profile {
+                h1: Arc::new(Http1Profile {
                     settings: row.h1_settings?,
                     headers: HttpHeadersProfile {
                         navigate: row.h1_headers_navigate?,
@@ -25,8 +27,8 @@ pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
                         xhr: row.h1_headers_xhr,
                         form: row.h1_headers_form,
                     },
-                },
-                h2: Http2Profile {
+                }),
+                h2: Arc::new(Http2Profile {
                     settings: row.h2_settings?,
                     headers: HttpHeadersProfile {
                         navigate: row.h2_headers_navigate?,
@@ -34,7 +36,7 @@ pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
                         xhr: row.h2_headers_xhr,
                         form: row.h2_headers_form,
                     },
-                },
+                }),
             },
             #[cfg(feature = "tls")]
             tls: TlsProfile {

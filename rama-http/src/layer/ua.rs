@@ -41,10 +41,7 @@ use crate::{
 };
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{
-    fmt::{self, Debug},
-    future::Future,
-};
+use std::fmt::{self, Debug};
 
 pub use rama_ua::{
     DeviceKind, HttpAgent, PlatformKind, TlsAgent, UserAgent, UserAgentInfo, UserAgentKind,
@@ -148,15 +145,6 @@ where
                 if let Some(tls_agent) = overwrites.tls {
                     ua.set_tls_agent(tls_agent);
                 }
-                if let Some(preserve_ua) = overwrites.preserve_ua {
-                    ua.set_preserve_ua_header(preserve_ua);
-                }
-                if let Some(req_init) = overwrites.req_init {
-                    ua.set_request_initiator(req_init);
-                }
-                if let Some(req_client_hints) = overwrites.req_client_hints {
-                    ua.set_requested_client_hints(req_client_hints);
-                }
             }
 
             ctx.insert(ua);
@@ -211,11 +199,8 @@ mod tests {
     use crate::layer::required_header::AddRequiredRequestHeadersLayer;
     use crate::service::client::HttpClientExt;
     use crate::{IntoResponse, Response, StatusCode, headers};
-    use itertools::Itertools;
     use rama_core::Context;
     use rama_core::service::service_fn;
-    use rama_http_types::headers::ClientHint;
-    use rama_ua::RequestInitiator;
     use std::convert::Infallible;
 
     #[tokio::test]
@@ -258,8 +243,6 @@ mod tests {
             assert_eq!(ua.platform(), Some(PlatformKind::IOS));
             assert_eq!(ua.http_agent(), None);
             assert_eq!(ua.tls_agent(), None);
-            assert!(!ua.preserve_ua_header());
-            assert!(ua.request_initiator().is_none());
 
             Ok(StatusCode::OK.into_response())
         }
@@ -312,10 +295,6 @@ mod tests {
             assert_eq!(ua_info.kind, UserAgentKind::Chromium);
             assert_eq!(ua_info.version, Some(124));
             assert_eq!(ua.platform(), Some(PlatformKind::Windows));
-            assert_eq!(
-                ua.requested_client_hints().join(", "),
-                "sec-ch-downlink, sec-ch-ect"
-            );
 
             Ok(StatusCode::OK.into_response())
         }
@@ -330,7 +309,6 @@ mod tests {
                 "x-proxy-ua",
                 serde_html_form::to_string(&UserAgentOverwrites {
                     ua: Some(UA.to_owned()),
-                    req_client_hints: Some(vec![ClientHint::Downlink, ClientHint::Ect]),
                     ..Default::default()
                 })
                 .unwrap(),
@@ -352,8 +330,6 @@ mod tests {
             assert_eq!(ua.platform(), Some(PlatformKind::IOS));
             assert_eq!(ua.http_agent(), Some(HttpAgent::Firefox));
             assert_eq!(ua.tls_agent(), Some(TlsAgent::Boringssl));
-            assert!(ua.preserve_ua_header());
-            assert_eq!(ua.request_initiator(), Some(RequestInitiator::Xhr));
 
             Ok(StatusCode::OK.into_response())
         }
@@ -370,9 +346,6 @@ mod tests {
                     ua: Some(UA.to_owned()),
                     http: Some(HttpAgent::Firefox),
                     tls: Some(TlsAgent::Boringssl),
-                    preserve_ua: Some(true),
-                    req_init: Some(RequestInitiator::Xhr),
-                    req_client_hints: Some(vec![ClientHint::Downlink]),
                 })
                 .unwrap(),
             )

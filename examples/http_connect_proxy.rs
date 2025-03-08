@@ -61,7 +61,7 @@ use rama::{
     context::Extensions,
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
-        client::HttpClient,
+        client::EasyHttpWebClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
             remove_header::{RemoveRequestHeaderLayer, RemoveResponseHeaderLayer},
@@ -212,7 +212,7 @@ async fn http_plain_proxy<S>(ctx: Context<S>, req: Request) -> Result<Response, 
 where
     S: Clone + Send + Sync + 'static,
 {
-    let client = HttpClient::default();
+    let client = EasyHttpWebClient::default();
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {

@@ -9,7 +9,7 @@ use rama::{
     http::{
         IntoResponse, Request, Response, StatusCode,
         client::{
-            HttpClient,
+            EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         layer::{
@@ -32,7 +32,10 @@ use rama::{
     },
     rt::Executor,
     service::service_fn,
-    ua::{UserAgentDatabase, UserAgentEmulateLayer, UserAgentSelectFallback},
+    ua::{
+        UserAgentDatabase, UserAgentEmulateHttpConnectModifier,
+        UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer, UserAgentSelectFallback,
+    },
 };
 use std::{io::IsTerminal, sync::Arc, time::Duration};
 use terminal_prompt::Terminal;
@@ -344,7 +347,12 @@ where
     )
     .await?;
 
-    let mut inner_client = HttpClient::default();
+    let mut inner_client = EasyHttpWebClient::default()
+        .with_http_conn_req_inspector(UserAgentEmulateHttpConnectModifier::default())
+        .with_http_serve_req_inspector((
+            UserAgentEmulateHttpRequestModifier::default(),
+            request_writer,
+        ));
 
     let server_verify_mode = if cfg.insecure {
         Some(ServerVerifyMode::Disable)
@@ -352,7 +360,6 @@ where
         None
     };
 
-    // TODO: get these somehow merged?
     inner_client.set_tls_config(ClientConfig {
         server_verify_mode,
         extensions: Some(vec![
@@ -414,7 +421,6 @@ where
             })
             .unwrap_or_else(AddAuthorizationLayer::none),
         AddRequiredRequestHeadersLayer::default(),
-        request_writer,
         match cfg.proxy {
             None => HttpProxyAddressLayer::try_from_env_default()?,
             Some(proxy) => {

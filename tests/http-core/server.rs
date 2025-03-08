@@ -3112,7 +3112,7 @@ impl Service<(), Request> for TestService {
         &self,
         _ctx: rama::Context<()>,
         mut req: Request,
-    ) -> impl std::future::Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let tx = self.tx.clone();
         let trailers_tx = self.trailers_tx.clone();
         let replies = self.reply.clone();
@@ -3186,7 +3186,7 @@ impl Service<(), Request> for HelloWorld {
         &self,
         _ctx: rama::Context<()>,
         _req: Request,
-    ) -> impl std::future::Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
+    ) -> impl Future<Output = Result<Self::Response, Self::Error>> + Send + '_ {
         let response = Response::new(rama::http::Body::from(HELLO));
         future::ok(response)
     }

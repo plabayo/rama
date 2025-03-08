@@ -8,7 +8,6 @@ use super::{Policy, PolicyResult, RetryBody};
 use crate::{Request, Response};
 use rama_core::Context;
 use rama_utils::backoff::Backoff;
-use std::future::Future;
 
 #[derive(Debug, Clone, Default)]
 /// An [`Extensions`] value that can be added to the [`Context`]

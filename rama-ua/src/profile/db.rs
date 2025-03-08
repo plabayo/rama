@@ -185,6 +185,7 @@ impl FromIterator<UserAgentProfile> for UserAgentDatabase {
     fn from_iter<T: IntoIterator<Item = UserAgentProfile>>(iter: T) -> Self {
         let iter = iter.into_iter();
         let (lb, _) = iter.size_hint();
+        assert!(lb < usize::MAX);
 
         let mut db = UserAgentDatabase {
             profiles: Vec::with_capacity(lb),
@@ -201,6 +202,8 @@ impl FromIterator<UserAgentProfile> for UserAgentDatabase {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use rama_http_types::{HeaderValue, header::USER_AGENT, proto::h1::Http1HeaderMap};
 
     use super::*;
@@ -403,7 +406,7 @@ mod tests {
             ua_version: ua.ua_version(),
             platform: ua.platform(),
             http: crate::HttpProfile {
-                h1: crate::Http1Profile {
+                h1: Arc::new(crate::Http1Profile {
                     headers: crate::HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
@@ -416,8 +419,8 @@ mod tests {
                         form: None,
                     },
                     settings: crate::Http1Settings::default(),
-                },
-                h2: crate::Http2Profile {
+                }),
+                h2: Arc::new(crate::Http2Profile {
                     headers: crate::HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
@@ -430,7 +433,7 @@ mod tests {
                         form: None,
                     },
                     settings: crate::Http2Settings::default(),
-                },
+                }),
             },
             #[cfg(feature = "tls")]
             tls: crate::TlsProfile {

@@ -133,7 +133,6 @@ pub use crate::h2::share::{FlowControl, Ping, PingPong, Pong, RecvStream, SendSt
 #[cfg(feature = "unstable")]
 pub use codec::{Codec, SendError, UserError};
 
-use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 

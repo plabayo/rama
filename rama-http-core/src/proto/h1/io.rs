@@ -315,7 +315,7 @@ where
     }
 
     #[cfg(test)]
-    fn flush(&mut self) -> impl std::future::Future<Output = io::Result<()>> + '_ {
+    fn flush(&mut self) -> impl Future<Output = io::Result<()>> + '_ {
         std::future::poll_fn(move |cx| self.poll_flush(cx))
     }
 }

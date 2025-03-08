@@ -16,7 +16,7 @@ use rama::{
     Context, Layer, Service,
     http::{
         Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode,
-        client::HttpClient,
+        client::EasyHttpWebClient,
         headers::{Accept, Authorization, HeaderMapExt, authorization::Basic},
         layer::{
             auth::{AddAuthorizationLayer, AsyncRequireAuthorizationLayer},
@@ -79,7 +79,7 @@ async fn main() {
             ),
         ),
     )
-        .layer(HttpClient::default());
+        .layer(EasyHttpWebClient::default());
 
     //--------------------------------------------------------------------------------
     // Low Level (Regular) http client (stack) service example.

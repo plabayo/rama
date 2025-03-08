@@ -3,7 +3,6 @@ use rama_core::{
     Context, Service,
     error::{BoxError, ErrorExt, OpaqueError},
 };
-use std::future::Future;
 
 /// Extends an Http Client with high level features,
 /// to facilitate the creation and sending of http requests,

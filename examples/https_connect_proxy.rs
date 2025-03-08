@@ -28,7 +28,7 @@ use rama::{
     graceful::Shutdown,
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
-        client::HttpClient,
+        client::EasyHttpWebClient,
         layer::{
             proxy_auth::ProxyAuthLayer,
             trace::TraceLayer,
@@ -176,7 +176,7 @@ async fn http_plain_proxy<S>(ctx: Context<S>, req: Request) -> Result<Response, 
 where
     S: Clone + Send + Sync + 'static,
 {
-    let client = HttpClient::default();
+    let client = EasyHttpWebClient::default();
     let uri = req.uri().clone();
     tracing::debug!(uri = %req.uri(), "proxy connect plain text request");
     match client.serve(ctx, req).await {

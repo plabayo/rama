@@ -1,7 +1,6 @@
 //! Http1 or Http2 connection.
 
 use futures_util::ready;
-use std::future::Future;
 use std::marker::PhantomPinned;
 use std::mem::MaybeUninit;
 use std::pin::Pin;

@@ -1,6 +1,5 @@
 use crate::{Body, IntoResponse, Request, Response, matcher::HttpMatcher};
 use rama_core::{Context, Layer, Service, layer::MapResponseLayer, service::BoxService};
-use std::future::Future;
 use std::{convert::Infallible, fmt};
 
 pub mod extract;

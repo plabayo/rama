@@ -1,7 +1,7 @@
 use rama_core::Context;
 use rama_core::error::BoxError;
 use std::fmt;
-use std::{convert::Infallible, future::Future, sync::Arc};
+use std::{convert::Infallible, sync::Arc};
 
 use crate::client::TcpStreamConnector;
 
