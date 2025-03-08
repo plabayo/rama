@@ -1,5 +1,6 @@
 use super::HttpProxyConnector;
 use rama_core::Layer;
+use rama_http_types::Version;
 
 #[derive(Debug, Clone, Default)]
 /// A [`Layer`] which wraps the given service with a [`HttpProxyConnector`].
@@ -7,6 +8,7 @@ use rama_core::Layer;
 /// See [`HttpProxyConnector`] for more information.
 pub struct HttpProxyConnectorLayer {
     required: bool,
+    version: Option<Version>,
 }
 
 impl HttpProxyConnectorLayer {
@@ -17,7 +19,10 @@ impl HttpProxyConnectorLayer {
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn optional() -> Self {
-        Self { required: false }
+        Self {
+            required: false,
+            version: Some(Version::HTTP_11),
+        }
     }
 
     /// Create a new [`HttpProxyConnectorLayer`] which creates a [`HttpProxyConnector`]
@@ -27,7 +32,36 @@ impl HttpProxyConnectorLayer {
     /// [`Context`]: rama_core::Context
     /// [`ProxyAddress`]: rama_net::address::ProxyAddress
     pub fn required() -> Self {
-        Self { required: true }
+        Self {
+            required: true,
+            version: Some(Version::HTTP_11),
+        }
+    }
+
+    /// Set the HTTP version to use for the CONNECT request.
+    ///
+    /// By default, this is auto detected.
+    pub fn with_version(mut self, version: Version) -> Self {
+        self.version = Some(version);
+        self
+    }
+
+    /// Set the HTTP version to use for the CONNECT request.
+    pub fn set_version(&mut self, version: Version) -> &mut Self {
+        self.version = Some(version);
+        self
+    }
+
+    /// Set the HTTP version to auto detect for the CONNECT request.
+    pub fn with_auto_version(mut self) -> Self {
+        self.version = None;
+        self
+    }
+
+    /// Set the HTTP version to auto detect for the CONNECT request.
+    pub fn set_auto_version(&mut self) -> &mut Self {
+        self.version = None;
+        self
     }
 }
 
@@ -35,6 +69,11 @@ impl<S> Layer<S> for HttpProxyConnectorLayer {
     type Service = HttpProxyConnector<S>;
 
     fn layer(&self, inner: S) -> Self::Service {
-        HttpProxyConnector::new(inner, self.required)
+        let mut svc = HttpProxyConnector::new(inner, self.required);
+        match self.version {
+            Some(version) => svc.set_version(version),
+            None => svc.set_auto_version(),
+        };
+        svc
     }
 }

@@ -7,7 +7,7 @@ use rama_core::{
     error::{BoxError, ErrorExt, OpaqueError},
 };
 use rama_http_core::upgrade;
-use rama_http_types::headers::ProxyAuthorization;
+use rama_http_types::{Version, headers::ProxyAuthorization};
 use rama_net::{
     address::ProxyAddress,
     client::{ConnectorService, EstablishedClientConnection},
@@ -26,6 +26,7 @@ use rama_net::tls::TlsTunnel;
 /// This behaviour is optional and only triggered in case there
 /// is a [`ProxyAddress`] found in the [`Context`].
 pub struct HttpProxyConnector<S> {
+    version: Option<Version>,
     inner: S,
     required: bool,
 }
@@ -42,6 +43,7 @@ impl<S: fmt::Debug> fmt::Debug for HttpProxyConnector<S> {
 impl<S: Clone> Clone for HttpProxyConnector<S> {
     fn clone(&self) -> Self {
         Self {
+            version: self.version,
             inner: self.inner.clone(),
             required: self.required,
         }
@@ -50,8 +52,42 @@ impl<S: Clone> Clone for HttpProxyConnector<S> {
 
 impl<S> HttpProxyConnector<S> {
     /// Creates a new [`HttpProxyConnector`].
+    ///
+    /// Protocol version is set to HTTP/1.1 by default.
     pub(super) fn new(inner: S, required: bool) -> Self {
-        Self { inner, required }
+        Self {
+            inner,
+            required,
+            version: Some(Version::HTTP_11),
+        }
+    }
+
+    /// Set the HTTP version to use for the CONNECT request.
+    ///
+    /// By default, this is auto detected.
+    #[allow(dead_code)]
+    pub(super) fn with_version(mut self, version: Version) -> Self {
+        self.version = Some(version);
+        self
+    }
+
+    /// Set the HTTP version to use for the CONNECT request.
+    pub(super) fn set_version(&mut self, version: Version) -> &mut Self {
+        self.version = Some(version);
+        self
+    }
+
+    /// Set the HTTP version to auto detect for the CONNECT request.
+    #[allow(dead_code)]
+    pub(super) fn with_auto_version(mut self) -> Self {
+        self.version = None;
+        self
+    }
+
+    /// Set the HTTP version to auto detect for the CONNECT request.
+    pub(super) fn set_auto_version(&mut self) -> &mut Self {
+        self.version = None;
+        self
     }
 
     /// Create a new [`HttpProxyConnector`]
@@ -182,6 +218,10 @@ where
         }
 
         let mut connector = InnerHttpProxyConnector::new(transport_ctx.authority.clone())?;
+        match self.version {
+            Some(version) => connector.set_version(version),
+            None => connector.set_auto_version(),
+        };
 
         if let Some(credential) = address.credential.clone() {
             match credential {

@@ -2,8 +2,13 @@
 //!
 //! As defined in <https://www.ietf.org/rfc/rfc2068.txt>.
 
+use super::HttpProxyError;
 use rama_core::error::{ErrorContext, OpaqueError};
-use rama_http_core::{client::conn::http1, upgrade};
+use rama_core::rt::Executor;
+use rama_http_core::body::Incoming;
+use rama_http_core::client::conn::{http1, http2};
+use rama_http_core::upgrade;
+use rama_http_types::Response;
 use rama_http_types::{
     Body, HeaderName, HeaderValue, Method, Request, StatusCode, Version,
     header::{HOST, USER_AGENT},
@@ -11,14 +16,13 @@ use rama_http_types::{
 };
 use rama_net::{address::Authority, stream::Stream};
 
-use super::HttpProxyError;
-
 #[derive(Debug)]
 /// Connector for HTTP proxies.
 ///
 /// Used to connect as a client to a HTTP proxy server.
 pub(super) struct InnerHttpProxyConnector {
     req: Request,
+    version: Option<Version>,
 }
 
 impl InnerHttpProxyConnector {
@@ -43,7 +47,20 @@ impl InnerHttpProxyConnector {
             .body(Body::empty())
             .context("build http request")?;
 
-        Ok(Self { req })
+        Ok(Self {
+            req,
+            version: Some(Version::HTTP_11),
+        })
+    }
+
+    pub(super) fn set_version(&mut self, version: Version) -> &mut Self {
+        self.version = Some(version);
+        self
+    }
+
+    pub(super) fn set_auto_version(&mut self) -> &mut Self {
+        self.version = None;
+        self
     }
 
     #[expect(unused)]
@@ -64,6 +81,45 @@ impl InnerHttpProxyConnector {
         self,
         stream: S,
     ) -> Result<upgrade::Upgraded, HttpProxyError> {
+        let response = match self.version {
+            Some(Version::HTTP_10 | Version::HTTP_11) => {
+                Self::handshake_h1(self.req, stream).await?
+            }
+            Some(Version::HTTP_2) => Self::handshake_h2(self.req, stream).await?,
+            None => match self.req.version() {
+                Version::HTTP_10 | Version::HTTP_11 => Self::handshake_h1(self.req, stream).await?,
+                Version::HTTP_2 => Self::handshake_h2(self.req, stream).await?,
+                version => {
+                    return Err(HttpProxyError::Other(format!(
+                        "invalid http version: {:?}",
+                        version,
+                    )));
+                }
+            },
+            version => {
+                return Err(HttpProxyError::Other(format!(
+                    "invalid http version: {:?}",
+                    version,
+                )));
+            }
+        };
+
+        match response.status() {
+            StatusCode::OK => upgrade::on(response)
+                .await
+                .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed())),
+            StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(HttpProxyError::AuthRequired),
+            StatusCode::SERVICE_UNAVAILABLE => Err(HttpProxyError::Unavailable),
+            status => Err(HttpProxyError::Other(format!(
+                "invalid http proxy conn handshake: status={status}",
+            ))),
+        }
+    }
+
+    async fn handshake_h1<S: Stream + Unpin>(
+        req: Request,
+        stream: S,
+    ) -> Result<Response<Incoming>, HttpProxyError> {
         let (tx, conn) = http1::Builder::default()
             .ignore_invalid_headers(true)
             .handshake(stream)
@@ -76,20 +132,28 @@ impl InnerHttpProxyConnector {
             }
         });
 
-        let response = tx
-            .send_request(self.req)
+        tx.send_request(req)
             .await
-            .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed()))?;
+            .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed()))
+    }
 
-        match response.status() {
-            StatusCode::OK => upgrade::on(response)
-                .await
-                .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed())),
-            StatusCode::PROXY_AUTHENTICATION_REQUIRED => Err(HttpProxyError::AuthRequired),
-            StatusCode::SERVICE_UNAVAILABLE => Err(HttpProxyError::Unavailable),
-            status => Err(HttpProxyError::Other(format!(
-                "invalid http proxy conn handshake: status={status}",
-            ))),
-        }
+    async fn handshake_h2<S: Stream + Unpin>(
+        req: Request,
+        stream: S,
+    ) -> Result<Response<Incoming>, HttpProxyError> {
+        let (tx, conn) = http2::Builder::new(Executor::new())
+            .handshake(stream)
+            .await
+            .map_err(|err| HttpProxyError::Transport(err.into()))?;
+
+        tokio::spawn(async move {
+            if let Err(err) = conn.await {
+                tracing::debug!(?err, "http2 proxy client conn failed");
+            }
+        });
+
+        tx.send_request(req)
+            .await
+            .map_err(|err| HttpProxyError::Transport(OpaqueError::from_std(err).into_boxed()))
     }
 }
