@@ -14,6 +14,7 @@ members = [
     "rama-http-core/tests/h2-support",
     "rama-http-types",
     "rama-macros",
+    "rama-macros/tests/macros",
     "rama-net",
     "rama-proxy",
     "rama-socks5",

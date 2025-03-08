@@ -6,8 +6,11 @@ authors = [
     "David Tolnay <dtolnay@gmail.com>",
     "Glen Henri J. De Cauwsemaecker <glen@plabayo.tech>",
 ]
-edition = "2021"
+edition = "2024"
 publish = false
+
+[lint]
+workspace = true
 
 [lib]
 path = "lib.rs"
