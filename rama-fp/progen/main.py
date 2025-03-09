@@ -38,12 +38,20 @@ def main():
                     for row in rows:
                         profile = {}
                         for i, col_name in enumerate(column_names):
-                            profile[col_name] = row[i]
-                        profiles.append(profile)
+                            if col_name == "updated_at":
+                                if row[i]:
+                                    profile[col_name] = row[i].strftime("%Y-%m-%d %H:%M:%S")
+                                else:
+                                    profile = None
+                                    break
+                            else:
+                                profile[col_name] = row[i]
+                        if profile:
+                            profiles.append(profile)
 
                     f.write(json.dumps(profiles))
 
-                print(f"Total profiles: {len(rows)}")
+                print(f"Total profiles: {len(profiles)}")
 
     except Exception as e:
         print(f"Error connecting to database: {e}")
