@@ -5,6 +5,16 @@ use std::collections::HashMap;
 use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, profile::UserAgentProfile};
 
 #[derive(Debug, Default)]
+/// Reference implementation of a [`UserAgentProvider`].
+///
+/// It stores the profiles and several indices in memory
+/// to quickly find a profile by User-Agent header value string,
+/// [`UserAgentKind`], [`PlatformKind`] and [`DeviceKind`].
+/// Where needed it makes use of market share data to select a random profile or subset.
+///
+/// See [`UserAgentProvider`] for more details.
+///
+/// [`UserAgentProvider`]: crate::emulate::UserAgentProvider
 pub struct UserAgentDatabase {
     profiles: Vec<UserAgentProfile>,
 
@@ -26,23 +36,28 @@ impl UserAgentDatabase {
     }
 
     #[inline]
+    /// Get the number of profiles in the database.
     pub fn len(&self) -> usize {
         self.profiles.len()
     }
 
     #[inline]
+    /// Check if the database is empty.
     pub fn is_empty(&self) -> bool {
         self.profiles.is_empty()
     }
 
+    /// Iterate over the User-Agent header value strings in the database.
     pub fn iter_ua_str(&self) -> impl Iterator<Item = &str> {
         self.map_ua_string.keys().map(|s| s.as_str())
     }
 
+    /// Iterate over the available [`UserAgentKind`]s in the database.
     pub fn iter_ua_kind(&self) -> impl Iterator<Item = &UserAgentKind> {
         self.map_ua_kind.keys()
     }
 
+    /// Iterate over the available [`PlatformKind`]s in the database.
     pub fn iter_platform(&self) -> impl Iterator<Item = &PlatformKind> {
         self.map_platform
             .keys()
@@ -50,10 +65,14 @@ impl UserAgentDatabase {
             .dedup()
     }
 
+    /// Iterate over the available [`DeviceKind`]s in the database.
     pub fn iter_device(&self) -> impl Iterator<Item = &DeviceKind> {
         self.map_device.keys().map(|(_, device)| device).dedup()
     }
 
+    /// Insert a new [`UserAgentProfile`] into the database,
+    /// ensuring to also index it by User-Agent header value string,
+    /// [`UserAgentKind`], [`PlatformKind`] and [`DeviceKind`].
     pub fn insert(&mut self, profile: UserAgentProfile) {
         let index = self.profiles.len();
         if let Some(ua_header) = profile.ua_str() {
@@ -79,6 +98,9 @@ impl UserAgentDatabase {
         self.profiles.push(profile);
     }
 
+    /// Select a random [`UserAgentProfile`] from the database.
+    ///
+    /// It makes use of global market share data to select a random profile.
     pub fn rnd(&self) -> Option<&UserAgentProfile> {
         let ua_kind = self.market_rnd_ua_kind();
         self.map_ua_kind
@@ -87,6 +109,11 @@ impl UserAgentDatabase {
             .and_then(|idx| self.profiles.get(*idx))
     }
 
+    /// Get a [`UserAgentProfile`] from the database by [`UserAgent`].
+    ///
+    /// It first tries to find the profile by User-Agent header value string,
+    /// if not found it then makes use of [`UserAgentKind`], [`PlatformKind`] and [`DeviceKind`]
+    /// to find a profile.
     pub fn get(&self, ua: &UserAgent) -> Option<&UserAgentProfile> {
         if let Some(profile) = self
             .map_ua_string
@@ -160,6 +187,7 @@ impl UserAgentDatabase {
     }
 
     #[inline]
+    /// Iterate over all [`UserAgentProfile`]s in the database.
     pub fn iter(&self) -> impl Iterator<Item = &UserAgentProfile> {
         self.profiles.iter()
     }

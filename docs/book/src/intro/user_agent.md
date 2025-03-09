@@ -45,3 +45,52 @@ Rama's UA emulation capabilities are powered by [its automated fingerprinting se
 > Feel free to make use of while crafting distorted http requests,
 > but please do so with moderation. In case you have ideas on how to improve
 > the service, please let us know [by opening an issue](https://github.com/plabayo/rama/issues).
+
+## User Agent Emulation
+
+Rama provides comprehensive user-agent emulation capabilities across multiple layers:
+
+### Multi-layer Emulation
+
+1. **HTTP Layer**: Rama can emulate HTTP request headers, including User-Agent strings, Accept headers, and other browser-specific headers that websites use for fingerprinting.
+
+2. **TLS Layer**: The TLS handshake contains significant fingerprinting information. Rama can emulate specific TLS client configurations, including cipher suites, extensions, and other TLS parameters that browsers expose.
+
+3. **JavaScript Layer**: Rama provides basic information that can be used to emulate JavaScript environment properties like `navigator` object values, screen dimensions, and other Web API surface details that websites check.
+
+### Technical Implementation
+
+Rama implements user-agent emulation through a profile-based system:
+
+- [`UserAgentProfile`](https://ramaproxy.org/docs/rama/ua/profile/struct.UserAgentProfile.html) - The main profile container that includes:
+  - [`HttpProfile`](https://ramaproxy.org/docs/rama/ua/profile/struct.HttpProfile.html) - HTTP headers and settings for different request types (navigate, form, XHR, fetch)
+  - [`TlsProfile`](https://ramaproxy.org/docs/rama/ua/profile/struct.TlsProfile.html) - TLS client configuration including cipher suites and extensions
+  - [`JsProfile`](https://ramaproxy.org/docs/rama/ua/profile/struct.JsProfile.html) - JavaScript environment properties
+
+These profiles can be applied to outgoing requests using middleware services:
+
+- [`UserAgentEmulateService`](https://ramaproxy.org/docs/rama/ua/emulate/struct.UserAgentEmulateService.html) - A service that applies the emulation profile to requests
+- [`UserAgentEmulateHttpRequestModifier`](https://ramaproxy.org/docs/rama/ua/emulate/struct.UserAgentEmulateHttpRequestModifier.html) - Modifies HTTP requests based on the profile
+
+Rama includes a database of pre-configured profiles for common browsers and platforms, making it easy to emulate specific user-agents without manual configuration. These profiles are generated from real browser fingerprints collected through Rama's fingerprinting service.
+
+The emulation can be applied selectively based on request context, allowing for sophisticated emulation strategies that can adapt to different scenarios or rotate between multiple profiles to avoid detection.
+
+### Embedded Profile Data
+
+Rama includes an `embed-profiles` feature flag that, when enabled, embeds a collection of pre-configured user agent profiles directly into the binary. This eliminates the need for external profile files and ensures that Rama has immediate access to a variety of emulation profiles.
+
+The embedded profiles are stored in the source file at [`rama-ua/src/profile/embed_profiles.json`](https://raw.githubusercontent.com/plabayo/rama/refs/heads/main/rama-ua/src/profile/embed_profiles.json) and include detailed fingerprinting data for various browsers and platforms. This JSON file contains:
+
+- Multiple browser profiles (Chrome, Firefox, Safari, Edge, etc.)
+- Different versions of each browser
+- Various operating system combinations (Windows, macOS, Linux, Android, iOS)
+- Complete HTTP header sets for different request types (navigate, form, XHR, fetch)
+- TLS configuration details including cipher suites and extensions
+- JavaScript environment properties that match real browser implementations
+
+These embedded profiles correspond directly to the profile structure described above, with each entry containing the full `UserAgentProfile` data including HTTP, TLS, and JavaScript components. The profiles are generated from real browser fingerprints collected through Rama's fingerprinting service, ensuring they accurately reflect actual browser behavior.
+
+Using the `embed-profiles` feature allows applications to immediately start with realistic browser emulation without any additional setup, making it ideal for applications that need to maintain a low profile or operate in environments where external files might be difficult to manage.
+
+To enable this feature, simply include the `embed-profiles` feature when adding Rama to your project.

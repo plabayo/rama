@@ -4,7 +4,6 @@
 //!
 //! Learn more about User Agents (UA) and why Rama supports it
 //! at <https://ramaproxy.org/book/intro/user_agent.html>.
-//!
 
 mod provider;
 pub use provider::{SelectedUserAgentProfile, UserAgentProvider, UserAgentSelectFallback};

@@ -51,11 +51,35 @@ impl From<&UserAgentProfile> for SelectedUserAgentProfile {
 /// given those all satisfy the abscence of filters.
 pub enum UserAgentSelectFallback {
     #[default]
+    /// Abort the request if no profile is found.
     Abort,
+    /// Select a random profile if no profile is found.
     Random,
 }
 
+/// A trait for providing user agent profiles for emulation.
+///
+/// This trait is used to select a user agent profile based on the current context.
+/// It's a core component of the user agent emulation system, allowing different
+/// strategies for selecting which user agent profile to use for a request.
+///
+/// Rama provides several built-in implementations:
+/// - [`()`]: Always returns `None`, effectively disabling user agent emulation
+/// - [`UserAgentProfile`]: Always returns the same profile
+/// - [`UserAgentDatabase`]: Selects a profile based on the [`UserAgent`] in the context,
+///   or falls back to a random profile if configured with [`UserAgentSelectFallback::Random`]
+/// - [`Option<P>`]: Delegates to the inner provider if `Some`, otherwise returns `None`
+///
+/// This trait is typically used by [`UserAgentEmulateService`] to select an appropriate
+/// user agent profile for HTTP request emulation.
+///
+/// [`UserAgentProfile`]: crate::profile::UserAgentProfile
+/// [`UserAgentDatabase`]: crate::profile::UserAgentDatabase
+/// [`UserAgent`]: crate::UserAgent
+/// [`UserAgentSelectFallback::Random`]: UserAgentSelectFallback::Random
+/// [`UserAgentEmulateService`]: crate::emulate::UserAgentEmulateService
 pub trait UserAgentProvider<State>: Send + Sync + 'static {
+    /// Selects a user agent profile based on the current context.
     fn select_user_agent_profile(&self, ctx: &Context<State>) -> Option<&UserAgentProfile>;
 }
 

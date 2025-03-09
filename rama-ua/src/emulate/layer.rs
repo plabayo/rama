@@ -5,6 +5,15 @@ use rama_http_types::HeaderName;
 
 use super::UserAgentSelectFallback;
 
+/// A layer that emulates a user agent profile.
+///
+/// See [`UserAgentEmulateService`] for more details.
+///
+/// This layer is used to emulate a user agent profile for a request.
+/// It makes use of a [`UserAgentProvider`] (`P`) to select a user agent profile.
+///
+/// [`UserAgentProvider`]: crate::emulate::UserAgentProvider
+/// [`UserAgentEmulateService`]: crate::emulate::UserAgentEmulateService
 pub struct UserAgentEmulateLayer<P> {
     provider: P,
     optional: bool,
@@ -41,6 +50,7 @@ impl<P: Clone> Clone for UserAgentEmulateLayer<P> {
 }
 
 impl<P> UserAgentEmulateLayer<P> {
+    /// Create a new [`UserAgentEmulateLayer`] with the given provider.
     pub fn new(provider: P) -> Self {
         Self {
             provider,

@@ -51,6 +51,11 @@ use super::{UserAgentProvider, UserAgentSelectFallback};
 /// such as [`UserAgentEmulateHttpRequestModifier`] and [`UserAgentEmulateHttpConnectModifier`] is in use within your connector stack.
 /// Tls emulation is facilitated by a tls client connector which respects
 /// the injected (tls) client profile.
+///
+/// See the implementation of[`EasyHttpWebClient`] for the reference implementation of how
+/// one can make use of this profile to emulate a user agent on the tls layer.
+///
+/// [`EasyHttpWebClient`]: https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html
 pub struct UserAgentEmulateService<S, P> {
     inner: S,
     provider: P,
@@ -90,6 +95,9 @@ impl<S: Clone, P: Clone> Clone for UserAgentEmulateService<S, P> {
 }
 
 impl<S, P> UserAgentEmulateService<S, P> {
+    /// Create a new [`UserAgentEmulateService`] with the given inner service and provider.
+    ///
+    /// Provider is implicitly expected to be a [`UserAgentProvider`].
     pub fn new(inner: S, provider: P) -> Self {
         Self {
             inner,
@@ -361,6 +369,7 @@ pub struct UserAgentEmulateHttpConnectModifier;
 
 impl UserAgentEmulateHttpConnectModifier {
     #[inline]
+    /// Create a new (default) [`UserAgentEmulateHttpConnectModifier`].
     pub fn new() -> Self {
         Self
     }
@@ -434,6 +443,7 @@ pub struct UserAgentEmulateHttpRequestModifier;
 
 impl UserAgentEmulateHttpRequestModifier {
     #[inline]
+    /// Create a new (default) [`UserAgentEmulateHttpRequestModifier`].
     pub fn new() -> Self {
         Self
     }

@@ -1,10 +1,15 @@
 //! User Agent (UA) Profiles, mostly used for emulation.
 //!
+//! See [`UserAgentProfile`] for the main profile type and
+//! [`UserAgentEmulateService`] for the service that triggers the emulation.
+//!
 //! This module contains the profiles for the User Agent (UA) that are used for emulation.
 //!
 //! Learn more about User Agents (UA) and why Rama supports it
 //! at <https://ramaproxy.org/book/intro/user_agent.html>.
 //!
+//! [`UserAgentProfile`]: crate::profile::UserAgentProfile
+//! [`UserAgentEmulateService`]: crate::emulate::UserAgentEmulateService
 
 mod http;
 pub use http::*;

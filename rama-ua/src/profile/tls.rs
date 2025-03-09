@@ -4,7 +4,15 @@ use rama_net::tls::client::{ClientConfig, ClientHello, ServerVerifyMode};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
+/// Profile of the user-agent's TLS (client) configuration.
+///
+/// It is used to emulate the TLS configuration of the user-agent.
+///
+/// See [`ClientConfig`] for more information.
+///
+/// [`ClientConfig`]: rama_net::tls::client::ClientConfig
 pub struct TlsProfile {
+    /// The TLS client configuration.
     pub client_config: Arc<ClientConfig>,
 }
 
