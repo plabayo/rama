@@ -38,6 +38,7 @@ tokio-boring = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 tracing = { workspace = true }
 webpki-roots = { workspace = true, optional = true }
+itertools = { workspace = true }
 
 [dev-dependencies]
 

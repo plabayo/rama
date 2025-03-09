@@ -79,7 +79,15 @@ try_from_mapping! {
 pub fn openssl_cipher_list_str_from_cipher_list(suites: &[super::CipherSuite]) -> Option<String> {
     let s = suites
         .iter()
-        .filter_map(|s| openssl_cipher_str_from_cipher_suite(*s))
+        .filter_map(|s| {
+            if s.is_grease() {
+                trace!("ignore grease cipher suite {s}");
+                return None;
+            }
+
+            openssl_cipher_str_from_cipher_suite(*s)
+        })
+        .dedup()
         .join(":");
     (!s.is_empty()).then_some(s)
 }

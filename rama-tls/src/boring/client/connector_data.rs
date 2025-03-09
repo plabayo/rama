@@ -10,6 +10,7 @@ use boring::{
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     },
 };
+use itertools::Itertools;
 use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent, openssl_cipher_list_str_from_cipher_list};
 use rama_net::tls::{
@@ -394,13 +395,20 @@ impl TlsConnectorData {
                             "TlsConnectorData: builder: from std client config: supported groups: {:?}",
                             groups
                         );
-                        curves = Some(groups.iter().filter_map(|c| match (*c).try_into() {
-                            Ok(v) => Some(v),
-                            Err(c) => {
-                            trace!("ignore unsupported support group (curve) {c} (file issue if you require it");
-                            None
+                        curves = Some(groups.iter().filter_map(|c| {
+                            if c.is_grease() {
+                                trace!("ignore grease support group (curve) {c}");
+                                return None;
                             }
-                            }).collect());
+
+                            match (*c).try_into() {
+                                Ok(v) => Some(v),
+                                Err(c) => {
+                                trace!("ignore unsupported support group (curve) {c} (file issue if you require it");
+                                None
+                                }
+                                }
+                        }).dedup().collect());
                     }
                     ClientHelloExtension::SupportedVersions(versions) => {
                         trace!(
@@ -435,13 +443,20 @@ impl TlsConnectorData {
                             "TlsConnectorData: builder: from std client config: signature algorithms: {:?}",
                             schemes
                         );
-                        verify_algorithm_prefs = Some(schemes.iter().filter_map(|s| match (*s).try_into() {
-                            Ok(v) => Some(v),
-                            Err(s) => {
-                            trace!("ignore unsupported signatured schemes {s} (file issue if you require it");
-                            None
+                        verify_algorithm_prefs = Some(schemes.iter().filter_map(|s| {
+                            if s.is_grease() {
+                                trace!("ignore grease signatured schemes {s}");
+                                return None;
                             }
-                            }).collect());
+
+                            match (*s).try_into() {
+                                Ok(v) => Some(v),
+                                Err(s) => {
+                                trace!("ignore unsupported signatured schemes {s} (file issue if you require it");
+                                None
+                                }
+                                }
+                        }).dedup().collect());
                     }
                     other => {
                         trace!(ext = ?other, "TlsConnectorData: builder: from std client config: ignore client hello ext");

@@ -231,7 +231,7 @@ net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
 http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-tcp/http"]
-http-full = ["http", "tcp", "dep:rama-http-backend", "dep:rama-http-core", "ua-embed-profiles"]
+http-full = ["http", "tcp", "dep:rama-http-backend", "dep:rama-http-core", "ua-embed-profiles", "compression"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
 ua = ["dep:rama-ua"]
@@ -356,7 +356,7 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_high_level_client"
-required-features = ["compression", "http-full"]
+required-features = ["http-full"]
 
 [[example]]
 name = "http_k8s_health"
@@ -364,7 +364,7 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_key_value_store"
-required-features = ["compression", "http-full"]
+required-features = ["http-full"]
 
 [[example]]
 name = "http_listener_hello"
@@ -384,7 +384,7 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_service_hello"
-required-features = ["compression", "http-full"]
+required-features = ["http-full"]
 
 [[example]]
 name = "http_service_match"
@@ -400,7 +400,7 @@ required-features = ["http-full"]
 
 [[example]]
 name = "http_web_service_dir_and_api"
-required-features = ["compression", "http-full"]
+required-features = ["http-full"]
 
 [[example]]
 name = "https_connect_proxy"

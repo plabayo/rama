@@ -2698,6 +2698,7 @@ version = "0.2.0-alpha.7"
 dependencies = [
  "boring",
  "flume",
+ "itertools 0.14.0",
  "moka",
  "parking_lot",
  "pin-project-lite",
