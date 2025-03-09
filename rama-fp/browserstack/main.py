@@ -173,44 +173,23 @@ def run_session(cap):
             print("loc", driver.execute_script("return document.location.href;"))
 
             domain = urlparse(entrypoint).netloc.split(":")[0]
-            print("add storage cookie for domain", domain)
-            driver.add_cookie({
-                "name": "rama-storage-auth",
-                "value": RAMA_FP_STORAGE_COOKIE,
-                "domain": domain,
-                "path": "/",
-                },
-                {
-                    "name": "source-device-name",
-                    "value": cap.get("deviceName", ""),
+            print("add cookies for domain", domain)
+            cookies = {
+                "rama-storage-auth": RAMA_FP_STORAGE_COOKIE,
+                "source-device-name": cap.get("deviceName", ""),
+                "source-os-name": cap.get("os", ""),
+                "source-os-version": cap.get("osVersion", ""),
+                "source-browser-name": cap.get("browserName", ""),
+                "source-browser-version": cap.get("browserVersion", ""),
+            }
+            for name, value in cookies.items():
+                print("add cookie to domain", domain, name)
+                driver.add_cookie({
+                    "name": name,
+                    "value": value,
                     "domain": domain,
                     "path": "/",
-                },
-                {
-                    "name": "source-os-name",
-                    "value": cap.get("os", ""),
-                    "domain": domain,
-                    "path": "/",
-                },
-                {
-                    "name": "source-os-version",
-                    "value": cap.get("osVersion", ""),
-                    "domain": domain,
-                    "path": "/",
-                },
-                {
-                    "name": "source-browser-name",
-                    "value": cap.get("browserName", ""),
-                    "domain": domain,
-                    "path": "/",
-                },
-                {
-                    "name": "source-browser-version",
-                    "value": cap.get("browserVersion", ""),
-                    "domain": domain,
-                    "path": "/",
-                },
-            )
+                })
 
             WebDriverWait(driver, 10).until(
                 EC.visibility_of_element_located(
