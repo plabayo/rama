@@ -2,7 +2,7 @@ use itertools::Itertools as _;
 use rand::seq::IndexedRandom as _;
 use std::collections::HashMap;
 
-use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, UserAgentProfile};
+use crate::{DeviceKind, PlatformKind, UserAgent, UserAgentKind, profile::UserAgentProfile};
 
 #[derive(Debug, Default)]
 pub struct UserAgentDatabase {
@@ -21,7 +21,7 @@ impl UserAgentDatabase {
     /// This function is only available if the `embed-profiles` feature is enabled.
     #[cfg(feature = "embed-profiles")]
     pub fn embedded() -> Self {
-        let profiles = crate::load_embedded_profiles();
+        let profiles = crate::profile::load_embedded_profiles();
         Self::from_iter(profiles)
     }
 
@@ -405,9 +405,9 @@ mod tests {
             ua_kind: ua.ua_kind().unwrap(),
             ua_version: ua.ua_version(),
             platform: ua.platform(),
-            http: crate::HttpProfile {
-                h1: Arc::new(crate::Http1Profile {
-                    headers: crate::HttpHeadersProfile {
+            http: crate::profile::HttpProfile {
+                h1: Arc::new(crate::profile::Http1Profile {
+                    headers: crate::profile::HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
                                 .into_iter()
@@ -418,10 +418,10 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    settings: crate::Http1Settings::default(),
+                    settings: crate::profile::Http1Settings::default(),
                 }),
-                h2: Arc::new(crate::Http2Profile {
-                    headers: crate::HttpHeadersProfile {
+                h2: Arc::new(crate::profile::Http2Profile {
+                    headers: crate::profile::HttpHeadersProfile {
                         navigate: Http1HeaderMap::new(
                             [(USER_AGENT, HeaderValue::from_str(s).unwrap())]
                                 .into_iter()
@@ -432,13 +432,14 @@ mod tests {
                         xhr: None,
                         form: None,
                     },
-                    settings: crate::Http2Settings::default(),
+                    settings: crate::profile::Http2Settings::default(),
                 }),
             },
             #[cfg(feature = "tls")]
-            tls: crate::TlsProfile {
+            tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
+            js: None,
         }
     }
 

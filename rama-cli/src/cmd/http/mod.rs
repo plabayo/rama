@@ -33,8 +33,11 @@ use rama::{
     rt::Executor,
     service::service_fn,
     ua::{
-        UserAgentDatabase, UserAgentEmulateHttpConnectModifier,
-        UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer, UserAgentSelectFallback,
+        emulate::{
+            UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
+            UserAgentEmulateLayer, UserAgentSelectFallback,
+        },
+        profile::UserAgentDatabase,
     },
 };
 use std::{io::IsTerminal, sync::Arc, time::Duration};

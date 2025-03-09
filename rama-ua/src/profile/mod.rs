@@ -1,3 +1,11 @@
+//! User Agent (UA) Profiles, mostly used for emulation.
+//!
+//! This module contains the profiles for the User Agent (UA) that are used for emulation.
+//!
+//! Learn more about User Agents (UA) and why Rama supports it
+//! at <https://ramaproxy.org/book/intro/user_agent.html>.
+//!
+
 mod http;
 pub use http::*;
 
@@ -5,6 +13,9 @@ pub use http::*;
 mod tls;
 #[cfg(feature = "tls")]
 pub use tls::*;
+
+mod js;
+pub use js::*;
 
 mod ua;
 pub use ua::*;

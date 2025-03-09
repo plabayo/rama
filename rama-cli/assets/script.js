@@ -22,13 +22,55 @@ async function fetchWithBackoff(url, options) {
     throw new Error('Max retries exceeded');
 }
 
+function getJsProfile() {
+    return {
+        navigator: {
+            appCodeName: window.navigator?.appCodeName,
+            appName: window.navigator?.appName,
+            appVersion: window.navigator?.appVersion,
+            buildID: window.navigator?.buildID,
+            cookieEnabled: window.navigator?.cookieEnabled,
+            doNotTrack: window.navigator?.doNotTrack,
+            language: window.navigator?.language,
+            languages: window.navigator?.languages,
+            oscpu: window.navigator?.oscpu,
+            pdfViewerEnabled: window.navigator?.pdfViewerEnabled,
+            platform: window.navigator?.platform,
+            product: window.navigator?.product,
+            productSub: window.navigator?.productSub,
+            userAgent: window.navigator?.userAgent,
+            vendor: window.navigator?.vendor,
+            vendorSub: window.navigator?.vendorSub,
+        },
+        screen: {
+            width: window.screen?.width,
+            height: window.screen?.height,
+            availWidth: window.screen?.availWidth,
+            availHeight: window.screen?.availHeight,
+            availLeft: window.screen?.availLeft,
+            left: window.screen?.left,
+            availTop: window.screen?.availTop,
+            top: window.screen?.top,
+            colorDepth: window.screen?.colorDepth,
+            pixelDepth: window.screen?.pixelDepth,
+            type: window.screen?.type,
+            mozOrientation: window.screen?.mozOrientation,
+            mozBrightness: window.screen?.mozBrightness,
+            lockOrientation: window.screen?.lockOrientation,
+            unlockOrientation: window.screen?.unlockOrientation,
+        },
+    };
+}
+
 // Function to make a POST request
 async function makePostRequest(url, number) {
     const headers = {
         'x-RAMA-custom-header-marker': `rama-fp${Date.now()}`,
     };
 
-    const body = JSON.stringify({ number });
+    const jsWebApis = getJsProfile();
+
+    const body = JSON.stringify({ number, jsWebApis });
 
     const options = {
         method: 'POST',
@@ -68,7 +110,7 @@ async function main() {
         // Generate random numbers for the requests
         const number = Math.floor(Math.random() * 1000) + 1;
         const number2 = Math.floor(Math.random() * 1000) + 1;
-        
+
         console.log('Generated random numbers:', number, number2);
 
         // Fetch POST request

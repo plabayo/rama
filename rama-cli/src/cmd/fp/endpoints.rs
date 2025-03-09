@@ -10,9 +10,10 @@ use crate::cmd::fp::data::TlsDisplayInfoExtensionData;
 use rama::{
     Context,
     http::{
-        Body, IntoResponse, Request, Response, StatusCode, response::Json,
+        Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode, response::Json,
         service::web::extract::Path,
     },
+    ua::profile::JsProfileWebApis,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -190,6 +191,13 @@ pub(super) struct APINumberParams {
     number: usize,
 }
 
+#[derive(Serialize, Deserialize)]
+pub(super) struct APINumberRequest {
+    number: usize,
+    #[serde(alias = "jsWebApis")]
+    js_web_apis: Option<JsProfileWebApis>,
+}
+
 pub(super) async fn post_api_fetch_number(
     Path(params): Path<APINumberParams>,
     mut ctx: Context<Arc<State>>,
@@ -197,7 +205,7 @@ pub(super) async fn post_api_fetch_number(
 ) -> Result<Json<serde_json::Value>, Response> {
     let ja4h = get_ja4h_info(&req);
 
-    let (mut parts, _) = req.into_parts();
+    let (mut parts, body) = req.into_parts();
 
     let user_agent_info = get_user_agent_info(&ctx).await;
 
@@ -224,12 +232,31 @@ pub(super) async fn post_api_fetch_number(
     .await
     .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
+    let request: APINumberRequest = body
+        .try_into_json()
+        .await
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
+
+    if let Some(js_web_apis) = request.js_web_apis.clone() {
+        if ctx.contains::<crate::fp::StorageAuthorized>() {
+            if let Some(storage) = ctx.state().storage.as_ref() {
+                storage
+                    .store_js_web_apis(user_agent.clone(), js_web_apis)
+                    .await
+                    .map_err(|err| {
+                        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+                    })?;
+            }
+        }
+    }
+
     let tls_info = get_tls_display_info_and_store(&ctx, user_agent)
         .await
         .map_err(|err| (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response())?;
 
     Ok(Json(json!({
         "number": params.number,
+        "body_number": request.number,
         "fp": {
             "user_agent_info": user_agent_info,
             "request_info": request_info,
@@ -239,6 +266,7 @@ pub(super) async fn post_api_fetch_number(
                 "pseudo_headers": http_info.pseudo_headers,
                 "ja4h": ja4h,
             }),
+            "js_web_apis": request.js_web_apis,
         }
     })))
 }

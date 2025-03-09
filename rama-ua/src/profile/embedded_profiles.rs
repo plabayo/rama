@@ -3,6 +3,7 @@ use std::sync::Arc;
 use rama_http_types::proto::h1::Http1HeaderMap;
 use serde::Deserialize;
 
+use crate::profile::*;
 use crate::*;
 
 /// Load the profiles embedded with the rama-ua crate.
@@ -45,6 +46,9 @@ pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
                         .map(rama_net::tls::client::ClientConfig::from)?,
                 ),
             },
+            js: row.js_web_apis.map(|web_apis| JsProfile {
+                web_apis: Some(Arc::new(web_apis)),
+            }),
         })
     })
 }
@@ -64,6 +68,7 @@ struct UserAgentProfileRow {
     h2_headers_form: Option<Http1HeaderMap>,
     #[cfg(feature = "tls")]
     tls_client_hello: Option<rama_net::tls::client::ClientHello>,
+    js_web_apis: Option<JsProfileWebApis>,
 }
 
 #[cfg(test)]

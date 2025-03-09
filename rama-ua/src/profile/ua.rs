@@ -18,6 +18,9 @@ pub struct UserAgentProfile {
     #[cfg(feature = "tls")]
     /// The profile information regarding the tls implementation of the [`crate::UserAgent`].
     pub tls: super::TlsProfile,
+
+    /// The information provivided by the js implementation of the [`crate::UserAgent`].
+    pub js: Option<super::JsProfile>,
 }
 
 impl UserAgentProfile {

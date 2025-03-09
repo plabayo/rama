@@ -17,7 +17,10 @@ use rama::{
         SecureTransport,
         client::{ClientHello, ClientHelloExtension},
     },
-    ua::{Http1Settings, Http2Settings, UserAgent},
+    ua::{
+        UserAgent,
+        profile::{Http1Settings, Http2Settings},
+    },
 };
 use serde::Serialize;
 use std::{str::FromStr, sync::Arc};

@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use rama_core::Context;
 
-use crate::{UserAgentDatabase, UserAgentProfile};
+use crate::profile::{UserAgentDatabase, UserAgentProfile};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 /// Fallback strategy that can be injected into the context

@@ -34,10 +34,11 @@ use rama_http_types::{
 };
 use rama_net::{Protocol, http::RequestContext};
 
-use crate::{
-    CUSTOM_HEADER_MARKER, HttpAgent, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
-    RequestInitiator, UserAgent, contains_ignore_ascii_case, starts_with_ignore_ascii_case,
+use crate::profile::{
+    CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
+    RequestInitiator,
 };
+use crate::{HttpAgent, UserAgent, contains_ignore_ascii_case, starts_with_ignore_ascii_case};
 
 use super::{UserAgentProvider, UserAgentSelectFallback};
 
@@ -707,9 +708,10 @@ mod tests {
         Body, BodyExtractExt, HeaderValue, header::ETAG, proto::h1::Http1HeaderName,
     };
 
-    use crate::{
+    use crate::emulate::UserAgentEmulateLayer;
+    use crate::profile::{
         Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile, HttpProfile,
-        UserAgentEmulateLayer, UserAgentProfile,
+        UserAgentProfile,
     };
 
     #[test]
@@ -1282,9 +1284,10 @@ mod tests {
                 }),
             },
             #[cfg(feature = "tls")]
-            tls: crate::TlsProfile {
+            tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
+            js: None,
         };
 
         let ua_service = (
@@ -1353,9 +1356,10 @@ mod tests {
                 }),
             },
             #[cfg(feature = "tls")]
-            tls: crate::TlsProfile {
+            tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
+            js: None,
         };
 
         let ua_service = (
@@ -1425,9 +1429,10 @@ mod tests {
                 }),
             },
             #[cfg(feature = "tls")]
-            tls: crate::TlsProfile {
+            tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
+            js: None,
         };
 
         let ua_service = (
@@ -1497,9 +1502,10 @@ mod tests {
                 }),
             },
             #[cfg(feature = "tls")]
-            tls: crate::TlsProfile {
+            tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
+            js: None,
         };
 
         let ua_service = (
@@ -1578,9 +1584,10 @@ mod tests {
                 }),
             },
             #[cfg(feature = "tls")]
-            tls: crate::TlsProfile {
+            tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
+            js: None,
         };
 
         let ua_service = (
