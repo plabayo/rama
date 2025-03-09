@@ -13,7 +13,7 @@ use rama::{
         Body, BodyExtractExt, IntoResponse, Request, Response, StatusCode, response::Json,
         service::web::extract::Path,
     },
-    ua::profile::JsProfileWebApis,
+    ua::profile::{JsProfileSourceInfo, JsProfileWebApis},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -194,6 +194,8 @@ pub(super) struct APINumberParams {
 #[derive(Serialize, Deserialize)]
 pub(super) struct APINumberRequest {
     number: usize,
+    #[serde(alias = "sourceInfo")]
+    source_info: Option<JsProfileSourceInfo>,
     #[serde(alias = "jsWebApis")]
     js_web_apis: Option<JsProfileWebApis>,
 }
@@ -237,11 +239,20 @@ pub(super) async fn post_api_fetch_number(
         .await
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()).into_response())?;
 
-    if let Some(js_web_apis) = request.js_web_apis.clone() {
-        if ctx.contains::<crate::fp::StorageAuthorized>() {
-            if let Some(storage) = ctx.state().storage.as_ref() {
+    if ctx.contains::<crate::fp::StorageAuthorized>() {
+        if let Some(storage) = ctx.state().storage.as_ref() {
+            if let Some(js_web_apis) = request.js_web_apis.clone() {
                 storage
                     .store_js_web_apis(user_agent.clone(), js_web_apis)
+                    .await
+                    .map_err(|err| {
+                        (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
+                    })?;
+            }
+
+            if let Some(source_info) = request.source_info.clone() {
+                storage
+                    .store_js_source_info(user_agent.clone(), source_info)
                     .await
                     .map_err(|err| {
                         (StatusCode::INTERNAL_SERVER_ERROR, err.to_string()).into_response()
@@ -267,6 +278,7 @@ pub(super) async fn post_api_fetch_number(
                 "ja4h": ja4h,
             }),
             "js_web_apis": request.js_web_apis,
+            "js_source_info": request.source_info,
         }
     })))
 }

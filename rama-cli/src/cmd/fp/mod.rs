@@ -399,14 +399,16 @@ where
         if let Some(cookie) = req.headers().typed_get::<Cookie>() {
             let cookie = cookie
                 .iter()
-                .map(|(k, v)| {
+                .filter_map(|(k, v)| {
                     if k.eq_ignore_ascii_case("rama-storage-auth") {
                         if Some(v) == ctx.state().storage_auth.as_deref() {
                             ctx.insert(StorageAuthorized);
                         }
-                        "rama-storage-auth=xxx".to_owned()
+                        Some("rama-storage-auth=xxx".to_owned())
+                    } else if !k.starts_with("source-") {
+                        Some(format!("{k}={v}"))
                     } else {
-                        format!("{k}={v}")
+                        None
                     }
                 })
                 .join("; ");

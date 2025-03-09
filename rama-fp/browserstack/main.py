@@ -179,7 +179,38 @@ def run_session(cap):
                 "value": RAMA_FP_STORAGE_COOKIE,
                 "domain": domain,
                 "path": "/",
-            })
+                },
+                {
+                    "name": "source-device-name",
+                    "value": cap.get("deviceName", ""),
+                    "domain": domain,
+                    "path": "/",
+                },
+                {
+                    "name": "source-os-name",
+                    "value": cap.get("os", ""),
+                    "domain": domain,
+                    "path": "/",
+                },
+                {
+                    "name": "source-os-version",
+                    "value": cap.get("osVersion", ""),
+                    "domain": domain,
+                    "path": "/",
+                },
+                {
+                    "name": "source-browser-name",
+                    "value": cap.get("browserName", ""),
+                    "domain": domain,
+                    "path": "/",
+                },
+                {
+                    "name": "source-browser-version",
+                    "value": cap.get("browserVersion", ""),
+                    "domain": domain,
+                    "path": "/",
+                },
+            )
 
             WebDriverWait(driver, 10).until(
                 EC.visibility_of_element_located(

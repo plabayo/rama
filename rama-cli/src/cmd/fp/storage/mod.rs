@@ -3,7 +3,7 @@ use rama::{
     error::{ErrorContext, OpaqueError},
     http::proto::h1::Http1HeaderMap,
     net::tls::client::ClientHello,
-    ua::profile::{Http1Settings, Http2Settings, JsProfileWebApis},
+    ua::profile::{Http1Settings, Http2Settings, JsProfileSourceInfo, JsProfileWebApis},
 };
 
 mod postgres;
@@ -306,6 +306,30 @@ impl Storage {
         if n != 1 {
             tracing::error!(
                 "unexpected number of rows affected to store js web apis for UA '{ua}': {n}"
+            );
+        }
+
+        Ok(())
+    }
+
+    pub(super) async fn store_js_source_info(
+        &self,
+        ua: String,
+        js_source_info: JsProfileSourceInfo,
+    ) -> Result<(), OpaqueError> {
+        tracing::debug!("store js source info for UA '{ua}': {js_source_info:?}");
+
+        let updated_at = Utc::now();
+
+        let client = self.pool.get().await.context("get postgres client")?;
+        let n = client.execute(
+            "INSERT INTO \"ua-profiles\" (uastr, js_source_info, updated_at) VALUES ($1, $2, $3) ON CONFLICT (uastr) DO UPDATE SET js_source_info = $2, updated_at = $3",
+            &[&ua, &types::Json(js_source_info), &updated_at],
+        ).await.context("store js source info in postgres")?;
+
+        if n != 1 {
+            tracing::error!(
+                "unexpected number of rows affected to store js source info for UA '{ua}': {n}"
             );
         }
 

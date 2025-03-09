@@ -62,6 +62,24 @@ function getJsProfile() {
     };
 }
 
+function getSourceInfo() {
+    // Extract source information from cookies
+    function getCookie(name) {
+        const value = `; ${document.cookie}`;
+        const parts = value.split(`; ${name}=`);
+        if (parts.length === 2) return parts.pop().split(';').shift();
+        return null;
+    }
+
+    return {
+        deviceName: getCookie('source-device-name'),
+        os: getCookie('source-os-name'),
+        osVersion: getCookie('source-os-version'),
+        browserName: getCookie('source-browser-name'),
+        browserVersion: getCookie('source-browser-version')
+    };
+}
+
 // Function to make a POST request
 async function makePostRequest(url, number) {
     const headers = {
@@ -69,8 +87,9 @@ async function makePostRequest(url, number) {
     };
 
     const jsWebApis = getJsProfile();
+    const sourceInfo = getSourceInfo();
 
-    const body = JSON.stringify({ number, jsWebApis });
+    const body = JSON.stringify({ number, jsWebApis, sourceInfo });
 
     const options = {
         method: 'POST',
