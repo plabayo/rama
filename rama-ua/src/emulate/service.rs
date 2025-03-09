@@ -34,11 +34,14 @@ use rama_http_types::{
 };
 use rama_net::{Protocol, http::RequestContext};
 
-use crate::profile::{
-    CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
-    RequestInitiator,
-};
 use crate::{HttpAgent, UserAgent, contains_ignore_ascii_case, starts_with_ignore_ascii_case};
+use crate::{
+    emulate::SelectedUserAgentProfile,
+    profile::{
+        CUSTOM_HEADER_MARKER, HttpHeadersProfile, HttpProfile, PreserveHeaderUserAgent,
+        RequestInitiator,
+    },
+};
 
 use super::{UserAgentProvider, UserAgentSelectFallback};
 
@@ -320,6 +323,9 @@ where
                 );
             }
         }
+
+        // inject the selected user agent profile into the context
+        ctx.insert(SelectedUserAgentProfile::from(profile));
 
         // serve emulated http(s) request via inner service
         let mut res = self

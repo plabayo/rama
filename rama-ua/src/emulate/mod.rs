@@ -7,7 +7,7 @@
 //!
 
 mod provider;
-pub use provider::{UserAgentProvider, UserAgentSelectFallback};
+pub use provider::{SelectedUserAgentProfile, UserAgentProvider, UserAgentSelectFallback};
 
 mod layer;
 pub use layer::UserAgentEmulateLayer;
