@@ -24,12 +24,12 @@ use rama_net::{address::Host, tls::client::ServerVerifyMode};
 use std::{fmt, sync::Arc};
 use tracing::{debug, trace};
 
-use crate::{
-    boring::client::compress_certificate::{
-        BrotliCertificateCompressor, ZlibCertificateCompressor,
-    },
-    keylog::new_key_log_file_handle,
+#[cfg(feature = "compression")]
+use crate::boring::client::compress_certificate::{
+    BrotliCertificateCompressor, ZlibCertificateCompressor,
 };
+
+use crate::keylog::new_key_log_file_handle;
 
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::HttpsConnector`].
@@ -157,6 +157,7 @@ impl TlsConnectorData {
             .iter()
             .flatten()
         {
+            #[cfg(feature = "compression")]
             match compressor {
                 CertificateCompressionAlgorithm::Zlib => {
                     cfg_builder.add_certificate_compression_algorithm(ZlibCertificateCompressor::default()).context("build (boring) ssl connector: add certificate compression algorithm: zlib")?;
@@ -176,6 +177,12 @@ impl TlsConnectorData {
                 _ => {
                     debug!("boring connector: certificate compression algorithm: unknown: ignore");
                 }
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                debug!(
+                    "boring connector: certificate compression algorithm: {compressor}: not supported (feature compression not enabled)"
+                );
             }
         }
 
