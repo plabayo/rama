@@ -19,8 +19,12 @@ use nom::{
 use rama_core::error::OpaqueError;
 use std::str;
 
-#[inline]
-pub(crate) fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
+
+/// Parse a [`ClientHello`] from the raw "wire" bytes.
+///
+/// This function is not infallible, it can return an error if the input is not a valid
+/// TLS ClientHello message or if there is unexpected trailing data.
+pub fn parse_client_hello(i: &[u8]) -> Result<ClientHello, OpaqueError> {
     match parse_client_hello_inner(i) {
         Err(err) => Err(OpaqueError::from_display(format!(
             "parse client hello handshake message: {err:?}"
