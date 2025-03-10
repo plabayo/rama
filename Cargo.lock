@@ -2638,6 +2638,7 @@ dependencies = [
  "md5",
  "nom 8.0.0",
  "opentelemetry",
+ "parking_lot",
  "pin-project-lite",
  "quickcheck",
  "rama-core",
@@ -2744,6 +2745,7 @@ name = "rama-utils"
 version = "0.2.0-alpha.7"
 dependencies = [
  "parking_lot",
+ "paste",
  "pin-project-lite",
  "quickcheck",
  "serde",
