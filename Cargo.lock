@@ -2697,6 +2697,8 @@ name = "rama-tls"
 version = "0.2.0-alpha.7"
 dependencies = [
  "boring",
+ "brotli",
+ "flate2",
  "flume",
  "itertools 0.14.0",
  "moka",

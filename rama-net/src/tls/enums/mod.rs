@@ -1029,6 +1029,17 @@ impl ApplicationProtocol {
     }
 }
 
+enum_builder! {
+    /// The `CertificateCompressionAlgorithm` TLS protocol enum, the algorithm used to compress the certificate.
+    /// The algorithm MUST be one of the algorithms listed in the peer's compress_certificate extension.
+    @U16
+    pub enum CertificateCompressionAlgorithm {
+        Zlib => 0x0001,
+        Brotli => 0x0002,
+        Zstd => 0x0003,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

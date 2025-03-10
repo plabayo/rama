@@ -13,7 +13,8 @@ use boring::{
 use itertools::Itertools;
 use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
 use rama_net::tls::{
-    ApplicationProtocol, ExtensionId, KeyLogIntent, openssl_cipher_list_str_from_cipher_list,
+    ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
+    openssl_cipher_list_str_from_cipher_list,
 };
 use rama_net::tls::{
     DataEncoding,
@@ -21,9 +22,14 @@ use rama_net::tls::{
 };
 use rama_net::{address::Host, tls::client::ServerVerifyMode};
 use std::{fmt, sync::Arc};
-use tracing::trace;
+use tracing::{debug, trace};
 
-use crate::keylog::new_key_log_file_handle;
+use crate::{
+    boring::client::compress_certificate::{
+        BrotliCertificateCompressor, ZlibCertificateCompressor,
+    },
+    keylog::new_key_log_file_handle,
+};
 
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::HttpsConnector`].
@@ -49,6 +55,8 @@ pub(super) struct ConnectConfigurationInput {
     pub(super) grease_enabled: bool,
     pub(super) ocsp_stapling_enabled: bool,
     pub(super) signed_cert_timestamps_enabled: bool,
+    pub(super) certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
+    pub(super) record_size_limit: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -141,6 +149,41 @@ impl TlsConnectorData {
 
         if self.connect_config_input.signed_cert_timestamps_enabled {
             cfg_builder.enable_signed_cert_timestamps();
+        }
+
+        for compressor in self
+            .connect_config_input
+            .certificate_compression_algorithms
+            .iter()
+            .flatten()
+        {
+            match compressor {
+                CertificateCompressionAlgorithm::Zlib => {
+                    cfg_builder.add_certificate_compression_algorithm(ZlibCertificateCompressor::default()).context("build (boring) ssl connector: add certificate compression algorithm: zlib")?;
+                }
+                CertificateCompressionAlgorithm::Brotli => {
+                    cfg_builder.add_certificate_compression_algorithm(
+                        BrotliCertificateCompressor::default(),
+                    )
+                    .context("build (boring) ssl connector: add certificate compression algorithm: brotli")?;
+                }
+                CertificateCompressionAlgorithm::Zstd => {
+                    // TODO fork boring and implement zstd compression
+                    debug!(
+                        "boring connector: certificate compression algorithm: zstd: not (yet) supported: ignore"
+                    );
+                }
+                _ => {
+                    debug!("boring connector: certificate compression algorithm: unknown: ignore");
+                }
+            }
+        }
+
+        // TODO: support ext DELEGATED_CREDENTIAL
+
+        if let Some(limit) = self.connect_config_input.record_size_limit {
+            // TODO fork boring and implement record size limit
+            debug!("boring connector: set record size limit: {}; ignore as it is not yet supported", limit);
         }
 
         match self
@@ -259,6 +302,27 @@ impl TlsConnectorData {
                     .connect_config_input
                     .signed_cert_timestamps_enabled
                     || other.connect_config_input.signed_cert_timestamps_enabled,
+                certificate_compression_algorithms: {
+                    let v: Vec<_> = other
+                        .connect_config_input
+                        .certificate_compression_algorithms
+                        .iter()
+                        .flatten()
+                        .chain(
+                            self.connect_config_input
+                                .certificate_compression_algorithms
+                                .iter()
+                                .flatten(),
+                        )
+                        .copied()
+                        .dedup()
+                        .collect();
+                    if v.is_empty() { None } else { Some(v) }
+                },
+                record_size_limit: other
+                    .connect_config_input
+                    .record_size_limit
+                    .or_else(|| self.connect_config_input.record_size_limit),
             }),
             server_name: other
                 .server_name
@@ -366,7 +430,9 @@ impl TlsConnectorData {
         let mut grease_enabled = false;
         let mut ocsp_stapling_enabled = false;
         let mut signed_cert_timestamps_enabled = false;
-
+        let mut certificate_compression_algorithms = None;
+        let mut record_size_limit = None;
+    
         for cfg in cfg_it {
             cipher_suites = cfg.cipher_suites.as_ref().or(cipher_suites);
             keylog_intent = cfg.key_logger.as_ref().or(keylog_intent);
@@ -506,6 +572,20 @@ impl TlsConnectorData {
                             }
                         }).dedup().collect());
                     }
+                    ClientHelloExtension::CertificateCompression(algorithms) => {
+                        trace!(
+                            "TlsConnectorData: builder: from std client config: certificate compression algorithms: {:?}",
+                            algorithms
+                        );
+                        certificate_compression_algorithms = Some(algorithms.clone());
+                    }
+                    ClientHelloExtension::RecordSizeLimit(limit) => {
+                        trace!(
+                            "TlsConnectorData: builder: from std client config: record size limit: {:?}",
+                            limit
+                        );
+                        record_size_limit = Some(*limit);
+                    }
                     other => match other.id() {
                         ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
                             trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable ocsp stapling");
@@ -599,6 +679,8 @@ impl TlsConnectorData {
                 grease_enabled,
                 ocsp_stapling_enabled,
                 signed_cert_timestamps_enabled,
+                certificate_compression_algorithms,
+                record_size_limit,
             }),
             server_name,
         })
@@ -627,7 +709,9 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
         let mut grease_enabled = false;
         let mut ocsp_stapling_enabled = false;
         let mut signed_cert_timestamps_enabled = false;
-    
+        let mut certificate_compression_algorithms = None;
+        let mut record_size_limit = None;
+
         // use the extensions that we can use for the builder
         for extension in value.extensions.iter().flatten() {
             match extension {
@@ -757,6 +841,20 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                         }
                     }).dedup().collect());
                 }
+                ClientHelloExtension::CertificateCompression(algorithms) => {
+                    trace!(
+                        "TlsConnectorData: builder: from std client config: certificate compression algorithms: {:?}",
+                        algorithms
+                    );
+                    certificate_compression_algorithms = Some(algorithms.clone());
+                }
+                ClientHelloExtension::RecordSizeLimit(limit) => {
+                    trace!(
+                        "TlsConnectorData: builder: from std client config: record size limit: {:?}",
+                        limit
+                    );
+                    record_size_limit = Some(*limit);
+                }
                 other => match other.id() {
                     ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
                         trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable ocsp stapling");
@@ -841,6 +939,8 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                 grease_enabled,
                 ocsp_stapling_enabled,
                 signed_cert_timestamps_enabled,
+                certificate_compression_algorithms,
+                record_size_limit,
             }),
             server_name,
         })

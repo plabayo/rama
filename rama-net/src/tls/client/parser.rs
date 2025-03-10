@@ -19,7 +19,6 @@ use nom::{
 use rama_core::error::OpaqueError;
 use std::str;
 
-
 /// Parse a [`ClientHello`] from the raw "wire" bytes.
 ///
 /// This function is not infallible, it can return an error if the input is not a valid
@@ -120,6 +119,13 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
         ExtensionId::SUPPORTED_VERSIONS => {
             parse_tls_extension_supported_versions_content(ext_data, ext_len)
         }
+        ExtensionId::COMPRESS_CERTIFICATE => {
+            parse_tls_extension_certificate_compression_content(ext_data)
+        }
+        ExtensionId::RECORD_SIZE_LIMIT => {
+            let (i, v) = be_u16(ext_data)?;
+            Ok((i, ClientHelloExtension::RecordSizeLimit(v)))
+        },
         _ => Ok((
             i,
             ClientHelloExtension::Opaque {
@@ -246,6 +252,16 @@ fn parse_tls_extension_alpn_content(i: &[u8]) -> IResult<&[u8], ClientHelloExten
             parse_protocol_name_list,
             ClientHelloExtension::ApplicationLayerProtocolNegotiation,
         ),
+    )
+    .parse(i)
+}
+
+fn parse_tls_extension_certificate_compression_content(
+    i: &[u8],
+) -> IResult<&[u8], ClientHelloExtension> {
+    map_parser(
+        length_data(be_u8),
+        map(parse_u16_type, ClientHelloExtension::CertificateCompression),
     )
     .parse(i)
 }
