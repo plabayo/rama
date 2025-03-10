@@ -125,7 +125,7 @@ fn parse_tls_client_hello_extension(i: &[u8]) -> IResult<&[u8], ClientHelloExten
         ExtensionId::RECORD_SIZE_LIMIT => {
             let (i, v) = be_u16(ext_data)?;
             Ok((i, ClientHelloExtension::RecordSizeLimit(v)))
-        },
+        }
         _ => Ok((
             i,
             ClientHelloExtension::Opaque {
@@ -307,7 +307,10 @@ mod tests {
 
     use super::*;
     use crate::address::Domain;
-    use crate::tls::{ECPointFormat, ExtensionId, SignatureScheme, SupportedGroup};
+    use crate::tls::{
+        CertificateCompressionAlgorithm, ECPointFormat, ExtensionId, SignatureScheme,
+        SupportedGroup,
+    };
 
     #[test]
     fn test_parse_tls_extension_sni_hostname() {
@@ -507,10 +510,9 @@ mod tests {
                 ProtocolVersion::TLSv1_0,
             ],
         );
-        assert_eq_opaque_extension(
+        assert_eq_supported_certificate_compression_extension(
             &client_hello.extensions()[13],
-            ExtensionId::COMPRESS_CERTIFICATE,
-            &[0x02, 0x00, 0x01],
+            &[CertificateCompressionAlgorithm::Zlib],
         );
         assert_eq_opaque_extension(
             &client_hello.extensions()[14],
@@ -629,6 +631,20 @@ mod tests {
         match ext {
             ClientHelloExtension::SupportedVersions(version_list) => {
                 assert_eq!(version_list, expected_version_list);
+            }
+            other => {
+                panic!("unexpected extension: {other:?}");
+            }
+        }
+    }
+
+    fn assert_eq_supported_certificate_compression_extension(
+        ext: &ClientHelloExtension,
+        expected_certificate_compression: &[CertificateCompressionAlgorithm],
+    ) {
+        match ext {
+            ClientHelloExtension::CertificateCompression(algorithms) => {
+                assert_eq!(algorithms, expected_certificate_compression);
             }
             other => {
                 panic!("unexpected extension: {other:?}");

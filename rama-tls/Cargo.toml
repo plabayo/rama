@@ -20,9 +20,9 @@ boring = ["dep:boring", "dep:tokio-boring", "rama-net/boring", "dep:moka"]
 compression = ["dep:flate2", "dep:brotli"]
 
 [dependencies]
-flate2 = { workspace = true, optional = true }
-brotli = { workspace = true, optional = true }
 boring = { workspace = true, optional = true }
+brotli = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
 itertools = { workspace = true }
 moka = { workspace = true, features = ["sync"], optional = true }

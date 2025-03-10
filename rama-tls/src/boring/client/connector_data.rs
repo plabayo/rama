@@ -183,7 +183,10 @@ impl TlsConnectorData {
 
         if let Some(limit) = self.connect_config_input.record_size_limit {
             // TODO fork boring and implement record size limit
-            debug!("boring connector: set record size limit: {}; ignore as it is not yet supported", limit);
+            debug!(
+                "boring connector: set record size limit: {}; ignore as it is not yet supported",
+                limit
+            );
         }
 
         match self
@@ -432,7 +435,7 @@ impl TlsConnectorData {
         let mut signed_cert_timestamps_enabled = false;
         let mut certificate_compression_algorithms = None;
         let mut record_size_limit = None;
-    
+
         for cfg in cfg_it {
             cipher_suites = cfg.cipher_suites.as_ref().or(cipher_suites);
             keylog_intent = cfg.key_logger.as_ref().or(keylog_intent);
