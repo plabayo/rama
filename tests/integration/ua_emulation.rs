@@ -8,6 +8,7 @@ use rama::http::{HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
 use rama::net::fingerprint::{Ja3, Ja4, Ja4H};
 use rama::net::stream::Socket;
+use rama::net::tls::ApplicationProtocol;
 use rama::net::tls::client::{ClientConfig, ServerVerifyMode};
 use rama::net::tls::client::{extract_client_config_from_ctx, parse_client_hello};
 use rama::net::tls::server::ServerAuth;
@@ -21,18 +22,20 @@ use rama::ua::emulate::{
     UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
 };
 use rama::ua::profile::HttpProfile;
+use rama::ua::profile::UserAgentDatabase;
 use rama::ua::profile::{
     Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile,
 };
 use rama::ua::profile::{TlsProfile, UserAgentProfile};
 use rama::ua::{PlatformKind, UserAgentKind};
 use rama::{Context, Layer, Service};
-use rama_net::tls::ApplicationProtocol;
 use std::convert::Infallible;
 use std::fmt;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
+use tokio::task::JoinSet;
 
 #[derive(Debug)]
 struct TestCase {
@@ -56,8 +59,6 @@ struct TestCaseExpected {
 
 #[tokio::test]
 async fn test_ua_emulation() {
-    // TODO: spawn server and client
-
     let test_cases = [
         TestCase {
             description: "MacOS Firefox 135 at 2025-03-09 @ https://echo.ramaproxy.org",
@@ -335,9 +336,85 @@ async fn test_ua_emulation() {
     }
 }
 
-// TODO: also test if all embedded profiles actually work, as in past
-// we had some cases where embedded profiles had stuff we didn't correct yet,
-// such as duplicate tls values or grease that we took as-is.
+#[tokio::test]
+async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
+    let ua_db = UserAgentDatabase::embedded();
+    assert!(!ua_db.is_empty(), "no profiles found");
+
+    let counter = Arc::new(AtomicUsize::new(0));
+
+    let mut handles = JoinSet::new();
+    for profile in ua_db.iter() {
+        let profile = Arc::new(profile.clone());
+        let counter = counter.clone();
+
+        handles.spawn(async move {
+            #[derive(Debug, Clone)]
+            struct State {
+                counter: Arc<AtomicUsize>,
+            }
+
+            async fn server_svc_fn(
+                ctx: Context<State>,
+                _req: Request,
+            ) -> Result<Response, Infallible> {
+                ctx.state()
+                    .counter
+                    .fetch_add(1, std::sync::atomic::Ordering::Release);
+                Ok(Response::new(Body::empty()))
+            }
+
+            let client = UserAgentEmulateLayer::new(profile).layer(service_fn(
+                async move |ctx: Context<State>, req: Request| {
+                    let mut chain_ref = extract_client_config_from_ctx(&ctx).unwrap();
+                    chain_ref.append(ClientConfig {
+                        server_verify_mode: Some(ServerVerifyMode::Disable),
+                        ..Default::default()
+                    });
+                    let tls_connector_data =
+                        TlsConnectorData::try_from_multiple_client_configs(chain_ref.iter())
+                            .unwrap();
+                    let connector = HttpConnector::new(
+                        TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn)))
+                            .with_connector_data(tls_connector_data),
+                    )
+                    .with_jit_req_inspector((
+                        HttpsAlpnModifier::default(),
+                        UserAgentEmulateHttpConnectModifier::default(),
+                    ))
+                    .with_svc_req_inspector(UserAgentEmulateHttpRequestModifier::default());
+
+                    let EstablishedClientConnection { ctx, req, conn } =
+                        connector.serve(ctx, req).await.unwrap();
+
+                    Ok::<_, Infallible>(conn.serve(ctx, req).await.unwrap())
+                },
+            ));
+
+            let ctx = Context::with_state(State {
+                counter: counter.clone(),
+            });
+
+            client
+                .serve(
+                    ctx,
+                    Request::builder()
+                        .uri("https://www.example.com")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+        });
+    }
+
+    handles.join_all().await;
+
+    assert_eq!(
+        counter.load(std::sync::atomic::Ordering::Acquire),
+        ua_db.len()
+    );
+}
 
 struct MockConnectorService<S> {
     serve_svc: S,
