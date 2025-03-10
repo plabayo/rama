@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::address::Host;
+use crate::tls::enums::CertificateCompressionAlgorithm;
 use crate::tls::{
     ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme,
     SupportedGroup, enums::CompressionAlgorithm,
@@ -198,6 +199,18 @@ pub enum ClientHelloExtension {
     ///
     /// - <https://www.iana.org/go/rfc8446>
     SupportedVersions(Vec<ProtocolVersion>),
+    /// The algorithm used to compress the certificate.
+    ///
+    /// # Reference
+    ///
+    /// - <https://datatracker.ietf.org/doc/html/rfc8879>
+    CertificateCompression(Vec<CertificateCompressionAlgorithm>),
+    /// The maximum size of a record.
+    ///
+    /// # Reference
+    ///
+    /// - <https://datatracker.ietf.org/doc/html/rfc8449>
+    RecordSizeLimit(u16),
     /// Any extension not supported by Rama,
     /// as it is still to be done or considered out of scope.
     Opaque {
@@ -220,6 +233,8 @@ impl ClientHelloExtension {
                 ExtensionId::APPLICATION_LAYER_PROTOCOL_NEGOTIATION
             }
             ClientHelloExtension::SupportedVersions(_) => ExtensionId::SUPPORTED_VERSIONS,
+            ClientHelloExtension::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
+            ClientHelloExtension::RecordSizeLimit(_) => ExtensionId::RECORD_SIZE_LIMIT,
             ClientHelloExtension::Opaque { id, .. } => *id,
         }
     }

@@ -15,8 +15,8 @@ pub use hello::{ClientHello, ClientHelloExtension};
 #[cfg(any(test, feature = "boring"))]
 mod parser;
 
-#[cfg(test)]
-pub(crate) use parser::parse_client_hello;
+#[cfg(any(test, feature = "boring"))]
+pub use parser::parse_client_hello;
 
 mod config;
 #[doc(inline)]

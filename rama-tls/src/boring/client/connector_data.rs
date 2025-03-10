@@ -12,14 +12,22 @@ use boring::{
 };
 use itertools::Itertools;
 use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
-use rama_net::tls::{ApplicationProtocol, KeyLogIntent, openssl_cipher_list_str_from_cipher_list};
+use rama_net::tls::{
+    ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
+    openssl_cipher_list_str_from_cipher_list,
+};
 use rama_net::tls::{
     DataEncoding,
     client::{ClientAuth, ClientHelloExtension},
 };
 use rama_net::{address::Host, tls::client::ServerVerifyMode};
 use std::{fmt, sync::Arc};
-use tracing::trace;
+use tracing::{debug, trace};
+
+#[cfg(feature = "compression")]
+use crate::boring::client::compress_certificate::{
+    BrotliCertificateCompressor, ZlibCertificateCompressor,
+};
 
 use crate::keylog::new_key_log_file_handle;
 
@@ -44,6 +52,11 @@ pub(super) struct ConnectConfigurationInput {
     pub(super) server_verify_mode: Option<ServerVerifyMode>,
     pub(super) client_auth: Option<ConnectorConfigClientAuth>,
     pub(super) store_server_certificate_chain: bool,
+    pub(super) grease_enabled: bool,
+    pub(super) ocsp_stapling_enabled: bool,
+    pub(super) signed_cert_timestamps_enabled: bool,
+    pub(super) certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
+    pub(super) record_size_limit: Option<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -128,8 +141,60 @@ impl TlsConnectorData {
             )?;
         }
 
-        // TODO: support grease, need to first detect it from config / client hello
-        // cfg_builder.set_grease_enabled(true);
+        cfg_builder.set_grease_enabled(self.connect_config_input.grease_enabled);
+
+        if self.connect_config_input.ocsp_stapling_enabled {
+            cfg_builder.enable_ocsp_stapling();
+        }
+
+        if self.connect_config_input.signed_cert_timestamps_enabled {
+            cfg_builder.enable_signed_cert_timestamps();
+        }
+
+        for compressor in self
+            .connect_config_input
+            .certificate_compression_algorithms
+            .iter()
+            .flatten()
+        {
+            #[cfg(feature = "compression")]
+            match compressor {
+                CertificateCompressionAlgorithm::Zlib => {
+                    cfg_builder.add_certificate_compression_algorithm(ZlibCertificateCompressor::default()).context("build (boring) ssl connector: add certificate compression algorithm: zlib")?;
+                }
+                CertificateCompressionAlgorithm::Brotli => {
+                    cfg_builder.add_certificate_compression_algorithm(
+                        BrotliCertificateCompressor::default(),
+                    )
+                    .context("build (boring) ssl connector: add certificate compression algorithm: brotli")?;
+                }
+                CertificateCompressionAlgorithm::Zstd => {
+                    // TODO fork boring and implement zstd compression
+                    debug!(
+                        "boring connector: certificate compression algorithm: zstd: not (yet) supported: ignore"
+                    );
+                }
+                _ => {
+                    debug!("boring connector: certificate compression algorithm: unknown: ignore");
+                }
+            }
+            #[cfg(not(feature = "compression"))]
+            {
+                debug!(
+                    "boring connector: certificate compression algorithm: {compressor}: not supported (feature compression not enabled)"
+                );
+            }
+        }
+
+        // TODO: support ext DELEGATED_CREDENTIAL
+
+        if let Some(limit) = self.connect_config_input.record_size_limit {
+            // TODO fork boring and implement record size limit
+            debug!(
+                "boring connector: set record size limit: {}; ignore as it is not yet supported",
+                limit
+            );
+        }
 
         match self
             .connect_config_input
@@ -235,9 +300,39 @@ impl TlsConnectorData {
                     .client_auth
                     .clone()
                     .or_else(|| self.connect_config_input.client_auth.clone()),
-                store_server_certificate_chain: other
+                store_server_certificate_chain: self
                     .connect_config_input
-                    .store_server_certificate_chain,
+                    .store_server_certificate_chain
+                    || other.connect_config_input.store_server_certificate_chain,
+                grease_enabled: self.connect_config_input.grease_enabled
+                    || other.connect_config_input.grease_enabled,
+                ocsp_stapling_enabled: self.connect_config_input.ocsp_stapling_enabled
+                    || other.connect_config_input.ocsp_stapling_enabled,
+                signed_cert_timestamps_enabled: self
+                    .connect_config_input
+                    .signed_cert_timestamps_enabled
+                    || other.connect_config_input.signed_cert_timestamps_enabled,
+                certificate_compression_algorithms: {
+                    let v: Vec<_> = other
+                        .connect_config_input
+                        .certificate_compression_algorithms
+                        .iter()
+                        .flatten()
+                        .chain(
+                            self.connect_config_input
+                                .certificate_compression_algorithms
+                                .iter()
+                                .flatten(),
+                        )
+                        .copied()
+                        .dedup()
+                        .collect();
+                    if v.is_empty() { None } else { Some(v) }
+                },
+                record_size_limit: other
+                    .connect_config_input
+                    .record_size_limit
+                    .or_else(|| self.connect_config_input.record_size_limit),
             }),
             server_name: other
                 .server_name
@@ -342,6 +437,11 @@ impl TlsConnectorData {
         let mut server_verify_mode = None;
         let mut store_server_certificate_chain = false;
         let mut client_auth = None;
+        let mut grease_enabled = false;
+        let mut ocsp_stapling_enabled = false;
+        let mut signed_cert_timestamps_enabled = false;
+        let mut certificate_compression_algorithms = None;
+        let mut record_size_limit = None;
 
         for cfg in cfg_it {
             cipher_suites = cfg.cipher_suites.as_ref().or(cipher_suites);
@@ -397,6 +497,7 @@ impl TlsConnectorData {
                         );
                         curves = Some(groups.iter().filter_map(|c| {
                             if c.is_grease() {
+                                grease_enabled = true;
                                 trace!("ignore grease support group (curve) {c}");
                                 return None;
                             }
@@ -416,7 +517,18 @@ impl TlsConnectorData {
                             versions
                         );
 
-                        if let Some(min_ver) = versions.iter().filter(|v| !v.is_grease()).min() {
+                        if let Some(min_ver) = versions
+                            .iter()
+                            .filter(|v| {
+                                if v.is_grease() {
+                                    grease_enabled = true;
+                                    trace!("ignore grease support version {v}");
+                                    return false;
+                                }
+                                true
+                            })
+                            .min()
+                        {
                             trace!(
                                 "TlsConnectorData: builder: from std client config: min version: {:?}",
                                 min_ver
@@ -427,7 +539,18 @@ impl TlsConnectorData {
                             })?);
                         }
 
-                        if let Some(max_ver) = versions.iter().filter(|v| !v.is_grease()).max() {
+                        if let Some(max_ver) = versions
+                            .iter()
+                            .filter(|v| {
+                                if v.is_grease() {
+                                    grease_enabled = true;
+                                    trace!("ignore grease support version {v}");
+                                    return false;
+                                }
+                                true
+                            })
+                            .max()
+                        {
                             trace!(
                                 "TlsConnectorData: builder: from std client config: max version: {:?}",
                                 max_ver
@@ -445,6 +568,7 @@ impl TlsConnectorData {
                         );
                         verify_algorithm_prefs = Some(schemes.iter().filter_map(|s| {
                             if s.is_grease() {
+                                grease_enabled = true;
                                 trace!("ignore grease signatured schemes {s}");
                                 return None;
                             }
@@ -452,15 +576,39 @@ impl TlsConnectorData {
                             match (*s).try_into() {
                                 Ok(v) => Some(v),
                                 Err(s) => {
-                                trace!("ignore unsupported signatured schemes {s} (file issue if you require it");
-                                None
+                                    trace!("ignore unsupported signatured schemes {s} (file issue if you require it");
+                                    None
                                 }
-                                }
+                            }
                         }).dedup().collect());
                     }
-                    other => {
-                        trace!(ext = ?other, "TlsConnectorData: builder: from std client config: ignore client hello ext");
+                    ClientHelloExtension::CertificateCompression(algorithms) => {
+                        trace!(
+                            "TlsConnectorData: builder: from std client config: certificate compression algorithms: {:?}",
+                            algorithms
+                        );
+                        certificate_compression_algorithms = Some(algorithms.clone());
                     }
+                    ClientHelloExtension::RecordSizeLimit(limit) => {
+                        trace!(
+                            "TlsConnectorData: builder: from std client config: record size limit: {:?}",
+                            limit
+                        );
+                        record_size_limit = Some(*limit);
+                    }
+                    other => match other.id() {
+                        ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
+                            trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable ocsp stapling");
+                            ocsp_stapling_enabled = true;
+                        }
+                        ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP => {
+                            trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable signed cert timestamps");
+                            signed_cert_timestamps_enabled = true;
+                        }
+                        _ => {
+                            trace!(ext = ?other, "TlsConnectorData: builder: from std client config: ignore client hello ext");
+                        }
+                    },
                 }
             }
         }
@@ -538,6 +686,11 @@ impl TlsConnectorData {
                 server_verify_mode,
                 client_auth,
                 store_server_certificate_chain,
+                grease_enabled,
+                ocsp_stapling_enabled,
+                signed_cert_timestamps_enabled,
+                certificate_compression_algorithms,
+                record_size_limit,
             }),
             server_name,
         })
@@ -563,6 +716,11 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
         let mut min_ssl_version = None;
         let mut max_ssl_version = None;
         let mut verify_algorithm_prefs = None;
+        let mut grease_enabled = false;
+        let mut ocsp_stapling_enabled = false;
+        let mut signed_cert_timestamps_enabled = false;
+        let mut certificate_compression_algorithms = None;
+        let mut record_size_limit = None;
 
         // use the extensions that we can use for the builder
         for extension in value.extensions.iter().flatten() {
@@ -608,13 +766,20 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                         "TlsConnectorData: builder: from std client config: supported groups: {:?}",
                         groups
                     );
-                    curves = Some(groups.iter().filter_map(|c| match (*c).try_into() {
-                        Ok(v) => Some(v),
-                        Err(c) => {
-                            trace!("ignore unsupported support group (curve) {c} (file issue if you require it");
-                            None
+                    curves = Some(groups.iter().filter_map(|c| {
+                        if c.is_grease() {
+                            grease_enabled = true;
+                            trace!("ignore grease support group (curve) {c}");
+                            return None;
                         }
-                    }).collect());
+                        match (*c).try_into() {
+                            Ok(v) => Some(v),
+                            Err(c) => {
+                                trace!("ignore unsupported support group (curve) {c} (file issue if you require it");
+                                None
+                            }
+                        }
+                    }).dedup().collect());
                 }
                 ClientHelloExtension::SupportedVersions(versions) => {
                     trace!(
@@ -622,7 +787,18 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                         versions
                     );
 
-                    if let Some(min_ver) = versions.iter().filter(|v| !v.is_grease()).min() {
+                    if let Some(min_ver) = versions
+                        .iter()
+                        .filter(|v| {
+                            if v.is_grease() {
+                                grease_enabled = true;
+                                trace!("ignore grease support version {v}");
+                                return false;
+                            }
+                            true
+                        })
+                        .min()
+                    {
                         trace!(
                             "TlsConnectorData: builder: from std client config: min version: {:?}",
                             min_ver
@@ -633,7 +809,18 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                         })?);
                     }
 
-                    if let Some(max_ver) = versions.iter().filter(|v| !v.is_grease()).max() {
+                    if let Some(max_ver) = versions
+                        .iter()
+                        .filter(|v| {
+                            if v.is_grease() {
+                                grease_enabled = true;
+                                trace!("ignore grease support version {v}");
+                                return false;
+                            }
+                            true
+                        })
+                        .max()
+                    {
                         trace!(
                             "TlsConnectorData: builder: from std client config: max version: {:?}",
                             max_ver
@@ -649,17 +836,48 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                         "TlsConnectorData: builder: from std client config: signature algorithms: {:?}",
                         schemes
                     );
-                    verify_algorithm_prefs = Some(schemes.iter().filter_map(|s| match (*s).try_into() {
-                        Ok(v) => Some(v),
-                        Err(s) => {
-                            trace!("ignore unsupported signatured schemes {s} (file issue if you require it");
-                            None
+                    verify_algorithm_prefs = Some(schemes.iter().filter_map(|s| {
+                        if s.is_grease() {
+                            grease_enabled = true;
+                            trace!("ignore grease support version {s}");
+                            return None;
                         }
-                    }).collect());
+                        match (*s).try_into() {
+                            Ok(v) => Some(v),
+                            Err(s) => {
+                                trace!("ignore unsupported signatured schemes {s} (file issue if you require it");
+                            None
+                            }
+                        }
+                    }).dedup().collect());
                 }
-                other => {
-                    trace!(ext = ?other, "TlsConnectorData: builder: from std client config: ignore client hello ext");
+                ClientHelloExtension::CertificateCompression(algorithms) => {
+                    trace!(
+                        "TlsConnectorData: builder: from std client config: certificate compression algorithms: {:?}",
+                        algorithms
+                    );
+                    certificate_compression_algorithms = Some(algorithms.clone());
                 }
+                ClientHelloExtension::RecordSizeLimit(limit) => {
+                    trace!(
+                        "TlsConnectorData: builder: from std client config: record size limit: {:?}",
+                        limit
+                    );
+                    record_size_limit = Some(*limit);
+                }
+                other => match other.id() {
+                    ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
+                        trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable ocsp stapling");
+                        ocsp_stapling_enabled = true;
+                    }
+                    ExtensionId::SIGNED_CERTIFICATE_TIMESTAMP => {
+                        trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable signed cert timestamps");
+                        signed_cert_timestamps_enabled = true;
+                    }
+                    _ => {
+                        trace!(ext = ?other, "TlsConnectorData: builder: from std client config: ignore client hello ext");
+                    }
+                },
             }
         }
 
@@ -728,6 +946,11 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
                 server_verify_mode: value.server_verify_mode,
                 client_auth,
                 store_server_certificate_chain: value.store_server_certificate_chain,
+                grease_enabled,
+                ocsp_stapling_enabled,
+                signed_cert_timestamps_enabled,
+                certificate_compression_algorithms,
+                record_size_limit,
             }),
             server_name,
         })

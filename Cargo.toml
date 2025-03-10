@@ -222,7 +222,7 @@ full = [
     "proxy-full",
 ]
 telemetry = ["rama-core/telemetry", "rama-net/telemetry", "rama-http/telemetry"]
-compression = ["http", "rama-http/compression"]
+compression = ["http", "rama-http/compression", "rama-tls/compression"]
 tls = ["net", "dep:rama-tls", "rama-net/tls", "rama-http/tls", "rama-http-backend/tls", "rama-ua/tls"]
 rustls = ["tls", "rama-tls/rustls", "rama-net/rustls", "rama-http-backend/rustls"]
 boring = ["tls", "rama-tls/boring", "rama-net/boring", "rama-http-backend/boring"]
