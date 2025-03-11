@@ -2652,6 +2652,7 @@ dependencies = [
 name = "rama-net"
 version = "0.2.0-alpha.8"
 dependencies = [
+ "aws-lc-sys",
  "base64 0.22.1",
  "boring",
  "bytes",
