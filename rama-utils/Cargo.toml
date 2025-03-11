@@ -14,9 +14,9 @@ rust-version = { workspace = true }
 workspace = true
 
 [dependencies]
-paste = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
+rama-macros = { version = "0.2.0-alpha.7", path = "../rama-macros" }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, features = ["time", "macros"] }
 

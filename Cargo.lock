@@ -2662,6 +2662,7 @@ dependencies = [
  "quickcheck",
  "rama-core",
  "rama-http-types",
+ "rama-macros",
  "rama-utils",
  "rustls",
  "serde",
@@ -2766,9 +2767,9 @@ name = "rama-utils"
 version = "0.2.0-alpha.7"
 dependencies = [
  "parking_lot",
- "paste",
  "pin-project-lite",
  "quickcheck",
+ "rama-macros",
  "serde",
  "serde_json",
  "tokio",

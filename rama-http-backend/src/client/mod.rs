@@ -56,16 +56,18 @@ pub struct EasyHttpWebClient<I1 = (), I2 = (), P = ()> {
     tls_config: Option<Arc<ClientConfig>>,
     #[cfg(any(feature = "rustls", feature = "boring"))]
     proxy_tls_config: Option<Arc<ClientConfig>>,
+    connection_pool: P,
     http_req_inspector_jit: I1,
     http_req_inspector_svc: I2,
 }
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2> {
+impl<I1: fmt::Debug, I2: fmt::Debug, P: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EasyHttpWebClient")
             .field("tls_config", &self.tls_config)
             .field("proxy_tls_config", &self.proxy_tls_config)
+            .field("connection_pool", &self.connection_pool)
             .field("http_req_inspector_jit", &self.http_req_inspector_jit)
             .field("http_req_inspector_svc", &self.http_req_inspector_svc)
             .finish()
@@ -73,9 +75,10 @@ impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2> {
 }
 
 #[cfg(not(any(feature = "rustls", feature = "boring")))]
-impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2> {
+impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EasyHttpWebClient")
+            .field("connection_pool", &self.connection_pool)
             .field("http_req_inspector_jit", &self.http_req_inspector_jit)
             .field("http_req_inspector_svc", &self.http_req_inspector_svc)
             .finish()
@@ -83,11 +86,12 @@ impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2> {
 }
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-impl<I1: Clone, I2: Clone> Clone for EasyHttpWebClient<I1, I2> {
+impl<I1: Clone, I2: Clone, P: Clone> Clone for EasyHttpWebClient<I1, I2, P> {
     fn clone(&self) -> Self {
         Self {
             tls_config: self.tls_config.clone(),
             proxy_tls_config: self.proxy_tls_config.clone(),
+            connection_pool: self.connection_pool.clone(),
             http_req_inspector_jit: self.http_req_inspector_jit.clone(),
             http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
@@ -95,9 +99,10 @@ impl<I1: Clone, I2: Clone> Clone for EasyHttpWebClient<I1, I2> {
 }
 
 #[cfg(not(any(feature = "rustls", feature = "boring")))]
-impl<I1: Clone, I2: Clone> Clone for EasyHttpWebClient<I1, I2> {
+impl<I1: Clone, I2: Clone, P: Clone> Clone for EasyHttpWebClient<I1, I2, P> {
     fn clone(&self) -> Self {
         Self {
+            connection_pool: self.connection_pool.clone(),
             http_req_inspector_jit: self.http_req_inspector_jit.clone(),
             http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
@@ -224,8 +229,8 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> HttpClient<Pool<S>> {
-        HttpClient {
+    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> EasyHttpWebClient<I1, I2, Pool<S>> {
+        EasyHttpWebClient {
             tls_config: self.tls_config,
             proxy_tls_config: self.proxy_tls_config,
             http_req_inspector_jit: self.http_req_inspector_jit,
@@ -235,8 +240,8 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    pub fn without_connection_pool(self) -> HttpClient {
-        HttpClient {
+    pub fn without_connection_pool(self) -> EasyHttpWebClient<I1, I2, ()> {
+        EasyHttpWebClient {
             tls_config: self.tls_config,
             proxy_tls_config: self.proxy_tls_config,
             http_req_inspector_jit: self.http_req_inspector_jit,
@@ -246,8 +251,8 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
     }
 
     #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> HttpClient<Pool<S>> {
-        HttpClient {
+    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> EasyHttpWebClient<I1, I2, Pool<S>> {
+        EasyHttpWebClient {
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: self.http_req_inspector_svc,
             connection_pool: pool,
@@ -255,8 +260,8 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
     }
 
     #[cfg(not(any(feature = "rustls", feature = "boring")))]
-    pub fn without_connection_pool(self) -> HttpClient {
-        HttpClient {
+    pub fn without_connection_pool(self) -> EasyHttpWebClient<I1, I2, ()> {
+        EasyHttpWebClient {
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: self.http_req_inspector_svc,
             connection_pool: (),
@@ -276,36 +281,40 @@ impl<Body> ReqToConnID<Request<Body>> for HttpConnId {
     }
 }
 
-enum Connection<C, State, B> {
-    Direct(EstablishedClientConnection<C, State, Request<B>>),
-    Pooled(EstablishedClientConnection<LeasedConnection<C, String>, State, Request<B>>),
+enum Connection<C, State, Request> {
+    Direct(EstablishedClientConnection<C, State, Request>),
+    Pooled(EstablishedClientConnection<LeasedConnection<C, String>, State, Request>),
 }
 
-trait Connector<C, State, B>: Send + Sync + 'static {
+trait Connector<C, State, Request>: Send + Sync + 'static {
     fn connection<T>(
         &self,
         connector: T,
         ctx: Context<State>,
-        req: Request<B>,
-    ) -> impl Future<Output = Result<Connection<C, State, B>, OpaqueError>> + Send
+        req: Request,
+    ) -> impl Future<Output = Result<Connection<C, State, Request>, OpaqueError>> + Send
     where
         State: Send,
-        B: Send,
-        T: ConnectorService<State, Request<B>, Connection = C>,
+        Request: Send,
+        T: ConnectorService<State, Request, Connection = C>,
         T::Error: Send + 'static;
 }
 
-impl<C, State, B, I1, I2> Connector<C, State, B> for HttpClient<(), I1, I2> {
+impl<C, State, Request, I1, I2> Connector<C, State, Request> for EasyHttpWebClient<I1, I2, ()>
+where
+    I1: Send + Sync + 'static,
+    I2: Send + Sync + 'static,
+{
     async fn connection<T>(
         &self,
         connector: T,
         ctx: Context<State>,
-        req: Request<B>,
-    ) -> Result<Connection<C, State, B>, OpaqueError>
+        req: Request,
+    ) -> Result<Connection<C, State, Request>, OpaqueError>
     where
         State: Send,
-        B: Send,
-        T: ConnectorService<State, Request<B>, Connection = C>,
+        Request: Send,
+        T: ConnectorService<State, Request, Connection = C>,
         T::Error: Send + Into<BoxError> + 'static,
     {
         let result = connector.connect(ctx, req).await.map_err(|err| {
@@ -315,26 +324,30 @@ impl<C, State, B, I1, I2> Connector<C, State, B> for HttpClient<(), I1, I2> {
     }
 }
 
-impl<C, State, B, S, I1, I2> Connector<C, State, B> for HttpClient<Pool<S>, I1, I2>
+impl<C, State, Request, S, I1, I2> Connector<C, State, Request>
+    for EasyHttpWebClient<I1, I2, Pool<S>>
 where
     C: Send,
     S: PoolStorage<ConnID = String, Connection = C>,
     State: Send + Sync + Clone + 'static,
-    B: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+    Request: Send + 'static,
+    I1: Send + Sync + 'static,
+    I2: Send + Sync + 'static,
 {
     async fn connection<T>(
         &self,
         connector: T,
         ctx: Context<State>,
-        req: Request<B>,
-    ) -> Result<Connection<C, State, B>, OpaqueError>
+        req: Request,
+    ) -> Result<Connection<C, State, Request>, OpaqueError>
     where
-        T: ConnectorService<State, Request<B>, Connection = C>,
+        T: ConnectorService<State, Request, Connection = C>,
         T::Error: Send + 'static,
     {
         let pool = self.connection_pool.clone();
         let connector = PooledConnector::new(connector, pool, HttpConnId {});
         // TODO map
+        let connector = connector as PooledConnector<T, S, HttpConnId>;
         let result = connector.connect(ctx, req).await.map_err(|err| {
             OpaqueError::from_boxed(err).with_context(|| format!("pooled connector failed"))
         })?;
@@ -342,12 +355,13 @@ where
     }
 }
 
-impl<State, Body, P> Service<State, Request<Body>> for HttpClient<P>
+impl<State, BodyIn, BodyOut, P, I1, I2> Service<State, Request<BodyIn>>
+    for EasyHttpWebClient<I1, I2, P>
 where
     // S: PoolStorage<Connection = HttpClientService<Body>, ConnID = String>,
     // S: Send + Sync + 'static,
     // HttpClient<P>: MaybePooledConnector<State, Body>,
-    HttpClient<P>: Connector<HttpClientService<Body>, State, Body>,
+    EasyHttpWebClient<I1, I2, P>: Connector<HttpClientService<BodyOut>, State, Request<BodyIn>>,
     State: Clone + Send + Sync + 'static,
     BodyIn: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
@@ -454,21 +468,24 @@ where
         // set the runtime http req inspector
         let connector = connector.with_svc_req_inspector(self.http_req_inspector_svc.clone());
 
-        let connection = self.connection(connector, ctx, req).await?;
+        let EstablishedClientConnection { ctx, req, conn } = connector.connect(ctx, req).await;
+
+        let result = conn.serve(ctx, req).await;
+        // let connection = self.connection(connector, ctx, req).await?;
         trace!(uri = %uri, "send http req to connector stack");
         // let resp = conn.serve(ctx, req).await.map_err(|err| {
         //     OpaqueError::from_boxed(err)
         //         .with_context(|| format!("http request failure for uri: {uri}"))
         // })?;
 
-        let result = match connection {
-            Connection::Direct(EstablishedClientConnection { ctx, req, conn }) => {
-                conn.serve(ctx, req).await
-            }
-            Connection::Pooled(EstablishedClientConnection { ctx, req, conn }) => {
-                conn.serve(ctx, req).await
-            }
-        };
+        // let result = match connection {
+        //     Connection::Direct(EstablishedClientConnection { ctx, req, conn }) => {
+        //         conn.serve(ctx, req).await
+        //     }
+        //     Connection::Pooled(EstablishedClientConnection { ctx, req, conn }) => {
+        //         conn.serve(ctx, req).await
+        //     }
+        // };
 
         let mut resp = result
             .map_err(|err| OpaqueError::from_boxed(err))

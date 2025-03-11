@@ -212,13 +212,11 @@ macro_rules! __nz {
 /// Create NonZero from literal
 pub use crate::__nz as nz;
 
-pub use paste::paste;
-
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __generate_field_setters {
     ($field: ident, $type: ty) => {
-        rama_utils::macros::paste! {
+        rama_macros::paste! {
             /// Set field with Some(value)
             pub fn [<set_ $field>](&mut self, $field: $type) -> &mut Self {
                 self.$field = Some($field);
