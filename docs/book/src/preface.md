@@ -141,6 +141,9 @@ Next to proxies, Rama can also be used to develop [Web Services](./web_servers.m
 [![Paypal Donation][paypal-badge]][paypal-url]
 [![Discord][discord-badge]][discord-url]
 
+> Rama also has a channel on the official Discord of the Tokio project.
+> Feel free to join us there as well: <https://discord.com/channels/500028886025895936/1349098858831024209>
+
 Please consult [the official docs.rs documentation][docs-url] or explore
 [the examples found in the `/examples` dir](https://github.com/plabayo/rama/tree/main/examples)
 to know how to use rama for your purposes.

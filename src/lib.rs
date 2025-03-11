@@ -121,6 +121,9 @@
 //!
 //! 💬 Come join us at [Discord](https://discord.gg/29EetaSYCD) on the `#rama` public channel. To ask questions, discuss ideas and ask how rama may be useful for you.
 //!
+//! > Rama also has a public channel on the official Discord of the tokio project.
+//! > Feel free to join us there instead or as well: <https://discord.com/channels/500028886025895936/1349098858831024209>
+//!
 //! [![rama banner](https://raw.githubusercontent.com/plabayo/rama/main/docs/img/rama_banner.jpeg)](https://ramaproxy.org/)
 //!
 //! ## 🧪 | Experimental

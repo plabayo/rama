@@ -163,6 +163,9 @@ Next to proxies, Rama can also be used to develop [Web Services](#--web-services
 
 💬 Come join us at [Discord][discord-url] on the `#rama` public channel. To ask questions, discuss ideas and ask how rama may be useful for you.
 
+> Rama also has a public channel on the official Discord of the tokio project.
+> Feel free to join us there instead or as well: <https://discord.com/channels/500028886025895936/1349098858831024209>
+
 ## ⌨️ | `rama` binary
 
 The `rama` binary allows you to use a lot of what `rama` has to offer without
