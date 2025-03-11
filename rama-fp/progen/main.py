@@ -49,7 +49,7 @@ def main():
                         if profile:
                             profiles.append(profile)
 
-                    f.write(json.dumps(profiles))
+                    f.write(json.dumps(profiles, sort_keys=True, indent=2))
 
                 print(f"Total profiles: {len(profiles)}")
 
