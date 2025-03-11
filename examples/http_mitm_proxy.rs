@@ -72,7 +72,7 @@ use rama::{
     tcp::server::TcpListener,
     tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
-use rama_http::layer::decompression::DecompressionLayer;
+use rama_http::layer::compress_adapter::CompressAdaptLayer;
 use rama_ua::{
     emulate::{
         UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
@@ -211,7 +211,7 @@ fn new_http_mitm_proxy(
             .optional(true),
         RemoveResponseHeaderLayer::hop_by_hop(),
         RemoveRequestHeaderLayer::hop_by_hop(),
-        DecompressionLayer::default().only_if_requested(true),
+        CompressAdaptLayer::default(),
         AddRequiredRequestHeadersLayer::new(),
     )
         .layer(service_fn(http_mitm_proxy))

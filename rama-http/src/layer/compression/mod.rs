@@ -75,7 +75,7 @@
 
 pub mod predicate;
 
-mod body;
+pub(crate) mod body;
 mod layer;
 mod pin_project_cfg;
 mod service;

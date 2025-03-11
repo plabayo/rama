@@ -8,7 +8,6 @@ use crate::{
     header::{self, ACCEPT_ENCODING},
 };
 use rama_core::{Context, Service};
-use rama_http_types::compression::DecompressIfPossible;
 use rama_http_types::headers::encoding::{AcceptEncoding, SupportedEncodings};
 use rama_utils::macros::define_inner_service_accessors;
 
@@ -21,7 +20,6 @@ use rama_utils::macros::define_inner_service_accessors;
 pub struct Decompression<S> {
     pub(crate) inner: S,
     pub(crate) accept: AcceptEncoding,
-    pub(crate) only_if_requested: bool,
 }
 
 impl<S> Decompression<S> {
@@ -30,7 +28,6 @@ impl<S> Decompression<S> {
         Self {
             inner: service,
             accept: AcceptEncoding::default(),
-            only_if_requested: false,
         }
     }
 
@@ -83,24 +80,6 @@ impl<S> Decompression<S> {
         self.accept.set_zstd(enable);
         self
     }
-
-    /// Sets whether to only decompress bodies if it is requested
-    /// via the response extension or request context.
-    ///
-    /// A request is made using the [`DecompressIfPossible`] marker type.
-    pub fn only_if_requested(mut self, enable: bool) -> Self {
-        self.only_if_requested = enable;
-        self
-    }
-
-    /// Sets whether to only decompress bodies if it is requested
-    /// via the response extension or request context.
-    ///
-    /// A request is made using the [`DecompressIfPossible`] marker type.
-    pub fn set_only_if_requested(&mut self, enable: bool) -> &mut Self {
-        self.only_if_requested = enable;
-        self
-    }
 }
 
 impl<S: fmt::Debug> fmt::Debug for Decompression<S> {
@@ -108,7 +87,6 @@ impl<S: fmt::Debug> fmt::Debug for Decompression<S> {
         f.debug_struct("Decompression")
             .field("inner", &self.inner)
             .field("accept", &self.accept)
-            .field("only_if_requested", &self.only_if_requested)
             .finish()
     }
 }
@@ -118,7 +96,6 @@ impl<S: Clone> Clone for Decompression<S> {
         Decompression {
             inner: self.inner.clone(),
             accept: self.accept,
-            only_if_requested: self.only_if_requested,
         }
     }
 }
@@ -144,21 +121,9 @@ where
             }
         }
 
-        let decompression_requested = ctx.contains::<DecompressIfPossible>();
-
         let res = self.inner.serve(ctx, req).await?;
 
         let (mut parts, body) = res.into_parts();
-
-        if self.only_if_requested
-            && !(decompression_requested
-                || parts.extensions.get::<DecompressIfPossible>().is_some())
-        {
-            return Ok(Response::from_parts(
-                parts,
-                DecompressionBody::new(BodyInner::identity(body)),
-            ));
-        }
 
         let res =
             if let header::Entry::Occupied(entry) = parts.headers.entry(header::CONTENT_ENCODING) {

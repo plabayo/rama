@@ -53,6 +53,8 @@ pub mod opentelemetry;
 pub(crate) mod util;
 
 #[cfg(feature = "compression")]
+pub mod compress_adapter;
+#[cfg(feature = "compression")]
 pub mod compression;
 #[cfg(feature = "compression")]
 pub mod decompression;

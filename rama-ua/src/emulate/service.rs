@@ -5,25 +5,13 @@ use rama_core::{
     error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_http_types::{
-    HeaderMap,
-    HeaderName,
-    IntoResponse,
-    Method,
-    Request,
-    Response,
-    Version,
-    // TODO: replace with a proper CompressionAdapterLayer instead,
-    // which will also re-encode in case encoding was requested :)
-    compression::DecompressIfPossible,
+    HeaderMap, HeaderName, Method, Request, Version,
     conn::Http1ClientContextParams,
     header::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
         REFERER, USER_AGENT,
     },
-    headers::{
-        ClientHint,
-        encoding::{Encoding, parse_accept_encoding_headers},
-    },
+    headers::ClientHint,
     proto::{
         h1::{
             Http1HeaderMap,
@@ -179,10 +167,10 @@ impl<State, Body, S, P> Service<State, Request<Body>> for UserAgentEmulateServic
 where
     State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
-    S: Service<State, Request<Body>, Response: IntoResponse, Error: Into<BoxError>>,
+    S: Service<State, Request<Body>, Error: Into<BoxError>>,
     P: UserAgentProvider<State>,
 {
-    type Response = Response;
+    type Response = S::Response;
     type Error = BoxError;
 
     async fn serve(
@@ -221,12 +209,7 @@ where
             Some(profile) => profile,
             None => {
                 return if self.optional {
-                    Ok(self
-                        .inner
-                        .serve(ctx, req)
-                        .await
-                        .map_err(Into::into)?
-                        .into_response())
+                    Ok(self.inner.serve(ctx, req).await.map_err(Into::into)?)
                 } else {
                     Err(OpaqueError::from_display(
                         "requirement not fulfilled: user agent profile could not be selected",
@@ -247,8 +230,6 @@ where
             ctx.get::<UserAgent>().and_then(|ua| ua.http_agent()),
             Some(HttpAgent::Preserve),
         );
-
-        let mut original_requested_encodings = None;
 
         if preserve_http {
             tracing::trace!(
@@ -282,13 +263,6 @@ where
                 }
                 req.extensions_mut().insert(headers);
             }
-
-            // track original encoding in case prolonged http emulation did indeed modify http emulation :)
-            original_requested_encodings = Some(
-                parse_accept_encoding_headers(req.headers(), true)
-                    .map(|qv| qv.value)
-                    .collect::<Vec<_>>(),
-            );
         }
 
         #[cfg(feature = "tls")]
@@ -336,27 +310,7 @@ where
         ctx.insert(SelectedUserAgentProfile::from(profile));
 
         // serve emulated http(s) request via inner service
-        let mut res = self
-            .inner
-            .serve(ctx, req)
-            .await
-            .map_err(Into::into)?
-            .into_response();
-
-        if let Some(original_requested_encodings) = original_requested_encodings {
-            if let Some(content_encoding) =
-                Encoding::maybe_from_content_encoding_header(res.headers(), true)
-            {
-                if !original_requested_encodings.contains(&content_encoding) {
-                    // Only request decompression if the server used a content-encoding
-                    // not listed in the original request's Accept-Encoding header
-                    // or because the callee didn't set this header at all.
-                    res.extensions_mut().insert(DecompressIfPossible::default());
-                }
-            }
-        }
-
-        Ok(res)
+        self.inner.serve(ctx, req).await.map_err(Into::into)
     }
 }
 
@@ -720,9 +674,7 @@ mod tests {
 
     use itertools::Itertools as _;
     use rama_core::{Layer, inspect::RequestInspectorLayer, service::service_fn};
-    use rama_http_types::{
-        Body, BodyExtractExt, HeaderValue, header::ETAG, proto::h1::Http1HeaderName,
-    };
+    use rama_http_types::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
 
     use crate::emulate::UserAgentEmulateLayer;
     use crate::profile::{
@@ -1324,8 +1276,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = ua_service.serve(Context::default(), req).await.unwrap();
-        let body = res.into_body().try_into_string().await.unwrap();
-        assert_eq!(body, "");
+        assert_eq!(res, "");
 
         let req = Request::builder()
             .method(Method::GET)
@@ -1333,8 +1284,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = ua_service.serve(Context::default(), req).await.unwrap();
-        let body = res.into_body().try_into_string().await.unwrap();
-        assert_eq!(body, "navigate");
+        assert_eq!(res, "navigate");
     }
 
     #[tokio::test]
@@ -1396,8 +1346,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = ua_service.serve(Context::default(), req).await.unwrap();
-        let body = res.into_body().try_into_string().await.unwrap();
-        assert_eq!(body, "navigate");
+        assert_eq!(res, "navigate");
     }
 
     #[tokio::test]
@@ -1469,8 +1418,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = ua_service.serve(Context::default(), req).await.unwrap();
-        let body = res.into_body().try_into_string().await.unwrap();
-        assert_eq!(body, "xhr");
+        assert_eq!(res, "xhr");
     }
 
     #[tokio::test]
@@ -1546,8 +1494,7 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         let res = ua_service.serve(Context::default(), req).await.unwrap();
-        let body = res.into_body().try_into_string().await.unwrap();
-        assert_eq!(body, "fetch");
+        assert_eq!(res, "fetch");
     }
 
     #[tokio::test]
@@ -1815,8 +1762,7 @@ mod tests {
             }
             let ctx = test_case.ctx.unwrap_or_default();
             let res = ua_service.serve(ctx, req).await.unwrap();
-            let body = res.into_body().try_into_string().await.unwrap();
-            assert_eq!(body, test_case.expected, "{}", test_case.description);
+            assert_eq!(res, test_case.expected, "{}", test_case.description);
         }
     }
 }

@@ -97,7 +97,7 @@
 
 mod request;
 
-mod body;
+pub(crate) mod body;
 mod layer;
 mod service;
 
