@@ -7,14 +7,14 @@ use libfuzzer_sys::{
 
 #[derive(Debug, Arbitrary)]
 struct HttpSpec {
-    uri: Vec<u8>,
+    uri: String,
     header_name: Vec<u8>,
     header_value: Vec<u8>,
 }
 
 async fn fuzz_entry(inp: HttpSpec) {
     if let Ok(req) = Request::builder()
-        .uri(&inp.uri[..])
+        .uri(inp.uri.as_bytes())
         .header(&inp.header_name[..], &inp.header_value[..])
         .body(())
     {
