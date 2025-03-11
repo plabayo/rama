@@ -11,9 +11,14 @@ use rama_core::{
     error::{BoxError, ErrorExt, OpaqueError},
     inspect::RequestInspector,
 };
-use rama_http_types::{Request, Response, dep::http_body};
-use rama_net::client::{ConnectorService, EstablishedClientConnection};
+use rama_http_core::service::HttpService;
+use rama_http_types::{Body, Request, Response, Uri, dep::http_body};
+use rama_net::client::{
+    ConnStoreFiFoReuseLruDrop, ConnectorService, EstablishedClientConnection, LeasedConnection,
+    Pool, PoolStorage, PooledConnector, ReqToConnID,
+};
 use rama_tcp::client::service::TcpConnector;
+use rama_utils::macros::nz;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_tls::std::client::{TlsConnector, TlsConnectorData};
@@ -46,12 +51,11 @@ pub mod proxy;
 /// passed through your "connector" setup. All this and more is possible by defining your own
 /// http client. Rama is here to empower you, the building blocks are there, go crazy
 /// with your own service fork and use the full power of Rust at your fingertips ;)
-pub struct EasyHttpWebClient<I1 = (), I2 = ()> {
+pub struct EasyHttpWebClient<I1 = (), I2 = (), P = ()> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_config: Option<Arc<ClientConfig>>,
     #[cfg(any(feature = "rustls", feature = "boring"))]
     proxy_tls_config: Option<Arc<ClientConfig>>,
-
     http_req_inspector_jit: I1,
     http_req_inspector_svc: I2,
 }
@@ -107,6 +111,7 @@ impl Default for EasyHttpWebClient {
             tls_config: None,
             #[cfg(any(feature = "rustls", feature = "boring"))]
             proxy_tls_config: None,
+            connection_pool: (),
             http_req_inspector_jit: (),
             http_req_inspector_svc: (),
         }
@@ -176,6 +181,7 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
             proxy_tls_config: self.proxy_tls_config,
             http_req_inspector_jit: http_req_inspector,
             http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: self.connection_pool,
         }
     }
 
@@ -187,6 +193,7 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
         EasyHttpWebClient {
             http_req_inspector_jit: http_req_inspector,
             http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: self.connection_pool,
         }
     }
 
@@ -200,6 +207,7 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
             proxy_tls_config: self.proxy_tls_config,
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: http_req_inspector,
+            connection_pool: self.connection_pool,
         }
     }
 
@@ -211,12 +219,135 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
         EasyHttpWebClient {
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: http_req_inspector,
+            connection_pool: self.connection_pool,
+        }
+    }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> HttpClient<Pool<S>> {
+        HttpClient {
+            tls_config: self.tls_config,
+            proxy_tls_config: self.proxy_tls_config,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: pool,
+        }
+    }
+
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    pub fn without_connection_pool(self) -> HttpClient {
+        HttpClient {
+            tls_config: self.tls_config,
+            proxy_tls_config: self.proxy_tls_config,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: (),
+        }
+    }
+
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> HttpClient<Pool<S>> {
+        HttpClient {
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: pool,
+        }
+    }
+
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    pub fn without_connection_pool(self) -> HttpClient {
+        HttpClient {
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: (),
         }
     }
 }
 
-impl<State, BodyIn, BodyOut, I1, I2> Service<State, Request<BodyIn>> for EasyHttpWebClient<I1, I2>
+/// Map http request to unique connection id so we can use a connection pool
+struct HttpConnId;
+
+impl<Body> ReqToConnID<Request<Body>> for HttpConnId {
+    type ConnID = String;
+
+    fn id(&self, request: &Request<Body>) -> Self::ConnID {
+        String::new()
+        // TODO get version, host, secure
+    }
+}
+
+enum Connection<C, State, B> {
+    Direct(EstablishedClientConnection<C, State, Request<B>>),
+    Pooled(EstablishedClientConnection<LeasedConnection<C, String>, State, Request<B>>),
+}
+
+trait Connector<C, State, B>: Send + Sync + 'static {
+    fn connection<T>(
+        &self,
+        connector: T,
+        ctx: Context<State>,
+        req: Request<B>,
+    ) -> impl Future<Output = Result<Connection<C, State, B>, OpaqueError>> + Send
+    where
+        State: Send,
+        B: Send,
+        T: ConnectorService<State, Request<B>, Connection = C>,
+        T::Error: Send + 'static;
+}
+
+impl<C, State, B, I1, I2> Connector<C, State, B> for HttpClient<(), I1, I2> {
+    async fn connection<T>(
+        &self,
+        connector: T,
+        ctx: Context<State>,
+        req: Request<B>,
+    ) -> Result<Connection<C, State, B>, OpaqueError>
+    where
+        State: Send,
+        B: Send,
+        T: ConnectorService<State, Request<B>, Connection = C>,
+        T::Error: Send + Into<BoxError> + 'static,
+    {
+        let result = connector.connect(ctx, req).await.map_err(|err| {
+            OpaqueError::from_boxed(err.into()).with_context(|| format!("connector failed"))
+        })?;
+        Ok(Connection::Direct(result))
+    }
+}
+
+impl<C, State, B, S, I1, I2> Connector<C, State, B> for HttpClient<Pool<S>, I1, I2>
 where
+    C: Send,
+    S: PoolStorage<ConnID = String, Connection = C>,
+    State: Send + Sync + Clone + 'static,
+    B: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
+{
+    async fn connection<T>(
+        &self,
+        connector: T,
+        ctx: Context<State>,
+        req: Request<B>,
+    ) -> Result<Connection<C, State, B>, OpaqueError>
+    where
+        T: ConnectorService<State, Request<B>, Connection = C>,
+        T::Error: Send + 'static,
+    {
+        let pool = self.connection_pool.clone();
+        let connector = PooledConnector::new(connector, pool, HttpConnId {});
+        // TODO map
+        let result = connector.connect(ctx, req).await.map_err(|err| {
+            OpaqueError::from_boxed(err).with_context(|| format!("pooled connector failed"))
+        })?;
+        Ok(Connection::Pooled(result))
+    }
+}
+
+impl<State, Body, P> Service<State, Request<Body>> for HttpClient<P>
+where
+    // S: PoolStorage<Connection = HttpClientService<Body>, ConnID = String>,
+    // S: Send + Sync + 'static,
+    // HttpClient<P>: MaybePooledConnector<State, Body>,
+    HttpClient<P>: Connector<HttpClientService<Body>, State, Body>,
     State: Clone + Send + Sync + 'static,
     BodyIn: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
     BodyOut: http_body::Body<Data: Send + 'static, Error: Into<BoxError>> + Unpin + Send + 'static,
@@ -323,21 +454,81 @@ where
         // set the runtime http req inspector
         let connector = connector.with_svc_req_inspector(self.http_req_inspector_svc.clone());
 
-        // NOTE: stack might change request version based on connector data,
-        // such as ALPN (tls), as such it is important to reset it back below,
-        // so that the other end can read it... This might however give issues in
-        // case switching http versions requires more work than version. If so,
-        // your first place will be to check here and/or in the [`HttpConnector`].
-        let EstablishedClientConnection { ctx, req, conn } = connector
-            .connect(ctx, req)
-            .await
-            .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
-
+        let connection = self.connection(connector, ctx, req).await?;
         trace!(uri = %uri, "send http req to connector stack");
-        let resp = conn.serve(ctx, req).await.map_err(|err| {
-            OpaqueError::from_boxed(err)
-                .with_context(|| format!("http request failure for uri: {uri}"))
-        })?;
+        // let resp = conn.serve(ctx, req).await.map_err(|err| {
+        //     OpaqueError::from_boxed(err)
+        //         .with_context(|| format!("http request failure for uri: {uri}"))
+        // })?;
+
+        let result = match connection {
+            Connection::Direct(EstablishedClientConnection { ctx, req, conn }) => {
+                conn.serve(ctx, req).await
+            }
+            Connection::Pooled(EstablishedClientConnection { ctx, req, conn }) => {
+                conn.serve(ctx, req).await
+            }
+        };
+
+        let mut resp = result
+            .map_err(|err| OpaqueError::from_boxed(err))
+            .with_context(|| format!("http request failure for uri: {uri}"))?;
+
+        // let mut resp = self.do_request(connector, ctx, req, uri.clone()).await?;
+        // .map_err(|err| {
+        //     OpaqueError::from_boxed(err)
+        //         .with_context(|| format!("http request failure for uri: {uri}"))
+        // })?;
+
+        // let EstablishedClientConnection { ctx, req, conn } = self.test(connector, ctx, req).await;
+
+        // let mut resp = match self.connector(connector) {
+        //     Connection::Direct(connector) => {
+        //         let EstablishedClientConnection { ctx, req, conn } = connector
+        //             .connect(ctx, req)
+        //             .await
+        //             .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
+
+        //         trace!(uri = %uri, "send http req to connector stack");
+        //         conn.serve(ctx, req).await.map_err(|err| {
+        //             OpaqueError::from_boxed(err)
+        //                 .with_context(|| format!("http request failure for uri: {uri}"))
+        //         })
+        //     }
+        //     Connection::Pooled(connector) => {
+        //         let EstablishedClientConnection { ctx, req, conn } = connector
+        //             .connect(ctx, req)
+        //             .await
+        //             .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
+
+        //         trace!(uri = %uri, "send http req to connector stack");
+        //         conn.serve(ctx, req).await.map_err(|err| {
+        //             OpaqueError::from_boxed(err)
+        //                 .with_context(|| format!("http request failure for uri: {uri}"))
+        //         })
+        //     }
+        // }?;
+
+        // // Pool<ConnStoreFiFoReuseLruDrop<HttpClientService<Body>, String>>
+        // let pool = self.pool().clone();
+
+        // // let connector = PooledConnector::new(connector, pool, HttpConnId {});
+        // // NOTE: stack might change request version based on connector data,
+        // // such as ALPN (tls), as such it is important to reset it back below,
+        // // so that the other end can read it... This might however give issues in
+        // // case switching http versions requires more work than version. If so,
+        // // your first place will be to check here and/or in the [`HttpConnector`].
+        // let EstablishedClientConnection { ctx, req, conn } = connector
+        //     .connect(ctx, req)
+        //     .await
+        //     .map_err(|err| OpaqueError::from_boxed(err).with_context(|| uri.to_string()))?;
+
+        // trace!(uri = %uri, "send http req to connector stack");
+        // let mut resp = conn.serve(ctx, req).await.map_err(|err| {
+        //     OpaqueError::from_boxed(err)
+        //         .with_context(|| format!("http request failure for uri: {uri}"))
+        // })?;
+
         trace!(uri = %uri, "response received from connector stack");
 
         Ok(resp)
