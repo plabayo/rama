@@ -3,7 +3,7 @@ use rama::{
     error::{ErrorContext, OpaqueError},
     http::proto::h1::Http1HeaderMap,
     net::tls::client::ClientHello,
-    ua::profile::{Http1Settings, Http2Settings, JsProfileSourceInfo, JsProfileWebApis},
+    ua::profile::{Http1Settings, Http2Settings, JsProfileWebApis, UserAgentSourceInfo},
 };
 
 mod postgres;
@@ -312,20 +312,20 @@ impl Storage {
         Ok(())
     }
 
-    pub(super) async fn store_js_source_info(
+    pub(super) async fn store_source_info(
         &self,
         ua: String,
-        js_source_info: JsProfileSourceInfo,
+        source_info: UserAgentSourceInfo,
     ) -> Result<(), OpaqueError> {
-        tracing::debug!("store js source info for UA '{ua}': {js_source_info:?}");
+        tracing::debug!("store source info for UA '{ua}': {source_info:?}");
 
         let updated_at = Utc::now();
 
         let client = self.pool.get().await.context("get postgres client")?;
         let n = client.execute(
-            "INSERT INTO \"ua-profiles\" (uastr, js_source_info, updated_at) VALUES ($1, $2, $3) ON CONFLICT (uastr) DO UPDATE SET js_source_info = $2, updated_at = $3",
-            &[&ua, &types::Json(js_source_info), &updated_at],
-        ).await.context("store js source info in postgres")?;
+            "INSERT INTO \"ua-profiles\" (uastr, source_info, updated_at) VALUES ($1, $2, $3) ON CONFLICT (uastr) DO UPDATE SET source_info = $2, updated_at = $3",
+            &[&ua, &types::Json(source_info), &updated_at],
+        ).await.context("store source info in postgres")?;
 
         if n != 1 {
             tracing::error!(

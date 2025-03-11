@@ -46,11 +46,13 @@ pub fn load_embedded_profiles() -> impl Iterator<Item = UserAgentProfile> {
                         .map(rama_net::tls::client::ClientConfig::from)?,
                 ),
             },
-            js: match (&row.js_web_apis, &row.js_source_info) {
-                (Some(_), _) | (_, Some(_)) => Some(JsProfile {
-                    web_apis: row.js_web_apis.map(Arc::new),
-                    source_info: row.js_source_info.map(Arc::new),
-                }),
+            runtime: match (&row.js_web_apis, &row.source_info) {
+                (Some(_), _) | (_, Some(_)) => Some(Arc::new(UserAgentRuntimeProfile {
+                    js_info: row.js_web_apis.map(|web_apis| JsProfile {
+                        web_apis: Some(web_apis),
+                    }),
+                    source_info: row.source_info,
+                })),
                 _ => None,
             },
         })
@@ -73,7 +75,7 @@ struct UserAgentProfileRow {
     #[cfg(feature = "tls")]
     tls_client_hello: Option<rama_net::tls::client::ClientHello>,
     js_web_apis: Option<JsProfileWebApis>,
-    js_source_info: Option<JsProfileSourceInfo>,
+    source_info: Option<UserAgentSourceInfo>,
 }
 
 #[cfg(test)]

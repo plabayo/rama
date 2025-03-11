@@ -290,7 +290,7 @@ async fn test_ua_emulation() {
             tls: TlsProfile {
                 client_config: Arc::new(client_hello.into()),
             },
-            js: None,
+            runtime: None,
         };
 
         let client = UserAgentEmulateLayer::new(Arc::new(profile)).layer(service_fn(

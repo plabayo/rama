@@ -4,7 +4,7 @@ use rama_core::Context;
 
 use crate::{
     PlatformKind, UserAgentKind,
-    profile::{JsProfile, UserAgentDatabase, UserAgentProfile},
+    profile::{UserAgentDatabase, UserAgentProfile, UserAgentRuntimeProfile},
 };
 
 #[derive(Debug, Clone)]
@@ -22,8 +22,8 @@ pub struct SelectedUserAgentProfile {
     /// The platform the [`crate::UserAgent`] is running on.
     pub platform: Option<PlatformKind>,
 
-    /// The information provivided by the js implementation of the [`crate::UserAgent`].
-    pub js: Option<JsProfile>,
+    /// Runtime (meta) info about the UA profile of the [`crate::UserAgent`].
+    pub runtime: Option<Arc<UserAgentRuntimeProfile>>,
 }
 
 impl From<&UserAgentProfile> for SelectedUserAgentProfile {
@@ -33,7 +33,7 @@ impl From<&UserAgentProfile> for SelectedUserAgentProfile {
             ua_kind: profile.ua_kind,
             ua_version: profile.ua_version,
             platform: profile.platform,
-            js: profile.js.clone(),
+            runtime: profile.runtime.clone(),
         }
     }
 }

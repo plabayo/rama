@@ -1255,7 +1255,7 @@ mod tests {
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
-            js: None,
+            runtime: None,
         };
 
         let ua_service = (
@@ -1325,7 +1325,7 @@ mod tests {
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
-            js: None,
+            runtime: None,
         };
 
         let ua_service = (
@@ -1397,7 +1397,7 @@ mod tests {
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
-            js: None,
+            runtime: None,
         };
 
         let ua_service = (
@@ -1469,7 +1469,7 @@ mod tests {
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
-            js: None,
+            runtime: None,
         };
 
         let ua_service = (
@@ -1550,7 +1550,7 @@ mod tests {
             tls: crate::profile::TlsProfile {
                 client_config: std::sync::Arc::new(rama_net::tls::client::ClientConfig::default()),
             },
-            js: None,
+            runtime: None,
         };
 
         let ua_service = (

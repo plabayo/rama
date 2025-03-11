@@ -1,41 +1,17 @@
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 /// Javascript information for a user-agent which supports Javascript and Web APIs.
 ///
 /// For now this profile collection only contains some WebAPI data as deemed
 /// relevant enough for user-agent emulation especially in the context of information
 /// that sometimes is required in request payloads or headers.
 pub struct JsProfile {
-    /// Source Information injected by fingerprinting service.
-    pub source_info: Option<Arc<JsProfileSourceInfo>>,
-
     /// WebAPI data, if Web APIs are supported by the user-agent.
     ///
     /// Web APIs are the interfaces that allow JavaScript to interact with the browser environment.
     /// See [MDN Web API reference](https://developer.mozilla.org/en-US/docs/Web/API) for more information.
-    pub web_apis: Option<Arc<JsProfileWebApis>>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-/// Source information injected by fingerprinting service.
-pub struct JsProfileSourceInfo {
-    /// Name of the device.
-    #[serde(alias = "deviceName")]
-    pub device_name: Option<String>,
-    /// Name of the operating system.
-    #[serde(alias = "os")]
-    pub os: Option<String>,
-    /// Version of the operating system.
-    #[serde(alias = "osVersion")]
-    pub os_version: Option<String>,
-    /// Name of the browser.
-    #[serde(alias = "browserName")]
-    pub browser_name: Option<String>,
-    /// Version of the browser.
-    #[serde(alias = "browserVersion")]
-    pub browser_version: Option<String>,
+    pub web_apis: Option<JsProfileWebApis>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,44 +26,6 @@ pub struct JsProfileWebApis {
     /// The Screen API provides information about the user's screen.
     /// See [MDN Screen API reference](https://developer.mozilla.org/en-US/docs/Web/API/Screen) for more information.
     pub screen: Option<JsProfileScreen>,
-}
-
-impl<'de> Deserialize<'de> for JsProfile {
-    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-    where
-        D: serde::Deserializer<'de>,
-    {
-        let profile = JsProfileDeserialize::deserialize(deserializer)?;
-        Ok(Self {
-            source_info: profile.source_info.map(Arc::new),
-            web_apis: profile.web_apis.map(Arc::new),
-        })
-    }
-}
-
-impl Serialize for JsProfile {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        JsProfileSerialize {
-            source_info: self.source_info.as_deref(),
-            web_apis: self.web_apis.as_deref(),
-        }
-        .serialize(serializer)
-    }
-}
-
-#[derive(Debug, Serialize)]
-struct JsProfileSerialize<'a> {
-    source_info: Option<&'a JsProfileSourceInfo>,
-    web_apis: Option<&'a JsProfileWebApis>,
-}
-
-#[derive(Debug, Deserialize)]
-struct JsProfileDeserialize {
-    pub source_info: Option<JsProfileSourceInfo>,
-    pub web_apis: Option<JsProfileWebApis>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
