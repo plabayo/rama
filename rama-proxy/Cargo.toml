@@ -21,9 +21,9 @@ csv = ["dep:tokio", "tokio/fs"]
 
 [dependencies]
 arc-swap = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.7", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", features = ["http"] }
-rama-utils = { version = "0.2.0-alpha.7", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http"] }
+rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
 serde = { workspace = true, features = ["derive"] }
 tokio = { workspace = true, optional = true }
 tracing = { workspace = true }
@@ -32,9 +32,9 @@ venndb = { workspace = true, optional = true }
 
 [dev-dependencies]
 itertools = { workspace = true }
-rama-http-types = { version = "0.2.0-alpha.7", path = "../rama-http-types" }
-rama-net = { version = "0.2.0-alpha.7", path = "../rama-net", features = ["http"] }
-rama-tcp = { version = "0.2.0-alpha.7", path = "../rama-tcp", features = ["http"] }
+rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http"] }
+rama-tcp = { version = "0.2.0-alpha.8", path = "../rama-tcp", features = ["http"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros"] }
