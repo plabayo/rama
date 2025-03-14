@@ -376,20 +376,6 @@ impl<S: PoolStorage> Pool<S> {
     }
 }
 
-// impl Default for Pool<()> {
-//     fn default() -> Self {
-//         // Self::new(nz!(10), nz!(20)).unwrap();
-//         Pool::<ConnStoreFiFoReuseLruDrop<_, _>>::default()
-//     }
-// }
-
-// impl<S: PoolStorage> Default for Pool<S> {
-//     fn default() -> Self {
-//         Self::new(nz!(10), nz!(20)).unwrap()
-//         // Pool::<()>::new_single_connection_pool()
-//     }
-// }
-
 impl<S: PoolStorage> Pool<S> {
     /// Get connection or create a new using provided async fn if we don't find one inside pool
     pub async fn get_connection_or_create<F, Fut>(
@@ -478,21 +464,21 @@ impl<S: PoolStorage> Pool<S> {
 /// not unique and multiple connections can have the same ID. IDs are used to filter
 /// which connections can be used for a specific Request in a way that is indepent of
 /// what a Request is.
-pub trait ReqToConnID<Request>: Sized + Send + Sync + 'static {
+pub trait ReqToConnID<State, Request>: Sized + Send + Sync + 'static {
     type ConnID: Send + Sync + PartialEq + Clone + 'static;
 
-    fn id(&self, request: &Request) -> Self::ConnID;
+    fn id(&self, ctx: &Context<State>, request: &Request) -> Result<Self::ConnID, OpaqueError>;
 }
 
-impl<Request, ConnID, F> ReqToConnID<Request> for F
+impl<State, Request, ConnID, F> ReqToConnID<State, Request> for F
 where
-    F: Fn(&Request) -> ConnID + Send + Sync + 'static,
+    F: Fn(&Context<State>, &Request) -> Result<ConnID, OpaqueError> + Send + Sync + 'static,
     ConnID: Send + Sync + PartialEq + Clone + 'static,
 {
     type ConnID = ConnID;
 
-    fn id(&self, request: &Request) -> Self::ConnID {
-        self(request)
+    fn id(&self, ctx: &Context<State>, request: &Request) -> Result<Self::ConnID, OpaqueError> {
+        self(ctx, request)
     }
 }
 
@@ -525,7 +511,7 @@ where
     State: Send + Sync + 'static,
     Request: Send + 'static,
     Storage: PoolStorage<ConnID = R::ConnID, Connection = S::Connection>,
-    R: ReqToConnID<Request>,
+    R: ReqToConnID<State, Request>,
 {
     type Response = EstablishedClientConnection<
         LeasedConnection<Storage::Connection, Storage::ConnID>,
@@ -539,7 +525,7 @@ where
         ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let conn_id = self.req_to_conn_id.id(&req);
+        let conn_id = self.req_to_conn_id.id(&ctx, &req)?;
 
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
             timeout(duration, self.pool.get_connection_or_create_cb(&conn_id))
@@ -614,11 +600,11 @@ mod tests {
     /// able to reuse the same connections
     struct StringRequestLengthID;
 
-    impl ReqToConnID<String> for StringRequestLengthID {
+    impl<State> ReqToConnID<State, String> for StringRequestLengthID {
         type ConnID = usize;
 
-        fn id(&self, req: &String) -> Self::ConnID {
-            req.chars().count()
+        fn id(&self, _ctx: &Context<State>, req: &String) -> Result<Self::ConnID, OpaqueError> {
+            Ok(req.chars().count())
         }
     }
 
@@ -630,7 +616,11 @@ mod tests {
         // let pool = Pool::<()>::new_single_connection_pool();
         // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
         // acting like like a global connection pool (eg database connection pool where all connections can be used).
-        let svc = PooledConnector::new(TestService::default(), pool, |_req: &String| ());
+        let svc = PooledConnector::new(
+            TestService::default(),
+            pool,
+            |_ctx: &Context<()>, _req: &String| Ok(()),
+        );
 
         let iterations = 10;
         for _i in 0..iterations {
