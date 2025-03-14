@@ -24,8 +24,17 @@ macro_rules! client_hint {
 
             #[inline]
             #[doc = "Attempts to convert a `HeaderName` to a `ClientHint`."]
-            pub fn match_header_name(name: &crate::HeaderName) -> Option<Self> {
+            pub fn match_header_name(name: &$crate::HeaderName) -> Option<Self> {
                 name.try_into().ok()
+            }
+
+            #[doc = "Return an iterator of all header names for this client hint."]
+            pub fn iter_header_names(&self) -> impl Iterator<Item = $crate::HeaderName> {
+                match self {
+                    $(
+                        Self::$name => vec![$($crate::HeaderName::from_static($str),)+].into_iter(),
+                    )+
+                }
             }
 
             #[doc = "Returns the preferred string representation of the client hint."]
@@ -118,6 +127,15 @@ macro_rules! client_hint {
                 let s = <std::borrow::Cow<'de, str>>::deserialize(deserializer)?;
                 Self::try_from(s.as_ref()).map_err(D::Error::custom)
             }
+        }
+
+        #[doc = "Returns an iterator over all client hints."]
+        pub fn all_client_hints() -> impl Iterator<Item = ClientHint> {
+            [
+                $(
+                    ClientHint::$name,
+                )+
+            ].into_iter()
         }
 
         #[doc = "Returns an iterator over all client hint header name strings."]

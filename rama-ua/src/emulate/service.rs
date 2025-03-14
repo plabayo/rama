@@ -11,7 +11,7 @@ use rama_http_types::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
         REFERER, USER_AGENT,
     },
-    headers::ClientHint,
+    headers::{ClientHint, all_client_hints},
     proto::{
         h1::{
             Http1HeaderMap,
@@ -595,6 +595,17 @@ fn merge_http_headers(
 ) -> Http1HeaderMap {
     let mut original_headers = HeaderMapValueRemover::from(original_headers);
 
+    // to support clients that pass in client hints as well. We'll ignore their
+    // header values, but can still take the hint none the less
+    let original_client_hints: Vec<_> = all_client_hints()
+        .filter(|p| {
+            p.iter_header_names()
+                .filter_map(|name| original_headers.remove(&name).map(|_| 1))
+                .sum::<u16>()
+                > 0
+        })
+        .collect();
+
     let mut output_headers_a = Vec::new();
     let mut output_headers_b = Vec::new();
 
@@ -606,7 +617,8 @@ fn merge_http_headers(
                 && (hint.is_low_entropy()
                     || requested_client_hints
                         .map(|hints| hints.contains(&hint))
-                        .unwrap_or_default())
+                        .unwrap_or_default()
+                    || original_client_hints.contains(&hint))
         } else {
             is_secure_request || !starts_with_ignore_ascii_case(header_name.as_str(), "sec-fetch")
         }
@@ -647,8 +659,11 @@ fn merge_http_headers(
 
     // respect original header order of original headers where possible
     for header_name in original_http_header_order.into_iter().flatten() {
-        if let Some(value) = original_headers.remove(header_name.header_name()) {
-            if is_header_allowed(header_name.header_name()) {
+        let std_header_name = header_name.header_name();
+        if let Some(value) = original_headers.remove(std_header_name) {
+            if is_header_allowed(header_name.header_name())
+                && ClientHint::match_header_name(std_header_name).is_none()
+            {
                 output_headers_a.push((header_name, value));
             }
         }
@@ -1089,6 +1104,7 @@ mod tests {
                     ("Sec-CH-UA-Mobile", "?0"),
                     ("Sec-CH-UA-Platform", "macOS"),
                     ("Sec-CH-UA-Platform-Version", "10.15.7"),
+                    ("Sec-CH-UA-Model", "LimitedEdition"),
                     ("DNT", "1"),
                     ("Sec-GPC", "1"),
                     ("Priority", "u=0, i"),
@@ -1098,7 +1114,6 @@ mod tests {
                     "x-show-price-currency",
                     "accept-language",
                     "cookie",
-                    "Sec-CH-UA-Model",
                 ]),
                 original_headers: vec![
                     ("x-show-price", "true"),
@@ -1107,6 +1122,7 @@ mod tests {
                     ("cookie", "session=on; foo=bar"),
                     ("x-requested-with", "XMLHttpRequest"),
                     ("sec-ch-ua-model", "Macintosh"),
+                    ("sec-ch-prefers-contrast", "xx"),
                 ],
                 preserve_ua_header: false,
                 is_secure_request: true,
@@ -1116,7 +1132,8 @@ mod tests {
                     "RTT",
                     "Sec-CH-UA-Arch",
                     "Sec-CH-UA-Bitness",
-                    "Sec-CH-UA-Model",
+                    // requested but not available
+                    "Sec-CH-Prefers-Reduced-Transparency",
                 ]),
                 expected: vec![
                     (
@@ -1133,7 +1150,6 @@ mod tests {
                     ("Upgrade-Insecure-Requests", "1"),
                     ("x-show-price", "true"),
                     ("x-show-price-currency", "USD"),
-                    ("Sec-CH-UA-Model", "Macintosh"),
                     ("x-requested-with", "XMLHttpRequest"),
                     ("Cookie", "session=on; foo=bar"),
                     ("Sec-Fetch-Dest", "document"),
@@ -1147,6 +1163,8 @@ mod tests {
                     ("Sec-CH-UA-Bitness", "64"),
                     ("Sec-CH-UA-Mobile", "?0"), // not requested, but low entropy
                     ("Sec-CH-UA-Platform", "macOS"), // not requested, but low entropy
+                    ("Sec-CH-UA-Model", "LimitedEdition"),
+                    // sec-ch-prefers-contrast was requested, but UA profile doesn't contain it :)
                     ("DNT", "1"),
                     ("Sec-GPC", "1"),
                     ("Priority", "u=0, i"),
