@@ -19,7 +19,7 @@ use rama::{
     error::OpaqueError,
     http::{
         BodyExtractExt,
-        client::HttpClient,
+        client::EasyHttpWebClient,
         server::HttpServer,
         service::{client::HttpClientExt, web::WebService},
     },
@@ -54,7 +54,7 @@ async fn main() {
     // errors to be given back to us and never retried internally.
     sleep(Duration::from_millis(10)).await;
 
-    let client = HttpClient::default().with_connection_pool(Pool::default());
+    let client = EasyHttpWebClient::default().with_connection_pool(Pool::default());
 
     let resp = client
         .get(format!("http://{ADDRESS}/"))
