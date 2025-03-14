@@ -7,7 +7,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError, error},
     graceful::{self, Shutdown, ShutdownGuard},
     http::{
-        IntoResponse, Request, Response, StatusCode,
+        Request, Response,
         client::{
             EasyHttpWebClient,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
@@ -21,7 +21,7 @@ use rama::{
             traffic_writer::WriterMode,
         },
     },
-    layer::{HijackLayer, MapResultLayer},
+    layer::MapResultLayer,
     net::{
         address::ProxyAddress,
         tls::{
@@ -31,7 +31,6 @@ use rama::{
         user::ProxyCredential,
     },
     rt::Executor,
-    service::service_fn,
     ua::{
         emulate::{
             UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
@@ -125,16 +124,12 @@ pub struct CliCommandHttp {
     headers: bool,
 
     #[arg(short = 'v', long)]
-    /// print verbose output, alias for --all --print hHbB (not used in offline mode)
+    /// print verbose output, alias for --all --print hHbB
     verbose: bool,
 
     #[arg(long)]
     /// show output for all requests/responses (including redirects)
     all: bool,
-
-    #[arg(long)]
-    /// print the request instead of executing it
-    offline: bool,
 
     #[arg(long, short = 'o')]
     /// write output to file instead of stdout
@@ -307,9 +302,7 @@ async fn create_client<S>(
 where
     S: Clone + Send + Sync + 'static,
 {
-    let (request_writer_mode, response_writer_mode) = if cfg.offline {
-        (Some(WriterMode::All), None)
-    } else if cfg.verbose {
+    let (request_writer_mode, response_writer_mode) = if cfg.verbose {
         cfg.all = true;
         (Some(WriterMode::All), Some(WriterMode::All))
     } else if cfg.body {
@@ -438,7 +431,6 @@ where
             }
         },
         SetProxyAuthHttpHeaderLayer::default(),
-        HijackLayer::new(cfg.offline, service_fn(dummy_response)),
     );
 
     Ok(client_builder.layer(inner_client))
@@ -491,10 +483,6 @@ fn parse_print_mode(mode: &str) -> Result<(Option<WriterMode>, Option<WriterMode
     }
 
     Ok((request_mode, response_mode))
-}
-
-async fn dummy_response<S, Request>(_ctx: Context<S>, _req: Request) -> Result<Response, BoxError> {
-    Ok(StatusCode::OK.into_response())
 }
 
 fn map_internal_client_error<E, Body>(
