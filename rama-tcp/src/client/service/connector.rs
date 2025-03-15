@@ -6,6 +6,7 @@ use rama_dns::{DnsResolver, HickoryDns};
 use rama_net::{
     address::ProxyAddress,
     client::EstablishedClientConnection,
+    stream::{ClientSocketInfo, SocketInfo},
     transport::{TransportProtocol, TryRefIntoTransportContext},
 };
 use tokio::net::TcpStream;
@@ -107,7 +108,7 @@ where
             .map_err(Into::into)?;
 
         if let Some(proxy) = ctx.get::<ProxyAddress>() {
-            let (conn, _addr) = crate::client::tcp_connect(
+            let (conn, addr) = crate::client::tcp_connect(
                 &ctx,
                 proxy.authority.clone(),
                 true,
@@ -116,6 +117,19 @@ where
             )
             .await
             .context("tcp connector: conncept to proxy")?;
+
+            ctx.insert(ClientSocketInfo(SocketInfo::new(
+                conn.local_addr()
+                    .inspect_err(|err| {
+                        tracing::debug!(
+                            ?err,
+                            "failed to receive local addr of established connection to proxy"
+                        )
+                    })
+                    .ok(),
+                addr,
+            )));
+
             return Ok(EstablishedClientConnection { ctx, req, conn });
         }
 
@@ -138,10 +152,22 @@ where
         }
 
         let authority = transport_ctx.authority.clone();
-        let (conn, _addr) =
+        let (conn, addr) =
             crate::client::tcp_connect(&ctx, authority, false, self.dns.clone(), connector)
                 .await
                 .context("tcp connector: connect to server")?;
+
+        ctx.insert(ClientSocketInfo(SocketInfo::new(
+            conn.local_addr()
+                .inspect_err(|err| {
+                    tracing::debug!(
+                        ?err,
+                        "failed to receive local addr of established connection"
+                    )
+                })
+                .ok(),
+            addr,
+        )));
 
         Ok(EstablishedClientConnection { ctx, req, conn })
     }

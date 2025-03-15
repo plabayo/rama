@@ -62,6 +62,10 @@ impl Socket for tokio::net::UdpSocket {
 }
 
 #[derive(Debug, Clone)]
+/// Information about the socket on the egress end.
+pub struct ClientSocketInfo(pub SocketInfo);
+
+#[derive(Debug, Clone)]
 /// Connected socket information.
 pub struct SocketInfo {
     local_addr: Option<SocketAddr>,
