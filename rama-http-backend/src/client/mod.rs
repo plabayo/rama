@@ -8,7 +8,7 @@ use std::sync::Arc;
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
     Context, Service,
-    error::{BoxError, ErrorExt, OpaqueError},
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     inspect::RequestInspector,
 };
 use rama_http_types::{Request, Response, dep::http_body};
@@ -28,9 +28,6 @@ use rama_tls::std::client::{TlsConnector, TlsConnectorData};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
-
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_core::error::ErrorContext;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use http_inspector::HttpsAlpnModifier;
@@ -78,7 +75,7 @@ impl<I1: fmt::Debug, I2: fmt::Debug, P: fmt::Debug> fmt::Debug for EasyHttpWebCl
 }
 
 #[cfg(not(any(feature = "rustls", feature = "boring")))]
-impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2, P> {
+impl<I1: fmt::Debug, I2: fmt::Debug, P: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EasyHttpWebClient")
             .field("connection_pool", &self.connection_pool)
