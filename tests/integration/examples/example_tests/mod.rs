@@ -18,6 +18,8 @@ mod http_key_value_store;
 mod http_listener_hello;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
 mod http_mitm_proxy;
+#[cfg(all(feature = "http-full"))]
+mod http_pooled_client;
 #[cfg(feature = "http-full")]
 mod http_rate_limit;
 #[cfg(feature = "http-full")]
