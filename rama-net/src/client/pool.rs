@@ -15,15 +15,19 @@ use std::{future::Future, net::SocketAddr};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tokio::time::timeout;
+use tracing::trace;
 
 /// [`PoolStorage`] implements the storage part of a connection pool. This storage
 /// also decides which connection it returns for a given ID or when the caller asks to
-/// remove one, this results in the pool deciding which mode we use for connection
+/// remove one, this results in the storage deciding which mode we use for connection
 /// reuse and dropping (eg FIFO for reuse and LRU for dropping conn when pool is full)
 pub trait PoolStorage: Sized + Send + Sync + 'static {
     type ConnID: PartialEq + Clone + Send + Sync + 'static;
     type Connection: Send;
 
+    /// Initialize [`PoolStorage`] with the given capacity. Implementer of this trait
+    /// can still decide if it will immedialty create storage of the given capacity,
+    /// or do it in a custom way (eg grow storage dynamically as needed)
     fn new(capacity: NonZeroU16) -> Self;
 
     /// Add connection to pool storage
@@ -87,10 +91,12 @@ impl<C: Debug, ConnID: Debug> Debug for PooledConnection<C, ConnID> {
 /// [`LeasedConnection`]s are considered active pool connections until dropped or
 /// ownership is taken of the internal connection.
 pub struct LeasedConnection<C, ConnID> {
+    /// Option so we can ownership during drop and return the [`PooledConnection`]
+    /// back to the pool
     pooled_conn: Option<PooledConnection<C, ConnID>>,
-    /// Weak reference to pool so we can return connections on drop
-    // pool: Weak<PoolInner<S>>,
+    /// Fn that can be used to return the [`PooledConnection`] back to the pool
     returner: Arc<dyn Fn(PooledConnection<C, ConnID>) + Send + Sync>,
+    /// Active slot this [`LeasedConnection`] is using from the pool
     _slot: ActiveSlot,
 }
 
@@ -281,6 +287,7 @@ where
     }
 
     fn add_connection(&self, conn: PooledConnection<Self::Connection, Self::ConnID>) {
+        trace!("adding connection back to pool");
         self.0.lock().push_front(conn);
     }
 
@@ -288,6 +295,7 @@ where
         &self,
         id: &Self::ConnID,
     ) -> Option<PooledConnection<Self::Connection, Self::ConnID>> {
+        trace!("getting connection from pool");
         let mut connections = self.0.lock();
         connections
             .iter()
@@ -299,6 +307,7 @@ where
     fn get_connection_to_drop(
         &self,
     ) -> Result<PooledConnection<Self::Connection, Self::ConnID>, OpaqueError> {
+        trace!("getting connection to drop from pool");
         self.0.lock().pop_back().context("None, this function should only be called when pool is full, in which case this should always return a connection")
     }
 }
@@ -346,7 +355,7 @@ pub enum GetConnectionOrCreate<F, C, ConnID>
 where
     F: FnOnce(C) -> LeasedConnection<C, ConnID>,
 {
-    /// Connection was found in pool for given ConnID and is ready to be used
+    /// Connection was found in the pool for given ConnID and is ready to be used
     LeasedConnection(LeasedConnection<C, ConnID>),
     /// Pool doesn't have connection for ConnID but instead returns a function
     /// which should be called by the external user to put a new connection
@@ -377,7 +386,7 @@ impl<S: PoolStorage> Pool<S> {
 }
 
 impl<S: PoolStorage> Pool<S> {
-    /// Get connection or create a new using provided async fn if we don't find one inside pool
+    /// Get connection or create a new one using provided async fn if we don't find one inside pool
     pub async fn get_connection_or_create<F, Fut>(
         &self,
         id: &S::ConnID,
@@ -428,6 +437,7 @@ impl<S: PoolStorage> Pool<S> {
         });
 
         if pooled_conn.is_some() {
+            trace!("creating leased connection from stored pooled connection");
             let leased_conn = LeasedConnection {
                 _slot: active_slot,
                 pooled_conn,
@@ -446,6 +456,7 @@ impl<S: PoolStorage> Pool<S> {
             }
         };
 
+        trace!("no pooled connection found, returning callback to create leased connection");
         Ok(GetConnectionOrCreate::AddConnection(
             move |conn: S::Connection| LeasedConnection {
                 _slot: active_slot,
@@ -610,10 +621,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_should_reuse_connections() {
-        // let pool = Pool::new_single_connection_pool();
-        // let pool = Pool::<ConnStoreFiFoReuseLruDrop<_, _>>::new(nz!(1), nz!(1)).unwrap();
         let pool = Pool::<ConnStoreFiFoReuseLruDrop<_, _>>::default();
-        // let pool = Pool::<()>::new_single_connection_pool();
         // We use a closure here to maps all requests to `()` id, this will result in all connections being shared and the pool
         // acting like like a global connection pool (eg database connection pool where all connections can be used).
         let svc = PooledConnector::new(
