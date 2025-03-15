@@ -22,7 +22,7 @@ use tracing::trace;
 /// remove one, this results in the storage deciding which mode we use for connection
 /// reuse and dropping (eg FIFO for reuse and LRU for dropping conn when pool is full)
 pub trait PoolStorage: Sized + Send + Sync + 'static {
-    type ConnID: PartialEq + Clone + Send + Sync + 'static;
+    type ConnID: PartialEq + Clone + Debug + Send + Sync + 'static;
     type Connection: Send;
 
     /// Initialize [`PoolStorage`] with the given capacity. Implementer of this trait
@@ -274,7 +274,7 @@ pub struct ConnStoreFiFoReuseLruDrop<C, ConnID>(Arc<Mutex<VecDeque<PooledConnect
 impl<C, ConnID> PoolStorage for ConnStoreFiFoReuseLruDrop<C, ConnID>
 where
     C: Send + 'static,
-    ConnID: PartialEq + Clone + Send + Sync + 'static,
+    ConnID: PartialEq + Clone + Debug + Send + Sync + 'static,
 {
     type ConnID = ConnID;
 
@@ -287,7 +287,7 @@ where
     }
 
     fn add_connection(&self, conn: PooledConnection<Self::Connection, Self::ConnID>) {
-        trace!("adding connection back to pool");
+        trace!(conn_id = ?conn.id, "adding connection back to pool");
         self.0.lock().push_front(conn);
     }
 
@@ -295,7 +295,7 @@ where
         &self,
         id: &Self::ConnID,
     ) -> Option<PooledConnection<Self::Connection, Self::ConnID>> {
-        trace!("getting connection from pool");
+        trace!(conn_id = ?id, "getting connection from pool");
         let mut connections = self.0.lock();
         connections
             .iter()
@@ -343,7 +343,7 @@ impl<S: Debug> Debug for Pool<S> {
 impl<C, ConnID> Default for Pool<ConnStoreFiFoReuseLruDrop<C, ConnID>>
 where
     C: Send + 'static,
-    ConnID: PartialEq + Clone + Send + Sync + 'static,
+    ConnID: PartialEq + Clone + Debug + Send + Sync + 'static,
 {
     fn default() -> Self {
         Self::new(nz!(10), nz!(20)).unwrap()
@@ -437,7 +437,7 @@ impl<S: PoolStorage> Pool<S> {
         });
 
         if pooled_conn.is_some() {
-            trace!("creating leased connection from stored pooled connection");
+            trace!(conn_id = ?id, "creating leased connection from stored pooled connection");
             let leased_conn = LeasedConnection {
                 _slot: active_slot,
                 pooled_conn,
@@ -456,7 +456,7 @@ impl<S: PoolStorage> Pool<S> {
             }
         };
 
-        trace!("no pooled connection found, returning callback to create leased connection");
+        trace!(conn_id = ?id, "no pooled connection found, returning callback to create leased connection");
         Ok(GetConnectionOrCreate::AddConnection(
             move |conn: S::Connection| LeasedConnection {
                 _slot: active_slot,
