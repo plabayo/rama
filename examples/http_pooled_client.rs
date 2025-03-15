@@ -15,7 +15,7 @@
 // rama provides everything out of the box to build a complete web service.
 
 use rama::{
-    Context, Layer, Service,
+    Context, Layer,
     error::OpaqueError,
     http::{
         BodyExtractExt,
@@ -34,14 +34,11 @@ use rama::{
 
 // Everything else we need is provided by the standard library, community crates or tokio.
 
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
 };
-use tokio::time::sleep;
+use tokio::{sync::oneshot::Sender, sync::oneshot::channel};
 use tokio_test::assert_err;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -53,11 +50,9 @@ const ADDRESS: &str = "127.0.0.1:62024";
 #[tokio::main]
 async fn main() {
     setup_tracing();
-    tokio::spawn(run_server(ADDRESS));
-
-    // Give server time to start, we do this instead of retrying as we want all
-    // errors to be given back to us and never retried internally.
-    sleep(Duration::from_millis(10)).await;
+    let (ready_tx, ready_rx) = channel();
+    tokio::spawn(run_server(ADDRESS, ready_tx));
+    ready_rx.await.unwrap();
 
     let client = EasyHttpWebClient::default().with_connection_pool(Pool::default());
 
@@ -101,19 +96,21 @@ fn setup_tracing() {
         .init();
 }
 
-async fn run_server(addr: &str) {
+async fn run_server(addr: &str, ready: Sender<()>) {
     tracing::info!("running service at: {addr}");
     let exec = Executor::default();
 
     let http_service =
         HttpServer::auto(exec).service(WebService::default().get("/", "Hello, World!"));
 
-    TcpListener::build()
+    let serve = TcpListener::build()
         .bind(addr)
         .await
         .expect("bind TCP Listener")
-        .serve((LimitLayer::new(FirstConnOnly::new())).layer(http_service))
-        .await;
+        .serve((LimitLayer::new(FirstConnOnly::new())).layer(http_service));
+
+    ready.send(()).unwrap();
+    serve.await;
 }
 
 #[derive(Clone)]
