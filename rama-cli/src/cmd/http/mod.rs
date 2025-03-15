@@ -246,7 +246,7 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         }
     });
 
-    shutdown.spawn_task_fn(move |guard| async move {
+    shutdown.spawn_task_fn(async move |guard| {
         let result = run_inner(guard, cfg).await;
         let _ = tx.send(result);
     });

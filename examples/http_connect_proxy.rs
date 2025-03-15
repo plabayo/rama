@@ -109,7 +109,7 @@ async fn main() {
         number: u32,
     }
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build().bind("127.0.0.1:62001").await.expect("bind tcp proxy to 127.0.0.1:62001");
 
         let exec = Executor::graceful(guard.clone());
@@ -123,12 +123,12 @@ async fn main() {
                     HijackLayer::new(
                         DomainMatcher::exact(Domain::from_static("echo.example.internal")),
                         Arc::new(match_service!{
-                            HttpMatcher::post("/lucky/:number") => |path: Path<APILuckyParams>| async move {
+                            HttpMatcher::post("/lucky/:number") => async move |path: Path<APILuckyParams>| {
                                 Json(json!({
                                     "lucky_number": path.number,
                                 }))
                             },
-                            HttpMatcher::get("/*") => |ctx: Context<()>, req: Request| async move {
+                            HttpMatcher::get("/*") => async move |ctx: Context<()>, req: Request| {
                                 Json(json!({
                                     "method": req.method().as_str(),
                                     "path": req.uri().path(),

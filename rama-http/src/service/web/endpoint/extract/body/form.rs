@@ -87,7 +87,7 @@ mod test {
             age: u8,
         }
 
-        let service = WebService::default().post("/", |Form(body): Form<Input>| async move {
+        let service = WebService::default().post("/", async |Form(body): Form<Input>| {
             assert_eq!(body.name, "Devan");
             assert_eq!(body.age, 29);
         });
@@ -111,8 +111,7 @@ mod test {
             age: u8,
         }
 
-        let service =
-            WebService::default().post("/", |Form(_): Form<Input>| async move { StatusCode::OK });
+        let service = WebService::default().post("/", async |Form(_): Form<Input>| StatusCode::OK);
 
         let req = Request::builder()
             .uri("/")
@@ -133,8 +132,7 @@ mod test {
             age: u8,
         }
 
-        let service =
-            WebService::default().get("/", |Form(_): Form<Input>| async move { StatusCode::OK });
+        let service = WebService::default().get("/", async |Form(_): Form<Input>| StatusCode::OK);
 
         let req = Request::builder()
             .uri("/")
@@ -154,7 +152,7 @@ mod test {
             age: u8,
         }
 
-        let service = WebService::default().get("/", |Form(body): Form<Input>| async move {
+        let service = WebService::default().get("/", async |Form(body): Form<Input>| {
             assert_eq!(body.name, "Devan");
             assert_eq!(body.age, 29);
         });
@@ -177,8 +175,7 @@ mod test {
             age: u8,
         }
 
-        let service =
-            WebService::default().get("/", |Form(_): Form<Input>| async move { StatusCode::OK });
+        let service = WebService::default().get("/", async |Form(_): Form<Input>| StatusCode::OK);
 
         let req = Request::builder()
             .uri("/?name=Devan")

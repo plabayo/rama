@@ -62,7 +62,7 @@ use std::marker::PhantomData;
 /// #[tokio::main]
 /// async fn main() {
 ///     let service = GetForwardedHeadersLayer::x_forwarded_for()
-///         .layer(service_fn(|ctx: Context<()>, _| async move {
+///         .layer(service_fn(async |ctx: Context<()>, _| {
 ///             let forwarded = ctx.get::<Forwarded>().unwrap();
 ///             assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
 ///             assert!(forwarded.client_proto().is_none());
@@ -404,14 +404,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_forwarded_header_forwarded() {
-        let service = GetForwardedHeadersLayer::forwarded().layer(service_fn(
-            |ctx: Context<()>, _| async move {
+        let service =
+            GetForwardedHeadersLayer::forwarded().layer(service_fn(async |ctx: Context<()>, _| {
                 let forwarded = ctx.get::<Forwarded>().unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert_eq!(forwarded.client_proto(), Some(ForwardedProtocol::HTTP));
                 Ok::<_, Infallible>(())
-            },
-        ));
+            }));
 
         let req = Request::builder()
             .header("Forwarded", "for=\"12.23.34.45:5000\";proto=http")
@@ -424,7 +423,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_forwarded_header_via() {
         let service =
-            GetForwardedHeadersLayer::via().layer(service_fn(|ctx: Context<()>, _| async move {
+            GetForwardedHeadersLayer::via().layer(service_fn(async |ctx: Context<()>, _| {
                 let forwarded = ctx.get::<Forwarded>().unwrap();
                 assert!(forwarded.client_ip().is_none());
                 assert_eq!(
@@ -447,7 +446,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_forwarded_header_x_forwarded_for() {
         let service = GetForwardedHeadersLayer::x_forwarded_for().layer(service_fn(
-            |ctx: Context<()>, _| async move {
+            async |ctx: Context<()>, _| {
                 let forwarded = ctx.get::<Forwarded>().unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert!(forwarded.client_proto().is_none());

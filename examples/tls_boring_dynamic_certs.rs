@@ -108,7 +108,7 @@ async fn main() {
     let shutdown = Shutdown::default();
 
     // create http server
-    shutdown.spawn_task_fn(|guard| async {
+    shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(service_fn(http_service));
 

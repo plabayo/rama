@@ -562,7 +562,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Default)
-            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
+            .layer(service_fn(async |ctx: Context<()>, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -613,7 +613,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(proxy))
             .filter_mode(ProxyFilterMode::Default)
-            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
+            .layer(service_fn(async |ctx: Context<()>, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -689,7 +689,7 @@ mod tests {
                     None
                 },
             )
-            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
+            .layer(service_fn(async |ctx: Context<()>, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -763,7 +763,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Default)
-            .layer(service_fn(|ctx: Context<()>, _| async move {
+            .layer(service_fn(async |ctx: Context<()>, _| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -803,7 +803,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .preserve_proxy(true)
             .filter_mode(ProxyFilterMode::Default)
-            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
+            .layer(service_fn(async |ctx: Context<()>, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -827,7 +827,7 @@ mod tests {
         let db = memproxydb().await;
 
         let service = ProxyDBLayer::new(Arc::new(db)).layer(service_fn(
-            |ctx: Context<()>, _: Request| async move {
+            async |ctx: Context<()>, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().cloned())
             },
         ));
@@ -890,7 +890,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Default)
-            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
+            .layer(service_fn(async |ctx: Context<()>, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -945,7 +945,7 @@ mod tests {
                 mobile: Some(false),
                 ..Default::default()
             }))
-            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
+            .layer(service_fn(async |ctx: Context<()>, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -995,7 +995,7 @@ mod tests {
 
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Required)
-            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
+            .layer(service_fn(async |ctx: Context<()>, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 
@@ -1080,7 +1080,7 @@ mod tests {
         let service = ProxyDBLayer::new(Arc::new(db))
             .filter_mode(ProxyFilterMode::Required)
             .select_predicate(|proxy: &Proxy| proxy.mobile)
-            .layer(service_fn(|ctx: Context<()>, _: Request| async move {
+            .layer(service_fn(async |ctx: Context<()>, _: Request| {
                 Ok::<_, Infallible>(ctx.get::<ProxyAddress>().unwrap().clone())
             }));
 

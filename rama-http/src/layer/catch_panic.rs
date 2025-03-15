@@ -316,7 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn panic_in_future() {
-        let svc = CatchPanicLayer::new().layer(service_fn(|_: Request<Body>| async {
+        let svc = CatchPanicLayer::new().layer(service_fn(async |_: Request<Body>| {
             panic!("future panic");
             Ok::<_, Infallible>(Response::new(Body::empty()))
         }));

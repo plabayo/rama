@@ -102,7 +102,7 @@ async fn main() {
         TlsAcceptorData::try_from(tls_server_config).expect("create tls acceptor data for server");
 
     // create mtls web server
-    shutdown.spawn_task_fn(|guard| async move {
+    shutdown.spawn_task_fn(async |guard| {
         let executor = Executor::graceful(guard.clone());
 
         let tcp_service = TlsAcceptorLayer::new(tls_server_data).layer(
@@ -126,7 +126,7 @@ async fn main() {
     });
 
     // create mtls tunnel proxy
-    shutdown.spawn_task_fn(|guard| async move {
+    shutdown.spawn_task_fn(async |guard| {
         tracing::info!("start mTLS TCP Tunnel Proxys: {}", TUNNEL_AUTHORITY);
 
         let forwarder = Forwarder::new(SERVER_AUTHORITY).connector(

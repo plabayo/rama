@@ -226,7 +226,7 @@ mod test {
         let retry_policy = ManagedPolicy::new(retry).with_backoff(backoff);
 
         let service = RetryLayer::new(retry_policy).layer(service_fn(
-            |_ctx, req: Request<RetryBody>| async {
+            async |_ctx, req: Request<RetryBody>| {
                 let txt = req.try_into_string().await.unwrap();
                 match txt.as_str() {
                     "internal" => Ok(StatusCode::INTERNAL_SERVER_ERROR.into_response()),

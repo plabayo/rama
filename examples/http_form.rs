@@ -67,7 +67,7 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard);
         HttpServer::auto(exec)
             .listen(

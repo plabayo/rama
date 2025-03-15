@@ -49,7 +49,7 @@ where
         Self {
             endpoints: Vec::new(),
             not_found: Arc::new(
-                service_fn(|| async { Ok(StatusCode::NOT_FOUND.into_response()) }).boxed(),
+                service_fn(async || Ok(StatusCode::NOT_FOUND.into_response())).boxed(),
             ),
             _phantom: PhantomData,
         }

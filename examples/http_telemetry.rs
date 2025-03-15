@@ -135,12 +135,12 @@ async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
     // http web service
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(async |guard| {
         // http service
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
             (TraceLayer::new_for_http(), RequestMetricsLayer::default()).layer(
-                WebService::default().get("/", |ctx: Context<Arc<Metrics>>| async move {
+                WebService::default().get("/", async |ctx: Context<Arc<Metrics>>| {
                     ctx.state().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
                 }),

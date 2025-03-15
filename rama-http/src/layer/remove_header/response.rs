@@ -11,7 +11,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let http_client = service_fn(|_: Request| async move {
+//! # let http_client = service_fn(async |_: Request| {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! #
@@ -180,7 +180,7 @@ mod test {
     #[tokio::test]
     async fn remove_response_header_prefix() {
         let svc = RemoveResponseHeaderLayer::prefix("x-foo").layer(service_fn(
-            |_ctx: Context<()>, _req: Request| async move {
+            async |_ctx: Context<()>, _req: Request| {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("x-foo-bar", "baz")
@@ -202,7 +202,7 @@ mod test {
     #[tokio::test]
     async fn remove_response_header_exact() {
         let svc = RemoveResponseHeaderLayer::exact(HeaderName::from_static("foo")).layer(
-            service_fn(|_ctx: Context<()>, _req: Request| async move {
+            service_fn(async |_ctx: Context<()>, _req: Request| {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("x-foo", "baz")
@@ -224,7 +224,7 @@ mod test {
     #[tokio::test]
     async fn remove_response_header_hop_by_hop() {
         let svc = RemoveResponseHeaderLayer::hop_by_hop().layer(service_fn(
-            |_ctx: Context<()>, _req: Request| async move {
+            async |_ctx: Context<()>, _req: Request| {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("connection", "close")

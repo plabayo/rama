@@ -62,7 +62,7 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
     let address = format!("{}:{}", cfg.interface, cfg.port);
     tracing::info!("starting proxy on: {}", address);
 
-    graceful.spawn_task_fn(move |guard| async move {
+    graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build()
             .bind(address)
             .await

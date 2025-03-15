@@ -112,7 +112,7 @@ async fn main() -> Result<(), BoxError> {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(async |guard| {
         let tcp_service = TcpListener::build_with_state(state.clone())
             .bind("127.0.0.1:62017")
             .await

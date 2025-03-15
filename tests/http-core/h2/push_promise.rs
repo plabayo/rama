@@ -39,7 +39,7 @@ async fn recv_push_works() {
             assert_eq!(resp.status(), StatusCode::NOT_FOUND);
         };
         let check_pushed_response = async move {
-            let p = pushed.and_then(|headers| async move {
+            let p = pushed.and_then(async |headers| {
                 let (request, response) = headers.into_parts();
                 assert_eq!(request.into_parts().0.method, Method::GET);
                 let resp = response.await.unwrap();

@@ -11,7 +11,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let http_client = service_fn(|_: Request| async move {
+//! # let http_client = service_fn(async |_: Request| {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! #
@@ -179,7 +179,7 @@ mod test {
     #[tokio::test]
     async fn remove_request_header_prefix() {
         let svc = RemoveRequestHeaderLayer::prefix("x-foo").layer(service_fn(
-            |_ctx: Context<()>, req: Request| async move {
+            async |_ctx: Context<()>, req: Request| {
                 assert!(req.headers().get("x-foo-bar").is_none());
                 assert_eq!(
                     req.headers().get("foo").map(|v| v.to_str().unwrap()),
@@ -199,7 +199,7 @@ mod test {
     #[tokio::test]
     async fn remove_request_header_exact() {
         let svc = RemoveRequestHeaderLayer::exact(HeaderName::from_static("x-foo")).layer(
-            service_fn(|_ctx: Context<()>, req: Request| async move {
+            service_fn(async |_ctx: Context<()>, req: Request| {
                 assert!(req.headers().get("x-foo").is_none());
                 assert_eq!(
                     req.headers().get("x-foo-bar").map(|v| v.to_str().unwrap()),
@@ -219,7 +219,7 @@ mod test {
     #[tokio::test]
     async fn remove_request_header_hop_by_hop() {
         let svc = RemoveRequestHeaderLayer::hop_by_hop().layer(service_fn(
-            |_ctx: Context<()>, req: Request| async move {
+            async |_ctx: Context<()>, req: Request| {
                 assert!(req.headers().get("connection").is_none());
                 assert_eq!(
                     req.headers().get("foo").map(|v| v.to_str().unwrap()),

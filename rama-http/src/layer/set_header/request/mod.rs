@@ -17,7 +17,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let http_client = service_fn(|_: Request| async move {
+//! # let http_client = service_fn(async |_: Request| {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! #
@@ -51,7 +51,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let http_client = service_fn(|| async move {
+//! # let http_client = service_fn(async || {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! fn date_header_value() -> HeaderValue {
@@ -66,7 +66,7 @@
 //!     // may have.
 //!     SetRequestHeaderLayer::overriding_fn(
 //!         header::DATE,
-//!         || async move {
+//!         async || {
 //!             Some(date_header_value())
 //!         }
 //!     ),

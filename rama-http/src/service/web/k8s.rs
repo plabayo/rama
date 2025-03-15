@@ -172,7 +172,7 @@ mod private {
 
     impl<S> Sealed<S> for () {
         fn to_k8s_service(self) -> BoxService<S, Request, Response, Infallible> {
-            service_fn(|| async { Ok(StatusCode::OK.into_response()) }).boxed()
+            service_fn(async || Ok(StatusCode::OK.into_response())).boxed()
         }
     }
 

@@ -173,12 +173,11 @@ mod tests {
     async fn basic() {
         let state = Arc::new(State(1));
 
-        let svc = AddExtensionLayer::new(state).layer(service_fn(
-            |ctx: Context<()>, _req: ()| async move {
+        let svc =
+            AddExtensionLayer::new(state).layer(service_fn(async |ctx: Context<()>, _req: ()| {
                 let state = ctx.get::<Arc<State>>().unwrap();
                 Ok::<_, Infallible>(state.0)
-            },
-        ));
+            }));
 
         let res = svc.serve(Context::default(), ()).await.unwrap();
 

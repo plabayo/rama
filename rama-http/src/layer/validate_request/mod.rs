@@ -119,7 +119,7 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
 //! let service = (
-//!     ValidateRequestHeaderLayer::custom_fn(|request: Request| async move {
+//!     ValidateRequestHeaderLayer::custom_fn(async |request: Request| {
 //!         // Validate the request
 //!         # Ok::<_, Response>(request)
 //!     }),

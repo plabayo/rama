@@ -159,10 +159,10 @@ mod tests {
         let value = Arc::new(std::sync::atomic::AtomicI32::new(0));
 
         let cloned_value = value.clone();
-        let svc = GetExtensionLayer::new(|state: State| async move {
+        let svc = GetExtensionLayer::new(async move |state: State| {
             cloned_value.store(state.0, std::sync::atomic::Ordering::Release);
         })
-        .layer(service_fn(|ctx: Context<()>, _req: ()| async move {
+        .layer(service_fn(async |ctx: Context<()>, _req: ()| {
             let state = ctx.get::<State>().unwrap();
             Ok::<_, Infallible>(state.0)
         }));

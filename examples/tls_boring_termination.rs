@@ -81,10 +81,10 @@ async fn main() {
     let shutdown = Shutdown::default();
 
     // create tls proxy
-    shutdown.spawn_task_fn(|guard| async move {
+    shutdown.spawn_task_fn(async move |guard| {
         let tcp_service = (
             TlsAcceptorLayer::new(acceptor_data).with_store_client_hello(true),
-            GetExtensionLayer::new(|st: SecureTransport| async move {
+            GetExtensionLayer::new(async move |st: SecureTransport| {
                 let client_hello = st.client_hello().unwrap();
                 tracing::debug!(?client_hello, "secure connection established");
             }),
@@ -102,7 +102,7 @@ async fn main() {
     });
 
     // create http server
-    shutdown.spawn_task_fn(|guard| async {
+    shutdown.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(service_fn(http_service));
 

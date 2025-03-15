@@ -164,13 +164,13 @@ mod tests {
     #[tokio::test]
     async fn test_service_fn() {
         let services = vec![
-            service_fn(|| async move { Ok(()) }).boxed(),
-            service_fn(|req: String| async move {
+            service_fn(async || Ok(())).boxed(),
+            service_fn(async |req: String| {
                 assert_eq!(req, "hello");
                 Ok(())
             })
             .boxed(),
-            service_fn(|_ctx: Context<()>, req: String| async move {
+            service_fn(async |_ctx: Context<()>, req: String| {
                 assert_eq!(req, "hello");
                 Ok(())
             })
@@ -189,11 +189,9 @@ mod tests {
 
     #[test]
     fn test_service_fn_without_usage() {
-        assert_send_sync(service_fn(|| async move { Ok::<_, Infallible>(()) }));
-        assert_send_sync(service_fn(
-            |_req: String| async move { Ok::<_, Infallible>(()) },
-        ));
-        assert_send_sync(service_fn(|_ctx: Context<()>, _req: String| async move {
+        assert_send_sync(service_fn(async || Ok::<_, Infallible>(())));
+        assert_send_sync(service_fn(async |_req: String| Ok::<_, Infallible>(())));
+        assert_send_sync(service_fn(async |_ctx: Context<()>, _req: String| {
             Ok::<_, Infallible>(())
         }));
     }

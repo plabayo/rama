@@ -17,7 +17,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let render_html = service_fn(|request: Request| async move {
+//! # let render_html = service_fn(async |request: Request| {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(request.into_body()))
 //! # });
 //! #
@@ -57,7 +57,7 @@
 //!
 //! #[tokio::main]
 //! async fn main() -> Result<(), BoxError> {
-//!     let render_html = service_fn(|_request: Request| async move {
+//!     let render_html = service_fn(async |_request: Request| {
 //!         Ok::<_, std::convert::Infallible>(Response::new(Body::from("1234567890")))
 //!     });
 //!
@@ -69,7 +69,7 @@
 //!         // may have.
 //!         SetResponseHeaderLayer::overriding_fn(
 //!             header::CONTENT_LENGTH,
-//!             |response: Response| async move {
+//!             async |response: Response| {
 //!                 let value = if let Some(size) = response.body().size_hint().exact() {
 //!                     // If the response body has a known size, returning `Some` will
 //!                     // set the `Content-Length` header to that value.
@@ -114,15 +114,15 @@
 //!     struct Success;
 //!
 //!     let svc = SetResponseHeader::overriding_fn(
-//!         service_fn(|| async {
+//!         service_fn(async || {
 //!             let mut res = ().into_response();
 //!             res.extensions_mut().insert(Success);
 //!             Ok::<_, Infallible>(res)
 //!         }),
 //!         HeaderName::from_static("x-used-request-id"),
-//!         |ctx: Context<()>| async move {
+//!         async |ctx: Context<()>| {
 //!             let factory = ctx.get::<RequestID>().cloned().map(|id| {
-//!                 BoxMakeHeaderValueFn::new(move |res: Response| async move {
+//!                 BoxMakeHeaderValueFn::new(async move |res: Response| {
 //!                     let header_value = res.extensions().get::<Success>().map(|_| {
 //!                         HeaderValue::from_str(id.0.as_str()).unwrap()
 //!                     });
@@ -435,7 +435,7 @@ mod tests {
     #[tokio::test]
     async fn test_override_mode() {
         let svc = SetResponseHeader::overriding(
-            service_fn(|| async {
+            service_fn(async || {
                 let res = Response::builder()
                     .header(header::CONTENT_TYPE, "good-content")
                     .body(Body::empty())
@@ -459,7 +459,7 @@ mod tests {
     #[tokio::test]
     async fn test_append_mode() {
         let svc = SetResponseHeader::appending(
-            service_fn(|| async {
+            service_fn(async || {
                 let res = Response::builder()
                     .header(header::CONTENT_TYPE, "good-content")
                     .body(Body::empty())
@@ -484,7 +484,7 @@ mod tests {
     #[tokio::test]
     async fn test_skip_if_present_mode() {
         let svc = SetResponseHeader::if_not_present(
-            service_fn(|| async {
+            service_fn(async || {
                 let res = Response::builder()
                     .header(header::CONTENT_TYPE, "good-content")
                     .body(Body::empty())
@@ -508,7 +508,7 @@ mod tests {
     #[tokio::test]
     async fn test_skip_if_present_mode_when_not_present() {
         let svc = SetResponseHeader::if_not_present(
-            service_fn(|| async {
+            service_fn(async || {
                 let res = Response::builder().body(Body::empty()).unwrap();
                 Ok::<_, Infallible>(res)
             }),

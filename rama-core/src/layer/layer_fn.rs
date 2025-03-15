@@ -106,7 +106,7 @@ mod tests {
         }
 
         let layer = layer_fn(ToUpper);
-        let f = |_, req| async move { Ok::<_, Infallible>(req) };
+        let f = async |_, req| Ok::<_, Infallible>(req);
 
         let res = layer
             .layer(service_fn(f))

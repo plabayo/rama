@@ -83,7 +83,7 @@ async fn main() {
         .expect("create tls server config");
 
     // create tls proxy
-    shutdown.spawn_task_fn(|guard| async move {
+    shutdown.spawn_task_fn(async |guard| {
         let tcp_service = TcpListener::build()
             .bind("127.0.0.1:62016")
             .await

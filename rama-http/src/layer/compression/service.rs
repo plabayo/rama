@@ -145,7 +145,7 @@ impl<S, P> Compression<S, P> {
     /// use rama_core::service::service_fn;
     ///
     /// // Placeholder service_fn
-    /// let service = service_fn(|_: ()| async {
+    /// let service = service_fn(async |_: ()| {
     ///     Ok::<_, std::io::Error>(rama_http::Response::new(()))
     /// });
     ///

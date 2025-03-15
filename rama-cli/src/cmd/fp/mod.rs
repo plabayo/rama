@@ -214,12 +214,12 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
         .parse::<HeaderValue>()
         .expect("parse header value");
 
-    graceful.spawn_task_fn(move |guard| async move {
+    graceful.spawn_task_fn(async move |guard|  {
         let inner_http_service = HijackLayer::new(
                 HttpMatcher::header_exists(HeaderName::from_static("referer"))
                     .and_header_exists(HeaderName::from_static("cookie"))
                     .negate(),
-                service_fn(|| async move {
+                service_fn(async || {
                     Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
                 }),
             )

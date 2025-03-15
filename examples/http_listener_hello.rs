@@ -35,7 +35,7 @@ async fn main() {
             // The below string type will also work
             // "127.0.0.1:62007",
             SocketAddress::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 62007),
-            service_fn(|req: Request| async move {
+            service_fn(async |req: Request| {
                 Ok(Json(json!({
                     "method": req.method().as_str(),
                     "path": req.uri().path(),

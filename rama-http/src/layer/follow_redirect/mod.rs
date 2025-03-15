@@ -24,7 +24,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), std::convert::Infallible> {
-//! # let http_client = service_fn(|req: Request| async move {
+//! # let http_client = service_fn(async |req: Request| {
 //! #     let dest = "https://www.rust-lang.org/";
 //! #     let mut res = Response::builder();
 //! #     if req.uri() != dest {
@@ -81,7 +81,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), MyError> {
-//! # let http_client = service_fn(|_: Request| async { Ok::<_, Infallible>(Response::new(Body::empty())) });
+//! # let http_client = service_fn(async |_: Request| Ok::<_, Infallible>(Response::new(Body::empty())));
 //! let policy = policy::Limited::new(10) // Set the maximum number of redirections to 10.
 //!     // Return an error when the limit was reached.
 //!     .or::<(), _, (), _>(policy::redirect_fn(|_| Err(MyError::TooManyRedirects)))

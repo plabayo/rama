@@ -123,10 +123,10 @@ async fn main() {
                         .get("/keys", list_keys)
                         .nest("/admin", ValidateRequestHeaderLayer::bearer("secret-token")
                             .layer(WebService::default()
-                                .delete("/keys", |ctx: Context<Arc<AppState>>| async move {
+                                .delete("/keys", async |ctx: Context<Arc<AppState>>| {
                                     ctx.state().db.write().await.clear();
                                 })
-                                .delete("/item/:key", |Path(params): Path<ItemParam>, ctx: Context<Arc<AppState>>| async move {
+                                .delete("/item/:key", async |Path(params): Path<ItemParam>, ctx: Context<Arc<AppState>>| {
                                     match ctx.state().db.write().await.remove(&params.key) {
                                         Some(_) => StatusCode::OK,
                                         None => StatusCode::NOT_FOUND,
@@ -136,7 +136,7 @@ async fn main() {
                             HttpMatcher::method_get().or_method_head().and_path("/item/:key"),
                             // only compress the get Action, not the Post Action
                             CompressionLayer::new()
-                                .layer((|Path(params): Path<ItemParam>, method: Method, ctx: Context<Arc<AppState>>| async move {
+                                .layer((async |Path(params): Path<ItemParam>, method: Method, ctx: Context<Arc<AppState>>| {
                                     match method {
                                         Method::GET => {
                                             match ctx.state().db.read().await.get(&params.key) {
@@ -155,16 +155,15 @@ async fn main() {
                                     }
                                 }).into_endpoint_service()),
                         )
-                        .post("/items", |ctx: Context<Arc<AppState>>, Json(dict): Json<HashMap<String, String>>| async move {
+                        .post("/items", async |ctx: Context<Arc<AppState>>, Json(dict): Json<HashMap<String, String>>| {
                             let mut db = ctx.state().db.write().await;
                             for (k, v) in dict {
                                 db.insert(k, bytes::Bytes::from(v));
                             }
                             StatusCode::OK
                         })
-                        // TODO: create a way to implement FromRequest also for a tuple
-                        // for (X, Y) where X is created from Context, and Y created from Request
-                        .post("/item/:key", |Path(params): Path<ItemParam>, ctx: Context<Arc<AppState>>, Bytes(value): Bytes| async move {
+
+                        .post("/item/:key", async |Path(params): Path<ItemParam>, ctx: Context<Arc<AppState>>, Bytes(value): Bytes| {
                             if value.is_empty() {
                                 return StatusCode::BAD_REQUEST;
                             }

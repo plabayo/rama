@@ -63,7 +63,7 @@ async fn main() {
 
     let sensitive_headers: Arc<[_]> = vec![header::AUTHORIZATION, header::COOKIE].into();
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(async |guard| {
         let exec = Executor::graceful(guard.clone());
 
         let http_service = (
@@ -78,7 +78,7 @@ async fn main() {
             SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
             MapResponseLayer::new(IntoResponse::into_response),
         ).layer(service_fn(
-                |ctx: Context<()>, req: Request| async move {
+                async |ctx: Context<()>, req: Request| {
                     let socket_info = ctx.get::<SocketInfo>().unwrap();
                     let tracker = ctx.get::<BytesRWTrackerHandle>().unwrap();
                     Ok(Html(format!(

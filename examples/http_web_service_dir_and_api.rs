@@ -73,7 +73,7 @@ async fn main() {
                 WebService::default()
                     .not_found(Redirect::temporary("/error.html"))
                     .get("/coin", coin_page)
-                    .post("/coin", |ctx: Context<Arc<AppState>>| async move {
+                    .post("/coin", async |ctx: Context<Arc<AppState>>| {
                         ctx.state().counter.fetch_add(1, Ordering::AcqRel);
                         coin_page(ctx).await
                     })

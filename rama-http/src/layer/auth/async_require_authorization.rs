@@ -99,7 +99,7 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
 //! let service =
-//!     AsyncRequireAuthorizationLayer::new(|request: Request| async move {
+//!     AsyncRequireAuthorizationLayer::new(async |request: Request| {
 //!         if let Some(user_id) = check_auth(&request).await {
 //!             Ok(request)
 //!         } else {

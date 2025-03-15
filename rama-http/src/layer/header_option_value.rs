@@ -285,7 +285,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
                 assert!(!ctx.contains::<UnitValue>());
 
                 Ok::<_, std::convert::Infallible>(())
@@ -307,7 +307,7 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
+        let inner_service = rama_core::service::service_fn(async |_: Request<()>| {
             Ok::<_, std::convert::Infallible>(())
         });
 
@@ -332,7 +332,7 @@ mod test {
                 .body(())
                 .unwrap();
 
-            let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
+            let inner_service = rama_core::service::service_fn(async |_: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 
@@ -358,7 +358,7 @@ mod test {
                 .body(())
                 .unwrap();
 
-            let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
+            let inner_service = rama_core::service::service_fn(async |_: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 

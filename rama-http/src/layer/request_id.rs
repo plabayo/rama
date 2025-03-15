@@ -14,7 +14,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let handler = service_fn(|request: Request| async move {
+//! # let handler = service_fn(async |request: Request| {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(request.into_body()))
 //! # });
 //! #
