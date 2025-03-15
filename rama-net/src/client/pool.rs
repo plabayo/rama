@@ -2,7 +2,7 @@ use super::conn::{ConnectorService, EstablishedClientConnection};
 use crate::stream::Socket;
 use parking_lot::Mutex;
 use rama_core::error::{BoxError, ErrorContext, OpaqueError};
-use rama_core::{Context, Service};
+use rama_core::{Context, Layer, Service};
 use rama_utils::macros::{generate_field_setters, nz};
 use std::collections::VecDeque;
 use std::fmt::Debug;
@@ -542,7 +542,6 @@ where
             Some(pool) => &pool.clone(),
             None => &self.pool,
         };
-
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
             timeout(duration, pool.get_connection_or_create_cb(&conn_id))
                 .await
@@ -566,6 +565,33 @@ where
             req,
             conn: leased_conn,
         })
+    }
+}
+
+pub struct PooledConnectorLayer<Storage, R> {
+    pool: Pool<Storage>,
+    req_to_conn_id: R,
+    wait_for_pool_timeout: Option<Duration>,
+}
+
+impl<Storage, R> PooledConnectorLayer<Storage, R> {
+    pub fn new(pool: Pool<Storage>, req_to_conn_id: R) -> Self {
+        Self {
+            pool,
+            req_to_conn_id,
+            wait_for_pool_timeout: None,
+        }
+    }
+
+    generate_field_setters!(wait_for_pool_timeout, Duration);
+}
+
+impl<S, Storage, R: Clone> Layer<S> for PooledConnectorLayer<Storage, R> {
+    type Service = PooledConnector<S, Storage, R>;
+
+    fn layer(&self, inner: S) -> Self::Service {
+        PooledConnector::new(inner, self.pool.clone(), self.req_to_conn_id.clone())
+            .maybe_with_wait_for_pool_timeout(self.wait_for_pool_timeout)
     }
 }
 

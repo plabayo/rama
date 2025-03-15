@@ -270,6 +270,8 @@ impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
 }
 
 /// Map http request to unique connection id so we can use a connection pool
+#[derive(Debug)]
+#[non_exhaustive]
 struct BasicHttpConnId;
 type BasicConnID = (Protocol, Authority);
 
@@ -348,7 +350,7 @@ where
         T::Error: Send + 'static,
     {
         let pool = self.connection_pool.clone();
-        let connector = PooledConnector::new(connector, pool, BasicHttpConnId {});
+        let connector = PooledConnector::new(connector, pool, BasicHttpConnId);
         let result = connector.connect(ctx, req).await.map_err(|err| {
             OpaqueError::from_boxed(err).with_context(|| format!("pooled connector failed"))
         })?;
@@ -467,6 +469,7 @@ where
         // set the runtime http req inspector
         let connector = connector.with_svc_req_inspector(self.http_req_inspector_svc.clone());
 
+        // NOTE: stack might change request version based on connector data,
         let connection = self.connect(connector, ctx, req).await?;
         trace!(uri = %uri, "send http req to connector stack");
 

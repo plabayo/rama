@@ -15,13 +15,17 @@
 // rama provides everything out of the box to build a complete web service.
 
 use rama::{
-    Context, Service,
+    Context, Layer, Service,
     error::OpaqueError,
     http::{
         BodyExtractExt,
         client::EasyHttpWebClient,
         server::HttpServer,
         service::{client::HttpClientExt, web::WebService},
+    },
+    layer::{
+        LimitLayer,
+        limit::{Policy, PolicyOutput, policy::PolicyResult},
     },
     net::client::Pool,
     rt::Executor,
@@ -31,7 +35,10 @@ use rama::{
 // Everything else we need is provided by the standard library, community crates or tokio.
 
 use std::{
-    sync::{Arc, atomic::AtomicU16},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 use tokio::time::sleep;
@@ -46,9 +53,7 @@ const ADDRESS: &str = "127.0.0.1:62024";
 #[tokio::main]
 async fn main() {
     setup_tracing();
-    tokio::spawn(async move {
-        run_server(ADDRESS).await;
-    });
+    tokio::spawn(run_server(ADDRESS));
 
     // Give server time to start, we do this instead of retrying as we want all
     // errors to be given back to us and never retried internally.
@@ -107,46 +112,44 @@ async fn run_server(addr: &str) {
         .bind(addr)
         .await
         .expect("bind TCP Listener")
-        .serve(LimitedConnections {
-            inner: http_service,
-            conns: Default::default(),
-            max_conns: 1,
-        })
+        .serve((LimitLayer::new(FirstConnOnly::new())).layer(http_service))
         .await;
 }
 
-/// [`LimitedConnections`] will keep track of total connection (not "active" connections) seen
-/// by the server and will stop working once conns >= max_conns
-struct LimitedConnections<S> {
-    inner: S,
-    max_conns: u16,
-    conns: Arc<AtomicU16>,
+#[derive(Clone)]
+/// Polify for limit layer that will only allow the first connection to succeed
+struct FirstConnOnly(Arc<AtomicBool>);
+
+impl FirstConnOnly {
+    fn new() -> Self {
+        Self(Arc::new(AtomicBool::new(false)))
+    }
 }
 
-impl<State, Request, S> Service<State, Request> for LimitedConnections<S>
+impl<State, Request> Policy<State, Request> for FirstConnOnly
 where
-    S: Service<State, Request>,
-    State: Clone + Send + Sync + 'static,
+    State: Send + Sync + 'static,
     Request: Send + 'static,
 {
-    type Response = S::Response;
+    type Guard = ();
 
     type Error = OpaqueError;
 
-    async fn serve(
+    async fn check(
         &self,
         ctx: Context<State>,
-        req: Request,
-    ) -> Result<Self::Response, Self::Error> {
-        let conns = self.conns.load(std::sync::atomic::Ordering::Acquire);
-        if conns >= self.max_conns {
-            return Err(OpaqueError::from_display("Exceeded max connections"));
-        }
-
-        self.conns.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        match self.inner.serve(ctx, req).await {
-            Ok(resp) => Ok(resp),
-            Err(_) => Err(OpaqueError::from_display("Internal error")),
+        request: Request,
+    ) -> PolicyResult<State, Request, Self::Guard, Self::Error> {
+        let output = match !self.0.swap(true, Ordering::AcqRel) {
+            true => PolicyOutput::Ready(()),
+            false => PolicyOutput::Abort(OpaqueError::from_display(
+                "Only first connection is allowed",
+            )),
+        };
+        PolicyResult {
+            ctx,
+            request,
+            output,
         }
     }
 }

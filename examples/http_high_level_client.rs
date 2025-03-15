@@ -48,9 +48,7 @@ const ADDRESS: &str = "127.0.0.1:62004";
 #[tokio::main]
 async fn main() {
     setup_tracing();
-    tokio::spawn(async move {
-        run_server(ADDRESS).await;
-    });
+    tokio::spawn(run_server(ADDRESS));
 
     // Thanks to the import of [`rama::http::client::HttpClientExt`] we can now also
     // use the high level API for this service stack.
