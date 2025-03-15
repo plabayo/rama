@@ -538,12 +538,17 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let conn_id = self.req_to_conn_id.id(&ctx, &req)?;
 
+        let pool = match ctx.get::<Pool<Storage>>() {
+            Some(pool) => &pool.clone(),
+            None => &self.pool,
+        };
+
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
-            timeout(duration, self.pool.get_connection_or_create_cb(&conn_id))
+            timeout(duration, pool.get_connection_or_create_cb(&conn_id))
                 .await
                 .map_err(|err| OpaqueError::from_std(err))?
         } else {
-            self.pool.get_connection_or_create_cb(&conn_id).await
+            pool.get_connection_or_create_cb(&conn_id).await
         }?;
 
         let (ctx, req, leased_conn) = match pool_result {
