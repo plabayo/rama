@@ -40,7 +40,7 @@ async fn retry_errors() {
     let response_counter = Arc::new(AtomicUsize::new(0));
     let error_counter = Arc::new(AtomicUsize::new(0));
 
-    let svc = RetryLayer::new(RetryErrors).layer(Svc {
+    let svc = RetryLayer::new(RetryErrors).into_layer(Svc {
         errored: AtomicBool::new(false),
         response_counter: response_counter.clone(),
         error_counter: error_counter.clone(),
@@ -78,7 +78,7 @@ async fn retry_limit() {
 
     let error_counter = Arc::new(AtomicUsize::new(0));
 
-    let svc = RetryLayer::new(Limit(Arc::new(Mutex::new(2)))).layer(Svc {
+    let svc = RetryLayer::new(Limit(Arc::new(Mutex::new(2)))).into_layer(Svc {
         error_counter: error_counter.clone(),
     });
 
@@ -114,7 +114,7 @@ async fn retry_error_inspection() {
         }
     }
 
-    let svc = RetryLayer::new(UnlessErr("reject")).layer(Svc {
+    let svc = RetryLayer::new(UnlessErr("reject")).into_layer(Svc {
         errored: AtomicBool::new(false),
     });
 
@@ -143,7 +143,7 @@ async fn retry_cannot_clone_request() {
         }
     }
 
-    let svc = RetryLayer::new(CannotClone).layer(Svc);
+    let svc = RetryLayer::new(CannotClone).into_layer(Svc);
 
     let err = svc
         .serve(Context::default(), request("hello"))
@@ -170,7 +170,7 @@ async fn success_with_cannot_clone() {
         }
     }
 
-    let svc = RetryLayer::new(CannotClone).layer(Svc);
+    let svc = RetryLayer::new(CannotClone).into_layer(Svc);
 
     let resp = svc
         .serve(Context::default(), request("hello"))
@@ -210,7 +210,7 @@ async fn retry_mutating_policy() {
     let svc = RetryLayer::new(MutatingPolicy {
         remaining: Arc::new(Mutex::new(2)),
     })
-    .layer(Svc {
+    .into_layer(Svc {
         responded: AtomicBool::new(false),
         response_counter: response_counter.clone(),
     });

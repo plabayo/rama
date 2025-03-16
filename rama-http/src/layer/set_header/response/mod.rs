@@ -30,7 +30,7 @@
 //!         header::CONTENT_TYPE,
 //!         HeaderValue::from_static("text/html"),
 //!     ),
-//! ).layer(render_html);
+//! ).into_layer(render_html);
 //!
 //! let request = Request::new(Body::empty());
 //!
@@ -83,7 +83,7 @@
 //!             },
 //!         ),
 //!     )
-//!         .layer(render_html);
+//!         .into_layer(render_html);
 //!
 //!     let request = Request::new(Body::empty());
 //!
@@ -286,6 +286,15 @@ where
             inner,
             header_name: self.header_name.clone(),
             make: self.make.clone(),
+            mode: self.mode,
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        SetResponseHeader {
+            inner,
+            header_name: self.header_name,
+            make: self.make,
             mode: self.mode,
         }
     }

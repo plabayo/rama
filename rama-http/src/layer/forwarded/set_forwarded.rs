@@ -75,7 +75,7 @@ use std::marker::PhantomData;
 /// }
 ///
 /// let service = SetForwardedHeadersLayer::<XRealIp>::new()
-///     .layer(service_fn(svc));
+///     .into_layer(service_fn(svc));
 ///
 /// # let req = Request::builder().uri("example.com").body(()).unwrap();
 /// # let mut ctx = Context::default();
@@ -190,6 +190,14 @@ impl<H, S> Layer<S> for SetForwardedHeadersLayer<H> {
         Self::Service {
             inner,
             by_node: self.by_node.clone(),
+            _headers: PhantomData,
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        Self::Service {
+            inner,
+            by_node: self.by_node,
             _headers: PhantomData,
         }
     }
@@ -448,13 +456,13 @@ mod tests {
                 dummy_service_fn,
             )),
         );
-        assert_is_service(SetForwardedHeadersLayer::via().layer(service_fn(dummy_service_fn)));
+        assert_is_service(SetForwardedHeadersLayer::via().into_layer(service_fn(dummy_service_fn)));
         assert_is_service(
-            SetForwardedHeadersLayer::<XRealIp>::new().layer(service_fn(dummy_service_fn)),
+            SetForwardedHeadersLayer::<XRealIp>::new().into_layer(service_fn(dummy_service_fn)),
         );
         assert_is_service(
             SetForwardedHeadersLayer::<(XRealIp, XForwardedProto)>::new()
-                .layer(service_fn(dummy_service_fn)),
+                .into_layer(service_fn(dummy_service_fn)),
         );
     }
 

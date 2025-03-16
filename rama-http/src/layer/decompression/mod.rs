@@ -29,7 +29,7 @@
 //! let mut server = (
 //!     // Automatically decompress request bodies.
 //!     RequestDecompressionLayer::new(),
-//! ).layer(service_fn(handler));
+//! ).into_layer(service_fn(handler));
 //!
 //! // Send the request, with the gzip encoded body, to our server.
 //! let _response = server.serve(Context::default(), request).await?;
@@ -73,7 +73,7 @@
 //! let mut client = (
 //!     // Automatically decompress response bodies.
 //!     DecompressionLayer::new(),
-//! ).layer(service);
+//! ).into_layer(service);
 //!
 //! // Call the service.
 //! //

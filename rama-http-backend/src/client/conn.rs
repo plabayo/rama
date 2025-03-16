@@ -245,4 +245,12 @@ impl<I1: Clone, I2: Clone, S> Layer<S> for HttpConnectorLayer<I1, I2> {
             http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HttpConnector {
+            inner,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+        }
+    }
 }

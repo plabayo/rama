@@ -433,7 +433,7 @@ where
         SetProxyAuthHttpHeaderLayer::default(),
     );
 
-    Ok(client_builder.layer(inner_client))
+    Ok(client_builder.into_layer(inner_client))
 }
 
 fn parse_print_mode(mode: &str) -> Result<(Option<WriterMode>, Option<WriterMode>), BoxError> {

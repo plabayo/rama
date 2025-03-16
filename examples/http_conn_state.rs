@@ -151,7 +151,7 @@ async fn main() {
                         }),
                     }
                 })
-                .layer(tcp_http_service),
+                .into_layer(tcp_http_service),
             )
             .await;
     });

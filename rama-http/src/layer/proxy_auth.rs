@@ -94,6 +94,10 @@ where
     fn layer(&self, inner: S) -> Self::Service {
         ProxyAuthService::new(self.proxy_auth.clone(), inner)
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        ProxyAuthService::new(self.proxy_auth, inner)
+    }
 }
 
 /// Middleware that validates if a request has the appropriate Proxy Authorisation.

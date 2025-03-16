@@ -151,12 +151,12 @@ async fn main() {
                     RemoveResponseHeaderLayer::hop_by_hop(),
                     RemoveRequestHeaderLayer::hop_by_hop(),
                 )
-            .layer(service_fn(http_plain_proxy)));
+            .into_layer(service_fn(http_plain_proxy)));
 
             tcp_service.serve_graceful(guard, (
                 // protect the http proxy from too large bodies, both from request and response end
                 BodyLimitLayer::symmetric(2 * 1024 * 1024),
-            ).layer(http_service)).await;
+            ).into_layer(http_service)).await;
     });
 
     graceful

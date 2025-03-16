@@ -77,7 +77,7 @@ async fn main() {
                 .on_response(DefaultOnResponse::new().include_headers(true).latency_unit(LatencyUnit::Micros)),
             SetSensitiveResponseHeadersLayer::from_shared(sensitive_headers),
             MapResponseLayer::new(IntoResponse::into_response),
-        ).layer(service_fn(
+        ).into_layer(service_fn(
                 async |ctx: Context<()>, req: Request| {
                     let socket_info = ctx.get::<SocketInfo>().unwrap();
                     let tracker = ctx.get::<BytesRWTrackerHandle>().unwrap();
@@ -117,7 +117,7 @@ async fn main() {
                     TraceErrLayer::new(),
                     TimeoutLayer::new(Duration::from_secs(8)),
                     IncomingBytesTrackerLayer::new(),
-                ).layer(tcp_http_service),
+                ).into_layer(tcp_http_service),
             )
             .await;
     });

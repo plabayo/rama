@@ -89,9 +89,9 @@ async fn main() {
                 tracing::debug!(?client_hello, "secure connection established");
             }),
         )
-            .layer(Forwarder::new(([127, 0, 0, 1], 62801)).connector(
+            .into_layer(Forwarder::new(([127, 0, 0, 1], 62801)).connector(
                 // ha proxy protocol used to forwarded the client original IP
-                HaProxyClientLayer::tcp().layer(TcpConnector::new()),
+                HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
             ));
 
         TcpListener::bind("127.0.0.1:63801")
@@ -107,7 +107,7 @@ async fn main() {
         let http_service = HttpServer::auto(exec).service(service_fn(http_service));
 
         let tcp_service =
-            (ConsumeErrLayer::default(), HaProxyServerLayer::new()).layer(http_service);
+            (ConsumeErrLayer::default(), HaProxyServerLayer::new()).into_layer(http_service);
 
         TcpListener::bind("127.0.0.1:62801")
             .await

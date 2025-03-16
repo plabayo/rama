@@ -46,7 +46,7 @@
 //! let mut svc = (
 //!     // Wrap response bodies in `BodyWrapper`
 //!     MapRequestBodyLayer::new(BodyWrapper::new),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Call the service
 //! let request = Request::new(Body::default());
@@ -86,6 +86,10 @@ where
 
     fn layer(&self, inner: S) -> Self::Service {
         MapRequestBody::new(inner, self.f.clone())
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        MapRequestBody::new(inner, self.f)
     }
 }
 

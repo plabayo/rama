@@ -292,7 +292,7 @@
 //!     RetryLayer::new(
 //!         ManagedPolicy::default().with_backoff(ExponentialBackoff::default()),
 //!     ),
-//! ).layer(EasyHttpWebClient::default());
+//! ).into_layer(EasyHttpWebClient::default());
 //!
 //! #[derive(Debug, Deserialize)]
 //! struct Info {

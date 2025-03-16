@@ -107,7 +107,7 @@ async fn main() {
             Arc::new(AppState::default()),
             addr,
             TraceLayer::new_for_http()
-                .layer(
+                .into_layer(
                     WebService::default()
                         .get("/", Json(json!({
                                 "GET /": "show this API documentation in Json Format",
@@ -122,7 +122,7 @@ async fn main() {
                             })))
                         .get("/keys", list_keys)
                         .nest("/admin", ValidateRequestHeaderLayer::bearer("secret-token")
-                            .layer(WebService::default()
+                            .into_layer(WebService::default()
                                 .delete("/keys", async |ctx: Context<Arc<AppState>>| {
                                     ctx.state().db.write().await.clear();
                                 })
@@ -136,7 +136,7 @@ async fn main() {
                             HttpMatcher::method_get().or_method_head().and_path("/item/:key"),
                             // only compress the get Action, not the Post Action
                             CompressionLayer::new()
-                                .layer((async |Path(params): Path<ItemParam>, method: Method, ctx: Context<Arc<AppState>>| {
+                                .into_layer((async |Path(params): Path<ItemParam>, method: Method, ctx: Context<Arc<AppState>>| {
                                     match method {
                                         Method::GET => {
                                             match ctx.state().db.read().await.get(&params.key) {

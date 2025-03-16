@@ -85,10 +85,10 @@ async fn main() {
 
     // create tls proxy
     shutdown.spawn_task_fn(async move |guard| {
-        let tcp_service = TlsAcceptorLayer::new(acceptor_data).layer(
+        let tcp_service = TlsAcceptorLayer::new(acceptor_data).into_layer(
             Forwarder::new(([127, 0, 0, 1], 62800)).connector(
                 // ha proxy protocol used to forwarded the client original IP
-                HaProxyClientLayer::tcp().layer(TcpConnector::new()),
+                HaProxyClientLayer::tcp().into_layer(TcpConnector::new()),
             ),
         );
 
@@ -102,7 +102,7 @@ async fn main() {
     // create http server
     shutdown.spawn_task_fn(async |guard| {
         let tcp_service = (ConsumeErrLayer::default(), HaProxyServerLayer::new())
-            .layer(service_fn(internal_tcp_service_fn));
+            .into_layer(service_fn(internal_tcp_service_fn));
 
         TcpListener::bind("127.0.0.1:62800")
             .await

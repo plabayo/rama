@@ -28,7 +28,7 @@
 //!     // The middleware is constructed from an iterator of headers to easily mark
 //!     // multiple headers at once.
 //!     SetSensitiveHeadersLayer::new(once(AUTHORIZATION)),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let response = service
@@ -80,6 +80,13 @@ impl<S> Layer<S> for SetSensitiveHeadersLayer {
             self.headers.clone(),
         )
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        SetSensitiveRequestHeaders::from_shared(
+            SetSensitiveResponseHeaders::from_shared(inner, self.headers.clone()),
+            self.headers,
+        )
+    }
 }
 
 /// Mark headers as [sensitive] on both requests and responses.
@@ -124,6 +131,13 @@ impl<S> Layer<S> for SetSensitiveRequestHeadersLayer {
         SetSensitiveRequestHeaders {
             inner,
             headers: self.headers.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        SetSensitiveRequestHeaders {
+            inner,
+            headers: self.headers,
         }
     }
 }
@@ -222,6 +236,13 @@ impl<S> Layer<S> for SetSensitiveResponseHeadersLayer {
             headers: self.headers.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        SetSensitiveResponseHeaders {
+            inner,
+            headers: self.headers,
+        }
+    }
 }
 
 /// Mark response headers as [sensitive].
@@ -316,7 +337,7 @@ mod tests {
             SetSensitiveRequestHeadersLayer::new(vec![header::COOKIE]),
             SetSensitiveResponseHeadersLayer::new(vec![header::SET_COOKIE]),
         )
-            .layer(service_fn(response_set_cookie));
+            .into_layer(service_fn(response_set_cookie));
 
         let mut req = Request::new(());
         req.headers_mut()

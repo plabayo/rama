@@ -50,7 +50,7 @@ async fn test_http_mitm_proxy() {
 
     let executor = Executor::default();
 
-    let tcp_service = TlsAcceptorLayer::new(tls_service_data).layer(
+    let tcp_service = TlsAcceptorLayer::new(tls_service_data).into_layer(
         HttpServer::auto(executor).service(service_fn(async |req: Request| {
             Ok(Json(json!({
                 "method": req.method().as_str(),

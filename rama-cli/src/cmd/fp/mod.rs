@@ -223,7 +223,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                     Ok::<_, Infallible>(Redirect::temporary("/consent").into_response())
                 }),
             )
-            .layer(match_service!{
+            .into_layer(match_service!{
                 HttpMatcher::get("/report") => endpoints::get_report,
                 HttpMatcher::post("/api/fetch/number/:number") => endpoints::post_api_fetch_number,
                 HttpMatcher::post("/api/xml/number/:number") => endpoints::post_api_xml_http_request_number,
@@ -256,7 +256,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
             UserAgentClassifierLayer::new(),
             ConsumeErrLayer::trace(tracing::Level::WARN),
             http_forwarded_layer,
-            ).layer(
+            ).into_layer(
                 Arc::new(match_service!{
                     // Navigate
                     HttpMatcher::get("/") => Redirect::temporary("/consent"),
@@ -300,7 +300,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 tcp_listener
                     .serve_graceful(
                         guard.clone(),
-                        tcp_service_builder.layer(
+                        tcp_service_builder.into_layer(
                             HttpServer::auto(Executor::graceful(guard)).service(http_service),
                         ),
                     )
@@ -311,7 +311,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 tcp_listener
                     .serve_graceful(
                         guard,
-                        tcp_service_builder.layer(HttpServer::http1().service(http_service)),
+                        tcp_service_builder.into_layer(HttpServer::http1().service(http_service)),
                     )
                     .await;
             }
@@ -320,7 +320,7 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
                 tcp_listener
                     .serve_graceful(
                         guard.clone(),
-                        tcp_service_builder.layer(
+                        tcp_service_builder.into_layer(
                             HttpServer::h2(Executor::graceful(guard)).service(http_service),
                         ),
                     )

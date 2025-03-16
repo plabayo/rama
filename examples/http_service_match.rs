@@ -62,7 +62,7 @@ async fn main() {
             .listen(
                 addr,
                 TraceLayer::new_for_http()
-                .layer(
+                .into_layer(
                         match_service!{
                             HttpMatcher::get("/") => Html(r##"<h1>Home</h1><a href="/echo">Echo Request</a>"##.to_owned()),
                             PathMatcher::new("/echo") => |req: Request| async move {

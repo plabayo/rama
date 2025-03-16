@@ -24,7 +24,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() {
-//! let service = UserAgentClassifierLayer::new().layer(service_fn(handle));
+//! let service = UserAgentClassifierLayer::new().into_layer(service_fn(handle));
 //!
 //! let _ = service
 //!     .get("http://www.example.com")
@@ -191,6 +191,10 @@ impl<S> Layer<S> for UserAgentClassifierLayer {
     fn layer(&self, inner: S) -> Self::Service {
         UserAgentClassifier::new(inner, self.overwrite_header.clone())
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        UserAgentClassifier::new(inner, self.overwrite_header)
+    }
 }
 
 #[cfg(test)]
@@ -222,7 +226,7 @@ mod tests {
             AddRequiredRequestHeadersLayer::default(),
             UserAgentClassifierLayer::new(),
         )
-            .layer(service_fn(handle));
+            .into_layer(service_fn(handle));
 
         let _ = service
             .get("http://www.example.com")
@@ -247,7 +251,7 @@ mod tests {
             Ok(StatusCode::OK.into_response())
         }
 
-        let service = UserAgentClassifierLayer::new().layer(service_fn(handle));
+        let service = UserAgentClassifierLayer::new().into_layer(service_fn(handle));
 
         let _ = service
             .get("http://www.example.com")
@@ -273,7 +277,7 @@ mod tests {
             Ok(StatusCode::OK.into_response())
         }
 
-        let service = UserAgentClassifierLayer::new().layer(service_fn(handle));
+        let service = UserAgentClassifierLayer::new().into_layer(service_fn(handle));
 
         let _ = service
             .get("http://www.example.com")
@@ -301,7 +305,7 @@ mod tests {
 
         let service = UserAgentClassifierLayer::new()
             .overwrite_header(HeaderName::from_static("x-proxy-ua"))
-            .layer(service_fn(handle));
+            .into_layer(service_fn(handle));
 
         let _ = service
             .get("http://www.example.com")
@@ -336,7 +340,7 @@ mod tests {
 
         let service = UserAgentClassifierLayer::new()
             .overwrite_header(HeaderName::from_static("x-proxy-ua"))
-            .layer(service_fn(handle));
+            .into_layer(service_fn(handle));
 
         let _ = service
             .get("http://www.example.com")

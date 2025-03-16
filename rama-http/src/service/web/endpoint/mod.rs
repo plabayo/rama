@@ -26,7 +26,7 @@ where
     fn into_endpoint_service(
         self,
     ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
-        MapResponseLayer::new(R::into_response).layer(self)
+        MapResponseLayer::new(R::into_response).into_layer(self)
     }
 }
 

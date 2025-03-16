@@ -88,21 +88,21 @@ impl<S> BodyLimitService<S> {
     ///
     /// See [`BodyLimitLayer`] for more information.
     pub fn request_only(service: S, limit: usize) -> Self {
-        BodyLimitLayer::request_only(limit).layer(service)
+        BodyLimitLayer::request_only(limit).into_layer(service)
     }
 
     /// Create a new [`BodyLimitService`], with the given limit to be applied to the response only.
     ///
     /// See [`BodyLimitLayer`] for more information.
     pub fn response_only(service: S, limit: usize) -> Self {
-        BodyLimitLayer::response_only(limit).layer(service)
+        BodyLimitLayer::response_only(limit).into_layer(service)
     }
 
     /// Create a new [`BodyLimitService`], with the given limit to be applied to both the request and response bodies.
     ///
     /// See [`BodyLimitLayer`] for more information.
     pub fn symmetric(service: S, limit: usize) -> Self {
-        BodyLimitLayer::symmetric(limit).layer(service)
+        BodyLimitLayer::symmetric(limit).into_layer(service)
     }
 
     /// Create a new [`BodyLimitService`], with the given limits
@@ -110,7 +110,7 @@ impl<S> BodyLimitService<S> {
     ///
     /// See [`BodyLimitLayer`] for more information.
     pub fn asymmetric(service: S, request: usize, response: usize) -> Self {
-        BodyLimitLayer::asymmetric(request, response).layer(service)
+        BodyLimitLayer::asymmetric(request, response).into_layer(service)
     }
 }
 

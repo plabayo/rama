@@ -190,6 +190,10 @@ impl<T, S> Layer<S> for HeaderOptionValueLayer<T> {
     fn layer(&self, inner: S) -> Self::Service {
         HeaderOptionValueService::new(inner, self.header_name.clone(), self.optional)
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HeaderOptionValueService::new(inner, self.header_name, self.optional)
+    }
 }
 
 #[cfg(test)]

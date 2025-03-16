@@ -135,7 +135,7 @@ async fn main() {
                     ),
                 ])),
             )
-                .layer(service_fn(async |req: Request| {
+                .into_layer(service_fn(async |req: Request| {
                     if req.uri().path().ends_with("/slow") {
                         tokio::time::sleep(Duration::from_secs(10)).await;
                     }

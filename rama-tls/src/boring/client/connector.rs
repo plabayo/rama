@@ -106,6 +106,14 @@ impl<K: Clone, S> Layer<S> for TlsConnectorLayer<K> {
             kind: self.kind.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        TlsConnector {
+            inner,
+            connector_data: self.connector_data,
+            kind: self.kind,
+        }
+    }
 }
 
 impl Default for TlsConnectorLayer<ConnectorKindAuto> {

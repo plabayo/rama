@@ -132,7 +132,7 @@ async fn main() -> Result<(), BoxError> {
                     service_fn(http_connect_proxy),
                 ),
             )
-                .layer(http_mitm_service),
+                .into_layer(http_mitm_service),
         );
 
         tcp_service
@@ -142,7 +142,7 @@ async fn main() -> Result<(), BoxError> {
                     // protect the http proxy from too large bodies, both from request and response end
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
                 )
-                    .layer(http_service),
+                    .into_layer(http_service),
             )
             .await;
     });
@@ -189,7 +189,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     let http_transport_service = HttpServer::auto(ctx.executor().clone()).service(http_service);
 
     let https_service = TlsAcceptorLayer::new(ctx.state().mitm_tls_service_data.clone())
-        .layer(http_transport_service);
+        .into_layer(http_transport_service);
 
     https_service
         .serve(ctx, upgraded)
@@ -214,7 +214,7 @@ fn new_http_mitm_proxy(
         CompressAdaptLayer::default(),
         AddRequiredRequestHeadersLayer::new(),
     )
-        .layer(service_fn(http_mitm_proxy))
+        .into_layer(service_fn(http_mitm_proxy))
 }
 
 async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infallible> {

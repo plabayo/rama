@@ -65,6 +65,14 @@ where
             _phantom: PhantomData,
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        GetExtension {
+            inner,
+            callback: self.callback,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 /// Middleware for adding some shareable value to incoming [Context].
@@ -162,7 +170,7 @@ mod tests {
         let svc = GetExtensionLayer::new(async move |state: State| {
             cloned_value.store(state.0, std::sync::atomic::Ordering::Release);
         })
-        .layer(service_fn(async |ctx: Context<()>, _req: ()| {
+        .into_layer(service_fn(async |ctx: Context<()>, _req: ()| {
             let state = ctx.get::<State>().unwrap();
             Ok::<_, Infallible>(state.0)
         }));

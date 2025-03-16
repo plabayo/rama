@@ -160,6 +160,14 @@ impl<S> Layer<S> for AddAuthorizationLayer {
             if_not_present: self.if_not_present,
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        AddAuthorization {
+            inner,
+            value: self.value,
+            if_not_present: self.if_not_present,
+        }
+    }
 }
 
 /// Middleware that adds authorization all requests using the [`Authorization`] header.

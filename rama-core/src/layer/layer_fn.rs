@@ -30,6 +30,10 @@ where
     fn layer(&self, inner: S) -> Self::Service {
         (self.f.clone())(inner)
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        (self.f)(inner)
+    }
 }
 
 impl<F> Clone for LayerFn<F>

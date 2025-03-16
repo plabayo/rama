@@ -1280,7 +1280,7 @@ mod tests {
             UserAgentEmulateLayer::new(ua_profile),
             RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
         )
-            .layer(service_fn(async |req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)
@@ -1350,7 +1350,7 @@ mod tests {
             UserAgentEmulateLayer::new(ua_profile),
             RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
         )
-            .layer(service_fn(async |req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)
@@ -1422,7 +1422,7 @@ mod tests {
             UserAgentEmulateLayer::new(ua_profile),
             RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
         )
-            .layer(service_fn(async |req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)
@@ -1494,7 +1494,7 @@ mod tests {
             UserAgentEmulateLayer::new(ua_profile),
             RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
         )
-            .layer(service_fn(async |req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)
@@ -1575,7 +1575,7 @@ mod tests {
             UserAgentEmulateLayer::new(ua_profile),
             RequestInspectorLayer::new(UserAgentEmulateHttpRequestModifier::default()),
         )
-            .layer(service_fn(async |req: Request| {
+            .into_layer(service_fn(async |req: Request| {
                 Ok::<_, Infallible>(
                     req.headers()
                         .get(ETAG)

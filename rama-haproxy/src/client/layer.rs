@@ -100,6 +100,14 @@ impl<S, P, V: Clone> Layer<S> for HaProxyLayer<P, V> {
             _phantom: PhantomData,
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HaProxyService {
+            inner,
+            version: self.version,
+            _phantom: PhantomData,
+        }
+    }
 }
 
 /// Service to encode and write the HaProxy Protocol

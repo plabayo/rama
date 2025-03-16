@@ -279,4 +279,17 @@ where
             on_failure: self.on_failure.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        Trace {
+            inner,
+            make_classifier: self.make_classifier,
+            make_span: self.make_span,
+            on_request: self.on_request,
+            on_eos: self.on_eos,
+            on_body_chunk: self.on_body_chunk,
+            on_response: self.on_response,
+            on_failure: self.on_failure,
+        }
+    }
 }

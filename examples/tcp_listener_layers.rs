@@ -66,7 +66,7 @@ async fn main() {
                     TraceErrLayer::new(),
                     TimeoutLayer::new(Duration::from_secs(8)),
                 )
-                    .layer(EchoService::new()),
+                    .into_layer(EchoService::new()),
             )
             .await;
     });

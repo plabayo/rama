@@ -94,4 +94,8 @@ impl<S, F: Clone> Layer<S> for MapStateLayer<F> {
     fn layer(&self, inner: S) -> Self::Service {
         MapState::new(inner, self.f.clone())
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        MapState::new(inner, self.f)
+    }
 }

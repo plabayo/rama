@@ -139,7 +139,7 @@ async fn main() {
         // http service
         let exec = Executor::graceful(guard.clone());
         let http_service = HttpServer::auto(exec).service(
-            (TraceLayer::new_for_http(), RequestMetricsLayer::default()).layer(
+            (TraceLayer::new_for_http(), RequestMetricsLayer::default()).into_layer(
                 WebService::default().get("/", async |ctx: Context<Arc<Metrics>>| {
                     ctx.state().counter.add(1, &[]);
                     Html("<h1>Hello!</h1>")
@@ -152,7 +152,10 @@ async fn main() {
             .bind("127.0.0.1:62012")
             .await
             .unwrap()
-            .serve_graceful(guard, NetworkMetricsLayer::default().layer(http_service))
+            .serve_graceful(
+                guard,
+                NetworkMetricsLayer::default().into_layer(http_service),
+            )
             .await;
     });
 

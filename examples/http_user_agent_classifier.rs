@@ -34,7 +34,7 @@ async fn main() {
             "127.0.0.1:62015",
             UserAgentClassifierLayer::new()
                 .overwrite_header(HeaderName::from_static("x-proxy-ua"))
-                .layer(service_fn(handle)),
+                .into_layer(service_fn(handle)),
         )
         .await
         .unwrap();

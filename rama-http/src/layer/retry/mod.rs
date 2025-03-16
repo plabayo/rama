@@ -225,7 +225,7 @@ mod test {
 
         let retry_policy = ManagedPolicy::new(retry).with_backoff(backoff);
 
-        let service = RetryLayer::new(retry_policy).layer(service_fn(
+        let service = RetryLayer::new(retry_policy).into_layer(service_fn(
             async |_ctx, req: Request<RetryBody>| {
                 let txt = req.try_into_string().await.unwrap();
                 match txt.as_str() {

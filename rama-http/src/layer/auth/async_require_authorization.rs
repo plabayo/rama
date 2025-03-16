@@ -147,6 +147,10 @@ where
     fn layer(&self, inner: S) -> Self::Service {
         AsyncRequireAuthorization::new(inner, self.auth.clone())
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        AsyncRequireAuthorization::new(inner, self.auth)
+    }
 }
 
 /// Middleware that authorizes all requests using the [`Authorization`] header.

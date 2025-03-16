@@ -136,4 +136,8 @@ where
     fn layer(&self, inner: S) -> Self::Service {
         HijackService::new(inner, self.hijack.clone(), self.matcher.clone())
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HijackService::new(inner, self.hijack, self.matcher)
+    }
 }

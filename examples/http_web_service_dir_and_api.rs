@@ -69,7 +69,7 @@ async fn main() {
         .listen_with_state(
             Arc::new(AppState::default()),
             addr,
-            (TraceLayer::new_for_http(), CompressionLayer::new()).layer(
+            (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
                 WebService::default()
                     .not_found(Redirect::temporary("/error.html"))
                     .get("/coin", coin_page)

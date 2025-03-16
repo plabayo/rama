@@ -30,7 +30,7 @@
 //!         header::USER_AGENT,
 //!         HeaderValue::from_static("my very cool proxy"),
 //!     ),
-//! ).layer(http_client);
+//! ).into_layer(http_client);
 //!
 //! let request = Request::new(Body::empty());
 //!
@@ -70,7 +70,7 @@
 //!             Some(date_header_value())
 //!         }
 //!     ),
-//! ).layer(http_client);
+//! ).into_layer(http_client);
 //!
 //! let request = Request::new(Body::default());
 //!
@@ -215,6 +215,15 @@ where
             inner,
             header_name: self.header_name.clone(),
             make: self.make.clone(),
+            mode: self.mode,
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        SetRequestHeader {
+            inner,
+            header_name: self.header_name,
+            make: self.make,
             mode: self.mode,
         }
     }

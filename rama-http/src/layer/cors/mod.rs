@@ -23,7 +23,7 @@
 //!     // allow requests from any origin
 //!     .allow_origin(Any);
 //!
-//! let mut service = cors.layer(service_fn(handle));
+//! let mut service = cors.into_layer(service_fn(handle));
 //!
 //! let request = Request::builder()
 //!     .header(header::ORIGIN, "https://example.com")
@@ -483,11 +483,15 @@ impl<S> Layer<S> for CorsLayer {
 
     fn layer(&self, inner: S) -> Self::Service {
         ensure_usable_cors_rules(self);
-
         Cors {
             inner,
             layer: self.clone(),
         }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        ensure_usable_cors_rules(&self);
+        Cors { inner, layer: self }
     }
 }
 

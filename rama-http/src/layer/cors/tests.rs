@@ -22,7 +22,7 @@ async fn vary_set_by_inner_service() {
             .unwrap())
     }
 
-    let svc = CorsLayer::permissive().layer(service_fn(inner_svc));
+    let svc = CorsLayer::permissive().into_layer(service_fn(inner_svc));
     let res = svc
         .serve(Context::default(), Request::new(Body::empty()))
         .await

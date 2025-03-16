@@ -41,6 +41,6 @@ async fn main() {
     // ...once running you can go in browser for example to:
     println!("open: http://127.0.0.1:62009/test-files/index.html");
     listener
-        .serve(TraceErrLayer::new().layer(http_fs_server))
+        .serve(TraceErrLayer::new().into_layer(http_fs_server))
         .await;
 }

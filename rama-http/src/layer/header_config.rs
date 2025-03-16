@@ -23,7 +23,7 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let service = HeaderConfigLayer::<Config>::required(HeaderName::from_static("x-proxy-config"))
-//!         .layer(WebService::default()
+//!         .into_layer(WebService::default()
 //!             .get("/", async |ctx: Context<()>| {
 //!                 let cfg = ctx.get::<Config>().unwrap();
 //!                 assert_eq!(cfg.s, "E&G");
@@ -230,6 +230,10 @@ impl<T, S> Layer<S> for HeaderConfigLayer<T> {
 
     fn layer(&self, inner: S) -> Self::Service {
         HeaderConfigService::new(inner, self.header_name.clone(), self.optional)
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HeaderConfigService::new(inner, self.header_name, self.optional)
     }
 }
 

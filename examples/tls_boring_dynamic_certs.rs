@@ -116,7 +116,7 @@ async fn main() {
             ConsumeErrLayer::default(),
             TlsAcceptorLayer::new(acceptor_data),
         )
-            .layer(http_service);
+            .into_layer(http_service);
 
         TcpListener::bind("127.0.0.1:64801")
             .await

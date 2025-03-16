@@ -122,7 +122,7 @@ where
         ),
         AddRequiredRequestHeadersLayer::default(),
     )
-        .layer(inner_client)
+        .into_layer(inner_client)
         .boxed()
 }
 

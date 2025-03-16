@@ -34,7 +34,7 @@
 //! #     }
 //! #     Ok::<_, std::convert::Infallible>(res.body(Body::empty()).unwrap())
 //! # });
-//! let mut client = FollowRedirectLayer::new().layer(http_client);
+//! let mut client = FollowRedirectLayer::new().into_layer(http_client);
 //!
 //! let request = Request::builder()
 //!     .uri("https://rust-lang.org/")
@@ -91,7 +91,7 @@
 //! let client = (
 //!     FollowRedirectLayer::with_policy(policy),
 //!     MapErrLayer::new(MyError::from_std),
-//! ).layer(http_client);
+//! ).into_layer(http_client);
 //!
 //! // ...
 //! let _ = client.serve(Context::default(), Request::default()).await?;
@@ -158,6 +158,13 @@ where
         FollowRedirect {
             inner,
             policy: self.policy.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        FollowRedirect {
+            inner,
+            policy: self.policy,
         }
     }
 }
@@ -382,7 +389,7 @@ mod tests {
 
     #[tokio::test]
     async fn follows() {
-        let svc = FollowRedirectLayer::with_policy(Action::Follow).layer(service_fn(handle));
+        let svc = FollowRedirectLayer::with_policy(Action::Follow).into_layer(service_fn(handle));
         let req = Request::builder()
             .uri("http://example.com/42")
             .body(Body::empty())
@@ -397,7 +404,7 @@ mod tests {
 
     #[tokio::test]
     async fn stops() {
-        let svc = FollowRedirectLayer::with_policy(Action::Stop).layer(service_fn(handle));
+        let svc = FollowRedirectLayer::with_policy(Action::Stop).into_layer(service_fn(handle));
         let req = Request::builder()
             .uri("http://example.com/42")
             .body(Body::empty())
@@ -412,7 +419,7 @@ mod tests {
 
     #[tokio::test]
     async fn limited() {
-        let svc = FollowRedirectLayer::with_policy(Limited::new(10)).layer(service_fn(handle));
+        let svc = FollowRedirectLayer::with_policy(Limited::new(10)).into_layer(service_fn(handle));
         let req = Request::builder()
             .uri("http://example.com/42")
             .body(Body::empty())

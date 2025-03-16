@@ -16,7 +16,7 @@
 //! async fn main() {
 //!     let service = HeaderFromStrConfigLayer::<String>::required(HeaderName::from_static("x-proxy-labels"))
 //!         .with_repeat(true)
-//!         .layer(WebService::default()
+//!         .into_layer(WebService::default()
 //!             .get("/", async |ctx: Context<()>| {
 //!                 // For production-like code you should prefer a custom type
 //!                 // to avoid possible conflicts. Ideally these are also as
@@ -273,6 +273,16 @@ impl<T, S> Layer<S> for HeaderFromStrConfigLayer<T> {
         HeaderFromStrConfigService {
             inner,
             header_name: self.header_name.clone(),
+            optional: self.optional,
+            repeat: self.repeat,
+            _marker: PhantomData,
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HeaderFromStrConfigService {
+            inner,
+            header_name: self.header_name,
             optional: self.optional,
             repeat: self.repeat,
             _marker: PhantomData,

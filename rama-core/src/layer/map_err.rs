@@ -93,4 +93,8 @@ where
             inner,
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        MapErr { f: self.f, inner }
+    }
 }

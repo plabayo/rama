@@ -26,7 +26,7 @@ async fn test_https_connect_proxy() {
                     #[cfg(feature = "compression")]
                     CompressionLayer::new(),
                 )
-                    .layer(service_fn(async |req: Request| {
+                    .into_layer(service_fn(async |req: Request| {
                         tracing::debug!(uri = %req.uri(), "serve request");
                         Ok(Json(json!({
                             "method": req.method().as_str(),

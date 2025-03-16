@@ -102,7 +102,7 @@ async fn main() {
                     service_fn(http_connect_proxy),
                 ),
             )
-                .layer(service_fn(http_plain_proxy)),
+                .into_layer(service_fn(http_plain_proxy)),
         );
 
         tcp_service
@@ -113,7 +113,7 @@ async fn main() {
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
                     TlsAcceptorLayer::new(tls_service_data).with_store_client_hello(true),
                 )
-                    .layer(http_service),
+                    .into_layer(http_service),
             )
             .await;
     });

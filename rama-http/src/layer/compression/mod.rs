@@ -44,7 +44,7 @@
 //! let mut service = (
 //!     // Compress responses based on the `Accept-Encoding` header.
 //!     CompressionLayer::new(),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let request = Request::builder()

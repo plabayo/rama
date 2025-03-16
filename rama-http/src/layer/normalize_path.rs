@@ -23,7 +23,7 @@
 //! let mut service = (
 //!     // trim trailing slashes from paths
 //!     NormalizePathLayer::trim_trailing_slash(),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // call the service
 //! let request = Request::builder()
@@ -179,7 +179,7 @@ mod tests {
             Ok(Response::new(request.uri().to_string()))
         }
 
-        let svc = NormalizePathLayer::trim_trailing_slash().layer(service_fn(handle));
+        let svc = NormalizePathLayer::trim_trailing_slash().into_layer(service_fn(handle));
 
         let body = svc
             .serve(

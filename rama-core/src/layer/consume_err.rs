@@ -260,6 +260,14 @@ where
             response: self.response.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        ConsumeErr {
+            f: self.f,
+            inner,
+            response: self.response,
+        }
+    }
 }
 
 mod sealed {

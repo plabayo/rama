@@ -156,6 +156,15 @@ impl<S, F: Clone> Layer<S> for NetworkMetricsLayer<F> {
             attributes_factory: self.attributes_factory.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        NetworkMetricsService {
+            inner,
+            metrics: self.metrics,
+            base_attributes: self.base_attributes,
+            attributes_factory: self.attributes_factory,
+        }
+    }
 }
 
 /// A [`Service`] that records network server metrics using OpenTelemetry.
@@ -169,7 +178,7 @@ pub struct NetworkMetricsService<S, F = ()> {
 impl<S> NetworkMetricsService<S, ()> {
     /// Create a new [`NetworkMetricsService`].
     pub fn new(inner: S) -> Self {
-        NetworkMetricsLayer::new().layer(inner)
+        NetworkMetricsLayer::new().into_layer(inner)
     }
 
     define_inner_service_accessors!();
@@ -298,7 +307,7 @@ mod tests {
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
-        .layer(());
+        .into_layer(());
 
         let attributes = svc.compute_attributes(&Context::default());
         assert!(
@@ -329,7 +338,7 @@ mod tests {
             ..Default::default()
         })
         .with_attributes(vec![KeyValue::new("test", "attribute_fn")])
-        .layer(());
+        .into_layer(());
 
         let attributes = svc.compute_attributes(&Context::default());
         assert!(
@@ -369,7 +378,7 @@ mod tests {
             attributes.push(KeyValue::new("test", "attribute_fn"));
             attributes
         })
-        .layer(());
+        .into_layer(());
 
         let attributes = svc.compute_attributes(&Context::default());
         assert!(
