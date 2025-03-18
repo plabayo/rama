@@ -17,11 +17,12 @@ workspace = true
 default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
 tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
-rustls = ["tls", "dep:rustls"]
+rustls = ["tls", "dep:rustls", "dep:aws-lc-sys"]
 boring = ["tls", "dep:boring", "dep:nom"]
 telemetry = ["rama-core/telemetry"]
 
 [dependencies]
+aws-lc-sys = { workspace = true, optional = true }
 base64 = { workspace = true }
 boring = { workspace = true, optional = true }
 bytes = { workspace = true }
