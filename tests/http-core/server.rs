@@ -1010,7 +1010,7 @@ async fn expect_continue_waits_for_body_poll() {
             socket,
             RamaHttpService::new(
                 rama::Context::default(),
-                service_fn(|req: Request| async move {
+                service_fn(async |req: Request| {
                     assert_eq!(req.headers()["expect"], "100-continue");
                     // But! We're never going to poll the body!
                     drop(req);
@@ -1448,7 +1448,7 @@ async fn returning_1xx_response_is_error() {
             socket,
             RamaHttpService::new(
                 rama::Context::default(),
-                service_fn(|_| async move {
+                service_fn(async |_| {
                     Ok::<_, Infallible>(
                         Response::builder()
                             .status(StatusCode::CONTINUE)
@@ -2057,7 +2057,7 @@ async fn h2_connect_multiplex() {
 
         let futures = streams
             .into_iter()
-            .map(|(i, response, mut send_stream)| async move {
+            .map(async |(i, response, mut send_stream)| {
                 if i % 4 == 0 {
                     return;
                 }
@@ -3195,7 +3195,7 @@ impl Service<(), Request> for HelloWorld {
 fn unreachable_service()
 -> impl Service<(), rama::http::Request, Response = rama::http::Response, Error = Infallible> + Clone
 {
-    service_fn(|_req| async move { unreachable!() })
+    service_fn(async |_req| unreachable!())
 }
 
 fn connect(addr: &SocketAddr) -> TcpStream {

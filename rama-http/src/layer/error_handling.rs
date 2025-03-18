@@ -32,7 +32,7 @@
 //!             StatusCode::INTERNAL_SERVER_ERROR.into_response()
 //!         }),
 //!         TimeoutLayer::new(Duration::from_secs(5)),
-//!         ).layer(service_fn(handler));
+//!         ).into_layer(service_fn(handler));
 //!
 //!     let service = WebService::default().get("/", home_handler);
 //!
@@ -96,6 +96,10 @@ impl<S, F: Clone> Layer<S> for ErrorHandlerLayer<F> {
 
     fn layer(&self, inner: S) -> Self::Service {
         ErrorHandler::new(inner).error_mapper(self.error_mapper.clone())
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        ErrorHandler::new(inner).error_mapper(self.error_mapper)
     }
 }
 

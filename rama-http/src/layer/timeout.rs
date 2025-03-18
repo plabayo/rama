@@ -34,7 +34,7 @@
 //! let svc = (
 //!     // Timeout requests after 30 seconds
 //!     TimeoutLayer::new(Duration::from_secs(30)),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //! # Ok(())
 //! # }
 //! ```

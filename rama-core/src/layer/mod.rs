@@ -5,22 +5,37 @@
 //! Direct copy of [tower-layer](https://docs.rs/tower-layer/0.3.0/tower_layer/trait.Layer.html).
 
 /// A layer that produces a Layered service (middleware(inner service)).
-pub trait Layer<S> {
+pub trait Layer<S>: Sized {
     /// The service produced by the layer.
     type Service;
 
     /// Wrap the given service with the middleware, returning a new service.
     fn layer(&self, inner: S) -> Self::Service;
+
+    /// Same as `layer` but consuming self after the service was created.
+    ///
+    /// This is useful in case you no longer need the Layer after the service
+    /// is created. By default this calls `layer` but if your `Layer` impl
+    /// requires cloning you can impl this method as well to avoid the cloning
+    /// for the cases where you no longer need the data in the `Layer` after
+    /// service ceation.
+    fn into_layer(self, inner: S) -> Self::Service {
+        self.layer(inner)
+    }
 }
 
 impl<T, S> Layer<S> for &T
 where
-    T: ?Sized + Layer<S>,
+    T: Layer<S>,
 {
     type Service = T::Service;
 
     fn layer(&self, inner: S) -> Self::Service {
         (**self).layer(inner)
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        (*self).layer(inner)
     }
 }
 
@@ -33,6 +48,13 @@ where
     fn layer(&self, inner: S) -> Self::Service {
         match self {
             Some(layer) => crate::combinators::Either::A(layer.layer(inner)),
+            None => crate::combinators::Either::B(inner),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        match self {
+            Some(layer) => crate::combinators::Either::A(layer.into_layer(inner)),
             None => crate::combinators::Either::B(inner),
         }
     }
@@ -56,6 +78,11 @@ where
         let (l1,) = self;
         l1.layer(service)
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1,) = self;
+        l1.into_layer(service)
+    }
 }
 
 impl<S, L1, L2> Layer<S> for (L1, L2)
@@ -68,6 +95,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2) = self;
         l1.layer(l2.layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2) = self;
+        l1.into_layer(l2.into_layer(service))
     }
 }
 
@@ -82,6 +114,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3) = self;
         l1.layer((l2, l3).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3) = self;
+        l1.into_layer((l2, l3).into_layer(service))
     }
 }
 
@@ -98,6 +135,11 @@ where
         let (l1, l2, l3, l4) = self;
         l1.layer((l2, l3, l4).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4) = self;
+        l1.into_layer((l2, l3, l4).into_layer(service))
+    }
 }
 
 impl<S, L1, L2, L3, L4, L5> Layer<S> for (L1, L2, L3, L4, L5)
@@ -113,6 +155,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5) = self;
         l1.layer((l2, l3, l4, l5).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5) = self;
+        l1.into_layer((l2, l3, l4, l5).into_layer(service))
     }
 }
 
@@ -131,6 +178,11 @@ where
         let (l1, l2, l3, l4, l5, l6) = self;
         l1.layer((l2, l3, l4, l5, l6).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6) = self;
+        l1.into_layer((l2, l3, l4, l5, l6).into_layer(service))
+    }
 }
 
 impl<S, L1, L2, L3, L4, L5, L6, L7> Layer<S> for (L1, L2, L3, L4, L5, L6, L7)
@@ -148,6 +200,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7) = self;
         l1.layer((l2, l3, l4, l5, l6, l7).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7).into_layer(service))
     }
 }
 
@@ -168,6 +225,11 @@ where
         let (l1, l2, l3, l4, l5, l6, l7, l8) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8).into_layer(service))
+    }
 }
 
 impl<S, L1, L2, L3, L4, L5, L6, L7, L8, L9> Layer<S> for (L1, L2, L3, L4, L5, L6, L7, L8, L9)
@@ -187,6 +249,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9).into_layer(service))
     }
 }
 
@@ -209,6 +276,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10).into_layer(service))
     }
 }
 
@@ -233,6 +305,11 @@ where
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11).into_layer(service))
+    }
 }
 
 impl<S, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12> Layer<S>
@@ -256,6 +333,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12).into_layer(service))
     }
 }
 
@@ -282,6 +364,11 @@ where
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13).into_layer(service))
+    }
 }
 
 impl<S, L1, L2, L3, L4, L5, L6, L7, L8, L9, L10, L11, L12, L13, L14> Layer<S>
@@ -307,6 +394,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14).into_layer(service))
     }
 }
 
@@ -335,6 +427,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15).into_layer(service))
     }
 }
 
@@ -365,6 +462,11 @@ where
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16).into_layer(service))
+    }
 }
 
 #[rustfmt::skip]
@@ -394,6 +496,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17).into_layer(service))
     }
 }
 
@@ -426,6 +533,11 @@ where
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18).into_layer(service))
+    }
 }
 
 #[rustfmt::skip]
@@ -457,6 +569,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19).into_layer(service))
     }
 }
 
@@ -491,6 +608,11 @@ where
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20).into_layer(service))
+    }
 }
 
 #[rustfmt::skip]
@@ -524,6 +646,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21).into_layer(service))
     }
 }
 
@@ -560,6 +687,11 @@ where
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22).into_layer(service))
+    }
 }
 
 #[rustfmt::skip]
@@ -595,6 +727,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23).into_layer(service))
     }
 }
 
@@ -633,6 +770,11 @@ where
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24).layer(service))
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24).into_layer(service))
+    }
 }
 
 #[rustfmt::skip]
@@ -670,6 +812,11 @@ where
     fn layer(&self, service: S) -> Self::Service {
         let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24, l25) = self;
         l1.layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24, l25).layer(service))
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        let (l1, l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24, l25) = self;
+        l1.into_layer((l2, l3, l4, l5, l6, l7, l8, l9, l10, l11, l12, l13, l14, l15, l16, l17, l18, l19, l20, l21, l22, l23, l24, l25).into_layer(service))
     }
 }
 
@@ -737,6 +884,14 @@ macro_rules! impl_layer_either {
                 match self {
                     $(
                         crate::combinators::$id::$param(layer) => crate::combinators::$id::$param(layer.layer(inner)),
+                    )+
+                }
+            }
+
+            fn into_layer(self, inner: S) -> Self::Service {
+                match self {
+                    $(
+                        crate::combinators::$id::$param(layer) => crate::combinators::$id::$param(layer.into_layer(inner)),
                     )+
                 }
             }

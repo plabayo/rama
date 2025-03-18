@@ -44,7 +44,7 @@
 //! let mut service = (
 //!     // Compress responses based on the `Accept-Encoding` header.
 //!     CompressionLayer::new(),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let request = Request::builder()
@@ -214,7 +214,7 @@ mod tests {
     async fn no_recompress() {
         const DATA: &str = "Hello, World! I'm already compressed with br!";
 
-        let svc = service_fn(|_| async {
+        let svc = service_fn(async |_| {
             let buf = {
                 let mut buf = Vec::new();
 
@@ -281,7 +281,7 @@ mod tests {
 
         const DATA: &str = "Hello world uncompressed";
 
-        let svc_fn = service_fn(|_| async {
+        let svc_fn = service_fn(async |_| {
             let resp = Response::builder()
                 // .header("content-encoding", "br")
                 .body(Body::from(DATA.as_bytes()))
@@ -389,7 +389,7 @@ mod tests {
         const DATA: &str = "Check compression quality level! Check compression quality level! Check compression quality level!";
         let level = CompressionLevel::Best;
 
-        let svc = service_fn(|_| async {
+        let svc = service_fn(async |_| {
             let resp = Response::builder()
                 .body(Body::from(DATA.as_bytes()))
                 .unwrap();
@@ -433,7 +433,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_not_compress_ranges() {
-        let svc = service_fn(|_| async {
+        let svc = service_fn(async |_| {
             let mut res = Response::new(Body::from("Hello"));
             let headers = res.headers_mut();
             headers.insert(ACCEPT_RANGES, "bytes".parse().unwrap());
@@ -461,7 +461,7 @@ mod tests {
 
     #[tokio::test]
     async fn should_strip_accept_ranges_header_when_compressing() {
-        let svc = service_fn(|_| async {
+        let svc = service_fn(async |_| {
             let mut res = Response::new(Body::from("Hello, World!"));
             res.headers_mut()
                 .insert(ACCEPT_RANGES, "bytes".parse().unwrap());
@@ -496,7 +496,7 @@ mod tests {
     #[tokio::test]
     async fn size_hint_identity() {
         const MSG: &str = "Hello, world!";
-        let svc = service_fn(|_| async { Ok::<_, std::io::Error>(Response::new(Body::from(MSG))) });
+        let svc = service_fn(async |_| Ok::<_, std::io::Error>(Response::new(Body::from(MSG))));
         let svc = Compression::new(svc);
 
         let req = Request::new(Body::empty());

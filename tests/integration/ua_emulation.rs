@@ -293,7 +293,7 @@ async fn test_ua_emulation() {
             runtime: None,
         };
 
-        let client = UserAgentEmulateLayer::new(Arc::new(profile)).layer(service_fn(
+        let client = UserAgentEmulateLayer::new(Arc::new(profile)).into_layer(service_fn(
             async move |ctx: Context<State>, req: Request| {
                 let mut chain_ref = extract_client_config_from_ctx(&ctx).expect(description);
                 chain_ref.append(ClientConfig {
@@ -364,7 +364,7 @@ async fn test_ua_embedded_profiles_are_all_resulting_in_correct_traffic_flow() {
                 Ok(Response::new(Body::empty()))
             }
 
-            let client = UserAgentEmulateLayer::new(profile).layer(service_fn(
+            let client = UserAgentEmulateLayer::new(profile).into_layer(service_fn(
                 async move |ctx: Context<State>, req: Request| {
                     let mut chain_ref = extract_client_config_from_ctx(&ctx).unwrap();
                     chain_ref.append(ClientConfig {
@@ -465,7 +465,7 @@ where
                 .unwrap(),
             )
             .with_store_client_hello(true)
-            .layer(HttpServer::auto(Executor::default()).service(svc));
+            .into_layer(HttpServer::auto(Executor::default()).service(svc));
             server.serve(server_ctx, server_socket).await.unwrap();
         });
 

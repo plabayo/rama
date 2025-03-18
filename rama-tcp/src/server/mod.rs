@@ -16,7 +16,7 @@
 //!     TcpListener::bind("127.0.0.1:9000")
 //!         .await
 //!         .expect("bind TCP Listener")
-//!         .serve(service_fn(|mut stream: TcpStream| async move {
+//!         .serve(service_fn(async |mut stream: TcpStream| {
 //!             let resp = [
 //!                 "HTTP/1.1 200 OK",
 //!                 "Content-Type: text/plain",

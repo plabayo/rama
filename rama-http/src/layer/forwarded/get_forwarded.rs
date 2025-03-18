@@ -62,7 +62,7 @@ use std::marker::PhantomData;
 /// #[tokio::main]
 /// async fn main() {
 ///     let service = GetForwardedHeadersLayer::x_forwarded_for()
-///         .layer(service_fn(|ctx: Context<()>, _| async move {
+///         .into_layer(service_fn(async |ctx: Context<()>, _| {
 ///             let forwarded = ctx.get::<Forwarded>().unwrap();
 ///             assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
 ///             assert!(forwarded.client_proto().is_none());
@@ -390,22 +390,22 @@ mod tests {
             )),
         );
         assert_is_service(
-            GetForwardedHeadersLayer::forwarded().layer(service_fn(dummy_service_fn)),
+            GetForwardedHeadersLayer::forwarded().into_layer(service_fn(dummy_service_fn)),
         );
-        assert_is_service(GetForwardedHeadersLayer::via().layer(service_fn(dummy_service_fn)));
+        assert_is_service(GetForwardedHeadersLayer::via().into_layer(service_fn(dummy_service_fn)));
         assert_is_service(
-            GetForwardedHeadersLayer::<XRealIp>::new().layer(service_fn(dummy_service_fn)),
+            GetForwardedHeadersLayer::<XRealIp>::new().into_layer(service_fn(dummy_service_fn)),
         );
         assert_is_service(
             GetForwardedHeadersLayer::<(ClientIp, TrueClientIp)>::new()
-                .layer(service_fn(dummy_service_fn)),
+                .into_layer(service_fn(dummy_service_fn)),
         );
     }
 
     #[tokio::test]
     async fn test_get_forwarded_header_forwarded() {
-        let service = GetForwardedHeadersLayer::forwarded().layer(service_fn(
-            |ctx: Context<()>, _| async move {
+        let service = GetForwardedHeadersLayer::forwarded().into_layer(service_fn(
+            async |ctx: Context<()>, _| {
                 let forwarded = ctx.get::<Forwarded>().unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert_eq!(forwarded.client_proto(), Some(ForwardedProtocol::HTTP));
@@ -424,7 +424,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_forwarded_header_via() {
         let service =
-            GetForwardedHeadersLayer::via().layer(service_fn(|ctx: Context<()>, _| async move {
+            GetForwardedHeadersLayer::via().into_layer(service_fn(async |ctx: Context<()>, _| {
                 let forwarded = ctx.get::<Forwarded>().unwrap();
                 assert!(forwarded.client_ip().is_none());
                 assert_eq!(
@@ -446,8 +446,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_get_forwarded_header_x_forwarded_for() {
-        let service = GetForwardedHeadersLayer::x_forwarded_for().layer(service_fn(
-            |ctx: Context<()>, _| async move {
+        let service = GetForwardedHeadersLayer::x_forwarded_for().into_layer(service_fn(
+            async |ctx: Context<()>, _| {
                 let forwarded = ctx.get::<Forwarded>().unwrap();
                 assert_eq!(forwarded.client_ip(), Some(IpAddr::from([12, 23, 34, 45])));
                 assert!(forwarded.client_proto().is_none());

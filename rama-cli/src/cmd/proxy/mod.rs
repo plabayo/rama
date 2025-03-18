@@ -62,7 +62,7 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
     let address = format!("{}:{}", cfg.interface, cfg.port);
     tracing::info!("starting proxy on: {}", address);
 
-    graceful.spawn_task_fn(move |guard| async move {
+    graceful.spawn_task_fn(async move |guard| {
         let tcp_service = TcpListener::build()
             .bind(address)
             .await
@@ -80,7 +80,7 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
                 RemoveResponseHeaderLayer::hop_by_hop(),
                 RemoveRequestHeaderLayer::hop_by_hop(),
             )
-                .layer(service_fn(http_plain_proxy)),
+                .into_layer(service_fn(http_plain_proxy)),
         );
 
         let tcp_service_builder = (
@@ -91,7 +91,7 @@ pub async fn run(cfg: CliCommandProxy) -> Result<(), BoxError> {
         );
 
         tcp_service
-            .serve_graceful(guard, tcp_service_builder.layer(http_service))
+            .serve_graceful(guard, tcp_service_builder.into_layer(http_service))
             .await;
     });
 

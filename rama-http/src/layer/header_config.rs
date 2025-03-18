@@ -23,8 +23,8 @@
 //! #[tokio::main]
 //! async fn main() {
 //!     let service = HeaderConfigLayer::<Config>::required(HeaderName::from_static("x-proxy-config"))
-//!         .layer(WebService::default()
-//!             .get("/", |ctx: Context<()>| async move {
+//!         .into_layer(WebService::default()
+//!             .get("/", async |ctx: Context<()>| {
 //!                 let cfg = ctx.get::<Config>().unwrap();
 //!                 assert_eq!(cfg.s, "E&G");
 //!                 assert_eq!(cfg.n, 1);
@@ -231,6 +231,10 @@ impl<T, S> Layer<S> for HeaderConfigLayer<T> {
     fn layer(&self, inner: S) -> Self::Service {
         HeaderConfigService::new(inner, self.header_name.clone(), self.optional)
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HeaderConfigService::new(inner, self.header_name, self.optional)
+    }
 }
 
 #[cfg(test)]
@@ -251,7 +255,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
                 let cfg: &Config = ctx.get().unwrap();
                 assert_eq!(cfg.s, "E&G");
                 assert_eq!(cfg.n, 1);
@@ -279,7 +283,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
                 let cfg: &Config = ctx.get().unwrap();
                 assert_eq!(cfg.s, "E&G");
                 assert_eq!(cfg.n, 1);
@@ -306,7 +310,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
                 assert!(ctx.get::<Config>().is_none());
 
                 Ok::<_, std::convert::Infallible>(())
@@ -328,7 +332,7 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
+        let inner_service = rama_core::service::service_fn(async |_: Request<()>| {
             Ok::<_, std::convert::Infallible>(())
         });
 
@@ -350,7 +354,7 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
+        let inner_service = rama_core::service::service_fn(async |_: Request<()>| {
             Ok::<_, std::convert::Infallible>(())
         });
 
@@ -372,7 +376,7 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
+        let inner_service = rama_core::service::service_fn(async |_: Request<()>| {
             Ok::<_, std::convert::Infallible>(())
         });
 

@@ -11,14 +11,14 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let http_client = service_fn(|_: Request| async move {
+//! # let http_client = service_fn(async |_: Request| {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! #
 //! let mut svc = (
 //!     // Layer that removes all response headers with the prefix `x-foo`.
 //!     RemoveResponseHeaderLayer::prefix("x-foo"),
-//! ).layer(http_client);
+//! ).into_layer(http_client);
 //!
 //! let request = Request::new(Body::empty());
 //!
@@ -87,6 +87,13 @@ impl<S> Layer<S> for RemoveResponseHeaderLayer {
             mode: self.mode.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        RemoveResponseHeader {
+            inner,
+            mode: self.mode,
+        }
+    }
 }
 
 /// Middleware that removes response headers from a request.
@@ -100,14 +107,14 @@ impl<S> RemoveResponseHeader<S> {
     ///
     /// Removes response headers by prefix.
     pub fn prefix(prefix: impl Into<Cow<'static, str>>, inner: S) -> Self {
-        RemoveResponseHeaderLayer::prefix(prefix.into()).layer(inner)
+        RemoveResponseHeaderLayer::prefix(prefix.into()).into_layer(inner)
     }
 
     /// Create a new [`RemoveResponseHeader`].
     ///
     /// Removes the response header with the exact name.
     pub fn exact(header: HeaderName, inner: S) -> Self {
-        RemoveResponseHeaderLayer::exact(header).layer(inner)
+        RemoveResponseHeaderLayer::exact(header).into_layer(inner)
     }
 
     /// Create a new [`RemoveResponseHeader`].
@@ -115,7 +122,7 @@ impl<S> RemoveResponseHeader<S> {
     /// Removes all hop-by-hop response headers as specified in [RFC 2616](https://datatracker.ietf.org/doc/html/rfc2616#section-13.5.1).
     /// This does not support other hop-by-hop headers defined in [section-14.10](https://datatracker.ietf.org/doc/html/rfc2616#section-14.10).
     pub fn hop_by_hop(inner: S) -> Self {
-        RemoveResponseHeaderLayer::hop_by_hop().layer(inner)
+        RemoveResponseHeaderLayer::hop_by_hop().into_layer(inner)
     }
 
     define_inner_service_accessors!();
@@ -179,8 +186,8 @@ mod test {
 
     #[tokio::test]
     async fn remove_response_header_prefix() {
-        let svc = RemoveResponseHeaderLayer::prefix("x-foo").layer(service_fn(
-            |_ctx: Context<()>, _req: Request| async move {
+        let svc = RemoveResponseHeaderLayer::prefix("x-foo").into_layer(service_fn(
+            async |_ctx: Context<()>, _req: Request| {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("x-foo-bar", "baz")
@@ -201,8 +208,8 @@ mod test {
 
     #[tokio::test]
     async fn remove_response_header_exact() {
-        let svc = RemoveResponseHeaderLayer::exact(HeaderName::from_static("foo")).layer(
-            service_fn(|_ctx: Context<()>, _req: Request| async move {
+        let svc = RemoveResponseHeaderLayer::exact(HeaderName::from_static("foo")).into_layer(
+            service_fn(async |_ctx: Context<()>, _req: Request| {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("x-foo", "baz")
@@ -223,8 +230,8 @@ mod test {
 
     #[tokio::test]
     async fn remove_response_header_hop_by_hop() {
-        let svc = RemoveResponseHeaderLayer::hop_by_hop().layer(service_fn(
-            |_ctx: Context<()>, _req: Request| async move {
+        let svc = RemoveResponseHeaderLayer::hop_by_hop().into_layer(service_fn(
+            async |_ctx: Context<()>, _req: Request| {
                 Ok::<_, Infallible>(
                     Response::builder()
                         .header("connection", "close")

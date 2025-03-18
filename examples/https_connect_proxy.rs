@@ -83,7 +83,7 @@ async fn main() {
         .expect("create tls server config");
 
     // create tls proxy
-    shutdown.spawn_task_fn(|guard| async move {
+    shutdown.spawn_task_fn(async |guard| {
         let tcp_service = TcpListener::build()
             .bind("127.0.0.1:62016")
             .await
@@ -102,7 +102,7 @@ async fn main() {
                     service_fn(http_connect_proxy),
                 ),
             )
-                .layer(service_fn(http_plain_proxy)),
+                .into_layer(service_fn(http_plain_proxy)),
         );
 
         tcp_service
@@ -113,7 +113,7 @@ async fn main() {
                     BodyLimitLayer::symmetric(2 * 1024 * 1024),
                     TlsAcceptorLayer::new(tls_service_data).with_store_client_hello(true),
                 )
-                    .layer(http_service),
+                    .into_layer(http_service),
             )
             .await;
     });

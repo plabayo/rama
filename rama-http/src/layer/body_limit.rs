@@ -19,7 +19,7 @@
 //! let mut svc = (
 //!      // Limit the request body to 2MB
 //!     BodyLimitLayer::new(2*1024*1024),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Call the service
 //! let request = Request::new(Body::default());

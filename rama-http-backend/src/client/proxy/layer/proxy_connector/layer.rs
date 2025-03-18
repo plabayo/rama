@@ -40,7 +40,7 @@ impl HttpProxyConnectorLayer {
 
     /// Set the HTTP version to use for the CONNECT request.
     ///
-    /// By default, this is auto detected.
+    /// By default this is set to HTTP/1.1.
     pub fn with_version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self

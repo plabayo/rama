@@ -102,12 +102,12 @@ async fn main() {
         TlsAcceptorData::try_from(tls_server_config).expect("create tls acceptor data for server");
 
     // create mtls web server
-    shutdown.spawn_task_fn(|guard| async move {
+    shutdown.spawn_task_fn(async |guard| {
         let executor = Executor::graceful(guard.clone());
 
-        let tcp_service = TlsAcceptorLayer::new(tls_server_data).layer(
+        let tcp_service = TlsAcceptorLayer::new(tls_server_data).into_layer(
             HttpServer::auto(executor).service(
-                TraceLayer::new_for_http().layer(
+                TraceLayer::new_for_http().into_layer(
                     WebService::default()
                         .get("/", Redirect::temporary("/hello"))
                         .get("/hello", Html("<h1>Hello, authorized client!</h1>")),
@@ -126,20 +126,20 @@ async fn main() {
     });
 
     // create mtls tunnel proxy
-    shutdown.spawn_task_fn(|guard| async move {
+    shutdown.spawn_task_fn(async |guard| {
         tracing::info!("start mTLS TCP Tunnel Proxys: {}", TUNNEL_AUTHORITY);
 
         let forwarder = Forwarder::new(SERVER_AUTHORITY).connector(
             TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.into_host()))
                 .with_connector_data(tls_client_data)
-                .layer(TcpConnector::new()),
+                .into_layer(TcpConnector::new()),
         );
 
         // L4 Proxy Service
         TcpListener::bind(TUNNEL_AUTHORITY.to_string())
             .await
             .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
-            .serve_graceful(guard, TraceErrLayer::new().layer(forwarder))
+            .serve_graceful(guard, TraceErrLayer::new().into_layer(forwarder))
             .await;
     });
 

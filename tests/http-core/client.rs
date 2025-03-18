@@ -2497,7 +2497,7 @@ mod conn {
                     sock,
                     RamaHttpService::new(
                         rama::Context::default(),
-                        service_fn(|req: Request| async move {
+                        service_fn(async |req: Request| {
                             tokio::spawn(async move {
                                 let _ = concat(req.into_body())
                                     .await
@@ -2556,7 +2556,7 @@ mod conn {
                     sock,
                     RamaHttpService::new(
                         rama::Context::default(),
-                        service_fn(|_req| async move {
+                        service_fn(async |_req| {
                             Ok::<_, Infallible>(Response::new(rama::http::Body::from(
                                 "No bread for you!",
                             )))

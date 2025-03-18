@@ -1,5 +1,6 @@
 use std::io::Result;
 use std::net::SocketAddr;
+use std::ops::{Deref, DerefMut};
 
 /// Common information exposed by a Socket-like construct.
 ///
@@ -58,6 +59,35 @@ impl Socket for tokio::net::UdpSocket {
     #[inline]
     fn peer_addr(&self) -> Result<SocketAddr> {
         self.peer_addr()
+    }
+}
+
+#[derive(Debug, Clone)]
+/// Information about the socket on the egress end.
+pub struct ClientSocketInfo(pub SocketInfo);
+
+impl AsRef<SocketInfo> for ClientSocketInfo {
+    fn as_ref(&self) -> &SocketInfo {
+        &self.0
+    }
+}
+
+impl AsMut<SocketInfo> for ClientSocketInfo {
+    fn as_mut(&mut self) -> &mut SocketInfo {
+        &mut self.0
+    }
+}
+
+impl Deref for ClientSocketInfo {
+    type Target = SocketInfo;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for ClientSocketInfo {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
     }
 }
 

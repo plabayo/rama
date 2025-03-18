@@ -18,7 +18,7 @@
 //! let mut service = (
 //!     // Require the `Accept` header to be `application/json`, `*/*` or `application/*`
 //!     ValidateRequestHeaderLayer::accept("application/json"),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Requests with the correct value are allowed through
 //! let request = Request::builder()
@@ -87,7 +87,7 @@
 //! let service = (
 //!     // Validate requests using `MyHeader`
 //!     ValidateRequestHeaderLayer::custom(MyHeader { /* ... */ }),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! # let request = Request::builder()
 //! #     .body(Body::empty())
@@ -119,11 +119,11 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
 //! let service = (
-//!     ValidateRequestHeaderLayer::custom_fn(|request: Request| async move {
+//!     ValidateRequestHeaderLayer::custom_fn(async |request: Request| {
 //!         // Validate the request
 //!         # Ok::<_, Response>(request)
 //!     }),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! # let request = Request::builder()
 //! #     .body(Body::empty())

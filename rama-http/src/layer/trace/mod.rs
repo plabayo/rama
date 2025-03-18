@@ -20,7 +20,7 @@
 //! // Setup tracing
 //! tracing_subscriber::fmt::init();
 //!
-//! let mut service = TraceLayer::new_for_http().layer(service_fn(handle));
+//! let mut service = TraceLayer::new_for_http().into_layer(service_fn(handle));
 //!
 //! let request = Request::new(Body::from("foo"));
 //!
@@ -77,7 +77,7 @@
 //!                 .latency_unit(LatencyUnit::Micros)
 //!         ),
 //!         // on so on for `on_eos`, `on_body_chunk`, and `on_failure`
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
 //! #     .serve(Context::default(), Request::new(Body::from("foo")))
@@ -125,7 +125,7 @@
 //!         .on_failure(|error: ServerErrorsFailureClass, latency: Duration, _span: &Span| {
 //!             tracing::debug!("something went wrong")
 //!         })
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
 //! #     .serve(Context::default(), Request::new(Body::from("foo")))
@@ -164,7 +164,7 @@
 //!         .on_failure(|error: ServerErrorsFailureClass, latency: Duration, _span: &Span| {
 //!             tracing::debug!("something went wrong")
 //!         })
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //! # let mut service = service;
 //! # let response = service
 //! #     .serve(Context::default(), Request::new(Body::from("foo")))
@@ -250,7 +250,7 @@
 //!
 //!             tracing::debug!("response generated")
 //!         }),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //! # Ok(())
 //! # }
 //! ```
@@ -328,11 +328,11 @@
 //! let service = (
 //!     // Create a trace layer that uses our classifier.
 //!     TraceLayer::new(MyMakeClassify),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Since `MyClassifier` is `Clone` we can also use `SharedClassifier`
 //! // to avoid having to define a separate `MakeClassifier`.
-//! let service = TraceLayer::new(SharedClassifier::new(MyClassifier)).layer(service_fn(handle));
+//! let service = TraceLayer::new(SharedClassifier::new(MyClassifier)).into_layer(service_fn(handle));
 //! # Ok(())
 //! # }
 //! ```
@@ -521,7 +521,7 @@ mod tests {
                 },
             );
 
-        let svc = trace_layer.layer(service_fn(echo));
+        let svc = trace_layer.into_layer(service_fn(echo));
 
         let res = svc
             .serve(Context::default(), Request::new(Body::from("foobar")))
@@ -579,7 +579,7 @@ mod tests {
                 },
             );
 
-        let svc = trace_layer.layer(service_fn(streaming_body));
+        let svc = trace_layer.into_layer(service_fn(streaming_body));
 
         let res = svc
             .serve(Context::default(), Request::new(Body::empty()))

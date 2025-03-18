@@ -79,7 +79,7 @@ mod tests {
                 HeaderValue::from_static("gzip, deflate, br"),
             ),
         )
-            .layer(service_fn(handle));
+            .into_layer(service_fn(handle));
 
         let request = Request::builder()
             .header(ACCEPT_ENCODING, "deflate")
@@ -107,7 +107,7 @@ mod tests {
                 .br(false)
                 .gzip(false),
         )
-            .layer(service_fn(handle));
+            .into_layer(service_fn(handle));
 
         let request = Request::builder().body(Body::empty())?;
 
@@ -137,7 +137,7 @@ mod tests {
                 .br(false)
                 .gzip(false),
         )
-            .layer(service_fn(handle));
+            .into_layer(service_fn(handle));
 
         let request = Request::builder()
             .header(ACCEPT_ENCODING, "deflate")
@@ -169,7 +169,7 @@ mod tests {
                 .br(false)
                 .gzip(false),
         )
-            .layer(service_fn(handle));
+            .into_layer(service_fn(handle));
 
         let request = Request::builder()
             .header(ACCEPT_ENCODING, "gzip")
@@ -197,7 +197,7 @@ mod tests {
                 .quality(CompressionLevel::Best)
                 .br(false),
         )
-            .layer(service_fn(handle));
+            .into_layer(service_fn(handle));
 
         let request = Request::builder()
             .header(ACCEPT_ENCODING, "deflate")
@@ -224,7 +224,7 @@ mod tests {
                 .quality(CompressionLevel::Best)
                 .br(false),
         )
-            .layer(service_fn(handle));
+            .into_layer(service_fn(handle));
 
         let request = Request::builder().body(Body::empty())?;
 

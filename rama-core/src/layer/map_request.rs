@@ -86,4 +86,8 @@ where
             inner,
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        MapRequest { f: self.f, inner }
+    }
 }

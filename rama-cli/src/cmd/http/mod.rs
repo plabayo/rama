@@ -246,7 +246,7 @@ pub async fn run(cfg: CliCommandHttp) -> Result<(), BoxError> {
         }
     });
 
-    shutdown.spawn_task_fn(move |guard| async move {
+    shutdown.spawn_task_fn(async move |guard| {
         let result = run_inner(guard, cfg).await;
         let _ = tx.send(result);
     });
@@ -433,7 +433,7 @@ where
         SetProxyAuthHttpHeaderLayer::default(),
     );
 
-    Ok(client_builder.layer(inner_client))
+    Ok(client_builder.into_layer(inner_client))
 }
 
 fn parse_print_mode(mode: &str) -> Result<(Option<WriterMode>, Option<WriterMode>), BoxError> {

@@ -23,7 +23,7 @@ async fn test_http_mitm_proxy() {
         HttpServer::auto(Executor::default())
             .listen(
                 "127.0.0.1:63003",
-                service_fn(|req: Request| async move {
+                service_fn(async |req: Request| {
                     Ok(Json(json!({
                         "method": req.method().as_str(),
                         "path": req.uri().path(),
@@ -50,8 +50,8 @@ async fn test_http_mitm_proxy() {
 
     let executor = Executor::default();
 
-    let tcp_service = TlsAcceptorLayer::new(tls_service_data).layer(
-        HttpServer::auto(executor).service(service_fn(|req: Request| async move {
+    let tcp_service = TlsAcceptorLayer::new(tls_service_data).into_layer(
+        HttpServer::auto(executor).service(service_fn(async |req: Request| {
             Ok(Json(json!({
                 "method": req.method().as_str(),
                 "path": req.uri().path(),

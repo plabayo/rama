@@ -418,7 +418,7 @@ mod tests {
 
     #[tokio::test]
     async fn valid_basic_token() {
-        let service = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar").into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(
@@ -435,7 +435,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_basic_token() {
-        let service = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar").into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(
@@ -455,7 +455,7 @@ mod tests {
 
     #[tokio::test]
     async fn valid_bearer_token() {
-        let service = ValidateRequestHeaderLayer::bearer("foobar").layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::bearer("foobar").into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer foobar")
@@ -469,7 +469,7 @@ mod tests {
 
     #[tokio::test]
     async fn basic_auth_is_case_sensitive_in_prefix() {
-        let service = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar").into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(
@@ -486,7 +486,7 @@ mod tests {
 
     #[tokio::test]
     async fn basic_auth_is_case_sensitive_in_value() {
-        let service = ValidateRequestHeaderLayer::basic("foo", "bar").layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::basic("foo", "bar").into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(
@@ -503,7 +503,7 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_bearer_token() {
-        let service = ValidateRequestHeaderLayer::bearer("foobar").layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::bearer("foobar").into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer wat")
@@ -517,7 +517,7 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_token_is_case_sensitive_in_prefix() {
-        let service = ValidateRequestHeaderLayer::bearer("foobar").layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::bearer("foobar").into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "bearer foobar")
@@ -531,7 +531,7 @@ mod tests {
 
     #[tokio::test]
     async fn bearer_token_is_case_sensitive_in_token() {
-        let service = ValidateRequestHeaderLayer::bearer("foobar").layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::bearer("foobar").into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer Foobar")
@@ -549,7 +549,7 @@ mod tests {
         let auth2 = Basic::new("user2", "pass2");
         let auth_vec = vec![auth1, auth2];
         let auth_context = AuthorizeContext::new(auth_vec);
-        let service = ValidateRequestHeaderLayer::custom(auth_context).layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::custom(auth_context).into_layer(service_fn(echo));
 
         // Test first credential
         let request = Request::builder()
@@ -590,7 +590,7 @@ mod tests {
         let auth1 = Basic::new("user1", "pass1");
         let auth_array = [auth1.clone(), auth1.clone()];
         let auth_context = AuthorizeContext::new(auth_array);
-        let service = ValidateRequestHeaderLayer::custom(auth_context).layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::custom(auth_context).into_layer(service_fn(echo));
 
         // Test valid credential
         let request = Request::builder()
@@ -609,7 +609,7 @@ mod tests {
         let auth = Basic::new("user", "pass");
         let arc_auth = Arc::new(auth);
         let auth_context = AuthorizeContext::new(arc_auth);
-        let service = ValidateRequestHeaderLayer::custom(auth_context).layer(service_fn(echo));
+        let service = ValidateRequestHeaderLayer::custom(auth_context).into_layer(service_fn(echo));
 
         let request = Request::builder()
             .header(
@@ -626,7 +626,7 @@ mod tests {
     async fn basic_allows_anonymous_if_header_is_missing() {
         let service = ValidateRequestHeaderLayer::basic("foo", "bar")
             .with_allow_anonymous(true)
-            .layer(service_fn(echo));
+            .into_layer(service_fn(echo));
 
         let request = Request::get("/").body(Body::empty()).unwrap();
 
@@ -639,7 +639,7 @@ mod tests {
     async fn basic_fails_if_allow_anonymous_and_credentials_are_invalid() {
         let service = ValidateRequestHeaderLayer::basic("foo", "bar")
             .with_allow_anonymous(true)
-            .layer(service_fn(echo));
+            .into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(
@@ -658,7 +658,7 @@ mod tests {
     async fn bearer_allows_anonymous_if_header_is_missing() {
         let service = ValidateRequestHeaderLayer::bearer("foobar")
             .with_allow_anonymous(true)
-            .layer(service_fn(echo));
+            .into_layer(service_fn(echo));
 
         let request = Request::get("/").body(Body::empty()).unwrap();
 
@@ -671,7 +671,7 @@ mod tests {
     async fn bearer_fails_if_allow_anonymous_and_credentials_are_invalid() {
         let service = ValidateRequestHeaderLayer::bearer("foobar")
             .with_allow_anonymous(true)
-            .layer(service_fn(echo));
+            .into_layer(service_fn(echo));
 
         let request = Request::get("/")
             .header(header::AUTHORIZATION, "Bearer wrong")

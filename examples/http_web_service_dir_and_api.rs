@@ -69,11 +69,11 @@ async fn main() {
         .listen_with_state(
             Arc::new(AppState::default()),
             addr,
-            (TraceLayer::new_for_http(), CompressionLayer::new()).layer(
+            (TraceLayer::new_for_http(), CompressionLayer::new()).into_layer(
                 WebService::default()
                     .not_found(Redirect::temporary("/error.html"))
                     .get("/coin", coin_page)
-                    .post("/coin", |ctx: Context<Arc<AppState>>| async move {
+                    .post("/coin", async |ctx: Context<Arc<AppState>>| {
                         ctx.state().counter.fetch_add(1, Ordering::AcqRel);
                         coin_page(ctx).await
                     })

@@ -23,6 +23,8 @@ pub struct UserAgentDatabase {
     map_ua_kind: HashMap<UserAgentKind, Vec<usize>>,
     map_platform: HashMap<(UserAgentKind, PlatformKind), Vec<usize>>,
     map_device: HashMap<(UserAgentKind, DeviceKind), Vec<usize>>,
+
+    disable_unknown_user_agent_data: bool,
 }
 
 impl UserAgentDatabase {
@@ -33,6 +35,22 @@ impl UserAgentDatabase {
     pub fn embedded() -> Self {
         let profiles = crate::profile::load_embedded_profiles();
         Self::from_iter(profiles)
+    }
+
+    /// Disabling this option (disable = true) means here that in case
+    /// you try to use [`UserAgentDatabase::get`] with a [`UserAgent`]
+    /// containing no match (not even a platform or device), that it the database
+    /// will return `None` instead of returning a global-random (market-based)
+    /// [`UserAgentProfile`], which it would do by default.
+    pub fn disable_unknown_user_agent_data(mut self, disable: bool) -> Self {
+        self.disable_unknown_user_agent_data = disable;
+        self
+    }
+
+    /// See [`disable_unknown_user_agent_data`], this is the non-consuming version.
+    pub fn set_disable_unknown_user_agent_data(&mut self, disable: bool) -> &mut Self {
+        self.disable_unknown_user_agent_data = disable;
+        self
     }
 
     #[inline]
@@ -175,11 +193,15 @@ impl UserAgentDatabase {
                             .and_then(|idx| self.profiles.get(*idx))
                     }
                     None => {
-                        let ua_kind = self.market_rnd_ua_kind();
-                        self.map_ua_kind
-                            .get(&ua_kind)
-                            .and_then(|v| v.choose(&mut rand::rng()))
-                            .and_then(|idx| self.profiles.get(*idx))
+                        if self.disable_unknown_user_agent_data {
+                            None
+                        } else {
+                            let ua_kind = self.market_rnd_ua_kind();
+                            self.map_ua_kind
+                                .get(&ua_kind)
+                                .and_then(|v| v.choose(&mut rand::rng()))
+                                .and_then(|idx| self.profiles.get(*idx))
+                        }
                     }
                 }
             }
@@ -401,6 +423,22 @@ mod tests {
                 "ua_str: {}",
                 ua_str
             );
+        }
+    }
+
+    #[test]
+    fn test_ua_db_get_rnd_due_to_unknown_data() {
+        let db = get_dummy_ua_db();
+        for _ in 0..100 {
+            assert!(db.get(&UserAgent::new("curl")).is_some());
+        }
+    }
+
+    #[test]
+    fn test_ua_db_get_none_due_to_unknown_data_rnd_disabled() {
+        let db = get_dummy_ua_db().disable_unknown_user_agent_data(true);
+        for _ in 0..100 {
+            assert!(db.get(&UserAgent::new("curl")).is_none());
         }
     }
 

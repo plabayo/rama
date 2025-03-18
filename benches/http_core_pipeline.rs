@@ -51,7 +51,7 @@ fn hello_world_16(b: divan::Bencher) {
                             stream,
                             rama::http::core::service::RamaHttpService::new(
                                 rama::Context::default(),
-                                service_fn(|_| async {
+                                service_fn(async |_| {
                                     Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(
                                         "Hello, World!",
                                     ))))

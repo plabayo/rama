@@ -26,7 +26,7 @@ where
     fn into_endpoint_service(
         self,
     ) -> impl Service<State, Request, Response = Response, Error = Infallible> {
-        MapResponseLayer::new(R::into_response).layer(self)
+        MapResponseLayer::new(R::into_response).into_layer(self)
     }
 }
 
@@ -232,13 +232,13 @@ mod tests {
 
     #[test]
     fn test_into_endpoint_service_fn_no_param() {
-        assert_into_endpoint_service(|| async { StatusCode::OK });
-        assert_into_endpoint_service(|| async { "hello" });
+        assert_into_endpoint_service(async || StatusCode::OK);
+        assert_into_endpoint_service(async || "hello");
     }
 
     #[tokio::test]
     async fn test_service_fn_wrapper_no_param() {
-        let svc = || async { StatusCode::OK };
+        let svc = async || StatusCode::OK;
         let svc = svc.into_endpoint_service();
 
         let resp = svc
@@ -256,7 +256,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_fn_wrapper_single_param_request() {
-        let svc = |req: Request| async move { req.uri().to_string() };
+        let svc = async |req: Request| req.uri().to_string();
         let svc = svc.into_endpoint_service();
 
         let resp = svc
@@ -276,7 +276,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_service_fn_wrapper_single_param_host() {
-        let svc = |Host(host): Host| async move { host.to_string() };
+        let svc = async |Host(host): Host| host.to_string();
         let svc = svc.into_endpoint_service();
 
         let resp = svc
@@ -303,7 +303,7 @@ mod tests {
 
         let svc = crate::service::web::WebService::default().get(
             "/:foo/bar",
-            |Host(host): Host, Path(params): Path<Params>| async move {
+            async |Host(host): Host, Path(params): Path<Params>| {
                 format!("{} => {}", host, params.foo)
             },
         );
@@ -331,12 +331,12 @@ mod tests {
             foo: String,
         }
 
-        assert_into_endpoint_service(|_path: Path<Params>| async { StatusCode::OK });
-        assert_into_endpoint_service(|Path(params): Path<Params>| async move { params.foo });
-        assert_into_endpoint_service(|Query(query): Query<Params>| async move { query.foo });
-        assert_into_endpoint_service(|method: Method| async move { method.to_string() });
-        assert_into_endpoint_service(|req: Request| async move { req.uri().to_string() });
-        assert_into_endpoint_service(|_host: Host| async { StatusCode::OK });
-        assert_into_endpoint_service(|Host(_host): Host| async { StatusCode::OK });
+        assert_into_endpoint_service(async |_path: Path<Params>| StatusCode::OK);
+        assert_into_endpoint_service(async |Path(params): Path<Params>| params.foo);
+        assert_into_endpoint_service(async |Query(query): Query<Params>| query.foo);
+        assert_into_endpoint_service(async |method: Method| method.to_string());
+        assert_into_endpoint_service(async |req: Request| req.uri().to_string());
+        assert_into_endpoint_service(async |_host: Host| StatusCode::OK);
+        assert_into_endpoint_service(async |Host(_host): Host| StatusCode::OK);
     }
 }

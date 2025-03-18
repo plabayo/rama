@@ -43,7 +43,7 @@ async fn main() {
 
     let graceful = rama::graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(|guard| async {
+    graceful.spawn_task_fn(async |guard| {
         TcpListener::bind("0.0.0.0:62501")
             .await
             .expect("bind TCP Listener")
@@ -52,7 +52,7 @@ async fn main() {
                 (
                     HijackLayer::new(
                         SocketMatcher::loopback().negate(),
-                        service_fn(|stream: TcpStream| async move {
+                        service_fn(async |stream: TcpStream| {
                             match stream.peer_addr() {
                                 Ok(addr) => tracing::warn!("blocked incoming connection: {}", addr),
                                 Err(err) => tracing::error!(
@@ -66,7 +66,7 @@ async fn main() {
                     TraceErrLayer::new(),
                     TimeoutLayer::new(Duration::from_secs(8)),
                 )
-                    .layer(EchoService::new()),
+                    .into_layer(EchoService::new()),
             )
             .await;
     });

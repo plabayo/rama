@@ -23,6 +23,10 @@ impl<S> Layer<S> for DnsResolveModeLayer {
     fn layer(&self, inner: S) -> Self::Service {
         DnsResolveModeService::new(inner, self.header_name.clone())
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        DnsResolveModeService::new(inner, self.header_name)
+    }
 }
 
 #[cfg(test)]
@@ -34,8 +38,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_dns_resolve_mode_layer() {
-        let svc = DnsResolveModeLayer::new(HeaderName::from_static("x-dns-resolve")).layer(
-            service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+        let svc = DnsResolveModeLayer::new(HeaderName::from_static("x-dns-resolve")).into_layer(
+            service_fn(async |ctx: Context<()>, _req: Request<()>| {
                 assert_eq!(
                     ctx.get::<DnsResolveMode>().unwrap(),
                     &DnsResolveMode::eager()

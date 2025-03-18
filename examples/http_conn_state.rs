@@ -122,7 +122,7 @@ where
 async fn main() {
     let graceful = rama::graceful::Shutdown::default();
 
-    graceful.spawn_task_fn(|guard| async move {
+    graceful.spawn_task_fn(async move |guard| {
         let exec = Executor::graceful(guard.clone());
 
         let tcp_http_service = HttpServer::auto(exec).service(service_fn(handle_index));
@@ -151,7 +151,7 @@ async fn main() {
                         }),
                     }
                 })
-                .layer(tcp_http_service),
+                .into_layer(tcp_http_service),
             )
             .await;
     });

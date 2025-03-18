@@ -135,4 +135,8 @@ where
             inner,
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        MapResult { f: self.f, inner }
+    }
 }

@@ -720,7 +720,7 @@ mod test {
             RetryLayer::new(ManagedPolicy::default().with_backoff(ExponentialBackoff::default())),
             AddRequiredRequestHeadersLayer::default(),
         )
-            .layer(service_fn(fake_client_fn))
+            .into_layer(service_fn(fake_client_fn))
             .boxed()
     }
 

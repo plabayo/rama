@@ -20,7 +20,7 @@
 //! let mut svc = (
 //!     // This will copy `x-request-id` headers from requests onto responses.
 //!     PropagateHeaderLayer::new(HeaderName::from_static("x-request-id")),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let request = Request::builder()
@@ -64,6 +64,13 @@ impl<S> Layer<S> for PropagateHeaderLayer {
         PropagateHeader {
             inner,
             header: self.header.clone(),
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        PropagateHeader {
+            inner,
+            header: self.header,
         }
     }
 }

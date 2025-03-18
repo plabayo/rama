@@ -188,9 +188,9 @@ impl IpServiceBuilder<mode::Http> {
             ConsumeErrLayer::default(),
             http_forwarded_layer,
         )
-            .layer(HttpEchoService);
+            .into_layer(HttpEchoService);
 
-        Ok(tcp_service_builder.layer(HttpServer::auto(executor).service(http_service)))
+        Ok(tcp_service_builder.into_layer(HttpServer::auto(executor).service(http_service)))
     }
 }
 
@@ -284,7 +284,7 @@ impl IpServiceBuilder<mode::Transport> {
             tcp_forwarded_layer,
         );
 
-        Ok(tcp_service_builder.layer(TcpEchoService))
+        Ok(tcp_service_builder.into_layer(TcpEchoService))
     }
 }
 

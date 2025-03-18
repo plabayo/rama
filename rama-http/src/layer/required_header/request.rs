@@ -87,6 +87,14 @@ impl<S> Layer<S> for AddRequiredRequestHeadersLayer {
             user_agent_header_value: self.user_agent_header_value.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        AddRequiredRequestHeaders {
+            inner,
+            overwrite: self.overwrite,
+            user_agent_header_value: self.user_agent_header_value,
+        }
+    }
 }
 
 /// Middleware that sets a header on the request.
@@ -224,8 +232,8 @@ mod test {
 
     #[tokio::test]
     async fn add_required_request_headers() {
-        let svc = AddRequiredRequestHeadersLayer::default().layer(service_fn(
-            |_ctx: Context<()>, req: Request| async move {
+        let svc = AddRequiredRequestHeadersLayer::default().into_layer(service_fn(
+            async |_ctx: Context<()>, req: Request| {
                 assert!(req.headers().contains_key(HOST));
                 assert!(req.headers().contains_key(USER_AGENT));
                 Ok::<_, Infallible>(rama_http_types::Response::new(Body::empty()))
@@ -246,7 +254,7 @@ mod test {
     async fn add_required_request_headers_custom_ua() {
         let svc = AddRequiredRequestHeadersLayer::default()
             .user_agent_header_value(HeaderValue::from_static("foo"))
-            .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
+            .into_layer(service_fn(async |_ctx: Context<()>, req: Request| {
                 assert!(req.headers().contains_key(HOST));
                 assert_eq!(
                     req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),
@@ -269,7 +277,7 @@ mod test {
     async fn add_required_request_headers_overwrite() {
         let svc = AddRequiredRequestHeadersLayer::new()
             .overwrite(true)
-            .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
+            .into_layer(service_fn(async |_ctx: Context<()>, req: Request| {
                 assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1:80");
                 assert_eq!(
                     req.headers().get(USER_AGENT).unwrap(),
@@ -296,7 +304,7 @@ mod test {
         let svc = AddRequiredRequestHeadersLayer::new()
             .overwrite(true)
             .user_agent_header_value(HeaderValue::from_static("foo"))
-            .layer(service_fn(|_ctx: Context<()>, req: Request| async move {
+            .into_layer(service_fn(async |_ctx: Context<()>, req: Request| {
                 assert_eq!(req.headers().get(HOST).unwrap(), "127.0.0.1:80");
                 assert_eq!(
                     req.headers().get(USER_AGENT).and_then(|v| v.to_str().ok()),

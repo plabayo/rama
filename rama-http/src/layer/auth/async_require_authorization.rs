@@ -99,7 +99,7 @@
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
 //! let service =
-//!     AsyncRequireAuthorizationLayer::new(|request: Request| async move {
+//!     AsyncRequireAuthorizationLayer::new(async |request: Request| {
 //!         if let Some(user_id) = check_auth(&request).await {
 //!             Ok(request)
 //!         } else {
@@ -146,6 +146,10 @@ where
 
     fn layer(&self, inner: S) -> Self::Service {
         AsyncRequireAuthorization::new(inner, self.auth.clone())
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        AsyncRequireAuthorization::new(inner, self.auth)
     }
 }
 

@@ -142,4 +142,17 @@ impl<S, P: Clone> Layer<S> for UserAgentEmulateLayer<P> {
         }
         svc
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        let mut svc = super::UserAgentEmulateService::new(inner, self.provider)
+            .optional(self.optional)
+            .try_auto_detect_user_agent(self.try_auto_detect_user_agent);
+        if let Some(fb) = self.select_fallback {
+            svc.set_select_fallback(fb);
+        }
+        if let Some(name) = self.input_header_order {
+            svc.set_input_header_order(name);
+        }
+        svc
+    }
 }

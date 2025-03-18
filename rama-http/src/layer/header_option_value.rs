@@ -190,6 +190,10 @@ impl<T, S> Layer<S> for HeaderOptionValueLayer<T> {
     fn layer(&self, inner: S) -> Self::Service {
         HeaderOptionValueService::new(inner, self.header_name.clone(), self.optional)
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HeaderOptionValueService::new(inner, self.header_name, self.optional)
+    }
 }
 
 #[cfg(test)]
@@ -285,7 +289,7 @@ mod test {
             .unwrap();
 
         let inner_service =
-            rama_core::service::service_fn(|ctx: Context<()>, _req: Request<()>| async move {
+            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
                 assert!(!ctx.contains::<UnitValue>());
 
                 Ok::<_, std::convert::Infallible>(())
@@ -307,7 +311,7 @@ mod test {
             .body(())
             .unwrap();
 
-        let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
+        let inner_service = rama_core::service::service_fn(async |_: Request<()>| {
             Ok::<_, std::convert::Infallible>(())
         });
 
@@ -332,7 +336,7 @@ mod test {
                 .body(())
                 .unwrap();
 
-            let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
+            let inner_service = rama_core::service::service_fn(async |_: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 
@@ -358,7 +362,7 @@ mod test {
                 .body(())
                 .unwrap();
 
-            let inner_service = rama_core::service::service_fn(|_: Request<()>| async move {
+            let inner_service = rama_core::service::service_fn(async |_: Request<()>| {
                 Ok::<_, std::convert::Infallible>(())
             });
 

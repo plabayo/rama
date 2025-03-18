@@ -17,7 +17,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let http_client = service_fn(|_: Request| async move {
+//! # let http_client = service_fn(async |_: Request| {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! #
@@ -30,7 +30,7 @@
 //!         header::USER_AGENT,
 //!         HeaderValue::from_static("my very cool proxy"),
 //!     ),
-//! ).layer(http_client);
+//! ).into_layer(http_client);
 //!
 //! let request = Request::new(Body::empty());
 //!
@@ -51,7 +51,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let http_client = service_fn(|| async move {
+//! # let http_client = service_fn(async || {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(Body::empty()))
 //! # });
 //! fn date_header_value() -> HeaderValue {
@@ -66,11 +66,11 @@
 //!     // may have.
 //!     SetRequestHeaderLayer::overriding_fn(
 //!         header::DATE,
-//!         || async move {
+//!         async || {
 //!             Some(date_header_value())
 //!         }
 //!     ),
-//! ).layer(http_client);
+//! ).into_layer(http_client);
 //!
 //! let request = Request::new(Body::default());
 //!
@@ -215,6 +215,15 @@ where
             inner,
             header_name: self.header_name.clone(),
             make: self.make.clone(),
+            mode: self.mode,
+        }
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        SetRequestHeader {
+            inner,
+            header_name: self.header_name,
+            make: self.make,
             mode: self.mode,
         }
     }

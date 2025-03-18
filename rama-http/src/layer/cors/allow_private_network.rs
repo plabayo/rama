@@ -134,7 +134,7 @@ mod tests {
     async fn cors_private_network_header_is_added_correctly() {
         let service = CorsLayer::new()
             .allow_private_network(true)
-            .layer(service_fn(echo));
+            .into_layer(service_fn(echo));
 
         let req = Request::builder()
             .header(REQUEST_PRIVATE_NETWORK.clone(), TRUE.clone())
@@ -158,7 +158,7 @@ mod tests {
             });
         let service = CorsLayer::new()
             .allow_private_network(allow_private_network)
-            .layer(service_fn(echo));
+            .into_layer(service_fn(echo));
 
         let req = Request::builder()
             .header(ORIGIN, "localhost")

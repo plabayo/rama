@@ -150,6 +150,13 @@ impl<S, W: Clone> Layer<S> for ResponseWriterLayer<W> {
             writer: self.writer.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        ResponseWriterService {
+            inner,
+            writer: self.writer,
+        }
+    }
 }
 
 /// Middleware to print Http request in std format.
@@ -200,7 +207,7 @@ impl<S> ResponseWriterService<S, UnboundedSender<Response>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let layer = ResponseWriterLayer::writer_unbounded(executor, writer, mode);
-        layer.layer(inner)
+        layer.into_layer(inner)
     }
 
     /// Create a new [`ResponseWriterService`] that prints responses to stdout
@@ -230,7 +237,7 @@ impl<S> ResponseWriterService<S, Sender<Response>> {
         W: AsyncWrite + Unpin + Send + Sync + 'static,
     {
         let layer = ResponseWriterLayer::writer(executor, writer, buffer_size, mode);
-        layer.layer(inner)
+        layer.into_layer(inner)
     }
 
     /// Create a new [`ResponseWriterService`] that prints responses to stdout

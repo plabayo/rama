@@ -82,4 +82,8 @@ where
     fn layer(&self, service: S) -> Self::Service {
         Timeout::with(service, self.timeout, self.into_error.clone())
     }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        Timeout::with(service, self.timeout, self.into_error)
+    }
 }

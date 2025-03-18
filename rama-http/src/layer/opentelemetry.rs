@@ -190,6 +190,15 @@ impl<S, F: Clone> Layer<S> for RequestMetricsLayer<F> {
             attributes_factory: self.attributes_factory.clone(),
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        RequestMetricsService {
+            inner,
+            metrics: self.metrics,
+            base_attributes: self.base_attributes,
+            attributes_factory: self.attributes_factory,
+        }
+    }
 }
 
 /// A [`Service`] that records [http] server metrics using OpenTelemetry.
@@ -203,7 +212,7 @@ pub struct RequestMetricsService<S, F = ()> {
 impl<S> RequestMetricsService<S, ()> {
     /// Create a new [`RequestMetricsService`].
     pub fn new(inner: S) -> Self {
-        RequestMetricsLayer::new().layer(inner)
+        RequestMetricsLayer::new().into_layer(inner)
     }
 
     define_inner_service_accessors!();
@@ -376,7 +385,7 @@ mod tests {
             metric_prefix: Some("foo".to_owned()),
             ..Default::default()
         })
-        .layer(());
+        .into_layer(());
         let mut ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
@@ -412,7 +421,7 @@ mod tests {
             ..Default::default()
         })
         .with_attributes(vec![KeyValue::new("test", "attribute_fn")])
-        .layer(());
+        .into_layer(());
         let mut ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")
@@ -457,7 +466,7 @@ mod tests {
             attributes.push(KeyValue::new("test", "attribute_fn"));
             attributes
         })
-        .layer(());
+        .into_layer(());
         let mut ctx = Context::default();
         let req = Request::builder()
             .uri("http://www.example.com")

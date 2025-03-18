@@ -77,7 +77,7 @@ async fn main() {
             ),
         ),
     )
-        .layer(EasyHttpWebClient::default());
+        .into_layer(EasyHttpWebClient::default());
 
     //--------------------------------------------------------------------------------
     // Low Level (Regular) http client (stack) service example.
@@ -180,12 +180,12 @@ async fn run_server(addr: &str) {
                 CompressionLayer::new(),
                 AsyncRequireAuthorizationLayer::new(auth_request),
             )
-                .layer(
+                .into_layer(
                     WebService::default()
                         .get("/", "Hello, World!")
                         .get(
                             "/info",
-                            |req: Request| async move {
+                            async |req: Request| {
                                 req.headers()
                                     .get("x-magic")
                                     .and_then(|v| v.to_str().ok())
@@ -204,7 +204,7 @@ async fn run_server(addr: &str) {
                         )
                         .post(
                             "/introduce",
-                            |Json(data): Json<serde_json::Value>| async move {
+                            async |Json(data): Json<serde_json::Value>| {
                                 format!("Hello, {}!", data["name"].as_str().unwrap())
                             },
                         ),

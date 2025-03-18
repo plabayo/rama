@@ -290,7 +290,7 @@ where
             ConsumeErrLayer::default(),
             http_forwarded_layer,
         )
-            .layer(self.http_service_builder.layer(EchoService));
+            .into_layer(self.http_service_builder.into_layer(EchoService));
 
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A(HttpServer::h2(executor).service(http_service)),
@@ -303,7 +303,7 @@ where
             None => Either3::C(HttpServer::auto(executor).service(http_service)),
         };
 
-        Ok(tcp_service_builder.layer(http_transport_service))
+        Ok(tcp_service_builder.into_layer(http_transport_service))
     }
 }
 

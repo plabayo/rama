@@ -37,7 +37,10 @@ where
     type Service = Retry<P, S>;
 
     fn layer(&self, service: S) -> Self::Service {
-        let policy = self.policy.clone();
-        Retry::new(policy, service)
+        Retry::new(self.policy.clone(), service)
+    }
+
+    fn into_layer(self, service: S) -> Self::Service {
+        Retry::new(self.policy, service)
     }
 }

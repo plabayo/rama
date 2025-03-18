@@ -21,7 +21,7 @@
 //! let mut service = (
 //!     // change the status to `404 Not Found` regardless what the inner service returns
 //!     SetStatusLayer::new(StatusCode::NOT_FOUND),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Call the service.
 //! let request = Request::builder().body(Body::empty())?;

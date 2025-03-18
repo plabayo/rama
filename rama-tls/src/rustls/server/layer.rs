@@ -39,4 +39,8 @@ impl<S> Layer<S> for TlsAcceptorLayer {
     fn layer(&self, inner: S) -> Self::Service {
         TlsAcceptorService::new(self.data.clone(), inner, self.store_client_hello)
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        TlsAcceptorService::new(self.data, inner, self.store_client_hello)
+    }
 }

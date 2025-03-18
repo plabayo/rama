@@ -78,6 +78,10 @@ impl<S> Layer<S> for HttpProxyAddressLayer {
     fn layer(&self, inner: S) -> Self::Service {
         HttpProxyAddressService::maybe(inner, self.address.clone()).preserve(self.preserve)
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        HttpProxyAddressService::maybe(inner, self.address).preserve(self.preserve)
+    }
 }
 
 /// A [`Service`] which allows you to add a [`ProxyAddress`]

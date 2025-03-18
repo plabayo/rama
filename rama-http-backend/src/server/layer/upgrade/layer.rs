@@ -60,4 +60,8 @@ impl<S, State, O> Layer<S> for UpgradeLayer<State, O> {
     fn layer(&self, inner: S) -> Self::Service {
         UpgradeService::new(self.handlers.clone(), inner)
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        UpgradeService::new(self.handlers, inner)
+    }
 }

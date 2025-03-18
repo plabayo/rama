@@ -59,7 +59,7 @@ const DEFAULT_CAPACITY: usize = 65536;
 ///
 ///     // Serve the HTTP server over TCP
 ///     listener
-///         .serve(TraceErrLayer::new().layer(http_fs_server))
+///         .serve(TraceErrLayer::new().into_layer(http_fs_server))
 ///         .await;
 /// }
 /// ```
@@ -333,7 +333,7 @@ impl<F> ServeDir<F> {
     ///
     ///     // Serve the HTTP server over TCP
     ///     listener
-    ///         .serve(TraceErrLayer::new().layer(http_fs_server))
+    ///         .serve(TraceErrLayer::new().into_layer(http_fs_server))
     ///         .await;
     /// }
     /// ```
@@ -381,7 +381,7 @@ impl<F> ServeDir<F> {
     ///
     ///     // Serve the HTTP server over TCP
     ///     listener
-    ///         .serve(TraceErrLayer::new().layer(http_fs_server))
+    ///         .serve(TraceErrLayer::new().into_layer(http_fs_server))
     ///         .await;
     /// }
     /// ```
@@ -447,7 +447,7 @@ impl<F> ServeDir<F> {
     ///
     ///     // Serve the HTTP server over TCP
     ///     listener
-    ///         .serve(TraceErrLayer::new().layer(http_fs_server))
+    ///         .serve(TraceErrLayer::new().into_layer(http_fs_server))
     ///         .await;
     /// }
     ///

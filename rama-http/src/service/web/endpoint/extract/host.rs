@@ -55,7 +55,7 @@ mod tests {
 
     async fn test_host_from_request(uri: &str, host: &str, headers: Vec<(&HeaderName, &str)>) {
         let svc = GetForwardedHeadersService::x_forwarded_host(
-            WebService::default().get("/", |Host(host): Host| async move { host.to_string() }),
+            WebService::default().get("/", async |Host(host): Host| host.to_string()),
         );
 
         let mut builder = Request::builder().method("GET").uri(uri);

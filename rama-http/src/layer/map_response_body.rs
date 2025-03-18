@@ -70,7 +70,7 @@
 //! let mut svc = (
 //!     // Wrap response bodies in `PrintChunkSizesBody`
 //!     MapResponseBodyLayer::new(PrintChunkSizesBody::new),
-//! ).layer(service_fn(handle));
+//! ).into_layer(service_fn(handle));
 //!
 //! // Call the service
 //! let request = Request::new(Body::from("foobar"));
@@ -110,6 +110,10 @@ where
 
     fn layer(&self, inner: S) -> Self::Service {
         MapResponseBody::new(inner, self.f.clone())
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        MapResponseBody::new(inner, self.f)
     }
 }
 

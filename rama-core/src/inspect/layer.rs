@@ -42,6 +42,13 @@ impl<I: Clone, S> Layer<S> for RequestInspectorLayer<I> {
             inner,
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        Self::Service {
+            request_inspector: self.0,
+            inner,
+        }
+    }
 }
 
 pub struct RequestInspectorLayerService<I, S> {

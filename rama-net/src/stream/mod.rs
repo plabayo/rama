@@ -19,7 +19,7 @@ impl<T> Stream for T where T: AsyncRead + AsyncWrite + Send + 'static {}
 
 mod socket;
 #[doc(inline)]
-pub use socket::{Socket, SocketInfo};
+pub use socket::{ClientSocketInfo, Socket, SocketInfo};
 
 pub mod dep {
     //! Dependencies for rama stream modules.

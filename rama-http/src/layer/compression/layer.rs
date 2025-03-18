@@ -31,6 +31,15 @@ where
             quality: self.quality,
         }
     }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        Compression {
+            inner,
+            accept: self.accept,
+            predicate: self.predicate,
+            quality: self.quality,
+        }
+    }
 }
 
 impl CompressionLayer {
@@ -145,7 +154,7 @@ mod tests {
             .gzip(false);
 
         // Compress responses based on the `Accept-Encoding` header.
-        let service = deflate_only_layer.layer(service_fn(handle));
+        let service = deflate_only_layer.into_layer(service_fn(handle));
 
         // Call the service with the deflate only layer
         let request = Request::builder()
@@ -168,7 +177,7 @@ mod tests {
             .deflate(false);
 
         // Compress responses based on the `Accept-Encoding` header.
-        let service = br_only_layer.layer(service_fn(handle));
+        let service = br_only_layer.into_layer(service_fn(handle));
 
         // Call the service with the br only layer
         let request = Request::builder()
@@ -210,7 +219,7 @@ mod tests {
             .deflate(false)
             .gzip(false);
 
-        let service = zstd_layer.layer(service_fn(zeroes));
+        let service = zstd_layer.into_layer(service_fn(zeroes));
 
         let request = Request::builder()
             .header(ACCEPT_ENCODING, "zstd")

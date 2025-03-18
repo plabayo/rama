@@ -2,6 +2,7 @@ use std::fmt;
 
 use rama_core::{
     Context, Service,
+    context::{self, RequestContextExt},
     error::{BoxError, ErrorContext, OpaqueError},
     inspect::RequestInspector,
 };
@@ -107,10 +108,15 @@ where
         // directly instead of here...
         let req = sanitize_client_req_header(&mut ctx, req)?;
 
+        let context::Parts { extensions, .. } = ctx.into_parts();
+
         let mut resp = match &self.sender {
             SendRequest::Http1(sender) => sender.send_request(req).await,
             SendRequest::Http2(sender) => sender.send_request(req).await,
         }?;
+
+        resp.extensions_mut()
+            .insert(RequestContextExt::from(extensions));
 
         let original_resp_http_version = resp.version();
         if original_resp_http_version == original_http_version {

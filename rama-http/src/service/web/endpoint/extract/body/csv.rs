@@ -87,7 +87,7 @@ mod test {
             alive: Option<bool>,
         }
 
-        let service = WebService::default().post("/", |Csv(body): Csv<Vec<Input>>| async move {
+        let service = WebService::default().post("/", async |Csv(body): Csv<Vec<Input>>| {
             assert_eq!(body.len(), 2);
 
             assert_eq!(body[0].name, "glen");
@@ -122,8 +122,8 @@ mod test {
             _alive: Option<bool>,
         }
 
-        let service = WebService::default()
-            .post("/", |Csv(_): Csv<Vec<Input>>| async move { StatusCode::OK });
+        let service =
+            WebService::default().post("/", async |Csv(_): Csv<Vec<Input>>| StatusCode::OK);
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)
@@ -143,8 +143,8 @@ mod test {
             _alive: Option<bool>,
         }
 
-        let service = WebService::default()
-            .post("/", |Csv(_): Csv<Vec<Input>>| async move { StatusCode::OK });
+        let service =
+            WebService::default().post("/", async |Csv(_): Csv<Vec<Input>>| StatusCode::OK);
 
         let req = rama_http_types::Request::builder()
             .method(rama_http_types::Method::POST)

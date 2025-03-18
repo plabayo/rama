@@ -14,7 +14,7 @@
 //!
 //! # #[tokio::main]
 //! # async fn main() -> Result<(), BoxError> {
-//! # let handler = service_fn(|request: Request| async move {
+//! # let handler = service_fn(async |request: Request| {
 //! #     Ok::<_, std::convert::Infallible>(Response::new(request.into_body()))
 //! # });
 //! #
@@ -46,7 +46,7 @@
 //!     ),
 //!     // propagate `x-request-id` headers from request to response
 //!     PropagateRequestIdLayer::new(x_request_id),
-//! ).layer(handler);
+//! ).into_layer(handler);
 //!
 //! let request = Request::new(Body::empty());
 //! let response = svc.serve(Context::default(), request).await?;
@@ -166,6 +166,10 @@ where
             self.header_name.clone(),
             self.make_request_id.clone(),
         )
+    }
+
+    fn into_layer(self, inner: S) -> Self::Service {
+        SetRequestId::new(inner, self.header_name, self.make_request_id)
     }
 }
 
@@ -420,7 +424,7 @@ mod tests {
             SetRequestIdLayer::x_request_id(Counter::default()),
             PropagateRequestIdLayer::x_request_id(),
         )
-            .layer(service_fn(handler));
+            .into_layer(service_fn(handler));
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();
@@ -455,7 +459,7 @@ mod tests {
                 HeaderValue::from_str("foo").unwrap(),
             ),
         )
-            .layer(service_fn(handler));
+            .into_layer(service_fn(handler));
 
         let req = Request::builder()
             .header("x-request-id", "foo")
@@ -487,7 +491,7 @@ mod tests {
             SetRequestIdLayer::x_request_id(MakeRequestUuid),
             PropagateRequestIdLayer::x_request_id(),
         )
-            .layer(service_fn(handler));
+            .into_layer(service_fn(handler));
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();
@@ -502,7 +506,7 @@ mod tests {
             SetRequestIdLayer::x_request_id(MakeRequestNanoid),
             PropagateRequestIdLayer::x_request_id(),
         )
-            .layer(service_fn(handler));
+            .into_layer(service_fn(handler));
 
         // header on response
         let req = Request::builder().body(Body::empty()).unwrap();
