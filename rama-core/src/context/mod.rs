@@ -93,11 +93,55 @@
 use crate::graceful::ShutdownGuard;
 use crate::rt::Executor;
 use std::fmt;
+use std::ops::{Deref, DerefMut};
 use tokio::task::JoinHandle;
 
 mod extensions;
 #[doc(inline)]
 pub use extensions::Extensions;
+
+#[derive(Debug, Clone)]
+/// Wrapper type that can be injected into the dynamic extensions of a "Response",
+/// in order to preserve the [`Context`]'s extensions of the _Request_
+/// which was used to produce the _Response_.
+pub struct RequestContextExt(Extensions);
+
+impl From<Extensions> for RequestContextExt {
+    fn from(value: Extensions) -> Self {
+        Self(value)
+    }
+}
+
+impl From<RequestContextExt> for Extensions {
+    fn from(value: RequestContextExt) -> Self {
+        value.0
+    }
+}
+
+impl AsRef<Extensions> for RequestContextExt {
+    fn as_ref(&self) -> &Extensions {
+        &self.0
+    }
+}
+
+impl AsMut<Extensions> for RequestContextExt {
+    fn as_mut(&mut self) -> &mut Extensions {
+        &mut self.0
+    }
+}
+
+impl Deref for RequestContextExt {
+    type Target = Extensions;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl DerefMut for RequestContextExt {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// Context passed to and between services as input.
 ///
@@ -111,6 +155,23 @@ pub struct Context<S> {
 impl<S: fmt::Debug> fmt::Debug for Context<S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Context")
+            .field("state", &self.state)
+            .field("executor", &self.executor)
+            .field("extensions", &self.extensions)
+            .finish()
+    }
+}
+
+/// Component parts of [`Context`].
+pub struct Parts<S> {
+    pub state: S,
+    pub executor: Executor,
+    pub extensions: Extensions,
+}
+
+impl<S: fmt::Debug> fmt::Debug for Parts<S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Parts")
             .field("state", &self.state)
             .field("executor", &self.executor)
             .field("extensions", &self.extensions)
@@ -141,6 +202,22 @@ impl<S> Context<S> {
             state,
             executor,
             extensions: Extensions::new(),
+        }
+    }
+
+    pub fn from_parts(parts: Parts<S>) -> Self {
+        Self {
+            state: parts.state,
+            executor: parts.executor,
+            extensions: parts.extensions,
+        }
+    }
+
+    pub fn into_parts(self) -> Parts<S> {
+        Parts {
+            state: self.state,
+            executor: self.executor,
+            extensions: self.extensions,
         }
     }
 

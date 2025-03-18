@@ -58,7 +58,7 @@
 
 use rama::{
     Context, Layer, Service,
-    context::Extensions,
+    context::{Extensions, RequestContextExt},
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
         client::EasyHttpWebClient,
@@ -74,9 +74,10 @@ use rama::{
         service::web::{extract::Path, match_service},
     },
     layer::HijackLayer,
-    net::http::RequestContext,
-    net::stream::layer::http::BodyLimitLayer,
-    net::{address::Domain, user::Basic},
+    net::{
+        address::Domain, http::RequestContext, stream::ClientSocketInfo,
+        stream::layer::http::BodyLimitLayer, user::Basic,
+    },
     rt::Executor,
     service::service_fn,
     tcp::{client::default_tcp_connect, server::TcpListener, utils::is_connection_error},
@@ -214,7 +215,25 @@ where
 {
     let client = EasyHttpWebClient::default();
     match client.serve(ctx, req).await {
-        Ok(resp) => Ok(resp),
+        Ok(resp) => {
+            match resp
+                .extensions()
+                .get::<RequestContextExt>()
+                .and_then(|ext| ext.get::<ClientSocketInfo>())
+            {
+                Some(client_socket_info) => tracing::info!(
+                    status = %resp.status(),
+                    local_addr = ?client_socket_info.local_addr(),
+                    server_addr = %client_socket_info.peer_addr(),
+                    "http plain text proxy received response",
+                ),
+                None => tracing::info!(
+                    status = %resp.status(),
+                    "http plain text proxy received response, IP info unknown",
+                ),
+            };
+            Ok(resp)
+        }
         Err(err) => {
             tracing::error!(error = %err, "error in client request");
             Ok(Response::builder()
