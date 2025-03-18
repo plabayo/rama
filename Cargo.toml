@@ -376,6 +376,10 @@ name = "http_mitm_proxy"
 required-features = ["http-full"]
 
 [[example]]
+name = "http_pooled_client"
+required-features = ["http-full"]
+
+[[example]]
 name = "http_rate_limit"
 required-features = ["http-full"]
 

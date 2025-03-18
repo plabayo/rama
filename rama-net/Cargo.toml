@@ -35,9 +35,11 @@ itertools = { workspace = true, optional = true }
 md5 = { workspace = true, optional = true }
 nom = { workspace = true, optional = true }
 opentelemetry = { workspace = true, optional = true }
+parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types", optional = true }
+rama-macros = { version = "0.2.0-alpha.8", path = "../rama-macros" }
 rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }

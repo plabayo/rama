@@ -176,9 +176,69 @@ macro_rules! __impl_deref {
             }
         }
     };
+
+    ($ident:ident< $($gen:ident),* >: $ty:ty) => {
+        impl<$($gen),*> std::ops::Deref for $ident<$($gen),*> {
+            type Target = $ty;
+
+            #[inline]
+            fn deref(&self) -> &Self::Target {
+                &self.0
+            }
+        }
+
+        impl<$($gen),*> std::ops::DerefMut for $ident<$($gen),*> {
+            #[inline]
+            fn deref_mut(&mut self) -> &mut Self::Target {
+                &mut self.0
+            }
+        }
+    };
 }
 #[doc(inline)]
 pub use crate::__impl_deref as impl_deref;
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __nz {
+    (0) => {
+        compile_error!("nz!(0) is invalid")
+    };
+    ($n:literal) => {
+        std::num::NonZero::new($n).unwrap()
+    };
+}
+#[doc(inline)]
+/// Create NonZero from literal
+pub use crate::__nz as nz;
+
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __generate_field_setters {
+    ($field: ident, $type: ty) => {
+        rama_macros::paste! {
+            /// Set field with Some(value)
+            pub fn [<set_ $field>](&mut self, $field: $type) -> &mut Self {
+                self.$field = Some($field);
+                self
+            }
+
+            /// Replace field with Some(value)
+            pub fn [<with_ $field>](mut self, $field: $type) -> Self {
+                self.$field = Some($field);
+                self
+            }
+
+            /// Replace field with the provided option
+            pub fn [<maybe_with_ $field>](mut self, $field: Option<$type>) -> Self {
+                self.$field = $field;
+                self
+            }
+        }
+    };
+}
+
+pub use crate::__generate_field_setters as generate_field_setters;
 
 #[cfg(test)]
 mod test {
