@@ -22,7 +22,7 @@ boring = ["tls", "dep:boring", "dep:nom"]
 telemetry = ["rama-core/telemetry"]
 
 [dependencies]
-aws-lc-sys = { workspace = true, optional = true, features = ["bindgen"] }
+aws-lc-sys = { workspace = true, optional = true }
 base64 = { workspace = true }
 boring = { workspace = true, optional = true }
 bytes = { workspace = true }
