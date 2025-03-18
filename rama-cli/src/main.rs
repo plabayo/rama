@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use rama::error::BoxError;
 
 pub mod cmd;
-use cmd::{echo, fp, http, tls, ip, proxy};
+use cmd::{echo, fp, http, ip, proxy, tls};
 
 pub mod error;
 
