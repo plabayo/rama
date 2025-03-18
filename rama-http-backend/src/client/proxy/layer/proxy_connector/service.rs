@@ -64,28 +64,26 @@ impl<S> HttpProxyConnector<S> {
 
     /// Set the HTTP version to use for the CONNECT request.
     ///
-    /// By default, this is auto detected.
-    #[allow(dead_code)]
-    pub(super) fn with_version(mut self, version: Version) -> Self {
+    /// By default this is set to HTTP/1.1.
+    pub fn with_version(mut self, version: Version) -> Self {
         self.version = Some(version);
         self
     }
 
     /// Set the HTTP version to use for the CONNECT request.
-    pub(super) fn set_version(&mut self, version: Version) -> &mut Self {
+    pub fn set_version(&mut self, version: Version) -> &mut Self {
         self.version = Some(version);
         self
     }
 
     /// Set the HTTP version to auto detect for the CONNECT request.
-    #[allow(dead_code)]
-    pub(super) fn with_auto_version(mut self) -> Self {
+    pub fn with_auto_version(mut self) -> Self {
         self.version = None;
         self
     }
 
     /// Set the HTTP version to auto detect for the CONNECT request.
-    pub(super) fn set_auto_version(&mut self) -> &mut Self {
+    pub fn set_auto_version(&mut self) -> &mut Self {
         self.version = None;
         self
     }

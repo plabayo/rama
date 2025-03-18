@@ -11,7 +11,7 @@ use rama_core::{
     error::{BoxError, ErrorExt, OpaqueError},
     inspect::RequestInspector,
 };
-use rama_http_types::{Request, Response, dep::http_body};
+use rama_http_types::{Request, Response, Version, dep::http_body};
 use rama_net::client::{ConnectorService, EstablishedClientConnection};
 use rama_tcp::client::service::TcpConnector;
 
@@ -52,6 +52,8 @@ pub struct EasyHttpWebClient<I1 = (), I2 = ()> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     proxy_tls_config: Option<Arc<ClientConfig>>,
 
+    proxy_http_connect_version: Option<Version>,
+
     http_req_inspector_jit: I1,
     http_req_inspector_svc: I2,
 }
@@ -62,6 +64,10 @@ impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2> {
         f.debug_struct("EasyHttpWebClient")
             .field("tls_config", &self.tls_config)
             .field("proxy_tls_config", &self.proxy_tls_config)
+            .field(
+                "proxy_http_connect_version",
+                &self.proxy_http_connect_version,
+            )
             .field("http_req_inspector_jit", &self.http_req_inspector_jit)
             .field("http_req_inspector_svc", &self.http_req_inspector_svc)
             .finish()
@@ -72,6 +78,10 @@ impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2> {
 impl<I1: fmt::Debug, I2: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EasyHttpWebClient")
+            .field(
+                "proxy_http_connect_version",
+                &self.proxy_http_connect_version,
+            )
             .field("http_req_inspector_jit", &self.http_req_inspector_jit)
             .field("http_req_inspector_svc", &self.http_req_inspector_svc)
             .finish()
@@ -84,6 +94,7 @@ impl<I1: Clone, I2: Clone> Clone for EasyHttpWebClient<I1, I2> {
         Self {
             tls_config: self.tls_config.clone(),
             proxy_tls_config: self.proxy_tls_config.clone(),
+            proxy_http_connect_version: self.proxy_http_connect_version,
             http_req_inspector_jit: self.http_req_inspector_jit.clone(),
             http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
@@ -94,6 +105,7 @@ impl<I1: Clone, I2: Clone> Clone for EasyHttpWebClient<I1, I2> {
 impl<I1: Clone, I2: Clone> Clone for EasyHttpWebClient<I1, I2> {
     fn clone(&self) -> Self {
         Self {
+            proxy_http_connect_version: self.proxy_http_connect_version,
             http_req_inspector_jit: self.http_req_inspector_jit.clone(),
             http_req_inspector_svc: self.http_req_inspector_svc.clone(),
         }
@@ -107,6 +119,7 @@ impl Default for EasyHttpWebClient {
             tls_config: None,
             #[cfg(any(feature = "rustls", feature = "boring"))]
             proxy_tls_config: None,
+            proxy_http_connect_version: Some(Version::HTTP_11),
             http_req_inspector_jit: (),
             http_req_inspector_svc: (),
         }
@@ -166,6 +179,32 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
         self
     }
 
+    /// Set the HTTP version to use for the Http Proxy CONNECT request.
+    ///
+    /// By default this is set to HTTP/1.1.
+    pub fn with_proxy_http_connect_version(mut self, version: Version) -> Self {
+        self.proxy_http_connect_version = Some(version);
+        self
+    }
+
+    /// Set the HTTP version to use for the Http Proxy CONNECT request.
+    pub fn set_proxy_http_connect_version(&mut self, version: Version) -> &mut Self {
+        self.proxy_http_connect_version = Some(version);
+        self
+    }
+
+    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
+    pub fn with_proxy_http_connect_auto_version(mut self) -> Self {
+        self.proxy_http_connect_version = None;
+        self
+    }
+
+    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
+    pub fn set_proxy_http_connect_auto_version(&mut self) -> &mut Self {
+        self.proxy_http_connect_version = None;
+        self
+    }
+
     #[cfg(any(feature = "rustls", feature = "boring"))]
     pub fn with_http_conn_req_inspector<T>(
         self,
@@ -174,6 +213,7 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
         EasyHttpWebClient {
             tls_config: self.tls_config,
             proxy_tls_config: self.proxy_tls_config,
+            proxy_http_connect_version: self.proxy_http_connect_version,
             http_req_inspector_jit: http_req_inspector,
             http_req_inspector_svc: self.http_req_inspector_svc,
         }
@@ -185,6 +225,7 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
         http_req_inspector: T,
     ) -> EasyHttpWebClient<T, I2> {
         EasyHttpWebClient {
+            proxy_http_connect_version: self.proxy_http_connect_version,
             http_req_inspector_jit: http_req_inspector,
             http_req_inspector_svc: self.http_req_inspector_svc,
         }
@@ -198,6 +239,7 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
         EasyHttpWebClient {
             tls_config: self.tls_config,
             proxy_tls_config: self.proxy_tls_config,
+            proxy_http_connect_version: self.proxy_http_connect_version,
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: http_req_inspector,
         }
@@ -209,6 +251,7 @@ impl<I1, I2> EasyHttpWebClient<I1, I2> {
         http_req_inspector: T,
     ) -> EasyHttpWebClient<I1, T> {
         EasyHttpWebClient {
+            proxy_http_connect_version: self.proxy_http_connect_version,
             http_req_inspector_jit: self.http_req_inspector_jit,
             http_req_inspector_svc: http_req_inspector,
         }
@@ -277,10 +320,15 @@ where
                 }
             };
 
-            let transport_connector = HttpProxyConnector::optional(
+            let mut transport_connector = HttpProxyConnector::optional(
                 TlsConnector::tunnel(tcp_connector, None)
                     .with_connector_data(proxy_tls_connector_data),
             );
+            match self.proxy_http_connect_version {
+                Some(version) => transport_connector.set_version(version),
+                None => transport_connector.set_auto_version(),
+            };
+
             let tls_connector_data = match extract_client_config_from_ctx(&ctx) {
                 Some(mut chain_ref) => {
                     trace!(
@@ -317,8 +365,15 @@ where
             ))
         };
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        let connector = HttpConnector::new(HttpProxyConnector::optional(tcp_connector))
-            .with_jit_req_inspector(self.http_req_inspector_jit.clone());
+        let connector = {
+            let mut proxy_connector = HttpProxyConnector::optional(tcp_connector);
+            match self.proxy_http_connect_version {
+                Some(version) => proxy_connector.set_version(version),
+                None => proxy_connector.set_auto_version(),
+            };
+            HttpConnector::new(proxy_connector)
+                .with_jit_req_inspector(self.http_req_inspector_jit.clone())
+        };
 
         // set the runtime http req inspector
         let connector = connector.with_svc_req_inspector(self.http_req_inspector_svc.clone());
