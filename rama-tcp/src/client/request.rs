@@ -11,7 +11,7 @@ use std::convert::Infallible;
 /// A request to establish a Tcp Connection.
 ///
 /// This can be used in case you operate on a layer below
-/// an application alyer such as Http.
+/// an application layer such as Http.
 pub struct Request {
     authority: Authority,
     protocol: Option<Protocol>,
