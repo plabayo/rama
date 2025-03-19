@@ -43,3 +43,12 @@ Here is a list of all `rama` crates:
 - [`rama-http`](https://crates.io/crates/rama-http): rama http services, layers and utilities
 - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
+
+`rama` crates that live in <https://github.com/plabayo/rama-boring> (forks of `cloudflare/boring`):
+
+- [`rama-boring`](https://crates.io/crates/rama-boring): BoringSSL bindings for Rama
+- [`rama-boring-sys`](https://crates.io/crates/rama-boring-sys): FFI bindings to BoringSSL for Rama
+
+repositories in function of rama that aren't crates:
+
+- <https://github.com/plabayo/homebrew-rama>: Homebrew formula for the rama Cli tool
