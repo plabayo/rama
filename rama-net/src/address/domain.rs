@@ -82,6 +82,45 @@ impl Domain {
         other.is_sub_of(self)
     }
 
+    /// Compare the registrable domain
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Domain;
+    ///
+    /// assert!(Domain::from_static("www.example.com")
+    ///     .have_same_registrable_domain(&Domain::from_static("example.com")));
+    ///
+    /// assert!(Domain::from_static("example.com")
+    ///     .have_same_registrable_domain(&Domain::from_static("www.example.com")));
+    ///
+    /// assert!(Domain::from_static("a.example.com")
+    ///     .have_same_registrable_domain(&Domain::from_static("b.example.com")));
+    ///
+    /// assert!(Domain::from_static("example.com")
+    ///     .have_same_registrable_domain(&Domain::from_static("example.com")));
+    /// ```
+    pub fn have_same_registrable_domain(&self, other: &Domain) -> bool {
+        let this_rd = psl::domain_str(self.as_str());
+        let other_rd = psl::domain_str(other.as_str());
+        this_rd == other_rd
+    }
+
+    /// Get the public suffix of the domain
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Domain;
+    ///
+    /// assert_eq!(Some("com"), Domain::from_static("www.example.com").suffix());
+    /// assert_eq!(Some("co.uk"), Domain::from_static("site.co.uk").suffix());
+    /// ```
+    pub fn suffix(&self) -> Option<&str> {
+        psl::suffix_str(self.as_str())
+    }
+
     /// Gets the domain name as reference.
     pub fn as_str(&self) -> &str {
         self.as_ref()

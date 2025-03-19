@@ -8,7 +8,6 @@ use rama_core::Context;
 use rama_core::error::OpaqueError;
 use rama_http_types::Method;
 use rama_http_types::{Request, Uri, Version, dep::http::request::Parts};
-use tracing::{trace, warn};
 
 #[cfg(feature = "tls")]
 use crate::tls::SecureTransport;
@@ -218,30 +217,7 @@ fn protocol_from_uri_or_context<State>(
     uri: &Uri,
     method: &Method,
 ) -> Protocol {
-    uri.scheme().map(|s| {
-        tracing::trace!(uri = %uri, "request context: detected protocol from scheme");
-        let protocol = s.into();
-        if method == Method::CONNECT {
-            match protocol {
-                Protocol::HTTP => {
-                    trace!(uri = %uri, "CONNECT request: upgrade HTTP => HTTPS");
-                    Protocol::HTTPS
-                }
-                Protocol::HTTPS => Protocol::HTTPS,
-                Protocol::WS => {
-                    trace!(uri = %uri, "CONNECT request: upgrade WS => WSS");
-                    Protocol::WSS
-                }
-                Protocol::WSS => Protocol::WSS,
-                other => {
-                    warn!(uri = %uri, protocol = %other, "CONNECT request: unexpected protocol");
-                    other
-                }
-            }
-        } else {
-            protocol
-        }
-    }).or_else(|| ctx.get::<Forwarded>()
+    Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), Some(method)).or_else(|| ctx.get::<Forwarded>()
         .and_then(|f| f.client_proto().map(|p| {
             tracing::trace!(uri = %uri, "request context: detected protocol from forwarded client proto");
             p.into()

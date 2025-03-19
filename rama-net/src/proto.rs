@@ -6,7 +6,8 @@ use rama_core::error::{ErrorContext, OpaqueError};
 use rama_utils::macros::str::eq_ignore_ascii_case;
 
 #[cfg(feature = "http")]
-use rama_http_types::Scheme;
+use rama_http_types::{Method, Scheme};
+use tracing::{trace, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 /// Web protocols that are relevant to Rama.
@@ -17,6 +18,39 @@ use rama_http_types::Scheme;
 ///
 /// [repo]: https://github.com/plabayo/rama
 pub struct Protocol(ProtocolKind);
+
+impl Protocol {
+    #[cfg(feature = "http")]
+    pub fn maybe_from_uri_scheme_str_and_method(
+        s: Option<&Scheme>,
+        method: Option<&Method>,
+    ) -> Option<Self> {
+        s.map(|s| {
+            trace!("detected protocol from scheme");
+            let protocol: Protocol = s.into();
+            if method == Some(&Method::CONNECT) {
+                match protocol {
+                    Protocol::HTTP => {
+                        trace!("CONNECT request: upgrade HTTP => HTTPS");
+                        Protocol::HTTPS
+                    }
+                    Protocol::HTTPS => Protocol::HTTPS,
+                    Protocol::WS => {
+                        trace!("CONNECT request: upgrade WS => WSS");
+                        Protocol::WSS
+                    }
+                    Protocol::WSS => Protocol::WSS,
+                    other => {
+                        warn!(protocol = %other, "CONNECT request: unexpected protocol");
+                        other
+                    }
+                }
+            } else {
+                protocol
+            }
+        })
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum ProtocolKind {

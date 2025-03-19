@@ -72,6 +72,7 @@ percent-encoding = "2.1"
 pin-project-lite = "0.2.13"
 rustls-pki-types = "^1"
 proc-macro2 = "1.0"
+psl = "2"
 socket2 = "0.5.8"
 opentelemetry = { version = "0.28.0", default-features = false, features = [
     "trace",
