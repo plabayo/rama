@@ -237,12 +237,12 @@ Here is a list of all `rama` crates:
 
 ## 🏢 | Proxy Examples
 
-- [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
+- [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_termination.rs):
   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
-  plain text stream to the first.
-- [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
+  plain text stream to the first. Tls is handled by rustls
+- [/examples/tls_boring_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_termination.rs):
   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
-  plain text stream to the first.
+  plain text stream to the first. Tls is handled by boring
 - [/examples/mtls_tunnel_and_service.rs](https://github.com/plabayo/rama/blob/main/examples/mtls_tunnel_and_service.rs):
   Example of how to do mTls (manual Tls, where the client also needs a certificate) using rama,
   as well as how one might use this concept to provide a tunnel service build with these concepts;

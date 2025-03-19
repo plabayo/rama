@@ -16,7 +16,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_termination --features=haproxy,http-full,rustls
+//! cargo run --example tls_rustls_termination --features=haproxy,http-full,rustls
 //! ```
 //!
 //! # Expected output
@@ -43,7 +43,7 @@
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    Context, Layer,
+    Context, Context, Layer, Layer,
     graceful::Shutdown,
     layer::ConsumeErrLayer,
     net::forwarded::Forwarded,
@@ -56,7 +56,7 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
 

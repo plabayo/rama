@@ -15,7 +15,7 @@
 //! It combines concepts that can seen in action separately in the following examples:
 //!
 //! - [`http_connect_proxy`](./http_connect_proxy.rs);
-//! - [`tls_termination`](./tls_termination.rs);
+//! - [`tls_rustls_termination`](./tls_rustls_termination.rs);
 //!
 //! # Run the example
 //!
