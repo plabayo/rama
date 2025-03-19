@@ -16,11 +16,10 @@ workspace = true
 [features]
 default = []
 rustls = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-pemfile", "dep:rustls-pki-types", "dep:webpki-roots", "dep:rcgen", "dep:tokio-rustls", "rama-net/rustls"]
-boring = ["dep:boring", "dep:tokio-boring", "rama-net/boring", "dep:moka"]
+boring = ["dep:rama-boring", "dep:rama-boring-tokio", "rama-net/boring", "dep:moka"]
 compression = ["dep:flate2", "dep:brotli"]
 
 [dependencies]
-boring = { workspace = true, optional = true }
 brotli = { workspace = true, optional = true }
 flate2 = { workspace = true, optional = true }
 flume = { workspace = true, features = ["async"] }
@@ -28,6 +27,8 @@ itertools = { workspace = true }
 moka = { workspace = true, features = ["sync"], optional = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
+rama-boring = { workspace = true, optional = true }
+rama-boring-tokio = { workspace = true, optional = true }
 rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types" }
 rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http", "tls"] }
@@ -38,7 +39,6 @@ rustls-native-certs = { workspace = true, optional = true }
 rustls-pemfile = { workspace = true, optional = true }
 rustls-pki-types = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
-tokio-boring = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, optional = true }
 tracing = { workspace = true }
 webpki-roots = { workspace = true, optional = true }

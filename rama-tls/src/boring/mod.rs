@@ -9,19 +9,19 @@ pub mod dep {
     //! Exported for your convenience.
 
     pub mod boring {
-        //! Re-export of the [`boring`] crate.
+        //! Re-export of the [`rama-boring`] crate.
         //!
-        //! [`boring`]: https://docs.rs/boring
+        //! [`rama-boring`]: https://docs.rs/rama-boring
 
         #[doc(inline)]
-        pub use boring::*;
+        pub use rama_boring::*;
     }
 
-    pub mod tokio_boring {
-        //! Full Re-export of the [`tokio-boring`] crate.
+    pub mod boring_tokio {
+        //! Full Re-export of the [`rama-tokio-boring`] crate.
         //!
-        //! [`tokio-boring`]: https://docs.rs/tokio-boring
+        //! [`rama-tokio-boring`]: https://docs.rs/rama-tokio-boring
         #[doc(inline)]
-        pub use tokio_boring::*;
+        pub use rama_boring_tokio::*;
     }
 }

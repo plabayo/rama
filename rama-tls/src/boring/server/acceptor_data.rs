@@ -10,12 +10,13 @@ use crate::boring::dep::boring::{
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     },
 };
-use boring::{
+use moka::sync::Cache;
+use parking_lot::Mutex;
+use rama_boring::{
     ssl::{ClientHello, NameType, SelectCertError, SslAcceptorBuilder, SslRef},
     x509::extension::{AuthorityKeyIdentifier, SubjectAlternativeName},
 };
-use moka::sync::Cache;
-use parking_lot::Mutex;
+use rama_boring_tokio::{AsyncSelectCertError, BoxSelectCertFinish};
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::{
     address::{Domain, Host},
@@ -29,7 +30,6 @@ use rama_net::{
     },
 };
 use std::{sync::Arc, time::Duration};
-use tokio_boring::{AsyncSelectCertError, BoxSelectCertFinish};
 
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].

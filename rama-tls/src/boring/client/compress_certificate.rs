@@ -1,7 +1,7 @@
-use boring::ssl::{CertificateCompressionAlgorithm, CertificateCompressor};
 use flate2::Compression;
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
+use rama_boring::ssl::{CertificateCompressionAlgorithm, CertificateCompressor};
 use std::io::{self, Result, prelude::*};
 
 #[derive(Debug, Clone, Default)]
