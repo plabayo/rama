@@ -1,0 +1,45 @@
+[package]
+name = "rama-tls-rustls"
+description = "tls implementations for rama using rustls"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "tls", "network", "rama"]
+categories = ["asynchronous", "network-programming", "cryptography", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+flume = { workspace = true, features = ["async"] }
+itertools = { workspace = true }
+parking_lot = { workspace = true }
+pin-project-lite = { workspace = true }
+rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http", "tls", "rustls"] }
+rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
+rcgen = { workspace = true}
+rustls = { workspace = true }
+rustls-native-certs = { workspace = true }
+rustls-pemfile = { workspace = true}
+rustls-pki-types = { workspace = true }
+tokio = { workspace = true, features = ["macros", "io-std"] }
+tokio-rustls = { workspace = true }
+tracing = { workspace = true }
+webpki-roots = { workspace = true }
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

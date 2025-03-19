@@ -43,7 +43,7 @@
 
 // rama provides everything out of the box to build a TLS termination proxy
 use rama::{
-    Context, Context, Layer, Layer,
+    Context, Layer,
     graceful::Shutdown,
     layer::ConsumeErrLayer,
     net::forwarded::Forwarded,
