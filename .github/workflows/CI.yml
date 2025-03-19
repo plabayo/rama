@@ -16,6 +16,8 @@ on:
 jobs:
   check-msrv:
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -37,6 +39,8 @@ jobs:
 
   check:
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -58,6 +62,8 @@ jobs:
 
   check-all-features:
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -77,20 +83,21 @@ jobs:
         run: |
           cargo fmt --all --check
 
-        # TODO: enable again once this CI issue is gone :shrug:
-        # test-msrv:
-        #   needs: [check, check-msrv, check-all-features]
-        #   runs-on: ubuntu-latest
-        #   steps:
-        #     - uses: actions/checkout@v4
-        #     - uses: dtolnay/rust-toolchain@master
-        #       with:
-        #         toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
-        #     - uses: Swatinem/rust-cache@v2
-        # with:
-        #   env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
-  #     - name: Run tests
-  #       run: cargo test --all-features --workspace
+  test-msrv:
+    needs: [check, check-msrv, check-all-features]
+    runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{env.RUST_TOOLCHAIN_MSRV}}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN_MSRV}}"
+      - name: Run tests
+        run: cargo test --all-features --workspace
 
   test-beta:
     needs: [check, check-msrv, check-all-features]

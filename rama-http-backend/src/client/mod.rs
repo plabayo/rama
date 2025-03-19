@@ -368,9 +368,10 @@ where
         T: ConnectorService<State, Request<Body>, Connection = C>,
         T::Error: Send + Into<BoxError> + 'static,
     {
-        let result = connector.connect(ctx, req).await.map_err(|err| {
-            OpaqueError::from_boxed(err.into()).with_context(|| format!("connector failed"))
-        })?;
+        let result = connector
+            .connect(ctx, req)
+            .await
+            .map_err(|err| OpaqueError::from_boxed(err.into()).context("connector failed"))?;
         Ok(Connection::Direct(result))
     }
 }
@@ -397,9 +398,10 @@ where
     {
         let pool = self.connection_pool.clone();
         let connector = PooledConnector::new(connector, pool, BasicHttpConnId);
-        let result = connector.connect(ctx, req).await.map_err(|err| {
-            OpaqueError::from_boxed(err).with_context(|| format!("pooled connector failed"))
-        })?;
+        let result = connector
+            .connect(ctx, req)
+            .await
+            .map_err(|err| OpaqueError::from_boxed(err).context("pooled connector failed"))?;
         Ok(Connection::Pooled(result))
     }
 }
@@ -541,7 +543,7 @@ where
         };
 
         let resp = result
-            .map_err(|err| OpaqueError::from_boxed(err))
+            .map_err(OpaqueError::from_boxed)
             .with_context(|| format!("http request failure for uri: {uri}"))?;
 
         trace!(uri = %uri, "response received from connector stack");
