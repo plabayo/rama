@@ -133,8 +133,8 @@ webpki-roots = "0.26.1"
 terminal-prompt = "0.2.3"
 parking_lot = "0.12.3"
 const_format = "0.2.32"
-hickory-resolver = { version = "0.24.1", default-features = false, features = [
-    "tokio-runtime",
+hickory-resolver = { version = "0.25.1", default-features = false, features = [
+    "tokio",
 ] }
 arc-swap = "1.7.1"
 flume = "0.11.1"
