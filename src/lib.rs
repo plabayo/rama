@@ -196,6 +196,7 @@
 //!
 //! - [`rama-boring`](https://crates.io/crates/rama-boring): BoringSSL bindings for Rama
 //! - [`rama-boring-sys`](https://crates.io/crates/rama-boring-sys): FFI bindings to BoringSSL for Rama
+//! - [`rama-boring-tokio`](https://crates.io/crates/rama-boring-tokio): an implementation of SSL streams for Tokio backed by BoringSSL in function of Rama
 //!
 //! repositories in function of rama that aren't crates:
 //!
