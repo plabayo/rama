@@ -7,7 +7,7 @@ use rama::{
         client::{ConnectorService, EstablishedClientConnection},
         tls::{
             DataEncoding,
-            client::{ClientConfig, NegotiatedTlsParameters},
+            client::{ClientConfig, NegotiatedTlsParameters, ServerVerifyMode},
         },
     },
     tcp::client::{Request, service::TcpConnector},
@@ -44,68 +44,52 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         )
         .init();
 
-    // let authority = Authority::try_from(cfg.address.clone())?;
-
     let authority = match Authority::try_from(cfg.address.clone()) {
         Ok(authority) => authority,
-        Err(err) => {
-            // if missing port, we can try to add the default port
-            if err.to_string().contains("missing port") {
-                let authority = format!("{}:443", cfg.address);
-                Authority::try_from(authority)?
-            } else {
-                return Err(err.into());
-            }
+        // if missing port, we can try to add the default port
+        Err(err) if err.to_string().contains("missing port") => {
+            let authority = format!("{}:443", cfg.address);
+            Authority::try_from(authority)?
         }
+        Err(err) => return Err(err.into()),
     };
+
+    tracing::info!("Connecting to: {}", authority);
 
     let tls_client_data = TlsConnectorData::try_from(ClientConfig {
         store_server_certificate_chain: true,
+        server_verify_mode: if cfg.insecure {
+            Some(ServerVerifyMode::Disable)
+        } else {
+            Some(ServerVerifyMode::Auto)
+        },
         ..Default::default()
     })
     .expect("create tls connector data for client");
 
     let tcp_connector = TcpConnector::new();
-
     let loggin_service = LoggingLayer.layer(tcp_connector);
 
     let tls_connector = TlsConnectorLayer::secure()
         .with_connector_data(tls_client_data)
         .layer(loggin_service);
 
-    let ctx = Context::default();
-
-    let EstablishedClientConnection { ctx, req, conn } =
-        tls_connector.connect(ctx, Request::new(authority)).await?;
+    let EstablishedClientConnection {
+        ctx,
+        req: _,
+        conn: _,
+    } = tls_connector
+        .connect(Context::default(), Request::new(authority))
+        .await?;
 
     let params = ctx.get::<NegotiatedTlsParameters>().unwrap();
 
     if let Some(cert_chain) = params.peer_certificate_chain.clone() {
         match cert_chain {
-            DataEncoding::Der(raw_data) => match X509::from_der(&raw_data) {
-                Ok(cert) => {
-                    println!("Certificate: {:?}", cert);
-
-                    println!("Subject: {:?}", cert.subject_name());
-                    println!("Issuer: {:?}", cert.issuer_name());
-                }
-                Err(err) => {
-                    println!("Error decoding certificate: {:?}", err);
-                }
-            },
+            DataEncoding::Der(raw_data) => log_cert(&raw_data, 1),
             DataEncoding::DerStack(raw_data_list) => {
                 for (i, raw_data) in raw_data_list.iter().enumerate() {
-                    match X509::from_der(raw_data) {
-                        Ok(cert) => {
-                            println!("\nCertificate #{}: {:?}", i + 1, cert);
-
-                            println!("Subject: {:?}", cert.subject_name());
-                            println!("Issuer: {:?}", cert.issuer_name());
-                        }
-                        Err(err) => {
-                            println!("Error decoding certificate #{}: {:?}", i + 1, err);
-                        }
-                    }
+                    log_cert(raw_data, i + 1);
                 }
             }
             DataEncoding::Pem(raw_data) => {
@@ -118,6 +102,19 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
     }
 
     Ok(())
+}
+
+fn log_cert(raw_data: &[u8], index: usize) {
+    match X509::from_der(raw_data) {
+        Ok(cert) => {
+            println!("Certificate #{}:", index);
+            println!("Subject: {:?}", cert.subject_name());
+            println!("Issuer: {:?}", cert.issuer_name());
+        }
+        Err(err) => {
+            eprintln!("Failed to decode certificate #{}: {:?}", index, err);
+        }
+    }
 }
 
 struct LoggingService<S> {
@@ -139,7 +136,7 @@ where
 
         if let Ok(ref established_conn) = result {
             if let Ok(Some(peer_addr)) = established_conn.conn.peer_addr().map(Some) {
-                println!("TCP connection established to IP: {}", peer_addr);
+                tracing::info!("TCP connection established to IP: {}", peer_addr);
             }
         }
 
