@@ -1,4 +1,5 @@
-use boring::{
+use itertools::Itertools;
+use rama_boring::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
     hash::MessageDigest,
@@ -10,7 +11,6 @@ use boring::{
         extension::{BasicConstraints, KeyUsage, SubjectKeyIdentifier},
     },
 };
-use itertools::Itertools;
 use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
@@ -82,7 +82,7 @@ impl fmt::Debug for ConnectConfigData {
 impl TlsConnectorData {
     pub(super) fn try_to_build_config(&self) -> Result<ConnectConfigData, OpaqueError> {
         let mut cfg_builder =
-            boring::ssl::SslConnector::builder(boring::ssl::SslMethod::tls_client())
+            rama_boring::ssl::SslConnector::builder(rama_boring::ssl::SslMethod::tls_client())
                 .context("create (boring) ssl connector builder")?;
 
         if let Some(keylog_filename) = self

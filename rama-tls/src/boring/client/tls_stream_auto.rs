@@ -1,10 +1,10 @@
 use std::fmt;
 
-use boring::ssl::SslRef;
 use pin_project_lite::pin_project;
+use rama_boring::ssl::SslRef;
+use rama_boring_tokio::SslStream;
 use rama_net::stream::Stream;
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_boring::SslStream;
 
 pin_project! {
     /// A stream which can be either a secure or a plain stream.

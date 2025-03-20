@@ -2,7 +2,8 @@
 
 use crate::DnsResolver;
 use hickory_resolver::{
-    Name, TokioAsyncResolver,
+    Name, TokioResolver,
+    name_server::TokioConnectionProvider,
     proto::rr::rdata::{A, AAAA},
 };
 use rama_core::error::{ErrorContext, OpaqueError};
@@ -16,7 +17,7 @@ pub use hickory_resolver::config;
 
 #[derive(Debug, Clone)]
 /// [`DnsResolver`] using the [`hickory_resolver`] crate
-pub struct HickoryDns(Arc<TokioAsyncResolver>);
+pub struct HickoryDns(Arc<TokioResolver>);
 
 impl Default for HickoryDns {
     fn default() -> Self {
@@ -92,11 +93,15 @@ impl HickoryDnsBuilder {
     /// [`Clone`] the [`HickoryDnsBuilder`] prior to calling this method in case you
     /// still need the builder afterwards.
     pub fn build(self) -> HickoryDns {
-        HickoryDns(Arc::new(TokioAsyncResolver::tokio(
+        let mut resolver_builder = TokioResolver::builder_with_config(
             self.config
                 .unwrap_or_else(config::ResolverConfig::cloudflare),
-            self.options.unwrap_or_default(),
-        )))
+            TokioConnectionProvider::default(),
+        );
+        if let Some(options) = self.options {
+            *resolver_builder.options_mut() = options;
+        }
+        HickoryDns(Arc::new(resolver_builder.build()))
     }
 }
 

@@ -2,7 +2,7 @@ use super::TlsAcceptorData;
 use crate::{
     boring::dep::{
         boring::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
-        tokio_boring::SslStream,
+        boring_tokio::SslStream,
     },
     keylog::new_key_log_file_handle,
     types::SecureTransport,
@@ -182,7 +182,7 @@ where
 
         let acceptor = acceptor_builder.build();
 
-        let stream = tokio_boring::accept(&acceptor, stream)
+        let stream = rama_boring_tokio::accept(&acceptor, stream)
             .await
             .map_err(|err| match err.as_io_error() {
                 Some(err) => OpaqueError::from_display(err.to_string())

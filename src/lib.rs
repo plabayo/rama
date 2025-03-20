@@ -192,6 +192,16 @@
 //! - [`rama-http-backend`](https://crates.io/crates/rama-http-backend): default http backend for `rama`
 //! - [`rama-http-core`](https://crates.io/crates/rama-http-core): http protocol implementation driving `rama-http-backend`
 //!
+//! `rama` crates that live in <https://github.com/plabayo/rama-boring> (forks of `cloudflare/boring`):
+//!
+//! - [`rama-boring`](https://crates.io/crates/rama-boring): BoringSSL bindings for Rama
+//! - [`rama-boring-sys`](https://crates.io/crates/rama-boring-sys): FFI bindings to BoringSSL for Rama
+//! - [`rama-boring-tokio`](https://crates.io/crates/rama-boring-tokio): an implementation of SSL streams for Tokio backed by BoringSSL in function of Rama
+//!
+//! repositories in function of rama that aren't crates:
+//!
+//! - <https://github.com/plabayo/homebrew-rama>: Homebrew formula for the rama Cli tool
+//!
 //! ## 🏢 | Proxy Examples
 //!
 //! - [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_termination.rs):

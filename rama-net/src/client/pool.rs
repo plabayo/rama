@@ -300,8 +300,7 @@ where
         connections
             .iter()
             .position(|stored| &stored.id == id)
-            .map(|idx| connections.remove(idx))
-            .flatten()
+            .and_then(|idx| connections.remove(idx))
     }
 
     fn get_connection_to_drop(
@@ -427,7 +426,7 @@ impl<S: PoolStorage> Pool<S> {
 
         let active_slot = ActiveSlot(active_permit);
 
-        let pooled_conn = self.inner.storage.get_connection(&id);
+        let pooled_conn = self.inner.storage.get_connection(id);
 
         let pool = Arc::downgrade(&self.inner);
         let returner = Arc::new(move |conn| {
@@ -545,7 +544,7 @@ where
         let pool_result = if let Some(duration) = self.wait_for_pool_timeout {
             timeout(duration, pool.get_connection_or_create_cb(&conn_id))
                 .await
-                .map_err(|err| OpaqueError::from_std(err))?
+                .map_err(OpaqueError::from_std)?
         } else {
             pool.get_connection_or_create_cb(&conn_id).await
         }?;

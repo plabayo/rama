@@ -1,11 +1,11 @@
-use std::fmt;
+use std::{borrow::Cow, fmt};
 
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, OpaqueError},
 };
 use rama_http_types::{
-    HeaderMap, HeaderName, Method, Request, Version,
+    HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
     conn::Http1ClientContextParams,
     header::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
@@ -20,7 +20,11 @@ use rama_http_types::{
         h2::PseudoHeaderOrder,
     },
 };
-use rama_net::{Protocol, http::RequestContext};
+use rama_net::{
+    Protocol,
+    address::{Authority, Host},
+    http::RequestContext,
+};
 
 use crate::{HttpAgent, UserAgent, contains_ignore_ascii_case, starts_with_ignore_ascii_case};
 use crate::{
@@ -422,6 +426,7 @@ where
                     http_version = ?req.version(),
                     "http profile found in context to use for emulation, proceed",
                 );
+
                 match get_base_http_headers(&ctx, &req, http_profile) {
                     Some(base_http_headers) => {
                         let original_http_header_order =
@@ -430,13 +435,24 @@ where
 
                         let preserve_ua_header = ctx.contains::<PreserveHeaderUserAgent>();
 
-                        let is_secure_request = match ctx.get::<RequestContext>() {
-                            Some(request_ctx) => request_ctx.protocol.is_secure(),
-                            None => req
-                                .uri()
-                                .scheme()
-                                .map(|s| Protocol::from(s.clone()).is_secure())
-                                .unwrap_or_default(),
+                        let (authority, protocol) = match ctx.get::<RequestContext>() {
+                            Some(ctx) => (
+                                Some(Cow::Borrowed(&ctx.authority)),
+                                Some(Cow::Borrowed(&ctx.protocol)),
+                            ),
+                            None => match RequestContext::try_from((&ctx, &req)) {
+                                Ok(ctx) => (
+                                    Some(Cow::Owned(ctx.authority)),
+                                    Some(Cow::Owned(ctx.protocol)),
+                                ),
+                                Err(err) => {
+                                    tracing::debug!(
+                                        ?err,
+                                        "failed to compute request's authority and protocol for UA Emulation purposes",
+                                    );
+                                    (None, None)
+                                }
+                            },
                         };
 
                         let output_headers = merge_http_headers(
@@ -444,7 +460,9 @@ where
                             original_http_header_order,
                             original_headers,
                             preserve_ua_header,
-                            is_secure_request,
+                            authority,
+                            protocol,
+                            Some(req.method()),
                             ctx.get::<Vec<ClientHint>>().map(|v| v.as_slice()),
                         );
 
@@ -585,14 +603,22 @@ fn get_base_http_headers_from_req_init(
     }
 }
 
-fn merge_http_headers(
+const SEC_FETCH_SITE: HeaderName = HeaderName::from_static("sec-fetch-site");
+
+#[allow(clippy::too_many_arguments)]
+fn merge_http_headers<'a>(
     base_http_headers: &Http1HeaderMap,
     original_http_header_order: Option<OriginalHttp1Headers>,
     original_headers: HeaderMap,
     preserve_ua_header: bool,
-    is_secure_request: bool,
+    request_authority: Option<Cow<'a, Authority>>,
+    protocol: Option<Cow<'a, Protocol>>,
+    method: Option<&Method>,
     requested_client_hints: Option<&[ClientHint]>,
 ) -> Http1HeaderMap {
+    let original_header_referer_value = original_headers.get(&REFERER).cloned();
+    let is_secure_request = protocol.as_ref().map(|p| p.is_secure()).unwrap_or_default();
+
     let mut original_headers = HeaderMapValueRemover::from(original_headers);
 
     // to support clients that pass in client hints as well. We'll ignore their
@@ -651,7 +677,19 @@ fn merge_http_headers(
                 if base_header_name == CUSTOM_HEADER_MARKER {
                     output_headers_ref = &mut output_headers_b;
                 } else if is_header_allowed(base_header_name) {
-                    output_headers_ref.push((base_name, base_value));
+                    if base_header_name == SEC_FETCH_SITE {
+                        // assumption: is_header_allowed ensures that this only
+                        // is reached in a secure context :)
+                        let value = compute_sec_fetch_site_value(
+                            original_header_referer_value.as_ref(),
+                            method,
+                            protocol.as_deref(),
+                            request_authority.as_deref(),
+                        );
+                        output_headers_ref.push((base_name, value));
+                    } else {
+                        output_headers_ref.push((base_name, base_value));
+                    }
                 }
             }
         }
@@ -681,6 +719,99 @@ fn merge_http_headers(
     )
 }
 
+fn compute_sec_fetch_site_value(
+    original_header_referer_value: Option<&HeaderValue>,
+    method: Option<&Method>,
+    protocol: Option<&Protocol>,
+    request_authority: Option<&Authority>,
+) -> HeaderValue {
+    match &original_header_referer_value {
+        Some(referer_value) => {
+            match referer_value
+                .to_str()
+                .context("turn referer into str")
+                .and_then(|s| {
+                    s.parse::<Uri>()
+                        .context("turn referer header value str into http Uri")
+                }) {
+                Ok(uri) => {
+                    let referer_protocol =
+                        Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), method);
+
+                    let default_port = uri
+                        .port_u16()
+                        .or_else(|| referer_protocol.as_ref().map(|p| p.default_port()));
+
+                    let maybe_authority = uri
+                        .host()
+                        .and_then(|h| Host::try_from(h).ok().and_then(|h| {
+                            match default_port {
+                                Some(default_port) => {
+                                    tracing::trace!(uri = %uri, host = %h, "detected host from (abs) referer uri");
+                                    Some(Authority::new(h, default_port))
+                                },
+                                None => {
+                                    tracing::trace!(uri = %uri, host = %h, "detected host from (abs) referer uri: but no port available");
+                                    None
+                                },
+                            }
+                        }));
+
+                    match maybe_authority {
+                        Some(authority) => {
+                            if referer_protocol.as_ref() == protocol {
+                                if Some(&authority) == request_authority {
+                                    HeaderValue::from_static("same-origin")
+                                } else if let Some(request_host) =
+                                    request_authority.as_ref().map(|a| a.host())
+                                {
+                                    let is_same_registrable_domain =
+                                        match (authority.host(), request_host) {
+                                            (Host::Name(a), Host::Name(b)) => {
+                                                a.have_same_registrable_domain(b)
+                                            }
+                                            (Host::Address(a), Host::Address(b)) => a == b,
+                                            _ => false,
+                                        };
+                                    if is_same_registrable_domain {
+                                        HeaderValue::from_static("same-site")
+                                    } else {
+                                        HeaderValue::from_static("cross-site")
+                                    }
+                                } else {
+                                    tracing::debug!(
+                                        referer = ?referer_value,
+                                        "missing request authority, returning none as default",
+                                    );
+                                    HeaderValue::from_static("none")
+                                }
+                            } else {
+                                HeaderValue::from_static("cross-site")
+                            }
+                        }
+                        None => {
+                            tracing::debug!(
+                                referer = ?referer_value,
+                                "invalid referer value (failed to extract authority from uri value)",
+                            );
+                            HeaderValue::from_static("none")
+                        }
+                    }
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        err = ?err,
+                        referer = ?referer_value,
+                        "invalid referer value (expected a valid uri, defaulting to none)",
+                    );
+                    HeaderValue::from_static("none")
+                }
+            }
+        }
+        None => HeaderValue::from_static("none"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -690,6 +821,7 @@ mod tests {
     use itertools::Itertools as _;
     use rama_core::{Layer, inspect::RequestInspectorLayer, service::service_fn};
     use rama_http_types::{Body, HeaderValue, header::ETAG, proto::h1::Http1HeaderName};
+    use rama_net::address::Host;
 
     use crate::emulate::UserAgentEmulateLayer;
     use crate::profile::{
@@ -705,7 +837,8 @@ mod tests {
             original_http_header_order: Option<Vec<&'static str>>,
             original_headers: Vec<(&'static str, &'static str)>,
             preserve_ua_header: bool,
-            is_secure_request: bool,
+            request_authority: Authority,
+            protocol: Protocol,
             requested_client_hints: Option<Vec<&'static str>>,
             expected: Vec<(&'static str, &'static str)>,
         }
@@ -717,7 +850,11 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::EXAMPLE_NAME,
+                    Protocol::HTTP.default_port(),
+                ),
+                protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![],
             },
@@ -730,7 +867,11 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::EXAMPLE_NAME,
+                    Protocol::HTTP.default_port(),
+                ),
+                protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![("Accept", "text/html")],
             },
@@ -743,7 +884,11 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![("content-type", "text/xml")],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::EXAMPLE_NAME,
+                    Protocol::HTTP.default_port(),
+                ),
+                protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![("Accept", "text/html"), ("Content-Type", "text/xml")],
             },
@@ -753,7 +898,11 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![("accept", "text/html")],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::EXAMPLE_NAME,
+                    Protocol::HTTP.default_port(),
+                ),
+                protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![("accept", "text/html")],
             },
@@ -763,7 +912,11 @@ mod tests {
                 original_http_header_order: None,
                 original_headers: vec![("content-type", "application/json")],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::EXAMPLE_NAME,
+                    Protocol::HTTP.default_port(),
+                ),
+                protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
@@ -784,7 +937,11 @@ mod tests {
                     ("user-agent", "php/8.0"),
                 ],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::EXAMPLE_NAME,
+                    Protocol::HTTP.default_port(),
+                ),
+                protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
@@ -805,7 +962,11 @@ mod tests {
                     ("user-agent", "php/8.0"),
                 ],
                 preserve_ua_header: true,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::EXAMPLE_NAME,
+                    Protocol::HTTP.default_port(),
+                ),
+                protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
@@ -827,7 +988,11 @@ mod tests {
                     ("user-agent", "php/8.0"),
                 ],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::EXAMPLE_NAME,
+                    Protocol::HTTP.default_port(),
+                ),
+                protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
@@ -856,7 +1021,11 @@ mod tests {
                     ("referer", "https://ramaproxy.org"),
                 ],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::from_str("ramaproxy.org").unwrap(),
+                    Protocol::HTTPS.default_port(),
+                ),
+                protocol: Protocol::HTTPS,
                 requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
@@ -889,7 +1058,11 @@ mod tests {
                     ("authorization", "Bearer 42"),
                 ],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::EXAMPLE_NAME,
+                    Protocol::HTTPS.default_port(),
+                ),
+                protocol: Protocol::HTTPS,
                 requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
@@ -924,7 +1097,11 @@ mod tests {
                     ("authorization", "Bearer 42"),
                 ],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::from_str("ramaproxy.org").unwrap(),
+                    Protocol::HTTPS.default_port(),
+                ),
+                protocol: Protocol::HTTPS,
                 requested_client_hints: None,
                 expected: vec![
                     ("accept", "text/html"),
@@ -977,7 +1154,11 @@ mod tests {
                     ("host", "www.example.com"),
                 ],
                 preserve_ua_header: false,
-                is_secure_request: false,
+                request_authority: Authority::new(
+                    Host::from_str("www.google.com").unwrap(),
+                    Protocol::HTTP.default_port(),
+                ),
+                protocol: Protocol::HTTP,
                 requested_client_hints: None,
                 expected: vec![
                     ("Host", "www.example.com"),
@@ -1043,7 +1224,11 @@ mod tests {
                     ("x-requested-with", "XMLHttpRequest"),
                 ],
                 preserve_ua_header: false,
-                is_secure_request: true,
+                request_authority: Authority::new(
+                    Host::from_str("www.google.com").unwrap(),
+                    Protocol::HTTPS.default_port(),
+                ),
+                protocol: Protocol::HTTPS,
                 requested_client_hints: None,
                 expected: vec![
                     (
@@ -1064,11 +1249,48 @@ mod tests {
                     ("Cookie", "session=on; foo=bar"),
                     ("Sec-Fetch-Dest", "document"),
                     ("Sec-Fetch-Mode", "navigate"),
-                    ("Sec-Fetch-Site", "cross-site"),
+                    ("Sec-Fetch-Site", "none"),
                     ("Sec-Fetch-User", "?1"),
                     ("DNT", "1"),
                     ("Sec-GPC", "1"),
                     ("Priority", "u=0, i"),
+                ],
+            },
+            TestCase {
+                description: "secure example request with referer",
+                base_http_headers: vec![
+                    ("Host", "www.google.com"),
+                    (
+                        "User-Agent",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ),
+                    (
+                        "Accept",
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    ),
+                    ("Referer", "https://www.google.com/"),
+                    ("Sec-Fetch-Site", "cross-site"),
+                ],
+                original_http_header_order: None,
+                original_headers: vec![("referer", "https://maps.google.com/")],
+                preserve_ua_header: false,
+                request_authority: Authority::new(
+                    Host::from_str("www.google.com").unwrap(),
+                    Protocol::HTTPS.default_port(),
+                ),
+                protocol: Protocol::HTTPS,
+                requested_client_hints: None,
+                expected: vec![
+                    (
+                        "User-Agent",
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                    ),
+                    (
+                        "Accept",
+                        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                    ),
+                    ("Referer", "https://maps.google.com/"),
+                    ("Sec-Fetch-Site", "same-site"),
                 ],
             },
             TestCase {
@@ -1125,7 +1347,11 @@ mod tests {
                     ("sec-ch-prefers-contrast", "xx"),
                 ],
                 preserve_ua_header: false,
-                is_secure_request: true,
+                request_authority: Authority::new(
+                    Host::from_str("www.google.com").unwrap(),
+                    Protocol::HTTPS.default_port(),
+                ),
+                protocol: Protocol::HTTPS,
                 requested_client_hints: Some(vec![
                     "Downlink",
                     "Ect",
@@ -1154,7 +1380,7 @@ mod tests {
                     ("Cookie", "session=on; foo=bar"),
                     ("Sec-Fetch-Dest", "document"),
                     ("Sec-Fetch-Mode", "navigate"),
-                    ("Sec-Fetch-Site", "cross-site"),
+                    ("Sec-Fetch-Site", "none"),
                     ("Sec-Fetch-User", "?1"),
                     ("Sec-CH-Downlink", "100"),
                     ("Sec-CH-Ect", "4g"),
@@ -1198,7 +1424,6 @@ mod tests {
                 }),
             );
             let preserve_ua_header = test_case.preserve_ua_header;
-            let is_secure_request = test_case.is_secure_request;
             let requested_client_hints = test_case.requested_client_hints.map(|hints| {
                 hints
                     .into_iter()
@@ -1211,7 +1436,9 @@ mod tests {
                 original_http_header_order,
                 original_headers,
                 preserve_ua_header,
-                is_secure_request,
+                Some(Cow::Borrowed(&test_case.request_authority)),
+                Some(Cow::Borrowed(&test_case.protocol)),
+                None,
                 requested_client_hints.as_deref(),
             );
 
@@ -1781,6 +2008,107 @@ mod tests {
             let ctx = test_case.ctx.unwrap_or_default();
             let res = ua_service.serve(ctx, req).await.unwrap();
             assert_eq!(res, test_case.expected, "{}", test_case.description);
+        }
+    }
+
+    #[test]
+    fn test_compute_sec_fetch_site_value() {
+        #[derive(Debug)]
+        struct TestCase {
+            referer: Option<&'static str>,
+            method: Option<Method>,
+            protocol: Protocol,
+            request_authority: Authority,
+            expected_value: &'static str,
+        }
+
+        let test_cases = [
+            TestCase {
+                referer: None,
+                method: None,
+                protocol: Protocol::HTTP,
+                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                expected_value: "none",
+            },
+            TestCase {
+                referer: Some("http://example.com/foo?q=1"),
+                method: None,
+                protocol: Protocol::HTTP,
+                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                expected_value: "same-origin",
+            },
+            TestCase {
+                referer: Some("http://example.com:8080/foo?q=1"),
+                method: None,
+                protocol: Protocol::HTTP,
+                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                expected_value: "same-site",
+            },
+            TestCase {
+                referer: Some("https://example.com/foo?q=1"),
+                method: None,
+                protocol: Protocol::HTTP,
+                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                expected_value: "cross-site",
+            },
+            TestCase {
+                referer: Some("http://example.com/foo?q=1"),
+                method: None,
+                protocol: Protocol::HTTPS,
+                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                expected_value: "cross-site",
+            },
+            TestCase {
+                referer: Some("http://example.be/foo?q=1"),
+                method: None,
+                protocol: Protocol::HTTP,
+                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                expected_value: "cross-site",
+            },
+            TestCase {
+                referer: Some("http://sub.example.com/foo?q=1"),
+                method: None,
+                protocol: Protocol::HTTP,
+                request_authority: Authority::new(Host::EXAMPLE_NAME, 80),
+                expected_value: "same-site",
+            },
+            TestCase {
+                referer: Some("http://example.com/foo?q=1"),
+                method: None,
+                protocol: Protocol::HTTP,
+                request_authority: Authority::new("sub.example.com".parse().unwrap(), 80),
+                expected_value: "same-site",
+            },
+            TestCase {
+                referer: Some("http://a.example.com/foo?q=1"),
+                method: None,
+                protocol: Protocol::HTTP,
+                request_authority: Authority::new("b.example.com".parse().unwrap(), 80),
+                expected_value: "same-site",
+            },
+            TestCase {
+                referer: Some("......."),
+                method: None,
+                protocol: Protocol::HTTP,
+                request_authority: Authority::new("b.example.com".parse().unwrap(), 80),
+                expected_value: "none",
+            },
+        ];
+
+        for test_case in test_cases {
+            let original_header_referer_value = test_case.referer.map(HeaderValue::from_static);
+            let computed_value = compute_sec_fetch_site_value(
+                original_header_referer_value.as_ref(),
+                test_case.method.as_ref(),
+                Some(&test_case.protocol),
+                Some(&test_case.request_authority),
+            );
+            assert_eq!(
+                computed_value.to_str().unwrap(),
+                test_case.expected_value,
+                "test_case: {:?}",
+                test_case,
+            );
         }
     }
 }

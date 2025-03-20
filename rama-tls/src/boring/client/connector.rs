@@ -1,4 +1,5 @@
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
+use rama_boring_tokio::SslStream;
 use rama_core::error::{BoxError, ErrorExt, OpaqueError};
 use rama_core::{Context, Layer, Service};
 use rama_net::address::Host;
@@ -8,7 +9,6 @@ use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
-use tokio_boring::SslStream;
 
 use super::{AutoTlsStream, TlsConnectorData, TlsStream};
 use crate::types::TlsTunnel;
@@ -391,7 +391,7 @@ where
         None => TlsConnectorData::new()?.try_to_build_config()?,
     };
     let server_host = client_config_data.server_name.unwrap_or(server_host);
-    let stream = tokio_boring::connect(
+    let stream = rama_boring_tokio::connect(
         client_config_data.config,
         server_host.to_string().as_str(),
         stream,
