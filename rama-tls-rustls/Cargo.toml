@@ -25,10 +25,10 @@ rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types" }
 rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http", "tls", "rustls"] }
 rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
-rcgen = { workspace = true}
+rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-native-certs = { workspace = true }
-rustls-pemfile = { workspace = true}
+rustls-pemfile = { workspace = true }
 rustls-pki-types = { workspace = true }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tokio-rustls = { workspace = true }
