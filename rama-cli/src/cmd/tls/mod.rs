@@ -95,9 +95,6 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
             DataEncoding::Pem(raw_data) => {
                 println!("PEM certificate: {:?}", raw_data);
             }
-            _ => {
-                println!("No peer certificate chain available");
-            }
         }
     }
 
