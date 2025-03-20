@@ -23,8 +23,11 @@ use rama_net::{
 };
 use rama_tcp::client::service::TcpConnector;
 
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_tls::std::client::{TlsConnector, TlsConnectorData};
+#[cfg(feature = "boring")]
+use rama_tls::boring::client::{TlsConnector, TlsConnectorData};
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use rama_tls_rustls::client::{TlsConnector, TlsConnectorData};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};

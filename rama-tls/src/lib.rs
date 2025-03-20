@@ -17,17 +17,8 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-#[cfg(feature = "rustls")]
-pub mod rustls;
-
 #[cfg(feature = "boring")]
 pub mod boring;
-
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-pub use rustls as std;
-
-#[cfg(feature = "boring")]
-pub use boring as std;
 
 pub mod keylog;
 

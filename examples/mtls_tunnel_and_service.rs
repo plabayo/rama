@@ -45,8 +45,8 @@ use rama::{
     tcp::client::service::Forwarder,
     tcp::client::service::TcpConnector,
     tcp::server::TcpListener,
-    tls::rustls::client::{TlsConnectorData, TlsConnectorLayer},
-    tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls_rustls::client::{TlsConnectorData, TlsConnectorLayer},
+    tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 // everything else is provided by the standard library, community crates or tokio

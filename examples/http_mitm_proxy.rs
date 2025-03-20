@@ -70,8 +70,14 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
+
+#[cfg(feature = "boring")]
+use rama::tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer};
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use rama::tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+
 use rama_http::layer::compress_adapter::CompressAdaptLayer;
 use rama_ua::{
     emulate::{

@@ -2568,6 +2568,7 @@ dependencies = [
  "rama-net",
  "rama-tcp",
  "rama-tls",
+ "rama-tls-rustls",
  "rama-utils",
  "tokio",
  "tracing",
