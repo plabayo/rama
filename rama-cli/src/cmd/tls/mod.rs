@@ -1,7 +1,9 @@
+#![allow(clippy::print_stdout)]
+
 use clap::Args;
 use rama::{
     Context, Layer, Service,
-    error::BoxError,
+    error::{BoxError, ErrorContext},
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
@@ -44,25 +46,21 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         )
         .init();
 
-    let authority = match Authority::try_from(cfg.address.clone()) {
-        Ok(authority) => authority,
-        // if missing port, we can try to add the default port
-        Err(err) if err.to_string().contains("missing port") => {
-            let authority = format!("{}:443", cfg.address);
-            Authority::try_from(authority)?
-        }
-        Err(err) => return Err(err.into()),
+    let address = cfg.address.trim();
+    let authority = if cfg.address.contains(':') {
+        address
+            .parse()
+            .context("parse config address as authority")?
+    } else {
+        let host = address.parse().context("parse config address as host")?;
+        Authority::new(host, 443)
     };
 
     tracing::info!("Connecting to: {}", authority);
 
     let tls_client_data = TlsConnectorData::try_from(ClientConfig {
         store_server_certificate_chain: true,
-        server_verify_mode: if cfg.insecure {
-            Some(ServerVerifyMode::Disable)
-        } else {
-            Some(ServerVerifyMode::Auto)
-        },
+        server_verify_mode: cfg.insecure.then_some(ServerVerifyMode::Disable),
         ..Default::default()
     })
     .expect("create tls connector data for client");
@@ -74,15 +72,13 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
         .with_connector_data(tls_client_data)
         .layer(loggin_service);
 
-    let EstablishedClientConnection {
-        ctx,
-        req: _,
-        conn: _,
-    } = tls_connector
+    let EstablishedClientConnection { ctx, .. } = tls_connector
         .connect(Context::default(), Request::new(authority))
         .await?;
 
-    let params = ctx.get::<NegotiatedTlsParameters>().unwrap();
+    let params = ctx
+        .get::<NegotiatedTlsParameters>()
+        .expect("NegotiatedTlsParameters to be available in connector context");
 
     if let Some(cert_chain) = params.peer_certificate_chain.clone() {
         match cert_chain {
