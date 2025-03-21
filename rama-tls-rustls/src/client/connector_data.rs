@@ -20,18 +20,18 @@ use tracing::trace;
 /// Created by converting a [`rustls::ClientConfig`] into it directly,
 /// or by trying to turn the _rama_ opiniated [`rama_net::tls::client::ClientConfig`] into it.
 pub struct TlsConnectorData {
-    pub(super) client_config_input: Arc<ClientConfigInput>,
-    pub(super) server_name: Option<Host>,
+    pub client_config_input: Arc<ClientConfigInput>,
+    pub server_name: Option<Host>,
 }
 
 #[derive(Debug, Default)]
-pub(super) struct ClientConfigInput {
-    pub(super) protocol_versions: Option<Vec<&'static SupportedProtocolVersion>>,
-    pub(super) client_auth: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    pub(super) key_logger: Option<String>,
-    pub(super) alpn_protos: Option<Vec<Vec<u8>>>,
-    pub(super) cert_verifier: Option<Arc<dyn ServerCertVerifier>>,
-    pub(super) store_server_certificate_chain: bool,
+pub struct ClientConfigInput {
+    pub protocol_versions: Option<Vec<&'static SupportedProtocolVersion>>,
+    pub client_auth: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+    pub key_logger: Option<String>,
+    pub alpn_protos: Option<Vec<Vec<u8>>>,
+    pub cert_verifier: Option<Arc<dyn ServerCertVerifier>>,
+    pub store_server_certificate_chain: bool,
 }
 
 impl TlsConnectorData {
@@ -200,141 +200,141 @@ impl TlsConnectorData {
     }
 }
 
-impl TlsConnectorData {
-    pub fn try_from_multiple_client_configs<'a>(
-        mut cfg_it: impl Iterator<Item = &'a rama_net::tls::client::ClientConfig>,
-    ) -> Result<Self, OpaqueError> {
-        let mut client_cfg = match cfg_it.next() {
-            Some(cfg) => cfg.clone(),
-            None => return TlsConnectorData::new(),
-        };
+// impl TlsConnectorData {
+//     pub fn try_from_multiple_client_configs<'a>(
+//         mut cfg_it: impl Iterator<Item = &'a rama_net::tls::client::ClientConfig>,
+//     ) -> Result<Self, OpaqueError> {
+//         let mut client_cfg = match cfg_it.next() {
+//             Some(cfg) => cfg.clone(),
+//             None => return TlsConnectorData::new(),
+//         };
 
-        // NOTE: if you care about this and this continues to exist,
-        // feel free to do it more performant for rustls :)
-        for cfg in cfg_it {
-            client_cfg.merge(cfg.clone());
-        }
+//         // NOTE: if you care about this and this continues to exist,
+//         // feel free to do it more performant for rustls :)
+//         for cfg in cfg_it {
+//             client_cfg.merge(cfg.clone());
+//         }
 
-        client_cfg
-            .try_into()
-            .context("TlsConnectorData from merged chain")
-    }
-}
+//         client_cfg
+//             .try_into()
+//             .context("TlsConnectorData from merged chain")
+//     }
+// }
 
-impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
-    type Error = OpaqueError;
+// impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
+//     type Error = OpaqueError;
 
-    fn try_from(value: rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
-        let protocol_versions = value.extensions.iter().flatten().find_map(|ext| {
-            if let ClientHelloExtension::SupportedVersions(versions) = ext {
-                Some(
-                    versions
-                        .iter()
-                        .filter_map(|v| (*v).try_into().ok())
-                        .collect(),
-                )
-            } else {
-                None
-            }
-        });
+//     fn try_from(value: rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
+//         let protocol_versions = value.extensions.iter().flatten().find_map(|ext| {
+//             if let ClientHelloExtension::SupportedVersions(versions) = ext {
+//                 Some(
+//                     versions
+//                         .iter()
+//                         .filter_map(|v| (*v).try_into().ok())
+//                         .collect(),
+//                 )
+//             } else {
+//                 None
+//             }
+//         });
 
-        let client_auth = match value.client_auth {
-            None => None,
-            Some(ClientAuth::SelfSigned) => {
-                let (cert_chain, key_der) =
-                    self_signed_client_auth().context("rustls/TlsConnectorData")?;
-                Some((cert_chain, key_der))
-            }
-            Some(ClientAuth::Single(data)) => {
-                // client TLS Certs
-                let cert_chain = match data.cert_chain {
-                    DataEncoding::Der(raw_data) => vec![CertificateDer::from(raw_data)],
-                    DataEncoding::DerStack(raw_data_list) => raw_data_list
-                        .into_iter()
-                        .map(CertificateDer::from)
-                        .collect(),
-                    DataEncoding::Pem(raw_data) => {
-                        let mut pem = BufReader::new(raw_data.as_bytes());
-                        let mut cert_chain = Vec::new();
-                        for cert in pemfile::certs(&mut pem) {
-                            cert_chain.push(
-                                cert.context("rustls/TlsConnectorData: parse tls client cert")?,
-                            );
-                        }
-                        cert_chain
-                    }
-                };
+//         let client_auth = match value.client_auth {
+//             None => None,
+//             Some(ClientAuth::SelfSigned) => {
+//                 let (cert_chain, key_der) =
+//                     self_signed_client_auth().context("rustls/TlsConnectorData")?;
+//                 Some((cert_chain, key_der))
+//             }
+//             Some(ClientAuth::Single(data)) => {
+//                 // client TLS Certs
+//                 let cert_chain = match data.cert_chain {
+//                     DataEncoding::Der(raw_data) => vec![CertificateDer::from(raw_data)],
+//                     DataEncoding::DerStack(raw_data_list) => raw_data_list
+//                         .into_iter()
+//                         .map(CertificateDer::from)
+//                         .collect(),
+//                     DataEncoding::Pem(raw_data) => {
+//                         let mut pem = BufReader::new(raw_data.as_bytes());
+//                         let mut cert_chain = Vec::new();
+//                         for cert in pemfile::certs(&mut pem) {
+//                             cert_chain.push(
+//                                 cert.context("rustls/TlsConnectorData: parse tls client cert")?,
+//                             );
+//                         }
+//                         cert_chain
+//                     }
+//                 };
 
-                // client TLS key
-                let key_der = match data.private_key {
-                    DataEncoding::Der(raw_data) => raw_data
-                        .try_into()
-                        .map_err(|_| OpaqueError::from_display("invalid key data"))
-                        .context("rustls/TlsConnectorData: read private (DER) key")?,
-                    DataEncoding::DerStack(raw_data_list) => raw_data_list
-                        .first()
-                        .cloned()
-                        .context("DataEncoding::DerStack: get first private (DER) key")?
-                        .try_into()
-                        .map_err(|_| OpaqueError::from_display("invalid key data"))
-                        .context("rustls/TlsConnectorData: read private (DER) key")?,
-                    DataEncoding::Pem(raw_data) => {
-                        let mut key_reader = BufReader::new(raw_data.as_bytes());
-                        pemfile::private_key(&mut key_reader)
-                            .context("rustls/TlsConnectorData: read private (PEM) key")?
-                            .context("rustls/TlsConnectorData: private found (in PEM)")?
-                    }
-                };
+//                 // client TLS key
+//                 let key_der = match data.private_key {
+//                     DataEncoding::Der(raw_data) => raw_data
+//                         .try_into()
+//                         .map_err(|_| OpaqueError::from_display("invalid key data"))
+//                         .context("rustls/TlsConnectorData: read private (DER) key")?,
+//                     DataEncoding::DerStack(raw_data_list) => raw_data_list
+//                         .first()
+//                         .cloned()
+//                         .context("DataEncoding::DerStack: get first private (DER) key")?
+//                         .try_into()
+//                         .map_err(|_| OpaqueError::from_display("invalid key data"))
+//                         .context("rustls/TlsConnectorData: read private (DER) key")?,
+//                     DataEncoding::Pem(raw_data) => {
+//                         let mut key_reader = BufReader::new(raw_data.as_bytes());
+//                         pemfile::private_key(&mut key_reader)
+//                             .context("rustls/TlsConnectorData: read private (PEM) key")?
+//                             .context("rustls/TlsConnectorData: private found (in PEM)")?
+//                     }
+//                 };
 
-                Some((cert_chain, key_der))
-            }
-        };
+//                 Some((cert_chain, key_der))
+//             }
+//         };
 
-        let cert_verifier: Option<Arc<dyn ServerCertVerifier>> =
-            match value.server_verify_mode.unwrap_or_default() {
-                ServerVerifyMode::Auto => None, // = default
-                ServerVerifyMode::Disable => {
-                    trace!("rustls: tls connector data: disable server cert verification");
-                    Some(Arc::new(NoServerCertVerifier::default()))
-                }
-            };
+//         let cert_verifier: Option<Arc<dyn ServerCertVerifier>> =
+//             match value.server_verify_mode.unwrap_or_default() {
+//                 ServerVerifyMode::Auto => None, // = default
+//                 ServerVerifyMode::Disable => {
+//                     trace!("rustls: tls connector data: disable server cert verification");
+//                     Some(Arc::new(NoServerCertVerifier::default()))
+//                 }
+//             };
 
-        let mut alpn_protos = None;
-        let mut server_name = None;
+//         let mut alpn_protos = None;
+//         let mut server_name = None;
 
-        // set all other extensions that we recognise for rustls purposes
-        for extension in value.extensions.iter().flatten() {
-            match extension {
-                ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpns) => {
-                    alpn_protos = Some(alpns.iter().map(|p| p.as_bytes().to_vec()).collect());
-                }
-                ClientHelloExtension::ServerName(opt_host) => {
-                    server_name = opt_host.clone();
-                }
-                other => {
-                    trace!(ext = ?other, "rustls/TlsConnectorData: ignore client hello ext");
-                }
-            }
-        }
+//         // set all other extensions that we recognise for rustls purposes
+//         for extension in value.extensions.iter().flatten() {
+//             match extension {
+//                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(alpns) => {
+//                     alpn_protos = Some(alpns.iter().map(|p| p.as_bytes().to_vec()).collect());
+//                 }
+//                 ClientHelloExtension::ServerName(opt_host) => {
+//                     server_name = opt_host.clone();
+//                 }
+//                 other => {
+//                     trace!(ext = ?other, "rustls/TlsConnectorData: ignore client hello ext");
+//                 }
+//             }
+//         }
 
-        // return the created client config, all good if you reach here
-        Ok(TlsConnectorData {
-            client_config_input: Arc::new(ClientConfigInput {
-                protocol_versions,
-                client_auth,
-                key_logger: value
-                    .key_logger
-                    .clone()
-                    .unwrap_or_default()
-                    .into_file_path(),
-                alpn_protos,
-                cert_verifier,
-                store_server_certificate_chain: value.store_server_certificate_chain,
-            }),
-            server_name,
-        })
-    }
-}
+//         // return the created client config, all good if you reach here
+//         Ok(TlsConnectorData {
+//             client_config_input: Arc::new(ClientConfigInput {
+//                 protocol_versions,
+//                 client_auth,
+//                 key_logger: value
+//                     .key_logger
+//                     .clone()
+//                     .unwrap_or_default()
+//                     .into_file_path(),
+//                 alpn_protos,
+//                 cert_verifier,
+//                 store_server_certificate_chain: value.store_server_certificate_chain,
+//             }),
+//             server_name,
+//         })
+//     }
+// }
 
 pub(super) fn client_root_certs() -> Arc<RootCertStore> {
     static ROOT_CERTS: OnceLock<Arc<RootCertStore>> = OnceLock::new();
@@ -347,7 +347,7 @@ pub(super) fn client_root_certs() -> Arc<RootCertStore> {
         .clone()
 }
 
-fn self_signed_client_auth()
+pub fn self_signed_client_auth()
 -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), OpaqueError> {
     // Create a client end entity cert.
     let alg = &rcgen::PKCS_ECDSA_P256_SHA256;

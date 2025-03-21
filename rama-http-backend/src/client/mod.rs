@@ -483,33 +483,36 @@ where
                 None => transport_connector.set_auto_version(),
             };
 
-            let tls_connector_data = match extract_client_config_from_ctx(&ctx) {
-                Some(mut chain_ref) => {
-                    trace!(
-                        "create tls connector using rama tls client config(s) from context and/or the predefined one if defined"
-                    );
-                    if let Some(tls_config) = self.tls_config.clone() {
-                        chain_ref.prepend(tls_config);
-                    }
-                    TlsConnectorData::try_from_multiple_client_configs(chain_ref.iter()).context(
-                        "EasyHttpWebClient: create tls connector data from tls client config(s) from context and/or the predefined one if defined",
-                    )?
-                }
-                None => match self.tls_config.as_deref() {
-                    Some(tls_config) => {
-                        trace!("create tls connector using pre-defined rama tls client config");
-                        tls_config.clone().try_into().context(
-                            "EasyHttpWebClient: create tls connector data from pre-defined tls config",
-                        )?
-                    }
-                    None => {
-                        trace!("create tls connector using the 'new_http_auto' constructor");
-                        TlsConnectorData::new_http_auto().context(
-                            "EasyHttpWebClient: create tls connector data for http (auto)",
-                        )?
-                    }
-                },
-            };
+            // let tls_connector_data = match extract_client_config_from_ctx(&ctx) {
+            //     Some(mut chain_ref) => {
+            //         trace!(
+            //             "create tls connector using rama tls client config(s) from context and/or the predefined one if defined"
+            //         );
+            //         if let Some(tls_config) = self.tls_config.clone() {
+            //             chain_ref.prepend(tls_config);
+            //         }
+            //         TlsConnectorData::try_from_multiple_client_configs(chain_ref.iter()).context(
+            //             "EasyHttpWebClient: create tls connector data from tls client config(s) from context and/or the predefined one if defined",
+            //         )?
+            //     }
+            //     None => match self.tls_config.as_deref() {
+            //         Some(tls_config) => {
+            //             trace!("create tls connector using pre-defined rama tls client config");
+            //             tls_config.clone().try_into().context(
+            //                 "EasyHttpWebClient: create tls connector data from pre-defined tls config",
+            //             )?
+            //         }
+            //         None => {
+            //             trace!("create tls connector using the 'new_http_auto' constructor");
+            //             TlsConnectorData::new_http_auto().context(
+            //                 "EasyHttpWebClient: create tls connector data for http (auto)",
+            //             )?
+            //         }
+            //     },
+            // };
+
+            let tls_connector_data = self.create_connector_data(&ctx)?;
+
             HttpConnector::new(
                 TlsConnector::auto(transport_connector).with_connector_data(tls_connector_data),
             )
@@ -552,5 +555,66 @@ where
         trace!(uri = %uri, "response received from connector stack");
 
         Ok(resp)
+    }
+}
+
+impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
+    #[cfg(feature = "boring")]
+    fn create_connector_data<State>(
+        &self,
+        ctx: &Context<State>,
+    ) -> Result<TlsConnectorData, OpaqueError> {
+        match extract_client_config_from_ctx(ctx) {
+            Some(mut chain_ref) => {
+                trace!(
+                    "create tls connector using rama tls client config(s) from context and/or the predefined one if defined"
+                );
+                if let Some(tls_config) = self.tls_config.clone() {
+                    chain_ref.prepend(tls_config);
+                }
+                TlsConnectorData::try_from_multiple_client_configs(chain_ref.iter()).context(
+                    "EasyHttpWebClient: create tls connector data from tls client config(s) from context and/or the predefined one if defined",
+                )
+            }
+            None => match self.tls_config.as_deref() {
+                Some(tls_config) => {
+                    trace!("create tls connector using pre-defined rama tls client config");
+                    tls_config.clone().try_into().context(
+                        "EasyHttpWebClient: create tls connector data from pre-defined tls config",
+                    )
+                }
+                None => {
+                    trace!("create tls connector using the 'new_http_auto' constructor");
+                    TlsConnectorData::new_http_auto()
+                        .context("EasyHttpWebClient: create tls connector data for http (auto)")
+                }
+            },
+        }
+    }
+
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    fn create_connector_data<State>(
+        &self,
+        ctx: &Context<State>,
+    ) -> Result<TlsConnectorData, OpaqueError> {
+        if let Some(_) = extract_client_config_from_ctx(ctx) {
+            return Err(OpaqueError::from_display(
+                "client config stored in ctx not supported for rustls",
+            ));
+        }
+
+        match self.tls_config.as_deref() {
+            Some(tls_config) => {
+                trace!("create tls connector using pre-defined rama tls client config");
+                tls_config.clone().try_into().context(
+                    "EasyHttpWebClient: create tls connector data from pre-defined tls config",
+                )
+            }
+            None => {
+                trace!("create tls connector using the 'new_http_auto' constructor");
+                TlsConnectorData::new_http_auto()
+                    .context("EasyHttpWebClient: create tls connector data for http (auto)")
+            }
+        }
     }
 }
