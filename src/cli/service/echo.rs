@@ -41,9 +41,14 @@ use tokio::net::TcpStream;
 use crate::{
     net::fingerprint::{Ja3, Ja4},
     net::tls::server::ServerConfig,
-    tls::std::server::TlsAcceptorLayer,
     tls::types::{SecureTransport, client::ClientHelloExtension},
 };
+
+#[cfg(feature = "boring")]
+use crate::tls::boring::server::TlsAcceptorLayer;
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use crate::tls_rustls::server::TlsAcceptorLayer;
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own echo [`Service`],

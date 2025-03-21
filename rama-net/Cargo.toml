@@ -26,6 +26,7 @@ aws-lc-sys = { workspace = true, optional = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 const_format = { workspace = true }
+flume = { workspace = true, features = ["async"] }
 futures-lite = { workspace = true }
 headers = { workspace = true }
 hex = { workspace = true, optional = true }

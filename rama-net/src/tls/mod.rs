@@ -12,6 +12,7 @@ pub use enums::{
 };
 
 pub mod client;
+pub mod keylog;
 pub mod server;
 
 #[derive(Debug, Clone)]

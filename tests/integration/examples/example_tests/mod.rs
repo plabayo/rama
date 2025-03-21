@@ -50,4 +50,4 @@ mod tls_boring_dynamic_certs;
 mod tls_boring_termination;
 
 #[cfg(all(feature = "rustls", feature = "haproxy", feature = "http-full"))]
-mod tls_termination;
+mod tls_rustls_termination;

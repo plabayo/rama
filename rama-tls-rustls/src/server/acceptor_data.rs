@@ -1,8 +1,8 @@
-use crate::rustls::dep::pemfile;
-use crate::rustls::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use crate::rustls::dep::rcgen::{self, KeyPair};
-use crate::rustls::dep::rustls::{self, RootCertStore, server::WebPkiClientVerifier};
-use crate::rustls::key_log::KeyLogFile;
+use crate::dep::pemfile;
+use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use crate::dep::rcgen::{self, KeyPair};
+use crate::dep::rustls::{self, RootCertStore, server::WebPkiClientVerifier};
+use crate::key_log::KeyLogFile;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::{Domain, Host};
 use rama_net::tls::DataEncoding;

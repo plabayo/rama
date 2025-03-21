@@ -16,7 +16,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_termination --features=haproxy,http-full,rustls
+//! cargo run --example tls_rustls_termination --features=haproxy,http-full,rustls
 //! ```
 //!
 //! # Expected output
@@ -56,7 +56,7 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
 

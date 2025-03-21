@@ -10,7 +10,7 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::rustls::server::TlsAcceptorLayer,
+    tls_rustls::server::TlsAcceptorLayer,
 };
 use serde_json::{Value, json};
 

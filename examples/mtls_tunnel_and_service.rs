@@ -28,6 +28,7 @@
 // rama provides everything out of the box to build mtls web services and proxies
 use rama::{
     Layer,
+    error::ErrorContext,
     graceful::Shutdown,
     http::{
         layer::trace::TraceLayer,
@@ -36,22 +37,33 @@ use rama::{
         service::web::WebService,
     },
     layer::TraceErrLayer,
-    net::address::{Authority, Host},
-    net::tls::client::{ClientAuth, ServerVerifyMode},
-    net::tls::client::{ClientConfig, ClientHelloExtension},
-    net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth, ServerConfig},
-    net::tls::{ApplicationProtocol, DataEncoding},
+    net::{
+        address::{Authority, Host},
+        tls::{
+            ApplicationProtocol, DataEncoding,
+            client::{ClientAuth, ClientHelloExtension, ServerVerifyMode},
+            server::{ClientVerifyMode, SelfSignedData, ServerAuth, ServerConfig},
+        },
+    },
     rt::Executor,
-    tcp::client::service::Forwarder,
-    tcp::client::service::TcpConnector,
-    tcp::server::TcpListener,
-    tls::rustls::client::{TlsConnectorData, TlsConnectorLayer},
-    tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tcp::{
+        client::service::{Forwarder, TcpConnector},
+        server::TcpListener,
+    },
+    tls_rustls::{
+        client::{ClientConfigInput, TlsConnectorData, TlsConnectorLayer},
+        server::{TlsAcceptorData, TlsAcceptorLayer},
+    },
 };
+use rama_net::tls::KeyLogIntent;
+use rama_tls_rustls::{client::self_signed_client_auth, verify::NoServerCertVerifier};
 
 // everything else is provided by the standard library, community crates or tokio
-use std::net::{IpAddr, Ipv4Addr};
 use std::time::Duration;
+use std::{
+    net::{IpAddr, Ipv4Addr},
+    sync::Arc,
+};
 use tracing::metadata::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
@@ -72,16 +84,36 @@ async fn main() {
 
     let shutdown = Shutdown::default();
 
-    // generate client connector data
-    let tls_client_data = TlsConnectorData::try_from(ClientConfig {
-        client_auth: Some(ClientAuth::SelfSigned),
-        server_verify_mode: Some(ServerVerifyMode::Disable),
-        extensions: Some(vec![ClientHelloExtension::ServerName(Some(
-            SERVER_AUTHORITY.into_host(),
-        ))]),
+    let conf = ClientConfigInput {
+        key_logger: KeyLogIntent::Environment.into_file_path(),
+        client_auth: Some(
+            self_signed_client_auth()
+                .context("rustls/TlsConnectorData")
+                .unwrap(),
+        ),
+        cert_verifier: Some(Arc::new(NoServerCertVerifier::default())),
         ..Default::default()
-    })
-    .expect("create tls connector data for client");
+    };
+
+    // generate client connector data
+    // let tls_client_data = TlsConnectorData::try_from(ClientConfig {
+    //     client_auth: Some(ClientAuth::SelfSigned),
+    //     server_verify_mode: Some(ServerVerifyMode::Disable),
+    //     extensions: Some(vec![ClientHelloExtension::ServerName(Some(
+    //         SERVER_AUTHORITY.into_host(),
+    //     ))]),
+    //     ..Default::default()
+    // })
+    // .expect("create tls connector data for client");
+
+    // let client_config = ClientConfig {
+
+    // }
+    let tls_client_data = TlsConnectorData {
+        client_config_input: Arc::new(conf),
+        server_name: Some(SERVER_AUTHORITY.into_host()),
+    };
+
     let tls_client_cert_chain: Vec<_> = tls_client_data
         .client_auth_cert_chain()
         .into_iter()
