@@ -254,7 +254,7 @@ dependencies = [
  "http-body",
  "http-body-util",
  "itoa",
- "matchit",
+ "matchit 0.7.3",
  "memchr",
  "mime",
  "percent-encoding",
@@ -1815,6 +1815,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 
 [[package]]
+name = "matchit"
+version = "0.8.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2f926ade0c4e170215ae43342bf13b9310a437609c81f29f86c5df6657582ef9"
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2397,6 +2403,7 @@ dependencies = [
  "hex",
  "http",
  "itertools 0.14.0",
+ "matchit 0.8.6",
  "opentelemetry-otlp",
  "opentelemetry_sdk",
  "pin-project-lite",
@@ -2561,6 +2568,7 @@ dependencies = [
  "httpdate",
  "iri-string",
  "itertools 0.14.0",
+ "matchit 0.8.6",
  "mime",
  "mime_guess",
  "nanoid",

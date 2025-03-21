@@ -21,11 +21,11 @@ tls = ["rama-net/tls"]
 
 [dependencies]
 async-compression = { workspace = true, features = [
-    "tokio",
-    "brotli",
-    "zlib",
-    "gzip",
-    "zstd",
+  "tokio",
+  "brotli",
+  "zlib",
+  "gzip",
+  "zstd",
 ], optional = true }
 base64 = { workspace = true }
 bitflags = { workspace = true }
@@ -36,6 +36,7 @@ futures-lite = { workspace = true }
 http-range-header = { workspace = true }
 httpdate = { workspace = true }
 iri-string = { workspace = true }
+matchit = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
 nanoid = { workspace = true }
