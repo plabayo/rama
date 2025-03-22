@@ -58,7 +58,7 @@ where
     where
         I: Service<State, Request, Response = Response, Error = Infallible> + 'static,
     {
-        let matcher = HttpMatcher::method(method_matcher);
+        let matcher = HttpMatcher::method(method_matcher).and_path(path);
         let box_service = service.boxed();
 
         match self.routes.at_mut(path) {
@@ -103,60 +103,37 @@ where
             }
         }
 
-        // // TODO: Return 404 response
-        Ok(Response::new(Body::empty()))
+        let not_found = Response::builder()
+            .status(404)
+            .body(Body::from("Not Found"))
+            .unwrap();
+
+        Ok(not_found)
     }
 }
 
-// #[cfg(test)]
-// mod tests {
-// use super::*;
-// use rama_core::service::service_fn;
-// use rama_http_types::{Body, Request, StatusCode, dep::http_body_util::BodyExt};
-//
-// #[tokio::test]
-// async fn test_router_get() {
-// let list_user = service_fn(|| async {
-//     Ok::<_, Infallible>(Response::new(Body::from("Hello, World!")))
-// });
-//
-// let router: Router<()> = Router::new().get("/user", list_user);
-//
-// let req = Request::post("/user").body(Body::empty()).unwrap();
-//
-// let resp = router.serve(Context::default(), req).await.unwrap();
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rama_core::service::service_fn;
+    use rama_http_types::{Body, Request, StatusCode, dep::http_body_util::BodyExt};
 
-// assert_eq!(resp.status(), StatusCode::OK);
-// let body = resp.into_body().collect().await.unwrap().to_bytes();
-// assert_eq!(body, "Hello, World!");
-// }
+    #[tokio::test]
+    async fn test_router_get() {
+        let list_user = service_fn(|| async {
+            Ok::<_, Infallible>(Response::new(Body::from("Hello, World!")))
+        });
 
-// #[tokio::test]
-// async fn test_router_merge() {
-//     let mut root_router: Router<()> = Router::new().get(
-//         "/home",
-//         service_fn(|| async {
-//             Ok::<_, Infallible>(Response::new(Body::from("Welcome Home!")))
-//         }),
-//     );
-//
-//     let child_router: Router<()> = Router::new().get(
-//         "/user/{id}",
-//         service_fn(|| async { Ok::<_, Infallible>(Response::new(Body::from("User Info"))) }),
-//     );
-//
-//     root_router.merge(child_router).unwrap();
-//
-//     let req = Request::get("/home").body(Body::empty()).unwrap();
-//     let resp = root_router.serve(Context::default(), req).await.unwrap();
-//     assert_eq!(resp.status(), StatusCode::OK);
-//     let body = resp.into_body().collect().await.unwrap().to_bytes();
-//     assert_eq!(body, "Welcome Home!");
-//
-//     let req = Request::get("/user/1").body(Body::empty()).unwrap();
-//     let resp = root_router.serve(Context::default(), req).await.unwrap();
-//     assert_eq!(resp.status(), StatusCode::OK);
-//     let body = resp.into_body().collect().await.unwrap().to_bytes();
-//     assert_eq!(body, "User Info");
-// }
-// }
+        let router: Router<()> = Router::new().get("/user", list_user);
+
+        let req = Request::post("/user").body(Body::empty()).unwrap();
+        let resp = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+
+        let req = Request::get("/user").body(Body::empty()).unwrap();
+        let resp = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Hello, World!");
+    }
+}
