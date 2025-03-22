@@ -16,7 +16,7 @@ use rama_http_types::Body;
 pub struct Router<State> {
     routes: MatchitRouter<
         Vec<(
-            HttpMatcher<State, Body>,
+            HttpMatcher<State, Request>,
             BoxService<State, Request, Response, Infallible>,
         )>,
     >,
@@ -85,7 +85,7 @@ where
 
 impl<State> Service<State, Request> for Router<State>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     type Response = Response;
     type Error = Infallible;
