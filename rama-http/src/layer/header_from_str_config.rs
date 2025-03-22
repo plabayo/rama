@@ -44,6 +44,7 @@ use crate::{
 };
 use rama_core::{Context, Layer, Service, error::BoxError};
 use rama_utils::macros::define_inner_service_accessors;
+use std::iter::FromIterator;
 use std::str::FromStr;
 use std::{fmt, marker::PhantomData};
 
@@ -51,15 +52,15 @@ use std::{fmt, marker::PhantomData};
 /// and inserts it into the [`Extensions`] of that object.
 ///
 /// [`Extensions`]: rama_core::context::Extensions
-pub struct HeaderFromStrConfigService<T, S> {
+pub struct HeaderFromStrConfigService<T, S, C = Vec<T>> {
     inner: S,
     header_name: HeaderName,
     optional: bool,
     repeat: bool,
-    _marker: PhantomData<fn() -> T>,
+    _marker: PhantomData<fn() -> (T, C)>,
 }
 
-impl<T, S> HeaderFromStrConfigService<T, S> {
+impl<T, S, C> HeaderFromStrConfigService<T, S, C> {
     define_inner_service_accessors!();
 
     /// Create a new [`HeaderFromStrConfigService`] with the given inner service
@@ -89,21 +90,25 @@ impl<T, S> HeaderFromStrConfigService<T, S> {
     }
 
     /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a [`Vec`].
+    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
     pub fn set_repeat(&mut self, repeat: bool) -> &mut Self {
         self.repeat = repeat;
         self
     }
 
     /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a [`Vec`].
+    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
     pub fn with_repeat(mut self, repeat: bool) -> Self {
         self.repeat = repeat;
         self
     }
 }
 
-impl<T, S: fmt::Debug> fmt::Debug for HeaderFromStrConfigService<T, S> {
+impl<T, S, C> fmt::Debug for HeaderFromStrConfigService<T, S, C>
+where
+    C: fmt::Debug,
+    S: fmt::Debug,
+{
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("HeaderFromStrConfigService")
             .field("inner", &self.inner)
@@ -112,13 +117,13 @@ impl<T, S: fmt::Debug> fmt::Debug for HeaderFromStrConfigService<T, S> {
             .field("repeat", &self.repeat)
             .field(
                 "_marker",
-                &format_args!("{}", std::any::type_name::<fn() -> T>()),
+                &format_args!("{}", std::any::type_name::<fn() -> (T, C)>()),
             )
             .finish()
     }
 }
 
-impl<T, S> Clone for HeaderFromStrConfigService<T, S>
+impl<T, S, C> Clone for HeaderFromStrConfigService<T, S, C>
 where
     S: Clone,
 {
@@ -133,10 +138,11 @@ where
     }
 }
 
-impl<T, S, State, Body, E> Service<State, Request<Body>> for HeaderFromStrConfigService<T, S>
+impl<T, S, State, Body, E, C> Service<State, Request<Body>> for HeaderFromStrConfigService<T, S, C>
 where
     S: Service<State, Request<Body>, Error = E>,
     T: FromStr<Err: Into<BoxError> + Send + Sync + 'static> + Send + Sync + 'static + Clone,
+    C: FromIterator<T> + Send + Sync + 'static + Clone,
     State: Clone + Send + Sync + 'static,
     Body: Send + Sync + 'static,
     E: Into<BoxError> + Send + Sync + 'static,
@@ -151,7 +157,7 @@ where
     ) -> Result<Self::Response, Self::Error> {
         if self.repeat {
             let headers = request.headers().get_all(&self.header_name);
-            let result: Result<Vec<T>, _> = headers
+            let mut parsed_values = headers
                 .into_iter()
                 .flat_map(|value| {
                     value.to_str().into_iter().flat_map(|string| {
@@ -164,9 +170,12 @@ where
                             .map(|x| x.parse::<T>().map_err(Into::into))
                     })
                 })
-                .collect();
-            let values = result?;
-            if values.is_empty() {
+                .peekable();
+
+            let is_empty = parsed_values.peek().is_none();
+            let values = parsed_values.collect::<Result<C, _>>()?;
+
+            if is_empty {
                 if !self.optional {
                     return Err(HeaderValueErr::HeaderMissing(self.header_name.to_string()).into());
                 }
@@ -190,18 +199,18 @@ where
     }
 }
 
-/// Layer which extracts a header CSv config for the given HeaderName
+/// Layer which extracts a header CSV config for the given HeaderName
 /// from a request or response and inserts it into the [`Extensions`] of that object.
 ///
 /// [`Extensions`]: rama_core::context::Extensions
-pub struct HeaderFromStrConfigLayer<T> {
+pub struct HeaderFromStrConfigLayer<T, C = Vec<T>> {
     header_name: HeaderName,
     optional: bool,
     repeat: bool,
-    _marker: PhantomData<fn() -> T>,
+    _marker: PhantomData<fn() -> (T, C)>,
 }
 
-impl<T> fmt::Debug for HeaderFromStrConfigLayer<T> {
+impl<T, C: fmt::Debug> fmt::Debug for HeaderFromStrConfigLayer<T, C> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         f.debug_struct("HeaderFromStrConfigLayer")
             .field("header_name", &self.header_name)
@@ -209,13 +218,13 @@ impl<T> fmt::Debug for HeaderFromStrConfigLayer<T> {
             .field("repeat", &self.repeat)
             .field(
                 "_marker",
-                &format_args!("{}", std::any::type_name::<fn() -> T>()),
+                &format_args!("{}", std::any::type_name::<fn() -> (T, C)>()),
             )
             .finish()
     }
 }
 
-impl<T> Clone for HeaderFromStrConfigLayer<T> {
+impl<T, C> Clone for HeaderFromStrConfigLayer<T, C> {
     fn clone(&self) -> Self {
         Self {
             header_name: self.header_name.clone(),
@@ -226,7 +235,7 @@ impl<T> Clone for HeaderFromStrConfigLayer<T> {
     }
 }
 
-impl<T> HeaderFromStrConfigLayer<T> {
+impl<T, C> HeaderFromStrConfigLayer<T, C> {
     /// Create a new [`HeaderFromStrConfigLayer`] with the given header name,
     /// on which to extract the config,
     /// and which will fail if the header is missing.
@@ -252,22 +261,22 @@ impl<T> HeaderFromStrConfigLayer<T> {
     }
 
     /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a [`Vec`].
+    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
     pub fn set_repeat(&mut self, repeat: bool) -> &mut Self {
         self.repeat = repeat;
         self
     }
 
     /// Toggle repeat on/off. When repeat is enabled the
-    /// data config will be parsed and inserted as a [`Vec`].
+    /// data config will be parsed and inserted as a container of type `C` (defaults to `Vec<T>`).
     pub fn with_repeat(mut self, repeat: bool) -> Self {
         self.repeat = repeat;
         self
     }
 }
 
-impl<T, S> Layer<S> for HeaderFromStrConfigLayer<T> {
-    type Service = HeaderFromStrConfigService<T, S>;
+impl<T, S, C> Layer<S> for HeaderFromStrConfigLayer<T, C> {
+    type Service = HeaderFromStrConfigService<T, S, C>;
 
     fn layer(&self, inner: S) -> Self::Service {
         HeaderFromStrConfigService {
@@ -293,8 +302,8 @@ impl<T, S> Layer<S> for HeaderFromStrConfigLayer<T> {
 #[cfg(test)]
 mod test {
     use super::*;
-
     use crate::Method;
+    use std::collections::{HashSet, LinkedList};
 
     #[tokio::test]
     async fn test_header_config_required_happy_path() {
@@ -339,6 +348,65 @@ mod test {
             });
 
         let service = HeaderFromStrConfigService::<String, _>::required(
+            inner_service,
+            HeaderName::from_static("x-proxy-labels"),
+        )
+        .with_repeat(true);
+
+        service.serve(Context::default(), request).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_header_config_required_repeat_custom_container() {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("https://www.example.com")
+            .header("x-proxy-labels", "foo,bar,baz,foo")
+            .body(())
+            .unwrap();
+
+        let inner_service =
+            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+                let labels: &HashSet<String> = ctx.get().unwrap();
+                assert_eq!(3, labels.len());
+                assert!(labels.contains("foo"));
+                assert!(labels.contains("bar"));
+                assert!(labels.contains("baz"));
+
+                Ok::<_, std::convert::Infallible>(())
+            });
+
+        let service = HeaderFromStrConfigService::<String, _, HashSet<String>>::required(
+            inner_service,
+            HeaderName::from_static("x-proxy-labels"),
+        )
+        .with_repeat(true);
+
+        service.serve(Context::default(), request).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_header_config_required_repeat_linked_list() {
+        let request = Request::builder()
+            .method(Method::GET)
+            .uri("https://www.example.com")
+            .header("x-proxy-labels", "foo,bar,baz")
+            .body(())
+            .unwrap();
+
+        let inner_service =
+            rama_core::service::service_fn(async |ctx: Context<()>, _req: Request<()>| {
+                let labels: &LinkedList<String> = ctx.get().unwrap();
+                let mut iter = labels.iter();
+                assert_eq!(Some("foo"), iter.next().map(|x| x.as_str()));
+                assert_eq!(Some("bar"), iter.next().map(|x| x.as_str()));
+                assert_eq!(Some("baz"), iter.next().map(|x| x.as_str()));
+                assert_eq!(None, iter.next());
+
+                Ok::<_, std::convert::Infallible>(())
+            });
+
+        let service = HeaderFromStrConfigService::<String, _, LinkedList<String>>::required(
             inner_service,
             HeaderName::from_static("x-proxy-labels"),
         )
