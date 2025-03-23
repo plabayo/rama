@@ -106,7 +106,6 @@ impl<T, S, C> HeaderFromStrConfigService<T, S, C> {
 
 impl<T, S, C> fmt::Debug for HeaderFromStrConfigService<T, S, C>
 where
-    C: fmt::Debug,
     S: fmt::Debug,
 {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
