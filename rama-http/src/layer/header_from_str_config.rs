@@ -172,14 +172,12 @@ where
                 })
                 .peekable();
 
-            let is_empty = parsed_values.peek().is_none();
-            let values = parsed_values.collect::<Result<C, _>>()?;
-
-            if is_empty {
+            if parsed_values.peek().is_none() {
                 if !self.optional {
                     return Err(HeaderValueErr::HeaderMissing(self.header_name.to_string()).into());
                 }
             } else {
+                let values = parsed_values.collect::<Result<C, _>>()?;
                 ctx.insert(values);
             }
         } else {
