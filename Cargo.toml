@@ -135,7 +135,7 @@ terminal-prompt = "0.2.3"
 parking_lot = "0.12.3"
 const_format = "0.2.32"
 hickory-resolver = { version = "0.25.1", default-features = false, features = [
-"tokio",
+    "tokio",
 ] }
 arc-swap = "1.7.1"
 flume = "0.11.1"
