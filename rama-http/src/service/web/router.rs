@@ -16,7 +16,7 @@ use rama_http_types::Body;
 pub struct Router<State> {
     routes: MatchitRouter<
         Vec<(
-            HttpMatcher<State, Request>,
+            HttpMatcher<State, Body>,
             BoxService<State, Request, Response, Infallible>,
         )>,
     >,
@@ -97,9 +97,9 @@ where
     ) -> Result<Self::Response, Self::Error> {
         if let Ok(matched) = self.routes.at(req.uri().path()) {
             for (matcher, service) in matched.value.iter() {
-                // if matcher.matches(None, &ctx, &req) {
-                //     return service.serve(ctx, req).await;
-                // }
+                if matcher.matches(None, &ctx, &req) {
+                    return service.serve(ctx, req).await;
+                }
             }
         }
 
