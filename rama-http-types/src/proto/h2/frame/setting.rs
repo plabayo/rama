@@ -111,7 +111,7 @@ impl SettingId {
 
     fn mask_id(self) -> u16 {
         let n = u16::from(self);
-        if n <= 0 || n > 15 {
+        if n == 0 || n > 15 {
             return 0;
         }
         1 << ((u16::from(self) - 1) as usize)
