@@ -144,13 +144,17 @@ use bytes::{Buf, Bytes};
 use rama_http_types::dep::http::{request, uri};
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{HeaderMap, Method, Request, Response, Version};
+use std::borrow::Cow;
 use std::fmt;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tracing::Instrument;
+
+use super::frame::{Priority, StreamDependency};
 
 /// Initializes new HTTP/2 streams on a connection by sending a request.
 ///
@@ -344,6 +348,15 @@ pub struct Builder {
     ///
     /// When this gets exceeded, we issue GOAWAYs.
     local_max_error_reset_streams: Option<usize>,
+
+    /// The headers frame pseudo order
+    headers_pseudo_order: Option<PseudoHeaderOrder>,
+
+    /// The headers frame priority
+    headers_priority: Option<StreamDependency>,
+
+    /// Priority stream list
+    priority: Option<Cow<'static, [Priority]>>,
 }
 
 #[derive(Debug)]
@@ -664,7 +677,39 @@ impl Builder {
             settings: Default::default(),
             stream_id: 1.into(),
             local_max_error_reset_streams: Some(proto::DEFAULT_LOCAL_RESET_COUNT_MAX),
+            headers_pseudo_order: None,
+            headers_priority: None,
+            priority: None,
         }
+    }
+
+    /// Set http2 header pseudo order
+    pub fn headers_pseudo_order(&mut self, order: PseudoHeaderOrder) -> &mut Self {
+        self.headers_pseudo_order = Some(order);
+        self
+    }
+
+    /// Set http2 header priority
+    pub fn headers_priority(&mut self, headers_priority: StreamDependency) -> &mut Self {
+        self.headers_priority = Some(headers_priority);
+        self
+    }
+
+    /// Settings frame order
+    pub fn setting_order(&mut self, order: SettingOrder) -> &mut Self {
+        self.settings.set_setting_order(Some(order));
+        self
+    }
+
+    /// Priority stream list
+    pub fn priority(&mut self, priority: Cow<'static, [Priority]>) -> &mut Self {
+        self.priority = Some(priority);
+        self
+    }
+
+    pub fn setting_config(&mut self, config: SettingsConfig) -> &mut Self {
+        self.settings.set_config(config);
+        self
     }
 
     /// Indicates the initial window size (in octets) for stream-level
@@ -1113,6 +1158,16 @@ impl Builder {
         self
     }
 
+    pub fn enable_connect_protocol(&mut self, value: u32) -> &mut Self {
+        self.settings.set_enable_connect_protocol(Some(value));
+        self
+    }
+
+    pub fn unknown_setting_9(&mut self, value: u32) -> &mut Self {
+        self.settings.set_unknown_setting_9(Some(value));
+        self
+    }
+
     /// Sets the header table size.
     ///
     /// This setting informs the peer of the maximum size of the header compression
@@ -1147,7 +1202,6 @@ impl Builder {
     }
 
     /// Sets the first stream ID to something other than 1.
-    #[cfg(feature = "unstable")]
     pub fn initial_stream_id(&mut self, stream_id: u32) -> &mut Self {
         self.stream_id = stream_id.into();
         assert!(
@@ -1337,7 +1391,10 @@ where
                 reset_stream_max: builder.reset_stream_max,
                 remote_reset_stream_max: builder.pending_accept_reset_stream_max,
                 local_error_reset_streams_max: builder.local_max_error_reset_streams,
-                settings: builder.settings.clone(),
+                settings: builder.settings,
+                headers_pseudo_order: builder.headers_pseudo_order,
+                headers_priority: builder.headers_priority,
+                priority: builder.priority,
             },
         );
         let send_request = SendRequest {
@@ -1592,7 +1649,10 @@ impl Peer {
         request: Request<()>,
         protocol: Option<Protocol>,
         end_of_stream: bool,
-    ) -> Result<Headers, SendError> {
+        headers_pseudo_order: Option<PseudoHeaderOrder>,
+        headers_priority: Option<StreamDependency>,
+        priority: Option<Cow<'static, [Priority]>>,
+    ) -> Result<(Option<Cow<'static, [Priority]>>, Headers), SendError> {
         use request::Parts;
 
         let (
@@ -1614,7 +1674,10 @@ impl Peer {
         let mut pseudo = Pseudo::request(method, uri, protocol);
 
         // reuse order if defined
-        if let Some(order) = extensions.remove::<PseudoHeaderOrder>() {
+        if let Some(order) = extensions
+            .remove::<PseudoHeaderOrder>()
+            .or(headers_pseudo_order)
+        {
             if !order.is_empty() {
                 pseudo.order = order;
             }
@@ -1650,14 +1713,24 @@ impl Peer {
             }
         }
 
+        // Check the priority list for overflowed stream IDs
+        if let Some(ref priority) = priority {
+            if let Some(last_priority) = priority.last() {
+                // Ensure the next stream ID does not overflow
+                if last_priority.stream_id().next_id()? > id {
+                    return Err(UserError::OverflowedStreamId.into());
+                }
+            }
+        }
+
         // Create the HEADERS frame
-        let mut frame = Headers::new(id, pseudo, headers, header_order);
+        let mut frame = Headers::new(id, pseudo, headers, header_order, headers_priority);
 
         if end_of_stream {
             frame.set_end_stream()
         }
 
-        Ok(frame)
+        Ok((priority, frame))
     }
 }
 

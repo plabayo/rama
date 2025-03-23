@@ -174,7 +174,7 @@ impl TlsConnectorData {
                         "boring connector: certificate compression algorithm: zstd: not (yet) supported: ignore"
                     );
                 }
-                _ => {
+                CertificateCompressionAlgorithm::Unknown(_) => {
                     debug!("boring connector: certificate compression algorithm: unknown: ignore");
                 }
             }

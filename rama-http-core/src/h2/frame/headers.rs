@@ -172,10 +172,11 @@ impl Headers {
         pseudo: Pseudo,
         fields: HeaderMap,
         field_order: OriginalHttp1Headers,
+        stream_dep: Option<StreamDependency>,
     ) -> Self {
         Headers {
             stream_id,
-            stream_dep: None,
+            stream_dep,
             header_block: HeaderBlock {
                 field_size: calculate_headermap_size(&fields),
                 fields,

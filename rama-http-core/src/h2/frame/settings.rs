@@ -1,34 +1,15 @@
 use std::fmt;
 
 use crate::h2::frame::{Error, Frame, FrameSize, Head, Kind, StreamId, util};
-use bytes::{BufMut, BytesMut};
+use bytes::BytesMut;
+
+use rama_http_types::proto::h2::frame::SettingOrder;
+pub use rama_http_types::proto::h2::frame::{Setting, SettingId, SettingsConfig};
 
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct Settings {
     flags: SettingsFlags,
-    // Fields
-    header_table_size: Option<u32>,
-    enable_push: Option<u32>,
-    max_concurrent_streams: Option<u32>,
-    initial_window_size: Option<u32>,
-    max_frame_size: Option<u32>,
-    max_header_list_size: Option<u32>,
-    enable_connect_protocol: Option<u32>,
-}
-
-/// An enum that lists all valid settings that can be sent in a SETTINGS
-/// frame.
-///
-/// Each setting has a value that is a 32 bit unsigned integer (6.5.1.).
-#[derive(Debug)]
-enum Setting {
-    HeaderTableSize(u32),
-    EnablePush(u32),
-    MaxConcurrentStreams(u32),
-    InitialWindowSize(u32),
-    MaxFrameSize(u32),
-    MaxHeaderListSize(u32),
-    EnableConnectProtocol(u32),
+    config: SettingsConfig,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Default)]
@@ -67,62 +48,74 @@ impl Settings {
     }
 
     pub fn initial_window_size(&self) -> Option<u32> {
-        self.initial_window_size
+        self.config.initial_window_size
+    }
+
+    pub fn set_config(&mut self, config: SettingsConfig) {
+        self.config = config;
     }
 
     pub fn set_initial_window_size(&mut self, size: Option<u32>) {
-        self.initial_window_size = size;
+        self.config.initial_window_size = size;
     }
 
     pub fn max_concurrent_streams(&self) -> Option<u32> {
-        self.max_concurrent_streams
+        self.config.max_concurrent_streams
     }
 
     pub fn set_max_concurrent_streams(&mut self, max: Option<u32>) {
-        self.max_concurrent_streams = max;
+        self.config.max_concurrent_streams = max;
     }
 
     pub fn max_frame_size(&self) -> Option<u32> {
-        self.max_frame_size
+        self.config.max_frame_size
     }
 
     pub fn set_max_frame_size(&mut self, size: Option<u32>) {
         if let Some(val) = size {
             assert!((DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&val));
         }
-        self.max_frame_size = size;
+        self.config.max_frame_size = size;
     }
 
     pub fn max_header_list_size(&self) -> Option<u32> {
-        self.max_header_list_size
+        self.config.max_header_list_size
     }
 
     pub fn set_max_header_list_size(&mut self, size: Option<u32>) {
-        self.max_header_list_size = size;
+        self.config.max_header_list_size = size;
     }
 
     pub fn is_push_enabled(&self) -> Option<bool> {
-        self.enable_push.map(|val| val != 0)
+        self.config.enable_push.map(|val| val != 0)
     }
 
     pub fn set_enable_push(&mut self, enable: bool) {
-        self.enable_push = Some(enable as u32);
+        self.config.enable_push = Some(enable as u32);
     }
 
     pub fn is_extended_connect_protocol_enabled(&self) -> Option<bool> {
-        self.enable_connect_protocol.map(|val| val != 0)
+        self.config.enable_connect_protocol.map(|val| val != 0)
     }
 
     pub fn set_enable_connect_protocol(&mut self, val: Option<u32>) {
-        self.enable_connect_protocol = val;
+        self.config.enable_connect_protocol = val;
     }
 
     pub fn header_table_size(&self) -> Option<u32> {
-        self.header_table_size
+        self.config.header_table_size
     }
 
     pub fn set_header_table_size(&mut self, size: Option<u32>) {
-        self.header_table_size = size;
+        self.config.header_table_size = size;
+    }
+
+    pub fn set_unknown_setting_9(&mut self, size: Option<u32>) {
+        self.config.unknown_setting_9 = size;
+    }
+
+    pub fn set_setting_order(&mut self, order: Option<SettingOrder>) {
+        self.config.setting_order = order;
     }
 
     pub fn load(head: Head, payload: &[u8]) -> Result<Settings, Error> {
@@ -155,47 +148,62 @@ impl Settings {
         debug_assert!(!settings.flags.is_ack());
 
         for raw in payload.chunks(6) {
-            match Setting::load(raw) {
-                Some(Setting::HeaderTableSize(val)) => {
-                    settings.header_table_size = Some(val);
+            let setting = Setting::load(raw);
+            match setting.id {
+                SettingId::HeaderTableSize => {
+                    settings.config.header_table_size = Some(setting.value);
                 }
-                Some(Setting::EnablePush(val)) => match val {
+                SettingId::EnablePush => match setting.value {
                     0 | 1 => {
-                        settings.enable_push = Some(val);
+                        settings.config.enable_push = Some(setting.value);
                     }
                     _ => {
                         return Err(Error::InvalidSettingValue);
                     }
                 },
-                Some(Setting::MaxConcurrentStreams(val)) => {
-                    settings.max_concurrent_streams = Some(val);
+                SettingId::MaxConcurrentStreams => {
+                    settings.config.max_concurrent_streams = Some(setting.value);
                 }
-                Some(Setting::InitialWindowSize(val)) => {
-                    if val as usize > MAX_INITIAL_WINDOW_SIZE {
+                SettingId::InitialWindowSize => {
+                    if setting.value as usize > MAX_INITIAL_WINDOW_SIZE {
                         return Err(Error::InvalidSettingValue);
                     } else {
-                        settings.initial_window_size = Some(val);
+                        settings.config.initial_window_size = Some(setting.value);
                     }
                 }
-                Some(Setting::MaxFrameSize(val)) => {
-                    if (DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&val) {
-                        settings.max_frame_size = Some(val);
+                SettingId::MaxFrameSize => {
+                    if (DEFAULT_MAX_FRAME_SIZE..=MAX_MAX_FRAME_SIZE).contains(&setting.value) {
+                        settings.config.max_frame_size = Some(setting.value);
                     } else {
                         return Err(Error::InvalidSettingValue);
                     }
                 }
-                Some(Setting::MaxHeaderListSize(val)) => {
-                    settings.max_header_list_size = Some(val);
+                SettingId::MaxHeaderListSize => {
+                    settings.config.max_header_list_size = Some(setting.value);
                 }
-                Some(Setting::EnableConnectProtocol(val)) => match val {
+                SettingId::EnableConnectProtocol => match setting.value {
                     0 | 1 => {
-                        settings.enable_connect_protocol = Some(val);
+                        settings.config.enable_connect_protocol = Some(setting.value);
                     }
                     _ => {
                         return Err(Error::InvalidSettingValue);
                     }
                 },
-                None => {}
+                SettingId::Unknown(9) => match setting.value {
+                    0 | 1 => {
+                        settings.config.unknown_setting_9 = Some(setting.value);
+                    }
+                    _ => {
+                        return Err(Error::InvalidSettingValue);
+                    }
+                },
+                SettingId::Unknown(id) => {
+                    tracing::trace!(
+                        %id,
+                        value = %setting.value,
+                        "ignore unknown h2 frame setting",
+                    );
+                }
             }
         }
 
@@ -225,32 +233,63 @@ impl Settings {
     }
 
     fn for_each<F: FnMut(Setting)>(&self, mut f: F) {
-        if let Some(v) = self.header_table_size {
-            f(Setting::HeaderTableSize(v));
-        }
+        let settings_order = match self.config.setting_order.clone() {
+            Some(mut order) => {
+                order.extend_with_default();
+                order
+            }
+            None => Default::default(),
+        };
 
-        if let Some(v) = self.enable_push {
-            f(Setting::EnablePush(v));
-        }
-
-        if let Some(v) = self.max_concurrent_streams {
-            f(Setting::MaxConcurrentStreams(v));
-        }
-
-        if let Some(v) = self.initial_window_size {
-            f(Setting::InitialWindowSize(v));
-        }
-
-        if let Some(v) = self.max_frame_size {
-            f(Setting::MaxFrameSize(v));
-        }
-
-        if let Some(v) = self.max_header_list_size {
-            f(Setting::MaxHeaderListSize(v));
-        }
-
-        if let Some(v) = self.enable_connect_protocol {
-            f(Setting::EnableConnectProtocol(v));
+        for id in settings_order {
+            match id {
+                SettingId::HeaderTableSize => {
+                    if let Some(value) = self.config.header_table_size {
+                        f(Setting { id, value });
+                    }
+                }
+                SettingId::EnablePush => {
+                    if let Some(value) = self.config.enable_push {
+                        f(Setting { id, value });
+                    }
+                }
+                SettingId::MaxConcurrentStreams => {
+                    if let Some(value) = self.config.max_concurrent_streams {
+                        f(Setting { id, value });
+                    }
+                }
+                SettingId::InitialWindowSize => {
+                    if let Some(value) = self.config.initial_window_size {
+                        f(Setting { id, value });
+                    }
+                }
+                SettingId::MaxFrameSize => {
+                    if let Some(value) = self.config.max_frame_size {
+                        f(Setting { id, value });
+                    }
+                }
+                SettingId::MaxHeaderListSize => {
+                    if let Some(value) = self.config.max_header_list_size {
+                        f(Setting { id, value });
+                    }
+                }
+                SettingId::EnableConnectProtocol => {
+                    if let Some(value) = self.config.enable_connect_protocol {
+                        f(Setting { id, value });
+                    }
+                }
+                SettingId::Unknown(0x09) => {
+                    if let Some(value) = self.config.unknown_setting_9 {
+                        f(Setting { id, value });
+                    }
+                }
+                SettingId::Unknown(id) => {
+                    tracing::trace!(
+                        %id,
+                        "ignore unknown setting, nop apply",
+                    )
+                }
+            }
         }
     }
 }
@@ -266,83 +305,37 @@ impl fmt::Debug for Settings {
         let mut builder = f.debug_struct("Settings");
         builder.field("flags", &self.flags);
 
-        self.for_each(|setting| match setting {
-            Setting::EnablePush(v) => {
-                builder.field("enable_push", &v);
+        self.for_each(|setting| match setting.id {
+            SettingId::EnablePush => {
+                builder.field("enable_push", &setting.value);
             }
-            Setting::HeaderTableSize(v) => {
-                builder.field("header_table_size", &v);
+            SettingId::HeaderTableSize => {
+                builder.field("header_table_size", &setting.value);
             }
-            Setting::InitialWindowSize(v) => {
-                builder.field("initial_window_size", &v);
+            SettingId::InitialWindowSize => {
+                builder.field("initial_window_size", &setting.value);
             }
-            Setting::MaxConcurrentStreams(v) => {
-                builder.field("max_concurrent_streams", &v);
+            SettingId::MaxConcurrentStreams => {
+                builder.field("max_concurrent_streams", &setting.value);
             }
-            Setting::MaxFrameSize(v) => {
-                builder.field("max_frame_size", &v);
+            SettingId::MaxFrameSize => {
+                builder.field("max_frame_size", &setting.value);
             }
-            Setting::MaxHeaderListSize(v) => {
-                builder.field("max_header_list_size", &v);
+            SettingId::MaxHeaderListSize => {
+                builder.field("max_header_list_size", &setting.value);
             }
-            Setting::EnableConnectProtocol(v) => {
-                builder.field("enable_connect_protocol", &v);
+            SettingId::EnableConnectProtocol => {
+                builder.field("enable_connect_protocol", &setting.value);
+            }
+            SettingId::Unknown(0x09) => {
+                builder.field("unknown_setting9", &setting.value);
+            }
+            SettingId::Unknown(id) => {
+                builder.field(&format!("unknown_unknown_setting_{id}"), &setting.value);
             }
         });
 
         builder.finish()
-    }
-}
-
-// ===== impl Setting =====
-
-impl Setting {
-    /// Creates a new `Setting` with the correct variant corresponding to the
-    /// given setting id, based on the settings IDs defined in section
-    /// 6.5.2.
-    fn from_id(id: u16, val: u32) -> Option<Setting> {
-        match id {
-            1 => Some(Setting::HeaderTableSize(val)),
-            2 => Some(Setting::EnablePush(val)),
-            3 => Some(Setting::MaxConcurrentStreams(val)),
-            4 => Some(Setting::InitialWindowSize(val)),
-            5 => Some(Setting::MaxFrameSize(val)),
-            6 => Some(Setting::MaxHeaderListSize(val)),
-            8 => Some(Setting::EnableConnectProtocol(val)),
-            _ => None,
-        }
-    }
-
-    /// Creates a new `Setting` by parsing the given buffer of 6 bytes, which
-    /// contains the raw byte representation of the setting, according to the
-    /// "SETTINGS format" defined in section 6.5.1.
-    ///
-    /// The `raw` parameter should have length at least 6 bytes, since the
-    /// length of the raw setting is exactly 6 bytes.
-    ///
-    /// # Panics
-    ///
-    /// If given a buffer shorter than 6 bytes, the function will panic.
-    fn load(raw: &[u8]) -> Option<Setting> {
-        let id: u16 = (u16::from(raw[0]) << 8) | u16::from(raw[1]);
-        let val: u32 = unpack_octets_4!(raw, 2, u32);
-
-        Setting::from_id(id, val)
-    }
-
-    fn encode(&self, dst: &mut BytesMut) {
-        let (kind, val) = match *self {
-            Setting::HeaderTableSize(v) => (1, v),
-            Setting::EnablePush(v) => (2, v),
-            Setting::MaxConcurrentStreams(v) => (3, v),
-            Setting::InitialWindowSize(v) => (4, v),
-            Setting::MaxFrameSize(v) => (5, v),
-            Setting::MaxHeaderListSize(v) => (6, v),
-            Setting::EnableConnectProtocol(v) => (8, v),
-        };
-
-        dst.put_u16(kind);
-        dst.put_u32(val);
     }
 }
 

@@ -3,7 +3,7 @@ use super::store::{self, Entry, Resolve, Store};
 use super::{Buffer, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
 use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::ext::Protocol;
-use crate::h2::frame::{self, Frame, Reason};
+use crate::h2::frame::{self, Frame, Priority, Reason, StreamDependency};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
@@ -12,6 +12,7 @@ use rama_http_types::dep::http::Extensions;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
 use rama_http_types::{HeaderMap, Request, Response};
+use std::borrow::Cow;
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
@@ -81,6 +82,15 @@ struct Inner {
 
     /// The number of stream refs to this shared state.
     refs: usize,
+
+    /// Pseudo order of the headers stream
+    headers_pseudo_order: Option<PseudoHeaderOrder>,
+
+    /// Priority of the headers stream
+    headers_priority: Option<StreamDependency>,
+
+    /// Priority stream list
+    priority: Option<Cow<'static, [Priority]>>,
 }
 
 #[derive(Debug)]
@@ -294,12 +304,20 @@ where
         }
 
         // Convert the message
-        let headers =
-            client::Peer::convert_send_message(stream_id, request, protocol, end_of_stream)?;
+        let (priority, headers) = client::Peer::convert_send_message(
+            stream_id,
+            request,
+            protocol,
+            end_of_stream,
+            me.headers_pseudo_order.clone(),
+            me.headers_priority.clone(),
+            me.priority.clone(),
+        )?;
 
         let mut stream = me.store.insert(stream.id, stream);
 
-        let sent = me.actions.send.send_headers(
+        let sent = me.actions.send.send_priority_and_headers(
+            priority,
             headers,
             send_buffer,
             &mut stream,
@@ -432,6 +450,9 @@ impl Inner {
             },
             store: Store::new(),
             refs: 1,
+            headers_priority: config.headers_priority,
+            headers_pseudo_order: config.headers_pseudo_order,
+            priority: config.priority,
         }))
     }
 

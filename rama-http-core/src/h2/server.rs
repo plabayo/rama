@@ -1385,6 +1385,9 @@ where
                                 .builder
                                 .local_max_error_reset_streams,
                             settings: self.builder.settings.clone(),
+                            headers_priority: None,
+                            headers_pseudo_order: None,
+                            priority: None,
                         },
                     );
 
@@ -1447,7 +1450,7 @@ impl Peer {
         let header_order: OriginalHttp1Headers = extensions.remove().unwrap_or_default();
 
         // Create the HEADERS frame
-        let mut frame = frame::Headers::new(id, pseudo, headers, header_order);
+        let mut frame = frame::Headers::new(id, pseudo, headers, header_order, None);
 
         if end_of_stream {
             frame.set_end_stream()
