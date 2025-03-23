@@ -189,14 +189,9 @@ impl Settings {
                         return Err(Error::InvalidSettingValue);
                     }
                 },
-                SettingId::Unknown(9) => match setting.value {
-                    0 | 1 => {
-                        settings.config.unknown_setting_9 = Some(setting.value);
-                    }
-                    _ => {
-                        return Err(Error::InvalidSettingValue);
-                    }
-                },
+                SettingId::Unknown(9) => {
+                    settings.config.unknown_setting_9 = Some(setting.value);
+                }
                 SettingId::Unknown(id) => {
                     tracing::trace!(
                         %id,

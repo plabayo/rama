@@ -259,7 +259,7 @@ impl Builder {
             .max_frame_size(config.max_frame_size);
 
         if let Some(value) = config.enable_push {
-            self.enable_push(value == 1);
+            self.enable_push(value != 0);
         }
 
         if let Some(value) = config.max_header_list_size {

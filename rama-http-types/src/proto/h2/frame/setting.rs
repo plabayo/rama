@@ -228,7 +228,10 @@ impl IntoIterator for SettingOrder {
 
 impl FromIterator<SettingId> for SettingOrder {
     fn from_iter<T: IntoIterator<Item = SettingId>>(iter: T) -> Self {
-        let mut this = Self::new();
+        let mut this = SettingOrder {
+            ids: SmallVec::new(),
+            mask: 0,
+        };
         for header in iter {
             this.push(header);
         }
@@ -255,7 +258,10 @@ impl Default for SettingOrder {
 
 impl<'a> FromIterator<&'a SettingId> for SettingOrder {
     fn from_iter<T: IntoIterator<Item = &'a SettingId>>(iter: T) -> Self {
-        let mut this = Self::new();
+        let mut this = SettingOrder {
+            ids: SmallVec::new(),
+            mask: 0,
+        };
         for header in iter {
             this.push(*header);
         }
