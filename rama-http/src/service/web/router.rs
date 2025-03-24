@@ -98,13 +98,13 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
 
-        // TODO: its not matching /user/:id because matchit supports /user/{id}
-        // third test case is failling because of this
+        // TODO: not matching /user/:id in test_params because `req.uri().path()` returns /user/42
+        println!("Request URI: {:?}", req.uri().path());
         if let Ok(matched) = self.routes.at(req.uri().path()) {
+            let uri_params = matched.params.iter().collect::<UriParams>();
+            ctx.insert(uri_params);
             for (matcher, service) in matched.value.iter() {
                 if matcher.matches(Some(&mut ext), &ctx, &req) {
-                    let uri_params = matched.params.iter().collect::<UriParams>();
-                    ctx.insert(uri_params);
                     ctx.extend(ext);
                     return service.serve(ctx, req).await;
                 }
@@ -184,7 +184,7 @@ mod tests {
             ))))
         });
 
-        let router = Router::new().get("/user/:id", user_service);
+        let router = Router::new().get("/user/{id}", user_service);
         let req = Request::get("/user/42").body(Body::empty()).unwrap();
         let resp = router.serve(Context::default(), req).await.unwrap();
 
