@@ -98,13 +98,15 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let mut ext = Extensions::new();
 
-        // TODO: not matching /user/:id in test_params because `req.uri().path()` returns /user/42
-        println!("Request URI: {:?}", req.uri().path());
         if let Ok(matched) = self.routes.at(req.uri().path()) {
-            let uri_params = matched.params.iter().collect::<UriParams>();
-            ctx.insert(uri_params);
+            // println!("Matched: {:?}", matched);
             for (matcher, service) in matched.value.iter() {
+                // println!("Matcher: {:?}", matcher);
+                // TODO: matcher.matches not matching here
                 if matcher.matches(Some(&mut ext), &ctx, &req) {
+                    // println!("Matched: {:?}", matched);
+                    let uri_params = matched.params.iter().collect::<UriParams>();
+                    ctx.insert(uri_params);
                     ctx.extend(ext);
                     return service.serve(ctx, req).await;
                 }
@@ -175,7 +177,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_params() {
+    async fn test_router_params() {
         // Service that extracts :id from UriParams in context
         let user_service = service_fn(|ctx: Context<()>, _req| async move {
             Ok::<_, Infallible>(Response::new(Body::from(format!(
