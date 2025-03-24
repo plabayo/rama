@@ -9,7 +9,7 @@ pub use rama_http_types::proto::h2::frame::{Setting, SettingId, SettingsConfig};
 #[derive(Clone, Default, Eq, PartialEq)]
 pub struct Settings {
     flags: SettingsFlags,
-    config: SettingsConfig,
+    pub(crate) config: SettingsConfig,
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Default)]
@@ -147,8 +147,11 @@ impl Settings {
         let mut settings = Settings::default();
         debug_assert!(!settings.flags.is_ack());
 
+        let mut setting_order = SettingOrder::default();
+
         for raw in payload.chunks(6) {
             let setting = Setting::load(raw);
+            setting_order.push(setting.id);
             match setting.id {
                 SettingId::HeaderTableSize => {
                     settings.config.header_table_size = Some(setting.value);
@@ -189,7 +192,7 @@ impl Settings {
                         return Err(Error::InvalidSettingValue);
                     }
                 },
-                SettingId::Unknown(9) => {
+                SettingId::Unknown(0x09) => {
                     settings.config.unknown_setting_9 = Some(setting.value);
                 }
                 SettingId::Unknown(id) => {
@@ -200,6 +203,10 @@ impl Settings {
                     );
                 }
             }
+        }
+
+        if !setting_order.is_empty() {
+            settings.set_setting_order(Some(setting_order));
         }
 
         Ok(settings)
@@ -228,13 +235,8 @@ impl Settings {
     }
 
     fn for_each<F: FnMut(Setting)>(&self, mut f: F) {
-        let settings_order = match self.config.setting_order.clone() {
-            Some(mut order) => {
-                order.extend_with_default();
-                order
-            }
-            None => Default::default(),
-        };
+        let mut settings_order = self.config.setting_order.clone().unwrap_or_default();
+        settings_order.extend_with_default();
 
         for id in settings_order {
             match id {
@@ -299,6 +301,7 @@ impl fmt::Debug for Settings {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         let mut builder = f.debug_struct("Settings");
         builder.field("flags", &self.flags);
+        builder.field("setting_order", &self.config.setting_order);
 
         self.for_each(|setting| match setting.id {
             SettingId::EnablePush => {

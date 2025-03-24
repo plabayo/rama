@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::{BufMut as _, BytesMut};
 use rama_utils::macros::enums::enum_builder;
 use rama_utils::octets::{unpack_octets_as_u16, unpack_octets_as_u32};
@@ -174,7 +176,7 @@ impl<'de> Deserialize<'de> for Setting {
 
 const SETTING_ORDER_STACK_SIZE: usize = 8;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SettingOrder {
     ids: SmallVec<[SettingId; SETTING_ORDER_STACK_SIZE]>,
     mask: u16,
@@ -183,6 +185,21 @@ pub struct SettingOrder {
 impl SettingOrder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn default_settings() -> Self {
+        [
+            SettingId::HeaderTableSize,
+            SettingId::EnablePush,
+            SettingId::InitialWindowSize,
+            SettingId::MaxConcurrentStreams,
+            SettingId::MaxFrameSize,
+            SettingId::MaxHeaderListSize,
+            SettingId::EnableConnectProtocol,
+            SettingId::Unknown(0x09),
+        ]
+        .into_iter()
+        .collect()
     }
 
     pub fn push(&mut self, id: SettingId) {
@@ -205,7 +222,7 @@ impl SettingOrder {
         if self.mask & SettingId::DEFAULT_MASK == SettingId::DEFAULT_MASK {
             return;
         }
-        self.extend(Self::default());
+        self.extend(Self::default_settings());
     }
 
     pub fn iter(&self) -> impl Iterator<Item = SettingId> {
@@ -232,10 +249,7 @@ impl IntoIterator for SettingOrder {
 
 impl FromIterator<SettingId> for SettingOrder {
     fn from_iter<T: IntoIterator<Item = SettingId>>(iter: T) -> Self {
-        let mut this = SettingOrder {
-            ids: SmallVec::new(),
-            mask: 0,
-        };
+        let mut this = Self::default();
         for header in iter {
             this.push(header);
         }
@@ -243,29 +257,9 @@ impl FromIterator<SettingId> for SettingOrder {
     }
 }
 
-impl Default for SettingOrder {
-    fn default() -> Self {
-        [
-            SettingId::HeaderTableSize,
-            SettingId::EnablePush,
-            SettingId::InitialWindowSize,
-            SettingId::MaxConcurrentStreams,
-            SettingId::MaxFrameSize,
-            SettingId::MaxHeaderListSize,
-            SettingId::EnableConnectProtocol,
-            SettingId::Unknown(0x09),
-        ]
-        .into_iter()
-        .collect()
-    }
-}
-
 impl<'a> FromIterator<&'a SettingId> for SettingOrder {
     fn from_iter<T: IntoIterator<Item = &'a SettingId>>(iter: T) -> Self {
-        let mut this = SettingOrder {
-            ids: SmallVec::new(),
-            mask: 0,
-        };
+        let mut this = Self::default();
         for header in iter {
             this.push(*header);
         }
@@ -292,7 +286,11 @@ impl<'de> Deserialize<'de> for SettingOrder {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
+/// Injected into h2 requests for those who are interested in this.
+pub struct InitialPeerSettings(pub Arc<SettingsConfig>);
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SettingsConfig {
     /// See [`SettingId::HeaderTableSize`] for more info.
     pub header_table_size: Option<u32>,
@@ -315,13 +313,31 @@ pub struct SettingsConfig {
     pub setting_order: Option<SettingOrder>,
 }
 
+impl PartialEq for SettingsConfig {
+    fn eq(&self, other: &Self) -> bool {
+        self.header_table_size == other.header_table_size
+            && self.enable_push == other.enable_push
+            && self.max_concurrent_streams == other.max_concurrent_streams
+            && self.initial_window_size == other.initial_window_size
+            && self.max_frame_size == other.max_frame_size
+            && self.max_header_list_size == other.max_header_list_size
+            && self.enable_connect_protocol == other.enable_connect_protocol
+            && self.unknown_setting_9 == other.unknown_setting_9
+    }
+}
+
+impl Eq for SettingsConfig {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn test_extend_with_default() {
-        let mut order: SettingOrder = Default::default();
+        let mut order = SettingOrder::default();
+        assert!(order.is_empty());
+        order.extend_with_default();
+        assert_eq!(order.len(), SETTING_ORDER_STACK_SIZE);
         let orig_order = order.clone();
         let n = order.len();
         order.extend_with_default();

@@ -11,6 +11,7 @@ use bytes::{Buf, Bytes};
 use rama_http_types::dep::http::Extensions;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::frame::{InitialPeerSettings, SettingsConfig};
 use rama_http_types::{HeaderMap, Request, Response};
 use std::borrow::Cow;
 use std::task::{Context, Poll, Waker};
@@ -82,6 +83,9 @@ struct Inner {
 
     /// The number of stream refs to this shared state.
     refs: usize,
+
+    /// The peer's initial h2 settings
+    peer_initial_settings: Option<Arc<SettingsConfig>>,
 
     /// Pseudo order of the headers stream
     headers_pseudo_order: Option<PseudoHeaderOrder>,
@@ -236,7 +240,13 @@ where
             &mut me.store,
             &mut me.counts,
             &mut me.actions.task,
-        )
+        )?;
+
+        if is_initial {
+            me.peer_initial_settings = Some(Arc::new(frame.config.clone()));
+        }
+
+        Ok(())
     }
 
     pub(crate) fn apply_local_settings(&mut self, frame: &frame::Settings) -> Result<(), Error> {
@@ -450,6 +460,7 @@ impl Inner {
             },
             store: Store::new(),
             refs: 1,
+            peer_initial_settings: None,
             headers_priority: config.headers_priority,
             headers_pseudo_order: config.headers_pseudo_order,
             priority: config.priority,
@@ -1261,7 +1272,13 @@ impl<B> StreamRef<B> {
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.opaque.key);
-        me.actions.recv.take_request(&mut stream)
+        let mut request = me.actions.recv.take_request(&mut stream);
+        if let Some(settings) = me.peer_initial_settings.clone() {
+            request
+                .extensions_mut()
+                .insert(InitialPeerSettings(settings));
+        }
+        request
     }
 
     /// Called by a client to see if the current stream is pending open
