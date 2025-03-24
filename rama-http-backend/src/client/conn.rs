@@ -4,7 +4,13 @@ use rama_core::{
     error::{BoxError, OpaqueError},
     inspect::RequestInspector,
 };
-use rama_http_types::{Request, Version, conn::Http1ClientContextParams, dep::http_body};
+use rama_http_core::h2::frame::Priority;
+use rama_http_types::{
+    Request, Version,
+    conn::{H2ClientContextParams, Http1ClientContextParams},
+    dep::http_body,
+    proto::h2::PseudoHeaderOrder,
+};
 use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     stream::Stream,
@@ -120,9 +126,38 @@ where
         match req.version() {
             Version::HTTP_2 => {
                 trace!(uri = %req.uri(), "create h2 client executor");
+
                 let executor = ctx.executor().clone();
-                let (sender, conn) =
-                    rama_http_core::client::conn::http2::handshake(executor, io).await?;
+                let mut builder = rama_http_core::client::conn::http2::Builder::new(executor);
+
+                if let Some(params) = ctx
+                    .get::<H2ClientContextParams>()
+                    .or_else(|| req.extensions().get())
+                {
+                    if let Some(ref config) = params.setting_config {
+                        builder.apply_setting_config(config);
+                    }
+                    if let Some(order) = params.headers_pseudo_order.clone() {
+                        builder.headers_pseudo_order(order);
+                    }
+                    if let Some(priority) = params.headers_priority.clone() {
+                        builder.headers_priority(priority.into());
+                    }
+                    if let Some(ref priority) = params.priority {
+                        builder.priority(
+                            priority
+                                .iter()
+                                .map(|p| Priority::from(p.clone()))
+                                .collect::<Vec<_>>(),
+                        );
+                    }
+                } else if let Some(pseudo_order) =
+                    req.extensions().get::<PseudoHeaderOrder>().cloned()
+                {
+                    builder.headers_pseudo_order(pseudo_order);
+                }
+
+                let (sender, conn) = builder.handshake(io).await?;
 
                 ctx.spawn(async move {
                     if let Err(err) = conn.await {

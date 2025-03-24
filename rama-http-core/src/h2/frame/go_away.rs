@@ -1,6 +1,7 @@
 use std::fmt;
 
 use bytes::{BufMut, Bytes};
+use rama_utils::octets::unpack_octets_as_u32;
 
 use crate::h2::frame::{self, Error, Head, Kind, Reason, StreamId};
 
@@ -46,7 +47,7 @@ impl GoAway {
         }
 
         let (last_stream_id, _) = StreamId::parse(&payload[..4]);
-        let error_code = unpack_octets_4!(payload, 4, u32);
+        let error_code = unpack_octets_as_u32(payload, 4);
         let debug_data = Bytes::copy_from_slice(&payload[8..]);
 
         Ok(GoAway {

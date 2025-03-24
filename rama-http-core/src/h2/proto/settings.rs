@@ -11,6 +11,8 @@ pub(crate) struct Settings {
     /// the socket first then the settings applied **before** receiving any
     /// further frames.
     remote: Option<frame::Settings>,
+    /// Last Received PRIORITY
+    last_priority: Option<frame::Priority>,
     /// Whether the connection has received the initial SETTINGS frame from the
     /// remote peer.
     has_received_remote_initial_settings: bool,
@@ -34,6 +36,7 @@ impl Settings {
             // the handshake process.
             local: Local::WaitingAck(local),
             remote: None,
+            last_priority: None,
             has_received_remote_initial_settings: false,
         }
     }
@@ -87,6 +90,22 @@ impl Settings {
         }
     }
 
+    pub(crate) fn recv_priority<T, B, C, P>(
+        &mut self,
+        frame: frame::Priority,
+        _codec: &mut Codec<T, B>,
+        _streams: &mut Streams<C, P>,
+    ) -> Result<(), Error>
+    where
+        T: AsyncWrite + Unpin,
+        B: Buf,
+        C: Buf,
+        P: Peer,
+    {
+        self.last_priority = Some(frame);
+        Ok(())
+    }
+
     pub(crate) fn send_settings(&mut self, frame: frame::Settings) -> Result<(), UserError> {
         assert!(!frame.is_ack());
         match &self.local {
@@ -120,6 +139,10 @@ impl Settings {
         C: Buf,
         P: Peer,
     {
+        if let Some(priority) = self.last_priority.take() {
+            streams.apply_priority(priority)?;
+        }
+
         if let Some(settings) = self.remote.clone() {
             if !dst.poll_ready(cx)?.is_ready() {
                 return Poll::Pending;
@@ -144,7 +167,6 @@ impl Settings {
                 dst.set_max_send_frame_size(val as usize);
             }
         }
-
         self.remote = None;
 
         match &self.local {

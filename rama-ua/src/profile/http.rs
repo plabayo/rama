@@ -1,6 +1,10 @@
 use rama_http_types::{
     HeaderName,
-    proto::{h1::Http1HeaderMap, h2::PseudoHeader},
+    conn::StreamDependencyParams,
+    proto::{
+        h1::Http1HeaderMap,
+        h2::{PseudoHeaderOrder, frame::SettingsConfig},
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -143,11 +147,21 @@ pub struct Http2Profile {
     pub settings: Http2Settings,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 /// The settings for the HTTP/2 profile.
 pub struct Http2Settings {
     /// The pseudo headers to be used for the HTTP/2 profile.
     ///
     /// See [`PseudoHeader`] for more details.
-    pub http_pseudo_headers: Option<Vec<PseudoHeader>>,
+    pub http_pseudo_headers: Option<PseudoHeaderOrder>,
+
+    /// The (initial) h2 settings to be used for the HTTP/2 profile.
+    ///
+    /// See [`SettingsConfig`] for more details.
+    pub initial_config: Option<SettingsConfig>,
+
+    /// The priority settings to be used for the HTTP/2 profile.
+    ///
+    /// See [`StreamDependencyParams`] for more details.
+    pub priority_header: Option<StreamDependencyParams>,
 }

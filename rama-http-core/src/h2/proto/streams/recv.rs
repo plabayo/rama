@@ -226,6 +226,7 @@ impl Recv {
                     ),
                     HeaderMap::new(),
                     OriginalHttp1Headers::new(),
+                    None,
                 );
                 res.set_end_stream();
                 Err(RecvHeaderBlockError::Oversize(Some(res)))

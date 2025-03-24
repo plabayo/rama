@@ -105,6 +105,10 @@ pub struct CliCommandFingerprint {
     #[arg(long, short = 's')]
     /// run echo service in secure mode (enable TLS)
     secure: bool,
+
+    #[arg(long)]
+    /// use self-signed certs in case secure is enabled
+    self_signed: bool,
 }
 
 /// run the rama FP service
@@ -169,6 +173,19 @@ pub async fn run(cfg: CliCommandFingerprint) -> Result<(), BoxError> {
     };
 
     let maybe_tls_server_config = cfg.secure.then(|| {
+        if cfg.self_signed {
+            return ServerConfig {
+                application_layer_protocol_negotiation: Some(match cfg.http_version {
+                    HttpVersion::H1 => vec![ApplicationProtocol::HTTP_11],
+                    HttpVersion::H2 => vec![ApplicationProtocol::HTTP_2],
+                    HttpVersion::Auto => {
+                        vec![ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]
+                    }
+                }),
+                ..ServerConfig::new(ServerAuth::default())
+            };
+        }
+
         let tls_key_pem_raw = std::env::var("RAMA_TLS_KEY").expect("RAMA_TLS_KEY");
         let tls_key_pem_raw = std::str::from_utf8(
             &ENGINE

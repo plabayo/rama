@@ -4,9 +4,13 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         self, HeaderMap, HeaderName, Request,
+        conn::LastPeerPriorityParams,
         dep::http::{Extensions, request::Parts},
         headers::Forwarded,
-        proto::{h1::Http1HeaderMap, h2::PseudoHeaderOrder},
+        proto::{
+            h1::Http1HeaderMap,
+            h2::{PseudoHeaderOrder, frame::InitialPeerSettings},
+        },
     },
     net::{
         fingerprint::{Ja3, Ja4, Ja4H},
@@ -210,7 +214,7 @@ pub(super) fn get_ja4h_info<B>(req: &Request<B>) -> Option<Ja4HInfo> {
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct HttpInfo {
     pub(super) headers: Vec<(String, String)>,
-    pub(super) pseudo_headers: Option<Vec<String>>,
+    pub(super) h2_settings: Option<Http2Settings>,
 }
 
 pub(super) async fn get_and_store_http_info(
@@ -222,7 +226,19 @@ pub(super) async fn get_and_store_http_info(
     initiator: Initiator,
 ) -> Result<HttpInfo, OpaqueError> {
     let original_headers = Http1HeaderMap::new(headers, Some(ext));
-    let pseudo_headers = ext.get::<PseudoHeaderOrder>();
+
+    let h2_settings = match http_version {
+        http::Version::HTTP_2 => Some(Http2Settings {
+            http_pseudo_headers: ext.get::<PseudoHeaderOrder>().cloned(),
+            initial_config: ext
+                .get::<InitialPeerSettings>()
+                .map(|p| p.0.as_ref().clone()),
+            priority_header: ext
+                .get::<LastPeerPriorityParams>()
+                .map(|p| p.0.dependency.clone()),
+        }),
+        _ => None,
+    };
 
     if ctx.contains::<StorageAuthorized>() {
         if let Some(storage) = ctx.state().storage.as_ref() {
@@ -281,16 +297,11 @@ pub(super) async fn get_and_store_http_info(
                     }
                 }
                 http::Version::HTTP_2 => {
-                    if let Some(pseudo_headers) = pseudo_headers {
+                    if let Some(settings) = h2_settings.clone() {
                         storage
-                            .store_h2_settings(
-                                ua.clone(),
-                                Http2Settings {
-                                    http_pseudo_headers: Some(pseudo_headers.iter().collect()),
-                                },
-                            )
+                            .store_h2_settings(ua.clone(), settings)
                             .await
-                            .context("store h2 pseudo headers")?;
+                            .context("store h2 settings")?;
                     }
                     match initiator {
                         Initiator::Navigator => {
@@ -336,12 +347,9 @@ pub(super) async fn get_and_store_http_info(
         })
         .collect();
 
-    let pseudo_headers: Option<Vec<_>> =
-        pseudo_headers.map(|o| o.iter().map(|p| p.to_string()).collect());
-
     Ok(HttpInfo {
         headers,
-        pseudo_headers,
+        h2_settings,
     })
 }
 

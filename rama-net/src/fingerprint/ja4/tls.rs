@@ -272,7 +272,7 @@ impl TryFrom<ProtocolVersion> for TlsVersion {
             ProtocolVersion::TLSv1_1 => Ok(Self::Tls1_1),
             ProtocolVersion::TLSv1_2 | ProtocolVersion::DTLSv1_2 => Ok(Self::Tls1_2),
             ProtocolVersion::TLSv1_3 | ProtocolVersion::DTLSv1_3 => Ok(Self::Tls1_3),
-            _ => Err(Ja4ComputeError::InvalidTlsVersion),
+            ProtocolVersion::Unknown(_) => Err(Ja4ComputeError::InvalidTlsVersion),
         }
     }
 }

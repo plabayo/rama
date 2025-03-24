@@ -20,6 +20,7 @@ where
         frame::Pseudo::default(),
         HeaderMap::default(),
         OriginalHttp1Headers::default(),
+        None,
     ))
 }
 
@@ -113,7 +114,7 @@ impl Mock<frame::Headers> {
         let (id, _, fields, field_order) = self.into_parts();
         let extensions = Default::default();
         let pseudo = frame::Pseudo::request(method, uri, extensions);
-        let frame = frame::Headers::new(id, pseudo, fields, field_order);
+        let frame = frame::Headers::new(id, pseudo, fields, field_order, None);
         Mock(frame)
     }
 
@@ -132,13 +133,14 @@ impl Mock<frame::Headers> {
             },
             fields,
             field_order,
+            None,
         );
         Mock(frame)
     }
 
     pub fn pseudo(self, pseudo: frame::Pseudo) -> Self {
         let (id, _, fields, field_order) = self.into_parts();
-        let frame = frame::Headers::new(id, pseudo, fields, field_order);
+        let frame = frame::Headers::new(id, pseudo, fields, field_order, None);
         Mock(frame)
     }
 
@@ -149,13 +151,19 @@ impl Mock<frame::Headers> {
     {
         let status = status.try_into().unwrap();
         let (id, _, fields, field_order) = self.into_parts();
-        let frame = frame::Headers::new(id, frame::Pseudo::response(status), fields, field_order);
+        let frame = frame::Headers::new(
+            id,
+            frame::Pseudo::response(status),
+            fields,
+            field_order,
+            None,
+        );
         Mock(frame)
     }
 
     pub fn fields(self, fields: HeaderMap, field_order: OriginalHttp1Headers) -> Self {
         let (id, pseudo, _, _) = self.into_parts();
-        let frame = frame::Headers::new(id, pseudo, fields, field_order);
+        let frame = frame::Headers::new(id, pseudo, fields, field_order, None);
         Mock(frame)
     }
 
@@ -170,7 +178,7 @@ impl Mock<frame::Headers> {
         let name = key.try_into().unwrap();
         field_order.push(name.clone().into());
         fields.insert(name, value.try_into().unwrap());
-        let frame = frame::Headers::new(id, pseudo, fields, field_order);
+        let frame = frame::Headers::new(id, pseudo, fields, field_order, None);
         Mock(frame)
     }
 
@@ -179,7 +187,7 @@ impl Mock<frame::Headers> {
 
         pseudo.set_status(value);
 
-        Mock(frame::Headers::new(id, pseudo, fields, field_order))
+        Mock(frame::Headers::new(id, pseudo, fields, field_order, None))
     }
 
     pub fn scheme(self, value: &str) -> Self {
@@ -188,7 +196,7 @@ impl Mock<frame::Headers> {
 
         pseudo.set_scheme(value);
 
-        Mock(frame::Headers::new(id, pseudo, fields, field_order))
+        Mock(frame::Headers::new(id, pseudo, fields, field_order, None))
     }
 
     pub fn eos(mut self) -> Self {

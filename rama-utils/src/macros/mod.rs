@@ -2,6 +2,10 @@
 
 #[doc(hidden)]
 #[macro_use]
+pub mod enums;
+
+#[doc(hidden)]
+#[macro_use]
 pub mod error;
 
 #[doc(hidden)]
