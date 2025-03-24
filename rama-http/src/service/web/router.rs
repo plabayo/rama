@@ -10,9 +10,9 @@ use rama_core::{
     Context,
     context::Extensions,
     matcher::Matcher,
-    service::{BoxService, Service},
+    service::{BoxService, Service, service_fn},
 };
-use rama_http_types::Body;
+use rama_http_types::{Body, IntoResponse, StatusCode};
 
 use super::IntoEndpointService;
 
@@ -23,6 +23,7 @@ pub struct Router<State> {
             Arc<BoxService<State, Request, Response, Infallible>>,
         )>,
     >,
+    not_found: Arc<BoxService<State, Request, Response, Infallible>>,
 }
 
 impl<State> std::fmt::Debug for Router<State> {
@@ -38,6 +39,9 @@ where
     pub fn new() -> Self {
         Self {
             routes: MatchitRouter::new(),
+            not_found: Arc::new(
+                service_fn(async || Ok(StatusCode::NOT_FOUND.into_response())).boxed(),
+            ),
         }
     }
 
@@ -121,6 +125,14 @@ where
 
         self
     }
+
+    pub fn not_found<I, T>(mut self, service: I) -> Self
+    where
+        I: IntoEndpointService<State, T>,
+    {
+        self.not_found = Arc::new(service.into_endpoint_service().boxed());
+        self
+    }
 }
 
 impl<State> Default for Router<State>
@@ -157,13 +169,7 @@ where
                 ext.clear();
             }
         }
-
-        let not_found = Response::builder()
-            .status(404)
-            .body(Body::from("Not Found"))
-            .unwrap();
-
-        Ok(not_found)
+        self.not_found.serve(ctx, req).await
     }
 }
 
@@ -176,81 +182,95 @@ mod tests {
     use rama_http_types::{Body, Request, StatusCode, dep::http_body_util::BodyExt};
 
     #[tokio::test]
-    async fn test_router_get() {
-        let list_user = service_fn(|| async {
-            Ok::<_, Infallible>(Response::new(Body::from("Hello, World!")))
+    async fn test_router() {
+        let root = service_fn(|_ctx, _req| async {
+            Ok(Response::builder()
+                .status(200)
+                .body(Body::from("Hello, World!"))
+                .unwrap())
         });
 
-        let router = Router::new().get("/user", list_user);
-
-        let req = Request::post("/user").body(Body::empty()).unwrap();
-        let resp = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-
-        let req = Request::get("/user").body(Body::empty()).unwrap();
-        let resp = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = resp.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "Hello, World!");
-    }
-
-    #[tokio::test]
-    async fn test_router_chain() {
-        let list_user = service_fn(|| async {
-            Ok::<_, Infallible>(Response::new(Body::from("Hello, World!")))
+        let list_users = service_fn(|_ctx, _req| async {
+            Ok(Response::builder()
+                .status(200)
+                .body(Body::from("List Users"))
+                .unwrap())
         });
 
-        let create_user =
-            service_fn(|| async { Ok::<_, Infallible>(Response::new(Body::from("User created"))) });
-
-        let router = Router::new()
-            .get("/user", list_user)
-            .post("/user", create_user);
-
-        let req = Request::get("/user").body(Body::empty()).unwrap();
-        let resp = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = resp.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "Hello, World!");
-
-        let req = Request::post("/user").body(Body::empty()).unwrap();
-        let resp = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = resp.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "User created");
-    }
-
-    #[tokio::test]
-    async fn test_router_params() {
-        // Service that extracts :id from UriParams in context
-        let user_service = service_fn(|ctx: Context<()>, _req| async move {
-            Ok::<_, Infallible>(Response::new(Body::from(format!(
-                "User ID: {}",
-                ctx.get::<UriParams>().unwrap().get("id").unwrap()
-            ))))
+        let create_user = service_fn(|_ctx, _req| async {
+            Ok(Response::builder()
+                .status(200)
+                .body(Body::from("Create User"))
+                .unwrap())
         });
 
-        let product_service = service_fn(|ctx: Context<()>, _req| async move {
-            Ok::<_, Infallible>(Response::new(Body::from(format!(
-                "Product ID: {}",
-                ctx.get::<UriParams>().unwrap().get("id").unwrap()
-            ))))
+        let get_user = service_fn(|ctx: Context<()>, _req| async move {
+            let uri_params = ctx.get::<UriParams>().unwrap();
+            let id = uri_params.get("id").unwrap();
+            Ok(Response::builder()
+                .status(200)
+                .body(Body::from(format!("Get User: {}", id)))
+                .unwrap())
+        });
+
+        let delete_user = service_fn(|ctx: Context<()>, _req| async move {
+            let uri_params = ctx.get::<UriParams>().unwrap();
+            let id = uri_params.get("id").unwrap();
+            Ok(Response::builder()
+                .status(200)
+                .body(Body::from(format!("Delete User: {}", id)))
+                .unwrap())
+        });
+
+        let not_found_service = service_fn(|_ctx, _req| async {
+            Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("Not Found"))
+                .unwrap())
         });
 
         let router = Router::new()
-            .get("/user/{id}", user_service)
-            .get("/product/{id}", product_service);
+            .get("/", root)
+            .get("/users", list_users)
+            .post("/users", create_user)
+            .get("/users/{id}", get_user)
+            .delete("/users/{id}", delete_user)
+            .not_found(not_found_service);
 
-        let req = Request::get("/user/42").body(Body::empty()).unwrap();
-        let resp = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = resp.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "User ID: 42");
+        let req = Request::get("/").body(Body::empty()).unwrap();
+        let res = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Hello, World!");
 
-        let req = Request::get("/product/123").body(Body::empty()).unwrap();
-        let resp = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
-        let body = resp.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "Product ID: 123");
+        let req = Request::get("/users").body(Body::empty()).unwrap();
+        let res = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "List Users");
+
+        let req = Request::post("/users").body(Body::empty()).unwrap();
+        let res = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Create User");
+
+        let req = Request::get("/users/123").body(Body::empty()).unwrap();
+        let res = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Get User: 123");
+
+        let req = Request::delete("/users/123").body(Body::empty()).unwrap();
+        let res = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Delete User: 123");
+
+        let req = Request::get("/not-found").body(Body::empty()).unwrap();
+        let res = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
+        let body = res.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Not Found");
     }
 }
