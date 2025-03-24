@@ -103,7 +103,7 @@ async fn main() {
     // configure OT metrics exporter
     let export_config = ExportConfig {
         endpoint: Some("http://localhost:4317".to_owned()),
-        timeout: Duration::from_secs(3),
+        timeout: Some(Duration::from_secs(3)),
         protocol: Protocol::Grpc,
     };
 
