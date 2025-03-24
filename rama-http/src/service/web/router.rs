@@ -57,6 +57,54 @@ where
         self.add_route(path, matcher, service)
     }
 
+    pub fn put<I, T>(self, path: &str, service: I) -> Self
+    where
+        I: IntoEndpointService<State, T>,
+    {
+        let matcher = HttpMatcher::put(path);
+        self.add_route(path, matcher, service)
+    }
+
+    pub fn delete<I, T>(self, path: &str, service: I) -> Self
+    where
+        I: IntoEndpointService<State, T>,
+    {
+        let matcher = HttpMatcher::delete(path);
+        self.add_route(path, matcher, service)
+    }
+
+    pub fn patch<I, T>(self, path: &str, service: I) -> Self
+    where
+        I: IntoEndpointService<State, T>,
+    {
+        let matcher = HttpMatcher::patch(path);
+        self.add_route(path, matcher, service)
+    }
+
+    pub fn head<I, T>(self, path: &str, service: I) -> Self
+    where
+        I: IntoEndpointService<State, T>,
+    {
+        let matcher = HttpMatcher::head(path);
+        self.add_route(path, matcher, service)
+    }
+
+    pub fn options<I, T>(self, path: &str, service: I) -> Self
+    where
+        I: IntoEndpointService<State, T>,
+    {
+        let matcher = HttpMatcher::options(path);
+        self.add_route(path, matcher, service)
+    }
+
+    pub fn trace<I, T>(self, path: &str, service: I) -> Self
+    where
+        I: IntoEndpointService<State, T>,
+    {
+        let matcher = HttpMatcher::trace(path);
+        self.add_route(path, matcher, service)
+    }
+
     fn add_route<I, T>(mut self, path: &str, matcher: HttpMatcher<State, Body>, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -99,12 +147,8 @@ where
         let mut ext = Extensions::new();
 
         if let Ok(matched) = self.routes.at(req.uri().path()) {
-            // println!("Matched: {:?}", matched);
             for (matcher, service) in matched.value.iter() {
-                // println!("Matcher: {:?}", matcher);
-                // TODO: matcher.matches not matching here
                 if matcher.matches(Some(&mut ext), &ctx, &req) {
-                    // println!("Matched: {:?}", matched);
                     let uri_params = matched.params.iter().collect::<UriParams>();
                     ctx.insert(uri_params);
                     ctx.extend(ext);
@@ -186,12 +230,27 @@ mod tests {
             ))))
         });
 
-        let router = Router::new().get("/user/{id}", user_service);
+        let product_service = service_fn(|ctx: Context<()>, _req| async move {
+            Ok::<_, Infallible>(Response::new(Body::from(format!(
+                "Product ID: {}",
+                ctx.get::<UriParams>().unwrap().get("id").unwrap()
+            ))))
+        });
+
+        let router = Router::new()
+            .get("/user/{id}", user_service)
+            .get("/product/{id}", product_service);
+
         let req = Request::get("/user/42").body(Body::empty()).unwrap();
         let resp = router.serve(Context::default(), req).await.unwrap();
-
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "User ID: 42");
+
+        let req = Request::get("/product/123").body(Body::empty()).unwrap();
+        let resp = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Product ID: 123");
     }
 }

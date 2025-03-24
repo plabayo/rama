@@ -155,7 +155,7 @@ impl PathMatcher {
         let path = path.as_ref();
         let path = path.trim().trim_matches('/');
 
-        if !path.contains([':', '*']) {
+        if !path.contains([':', '*', '{', '}']) {
             return Self {
                 kind: PathMatcherKind::Literal(path.to_lowercase()),
             };
@@ -180,6 +180,9 @@ impl PathMatcher {
                     Some(PathFragment::Param(
                         s.trim_start_matches(':').to_lowercase(),
                     ))
+                } else if s.starts_with("{") && s.ends_with("}") {
+                    let param_name = s[1..s.len() - 1].to_lowercase();
+                    Some(PathFragment::Param(param_name))
                 } else if s == "*" && index == fragment_length - 1 {
                     Some(PathFragment::Glob)
                 } else {
