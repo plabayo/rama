@@ -33,6 +33,7 @@ use crate::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
 };
+use rama_http::proto::h2::frame::InitialPeerSettings;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
@@ -455,19 +456,32 @@ impl Service<(), Request> for EchoService {
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
         let tls_client_hello: Option<()> = None;
 
+        let mut h2 = None;
+        if parts.version == Version::HTTP_2 {
+            let initial_peer_settings = parts
+                .extensions
+                .get::<InitialPeerSettings>()
+                .map(|p| p.0.as_ref());
+
+            h2 = Some(json!({
+                "settings": initial_peer_settings,
+            }));
+        }
+
         Ok(Json(json!({
             "ua": user_agent_info,
             "http": {
-                "ja4h": ja4h,
                 "version": format!("{:?}", parts.version),
                 "scheme": scheme,
                 "method": format!("{:?}", parts.method),
                 "authority": authority,
                 "path": parts.uri.path().to_owned(),
                 "query": parts.uri.query().map(str::to_owned),
+                "h2": h2,
                 "headers": headers,
                 "pseudo_headers": pseudo_headers,
                 "payload": body,
+                "ja4h": ja4h,
             },
             "tls": tls_client_hello,
             "socket_addr": ctx.get::<Forwarded>()

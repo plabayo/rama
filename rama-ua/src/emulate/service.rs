@@ -6,7 +6,7 @@ use rama_core::{
 };
 use rama_http_types::{
     HeaderMap, HeaderName, HeaderValue, Method, Request, Uri, Version,
-    conn::Http1ClientContextParams,
+    conn::{H2ClientContextParams, Http1ClientContextParams, StreamDependencyParams},
     header::{
         ACCEPT, ACCEPT_LANGUAGE, AUTHORIZATION, CONTENT_LENGTH, CONTENT_TYPE, COOKIE, HOST, ORIGIN,
         REFERER, USER_AGENT,
@@ -17,7 +17,7 @@ use rama_http_types::{
             Http1HeaderMap,
             headers::{HeaderMapValueRemover, original::OriginalHttp1Headers},
         },
-        h2::PseudoHeaderOrder,
+        h2::frame::StreamId,
     },
 };
 use rama_net::{
@@ -482,14 +482,41 @@ where
                     tracing::trace!(
                         "user agent emulation: insert h2 pseudo header order into request extensions"
                     );
-                    req.extensions_mut().insert(PseudoHeaderOrder::from_iter(
-                        http_profile
-                            .h2
-                            .settings
-                            .http_pseudo_headers
-                            .iter()
-                            .flatten(),
-                    ));
+                    let pseudo_headers = http_profile.h2.settings.http_pseudo_headers.clone();
+                    let initial_config = http_profile.h2.settings.initial_config.clone();
+
+                    // TODO: support tracking this also from peer
+                    let headers_priority =
+                        match ctx.get::<SelectedUserAgentProfile>().map(|p| p.ua_kind) {
+                            Some(crate::UserAgentKind::Chromium) => Some(StreamDependencyParams {
+                                dependency_id: StreamId::from(0),
+                                weight: 255,
+                                is_exclusive: true,
+                            }),
+                            Some(crate::UserAgentKind::Firefox) => Some(StreamDependencyParams {
+                                dependency_id: StreamId::from(0),
+                                weight: 41,
+                                is_exclusive: true,
+                            }),
+                            Some(crate::UserAgentKind::Safari) => Some(StreamDependencyParams {
+                                dependency_id: StreamId::from(0),
+                                weight: 255,
+                                is_exclusive: false,
+                            }),
+                            None => None,
+                        };
+
+                    if let Some(pseudo_headers) = pseudo_headers.clone() {
+                        req.extensions_mut().insert(pseudo_headers);
+                    }
+                    if pseudo_headers.is_some() || initial_config.is_some() {
+                        req.extensions_mut().insert(H2ClientContextParams {
+                            headers_pseudo_order: pseudo_headers,
+                            setting_config: initial_config,
+                            headers_priority,
+                            priority: None, // TODO: do we need to care about priority?
+                        });
+                    }
                 }
             }
             None => {
