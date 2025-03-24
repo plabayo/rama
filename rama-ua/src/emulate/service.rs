@@ -378,9 +378,61 @@ fn emulate_http_connect_settings<Body, State>(
             });
         }
         Version::HTTP_2 => {
-            tracing::trace!(
-                "UA emulation does not yet support h2 connection settings: not applying anything h2-specific"
-            );
+            let pseudo_headers = profile.h2.settings.http_pseudo_headers.clone();
+            let initial_config = profile.h2.settings.initial_config.clone();
+
+            let headers_priority = match (
+                profile.h2.settings.priority_header.clone(),
+                ctx.get::<SelectedUserAgentProfile>().map(|p| p.ua_kind),
+            ) {
+                (Some(priority), _) => Some(priority),
+                (None, Some(crate::UserAgentKind::Chromium)) => {
+                    tracing::trace!(
+                        "no priority h2 settings found, using hardcoded value from chromium instead"
+                    );
+                    Some(StreamDependencyParams {
+                        dependency_id: StreamId::from(0),
+                        weight: 255,
+                        is_exclusive: true,
+                    })
+                }
+                (None, Some(crate::UserAgentKind::Firefox)) => {
+                    tracing::trace!(
+                        "no priority h2 settings found, using hardcoded value from firefox instead"
+                    );
+                    Some(StreamDependencyParams {
+                        dependency_id: StreamId::from(0),
+                        weight: 41,
+                        is_exclusive: true,
+                    })
+                }
+                (None, Some(crate::UserAgentKind::Safari)) => {
+                    tracing::trace!(
+                        "no priority h2 settings found, using hardcoded value from safari instead"
+                    );
+                    Some(StreamDependencyParams {
+                        dependency_id: StreamId::from(0),
+                        weight: 255,
+                        is_exclusive: false,
+                    })
+                }
+                (None, None) => None,
+            };
+
+            if pseudo_headers.is_some() || initial_config.is_some() {
+                tracing::trace!(
+                    ?pseudo_headers,
+                    ?initial_config,
+                    ?headers_priority,
+                    "user agent emulation: insert h2 settings into extensions"
+                );
+                req.extensions_mut().insert(H2ClientContextParams {
+                    headers_pseudo_order: pseudo_headers,
+                    setting_config: initial_config,
+                    headers_priority,
+                    priority: None, // TODO: do we need to care about priority?
+                });
+            }
         }
         Version::HTTP_3 => tracing::debug!(
             "UA emulation not yet supported for h3: not applying anything h3-specific"
@@ -479,60 +531,15 @@ where
                 }
 
                 if req.version() == Version::HTTP_2 {
-                    tracing::trace!(
-                        "user agent emulation: insert h2 pseudo header order into request extensions"
-                    );
                     let pseudo_headers = http_profile.h2.settings.http_pseudo_headers.clone();
-                    let initial_config = http_profile.h2.settings.initial_config.clone();
 
-                    let headers_priority = match (
-                        http_profile.h2.settings.priority_header.clone(),
-                        ctx.get::<SelectedUserAgentProfile>().map(|p| p.ua_kind),
-                    ) {
-                        (Some(priority), _) => Some(priority),
-                        (None, Some(crate::UserAgentKind::Chromium)) => {
-                            tracing::trace!(
-                                "no priority h2 settings found, using hardcoded value from chromium instead"
-                            );
-                            Some(StreamDependencyParams {
-                                dependency_id: StreamId::from(0),
-                                weight: 255,
-                                is_exclusive: true,
-                            })
-                        }
-                        (None, Some(crate::UserAgentKind::Firefox)) => {
-                            tracing::trace!(
-                                "no priority h2 settings found, using hardcoded value from firefox instead"
-                            );
-                            Some(StreamDependencyParams {
-                                dependency_id: StreamId::from(0),
-                                weight: 41,
-                                is_exclusive: true,
-                            })
-                        }
-                        (None, Some(crate::UserAgentKind::Safari)) => {
-                            tracing::trace!(
-                                "no priority h2 settings found, using hardcoded value from safari instead"
-                            );
-                            Some(StreamDependencyParams {
-                                dependency_id: StreamId::from(0),
-                                weight: 255,
-                                is_exclusive: false,
-                            })
-                        }
-                        (None, None) => None,
-                    };
+                    tracing::trace!(
+                        ?pseudo_headers,
+                        "user agent emulation: insert h2 pseudo headers into request extensions"
+                    );
 
                     if let Some(pseudo_headers) = pseudo_headers.clone() {
                         req.extensions_mut().insert(pseudo_headers);
-                    }
-                    if pseudo_headers.is_some() || initial_config.is_some() {
-                        req.extensions_mut().insert(H2ClientContextParams {
-                            headers_pseudo_order: pseudo_headers,
-                            setting_config: initial_config,
-                            headers_priority,
-                            priority: None, // TODO: do we need to care about priority?
-                        });
                     }
                 }
             }
