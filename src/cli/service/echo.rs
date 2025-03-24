@@ -12,6 +12,7 @@ use crate::{
     error::{BoxError, OpaqueError},
     http::{
         IntoResponse, Request, Response, Version,
+        conn::LastPeerPriorityParams,
         dep::http_body_util::BodyExt,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
@@ -22,6 +23,7 @@ use crate::{
         },
         proto::h1::Http1HeaderMap,
         proto::h2::PseudoHeaderOrder,
+        proto::h2::frame::InitialPeerSettings,
         response::Json,
         server::HttpServer,
     },
@@ -33,7 +35,6 @@ use crate::{
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
 };
-use rama_http::proto::h2::frame::InitialPeerSettings;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
@@ -339,11 +340,6 @@ impl Service<(), Request> for EchoService {
         let authority = request_context.authority.to_string();
         let scheme = request_context.protocol.to_string();
 
-        let pseudo_headers: Option<Vec<_>> = req
-            .extensions()
-            .get::<PseudoHeaderOrder>()
-            .map(|o| o.iter().collect());
-
         let ja4h = Ja4H::compute(&req)
             .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
             .ok()
@@ -463,8 +459,17 @@ impl Service<(), Request> for EchoService {
                 .get::<InitialPeerSettings>()
                 .map(|p| p.0.as_ref());
 
+            let pseudo_headers = parts.extensions.get::<PseudoHeaderOrder>();
+
+            let last_priority_params = parts
+                .extensions
+                .get::<LastPeerPriorityParams>()
+                .map(|p| p.0.dependency.clone());
+
             h2 = Some(json!({
                 "settings": initial_peer_settings,
+                "pseudo_headers": pseudo_headers,
+                "last_priority_params": last_priority_params,
             }));
         }
 
@@ -479,7 +484,6 @@ impl Service<(), Request> for EchoService {
                 "query": parts.uri.query().map(str::to_owned),
                 "h2": h2,
                 "headers": headers,
-                "pseudo_headers": pseudo_headers,
                 "payload": body,
                 "ja4h": ja4h,
             },

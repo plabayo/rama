@@ -485,26 +485,43 @@ where
                     let pseudo_headers = http_profile.h2.settings.http_pseudo_headers.clone();
                     let initial_config = http_profile.h2.settings.initial_config.clone();
 
-                    // TODO: support tracking this also from peer
-                    let headers_priority =
-                        match ctx.get::<SelectedUserAgentProfile>().map(|p| p.ua_kind) {
-                            Some(crate::UserAgentKind::Chromium) => Some(StreamDependencyParams {
+                    let headers_priority = match (
+                        http_profile.h2.settings.priority_header.clone(),
+                        ctx.get::<SelectedUserAgentProfile>().map(|p| p.ua_kind),
+                    ) {
+                        (Some(priority), _) => Some(priority),
+                        (None, Some(crate::UserAgentKind::Chromium)) => {
+                            tracing::trace!(
+                                "no priority h2 settings found, using hardcoded value from chromium instead"
+                            );
+                            Some(StreamDependencyParams {
                                 dependency_id: StreamId::from(0),
                                 weight: 255,
                                 is_exclusive: true,
-                            }),
-                            Some(crate::UserAgentKind::Firefox) => Some(StreamDependencyParams {
+                            })
+                        }
+                        (None, Some(crate::UserAgentKind::Firefox)) => {
+                            tracing::trace!(
+                                "no priority h2 settings found, using hardcoded value from firefox instead"
+                            );
+                            Some(StreamDependencyParams {
                                 dependency_id: StreamId::from(0),
                                 weight: 41,
                                 is_exclusive: true,
-                            }),
-                            Some(crate::UserAgentKind::Safari) => Some(StreamDependencyParams {
+                            })
+                        }
+                        (None, Some(crate::UserAgentKind::Safari)) => {
+                            tracing::trace!(
+                                "no priority h2 settings found, using hardcoded value from safari instead"
+                            );
+                            Some(StreamDependencyParams {
                                 dependency_id: StreamId::from(0),
                                 weight: 255,
                                 is_exclusive: false,
-                            }),
-                            None => None,
-                        };
+                            })
+                        }
+                        (None, None) => None,
+                    };
 
                     if let Some(pseudo_headers) = pseudo_headers.clone() {
                         req.extensions_mut().insert(pseudo_headers);

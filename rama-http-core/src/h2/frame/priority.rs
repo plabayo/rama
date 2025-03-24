@@ -18,6 +18,15 @@ impl From<PriorityParams> for Priority {
     }
 }
 
+impl From<Priority> for PriorityParams {
+    fn from(value: Priority) -> Self {
+        Self {
+            stream_id: value.stream_id,
+            dependency: value.dependency.into(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Eq, PartialEq)]
 pub struct StreamDependency {
     /// The ID of the stream dependency target
@@ -34,6 +43,16 @@ pub struct StreamDependency {
 
 impl From<StreamDependencyParams> for StreamDependency {
     fn from(value: StreamDependencyParams) -> Self {
+        Self {
+            dependency_id: value.dependency_id,
+            weight: value.weight,
+            is_exclusive: value.is_exclusive,
+        }
+    }
+}
+
+impl From<StreamDependency> for StreamDependencyParams {
+    fn from(value: StreamDependency) -> Self {
         Self {
             dependency_id: value.dependency_id,
             weight: value.weight,
@@ -77,6 +96,10 @@ impl Priority {
 
     pub fn stream_id(&self) -> StreamId {
         self.stream_id
+    }
+
+    pub fn dependency(&self) -> &StreamDependency {
+        &self.dependency
     }
 
     pub fn encode<B: BufMut>(&self, dst: &mut B) {

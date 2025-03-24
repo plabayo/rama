@@ -359,6 +359,13 @@ where
                         &mut self.inner.streams,
                     )?;
                 }
+                ReceivedFrame::Priority(frame) => {
+                    self.inner.settings.recv_priority(
+                        frame,
+                        &mut self.codec,
+                        &mut self.inner.streams,
+                    )?;
+                }
                 ReceivedFrame::Continue => (),
                 ReceivedFrame::Done => {
                     return Poll::Ready(Ok(()));
@@ -549,7 +556,7 @@ where
             }
             Some(Frame::Priority(frame)) => {
                 tracing::trace!(?frame, "recv PRIORITY");
-                // TODO: handle
+                return Ok(ReceivedFrame::Priority(frame));
             }
             None => {
                 tracing::trace!("codec closed");
@@ -563,6 +570,7 @@ where
 
 enum ReceivedFrame {
     Settings(frame::Settings),
+    Priority(frame::Priority),
     Continue,
     Done,
 }

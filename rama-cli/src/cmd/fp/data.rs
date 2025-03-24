@@ -4,6 +4,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         self, HeaderMap, HeaderName, Request,
+        conn::LastPeerPriorityParams,
         dep::http::{Extensions, request::Parts},
         headers::Forwarded,
         proto::{
@@ -232,6 +233,9 @@ pub(super) async fn get_and_store_http_info(
             initial_config: ext
                 .get::<InitialPeerSettings>()
                 .map(|p| p.0.as_ref().clone()),
+            priority_header: ext
+                .get::<LastPeerPriorityParams>()
+                .map(|p| p.0.dependency.clone()),
         }),
         _ => None,
     };

@@ -140,6 +140,19 @@ pub(super) async fn get_report(
                 rows: vec![("order".to_owned(), pseudo.iter().join(", "))],
             });
         }
+        if let Some(priority) = h2_settings.priority_header {
+            tables.push(Table {
+                title: "🚗 H2 Priority Header".to_owned(),
+                rows: vec![
+                    (
+                        "dependency_id".to_owned(),
+                        u32::from(priority.dependency_id).to_string(),
+                    ),
+                    ("weight".to_owned(), priority.weight.to_string()),
+                    ("is_exclusive".to_owned(), priority.is_exclusive.to_string()),
+                ],
+            });
+        }
         if let Some(settings) = h2_settings.initial_config {
             let mut rows = Vec::with_capacity(8);
             let mut order = settings.setting_order.unwrap_or_default();

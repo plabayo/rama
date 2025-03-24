@@ -8,6 +8,7 @@ use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
 use bytes::{Buf, Bytes};
+use rama_http_types::conn::{LastPeerPriorityParams, PriorityParams};
 use rama_http_types::dep::http::Extensions;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
@@ -86,6 +87,10 @@ struct Inner {
 
     /// The peer's initial h2 settings
     peer_initial_settings: Option<Arc<SettingsConfig>>,
+
+    /// TODO: perhaps actually use these for something...
+    first_priority_params: Option<PriorityParams>,
+    last_priority_params: Option<PriorityParams>,
 
     /// Pseudo order of the headers stream
     headers_pseudo_order: Option<PseudoHeaderOrder>,
@@ -245,6 +250,20 @@ where
         if is_initial {
             me.peer_initial_settings = Some(Arc::new(frame.config.clone()));
         }
+
+        Ok(())
+    }
+
+    pub(crate) fn apply_priority(&mut self, frame: frame::Priority) -> Result<(), Error> {
+        let mut me = self.inner.lock().unwrap();
+        let me = &mut *me;
+
+        let params: PriorityParams = frame.into();
+
+        if me.first_priority_params.is_none() {
+            me.first_priority_params = Some(params.clone());
+        }
+        me.last_priority_params = Some(params);
 
         Ok(())
     }
@@ -461,6 +480,8 @@ impl Inner {
             store: Store::new(),
             refs: 1,
             peer_initial_settings: None,
+            first_priority_params: None,
+            last_priority_params: None,
             headers_priority: config.headers_priority,
             headers_pseudo_order: config.headers_pseudo_order,
             priority: config.priority,
@@ -1277,6 +1298,11 @@ impl<B> StreamRef<B> {
             request
                 .extensions_mut()
                 .insert(InitialPeerSettings(settings));
+        }
+        if let Some(params) = me.last_priority_params.clone() {
+            request
+                .extensions_mut()
+                .insert(LastPeerPriorityParams(params));
         }
         request
     }

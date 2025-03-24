@@ -1,5 +1,6 @@
 use rama_http_types::{
     HeaderName,
+    conn::StreamDependencyParams,
     proto::{
         h1::Http1HeaderMap,
         h2::{PseudoHeaderOrder, frame::SettingsConfig},
@@ -158,4 +159,9 @@ pub struct Http2Settings {
     ///
     /// See [`SettingsConfig`] for more details.
     pub initial_config: Option<SettingsConfig>,
+
+    /// The priority settings to be used for the HTTP/2 profile.
+    ///
+    /// See [`StreamDependencyParams`] for more details.
+    pub priority_header: Option<StreamDependencyParams>,
 }

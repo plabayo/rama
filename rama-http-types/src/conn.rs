@@ -55,6 +55,10 @@ pub struct StreamDependencyParams {
     pub is_exclusive: bool,
 }
 
+#[derive(Debug, Clone)]
+/// Injected into h2 requests for those who are interested in this.
+pub struct LastPeerPriorityParams(pub PriorityParams);
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PriorityParams {
     pub stream_id: StreamId,
