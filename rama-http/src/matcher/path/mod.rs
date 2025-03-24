@@ -63,6 +63,16 @@ impl UriParams {
     }
 }
 
+impl<'a> FromIterator<(&'a str, &'a str)> for UriParams {
+    fn from_iter<T: IntoIterator<Item = (&'a str, &'a str)>>(iter: T) -> Self {
+        let mut params = UriParams::default();
+        for (k, v) in iter {
+            params.insert(k.to_owned(), v.to_owned());
+        }
+        params
+    }
+}
+
 #[derive(Debug)]
 /// Error that can occur during the deserialization of the [`UriParams`].
 ///

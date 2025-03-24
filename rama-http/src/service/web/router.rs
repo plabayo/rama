@@ -1,23 +1,26 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, sync::Arc};
 
 use crate::{
     Request, Response,
-    matcher::{HttpMatcher, MethodMatcher},
+    matcher::{HttpMatcher, UriParams},
 };
 
 use matchit::Router as MatchitRouter;
 use rama_core::{
     Context,
+    context::Extensions,
     matcher::Matcher,
     service::{BoxService, Service},
 };
 use rama_http_types::Body;
 
+use super::IntoEndpointService;
+
 pub struct Router<State> {
     routes: MatchitRouter<
         Vec<(
             HttpMatcher<State, Body>,
-            BoxService<State, Request, Response, Infallible>,
+            Arc<BoxService<State, Request, Response, Infallible>>,
         )>,
     >,
 }
@@ -38,39 +41,37 @@ where
         }
     }
 
-    pub fn get<I>(mut self, path: &str, service: I) -> Self
+    pub fn get<I, T>(self, path: &str, service: I) -> Self
     where
-        I: Service<State, Request, Response = Response, Error = Infallible> + 'static,
+        I: IntoEndpointService<State, T>,
     {
-        self.add_route(MethodMatcher::GET, path, service);
-        self
+        let matcher = HttpMatcher::get(path);
+        self.add_route(path, matcher, service)
     }
 
-    pub fn post<I>(mut self, path: &str, service: I) -> Self
+    pub fn post<I, T>(self, path: &str, service: I) -> Self
     where
-        I: Service<State, Request, Response = Response, Error = Infallible> + 'static,
+        I: IntoEndpointService<State, T>,
     {
-        self.add_route(MethodMatcher::POST, path, service);
-        self
+        let matcher = HttpMatcher::post(path);
+        self.add_route(path, matcher, service)
     }
 
-    fn add_route<I>(&mut self, method_matcher: MethodMatcher, path: &str, service: I)
+    fn add_route<I, T>(mut self, path: &str, matcher: HttpMatcher<State, Body>, service: I) -> Self
     where
-        I: Service<State, Request, Response = Response, Error = Infallible> + 'static,
+        I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::method(method_matcher).and_path(path);
-        let box_service = service.boxed();
+        let service = service.into_endpoint_service().boxed();
 
-        match self.routes.at_mut(path) {
-            Ok(matched) => {
-                matched.value.push((matcher, box_service));
-            }
-            Err(_) => {
-                self.routes
-                    .insert(path, vec![(matcher, box_service)])
-                    .unwrap();
-            }
+        if let Ok(matched) = self.routes.at_mut(path) {
+            matched.value.push((matcher, Arc::new(service)));
+        } else {
+            self.routes
+                .insert(path, vec![(matcher, Arc::new(service))])
+                .expect("Failed to add route");
         }
+
+        self
     }
 }
 
@@ -92,14 +93,22 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         req: Request,
     ) -> Result<Self::Response, Self::Error> {
+        let mut ext = Extensions::new();
+
+        // TODO: its not matching /user/:id because matchit supports /user/{id}
+        // third test case is failling because of this
         if let Ok(matched) = self.routes.at(req.uri().path()) {
             for (matcher, service) in matched.value.iter() {
-                if matcher.matches(None, &ctx, &req) {
+                if matcher.matches(Some(&mut ext), &ctx, &req) {
+                    let uri_params = matched.params.iter().collect::<UriParams>();
+                    ctx.insert(uri_params);
+                    ctx.extend(ext);
                     return service.serve(ctx, req).await;
                 }
+                ext.clear();
             }
         }
 
@@ -114,6 +123,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use crate::matcher::UriParams;
+
     use super::*;
     use rama_core::service::service_fn;
     use rama_http_types::{Body, Request, StatusCode, dep::http_body_util::BodyExt};
@@ -124,7 +135,7 @@ mod tests {
             Ok::<_, Infallible>(Response::new(Body::from("Hello, World!")))
         });
 
-        let router: Router<()> = Router::new().get("/user", list_user);
+        let router = Router::new().get("/user", list_user);
 
         let req = Request::post("/user").body(Body::empty()).unwrap();
         let resp = router.serve(Context::default(), req).await.unwrap();
@@ -135,5 +146,50 @@ mod tests {
         assert_eq!(resp.status(), StatusCode::OK);
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, "Hello, World!");
+    }
+
+    #[tokio::test]
+    async fn test_router_chain() {
+        let list_user = service_fn(|| async {
+            Ok::<_, Infallible>(Response::new(Body::from("Hello, World!")))
+        });
+
+        let create_user =
+            service_fn(|| async { Ok::<_, Infallible>(Response::new(Body::from("User created"))) });
+
+        let router = Router::new()
+            .get("/user", list_user)
+            .post("/user", create_user);
+
+        let req = Request::get("/user").body(Body::empty()).unwrap();
+        let resp = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "Hello, World!");
+
+        let req = Request::post("/user").body(Body::empty()).unwrap();
+        let resp = router.serve(Context::default(), req).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "User created");
+    }
+
+    #[tokio::test]
+    async fn test_params() {
+        // Service that extracts :id from UriParams in context
+        let user_service = service_fn(|ctx: Context<()>, _req| async move {
+            Ok::<_, Infallible>(Response::new(Body::from(format!(
+                "User ID: {}",
+                ctx.get::<UriParams>().unwrap().get("id").unwrap()
+            ))))
+        });
+
+        let router = Router::new().get("/user/:id", user_service);
+        let req = Request::get("/user/42").body(Body::empty()).unwrap();
+        let resp = router.serve(Context::default(), req).await.unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        assert_eq!(body, "User ID: 42");
     }
 }
