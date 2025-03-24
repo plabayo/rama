@@ -200,6 +200,9 @@
 //!
 //! repositories in function of rama that aren't crates:
 //!
+//! - <https://github.com/plabayo/rama-boringssl>:
+//!   Fork of [mirror of BoringSSL](https://github.com/plabayo/rama-boringssl)
+//!   in function of [rama-boring](https://github.com/plabayo/rama-boring)
 //! - <https://github.com/plabayo/homebrew-rama>: Homebrew formula for the rama Cli tool
 //!
 //! ## 🏢 | Proxy Examples
