@@ -180,7 +180,7 @@ impl PathMatcher {
                     Some(PathFragment::Param(
                         s.trim_start_matches(':').to_lowercase(),
                     ))
-                } else if s.starts_with("{") && s.ends_with("}") && s.len() > 2 {
+                } else if s.starts_with('{') && s.ends_with('}') && s.len() > 2 {
                     let param_name = s[1..s.len() - 1].to_lowercase();
                     Some(PathFragment::Param(param_name))
                 } else if s == "*" && index == fragment_length - 1 {

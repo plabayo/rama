@@ -1,4 +1,4 @@
-use std::{convert::Infallible, sync::Arc};
+use std::convert::Infallible;
 
 use crate::{
     Request, Response,
@@ -10,9 +10,9 @@ use rama_core::{
     Context,
     context::Extensions,
     matcher::Matcher,
-    service::{BoxService, Service, service_fn},
+    service::{BoxService, Service},
 };
-use rama_http_types::{Body, IntoResponse, StatusCode};
+use rama_http_types::{Body, StatusCode};
 
 use super::IntoEndpointService;
 
@@ -20,10 +20,10 @@ pub struct Router<State> {
     routes: MatchitRouter<
         Vec<(
             HttpMatcher<State, Body>,
-            Arc<BoxService<State, Request, Response, Infallible>>,
+            BoxService<State, Request, Response, Infallible>,
         )>,
     >,
-    not_found: Arc<BoxService<State, Request, Response, Infallible>>,
+    not_found: Option<BoxService<State, Request, Response, Infallible>>,
 }
 
 impl<State> std::fmt::Debug for Router<State> {
@@ -39,9 +39,7 @@ where
     pub fn new() -> Self {
         Self {
             routes: MatchitRouter::new(),
-            not_found: Arc::new(
-                service_fn(async || Ok(StatusCode::NOT_FOUND.into_response())).boxed(),
-            ),
+            not_found: None,
         }
     }
 
@@ -116,10 +114,10 @@ where
         let service = service.into_endpoint_service().boxed();
 
         if let Ok(matched) = self.routes.at_mut(path) {
-            matched.value.push((matcher, Arc::new(service)));
+            matched.value.push((matcher, service));
         } else {
             self.routes
-                .insert(path, vec![(matcher, Arc::new(service))])
+                .insert(path, vec![(matcher, service)])
                 .expect("Failed to add route");
         }
 
@@ -130,7 +128,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        self.not_found = Arc::new(service.into_endpoint_service().boxed());
+        self.not_found = Some(service.into_endpoint_service().boxed());
         self
     }
 }
@@ -169,7 +167,15 @@ where
                 ext.clear();
             }
         }
-        self.not_found.serve(ctx, req).await
+
+        if let Some(not_found) = &self.not_found {
+            not_found.serve(ctx, req).await
+        } else {
+            Ok(Response::builder()
+                .status(StatusCode::NOT_FOUND)
+                .body(Body::from("Not Found"))
+                .unwrap())
+        }
     }
 }
 
