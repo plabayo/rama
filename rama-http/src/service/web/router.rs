@@ -34,7 +34,7 @@ impl<State> std::fmt::Debug for Router<State> {
 
 impl<State> Router<State>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     pub fn new() -> Self {
         Self {
@@ -135,7 +135,7 @@ where
 
 impl<State> Default for Router<State>
 where
-    State: Send + Sync + 'static,
+    State: Clone + Send + Sync + 'static,
 {
     fn default() -> Self {
         Self::new()
