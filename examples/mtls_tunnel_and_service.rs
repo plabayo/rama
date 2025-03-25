@@ -73,110 +73,111 @@ const TUNNEL_AUTHORITY: Authority = Authority::new(LOCALHOST, 62014);
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::registry()
-        .with(fmt::layer())
-        .with(
-            EnvFilter::builder()
-                .with_default_directive(LevelFilter::DEBUG.into())
-                .from_env_lossy(),
-        )
-        .init();
+    // tracing_subscriber::registry()
+    //     .with(fmt::layer())
+    //     .with(
+    //         EnvFilter::builder()
+    //             .with_default_directive(LevelFilter::DEBUG.into())
+    //             .from_env_lossy(),
+    //     )
+    //     .init();
 
-    let shutdown = Shutdown::default();
+    // let shutdown = Shutdown::default();
 
-    let conf = ClientConfigInput {
-        key_logger: KeyLogIntent::Environment.into_file_path(),
-        client_auth: Some(
-            self_signed_client_auth()
-                .context("rustls/TlsConnectorData")
-                .unwrap(),
-        ),
-        cert_verifier: Some(Arc::new(NoServerCertVerifier::default())),
-        ..Default::default()
-    };
-
-    // generate client connector data
-    // let tls_client_data = TlsConnectorData::try_from(ClientConfig {
-    //     client_auth: Some(ClientAuth::SelfSigned),
-    //     server_verify_mode: Some(ServerVerifyMode::Disable),
-    //     extensions: Some(vec![ClientHelloExtension::ServerName(Some(
-    //         SERVER_AUTHORITY.into_host(),
-    //     ))]),
+    // let conf = ClientConfigInput {
+    //     key_logger: KeyLogIntent::Environment.into_file_path(),
+    //     client_auth: Some(
+    //         self_signed_client_auth()
+    //             .context("rustls/TlsConnectorData")
+    //             .unwrap(),
+    //     ),
+    //     cert_verifier: Some(Arc::new(NoServerCertVerifier::default())),
     //     ..Default::default()
-    // })
-    // .expect("create tls connector data for client");
+    // };
 
-    // let client_config = ClientConfig {
+    // // generate client connector data
+    // // let tls_client_data = TlsConnectorData::try_from(ClientConfig {
+    // //     client_auth: Some(ClientAuth::SelfSigned),
+    // //     server_verify_mode: Some(ServerVerifyMode::Disable),
+    // //     extensions: Some(vec![ClientHelloExtension::ServerName(Some(
+    // //         SERVER_AUTHORITY.into_host(),
+    // //     ))]),
+    // //     ..Default::default()
+    // // })
+    // // .expect("create tls connector data for client");
 
-    // }
-    let tls_client_data = TlsConnectorData {
-        client_config_input: Arc::new(conf),
-        server_name: Some(SERVER_AUTHORITY.into_host()),
-    };
+    // // let client_config = ClientConfig {
 
-    let tls_client_cert_chain: Vec<_> = tls_client_data
-        .client_auth_cert_chain()
-        .into_iter()
-        .flatten()
-        .map(|cert| cert.as_ref().to_vec())
-        .collect();
+    // // }
+    // let tls_client_data = TlsConnectorData {
+    //     client_config_input: Arc::new(conf),
+    //     server_name: Some(SERVER_AUTHORITY.into_host()),
+    // };
 
-    // generate server cert
-    let mut tls_server_config =
-        ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
-    tls_server_config.client_verify_mode =
-        ClientVerifyMode::ClientAuth(DataEncoding::DerStack(tls_client_cert_chain));
-    tls_server_config.application_layer_protocol_negotiation = Some(vec![
-        ApplicationProtocol::HTTP_2,
-        ApplicationProtocol::HTTP_11,
-    ]);
-    let tls_server_data =
-        TlsAcceptorData::try_from(tls_server_config).expect("create tls acceptor data for server");
+    // let tls_client_cert_chain: Vec<_> = tls_client_data
+    //     .client_auth_cert_chain()
+    //     .into_iter()
+    //     .flatten()
+    //     .map(|cert| cert.as_ref().to_vec())
+    //     .collect();
 
-    // create mtls web server
-    shutdown.spawn_task_fn(async |guard| {
-        let executor = Executor::graceful(guard.clone());
+    // // generate server cert
+    // let mut tls_server_config =
+    //     ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
+    // tls_server_config.client_verify_mode =
+    //     ClientVerifyMode::ClientAuth(DataEncoding::DerStack(tls_client_cert_chain));
+    // tls_server_config.application_layer_protocol_negotiation = Some(vec![
+    //     ApplicationProtocol::HTTP_2,
+    //     ApplicationProtocol::HTTP_11,
+    // ]);
+    // todo!();
+    // let tls_server_data =
+    //     TlsAcceptorData::try_from(tls_server_config).expect("create tls acceptor data for server");
 
-        let tcp_service = TlsAcceptorLayer::new(tls_server_data).into_layer(
-            HttpServer::auto(executor).service(
-                TraceLayer::new_for_http().into_layer(
-                    WebService::default()
-                        .get("/", Redirect::temporary("/hello"))
-                        .get("/hello", Html("<h1>Hello, authorized client!</h1>")),
-                ),
-            ),
-        );
+    // // create mtls web server
+    // shutdown.spawn_task_fn(async |guard| {
+    //     let executor = Executor::graceful(guard.clone());
 
-        tracing::info!("start mtls (https) web service: {}", SERVER_AUTHORITY);
-        TcpListener::bind(SERVER_AUTHORITY.to_string())
-            .await
-            .unwrap_or_else(|e| {
-                panic!("bind TCP Listener ({SERVER_AUTHORITY}): mtls (https): web service: {e}")
-            })
-            .serve_graceful(guard, tcp_service)
-            .await;
-    });
+    //     let tcp_service = TlsAcceptorLayer::new(tls_server_data).into_layer(
+    //         HttpServer::auto(executor).service(
+    //             TraceLayer::new_for_http().into_layer(
+    //                 WebService::default()
+    //                     .get("/", Redirect::temporary("/hello"))
+    //                     .get("/hello", Html("<h1>Hello, authorized client!</h1>")),
+    //             ),
+    //         ),
+    //     );
 
-    // create mtls tunnel proxy
-    shutdown.spawn_task_fn(async |guard| {
-        tracing::info!("start mTLS TCP Tunnel Proxys: {}", TUNNEL_AUTHORITY);
+    //     tracing::info!("start mtls (https) web service: {}", SERVER_AUTHORITY);
+    //     TcpListener::bind(SERVER_AUTHORITY.to_string())
+    //         .await
+    //         .unwrap_or_else(|e| {
+    //             panic!("bind TCP Listener ({SERVER_AUTHORITY}): mtls (https): web service: {e}")
+    //         })
+    //         .serve_graceful(guard, tcp_service)
+    //         .await;
+    // });
 
-        let forwarder = Forwarder::new(SERVER_AUTHORITY).connector(
-            TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.into_host()))
-                .with_connector_data(tls_client_data)
-                .into_layer(TcpConnector::new()),
-        );
+    // // create mtls tunnel proxy
+    // shutdown.spawn_task_fn(async |guard| {
+    //     tracing::info!("start mTLS TCP Tunnel Proxys: {}", TUNNEL_AUTHORITY);
 
-        // L4 Proxy Service
-        TcpListener::bind(TUNNEL_AUTHORITY.to_string())
-            .await
-            .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
-            .serve_graceful(guard, TraceErrLayer::new().into_layer(forwarder))
-            .await;
-    });
+    //     let forwarder = Forwarder::new(SERVER_AUTHORITY).connector(
+    //         TlsConnectorLayer::tunnel(Some(SERVER_AUTHORITY.into_host()))
+    //             .with_connector_data(tls_client_data)
+    //             .into_layer(TcpConnector::new()),
+    //     );
 
-    shutdown
-        .shutdown_with_limit(Duration::from_secs(30))
-        .await
-        .expect("graceful shutdown");
+    //     // L4 Proxy Service
+    //     TcpListener::bind(TUNNEL_AUTHORITY.to_string())
+    //         .await
+    //         .expect("bind TCP Listener: mTLS TCP Tunnel Proxys")
+    //         .serve_graceful(guard, TraceErrLayer::new().into_layer(forwarder))
+    //         .await;
+    // });
+
+    // shutdown
+    //     .shutdown_with_limit(Duration::from_secs(30))
+    //     .await
+    //     .expect("graceful shutdown");
 }

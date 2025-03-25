@@ -56,9 +56,11 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls_rustls::dep::rustls,
+    tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer, self_signed_server_auth},
 };
-use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
+use rama_net::tls::server::SelfSignedData;
+// use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
@@ -77,9 +79,15 @@ async fn main() {
         )
         .init();
 
-    let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
+    let builder = rustls::ServerConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS);
+    let (cert_chain, key_der) = self_signed_server_auth(SelfSignedData::default()).unwrap();
 
-    let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+    let r = builder
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key_der)
+        .unwrap();
+
+    let acceptor_data = TlsAcceptorData::from(r);
 
     let shutdown = Shutdown::default();
 
