@@ -6,7 +6,7 @@ use rama::{Context, http::BodyExtractExt};
 async fn test_tls_termination() {
     utils::init_tracing();
 
-    let runner = utils::ExampleRunner::interactive("tls_termination", Some("rustls"));
+    let runner = utils::ExampleRunner::interactive("tls_rustls_termination", Some("rustls"));
 
     // We do not test the direct http service, it's end-to-end anyway,
     // but mostly because otherwise we need to fake the Forwarding stuff (HaProxy) as well.

@@ -2355,6 +2355,7 @@ dependencies = [
  "rama-proxy",
  "rama-tcp",
  "rama-tls",
+ "rama-tls-rustls",
  "rama-ua",
  "rama-utils",
  "regex",
@@ -2546,6 +2547,7 @@ dependencies = [
  "rama-net",
  "rama-tcp",
  "rama-tls",
+ "rama-tls-rustls",
  "rama-utils",
  "tokio",
  "tracing",
@@ -2634,6 +2636,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "const_format",
+ "flume",
  "futures-lite",
  "headers",
  "hex",
@@ -2712,6 +2715,29 @@ dependencies = [
  "rama-boring",
  "rama-boring-tokio",
  "rama-core",
+ "rama-net",
+ "rama-utils",
+ "rcgen",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "webpki-roots",
+]
+
+[[package]]
+name = "rama-tls-rustls"
+version = "0.2.0-alpha.8"
+dependencies = [
+ "flume",
+ "itertools 0.14.0",
+ "parking_lot",
+ "pin-project-lite",
+ "rama-core",
+ "rama-http-types",
  "rama-net",
  "rama-utils",
  "rcgen",

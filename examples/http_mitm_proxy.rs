@@ -15,7 +15,7 @@
 //! It combines concepts that can seen in action separately in the following examples:
 //!
 //! - [`http_connect_proxy`](./http_connect_proxy.rs);
-//! - [`tls_termination`](./tls_termination.rs);
+//! - [`tls_rustls_termination`](./tls_rustls_termination.rs);
 //!
 //! # Run the example
 //!
@@ -70,8 +70,14 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
+
+#[cfg(feature = "boring")]
+use rama::tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer};
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use rama::tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+
 use rama_http::layer::compress_adapter::CompressAdaptLayer;
 use rama_ua::{
     emulate::{

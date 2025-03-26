@@ -1,5 +1,5 @@
 use super::TlsConnectorData;
-use crate::rustls::dep::tokio_rustls::{TlsConnector as RustlsConnector, client::TlsStream};
+use crate::dep::tokio_rustls::{TlsConnector as RustlsConnector, client::TlsStream};
 use crate::types::TlsTunnel;
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
@@ -277,7 +277,6 @@ where
         );
 
         let connector_data = ctx.get::<TlsConnectorData>().cloned();
-
         let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         tracing::trace!(
@@ -332,7 +331,6 @@ where
         let server_host = transport_ctx.authority.host().clone();
 
         let connector_data = ctx.get::<TlsConnectorData>().cloned();
-
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
         ctx.insert(negotiated_params);
 
@@ -379,7 +377,6 @@ where
         };
 
         let connector_data = ctx.get::<TlsConnectorData>().cloned();
-
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
         ctx.insert(negotiated_params);
 

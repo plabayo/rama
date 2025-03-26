@@ -47,8 +47,13 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::{client::default_tcp_connect, server::TcpListener, utils::is_connection_error},
-    tls::std::server::TlsAcceptorLayer,
 };
+
+#[cfg(feature = "boring")]
+use rama::tls::boring::server::TlsAcceptorLayer;
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use rama::tls_rustls::server::TlsAcceptorLayer;
 
 use std::convert::Infallible;
 use std::time::Duration;

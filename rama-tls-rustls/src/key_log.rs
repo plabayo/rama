@@ -1,8 +1,7 @@
-use std::fmt;
-
-use crate::keylog::{KeyLogFileHandle, new_key_log_file_handle};
-use crate::rustls::dep::rustls::KeyLog;
+use crate::dep::rustls::KeyLog;
 use rama_core::error::OpaqueError;
+use rama_net::tls::keylog::{KeyLogFileHandle, new_key_log_file_handle};
+use std::fmt;
 
 #[derive(Debug, Clone)]
 /// [`KeyLog`] implementation that opens a file for the given path.
