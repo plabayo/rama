@@ -5,9 +5,9 @@
 //! # Example
 //!
 //! ```no_run
-//! use rama_tcp::{TcpStream, server::TcpListener};
+//! use rama_tcp::server::TcpListener;
 //! use rama_core::service::service_fn;
-//! use tokio::io::AsyncWriteExt;
+//! use tokio::{io::AsyncWriteExt, net::TcpStream};
 //!
 //! const SRC: &str = include_str!("../../../examples/tcp_listener_hello.rs");
 //!
