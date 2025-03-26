@@ -26,7 +26,7 @@ as a distant relative.
 
 ## Relative Forks
 
-- <https://github.com/tokio-rs/axum/tree/e0b55d750390d810028caad0387058751611c1b4>
+- <https://github.com/tokio-rs/axum/tree/2b6ae09568f29451b731674a578275955314badc>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError
