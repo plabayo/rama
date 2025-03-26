@@ -3,7 +3,7 @@ use rama_core::error::BoxError;
 use rama_http_core::server::conn::auto::Builder as AutoBuilder;
 use rama_http_core::server::conn::http1::Builder as Http1Builder;
 use rama_http_core::server::conn::http2::Builder as Http2Builder;
-use rama_tcp::utils::is_connection_error;
+use rama_net::conn::is_connection_error;
 use std::error::Error;
 
 /// A utility trait to allow any of the http-core server builders to be used

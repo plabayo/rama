@@ -316,7 +316,7 @@ where
 }
 
 async fn handle_accept_err(err: io::Error) {
-    if crate::utils::is_connection_error(&err) {
+    if rama_net::conn::is_connection_error(&err) {
         tracing::trace!(
             error = &err as &dyn std::error::Error,
             "TCP accept error: connect error"

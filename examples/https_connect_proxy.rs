@@ -37,6 +37,7 @@ use rama::{
         matcher::MethodMatcher,
         server::HttpServer,
     },
+    net::conn::is_connection_error,
     net::http::RequestContext,
     net::stream::layer::http::BodyLimitLayer,
     net::tls::{
@@ -46,7 +47,7 @@ use rama::{
     net::user::Basic,
     rt::Executor,
     service::service_fn,
-    tcp::{client::default_tcp_connect, server::TcpListener, utils::is_connection_error},
+    tcp::{client::default_tcp_connect, server::TcpListener},
     tls::std::server::TlsAcceptorLayer,
 };
 

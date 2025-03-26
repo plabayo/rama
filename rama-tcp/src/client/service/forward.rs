@@ -1,5 +1,5 @@
 use super::TcpConnector;
-use crate::{client::Request as TcpRequest, utils::is_connection_error};
+use crate::client::Request as TcpRequest;
 use rama_core::{
     Context, Layer, Service,
     error::{BoxError, ErrorExt, OpaqueError},
@@ -200,7 +200,7 @@ where
         match tokio::io::copy_bidirectional(&mut source, target.deref_mut()).await {
             Ok(_) => Ok(()),
             Err(err) => {
-                if is_connection_error(&err) {
+                if rama_net::conn::is_connection_error(&err) {
                     Ok(())
                 } else {
                     Err(err.context("tcp forwarder"))

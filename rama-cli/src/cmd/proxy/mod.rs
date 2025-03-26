@@ -16,11 +16,12 @@ use rama::{
         server::HttpServer,
     },
     layer::{LimitLayer, TimeoutLayer, limit::policy::ConcurrentPolicy},
+    net::conn::is_connection_error,
     net::http::RequestContext,
     net::stream::layer::http::BodyLimitLayer,
     rt::Executor,
     service::service_fn,
-    tcp::{client::default_tcp_connect, server::TcpListener, utils::is_connection_error},
+    tcp::{client::default_tcp_connect, server::TcpListener},
 };
 use std::{convert::Infallible, time::Duration};
 use tracing::level_filters::LevelFilter;
