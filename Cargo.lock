@@ -2540,7 +2540,6 @@ version = "0.2.0-alpha.8"
 dependencies = [
  "const_format",
  "h2",
- "pin-project-lite",
  "rama-core",
  "rama-http-core",
  "rama-http-types",
@@ -2632,7 +2631,6 @@ dependencies = [
 name = "rama-net"
 version = "0.2.0-alpha.8"
 dependencies = [
- "aws-lc-sys",
  "base64 0.22.1",
  "bytes",
  "const_format",
@@ -2643,7 +2641,6 @@ dependencies = [
  "itertools 0.14.0",
  "md5",
  "nom 8.0.0",
- "opentelemetry",
  "parking_lot",
  "pin-project-lite",
  "psl",
@@ -2651,7 +2648,6 @@ dependencies = [
  "rama-boring",
  "rama-core",
  "rama-http-types",
- "rama-macros",
  "rama-utils",
  "rustls",
  "serde",
@@ -2716,7 +2712,6 @@ dependencies = [
  "rama-boring",
  "rama-boring-tokio",
  "rama-core",
- "rama-http-types",
  "rama-net",
  "rama-utils",
  "rcgen",
@@ -2734,7 +2729,6 @@ dependencies = [
 name = "rama-ua"
 version = "0.2.0-alpha.8"
 dependencies = [
- "bytes",
  "itertools 0.14.0",
  "rama-core",
  "rama-http-types",
