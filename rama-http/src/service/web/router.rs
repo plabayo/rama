@@ -107,6 +107,21 @@ where
         self.add_route(path, matcher, service)
     }
 
+    pub fn sub<I, T>(self, prefix: &str, service: I) -> Self
+    where
+        I: IntoEndpointService<State, T>,
+    {
+        let path = format!("{}/{}", prefix.trim_end_matches(['/']), "{*nest}");
+        let matcher = HttpMatcher::path("*");
+
+        let nested_router_service = NestedRouterService {
+            prefix: prefix.to_owned(),
+            nested: service.into_endpoint_service().boxed(),
+        };
+
+        self.add_route(&path, matcher, nested_router_service)
+    }
+
     fn add_route<I, T>(mut self, path: &str, matcher: HttpMatcher<State, Body>, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -130,6 +145,44 @@ where
     {
         self.not_found = Some(service.into_endpoint_service().boxed());
         self
+    }
+}
+
+struct NestedRouterService<State> {
+    prefix: String,
+    nested: BoxService<State, Request, Response, Infallible>,
+}
+
+impl<State: std::fmt::Debug> std::fmt::Debug for NestedRouterService<State> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NestedRouterService")
+            .field("prefix", &self.prefix)
+            .finish()
+    }
+}
+
+impl<State> Service<State, Request> for NestedRouterService<State>
+where
+    State: Clone + Send + Sync + 'static,
+{
+    type Response = Response;
+    type Error = Infallible;
+
+    async fn serve(
+        &self,
+        ctx: Context<State>,
+        mut req: Request,
+    ) -> Result<Self::Response, Self::Error> {
+        let path = ctx.get::<UriParams>().unwrap().glob().unwrap();
+
+        if path.starts_with(&self.prefix) {
+            // strip the "/prefix" from the request URI
+            let new_path = &path[self.prefix.len()..];
+            // update the request URI with the new path
+            *req.uri_mut() = new_path.parse().unwrap();
+        }
+
+        self.nested.serve(ctx, req).await
     }
 }
 
@@ -185,98 +238,149 @@ mod tests {
 
     use super::*;
     use rama_core::service::service_fn;
-    use rama_http_types::{Body, Request, StatusCode, dep::http_body_util::BodyExt};
+    use rama_http_types::{Body, Method, Request, StatusCode, dep::http_body_util::BodyExt};
 
-    #[tokio::test]
-    async fn test_router() {
-        let root = service_fn(|_ctx, _req| async {
+    fn root_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+        service_fn(|_ctx, _req| async {
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from("Hello, World!"))
                 .unwrap())
-        });
+        })
+    }
 
-        let list_users = service_fn(|_ctx, _req| async {
-            Ok(Response::builder()
-                .status(200)
-                .body(Body::from("List Users"))
-                .unwrap())
-        });
-
-        let create_user = service_fn(|_ctx, _req| async {
+    fn create_user_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+        service_fn(|_ctx, _req| async {
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from("Create User"))
                 .unwrap())
-        });
+        })
+    }
 
-        let get_user = service_fn(|ctx: Context<()>, _req| async move {
+    fn get_users_servic() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+        service_fn(|_ctx, _req| async {
+            Ok(Response::builder()
+                .status(200)
+                .body(Body::from("List Users"))
+                .unwrap())
+        })
+    }
+
+    fn get_user_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+        service_fn(|ctx: Context<()>, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
             let id = uri_params.get("id").unwrap();
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from(format!("Get User: {}", id)))
                 .unwrap())
-        });
+        })
+    }
 
-        let delete_user = service_fn(|ctx: Context<()>, _req| async move {
+    fn delete_user_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+        service_fn(|ctx: Context<()>, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
             let id = uri_params.get("id").unwrap();
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from(format!("Delete User: {}", id)))
                 .unwrap())
-        });
+        })
+    }
 
-        let not_found_service = service_fn(|_ctx, _req| async {
+    fn not_found_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+        service_fn(|_ctx, _req| async {
             Ok(Response::builder()
                 .status(StatusCode::NOT_FOUND)
                 .body(Body::from("Not Found"))
                 .unwrap())
-        });
+        })
+    }
 
+    #[tokio::test]
+    async fn test_router() {
         let router = Router::new()
-            .get("/", root)
-            .get("/users", list_users)
-            .post("/users", create_user)
-            .get("/users/{id}", get_user)
-            .delete("/users/{id}", delete_user)
-            .not_found(not_found_service);
+            .get("/", root_service())
+            .get("/users", get_users_servic())
+            .post("/users", create_user_service())
+            .get("/users/{id}", get_user_service())
+            .delete("/users/{id}", delete_user_service())
+            .not_found(not_found_service());
 
-        let req = Request::get("/").body(Body::empty()).unwrap();
-        let res = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "Hello, World!");
+        let cases = vec![
+            (Method::GET, "/", "Hello, World!", StatusCode::OK),
+            (Method::GET, "/users", "List Users", StatusCode::OK),
+            (Method::POST, "/users", "Create User", StatusCode::OK),
+            (Method::GET, "/users/123", "Get User: 123", StatusCode::OK),
+            (
+                Method::DELETE,
+                "/users/123",
+                "Delete User: 123",
+                StatusCode::OK,
+            ),
+            (
+                Method::GET,
+                "/not-found",
+                "Not Found",
+                StatusCode::NOT_FOUND,
+            ),
+        ];
 
-        let req = Request::get("/users").body(Body::empty()).unwrap();
-        let res = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "List Users");
+        for (method, path, expected_body, expected_status) in cases {
+            let req = match method {
+                Method::GET => Request::get(path),
+                Method::POST => Request::post(path),
+                Method::DELETE => Request::delete(path),
+                _ => panic!("Unsupported HTTP method"),
+            }
+            .body(Body::empty())
+            .unwrap();
 
-        let req = Request::post("/users").body(Body::empty()).unwrap();
-        let res = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "Create User");
+            let res = router.serve(Context::default(), req).await.unwrap();
+            assert_eq!(res.status(), expected_status);
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, expected_body);
+        }
+    }
 
-        let req = Request::get("/users/123").body(Body::empty()).unwrap();
-        let res = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "Get User: 123");
+    #[tokio::test]
+    async fn test_router_nest() {
+        let api_router = Router::new()
+            .get("/users", get_users_servic())
+            .post("/users", create_user_service())
+            .delete("/users/{id}", delete_user_service());
 
-        let req = Request::delete("/users/123").body(Body::empty()).unwrap();
-        let res = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "Delete User: 123");
+        let app = Router::new()
+            .sub("/api", api_router)
+            .get("/", root_service());
 
-        let req = Request::get("/not-found").body(Body::empty()).unwrap();
-        let res = router.serve(Context::default(), req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::NOT_FOUND);
-        let body = res.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(body, "Not Found");
+        let cases = vec![
+            (Method::GET, "/", "Hello, World!", StatusCode::OK),
+            (Method::GET, "/api/users", "List Users", StatusCode::OK),
+            (Method::POST, "/api/users", "Create User", StatusCode::OK),
+            (
+                Method::DELETE,
+                "/api/users/123",
+                "Delete User: 123",
+                StatusCode::OK,
+            ),
+        ];
+
+        for (method, path, expected_body, expected_status) in cases {
+            let req = match method {
+                Method::GET => Request::get(path),
+                Method::POST => Request::post(path),
+                Method::DELETE => Request::delete(path),
+                _ => panic!("Unsupported HTTP method"),
+            }
+            .body(Body::empty())
+            .unwrap();
+
+            let res = app.serve(Context::default(), req).await.unwrap();
+            assert_eq!(res.status(), expected_status);
+            let body = res.into_body().collect().await.unwrap().to_bytes();
+            assert_eq!(body, expected_body);
+        }
     }
 }
