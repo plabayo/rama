@@ -81,3 +81,15 @@ where
         self.serve(ctx, req)
     }
 }
+
+
+/// Any connector
+///         Http -> rustls -> tcp
+///         Http -> boring -> tcp
+///         http -> None   -> tcp
+/// Pool -> Http -> rustls -> tcp
+/// Pool -> Http -> boring -> tcp
+/// Pool -> http -> None   -> tcp
+
+
+/// tcp -> rustls | boring | None -> http

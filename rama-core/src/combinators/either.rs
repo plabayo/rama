@@ -221,5 +221,3 @@ macro_rules! impl_async_read_write_either {
         }
     };
 }
-
-impl_either!(impl_async_read_write_either);

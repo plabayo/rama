@@ -21,7 +21,7 @@ pub mod client;
 pub mod server;
 pub mod verify;
 
-mod key_log;
+pub mod key_log;
 
 pub mod types {
     //! common tls types

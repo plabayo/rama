@@ -23,4 +23,4 @@ pub use layer::TlsAcceptorLayer;
 
 mod acceptor_data;
 #[doc(inline)]
-pub use acceptor_data::TlsAcceptorData;
+pub use acceptor_data::{TlsAcceptorData, self_signed_server_auth};
