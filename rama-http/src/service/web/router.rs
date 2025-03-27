@@ -16,6 +16,11 @@ use rama_http_types::{Body, StatusCode};
 
 use super::IntoEndpointService;
 
+/// A basic router that can be used to route requests to different services based on the request path.
+///
+/// This router uses `matchit::Router` to efficiently match incoming requests
+/// to predefined routes. Each route is associated with an `HttpMatcher`
+/// and a corresponding service handler.
 pub struct Router<State> {
     routes: MatchitRouter<
         Vec<(
@@ -36,6 +41,7 @@ impl<State> Router<State>
 where
     State: Clone + Send + Sync + 'static,
 {
+    /// create a new router.
     pub fn new() -> Self {
         Self {
             routes: MatchitRouter::new(),
@@ -43,14 +49,25 @@ where
         }
     }
 
+    /// add a GET route to the router.
+    /// the path can contain parameters, e.g. `/users/{id}`.
+    /// the path can also contain a glob matcher, e.g. `/assets/{*path}`.
     pub fn get<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::get(path);
+        // keep everything before the "{*" part and add a glob matcher
+        let matcher_path = if let Some(start) = path.find("{*") {
+            format!("{}*", &path[..start])
+        } else {
+            path.to_owned()
+        };
+
+        let matcher = HttpMatcher::get(matcher_path);
         self.add_route(path, matcher, service)
     }
 
+    /// add a POST route to the router.
     pub fn post<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -59,6 +76,7 @@ where
         self.add_route(path, matcher, service)
     }
 
+    /// add a PUT route to the router.
     pub fn put<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -67,6 +85,7 @@ where
         self.add_route(path, matcher, service)
     }
 
+    /// add a DELETE route to the router.
     pub fn delete<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -75,6 +94,7 @@ where
         self.add_route(path, matcher, service)
     }
 
+    /// add a PATCH route to the router.
     pub fn patch<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -83,6 +103,7 @@ where
         self.add_route(path, matcher, service)
     }
 
+    /// add a HEAD route to the router.
     pub fn head<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -91,6 +112,7 @@ where
         self.add_route(path, matcher, service)
     }
 
+    /// add a OPTIONS route to the router.
     pub fn options<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -99,6 +121,7 @@ where
         self.add_route(path, matcher, service)
     }
 
+    /// add a TRACE route to the router.
     pub fn trace<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -107,6 +130,9 @@ where
         self.add_route(path, matcher, service)
     }
 
+    /// register a nested router under a prefix.
+    ///
+    /// The prefix is used to match the request path and strip it from the request URI.
     pub fn sub<I, T>(self, prefix: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -122,6 +148,7 @@ where
         self.add_route(&path, matcher, nested_router_service)
     }
 
+    /// add a route to the router with it's matcher and service.
     fn add_route<I, T>(mut self, path: &str, matcher: HttpMatcher<State, Body>, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -139,6 +166,7 @@ where
         self
     }
 
+    /// use the provided service when no route matches the request.
     pub fn not_found<I, T>(mut self, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
@@ -289,6 +317,18 @@ mod tests {
         })
     }
 
+    fn serve_assets_service() -> impl Service<(), Request, Response = Response, Error = Infallible>
+    {
+        service_fn(|ctx: Context<()>, _req| async move {
+            let uri_params = ctx.get::<UriParams>().unwrap();
+            let path = uri_params.glob().unwrap();
+            Ok(Response::builder()
+                .status(200)
+                .body(Body::from(format!("Serve Assets: {}", path)))
+                .unwrap())
+        })
+    }
+
     fn not_found_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
         service_fn(|_ctx, _req| async {
             Ok(Response::builder()
@@ -306,6 +346,7 @@ mod tests {
             .post("/users", create_user_service())
             .get("/users/{id}", get_user_service())
             .delete("/users/{id}", delete_user_service())
+            .get("/assets/{*path}", serve_assets_service())
             .not_found(not_found_service());
 
         let cases = vec![
@@ -320,6 +361,18 @@ mod tests {
                 StatusCode::OK,
             ),
             (
+                Method::PUT,
+                "/users/123",
+                "Not Found",
+                StatusCode::NOT_FOUND,
+            ),
+            (
+                Method::GET,
+                "/assets/css/style.css",
+                "Serve Assets: /css/style.css",
+                StatusCode::OK,
+            ),
+            (
                 Method::GET,
                 "/not-found",
                 "Not Found",
@@ -331,6 +384,7 @@ mod tests {
             let req = match method {
                 Method::GET => Request::get(path),
                 Method::POST => Request::post(path),
+                Method::PUT => Request::put(path),
                 Method::DELETE => Request::delete(path),
                 _ => panic!("Unsupported HTTP method"),
             }
