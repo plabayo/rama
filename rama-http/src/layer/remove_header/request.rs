@@ -31,7 +31,8 @@
 use crate::{HeaderName, Request, Response};
 use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
-use std::{borrow::Cow, fmt};
+use smol_str::SmolStr;
+use std::fmt;
 
 #[derive(Debug, Clone)]
 /// Layer that applies [`RemoveRequestHeader`] which removes request headers.
@@ -43,7 +44,7 @@ pub struct RemoveRequestHeaderLayer {
 
 #[derive(Debug, Clone)]
 enum RemoveRequestHeaderMode {
-    Prefix(Cow<'static, str>),
+    Prefix(SmolStr),
     Exact(HeaderName),
     Hop,
 }
@@ -52,7 +53,7 @@ impl RemoveRequestHeaderLayer {
     /// Create a new [`RemoveRequestHeaderLayer`].
     ///
     /// Removes request headers by prefix.
-    pub fn prefix(prefix: impl Into<Cow<'static, str>>) -> Self {
+    pub fn prefix(prefix: impl Into<SmolStr>) -> Self {
         Self {
             mode: RemoveRequestHeaderMode::Prefix(prefix.into()),
         }
@@ -106,7 +107,7 @@ impl<S> RemoveRequestHeader<S> {
     /// Create a new [`RemoveRequestHeader`].
     ///
     /// Removes headers by prefix.
-    pub fn prefix(prefix: impl Into<Cow<'static, str>>, inner: S) -> Self {
+    pub fn prefix(prefix: impl Into<SmolStr>, inner: S) -> Self {
         RemoveRequestHeaderLayer::prefix(prefix.into()).into_layer(inner)
     }
 
