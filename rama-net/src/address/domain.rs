@@ -1,6 +1,7 @@
 use super::Host;
 use rama_core::error::{ErrorContext, OpaqueError};
-use std::{borrow::Cow, cmp::Ordering, fmt, iter::repeat};
+use smol_str::SmolStr;
+use std::{cmp::Ordering, fmt, iter::repeat};
 
 /// A domain.
 ///
@@ -9,7 +10,7 @@ use std::{borrow::Cow, cmp::Ordering, fmt, iter::repeat};
 /// The validation of domains created by this type is very shallow.
 /// Proper validation is offloaded to other services such as DNS resolvers.
 #[derive(Debug, Clone)]
-pub struct Domain(Cow<'static, str>);
+pub struct Domain(SmolStr);
 
 impl Domain {
     /// Creates a domain at compile time.
@@ -23,7 +24,7 @@ impl Domain {
         if !is_valid_name(s.as_bytes()) {
             panic!("static str is an invalid domain");
         }
-        Self(Cow::Borrowed(s))
+        Self(SmolStr::new_static(s))
     }
 
     /// Creates the example [`Domain].
@@ -60,8 +61,8 @@ impl Domain {
     ///
     /// Note that a [`Domain`] is a sub of itself.
     pub fn is_sub_of(&self, other: &Domain) -> bool {
-        let a = self.0.as_ref().trim_matches('.');
-        let b = other.0.as_ref().trim_matches('.');
+        let a = self.as_ref().trim_matches('.');
+        let b = other.as_ref().trim_matches('.');
         match a.len().cmp(&b.len()) {
             Ordering::Equal => a.eq_ignore_ascii_case(b),
             Ordering::Greater => {
@@ -129,14 +130,14 @@ impl Domain {
     /// Returns the domain name inner Cow value.
     ///
     /// Should not be exposed in the public rama API.
-    pub(crate) fn into_inner(self) -> Cow<'static, str> {
+    pub(crate) fn into_inner(self) -> SmolStr {
         self.0
     }
 }
 
 impl std::hash::Hash for Domain {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        let this = self.0.as_ref();
+        let this = self.as_ref();
         let this = this.strip_prefix('.').unwrap_or(this);
         for b in this.bytes() {
             let b = b.to_ascii_lowercase();
@@ -147,7 +148,7 @@ impl std::hash::Hash for Domain {
 
 impl AsRef<str> for Domain {
     fn as_ref(&self) -> &str {
-        self.0.as_ref()
+        self.0.as_str()
     }
 }
 
@@ -170,7 +171,7 @@ impl TryFrom<String> for Domain {
 
     fn try_from(name: String) -> Result<Self, Self::Error> {
         if is_valid_name(name.as_bytes()) {
-            Ok(Self(Cow::Owned(name)))
+            Ok(Self(SmolStr::new(name)))
         } else {
             Err(OpaqueError::from_display("invalid domain"))
         }
@@ -182,7 +183,7 @@ impl<'a> TryFrom<&'a [u8]> for Domain {
 
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
         if is_valid_name(name) {
-            Ok(Self(Cow::Owned(
+            Ok(Self(SmolStr::new(
                 String::from_utf8(name.to_vec()).context("convert domain bytes to utf-8 string")?,
             )))
         } else {
@@ -196,7 +197,7 @@ impl TryFrom<Vec<u8>> for Domain {
 
     fn try_from(name: Vec<u8>) -> Result<Self, Self::Error> {
         if is_valid_name(name.as_slice()) {
-            Ok(Self(Cow::Owned(
+            Ok(Self(SmolStr::new(
                 String::from_utf8(name).context("convert domain bytes to utf-8 string")?,
             )))
         } else {

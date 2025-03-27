@@ -1,5 +1,6 @@
 use rama_core::error::{ErrorContext, OpaqueError};
-use std::{borrow::Cow, fmt};
+use smol_str::SmolStr;
+use std::fmt;
 
 macro_rules! create_obf_type {
     ($name:ident, $val_fn:expr, $fix_lossy:expr) => {
@@ -7,7 +8,7 @@ macro_rules! create_obf_type {
         #[doc = ""]
         #[doc = "See <https://datatracker.ietf.org/doc/html/rfc7239#section-6>."]
         #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-        pub struct $name(Cow<'static, str>);
+        pub struct $name(SmolStr);
 
         impl $name {
             #[doc = concat!("Creates a [`", stringify!($name), "`] at compile time.")]
@@ -21,7 +22,7 @@ macro_rules! create_obf_type {
                 if !$val_fn(s.as_bytes()) {
                     panic!(concat!("static str is an invalid ", stringify!($name)));
                 }
-                Self(Cow::Borrowed(s))
+                Self(SmolStr::new_static(s))
             }
 
             #[doc = concat!("Try to convert a vector of bytes to a [`", stringify!($name), "`].")]
@@ -64,7 +65,7 @@ macro_rules! create_obf_type {
 
             #[allow(dead_code)]
             /// easier creation for other locs in this codebase where we are certain that data is pre-validated
-            pub(super) fn from_inner(inner: Cow<'static, str>) -> Self {
+            pub(super) fn from_inner(inner: SmolStr) -> Self {
                 debug_assert!($val_fn(inner.as_bytes()));
                 Self(inner)
             }
@@ -95,7 +96,7 @@ macro_rules! create_obf_type {
 
             fn try_from(s: String) -> Result<Self, Self::Error> {
                 if $val_fn(s.as_bytes()) {
-                    Ok(Self(Cow::Owned(s)))
+                    Ok(Self(SmolStr::new(s)))
                 } else {
                     Err(OpaqueError::from_display(concat!("invalid ", stringify!($name))))
                 }
@@ -107,7 +108,7 @@ macro_rules! create_obf_type {
 
             fn try_from(s: Vec<u8>) -> Result<Self, Self::Error> {
                 if $val_fn(s.as_slice()) {
-                    Ok(Self(Cow::Owned(
+                    Ok(Self(SmolStr::new(
                         String::from_utf8(s).context(concat!("convert ", stringify!($name), "bytes to utf-8 string"))?,
                     )))
                 } else {
