@@ -127,7 +127,7 @@ impl Domain {
         self.as_ref()
     }
 
-    /// Returns the domain name inner Cow value.
+    /// Returns the domain name inner value.
     ///
     /// Should not be exposed in the public rama API.
     pub(crate) fn into_inner(self) -> SmolStr {
@@ -184,7 +184,7 @@ impl<'a> TryFrom<&'a [u8]> for Domain {
     fn try_from(name: &'a [u8]) -> Result<Self, Self::Error> {
         if is_valid_name(name) {
             Ok(Self(SmolStr::new(
-                String::from_utf8(name.to_vec()).context("convert domain bytes to utf-8 string")?,
+                std::str::from_utf8(name).context("convert domain bytes to utf-8 string")?,
             )))
         } else {
             Err(OpaqueError::from_display("invalid domain"))
