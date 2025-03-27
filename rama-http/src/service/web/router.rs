@@ -2,7 +2,7 @@ use std::convert::Infallible;
 
 use crate::{
     Request, Response,
-    matcher::{HttpMatcher, UriParams},
+    matcher::{HttpMatcher, MethodMatcher, UriParams},
 };
 
 use matchit::Router as MatchitRouter;
@@ -51,19 +51,12 @@ where
 
     /// add a GET route to the router.
     /// the path can contain parameters, e.g. `/users/{id}`.
-    /// the path can also contain a glob matcher, e.g. `/assets/{*path}`.
+    /// the path can also contain a catch call, e.g. `/assets/{*path}`.
     pub fn get<I, T>(self, path: &str, service: I) -> Self
     where
         I: IntoEndpointService<State, T>,
     {
-        // keep everything before the "{*" part and add a glob matcher
-        let matcher_path = if let Some(start) = path.find("{*") {
-            format!("{}*", &path[..start])
-        } else {
-            path.to_owned()
-        };
-
-        let matcher = HttpMatcher::get(matcher_path);
+        let matcher = HttpMatcher::method(MethodMatcher::GET);
         self.add_route(path, matcher, service)
     }
 
@@ -72,7 +65,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::post(path);
+        let matcher = HttpMatcher::method(MethodMatcher::POST);
         self.add_route(path, matcher, service)
     }
 
@@ -81,7 +74,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::put(path);
+        let matcher = HttpMatcher::method(MethodMatcher::PUT);
         self.add_route(path, matcher, service)
     }
 
@@ -90,7 +83,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::delete(path);
+        let matcher = HttpMatcher::method(MethodMatcher::DELETE);
         self.add_route(path, matcher, service)
     }
 
@@ -99,7 +92,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::patch(path);
+        let matcher = HttpMatcher::method(MethodMatcher::PATCH);
         self.add_route(path, matcher, service)
     }
 
@@ -108,7 +101,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::head(path);
+        let matcher = HttpMatcher::method(MethodMatcher::HEAD);
         self.add_route(path, matcher, service)
     }
 
@@ -117,7 +110,7 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::options(path);
+        let matcher = HttpMatcher::method(MethodMatcher::OPTIONS);
         self.add_route(path, matcher, service)
     }
 
@@ -126,7 +119,16 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let matcher = HttpMatcher::trace(path);
+        let matcher = HttpMatcher::method(MethodMatcher::TRACE);
+        self.add_route(path, matcher, service)
+    }
+
+    /// add a CONNECT route to the router.
+    pub fn connect<I, T>(self, path: &str, service: I) -> Self
+    where
+        I: IntoEndpointService<State, T>,
+    {
+        let matcher = HttpMatcher::method(MethodMatcher::CONNECT);
         self.add_route(path, matcher, service)
     }
 
@@ -138,7 +140,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let path = format!("{}/{}", prefix.trim_end_matches(['/']), "{*nest}");
-        let matcher = HttpMatcher::path("*");
+        let matcher = HttpMatcher::custom(true);
 
         let nested_router_service = NestedRouterService {
             prefix: prefix.to_owned(),
@@ -201,13 +203,13 @@ where
         ctx: Context<State>,
         mut req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let path = ctx.get::<UriParams>().unwrap().glob().unwrap();
+        let param = ctx.get::<UriParams>().unwrap();
 
-        if path.starts_with(&self.prefix) {
-            // strip the "/prefix" from the request URI
-            let new_path = &path[self.prefix.len()..];
-            // update the request URI with the new path
-            *req.uri_mut() = new_path.parse().unwrap();
+        if let Some(nest) = param.get("nest") {
+            // build the nested path
+            let path = format!("/{}", nest);
+            // update the request URI with the nested path
+            *req.uri_mut() = path.parse().unwrap();
         }
 
         self.nested.serve(ctx, req).await
@@ -321,10 +323,10 @@ mod tests {
     {
         service_fn(|ctx: Context<()>, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
-            let path = uri_params.glob().unwrap();
+            let path = uri_params.get("path").unwrap();
             Ok(Response::builder()
                 .status(200)
-                .body(Body::from(format!("Serve Assets: {}", path)))
+                .body(Body::from(format!("Serve Assets: /{}", path)))
                 .unwrap())
         })
     }
