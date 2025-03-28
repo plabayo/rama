@@ -1969,9 +1969,9 @@ dependencies = [
 
 [[package]]
 name = "once_cell"
-version = "1.21.1"
+version = "1.21.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d75b0bedcc4fe52caa0e03d9f1151a323e4aa5e2d78ba3580400cd3c9e2bc4bc"
+checksum = "42f5e15c9953c5e4ccceeb2e7382a716482c34515315f7b03532b8b4e8393d2d"
 dependencies = [
  "critical-section",
  "portable-atomic",
@@ -2296,9 +2296,9 @@ dependencies = [
 
 [[package]]
 name = "psl"
-version = "2.1.96"
+version = "2.1.97"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c8cf97e71c0401f4efde4be61e968330d3694ed34475ed2f664be9b2a3e5430a"
+checksum = "512f3593cab3435fbdfdc3bde4355fb9e365b734e2ab8b86ece60a9f773ec9b1"
 dependencies = [
  "psl-types",
 ]
@@ -2386,9 +2386,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5bdb4213d9bd04ef2101c7631ed249182bd2880ff5f1ab5607ffb06fb51c471"
+checksum = "be50f052703b876681c7ad40d42c34af355237ada6063a0619e429f2341a9bac"
 dependencies = [
  "bitflags",
  "foreign-types",
@@ -2399,9 +2399,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-sys"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4683a1a6d535ba0050aa6af3a7a02638e02c985344b3dee9e9dc4ebca3d20bd"
+checksum = "a9d1224bfe05ad10eec1f5a9291078bb234c7194bce1b9e21e862032c30ae6c7"
 dependencies = [
  "autocfg",
  "bindgen 0.71.1",
@@ -2412,9 +2412,9 @@ dependencies = [
 
 [[package]]
 name = "rama-boring-tokio"
-version = "0.2.0-alpha.2"
+version = "0.2.0-alpha.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8117d1f41f546d6ea27993724fb8e9520f8228378a418ddca422bc1c7e2bbadd"
+checksum = "a434ae552ee68dbd291f87859d1f40de1661f419b7d44b6d466d60c662ce3726"
 dependencies = [
  "rama-boring",
  "rama-boring-sys",

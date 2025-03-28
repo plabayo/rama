@@ -14,7 +14,6 @@ use rama_boring::{
 use rama_core::error::{ErrorContext, ErrorExt, OpaqueError};
 use rama_net::tls::{
     ApplicationProtocol, CertificateCompressionAlgorithm, ExtensionId, KeyLogIntent,
-    openssl_cipher_list_str_from_cipher_list,
 };
 use rama_net::tls::{
     DataEncoding,
@@ -43,7 +42,7 @@ pub struct TlsConnectorData {
 #[derive(Debug, Clone, Default)]
 pub(super) struct ConnectConfigurationInput {
     pub(super) keylog_intent: Option<KeyLogIntent>,
-    pub(super) cipher_list: Option<String>,
+    pub(super) cipher_list: Option<Vec<u16>>,
     pub(super) alpn_protos: Option<Vec<u8>>,
     pub(super) curves: Option<Vec<SslCurve>>,
     pub(super) min_ssl_version: Option<SslVersion>,
@@ -99,10 +98,10 @@ impl TlsConnectorData {
             });
         }
 
-        if let Some(s) = self.connect_config_input.cipher_list.as_deref() {
-            trace!("boring connector: set cipher list: {s}");
+        if let Some(list) = self.connect_config_input.cipher_list.as_deref() {
+            trace!("boring connector: set raw cipher list: {list:?}");
             cfg_builder
-                .set_cipher_list(s)
+                .set_raw_cipher_list(list)
                 .context("build (boring) ssl connector: set cipher list")?;
         }
 
@@ -613,9 +612,9 @@ impl TlsConnectorData {
             }
         }
 
-        let cipher_list = cipher_suites
-            .map(|suites| suites.as_slice())
-            .and_then(openssl_cipher_list_str_from_cipher_list);
+        let cipher_list: Option<Vec<u16>> = cipher_suites
+            .as_ref()
+            .map(|v| v.iter().copied().map(Into::into).collect());
         trace!(
             "TlsConnectorData: builder: from std client config: cipher list: {:?}",
             cipher_list
@@ -701,10 +700,10 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
     type Error = OpaqueError;
 
     fn try_from(value: rama_net::tls::client::ClientConfig) -> Result<Self, Self::Error> {
-        let cipher_list = value
+        let cipher_list: Option<Vec<u16>> = value
             .cipher_suites
-            .as_deref()
-            .and_then(openssl_cipher_list_str_from_cipher_list);
+            .as_ref()
+            .map(|v| v.iter().copied().map(Into::into).collect());
         trace!(
             "TlsConnectorData: builder: from std client config: cipher list: {:?}",
             cipher_list
