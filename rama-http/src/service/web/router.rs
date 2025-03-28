@@ -57,7 +57,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::GET);
-        self.add_route(path, matcher, service)
+        self.match_route(path, matcher, service)
     }
 
     /// add a POST route to the router.
@@ -66,7 +66,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::POST);
-        self.add_route(path, matcher, service)
+        self.match_route(path, matcher, service)
     }
 
     /// add a PUT route to the router.
@@ -75,7 +75,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::PUT);
-        self.add_route(path, matcher, service)
+        self.match_route(path, matcher, service)
     }
 
     /// add a DELETE route to the router.
@@ -84,7 +84,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::DELETE);
-        self.add_route(path, matcher, service)
+        self.match_route(path, matcher, service)
     }
 
     /// add a PATCH route to the router.
@@ -93,7 +93,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::PATCH);
-        self.add_route(path, matcher, service)
+        self.match_route(path, matcher, service)
     }
 
     /// add a HEAD route to the router.
@@ -102,7 +102,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::HEAD);
-        self.add_route(path, matcher, service)
+        self.match_route(path, matcher, service)
     }
 
     /// add a OPTIONS route to the router.
@@ -111,7 +111,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::OPTIONS);
-        self.add_route(path, matcher, service)
+        self.match_route(path, matcher, service)
     }
 
     /// add a TRACE route to the router.
@@ -120,7 +120,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::TRACE);
-        self.add_route(path, matcher, service)
+        self.match_route(path, matcher, service)
     }
 
     /// add a CONNECT route to the router.
@@ -129,7 +129,7 @@ where
         I: IntoEndpointService<State, T>,
     {
         let matcher = HttpMatcher::method(MethodMatcher::CONNECT);
-        self.add_route(path, matcher, service)
+        self.match_route(path, matcher, service)
     }
 
     /// register a nested router under a prefix.
@@ -147,11 +147,16 @@ where
             nested: service.into_endpoint_service().boxed(),
         };
 
-        self.add_route(&path, matcher, nested_router_service)
+        self.match_route(&path, matcher, nested_router_service)
     }
 
     /// add a route to the router with it's matcher and service.
-    fn add_route<I, T>(mut self, path: &str, matcher: HttpMatcher<State, Body>, service: I) -> Self
+    pub fn match_route<I, T>(
+        mut self,
+        path: &str,
+        matcher: HttpMatcher<State, Body>,
+        service: I,
+    ) -> Self
     where
         I: IntoEndpointService<State, T>,
     {
@@ -191,6 +196,24 @@ impl<State: std::fmt::Debug> std::fmt::Debug for NestedRouterService<State> {
     }
 }
 
+struct ParentUriParams(UriParams);
+
+impl Clone for ParentUriParams {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+impl ParentUriParams {
+    fn merge_with_child(&self, child_params: &UriParams) -> UriParams {
+        let mut merged = self.0.clone();
+        for (key, value) in child_params.iter() {
+            merged.insert(key.to_owned(), value.to_owned());
+        }
+        merged
+    }
+}
+
 impl<State> Service<State, Request> for NestedRouterService<State>
 where
     State: Clone + Send + Sync + 'static,
@@ -200,16 +223,20 @@ where
 
     async fn serve(
         &self,
-        ctx: Context<State>,
+        mut ctx: Context<State>,
         mut req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        let param = ctx.get::<UriParams>().unwrap();
+        if let Some(param) = ctx.get::<UriParams>() {
+            let nested_params = param.clone();
 
-        if let Some(nest) = param.get("nest") {
-            // build the nested path
-            let path = format!("/{}", nest);
-            // update the request URI with the nested path
-            *req.uri_mut() = path.parse().unwrap();
+            if let Some(nest) = nested_params.get("nest") {
+                // build the nested path
+                let path = format!("/{}", nest);
+                // update the request URI with the nested path
+                *req.uri_mut() = path.parse().unwrap();
+            }
+
+            ctx.insert(ParentUriParams(nested_params));
         }
 
         self.nested.serve(ctx, req).await
@@ -240,10 +267,16 @@ where
         let mut ext = Extensions::new();
 
         if let Ok(matched) = self.routes.at(req.uri().path()) {
+            let uri_params = matched.params.iter().collect::<UriParams>();
+            if let Some(parent_params) = ctx.get::<ParentUriParams>() {
+                let merged_params = parent_params.merge_with_child(&uri_params);
+                ctx.insert(merged_params);
+            } else {
+                ctx.insert(uri_params);
+            }
+
             for (matcher, service) in matched.value.iter() {
                 if matcher.matches(Some(&mut ext), &ctx, &req) {
-                    let uri_params = matched.params.iter().collect::<UriParams>();
-                    ctx.insert(uri_params);
                     ctx.extend(ext);
                     return service.serve(ctx, req).await;
                 }
@@ -300,7 +333,7 @@ mod tests {
     fn get_user_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
         service_fn(|ctx: Context<()>, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
-            let id = uri_params.get("id").unwrap();
+            let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from(format!("Get User: {}", id)))
@@ -311,7 +344,7 @@ mod tests {
     fn delete_user_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
         service_fn(|ctx: Context<()>, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
-            let id = uri_params.get("id").unwrap();
+            let id = uri_params.get("user_id").unwrap();
             Ok(Response::builder()
                 .status(200)
                 .body(Body::from(format!("Delete User: {}", id)))
@@ -340,14 +373,35 @@ mod tests {
         })
     }
 
+    fn get_user_order_service() -> impl Service<(), Request, Response = Response, Error = Infallible>
+    {
+        service_fn(|ctx: Context<()>, _req| async move {
+            let uri_params = ctx.get::<UriParams>().unwrap();
+            println!("{:?}", uri_params);
+            let user_id = uri_params.get("user_id").unwrap();
+            let order_id = uri_params.get("order_id").unwrap();
+            Ok(Response::builder()
+                .status(200)
+                .body(Body::from(format!(
+                    "Get Order: {} for User: {}",
+                    order_id, user_id
+                )))
+                .unwrap())
+        })
+    }
+
     #[tokio::test]
     async fn test_router() {
         let router = Router::new()
             .get("/", root_service())
             .get("/users", get_users_servic())
             .post("/users", create_user_service())
-            .get("/users/{id}", get_user_service())
-            .delete("/users/{id}", delete_user_service())
+            .get("/users/{user_id}", get_user_service())
+            .delete("/users/{user_id}", delete_user_service())
+            .get(
+                "/users/{user_id}/orders/{order_id}",
+                get_user_order_service(),
+            )
             .get("/assets/{*path}", serve_assets_service())
             .not_found(not_found_service());
 
@@ -360,6 +414,12 @@ mod tests {
                 Method::DELETE,
                 "/users/123",
                 "Delete User: 123",
+                StatusCode::OK,
+            ),
+            (
+                Method::GET,
+                "/users/123/orders/456",
+                "Get Order: 456 for User: 123",
                 StatusCode::OK,
             ),
             (
@@ -405,7 +465,11 @@ mod tests {
         let api_router = Router::new()
             .get("/users", get_users_servic())
             .post("/users", create_user_service())
-            .delete("/users/{id}", delete_user_service());
+            .delete("/users/{user_id}", delete_user_service())
+            .sub(
+                "/users/{user_id}",
+                Router::new().get("/orders/{order_id}", get_user_order_service()),
+            );
 
         let app = Router::new()
             .sub("/api", api_router)
@@ -419,6 +483,12 @@ mod tests {
                 Method::DELETE,
                 "/api/users/123",
                 "Delete User: 123",
+                StatusCode::OK,
+            ),
+            (
+                Method::GET,
+                "/api/users/123/orders/456",
+                "Get Order: 456 for User: 123",
                 StatusCode::OK,
             ),
         ];

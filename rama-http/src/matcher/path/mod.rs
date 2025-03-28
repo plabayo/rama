@@ -13,7 +13,7 @@ pub struct UriParams {
 }
 
 impl UriParams {
-    fn insert(&mut self, name: String, value: String) {
+    pub fn insert(&mut self, name: String, value: String) {
         self.params
             .get_or_insert_with(HashMap::new)
             .insert(name, value);
@@ -60,6 +60,14 @@ impl UriParams {
             None => Err(de::PathDeserializationError::new(de::ErrorKind::NoParams)),
         }
         .map_err(UriParamsDeserializeError)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.params
+            .as_ref()
+            .map(|params| params.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .into_iter()
+            .flatten()
     }
 }
 
