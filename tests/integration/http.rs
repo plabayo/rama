@@ -1,41 +1,20 @@
 use rama::http::Request;
 use rama::http::client::HttpConnector;
-use rama::http::client::http_inspector::HttpsAlpnModifier;
-use rama::http::proto::h1::Http1HeaderMap;
 use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
-use rama::http::{HeaderName, HeaderValue};
 use rama::net::client::EstablishedClientConnection;
-use rama::net::fingerprint::{Ja3, Ja4, Ja4H};
 use rama::net::stream::Socket;
-use rama::net::tls::ApplicationProtocol;
-use rama::net::tls::client::{ClientConfig, ServerVerifyMode};
-use rama::net::tls::client::{extract_client_config_from_ctx, parse_client_hello};
-use rama::net::tls::server::ServerAuth;
-use rama::net::tls::server::ServerConfig;
 use rama::rt::Executor;
 use rama::service::service_fn;
-use rama::tls::boring::client::TlsConnector;
-use rama::tls::boring::client::TlsConnectorData;
-use rama::tls::boring::server::TlsAcceptorLayer;
-use rama::ua::emulate::{
-    UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
-};
-use rama::ua::profile::HttpProfile;
-use rama::ua::profile::UserAgentDatabase;
-use rama::ua::profile::{
-    Http1Profile, Http1Settings, Http2Profile, Http2Settings, HttpHeadersProfile,
-};
-use rama::ua::profile::{TlsProfile, UserAgentProfile};
-use rama::ua::{PlatformKind, UserAgentKind};
-use rama::{Context, Layer, Service};
+use rama::{Context, Service};
 use std::convert::Infallible;
 use std::fmt;
 use std::net::Ipv4Addr;
-use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
-use tokio::task::JoinSet;
+
+// TODO
+// - move to http crate
+// - generic mock connector so we can start doing tests like this everywhere
 
 #[tokio::test]
 async fn test_client() {
@@ -54,7 +33,8 @@ async fn test_client() {
 
     let EstablishedClientConnection { ctx, req, conn } =
         connector.serve(ctx, create_req()).await.unwrap();
-    for i in 0..100 {
+
+    for i in 0..10000 {
         let x = conn.serve(Context::default(), create_req()).await.unwrap();
     }
 }
