@@ -4,7 +4,6 @@ use rama::http::server::HttpServer;
 use rama::http::{Body, Response};
 use rama::net::client::EstablishedClientConnection;
 use rama::net::stream::Socket;
-use rama::rt::Executor;
 use rama::service::service_fn;
 use rama::{Context, Service};
 use std::convert::Infallible;
