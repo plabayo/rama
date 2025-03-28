@@ -5,7 +5,12 @@ use rama::http::{Body, Response};
 use rama::net::client::EstablishedClientConnection;
 use rama::net::stream::Socket;
 use rama::service::service_fn;
-use rama::{Context, Service};
+use rama::{Context, Layer, Service};
+use rama_net::tls::ApplicationProtocol;
+use rama_net::tls::client::{ClientConfig, ServerVerifyMode};
+use rama_net::tls::server::{ServerAuth, ServerConfig};
+use rama_tls::std::client::{TlsConnector, TlsConnectorData};
+use rama_tls::std::server::TlsAcceptorLayer;
 use std::convert::Infallible;
 use std::fmt;
 use std::net::Ipv4Addr;
@@ -28,7 +33,16 @@ async fn test_client() {
             .body(Body::from("fdjqskjfkdsqlmfjdksqlmfq"))
             .unwrap()
     };
-    let connector = HttpConnector::new(MockConnectorService::new(service_fn(server_svc_fn)));
+
+    let config = ClientConfig {
+        server_verify_mode: Some(ServerVerifyMode::Disable),
+        ..Default::default()
+    };
+    let tls_connector_data = TlsConnectorData::try_from(config).unwrap();
+    let connector = HttpConnector::new(
+        TlsConnector::secure(MockConnectorService::new(service_fn(server_svc_fn)))
+            .with_connector_data(tls_connector_data),
+    );
 
     let EstablishedClientConnection {
         ctx: _,
@@ -38,7 +52,7 @@ async fn test_client() {
 
     // println!("{:?}", ctx.extensions().);
 
-    for _i in 0..10000 {
+    for _i in 0..100000 {
         let x = conn.serve(Context::default(), create_req()).await.unwrap();
         println!("{:?}", x);
     }
@@ -81,7 +95,19 @@ where
         let svc = self.serve_svc.clone();
 
         tokio::spawn(async move {
-            let server = HttpServer::http1().service(svc);
+            let server = TlsAcceptorLayer::new(
+                ServerConfig {
+                    application_layer_protocol_negotiation: Some(vec![
+                        ApplicationProtocol::HTTP_2,
+                        ApplicationProtocol::HTTP_11,
+                    ]),
+                    ..ServerConfig::new(ServerAuth::default())
+                }
+                .try_into()
+                .unwrap(),
+            )
+            .with_store_client_hello(true)
+            .into_layer(HttpServer::http1().service(svc));
             server.serve(server_ctx, server_socket).await.unwrap();
         });
 

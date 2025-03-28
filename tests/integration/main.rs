@@ -4,5 +4,5 @@ mod examples;
 #[cfg(all(feature = "http-full", feature = "boring"))]
 mod ua_emulation;
 
-#[cfg(feature = "http-full")]
+#[cfg(all(feature = "http-full", any(feature = "rustls", feature = "boring")))]
 mod http;
