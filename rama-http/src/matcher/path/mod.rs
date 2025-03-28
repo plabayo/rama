@@ -358,6 +358,11 @@ mod test {
                 params.insert("title".to_owned(), "oxford-dictionary".to_owned());
                 params
             }),
+            TestCase::some("/book/oxford-dictionary/author", "/book/{title}/author", {
+                let mut params = UriParams::default();
+                params.insert("title".to_owned(), "oxford-dictionary".to_owned());
+                params
+            }),
             TestCase::some(
                 "/book/oxford-dictionary/author/0",
                 "/book/:title/author/:index",
@@ -365,6 +370,16 @@ mod test {
                     let mut params = UriParams::default();
                     params.insert("title".to_owned(), "oxford-dictionary".to_owned());
                     params.insert("index".to_owned(), "0".to_owned());
+                    params
+                },
+            ),
+            TestCase::some(
+                "/book/oxford-dictionary/author/1",
+                "/book/{title}/author/{index}",
+                {
+                    let mut params = UriParams::default();
+                    params.insert("title".to_owned(), "oxford-dictionary".to_owned());
+                    params.insert("index".to_owned(), "1".to_owned());
                     params
                 },
             ),
