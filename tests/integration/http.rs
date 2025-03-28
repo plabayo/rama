@@ -18,24 +18,30 @@ use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
 
 #[tokio::test]
 async fn test_client() {
-    async fn server_svc_fn(ctx: Context<()>, _req: Request) -> Result<Response, Infallible> {
-        Ok(Response::new(Body::empty()))
+    async fn server_svc_fn(_ctx: Context<()>, _req: Request) -> Result<Response, Infallible> {
+        Ok(Response::new(Body::from("fdjqskjfkdsqlmfjdksqlmfq")))
     }
 
     let ctx = Context::default();
     let create_req = || {
         Request::builder()
             .uri("https://www.example.com")
-            .body(Body::empty())
+            .body(Body::from("fdjqskjfkdsqlmfjdksqlmfq"))
             .unwrap()
     };
     let connector = HttpConnector::new(MockConnectorService::new(service_fn(server_svc_fn)));
 
-    let EstablishedClientConnection { ctx, req, conn } =
-        connector.serve(ctx, create_req()).await.unwrap();
+    let EstablishedClientConnection {
+        ctx: _,
+        req: _,
+        conn,
+    } = connector.serve(ctx, create_req()).await.unwrap();
 
-    for i in 0..10000 {
+    // println!("{:?}", ctx.extensions().);
+
+    for _i in 0..10000 {
         let x = conn.serve(Context::default(), create_req()).await.unwrap();
+        println!("{:?}", x);
     }
 }
 
@@ -76,7 +82,7 @@ where
         let svc = self.serve_svc.clone();
 
         tokio::spawn(async move {
-            let server = HttpServer::auto(Executor::default()).service(svc);
+            let server = HttpServer::http1().service(svc);
             server.serve(server_ctx, server_socket).await.unwrap();
         });
 
