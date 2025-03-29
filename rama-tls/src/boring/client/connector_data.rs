@@ -43,6 +43,7 @@ pub struct TlsConnectorData {
 pub(super) struct ConnectConfigurationInput {
     pub(super) keylog_intent: Option<KeyLogIntent>,
     pub(super) cipher_list: Option<Vec<u16>>,
+    pub(super) extension_order: Option<Vec<u16>>,
     pub(super) alpn_protos: Option<Vec<u8>>,
     pub(super) curves: Option<Vec<SslCurve>>,
     pub(super) min_ssl_version: Option<SslVersion>,
@@ -96,6 +97,13 @@ impl TlsConnectorData {
                 let line = format!("{}\n", line);
                 handle.write_log_line(line);
             });
+        }
+
+        if let Some(order) = self.connect_config_input.extension_order.as_deref() {
+            trace!("boring connector: set extension order: {order:?}");
+            cfg_builder
+                .set_extension_order(order)
+                .context("build (boring) ssl connector: set extension order")?;
         }
 
         if let Some(list) = self.connect_config_input.cipher_list.as_deref() {
@@ -262,6 +270,25 @@ impl TlsConnectorData {
                     .keylog_intent
                     .clone()
                     .or_else(|| self.connect_config_input.keylog_intent.clone()),
+                extension_order: {
+                    let v: Vec<_> = self
+                        .connect_config_input
+                        .extension_order
+                        .iter()
+                        .flatten()
+                        .copied()
+                        .chain(
+                            other
+                                .connect_config_input
+                                .extension_order
+                                .iter()
+                                .flatten()
+                                .copied(),
+                        )
+                        .dedup()
+                        .collect();
+                    (!v.is_empty()).then_some(v)
+                },
                 cipher_list: other
                     .connect_config_input
                     .cipher_list
@@ -426,6 +453,7 @@ impl TlsConnectorData {
         cfg_it: impl Iterator<Item = &'a rama_net::tls::client::ClientConfig>,
     ) -> Result<Self, OpaqueError> {
         let mut keylog_intent = None;
+        let mut extension_order = None;
         let mut cipher_suites = None;
         let mut server_name = None;
         let mut alpn_protos = None;
@@ -449,6 +477,21 @@ impl TlsConnectorData {
             server_verify_mode = cfg.server_verify_mode.or(server_verify_mode);
             store_server_certificate_chain =
                 store_server_certificate_chain || cfg.store_server_certificate_chain;
+
+            extension_order = {
+                let v: Vec<_> = extension_order
+                    .into_iter()
+                    .flatten()
+                    .chain(
+                        cfg.extensions
+                            .iter()
+                            .flatten()
+                            .map(|ext| u16::from(ext.id())),
+                    )
+                    .dedup()
+                    .collect();
+                (!v.is_empty()).then_some(v)
+            };
 
             // use the extensions that we can use for the builder
             for extension in cfg.extensions.iter().flatten() {
@@ -676,6 +719,7 @@ impl TlsConnectorData {
         Ok(TlsConnectorData {
             connect_config_input: Arc::new(ConnectConfigurationInput {
                 keylog_intent: keylog_intent.cloned(),
+                extension_order,
                 cipher_list,
                 alpn_protos,
                 curves,
@@ -721,8 +765,17 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
         let mut certificate_compression_algorithms = None;
         let mut record_size_limit = None;
 
+        let mut extension_order = Vec::with_capacity(
+            value
+                .extensions
+                .as_ref()
+                .map(|ext| ext.len())
+                .unwrap_or_default(),
+        );
+
         // use the extensions that we can use for the builder
         for extension in value.extensions.iter().flatten() {
+            extension_order.push(extension.id().into());
             match extension {
                 ClientHelloExtension::ServerName(maybe_host) => {
                     server_name = match maybe_host {
@@ -936,6 +989,7 @@ impl TryFrom<rama_net::tls::client::ClientConfig> for TlsConnectorData {
         Ok(TlsConnectorData {
             connect_config_input: Arc::new(ConnectConfigurationInput {
                 keylog_intent: value.key_logger,
+                extension_order: (!extension_order.is_empty()).then_some(extension_order),
                 cipher_list,
                 alpn_protos,
                 curves,
