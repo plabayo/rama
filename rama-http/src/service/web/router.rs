@@ -196,24 +196,6 @@ impl<State: std::fmt::Debug> std::fmt::Debug for NestedRouterService<State> {
     }
 }
 
-struct ParentUriParams(UriParams);
-
-impl Clone for ParentUriParams {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl ParentUriParams {
-    fn merge_with_child(&self, child_params: &UriParams) -> UriParams {
-        let mut merged = self.0.clone();
-        for (key, value) in child_params.iter() {
-            merged.insert(key.to_owned(), value.to_owned());
-        }
-        merged
-    }
-}
-
 impl<State> Service<State, Request> for NestedRouterService<State>
 where
     State: Clone + Send + Sync + 'static,
@@ -226,18 +208,23 @@ where
         mut ctx: Context<State>,
         mut req: Request,
     ) -> Result<Self::Response, Self::Error> {
-        if let Some(param) = ctx.get::<UriParams>() {
-            let nested_params = param.clone();
+        let params: UriParams = match ctx.remove::<UriParams>() {
+            Some(params) => {
+                let nested_path = params.get("nest").unwrap();
 
-            if let Some(nest) = nested_params.get("nest") {
-                // build the nested path
-                let path = format!("/{}", nest);
-                // update the request URI with the nested path
+                let filtered_params: UriParams =
+                    params.iter().filter(|(key, _)| *key != "nest").collect();
+
+                // build the nested path and update the request URI
+                let path = format!("/{}", nested_path);
                 *req.uri_mut() = path.parse().unwrap();
-            }
 
-            ctx.insert(ParentUriParams(nested_params));
-        }
+                filtered_params
+            }
+            None => UriParams::default(),
+        };
+
+        ctx.insert(params);
 
         self.nested.serve(ctx, req).await
     }
@@ -267,13 +254,16 @@ where
         let mut ext = Extensions::new();
 
         if let Ok(matched) = self.routes.at(req.uri().path()) {
-            let uri_params = matched.params.iter().collect::<UriParams>();
-            if let Some(parent_params) = ctx.get::<ParentUriParams>() {
-                let merged_params = parent_params.merge_with_child(&uri_params);
-                ctx.insert(merged_params);
-            } else {
-                ctx.insert(uri_params);
-            }
+            let uri_params = matched.params.iter();
+
+            let params: UriParams = match ctx.remove::<UriParams>() {
+                Some(mut params) => {
+                    params.extend(uri_params);
+                    params
+                }
+                None => uri_params.collect(),
+            };
+            ctx.insert(params);
 
             for (matcher, service) in matched.value.iter() {
                 if matcher.matches(Some(&mut ext), &ctx, &req) {
@@ -377,7 +367,6 @@ mod tests {
     {
         service_fn(|ctx: Context<()>, _req| async move {
             let uri_params = ctx.get::<UriParams>().unwrap();
-            println!("{:?}", uri_params);
             let user_id = uri_params.get("user_id").unwrap();
             let order_id = uri_params.get("order_id").unwrap();
             Ok(Response::builder()

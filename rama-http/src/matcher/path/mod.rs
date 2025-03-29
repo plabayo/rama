@@ -13,7 +13,7 @@ pub struct UriParams {
 }
 
 impl UriParams {
-    pub fn insert(&mut self, name: String, value: String) {
+    fn insert(&mut self, name: String, value: String) {
         self.params
             .get_or_insert_with(HashMap::new)
             .insert(name, value);
@@ -60,6 +60,20 @@ impl UriParams {
             None => Err(de::PathDeserializationError::new(de::ErrorKind::NoParams)),
         }
         .map_err(UriParamsDeserializeError)
+    }
+
+    /// Extend the [`UriParams`] with the given iterator.
+    pub fn extend<I, K, V>(&mut self, iter: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let params = self.params.get_or_insert_with(HashMap::new);
+        for (k, v) in iter {
+            params.insert(k.into(), v.into());
+        }
+        self
     }
 
     pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
