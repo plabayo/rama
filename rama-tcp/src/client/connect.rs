@@ -15,13 +15,12 @@ use std::{
     },
     time::Duration,
 };
-use tokio::{
-    net::TcpStream,
-    sync::{
-        Semaphore,
-        mpsc::{Sender, channel},
-    },
+use tokio::sync::{
+    Semaphore,
+    mpsc::{Sender, channel},
 };
+
+use crate::TcpStream;
 
 /// Trait used internally by [`tcp_connect`] and the `TcpConnector`
 /// to actually establish the [`TcpStream`.]

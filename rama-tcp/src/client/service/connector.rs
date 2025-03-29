@@ -9,8 +9,8 @@ use rama_net::{
     stream::{ClientSocketInfo, SocketInfo},
     transport::{TransportProtocol, TryRefIntoTransportContext},
 };
-use tokio::net::TcpStream;
 
+use crate::TcpStream;
 use crate::client::connect::TcpStreamConnector;
 
 use super::{CreatedTcpStreamConnector, TcpStreamConnectorCloneFactory, TcpStreamConnectorFactory};
