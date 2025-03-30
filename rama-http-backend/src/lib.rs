@@ -25,28 +25,24 @@ mod tests {
     use rama_core::{Context, Service, rt::Executor, service::service_fn};
     use rama_http_types::{Body, Request, Response, Version};
     use rama_net::client::MockConnectorService;
-    use std::convert::Infallible;
+    use std::{
+        convert::Infallible,
+        time::{Duration, Instant},
+    };
+    use tokio::time::sleep;
 
     #[tokio::test]
     async fn test_http11_pipelining() {
-        async fn server_svc_fn(_ctx: Context<()>, _req: Request) -> Result<Response, Infallible> {
-            Ok(Response::new(Body::from("a random response body")))
-        }
-
         let ctx = Context::default();
-        let create_req = || {
-            Request::builder()
-                .uri("https://www.example.com")
-                .version(Version::HTTP_11)
-                .body(Body::from("a reandom request body"))
-                .unwrap()
-        };
-
         let connector = HttpConnector::new(MockConnectorService::new(|| {
             HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
         }));
 
-        let conn = connector.serve(ctx, create_req()).await.unwrap().conn;
+        let conn = connector
+            .serve(ctx, create_test_request(Version::HTTP_11))
+            .await
+            .unwrap()
+            .conn;
 
         // Http 1.1 should pipeline requests. Pipelining is important when trying to send multiple
         // requests on the same connection. This is something we generally don't do, but we do
@@ -54,13 +50,58 @@ mod tests {
         // bug consistently has proven very hard so we trigger this one instead. Both of them
         // should be fixed by waiting for conn.isready().await before trying to send data on the connection.
         // For http1.1 this will result in pipelining (http2 will still be multiplexed)
+        let start = Instant::now();
         let (res1, res2) = join(
-            conn.serve(Context::default(), create_req()),
-            conn.serve(Context::default(), create_req()),
+            conn.serve(Context::default(), create_test_request(Version::HTTP_11)),
+            conn.serve(Context::default(), create_test_request(Version::HTTP_11)),
         )
         .await;
+        let duration = start.elapsed();
 
         res1.unwrap();
         res2.unwrap();
+
+        assert!(duration > Duration::from_millis(200));
+    }
+
+    #[tokio::test]
+    async fn test_http2_multiplex() {
+        let ctx = Context::default();
+        let connector = HttpConnector::new(MockConnectorService::new(|| {
+            HttpServer::auto(Executor::default()).service(service_fn(server_svc_fn))
+        }));
+
+        let conn = connector
+            .serve(ctx, create_test_request(Version::HTTP_2))
+            .await
+            .unwrap()
+            .conn;
+
+        // We have an artificial sleep of 100ms, so multiplexing should be < 200ms
+        let start = Instant::now();
+        let (res1, res2) = join(
+            conn.serve(Context::default(), create_test_request(Version::HTTP_2)),
+            conn.serve(Context::default(), create_test_request(Version::HTTP_2)),
+        )
+        .await;
+
+        let duration = start.elapsed();
+        res1.unwrap();
+        res2.unwrap();
+
+        assert!(duration < Duration::from_millis(200));
+    }
+
+    async fn server_svc_fn(_ctx: Context<()>, _req: Request) -> Result<Response, Infallible> {
+        sleep(Duration::from_millis(100)).await;
+        Ok(Response::new(Body::from("a random response body")))
+    }
+
+    fn create_test_request(version: Version) -> Request {
+        Request::builder()
+            .uri("https://www.example.com")
+            .version(version)
+            .body(Body::from("a reandom request body"))
+            .unwrap()
     }
 }
