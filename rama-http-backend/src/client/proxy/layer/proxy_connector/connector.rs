@@ -120,7 +120,7 @@ impl InnerHttpProxyConnector {
         req: Request,
         stream: S,
     ) -> Result<Response<Incoming>, HttpProxyError> {
-        let (tx, conn) = http1::Builder::default()
+        let (mut tx, conn) = http1::Builder::default()
             .ignore_invalid_headers(true)
             .handshake(stream)
             .await
@@ -141,7 +141,7 @@ impl InnerHttpProxyConnector {
         req: Request,
         stream: S,
     ) -> Result<Response<Incoming>, HttpProxyError> {
-        let (tx, conn) = http2::Builder::new(Executor::new())
+        let (mut tx, conn) = http2::Builder::new(Executor::new())
             .handshake(stream)
             .await
             .map_err(|err| HttpProxyError::Transport(err.into()))?;

@@ -10,6 +10,7 @@ use futures_util::future::join_all;
 use rama::http::dep::http_body_util::BodyExt;
 use rama::http::{Method, Request, Response};
 use rama::rt::Executor;
+use tokio::sync::Mutex;
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
@@ -307,7 +308,7 @@ impl Opts {
         let addr = spawn_server(&rt, &self);
 
         enum Client {
-            Http1(rama::http::core::client::conn::http1::SendRequest<BoxedBody>),
+            Http1(Mutex<rama::http::core::client::conn::http1::SendRequest<BoxedBody>>),
             Http2(rama::http::core::client::conn::http2::SendRequest<BoxedBody>),
         }
 
@@ -336,7 +337,7 @@ impl Opts {
                     .await
                     .unwrap();
                 tokio::spawn(conn);
-                Client::Http1(tx)
+                Client::Http1(Mutex::new(tx))
             }
         });
 
@@ -371,12 +372,18 @@ impl Opts {
             req
         };
 
-        let client_ref = &client;
+        let shared_client = &client;
 
         let send_request = async |req| {
-            let res = match client_ref {
-                Client::Http1(tx) => tx.send_request(req).await.expect("client wait h1"),
-                Client::Http2(tx) => tx.send_request(req).await.expect("client wait h2"),
+            let res = match shared_client {
+                Client::Http1(tx) => {
+                    let mut tx = tx.lock().await;
+                    tx.send_request(req).await.expect("client wait h1")
+                }
+                Client::Http2(tx) => {
+                    let mut tx = tx.clone();
+                    tx.send_request(req).await.expect("client wait h2")
+                }
             };
             let mut body = res.into_body();
             while let Some(_chunk) = body.frame().await {}
