@@ -1,7 +1,5 @@
-use crate::stream::Socket;
 use rama_core::{Context, Service, error::BoxError};
-use std::{convert::Infallible, fmt, net::Ipv4Addr};
-use tokio::io::{AsyncRead, AsyncWrite, DuplexStream, duplex};
+use std::fmt;
 
 /// The established connection to a server returned for the http client to be used.
 pub struct EstablishedClientConnection<S, State, Request> {
