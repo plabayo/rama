@@ -61,6 +61,38 @@ impl UriParams {
         }
         .map_err(UriParamsDeserializeError)
     }
+
+    /// Extend the [`UriParams`] with the given iterator.
+    pub fn extend<I, K, V>(&mut self, iter: I) -> &mut Self
+    where
+        I: IntoIterator<Item = (K, V)>,
+        K: Into<String>,
+        V: Into<String>,
+    {
+        let params = self.params.get_or_insert_with(HashMap::new);
+        for (k, v) in iter {
+            params.insert(k.into(), v.into());
+        }
+        self
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.params
+            .as_ref()
+            .map(|params| params.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+            .into_iter()
+            .flatten()
+    }
+}
+
+impl<'a> FromIterator<(&'a str, &'a str)> for UriParams {
+    fn from_iter<T: IntoIterator<Item = (&'a str, &'a str)>>(iter: T) -> Self {
+        let mut params = UriParams::default();
+        for (k, v) in iter {
+            params.insert(k.to_owned(), v.to_owned());
+        }
+        params
+    }
 }
 
 #[derive(Debug)]
@@ -145,7 +177,7 @@ impl PathMatcher {
         let path = path.as_ref();
         let path = path.trim().trim_matches('/');
 
-        if !path.contains([':', '*']) {
+        if !path.contains([':', '*', '{', '}']) {
             return Self {
                 kind: PathMatcherKind::Literal(path.to_lowercase()),
             };
@@ -170,6 +202,9 @@ impl PathMatcher {
                     Some(PathFragment::Param(
                         s.trim_start_matches(':').to_lowercase(),
                     ))
+                } else if s.starts_with('{') && s.ends_with('}') && s.len() > 2 {
+                    let param_name = s[1..s.len() - 1].to_lowercase();
+                    Some(PathFragment::Param(param_name))
                 } else if s == "*" && index == fragment_length - 1 {
                     Some(PathFragment::Glob)
                 } else {
@@ -337,6 +372,11 @@ mod test {
                 params.insert("title".to_owned(), "oxford-dictionary".to_owned());
                 params
             }),
+            TestCase::some("/book/oxford-dictionary/author", "/book/{title}/author", {
+                let mut params = UriParams::default();
+                params.insert("title".to_owned(), "oxford-dictionary".to_owned());
+                params
+            }),
             TestCase::some(
                 "/book/oxford-dictionary/author/0",
                 "/book/:title/author/:index",
@@ -344,6 +384,16 @@ mod test {
                     let mut params = UriParams::default();
                     params.insert("title".to_owned(), "oxford-dictionary".to_owned());
                     params.insert("index".to_owned(), "0".to_owned());
+                    params
+                },
+            ),
+            TestCase::some(
+                "/book/oxford-dictionary/author/1",
+                "/book/{title}/author/{index}",
+                {
+                    let mut params = UriParams::default();
+                    params.insert("title".to_owned(), "oxford-dictionary".to_owned());
+                    params.insert("index".to_owned(), "1".to_owned());
                     params
                 },
             ),

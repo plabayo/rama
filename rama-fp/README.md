@@ -33,7 +33,7 @@ Steps:
 sudo certbot certonly --manual -d fp.ramaproxy.org
 ```
 2. update the `RAMA_ACME_DATA` SECRET in <https://fly.io> app config to enable and point to the new key/value ACME validation pair (format is `file_name,file_content`)
-3. redeploy
+3. redeploy: `fly deploy`
 4. press `enter` in process started in step (1)
 5. copy key and cert files, found at and to be made available as secrets at:
   - `RAMA_TLS_CRT`: `sudo cat /etc/letsencrypt/live/fp.ramaproxy.org/fullchain.pem | base64 | pbcopy`

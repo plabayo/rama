@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use smol_str::SmolStr;
 use std::cmp::min;
 use std::str::FromStr;
 
@@ -80,7 +80,7 @@ enum ProtocolKind {
     /// The difference with [`Self::Socks5`] is that the proxy resolves the URL hostname.
     Socks5h,
     /// Custom protocol.
-    Custom(Cow<'static, str>),
+    Custom(SmolStr),
 }
 
 const SCHEME_HTTP: &str = "http";
@@ -137,7 +137,7 @@ impl Protocol {
         } else if eq_ignore_ascii_case!(s, SCHEME_WSS) {
             ProtocolKind::Wss
         } else if validate_scheme_str(s) {
-            ProtocolKind::Custom(Cow::Borrowed(s))
+            ProtocolKind::Custom(SmolStr::new_static(s))
         } else {
             panic!("invalid static protocol str");
         })
@@ -262,7 +262,7 @@ impl TryFrom<&str> for Protocol {
 
     fn try_from(s: &str) -> Result<Self, Self::Error> {
         Ok(try_to_convert_str_to_non_custom_protocol(s)?
-            .unwrap_or_else(|| Protocol(ProtocolKind::Custom(Cow::Owned(s.to_owned())))))
+            .unwrap_or_else(|| Protocol(ProtocolKind::Custom(SmolStr::new_inline(s)))))
     }
 }
 
@@ -271,7 +271,7 @@ impl TryFrom<String> for Protocol {
 
     fn try_from(s: String) -> Result<Self, Self::Error> {
         Ok(try_to_convert_str_to_non_custom_protocol(&s)?
-            .unwrap_or(Protocol(ProtocolKind::Custom(Cow::Owned(s)))))
+            .unwrap_or(Protocol(ProtocolKind::Custom(SmolStr::new(s)))))
     }
 }
 
@@ -280,7 +280,7 @@ impl TryFrom<&String> for Protocol {
 
     fn try_from(s: &String) -> Result<Self, Self::Error> {
         Ok(try_to_convert_str_to_non_custom_protocol(s)?
-            .unwrap_or_else(|| Protocol(ProtocolKind::Custom(Cow::Owned(s.clone())))))
+            .unwrap_or_else(|| Protocol(ProtocolKind::Custom(SmolStr::new(s)))))
     }
 }
 

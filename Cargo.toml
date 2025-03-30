@@ -52,6 +52,7 @@ futures-core = "0.3"
 futures = "0.3"
 h2 = "0.4"
 headers = "0.4"
+matchit = "0.8.6"
 moka = "0.12.8"
 hex = "0.4"
 http = "1"
@@ -60,8 +61,8 @@ http-body-util = "0.1"
 http-range-header = "0.4.0"
 deadpool-postgres = "0.14.1"
 httpdate = "1.0"
-rama-boring = "0.2.0-alpha.2"
-rama-boring-tokio = "0.2.0-alpha.2"
+rama-boring = "0.2.0-alpha.5"
+rama-boring-tokio = "0.2.0-alpha.5"
 ipnet = "2.9.0"
 libfuzzer-sys = "0.4"
 honggfuzz = "0.5.56"
@@ -157,6 +158,7 @@ sha2 = "0.10.8"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
 mimalloc = { version = "0.1.39", default-features = false }
 chrono = "0.4.40"
+smol_str = "0.3"
 
 [workspace.lints.rust]
 unreachable_pub = "deny"
@@ -250,6 +252,7 @@ rustversion = { workspace = true }
 base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+matchit = { workspace = true, optional = true }
 rama-core = { version = "0.2.0-alpha.8", path = "rama-core" }
 rama-dns = { version = "0.2.0-alpha.8", path = "rama-dns", optional = true }
 rama-haproxy = { version = "0.2.0-alpha.8", path = "rama-haproxy", optional = true }
