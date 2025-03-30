@@ -24,7 +24,7 @@ mod tests {
     use futures::future::join;
     use rama_core::{Context, Service, rt::Executor, service::service_fn};
     use rama_http_types::{Body, Request, Response, Version};
-    use rama_net::client::MockConnectorService;
+    use rama_net::test_utils::client::MockConnectorService;
     use std::{
         convert::Infallible,
         time::{Duration, Instant},
