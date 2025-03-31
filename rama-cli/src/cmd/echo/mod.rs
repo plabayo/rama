@@ -13,12 +13,13 @@ use rama::{
     },
     rt::Executor,
     tcp::server::TcpListener,
+    ua::profile::UserAgentDatabase,
 };
 
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as ENGINE;
 
-use std::{convert::Infallible, time::Duration};
+use std::{convert::Infallible, sync::Arc, time::Duration};
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
 
@@ -139,6 +140,7 @@ pub async fn run(cfg: CliCommandEcho) -> Result<(), BoxError> {
         .maybe_forward(cfg.forward)
         .maybe_tls_server_config(maybe_tls_server_config)
         .http_layer(maybe_acme_service)
+        .user_agent_database(Arc::new(UserAgentDatabase::embedded()))
         .build(Executor::graceful(graceful.guard()))
         .expect("build echo service");
 
