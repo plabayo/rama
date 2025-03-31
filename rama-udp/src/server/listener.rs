@@ -99,11 +99,9 @@ where
         self,
         addr: A,
     ) -> Result<TcpListener<S>, BoxError> {
-        let socket_addr = addr.try_into().map_err(Into::<BoxError>::into)?;
+        let socket_addr = addr.try_into().map_err(Into::into)?;
         let tokio_socket_addr: SocketAddr = socket_addr.into();
-        let inner = TokioTcpListener::bind(tokio_socket_addr)
-            .await
-            .map_err(Into::<BoxError>::into)?;
+        let inner = TokioTcpListener::bind(tokio_socket_addr).await?;
 
         if let Some(ttl) = self.ttl {
             inner.set_ttl(ttl)?;

@@ -2,14 +2,14 @@
 
 use bytes::Bytes;
 use futures_core::Stream;
-use futures_util::TryStreamExt;
+// use futures_util::TryStreamExt;
 use futures_util::stream::{SplitSink, SplitStream, StreamExt};
 use pin_project_lite::pin_project;
 use std::fmt;
 use std::net::SocketAddr;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite};
+// use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::io::{SinkWriter, StreamReader};
 use tokio_util::udp::UdpFramed;
 
@@ -80,61 +80,61 @@ impl<C> UdpStream<C> {
     }
 }
 
-impl<C> AsyncRead for UdpStream<C>
-where
-    C: Decoder<Item = Bytes, Error: Into<std::io::Error>>,
-{
-    #[inline]
-    fn poll_read(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &mut tokio::io::ReadBuf<'_>,
-    ) -> Poll<std::io::Result<()>> {
-        self.project().r.poll_read(cx, buf)
-    }
-}
+// impl<C> AsyncRead for UdpStream<C>
+// where
+//     C: Decoder<Item = Bytes, Error: Into<std::io::Error>>,
+// {
+//     #[inline]
+//     fn poll_read(
+//         self: Pin<&mut Self>,
+//         cx: &mut Context<'_>,
+//         buf: &mut tokio::io::ReadBuf<'_>,
+//     ) -> Poll<std::io::Result<()>> {
+//         self.project().r.poll_read(cx, buf)
+//     }
+// }
 
-impl<C> AsyncWrite for UdpStream<C>
-where
-    C: Encoder<Bytes, Error: Into<std::io::Error>>,
-{
-    #[inline]
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, std::io::Error>> {
-        self.project().w.poll_write(cx, buf)
-    }
+// impl<C> AsyncWrite for UdpStream<C>
+// where
+//     C: Encoder<Bytes, Error: Into<std::io::Error>>,
+// {
+//     #[inline]
+//     fn poll_write(
+//         self: Pin<&mut Self>,
+//         cx: &mut Context<'_>,
+//         buf: &[u8],
+//     ) -> Poll<Result<usize, std::io::Error>> {
+//         self.project().w.poll_write(cx, buf)
+//     }
 
-    #[inline]
-    fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
-        todo!()
-    }
+//     #[inline]
+//     fn poll_flush(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), std::io::Error>> {
+//         todo!()
+//     }
 
-    #[inline]
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        todo!()
-    }
+//     #[inline]
+//     fn poll_shutdown(
+//         self: Pin<&mut Self>,
+//         cx: &mut Context<'_>,
+//     ) -> Poll<Result<(), std::io::Error>> {
+//         todo!()
+//     }
 
-    #[inline]
-    fn poll_write_vectored(
-        self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        bufs: &[IoSlice<'_>],
-    ) -> Poll<Result<usize, io::Error>> {
-        let buf = bufs
-            .iter()
-            .find(|b| !b.is_empty())
-            .map_or(&[][..], |b| &**b);
-        self.poll_write(cx, buf)
-    }
+//     #[inline]
+//     fn poll_write_vectored(
+//         self: Pin<&mut Self>,
+//         cx: &mut Context<'_>,
+//         bufs: &[IoSlice<'_>],
+//     ) -> Poll<Result<usize, io::Error>> {
+//         let buf = bufs
+//             .iter()
+//             .find(|b| !b.is_empty())
+//             .map_or(&[][..], |b| &**b);
+//         self.poll_write(cx, buf)
+//     }
 
-    #[inline]
-    fn is_write_vectored(&self) -> bool {
-        false
-    }
-}
+//     #[inline]
+//     fn is_write_vectored(&self) -> bool {
+//         false
+//     }
+// }
