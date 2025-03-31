@@ -7,7 +7,7 @@ use rama::{
 const ADDRESS: &str = "127.0.0.1:62018";
 
 #[tokio::test]
-// #[ignore]
+#[ignore]
 async fn test_http_web_router() {
     utils::init_tracing();
 
