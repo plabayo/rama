@@ -235,14 +235,14 @@ impl<H> EchoServiceBuilder<H> {
 
     /// set the user agent datasbase that if set would be used to look up
     /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
-    pub fn user_agent_database(mut self, db: std::sync::Arc<UserAgentDatabase>) -> Self {
+    pub fn with_user_agent_database(mut self, db: std::sync::Arc<UserAgentDatabase>) -> Self {
         self.uadb = Some(db);
         self
     }
 
     /// maybe set the user agent datasbase that if set would be used to look up
     /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
-    pub fn maybe_user_agent_database(
+    pub fn maybe_with_user_agent_database(
         mut self,
         db: Option<std::sync::Arc<UserAgentDatabase>>,
     ) -> Self {
