@@ -6,4 +6,4 @@ pub use connector::{AutoTlsStream, TlsConnector, TlsConnectorLayer};
 
 mod connector_data;
 #[doc(inline)]
-pub use connector_data::{ClientConfigInput, TlsConnectorData, self_signed_client_auth};
+pub use connector_data::{TlsConnectorData, client_root_certs, self_signed_client_auth};

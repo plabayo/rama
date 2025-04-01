@@ -7,7 +7,10 @@ use std::sync::Arc;
 
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
-    combinators::Either, error::{BoxError, ErrorContext, ErrorExt, OpaqueError}, inspect::RequestInspector, Context, Layer, Service
+    Context, Layer, Service,
+    combinators::Either,
+    error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
+    inspect::RequestInspector,
 };
 use rama_http_types::{Request, Response, Version, dep::http_body};
 use rama_net::{
@@ -22,11 +25,17 @@ use rama_net::{
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(feature = "boring")]
-use rama_tls::boring::client::{TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData, TlsConnectorLayer as BoringTlsConnectorLayer};
+use rama_tls::boring::client::{
+    TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData,
+    TlsConnectorLayer as BoringTlsConnectorLayer,
+};
 
 use rama_tls::boring::dep::boring_tokio::connect;
 #[cfg(feature = "rustls")]
-use rama_tls_rustls::client::{TlsConnector as RustlsTlsConnector, TlsConnectorData as RustlsTlsConnectorData, TlsConnectorLayer as RustlsTlsConnectorLayer};
+use rama_tls_rustls::client::{
+    TlsConnector as RustlsTlsConnector, TlsConnectorData as RustlsTlsConnectorData,
+    TlsConnectorLayer as RustlsTlsConnectorLayer,
+};
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
@@ -46,7 +55,6 @@ use tracing::trace;
 pub mod http_inspector;
 pub mod proxy;
 
-
 pub enum TlsConnector {
     #[cfg(feature = "boring")]
     Boring(BoringTlsConnectorLayer),
@@ -63,10 +71,9 @@ pub enum TlsConnector {
 /// with your own service fork and use the full power of Rust at your fingertips ;)
 pub struct EasyHttpWebClient<I1 = (), I2 = (), P = ()> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    tls_connector: Option<TlsConnector>,
+    tls_connector: TlsConnector,
     #[cfg(any(feature = "rustls", feature = "boring"))]
     proxy_tls_connector: Option<TlsConnector>,
-
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
     tls_config: Option<Arc<ClientConfig>>,
@@ -79,7 +86,7 @@ pub struct EasyHttpWebClient<I1 = (), I2 = (), P = ()> {
     http_req_inspector_svc: I2,
 }
 
-struct ConnectorOption<P, T, PT>{
+struct ConnectorOption<P, T, PT> {
     pool: P,
     tls: T,
     proxy_tls: PT,
@@ -87,8 +94,8 @@ struct ConnectorOption<P, T, PT>{
 /// Pool (yes/no) Tls (no/rustls/boring) ProxyTls (no/rustls/boring) = 18
 enum Connector<P = ()> {
     NoPoolNoTlsNoProxyTls(ConnectorOption<(), (), ()>),
-    NoPoolNoTlsProxyRustls(ConnectorOption<(),(),RustlsTlsConnectorLayer>),
-    NoPoolNoTlsProxyBoring(ConnectorOption<(),(), BoringTlsConnectorLayer>),
+    NoPoolNoTlsProxyRustls(ConnectorOption<(), (), RustlsTlsConnectorLayer>),
+    NoPoolNoTlsProxyBoring(ConnectorOption<(), (), BoringTlsConnectorLayer>),
     NoPoolRustlsNoProxyTls(ConnectorOption<(), RustlsTlsConnectorLayer, ()>),
     NoPoolRustlsProxyRustls(ConnectorOption<(), RustlsTlsConnectorLayer, RustlsTlsConnectorLayer>),
     NoPoolRustlsProxyBoring(ConnectorOption<(), RustlsTlsConnectorLayer, BoringTlsConnectorLayer>),
@@ -523,7 +530,6 @@ where
             //     // None => Either::B(transport_connector),
             // };
 
- 
             // HttpConnector::new(inner)
             // .with_jit_req_inspector((
             //     HttpsAlpnModifier::default(),
@@ -550,17 +556,15 @@ where
             //     None => todo!(),
             // }
 
-
-            let connector = match self.tls_connector.as_ref() {
-                Some(tls_connector) => match tls_connector {
-                    TlsConnector::Boring(tls_connector_layer) => HttpConnector::new((tls_connector_layer.clone(),).layer(transport_connector)),
-                    TlsConnector::Rustls(tls_connector_layer) => todo!(),
-                },
-                None => HttpConnector::new(transport_connector).with_jit_req_inspector((HttpsAlpnModifier::default(), self.http_req_inspector_jit.clone())),
+            let connector = match self.tls_connector {
+                TlsConnector::Boring(tls_connector_layer) => {
+                    HttpConnector::new((tls_connector_layer.clone(),).layer(transport_connector))
+                }
+                TlsConnector::Rustls(tls_connector_layer) => {
+                    HttpConnector::new((tls_connector_layer.clone(),).layer(transport_connector))
+                }
             };
-
         };
-
 
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
         let connector = {

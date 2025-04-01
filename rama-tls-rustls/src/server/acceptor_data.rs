@@ -16,27 +16,7 @@ use std::sync::Arc;
 /// Created by converting a [`rustls::ServerConfig`] into it directly,
 /// or by trying to turn the _rama_ opiniated [`rama_net::tls::server::ServerConfig`] into it.
 pub struct TlsAcceptorData {
-    pub(super) server_config: Arc<rustls::ServerConfig>,
-    pub(super) server_cert_chain: Option<Vec<CertificateDer<'static>>>,
-}
-
-impl TlsAcceptorData {
-    /// Return a shared reference to the underlying [`rustls::ServerConfig`].
-    pub fn server_config(&self) -> &rustls::ServerConfig {
-        self.server_config.as_ref()
-    }
-
-    /// Return a reference to the exposed server cert chain,
-    /// should these exist and be exposed.
-    pub fn server_cert_chain(&self) -> Option<&[CertificateDer<'static>]> {
-        self.server_cert_chain.as_deref()
-    }
-
-    /// Take (consume) the exposed server cert chain,
-    /// should these exist and be exposed.
-    pub fn take_server_cert_chain(&mut self) -> Option<Vec<CertificateDer<'static>>> {
-        self.server_cert_chain.take()
-    }
+    pub server_config: Arc<rustls::ServerConfig>,
 }
 
 impl From<rustls::ServerConfig> for TlsAcceptorData {
@@ -50,7 +30,6 @@ impl From<Arc<rustls::ServerConfig>> for TlsAcceptorData {
     fn from(value: Arc<rustls::ServerConfig>) -> Self {
         Self {
             server_config: value,
-            server_cert_chain: None,
         }
     }
 }

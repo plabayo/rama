@@ -401,29 +401,32 @@ impl<S, K> TlsConnector<S, K> {
     where
         T: Stream + Unpin,
     {
-        let connector_data = connector_data.as_ref().or(self.connector_data.as_ref());
-        let client_config_data = match connector_data {
-            Some(connector_data) => connector_data.try_to_build_config()?,
-            None => TlsConnectorData::new_http_auto()?.try_to_build_config()?,
-        };
+        let connector_data = connector_data
+            .or(self.connector_data.clone())
+            .unwrap_or(TlsConnectorData::new_http_auto()?);
+        // let connector_data = match connector_data {
+        //     Some(connector_data) => connector_data,
+        //     None => TlsConnectorData::new_http_auto()?,
+        // };
         let server_name = rustls_pki_types::ServerName::try_from(
-            client_config_data.server_name.unwrap_or(server_host),
+            connector_data.server_name.unwrap_or(server_host),
         )?;
 
-        let connector = RustlsConnector::from(Arc::new(client_config_data.config));
+        let connector = RustlsConnector::from(Arc::new(connector_data.client_config));
 
         let stream = connector.connect(server_name, stream).await?;
 
         let (_, conn_data_ref) = stream.get_ref();
 
-        let store_server_cert_chain = connector_data
-            .is_some_and(|data| data.client_config_input.store_server_certificate_chain);
+        // TODO
+        // let store_server_cert_chain = connector_data
+        //     .is_some_and(|data| data.client_config_input.store_server_certificate_chain);
 
-        let server_certificate_chain = if store_server_cert_chain {
-            conn_data_ref.peer_certificates().map(Into::into)
-        } else {
-            None
-        };
+        // let server_certificate_chain = if store_server_cert_chain {
+        //     conn_data_ref.peer_certificates().map(Into::into)
+        // } else {
+        //     None
+        // };
 
         let params = NegotiatedTlsParameters {
             protocol_version: conn_data_ref
@@ -433,7 +436,8 @@ impl<S, K> TlsConnector<S, K> {
             application_layer_protocol: conn_data_ref
                 .alpn_protocol()
                 .map(ApplicationProtocol::from),
-            peer_certificate_chain: server_certificate_chain,
+            // TODO
+            peer_certificate_chain: None,
         };
 
         Ok((stream, params))

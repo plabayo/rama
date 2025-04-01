@@ -20,185 +20,199 @@ use tracing::trace;
 /// Created by converting a [`rustls::ClientConfig`] into it directly,
 /// or by trying to turn the _rama_ opiniated [`rama_net::tls::client::ClientConfig`] into it.
 pub struct TlsConnectorData {
-    pub client_config_input: Arc<ClientConfigInput>,
+    // pub client_config_input: Arc<ClientConfigInput>,
+    pub client_config: rustls::ClientConfig,
     pub server_name: Option<Host>,
 }
 
-#[derive(Debug, Default)]
-pub struct ClientConfigInput {
-    pub protocol_versions: Option<Vec<&'static SupportedProtocolVersion>>,
-    pub client_auth: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
-    pub key_logger: Option<String>,
-    pub alpn_protos: Option<Vec<Vec<u8>>>,
-    pub cert_verifier: Option<Arc<dyn ServerCertVerifier>>,
-    pub store_server_certificate_chain: bool,
-}
+// #[derive(Debug, Default)]
+// pub struct ClientConfigInput {
+//     pub protocol_versions: Option<Vec<&'static SupportedProtocolVersion>>,
+//     pub client_auth: Option<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>)>,
+//     pub key_logger: Option<String>,
+//     pub alpn_protos: Option<Vec<Vec<u8>>>,
+//     pub cert_verifier: Option<Arc<dyn ServerCertVerifier>>,
+//     pub store_server_certificate_chain: bool,
+// }
 
 impl TlsConnectorData {
-    /// Create a default [`TlsConnectorData`].
-    ///
-    /// This constructor is best fit for tunnel purposes,
-    /// for https purposes and other application protocols
-    /// you may want to use another constructor instead.
-    pub fn new() -> Result<TlsConnectorData, OpaqueError> {
-        Ok(TlsConnectorData {
-            client_config_input: Arc::new(ClientConfigInput::default()),
-            server_name: None,
-        })
-    }
+    //     /// Create a default [`TlsConnectorData`].
+    //     ///
+    //     /// This constructor is best fit for tunnel purposes,
+    //     /// for https purposes and other application protocols
+    //     /// you may want to use another constructor instead.
+    //     pub fn new() -> Result<TlsConnectorData, OpaqueError> {
+    //         Ok(TlsConnectorData {
+    //             client_config_input: Arc::new(ClientConfigInput::default()),
+    //             server_name: None,
+    //         })
+    //     }
 
     /// Create a default [`TlsConnectorData`] that is focussed
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.
     pub fn new_http_auto() -> Result<TlsConnectorData, OpaqueError> {
+        let mut config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
+            .with_root_certificates(client_root_certs())
+            .with_no_client_auth();
+        config.alpn_protocols = vec![
+            ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
+            ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
+        ];
+        // TODO add keylogger
+
         Ok(TlsConnectorData {
-            client_config_input: Arc::new(ClientConfigInput {
-                alpn_protos: Some(vec![
-                    ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-                    ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-                ]),
-                ..Default::default()
-            }),
+            client_config: config,
             server_name: None,
         })
+        // Ok(TlsConnectorData {
+        //     client_config_input: Arc::new(ClientConfigInput {
+        //         alpn_protos: Some(vec![
+        //             ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
+        //             ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
+        //         ]),
+        //         ..Default::default()
+        //     }),
+        //     server_name: None,
+        // })
     }
 
-    /// Create a default [`TlsConnectorData`] that is focussed
-    /// on providing http/1.1 connections.
-    pub fn new_http_1() -> Result<TlsConnectorData, OpaqueError> {
-        Ok(TlsConnectorData {
-            client_config_input: Arc::new(ClientConfigInput {
-                alpn_protos: Some(vec![ApplicationProtocol::HTTP_11.as_bytes().to_vec()]),
-                ..Default::default()
-            }),
-            server_name: None,
-        })
-    }
+    //     /// Create a default [`TlsConnectorData`] that is focussed
+    //     /// on providing http/1.1 connections.
+    //     pub fn new_http_1() -> Result<TlsConnectorData, OpaqueError> {
+    //         Ok(TlsConnectorData {
+    //             client_config_input: Arc::new(ClientConfigInput {
+    //                 alpn_protos: Some(vec![ApplicationProtocol::HTTP_11.as_bytes().to_vec()]),
+    //                 ..Default::default()
+    //             }),
+    //             server_name: None,
+    //         })
+    //     }
 
-    /// Create a default [`TlsConnectorData`] that is focussed
-    /// on providing h2 connections.
-    pub fn new_http_2() -> Result<TlsConnectorData, OpaqueError> {
-        Ok(TlsConnectorData {
-            client_config_input: Arc::new(ClientConfigInput {
-                alpn_protos: Some(vec![
-                    ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-                    ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-                ]),
-                ..Default::default()
-            }),
-            server_name: None,
-        })
-    }
+    //     /// Create a default [`TlsConnectorData`] that is focussed
+    //     /// on providing h2 connections.
+    //     pub fn new_http_2() -> Result<TlsConnectorData, OpaqueError> {
+    //         Ok(TlsConnectorData {
+    //             client_config_input: Arc::new(ClientConfigInput {
+    //                 alpn_protos: Some(vec![
+    //                     ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
+    //                     ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
+    //                 ]),
+    //                 ..Default::default()
+    //             }),
+    //             server_name: None,
+    //         })
+    //     }
 }
 
-#[derive(Debug)]
-pub(super) struct ClientConfigData {
-    pub(super) config: ClientConfig,
-    pub(super) server_name: Option<Host>,
-}
+// #[derive(Debug)]
+// pub(super) struct ClientConfigData {
+//     pub(super) config: ClientConfig,
+//     pub(super) server_name: Option<Host>,
+// }
 
 impl TlsConnectorData {
-    pub(super) fn try_to_build_config(&self) -> Result<ClientConfigData, OpaqueError> {
-        let builder = ClientConfig::builder_with_protocol_versions(
-            self.client_config_input
-                .protocol_versions
-                .as_deref()
-                .unwrap_or(ALL_VERSIONS),
-        )
-        .with_root_certificates(client_root_certs());
+    // pub(super) fn try_to_build_config(&self) -> Result<ClientConfigData, OpaqueError> {
+    //     let builder = ClientConfig::builder_with_protocol_versions(
+    //         self.client_config_input
+    //             .protocol_versions
+    //             .as_deref()
+    //             .unwrap_or(ALL_VERSIONS),
+    //     )
+    //     .with_root_certificates(client_root_certs());
 
-        let mut client_config = match self.client_config_input.client_auth.as_ref() {
-            Some((cert_chain, key_der)) => builder
-                .with_client_auth_cert(cert_chain.clone(), key_der.clone_key())
-                .context("rustls connector: create tls client config with client auth certs")?,
-            None => builder.with_no_client_auth(),
-        };
+    //     let mut client_config = match self.client_config_input.client_auth.as_ref() {
+    //         Some((cert_chain, key_der)) => builder
+    //             .with_client_auth_cert(cert_chain.clone(), key_der.clone_key())
+    //             .context("rustls connector: create tls client config with client auth certs")?,
+    //         None => builder.with_no_client_auth(),
+    //     };
 
-        if let Some(key_logger) = self.client_config_input.key_logger.clone() {
-            let key_log = KeyLogFile::new(key_logger)?;
-            client_config.key_log = Arc::new(key_log);
-        }
+    //     if let Some(key_logger) = self.client_config_input.key_logger.clone() {
+    //         let key_log = KeyLogFile::new(key_logger)?;
+    //         client_config.key_log = Arc::new(key_log);
+    //     }
 
-        if let Some(alpn_protos) = self.client_config_input.alpn_protos.clone() {
-            client_config.alpn_protocols = alpn_protos;
-        }
+    //     if let Some(alpn_protos) = self.client_config_input.alpn_protos.clone() {
+    //         client_config.alpn_protocols = alpn_protos;
+    //     }
 
-        if let Some(cert_verifier) = self.client_config_input.cert_verifier.clone() {
-            client_config
-                .dangerous()
-                .set_certificate_verifier(cert_verifier);
-        }
+    //     if let Some(cert_verifier) = self.client_config_input.cert_verifier.clone() {
+    //         client_config
+    //             .dangerous()
+    //             .set_certificate_verifier(cert_verifier);
+    //     }
 
-        Ok(ClientConfigData {
-            config: client_config,
-            server_name: self.server_name.clone(),
-        })
-    }
+    //     Ok(ClientConfigData {
+    //         config: client_config,
+    //         server_name: self.server_name.clone(),
+    //     })
+    // }
 
-    /// Merge `self` together with the `other`, resulting in
-    /// a new [`TlsConnectorData`], where any defined properties of `other`
-    /// take priority over conflicting ones in `self`.
-    pub fn merge(&self, other: &TlsConnectorData) -> TlsConnectorData {
-        TlsConnectorData {
-            client_config_input: Arc::new(ClientConfigInput {
-                protocol_versions: other
-                    .client_config_input
-                    .protocol_versions
-                    .clone()
-                    .or_else(|| self.client_config_input.protocol_versions.clone()),
-                client_auth: other
-                    .client_config_input
-                    .client_auth
-                    .as_ref()
-                    .map(|(cert_chain, key_der)| (cert_chain.clone(), key_der.clone_key()))
-                    .or_else(|| {
-                        self.client_config_input
-                            .client_auth
-                            .as_ref()
-                            .map(|(cert_chain, key_der)| (cert_chain.clone(), key_der.clone_key()))
-                    }),
-                key_logger: other
-                    .client_config_input
-                    .key_logger
-                    .clone()
-                    .or_else(|| self.client_config_input.key_logger.clone()),
-                alpn_protos: other
-                    .client_config_input
-                    .alpn_protos
-                    .clone()
-                    .or_else(|| self.client_config_input.alpn_protos.clone()),
-                cert_verifier: other
-                    .client_config_input
-                    .cert_verifier
-                    .clone()
-                    .or_else(|| self.client_config_input.cert_verifier.clone()),
-                store_server_certificate_chain: other
-                    .client_config_input
-                    .store_server_certificate_chain,
-            }),
-            server_name: other
-                .server_name
-                .clone()
-                .or_else(|| self.server_name.clone()),
-        }
-    }
+    // / Merge `self` together with the `other`, resulting in
+    // / a new [`TlsConnectorData`], where any defined properties of `other`
+    // / take priority over conflicting ones in `self`.
+    // pub fn merge(&self, other: &TlsConnectorData) -> TlsConnectorData {
+    //     TlsConnectorData {
+    //         client_config_input: Arc::new(ClientConfigInput {
+    //             protocol_versions: other
+    //                 .client_config_input
+    //                 .protocol_versions
+    //                 .clone()
+    //                 .or_else(|| self.client_config_input.protocol_versions.clone()),
+    //             client_auth: other
+    //                 .client_config_input
+    //                 .client_auth
+    //                 .as_ref()
+    //                 .map(|(cert_chain, key_der)| (cert_chain.clone(), key_der.clone_key()))
+    //                 .or_else(|| {
+    //                     self.client_config_input
+    //                         .client_auth
+    //                         .as_ref()
+    //                         .map(|(cert_chain, key_der)| (cert_chain.clone(), key_der.clone_key()))
+    //                 }),
+    //             key_logger: other
+    //                 .client_config_input
+    //                 .key_logger
+    //                 .clone()
+    //                 .or_else(|| self.client_config_input.key_logger.clone()),
+    //             alpn_protos: other
+    //                 .client_config_input
+    //                 .alpn_protos
+    //                 .clone()
+    //                 .or_else(|| self.client_config_input.alpn_protos.clone()),
+    //             cert_verifier: other
+    //                 .client_config_input
+    //                 .cert_verifier
+    //                 .clone()
+    //                 .or_else(|| self.client_config_input.cert_verifier.clone()),
+    //             store_server_certificate_chain: other
+    //                 .client_config_input
+    //                 .store_server_certificate_chain,
+    //         }),
+    //         server_name: other
+    //             .server_name
+    //             .clone()
+    //             .or_else(|| self.server_name.clone()),
+    //     }
+    // }
 }
 
-impl TlsConnectorData {
-    /// Return a reference to the exposed client cert chain,
-    /// should these exist and be exposed.
-    pub fn client_auth_cert_chain(&self) -> Option<&[CertificateDer<'static>]> {
-        self.client_config_input
-            .client_auth
-            .as_ref()
-            .map(|t| t.0.as_ref())
-    }
+// impl TlsConnectorData {
+//     /// Return a reference to the exposed client cert chain,
+//     /// should these exist and be exposed.
+//     pub fn client_auth_cert_chain(&self) -> Option<&[CertificateDer<'static>]> {
+//         self.client_config_input
+//             .client_auth
+//             .as_ref()
+//             .map(|t| t.0.as_ref())
+//     }
 
-    /// Return a reference the desired (SNI) in case it exists
-    pub fn server_name(&self) -> Option<&Host> {
-        self.server_name.as_ref()
-    }
-}
+//     /// Return a reference the desired (SNI) in case it exists
+//     pub fn server_name(&self) -> Option<&Host> {
+//         self.server_name.as_ref()
+//     }
+// }
 
 // impl TlsConnectorData {
 //     pub fn try_from_multiple_client_configs<'a>(
@@ -336,7 +350,7 @@ impl TlsConnectorData {
 //     }
 // }
 
-pub(super) fn client_root_certs() -> Arc<RootCertStore> {
+pub fn client_root_certs() -> Arc<RootCertStore> {
     static ROOT_CERTS: OnceLock<Arc<RootCertStore>> = OnceLock::new();
     ROOT_CERTS
         .get_or_init(|| {
