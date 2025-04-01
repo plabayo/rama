@@ -127,6 +127,13 @@ impl UserAgentDatabase {
             .and_then(|idx| self.profiles.get(*idx))
     }
 
+    /// Get a [`UserAgentProfile`] from the database by an [`UserAgent`] header string
+    pub fn get_exact_header_str(&self, ua: &str) -> Option<&UserAgentProfile> {
+        self.map_ua_string
+            .get(ua)
+            .and_then(|idx| self.profiles.get(*idx))
+    }
+
     /// Get a [`UserAgentProfile`] from the database by [`UserAgent`].
     ///
     /// It first tries to find the profile by User-Agent header value string,
