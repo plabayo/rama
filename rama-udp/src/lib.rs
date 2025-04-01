@@ -17,11 +17,11 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-// pub mod server;
-// pub mod stream;
-
 mod socket;
 pub use socket::UdpSocket;
+
+#[doc(inline)]
+pub use tokio_util::udp::UdpFramed;
 
 pub mod codec {
     //! Adaptors from `AsyncRead`/`AsyncWrite` to Stream/Sink

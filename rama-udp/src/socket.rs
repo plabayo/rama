@@ -1,3 +1,4 @@
+use crate::UdpFramed;
 use bytes::BufMut;
 use rama_core::error::{BoxError, ErrorContext};
 use rama_net::address::SocketAddress;
@@ -769,6 +770,11 @@ impl UdpSocket {
     #[inline]
     pub fn take_error(&self) -> io::Result<Option<io::Error>> {
         self.inner.take_error()
+    }
+
+    /// Consume this [`UdpSocket`] into a [`UdpFramed`] using the given `C` codec.
+    pub fn into_framed<C>(self, codec: C) -> UdpFramed<C> {
+        UdpFramed::new(self.inner, codec)
     }
 }
 
