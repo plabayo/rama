@@ -3,7 +3,10 @@ use std::{fmt, io};
 
 use crate::tls::{
     CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SecureTransport, SupportedGroup,
+    client::NegotiatedTlsParameters,
 };
+
+use super::ClientHelloProvider;
 
 #[derive(Debug, Clone)]
 /// Data which can be hashed using [`Self::hash`],
@@ -27,14 +30,33 @@ impl Ja3 {
             .get::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .ok_or(Ja3ComputeError::MissingClientHello)?;
+        let negotiated_tls_version = ext
+            .get::<NegotiatedTlsParameters>()
+            .map(|param| param.protocol_version);
+        Self::compute_from_client_hello(client_hello, negotiated_tls_version)
+    }
 
-        let version = client_hello.protocol_version();
+    /// Compute the [`Ja3`] (hash) from a reference to either a
+    /// [`ClientHello`] or a [`ClientConfig`] data structure.
+    ///
+    /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
+    ///
+    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientConfig`]: crate::tls::client::ClientConfig
+    pub fn compute_from_client_hello(
+        client_hello: impl ClientHelloProvider,
+        negotiated_tls_version: Option<ProtocolVersion>,
+    ) -> Result<Self, Ja3ComputeError> {
+        let version = negotiated_tls_version.unwrap_or_else(|| {
+            tracing::trace!(
+                "negotiated tls protocol version missing: fallback to client hello tls"
+            );
+            client_hello.protocol_version()
+        });
 
         let cipher_suites: Vec<_> = client_hello
             .cipher_suites()
-            .iter()
             .filter(|c| !c.is_grease())
-            .copied()
             .collect();
         if cipher_suites.is_empty() {
             return Err(Ja3ComputeError::EmptyCipherSuites);
@@ -50,9 +72,7 @@ impl Ja3 {
                 continue;
             }
 
-            extensions
-                .get_or_insert_with(|| Vec::with_capacity(ce_extensions.len()))
-                .push(ext.id());
+            extensions.get_or_insert_with(Vec::default).push(ext.id());
 
             match ext {
                 crate::tls::client::ClientHelloExtension::SupportedGroups(vec) => {

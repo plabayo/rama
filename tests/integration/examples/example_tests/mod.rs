@@ -33,6 +33,8 @@ mod http_telemetry;
 #[cfg(feature = "http-full")]
 mod http_user_agent_classifier;
 #[cfg(feature = "http-full")]
+mod http_web_router;
+#[cfg(feature = "http-full")]
 mod http_web_service_dir_and_api;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
 mod https_connect_proxy;

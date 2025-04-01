@@ -14,6 +14,7 @@ use crate::{
         IntoResponse, Request, Response, Version,
         conn::LastPeerPriorityParams,
         dep::http_body_util::BodyExt,
+        header::USER_AGENT,
         headers::{CFConnectingIp, ClientIp, TrueClientIp, XClientIp, XRealIp},
         layer::{
             forwarded::GetForwardedHeadersLayer,
@@ -32,9 +33,12 @@ use crate::{
     net::forwarded::Forwarded,
     net::http::RequestContext,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
+    net::tls::client::NegotiatedTlsParameters,
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
+    ua::profile::UserAgentDatabase,
 };
+use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
@@ -62,6 +66,8 @@ pub struct EchoServiceBuilder<H> {
     http_version: Option<Version>,
 
     http_service_builder: H,
+
+    uadb: Option<std::sync::Arc<UserAgentDatabase>>,
 }
 
 impl Default for EchoServiceBuilder<()> {
@@ -78,6 +84,8 @@ impl Default for EchoServiceBuilder<()> {
             http_version: None,
 
             http_service_builder: (),
+
+            uadb: None,
         }
     }
 }
@@ -221,7 +229,33 @@ impl<H> EchoServiceBuilder<H> {
             http_version: self.http_version,
 
             http_service_builder: (self.http_service_builder, layer),
+
+            uadb: self.uadb,
         }
+    }
+
+    /// set the user agent datasbase that if set would be used to look up
+    /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
+    pub fn with_user_agent_database(mut self, db: std::sync::Arc<UserAgentDatabase>) -> Self {
+        self.uadb = Some(db);
+        self
+    }
+
+    /// maybe set the user agent datasbase that if set would be used to look up
+    /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
+    pub fn maybe_with_user_agent_database(
+        mut self,
+        db: Option<std::sync::Arc<UserAgentDatabase>>,
+    ) -> Self {
+        self.uadb = db;
+        self
+    }
+
+    /// set the user agent datasbase that if set would be used to look up
+    /// a user agent (by ua header string) to see if we have a ja3/ja4 hash.
+    pub fn set_user_agent_database(&mut self, db: std::sync::Arc<UserAgentDatabase>) -> &mut Self {
+        self.uadb = Some(db);
+        self
     }
 }
 
@@ -292,7 +326,10 @@ where
             ConsumeErrLayer::default(),
             http_forwarded_layer,
         )
-            .into_layer(self.http_service_builder.into_layer(EchoService));
+            .into_layer(
+                self.http_service_builder
+                    .into_layer(EchoService { uadb: self.uadb }),
+            );
 
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A(HttpServer::h2(executor).service(http_service)),
@@ -312,7 +349,9 @@ where
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 /// The inner echo-service used by the [`EchoServiceBuilder`].
-pub struct EchoService;
+pub struct EchoService {
+    uadb: Option<std::sync::Arc<UserAgentDatabase>>,
+}
 
 impl Service<(), Request> for EchoService {
     type Response = Response;
@@ -340,13 +379,69 @@ impl Service<(), Request> for EchoService {
         let authority = request_context.authority.to_string();
         let scheme = request_context.protocol.to_string();
 
+        let ua_str = req
+            .headers()
+            .get(USER_AGENT)
+            .and_then(|h| h.to_str().ok())
+            .map(ToOwned::to_owned);
+        tracing::debug!(?ua_str, "echo request received from ua with ua header");
+
+        #[derive(Debug, Serialize)]
+        struct FingerprintProfileData {
+            hash: String,
+            verbose: String,
+            matched: bool,
+        }
+
         let ja4h = Ja4H::compute(&req)
             .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
             .ok()
             .map(|ja4h| {
+                let mut profile_ja4h: Option<FingerprintProfileData> = None;
+
+                if let Some(uadb) = self.uadb.as_deref() {
+                    if let Some(profile) =
+                        ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
+                    {
+                        let matched_ja4h = match req.version() {
+                            Version::HTTP_10 | Version::HTTP_11 => profile
+                                .http
+                                .ja4h_h1_navigate(Some(req.method().clone()))
+                                .inspect_err(|err| {
+                                    tracing::trace!(
+                                        ?err,
+                                        "ja4h computation of matched profile for incoming h1 req"
+                                    )
+                                })
+                                .ok(),
+                            Version::HTTP_2 => profile
+                                .http
+                                .ja4h_h2_navigate(Some(req.method().clone()))
+                                .inspect_err(|err| {
+                                    tracing::trace!(
+                                        ?err,
+                                        "ja4h computation of matched profile for incoming h2 req"
+                                    )
+                                })
+                                .ok(),
+                            _ => None,
+                        };
+                        if let Some(tgt) = matched_ja4h {
+                            let hash = format!("{tgt}");
+                            let matched = format!("{ja4h}") == hash;
+                            profile_ja4h = Some(FingerprintProfileData {
+                                hash,
+                                verbose: format!("{tgt:?}"),
+                                matched,
+                            });
+                        }
+                    }
+                }
+
                 json!({
                     "hash": format!("{ja4h}"),
-                    "raw": format!("{ja4h:?}"),
+                    "verbose": format!("{ja4h:?}"),
+                    "profile": profile_ja4h,
                 })
             });
 
@@ -368,29 +463,89 @@ impl Service<(), Request> for EchoService {
         let body = hex::encode(body.as_ref());
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_client_hello = ctx
+        let tls_info = ctx
             .get::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .map(|hello| {
                 let ja4 = Ja4::compute(ctx.extensions())
                     .inspect_err(|err| tracing::trace!(?err, "ja4 computation"))
-                    .ok()
-                    .map(|ja4| {
-                        json!({
-                            "hash": format!("{ja4}"),
-                            "raw": format!("{ja4:?}"),
-                        })
-                    });
+                    .ok();
+
+                let mut profile_ja4: Option<FingerprintProfileData> = None;
+
+                if let Some(uadb) = self.uadb.as_deref() {
+                    if let Some(profile) =
+                        ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
+                    {
+                        let matched_ja4 = profile
+                            .tls
+                            .compute_ja4(
+                                ctx.get::<NegotiatedTlsParameters>()
+                                    .map(|param| param.protocol_version),
+                            )
+                            .inspect_err(|err| {
+                                tracing::trace!(?err, "ja4 computation of matched profile")
+                            })
+                            .ok();
+                        if let (Some(src), Some(tgt)) = (ja4.as_ref(), matched_ja4) {
+                            let hash = format!("{tgt}");
+                            let matched = format!("{src}") == hash;
+                            profile_ja4 = Some(FingerprintProfileData {
+                                hash,
+                                verbose: format!("{tgt:?}"),
+                                matched,
+                            });
+                        }
+                    }
+                }
+
+                let ja4 = ja4.map(|ja4| {
+                    json!({
+                        "hash": format!("{ja4}"),
+                        "verbose": format!("{ja4:?}"),
+                        "profile": profile_ja4,
+                    })
+                });
 
                 let ja3 = Ja3::compute(ctx.extensions())
                     .inspect_err(|err| tracing::trace!(?err, "ja3 computation"))
-                    .ok()
-                    .map(|ja3| {
-                        json!({
-                            "full": format!("{ja3}"),
-                            "hash": format!("{ja3:x}"),
-                        })
-                    });
+                    .ok();
+
+                let mut profile_ja3: Option<FingerprintProfileData> = None;
+
+                if let Some(uadb) = self.uadb.as_deref() {
+                    if let Some(profile) =
+                        ua_str.as_deref().and_then(|s| uadb.get_exact_header_str(s))
+                    {
+                        let matched_ja3 = profile
+                            .tls
+                            .compute_ja3(
+                                ctx.get::<NegotiatedTlsParameters>()
+                                    .map(|param| param.protocol_version),
+                            )
+                            .inspect_err(|err| {
+                                tracing::trace!(?err, "ja3 computation of matched profile")
+                            })
+                            .ok();
+                        if let (Some(src), Some(tgt)) = (ja3.as_ref(), matched_ja3) {
+                            let hash = format!("{tgt:x}");
+                            let matched = format!("{src:x}") == hash;
+                            profile_ja3 = Some(FingerprintProfileData {
+                                hash,
+                                verbose: format!("{tgt}"),
+                                matched,
+                            });
+                        }
+                    }
+                }
+
+                let ja3 = ja3.map(|ja3| {
+                    json!({
+                        "hash": format!("{ja3:x}"),
+                        "verbose": format!("{ja3}"),
+                        "profile": profile_ja3,
+                    })
+                });
 
                 json!({
                     "header": {
@@ -450,7 +605,7 @@ impl Service<(), Request> for EchoService {
             });
 
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
-        let tls_client_hello: Option<()> = None;
+        let tls_info: Option<()> = None;
 
         let mut h2 = None;
         if parts.version == Version::HTTP_2 {
@@ -487,7 +642,7 @@ impl Service<(), Request> for EchoService {
                 "payload": body,
                 "ja4h": ja4h,
             },
-            "tls": tls_client_hello,
+            "tls": tls_info,
             "socket_addr": ctx.get::<Forwarded>()
                 .and_then(|f|
                         f.client_socket_addr().map(|addr| addr.to_string())
