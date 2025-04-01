@@ -230,7 +230,7 @@ compression = ["http", "rama-http/compression", "rama-tls/compression"]
 tls = ["net", "dep:rama-tls", "rama-net/tls", "rama-http/tls", "rama-http-backend/tls", "rama-ua/tls"]
 rustls = ["tls", "rama-tls/rustls", "rama-net/rustls", "rama-http-backend/rustls"]
 boring = ["tls", "rama-tls/boring", "rama-net/boring", "rama-http-backend/boring"]
-cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
+cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
 net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
@@ -265,6 +265,7 @@ rama-tcp = { version = "0.2.0-alpha.8", path = "rama-tcp", optional = true }
 rama-tls = { version = "0.2.0-alpha.8", path = "rama-tls", optional = true }
 rama-ua = { version = "0.2.0-alpha.8", path = "rama-ua", optional = true }
 rama-utils = { version = "0.2.0-alpha.8", path = "rama-utils" }
+serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["macros", "io-std"], optional = true }

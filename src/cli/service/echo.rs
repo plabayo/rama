@@ -38,6 +38,7 @@ use crate::{
     rt::Executor,
     ua::profile::UserAgentDatabase,
 };
+use serde::Serialize;
 use serde_json::json;
 use std::{convert::Infallible, time::Duration};
 use tokio::net::TcpStream;
@@ -385,12 +386,18 @@ impl Service<(), Request> for EchoService {
             .map(ToOwned::to_owned);
         tracing::debug!(?ua_str, "echo request received from ua with ua header");
 
+        #[derive(Debug, Serialize)]
+        struct FingerprintProfileData {
+            hash: String,
+            verbose: String,
+            matched: bool,
+        }
+
         let ja4h = Ja4H::compute(&req)
             .inspect_err(|err| tracing::error!(?err, "ja4h compute failure"))
             .ok()
             .map(|ja4h| {
-                let mut ja4h_match: Option<bool> = None;
-                let mut profile_ja4h: Option<String> = None;
+                let mut profile_ja4h: Option<FingerprintProfileData> = None;
 
                 if let Some(uadb) = self.uadb.as_deref() {
                     if let Some(profile) =
@@ -420,18 +427,21 @@ impl Service<(), Request> for EchoService {
                             _ => None,
                         };
                         if let Some(tgt) = matched_ja4h {
-                            let h = format!("{tgt}");
-                            ja4h_match = Some(format!("{ja4h}") == h);
-                            profile_ja4h = Some(h);
+                            let hash = format!("{tgt}");
+                            let matched = format!("{ja4h}") == hash;
+                            profile_ja4h = Some(FingerprintProfileData {
+                                hash,
+                                verbose: format!("{tgt:?}"),
+                                matched,
+                            });
                         }
                     }
                 }
 
                 json!({
                     "hash": format!("{ja4h}"),
-                    "raw": format!("{ja4h:?}"),
-                    "match": ja4h_match,
-                    "profile_hash": profile_ja4h,
+                    "verbose": format!("{ja4h:?}"),
+                    "profile": profile_ja4h,
                 })
             });
 
@@ -461,8 +471,7 @@ impl Service<(), Request> for EchoService {
                     .inspect_err(|err| tracing::trace!(?err, "ja4 computation"))
                     .ok();
 
-                let mut ja4_match: Option<bool> = None;
-                let mut profile_ja4: Option<String> = None;
+                let mut profile_ja4: Option<FingerprintProfileData> = None;
 
                 if let Some(uadb) = self.uadb.as_deref() {
                     if let Some(profile) =
@@ -479,9 +488,13 @@ impl Service<(), Request> for EchoService {
                             })
                             .ok();
                         if let (Some(src), Some(tgt)) = (ja4.as_ref(), matched_ja4) {
-                            let h = format!("{tgt}");
-                            ja4_match = Some(format!("{src}") == h);
-                            profile_ja4 = Some(h);
+                            let hash = format!("{tgt}");
+                            let matched = format!("{src}") == hash;
+                            profile_ja4 = Some(FingerprintProfileData {
+                                hash,
+                                verbose: format!("{tgt:?}"),
+                                matched,
+                            });
                         }
                     }
                 }
@@ -489,9 +502,8 @@ impl Service<(), Request> for EchoService {
                 let ja4 = ja4.map(|ja4| {
                     json!({
                         "hash": format!("{ja4}"),
-                        "raw": format!("{ja4:?}"),
-                        "match": ja4_match,
-                        "profile_hash": profile_ja4,
+                        "verbose": format!("{ja4:?}"),
+                        "profile": profile_ja4,
                     })
                 });
 
@@ -499,8 +511,7 @@ impl Service<(), Request> for EchoService {
                     .inspect_err(|err| tracing::trace!(?err, "ja3 computation"))
                     .ok();
 
-                let mut ja3_match: Option<bool> = None;
-                let mut profile_ja3: Option<String> = None;
+                let mut profile_ja3: Option<FingerprintProfileData> = None;
 
                 if let Some(uadb) = self.uadb.as_deref() {
                     if let Some(profile) =
@@ -517,19 +528,22 @@ impl Service<(), Request> for EchoService {
                             })
                             .ok();
                         if let (Some(src), Some(tgt)) = (ja3.as_ref(), matched_ja3) {
-                            let h = format!("{tgt}");
-                            ja3_match = Some(format!("{src}") == h);
-                            profile_ja3 = Some(h);
+                            let hash = format!("{tgt:x}");
+                            let matched = format!("{src:x}") == hash;
+                            profile_ja3 = Some(FingerprintProfileData {
+                                hash,
+                                verbose: format!("{tgt}"),
+                                matched,
+                            });
                         }
                     }
                 }
 
                 let ja3 = ja3.map(|ja3| {
                     json!({
-                        "full": format!("{ja3}"),
                         "hash": format!("{ja3:x}"),
-                        "match": ja3_match,
-                        "profile_hash": profile_ja3,
+                        "verbose": format!("{ja3}"),
+                        "profile": profile_ja3,
                     })
                 });
 
