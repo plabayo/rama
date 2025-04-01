@@ -1,5 +1,7 @@
 //! This example leverages `BytesCodec` to create a UDP client and server which
-//! speak a custom protocol.//! # Run the example
+//! speak a custom protocol.
+//!
+//! # Run the example
 //!
 //! ```sh
 //! cargo run --example udp_codec --features=udp
