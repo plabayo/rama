@@ -9,7 +9,9 @@ use std::fmt;
 use std::pin::pin;
 use std::sync::Arc;
 use std::{io, net::SocketAddr};
-use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
+use tokio::net::TcpListener as TokioTcpListener;
+
+use crate::TcpStream;
 
 /// Builder for `TcpListener`.
 pub struct TcpListenerBuilder<S> {

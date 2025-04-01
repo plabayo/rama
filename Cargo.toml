@@ -222,6 +222,7 @@ full = [
     "boring",
     "cli",
     "tcp",
+    "udp",
     "http-full",
     "proxy-full",
 ]
@@ -234,6 +235,7 @@ cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde", "dep:serde_json", "dep
 net = ["dep:rama-net"]
 dns = ["net", "dep:rama-dns"]
 tcp = ["dns", "dep:rama-tcp"]
+udp = ["net", "dep:rama-udp"]
 http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-tcp/http"]
 http-full = ["http", "tcp", "dep:rama-http-backend", "dep:rama-http-core", "ua-embed-profiles", "compression"]
 proxy = ["dep:rama-proxy"]
@@ -264,6 +266,7 @@ rama-proxy = { version = "0.2.0-alpha.8", path = "rama-proxy", optional = true }
 rama-tcp = { version = "0.2.0-alpha.8", path = "rama-tcp", optional = true }
 rama-tls = { version = "0.2.0-alpha.8", path = "rama-tls", optional = true }
 rama-ua = { version = "0.2.0-alpha.8", path = "rama-ua", optional = true }
+rama-udp = { version = "0.2.0-alpha.8", path = "rama-udp", optional = true }
 rama-utils = { version = "0.2.0-alpha.8", path = "rama-utils" }
 serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
@@ -290,7 +293,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
 spmc = { workspace = true }
-tokio = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tokio-test = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
@@ -427,6 +430,10 @@ required-features = ["tcp"]
 [[example]]
 name = "tcp_listener_layers"
 required-features = ["tcp"]
+
+[[example]]
+name = "udp_codec"
+required-features = ["udp"]
 
 [[example]]
 name = "tls_boring_dynamic_certs"

@@ -2379,6 +2379,7 @@ dependencies = [
  "rama-tcp",
  "rama-tls",
  "rama-ua",
+ "rama-udp",
  "rama-utils",
  "regex",
  "rustversion",
@@ -2770,6 +2771,19 @@ dependencies = [
 [[package]]
 name = "rama-udp"
 version = "0.2.0-alpha.8"
+dependencies = [
+ "bytes",
+ "futures-core",
+ "futures-sink",
+ "futures-util",
+ "pin-project-lite",
+ "rama-core",
+ "rama-net",
+ "rama-utils",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "rama-utils"

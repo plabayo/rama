@@ -7,6 +7,8 @@ use rama_utils::macros::str::eq_ignore_ascii_case;
 
 #[cfg(feature = "http")]
 use rama_http_types::{Method, Scheme};
+
+#[cfg(feature = "http")]
 use tracing::{trace, warn};
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
