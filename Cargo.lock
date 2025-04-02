@@ -2711,6 +2711,10 @@ dependencies = [
 [[package]]
 name = "rama-socks5"
 version = "0.2.0-alpha.8"
+dependencies = [
+ "rama-utils",
+ "smallvec",
+]
 
 [[package]]
 name = "rama-tcp"

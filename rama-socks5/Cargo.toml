@@ -17,6 +17,8 @@ workspace = true
 default = []
 
 [dependencies]
+rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
+smallvec = { workspace = true }
 
 [dev-dependencies]
 
