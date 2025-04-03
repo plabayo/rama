@@ -8,6 +8,14 @@ use smallvec::SmallVec;
 #[derive(Debug, Clone)]
 /// The client connects to the server, and sends a header which
 /// contains the protocol version desired and SOCKS methods supported by the client.
+///
+/// ```plain
+/// +-----+----------+----------+
+/// | VER | NMETHODS | METHODS  |
+/// +-----+----------+----------+
+/// |  1  |    1     | 1 to 255 |
+/// +-----+----------+----------|
+/// ```
 pub struct Header {
     pub version: ProtocolVersion,
     pub number_methods: u8,
