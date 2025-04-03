@@ -305,7 +305,6 @@ where
                         *req.version_mut() = version;
                         *req.headers_mut() = headers.clone();
                         policy.on_request(&mut ctx, &mut req);
-                        continue;
                     }
                     Action::Stop => return Ok(res),
                 }

@@ -214,7 +214,6 @@ async fn open_file_with_fallback(
                 path.set_extension(OsStr::new(""));
                 // Remove the encoding from the negotiated_encodings since the file doesn't exist
                 negotiated_encoding.retain(|qv| qv.value != encoding);
-                continue;
             }
             (Err(err), _) => return Err(err),
         };
@@ -240,7 +239,6 @@ async fn file_metadata_with_fallback(
                 path.set_extension(OsStr::new(""));
                 // Remove the encoding from the negotiated_encodings since the file doesn't exist
                 negotiated_encoding.retain(|qv| qv.value != encoding);
-                continue;
             }
             (Err(err), _) => return Err(err),
         };
