@@ -5,4 +5,8 @@
 pub mod client;
 pub mod server;
 
-mod version;
+mod enums;
+pub use enums::{
+    AddressType, Command, ProtocolVersion, ReplyKind, SocksMethod,
+    UsernamePasswordSubnegotiationVersion,
+};
