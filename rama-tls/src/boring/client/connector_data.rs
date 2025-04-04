@@ -194,16 +194,6 @@ impl TlsConnectorData {
             }
         }
 
-        // TODO: support ext DELEGATED_CREDENTIAL
-
-        if let Some(limit) = self.connect_config_input.record_size_limit {
-            // TODO fork boring and implement record size limit
-            debug!(
-                "boring connector: set record size limit: {}; ignore as it is not yet supported",
-                limit
-            );
-        }
-
         match self
             .connect_config_input
             .server_verify_mode
@@ -249,6 +239,11 @@ impl TlsConnectorData {
             .build()
             .configure()
             .context("create ssl connector configuration")?;
+
+        if let Some(limit) = self.connect_config_input.record_size_limit {
+            trace!("boring connector: setting record size limit");
+            cfg.set_record_size_limit(limit).unwrap();
+        }
 
         if let Some(schemes) = self
             .connect_config_input
