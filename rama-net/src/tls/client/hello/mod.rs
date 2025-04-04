@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::fmt::Display;
 
 use crate::address::Host;
 use crate::tls::enums::CertificateCompressionAlgorithm;
@@ -217,6 +218,11 @@ pub enum ClientHelloExtension {
     ///
     /// - <https://datatracker.ietf.org/doc/html/rfc9345>
     DelegatedCredentials(Vec<SignatureScheme>),
+    /// Encrypted hello send by the client
+    /// # Reference
+    ///
+    /// - <https://datatracker.ietf.org/doc/html/draft-ietf-tls-esni/>
+    EncryptedClientHello(ECHClientHello),
     /// Any extension not supported by Rama,
     /// as it is still to be done or considered out of scope.
     Opaque {
@@ -242,7 +248,41 @@ impl ClientHelloExtension {
             ClientHelloExtension::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
             ClientHelloExtension::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,
             ClientHelloExtension::RecordSizeLimit(_) => ExtensionId::RECORD_SIZE_LIMIT,
+            ClientHelloExtension::EncryptedClientHello(_) => ExtensionId::ENCRYPTED_CLIENT_HELLO,
             ClientHelloExtension::Opaque { id, .. } => *id,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+/// Client Hello contents send by ech
+pub enum ECHClientHello {
+    /// Send when message is in the outer (unencrypted) part of client hello
+    Outer(ECHClientHelloOuter),
+    /// Send inside the inner (encrypted) client hello, need so all extensions
+    /// are part of the inner client hello. Servers will only use this hello
+    /// and if it does contain this extension the server thinks ech is not supported.
+    Inner(),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+/// Data send by ech hello message when it is in the outer part
+pub struct ECHClientHelloOuter {
+    pub cipher_suite: HpkeSymmetricCipherSuite,
+    pub config_id: u8,
+    pub enc: Vec<u8>,
+    pub payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Hash)]
+/// HPKE KDF and AEAD pair used to encrypt ClientHello
+pub struct HpkeSymmetricCipherSuite {
+    pub kdf_id: u16,
+    pub aead_id: u16,
+}
+
+impl Display for HpkeSymmetricCipherSuite {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{},{}", self.kdf_id, self.aead_id)
     }
 }

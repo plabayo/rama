@@ -259,6 +259,10 @@ impl TlsConnectorData {
             cfg.set_delegated_credential_schemes(schemes).unwrap();
         }
 
+        // TODO seems like we always want to enable this if we don't do actual ECH?
+        trace!("boring connector: enabling ech grease");
+        cfg.set_enable_ech_grease(true);
+
         trace!(
             "boring connector: return SSL connector config for server: {:?}",
             self.server_name

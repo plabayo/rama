@@ -33,7 +33,7 @@ use crate::{
     net::forwarded::Forwarded,
     net::http::RequestContext,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
-    net::tls::client::NegotiatedTlsParameters,
+    net::tls::client::{ECHClientHello, NegotiatedTlsParameters},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     ua::profile::UserAgentDatabase,
@@ -592,6 +592,25 @@ impl Service<(), Request> for EchoService {
                             "id": extension.id().to_string(),
                             "data": v.to_string(),
                         }),
+                        ClientHelloExtension::EncryptedClientHello(ech) => match ech {
+                            ECHClientHello::Outer(ech) => json!({
+                                "id": extension.id().to_string(),
+                                "data": {
+                                    "type": "outer",
+                                    "cipher_suite": ech.cipher_suite,
+                                    "config_id": ech.config_id,
+                                    "enc":  format!("0x{}", hex::encode(&ech.enc)),
+                                    "payload": format!("0x{}", hex::encode(&ech.payload)),
+                                },
+                            }),
+                            ECHClientHello::Inner() => json!({
+                                "id": extension.id().to_string(),
+                                "data": {
+                                    "type": "inner",
+                                },
+                            })
+
+                        }
                         ClientHelloExtension::Opaque { id, data } => if data.is_empty() {
                             json!({
                                 "id": id.to_string()
