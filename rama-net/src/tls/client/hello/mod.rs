@@ -211,6 +211,12 @@ pub enum ClientHelloExtension {
     ///
     /// - <https://datatracker.ietf.org/doc/html/rfc8449>
     RecordSizeLimit(u16),
+    /// Delegated credentials
+    ///
+    /// # Reference
+    ///
+    /// - <https://datatracker.ietf.org/doc/html/rfc9345>
+    DelegatedCredentials(Vec<SignatureScheme>),
     /// Any extension not supported by Rama,
     /// as it is still to be done or considered out of scope.
     Opaque {
@@ -234,6 +240,7 @@ impl ClientHelloExtension {
             }
             ClientHelloExtension::SupportedVersions(_) => ExtensionId::SUPPORTED_VERSIONS,
             ClientHelloExtension::CertificateCompression(_) => ExtensionId::COMPRESS_CERTIFICATE,
+            ClientHelloExtension::DelegatedCredentials(_) => ExtensionId::DELEGATED_CREDENTIAL,
             ClientHelloExtension::RecordSizeLimit(_) => ExtensionId::RECORD_SIZE_LIMIT,
             ClientHelloExtension::Opaque { id, .. } => *id,
         }

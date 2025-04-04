@@ -57,6 +57,7 @@ pub(super) struct ConnectConfigurationInput {
     pub(super) signed_cert_timestamps_enabled: bool,
     pub(super) certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
     pub(super) record_size_limit: Option<u16>,
+    pub(super) delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
 }
 
 #[derive(Debug, Clone)]
@@ -244,10 +245,19 @@ impl TlsConnectorData {
         }
 
         trace!("boring connector: build SSL connector config");
-        let cfg = cfg_builder
+        let mut cfg = cfg_builder
             .build()
             .configure()
             .context("create ssl connector configuration")?;
+
+        if let Some(schemes) = self
+            .connect_config_input
+            .delegated_credential_schemes
+            .as_ref()
+        {
+            trace!("boring connector: setting delegated credential schemes");
+            cfg.set_delegated_credential_schemes(schemes).unwrap();
+        }
 
         trace!(
             "boring connector: return SSL connector config for server: {:?}",
@@ -359,6 +369,15 @@ impl TlsConnectorData {
                     .connect_config_input
                     .record_size_limit
                     .or_else(|| self.connect_config_input.record_size_limit),
+                delegated_credential_schemes: other
+                    .connect_config_input
+                    .delegated_credential_schemes
+                    .clone()
+                    .or_else(|| {
+                        self.connect_config_input
+                            .delegated_credential_schemes
+                            .clone()
+                    }),
             }),
             server_name: other
                 .server_name
@@ -469,6 +488,7 @@ impl TlsConnectorData {
         let mut signed_cert_timestamps_enabled = false;
         let mut certificate_compression_algorithms = None;
         let mut record_size_limit = None;
+        let mut delegated_credential_schemes = None;
 
         for cfg in cfg_it {
             cipher_suites = cfg.cipher_suites.as_ref().or(cipher_suites);
@@ -631,6 +651,26 @@ impl TlsConnectorData {
                         );
                         certificate_compression_algorithms = Some(algorithms.clone());
                     }
+                    ClientHelloExtension::DelegatedCredentials(schemes) => {
+                        trace!(
+                            "TlsConnectorData: builder: from std client config: delegated credentials signature algorithms: {:?}",
+                            schemes
+                        );
+                        delegated_credential_schemes = Some(
+                            schemes
+                                .iter()
+                                .filter_map(|s| {
+                                    match (*s).try_into() {
+                                        Ok(v) => Some(v),
+                                        Err(s) => {
+                                            trace!("ignore unsupported signatured scheme for delegated creds {s} (file issue if you require it");
+                                            None
+                                        }
+                                    }
+                                })
+                                .collect(),
+                        );
+                    }
                     ClientHelloExtension::RecordSizeLimit(limit) => {
                         trace!(
                             "TlsConnectorData: builder: from std client config: record size limit: {:?}",
@@ -733,6 +773,7 @@ impl TlsConnectorData {
                 ocsp_stapling_enabled,
                 signed_cert_timestamps_enabled,
                 certificate_compression_algorithms,
+                delegated_credential_schemes,
                 record_size_limit,
             }),
             server_name,
