@@ -1,5 +1,3 @@
-use std::fmt;
-
 use rama_core::{
     Context, Service,
     context::{self, RequestContextExt},
@@ -13,9 +11,11 @@ use rama_http_types::{
     headers::HeaderMapExt,
 };
 use rama_net::{address::ProxyAddress, http::RequestContext};
+use std::fmt;
+use tokio::sync::Mutex;
 
 pub(super) enum SendRequest<Body> {
-    Http1(rama_http_core::client::conn::http1::SendRequest<Body>),
+    Http1(Mutex<rama_http_core::client::conn::http1::SendRequest<Body>>),
     Http2(rama_http_core::client::conn::http2::SendRequest<Body>),
 }
 
@@ -111,8 +111,16 @@ where
         let context::Parts { extensions, .. } = ctx.into_parts();
 
         let mut resp = match &self.sender {
-            SendRequest::Http1(sender) => sender.send_request(req).await,
-            SendRequest::Http2(sender) => sender.send_request(req).await,
+            SendRequest::Http1(sender) => {
+                let mut sender = sender.lock().await;
+                sender.ready().await?;
+                sender.send_request(req).await
+            }
+            SendRequest::Http2(sender) => {
+                let mut sender = sender.clone();
+                sender.ready().await?;
+                sender.send_request(req).await
+            }
         }?;
 
         resp.extensions_mut()

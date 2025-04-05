@@ -21,6 +21,7 @@ boring = ["tls", "rama-net/boring", "rama-tls/boring"]
 
 [dependencies]
 const_format = { workspace = true }
+futures = { workspace = true }
 h2 = { workspace = true }
 rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
 rama-http-core = { version = "0.2.0-alpha.8", path = "../rama-http-core" }

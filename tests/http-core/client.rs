@@ -333,7 +333,7 @@ macro_rules! test {
                 req.headers_mut().append("Host", HeaderValue::from_str(&host).unwrap());
             }
 
-            let (sender, conn) = builder.handshake(stream).await?;
+            let (mut sender, conn) = builder.handshake(stream).await?;
 
             tokio::task::spawn(async move {
                 if let Err(err) = conn.await {
@@ -1541,7 +1541,7 @@ mod conn {
 
         let client = async move {
             let tcp = tcp_connect(&addr).await.expect("connect");
-            let (client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
+            let (mut client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
 
             tokio::task::spawn(async move {
                 conn.await.expect("http conn");
@@ -1581,7 +1581,7 @@ mod conn {
 
         let client = async move {
             let tcp = tcp_connect(&addr).await.expect("connect");
-            let (client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
+            let (mut client, conn) = conn::http1::handshake(tcp).await.expect("handshake");
 
             tokio::task::spawn(async move {
                 conn.await.expect("http conn");
@@ -1638,7 +1638,7 @@ mod conn {
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
 
-        let (client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
+        let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
         rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
 
@@ -1682,7 +1682,7 @@ mod conn {
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
 
-        let (client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
+        let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
         rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
 
@@ -1740,7 +1740,7 @@ mod conn {
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
 
-        let (client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
+        let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
         rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
 
@@ -1784,7 +1784,7 @@ mod conn {
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
 
-        let (client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
+        let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
         rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
 
@@ -1825,7 +1825,7 @@ mod conn {
 
         let tcp = rt.block_on(tcp_connect(&addr)).unwrap();
 
-        let (client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
+        let (mut client, conn) = rt.block_on(conn::http1::handshake(tcp)).unwrap();
 
         rt.spawn(conn.map_err(|e| panic!("conn error: {}", e)).map(|_| ()));
 
@@ -2070,7 +2070,7 @@ mod conn {
 
         let tcp = tcp_connect(&addr).await.unwrap();
 
-        let (client, conn) = conn::http1::Builder::new()
+        let (mut client, conn) = conn::http1::Builder::new()
             .http09_responses(true)
             .handshake(tcp)
             .await
@@ -2107,7 +2107,7 @@ mod conn {
 
         let tcp = tcp_connect(&addr).await.unwrap();
 
-        let (client, conn) = conn::http1::handshake(tcp).await.unwrap();
+        let (mut client, conn) = conn::http1::handshake(tcp).await.unwrap();
 
         tokio::spawn(async move {
             let _ = conn.await;
@@ -2353,7 +2353,7 @@ mod conn {
         let (tx2, rx2) = oneshot::channel::<()>();
         let mut rxs = vec![rx, rx2];
         for _i in 0..requests {
-            let client = clients.pop().unwrap();
+            let mut client = clients.pop().unwrap();
             let rx = rxs.pop().unwrap();
             let req = Request::builder()
                 .method(Method::CONNECT)
@@ -2568,7 +2568,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
-        let (client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2623,7 +2623,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
-        let (client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake(io)
             .await
             .expect("http handshake");
@@ -2673,7 +2673,7 @@ mod conn {
         });
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
-        let (client, conn) = conn::http2::Builder::new(Executor::new())
+        let (mut client, conn) = conn::http2::Builder::new(Executor::new())
             .handshake::<_, Empty<Bytes>>(io)
             .await
             .expect("http handshake");
@@ -2711,7 +2711,7 @@ mod conn {
 
         let io = tcp_connect(&addr).await.expect("tcp connect");
 
-        let (client, conn) = conn::http1::Builder::new()
+        let (mut client, conn) = conn::http1::Builder::new()
             .handshake(io)
             .await
             .expect("handshake");

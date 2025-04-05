@@ -15,6 +15,7 @@ use rama_net::{
     client::{ConnectorService, EstablishedClientConnection},
     stream::Stream,
 };
+use tokio::sync::Mutex;
 
 use rama_utils::macros::define_inner_service_accessors;
 use std::fmt;
@@ -191,7 +192,7 @@ where
                 });
 
                 let svc = HttpClientService {
-                    sender: SendRequest::Http1(sender),
+                    sender: SendRequest::Http1(Mutex::new(sender)),
                     http_req_inspector: self.http_req_inspector_svc.clone(),
                 };
 
