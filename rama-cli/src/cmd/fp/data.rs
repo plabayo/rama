@@ -501,7 +501,7 @@ pub(super) async fn get_tls_display_info_and_store(
                                 format!("0x{}", hex::encode(&hello.payload)),
                             ]))
                         }
-                        ECHClientHello::Inner() => None,
+                        ECHClientHello::Inner => None,
                     },
                 },
                 ClientHelloExtension::Opaque { id, data } => TlsDisplayInfoExtension {

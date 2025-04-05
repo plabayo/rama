@@ -333,14 +333,17 @@ fn parse_ech_client_hello(input: &[u8]) -> IResult<&[u8], ECHClientHello> {
             Ok((
                 input,
                 ECHClientHello::Outer(ECHClientHelloOuter {
-                    cipher_suite: HpkeSymmetricCipherSuite { aead_id, kdf_id },
+                    cipher_suite: HpkeSymmetricCipherSuite {
+                        aead_id: aead_id.into(),
+                        kdf_id: kdf_id.into(),
+                    },
                     config_id,
                     enc: enc.to_vec(),
                     payload: payload.to_vec(),
                 }),
             ))
         }
-        false => Ok((input, ECHClientHello::Inner())),
+        false => Ok((input, ECHClientHello::Inner)),
     }
 }
 

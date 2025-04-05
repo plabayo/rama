@@ -597,13 +597,16 @@ impl Service<(), Request> for EchoService {
                                 "id": extension.id().to_string(),
                                 "data": {
                                     "type": "outer",
-                                    "cipher_suite": ech.cipher_suite,
+                                    "cipher_suite": {
+                                        "aead_id": ech.cipher_suite.aead_id.to_string(),
+                                        "kdf_id": ech.cipher_suite.kdf_id.to_string(),
+                                    },
                                     "config_id": ech.config_id,
                                     "enc":  format!("0x{}", hex::encode(&ech.enc)),
                                     "payload": format!("0x{}", hex::encode(&ech.payload)),
                                 },
                             }),
-                            ECHClientHello::Inner() => json!({
+                            ECHClientHello::Inner => json!({
                                 "id": extension.id().to_string(),
                                 "data": {
                                     "type": "inner",

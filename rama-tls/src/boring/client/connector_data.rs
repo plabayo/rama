@@ -58,6 +58,7 @@ pub(super) struct ConnectConfigurationInput {
     pub(super) certificate_compression_algorithms: Option<Vec<CertificateCompressionAlgorithm>>,
     pub(super) record_size_limit: Option<u16>,
     pub(super) delegated_credential_schemes: Option<Vec<SslSignatureAlgorithm>>,
+    pub(super) encrypted_client_hello: Option<bool>,
 }
 
 #[derive(Debug, Clone)]
@@ -254,9 +255,14 @@ impl TlsConnectorData {
             cfg.set_delegated_credential_schemes(schemes).unwrap();
         }
 
-        // TODO seems like we always want to enable this if we don't do actual ECH?
-        trace!("boring connector: enabling ech grease");
-        cfg.set_enable_ech_grease(true);
+        if self
+            .connect_config_input
+            .encrypted_client_hello
+            .unwrap_or_default()
+        {
+            trace!("boring connector: enabling ech grease");
+            cfg.set_enable_ech_grease(true);
+        }
 
         trace!(
             "boring connector: return SSL connector config for server: {:?}",
@@ -377,6 +383,10 @@ impl TlsConnectorData {
                             .delegated_credential_schemes
                             .clone()
                     }),
+                encrypted_client_hello: other
+                    .connect_config_input
+                    .encrypted_client_hello
+                    .or(self.connect_config_input.encrypted_client_hello),
             }),
             server_name: other
                 .server_name
@@ -488,6 +498,7 @@ impl TlsConnectorData {
         let mut certificate_compression_algorithms = None;
         let mut record_size_limit = None;
         let mut delegated_credential_schemes = None;
+        let mut encrypted_client_hello = None;
 
         for cfg in cfg_it {
             cipher_suites = cfg.cipher_suites.as_ref().or(cipher_suites);
@@ -677,6 +688,12 @@ impl TlsConnectorData {
                         );
                         record_size_limit = Some(*limit);
                     }
+                    ClientHelloExtension::EncryptedClientHello(_) => {
+                        trace!(
+                            "TlsConnectorData: builder: from std client config: encrypted client hello enabled",
+                        );
+                        encrypted_client_hello = Some(true);
+                    }
                     other => match other.id() {
                         ExtensionId::STATUS_REQUEST | ExtensionId::STATUS_REQUEST_V2 => {
                             trace!(ext = ?other, "TlsConnectorData: builder: from std client config: enable ocsp stapling");
@@ -774,6 +791,7 @@ impl TlsConnectorData {
                 certificate_compression_algorithms,
                 delegated_credential_schemes,
                 record_size_limit,
+                encrypted_client_hello,
             }),
             server_name,
         })

@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 use std::fmt::Display;
 
 use crate::address::Host;
-use crate::tls::enums::CertificateCompressionAlgorithm;
+use crate::tls::enums::{
+    AuthenticatedEncryptionWithAssociatedData, CertificateCompressionAlgorithm,
+    KeyDerivationFunction,
+};
 use crate::tls::{
     ApplicationProtocol, CipherSuite, ECPointFormat, ExtensionId, ProtocolVersion, SignatureScheme,
     SupportedGroup, enums::CompressionAlgorithm,
@@ -257,12 +260,15 @@ impl ClientHelloExtension {
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 /// Client Hello contents send by ech
 pub enum ECHClientHello {
-    /// Send when message is in the outer (unencrypted) part of client hello
+    /// Send when message is in the outer (unencrypted) part of client hello. It contains
+    /// encryption data and the encrypted client hello.
     Outer(ECHClientHelloOuter),
-    /// Send inside the inner (encrypted) client hello, need so all extensions
-    /// are part of the inner client hello. Servers will only use this hello
-    /// and if it does contain this extension the server thinks ech is not supported.
-    Inner(),
+    /// The inner extension has an empty payload, which is included because TLS servers are
+    /// not allowed to provide extensions in ServerHello which were not included in ClientHello.
+    /// And when using encrypted client hello the server will discard the outer unencrypted one,
+    /// and only look at the encrypted client hello. So we have to add this extension again there so
+    /// the server knows ECH is supported by the client.
+    Inner,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
@@ -277,8 +283,8 @@ pub struct ECHClientHelloOuter {
 #[derive(Debug, Clone, Serialize, Deserialize, Hash)]
 /// HPKE KDF and AEAD pair used to encrypt ClientHello
 pub struct HpkeSymmetricCipherSuite {
-    pub kdf_id: u16,
-    pub aead_id: u16,
+    pub kdf_id: KeyDerivationFunction,
+    pub aead_id: AuthenticatedEncryptionWithAssociatedData,
 }
 
 impl Display for HpkeSymmetricCipherSuite {
