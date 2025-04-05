@@ -2566,6 +2566,7 @@ name = "rama-http-backend"
 version = "0.2.0-alpha.8"
 dependencies = [
  "const_format",
+ "futures",
  "h2",
  "rama-core",
  "rama-http-core",

@@ -724,6 +724,27 @@ enum_builder! {
     }
 }
 
+enum_builder! {
+    /// Key derivation function used in hybrid public key encryption
+    @U16
+    pub enum KeyDerivationFunction {
+        HKDF_SHA256 => 0x0001,
+        HKDF_SHA384 => 0x0002,
+        HKDF_SHA512 => 0x0003,
+    }
+}
+
+enum_builder! {
+    /// Authenticated encryption with associated data (AEAD) used in hybrid public key encryption
+    @U16
+    pub enum AuthenticatedEncryptionWithAssociatedData {
+        AES_128_GCM => 0x0001,
+        AES_256_GCM => 0x0002,
+        ChaCha20Poly1305 => 0x0003,
+        ExportOnly => 0xffff,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

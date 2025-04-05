@@ -130,7 +130,7 @@ where
     /// Absolute-form `Uri`s are not required. If received, they will be serialized
     /// as-is.
     pub fn send_request(
-        &self,
+        &mut self,
         req: Request<B>,
     ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
         let sent = self.dispatch.send(req);
