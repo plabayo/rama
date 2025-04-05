@@ -59,10 +59,7 @@ pub(super) async fn read_authority<R: AsyncRead + Unpin>(
             IpAddr::from(array).into()
         }
         AddressType::Unknown(b) => {
-            return Err(ReadError::UnexpectedByte {
-                pos: 3,
-                byte: b.into(),
-            });
+            return Err(ReadError::UnexpectedByte { pos: 3, byte: b });
         }
     };
     let port = r.read_u16().await?;

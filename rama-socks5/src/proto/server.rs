@@ -40,7 +40,7 @@ impl Header {
             ProtocolVersion::Unknown(version) => {
                 return Err(ProtocolError::UnexpectedByte {
                     pos: 0,
-                    byte: version.into(),
+                    byte: version,
                 });
             }
         }
@@ -72,6 +72,7 @@ impl Header {
         buf.put_u8(self.method.into());
     }
 
+    #[allow(clippy::unused_self)]
     const fn serialized_len(&self) -> usize {
         1 + 1
     }
@@ -116,14 +117,14 @@ impl Reply {
             ProtocolVersion::Unknown(version) => {
                 return Err(ProtocolError::UnexpectedByte {
                     pos: 0,
-                    byte: version.into(),
+                    byte: version,
                 });
             }
         }
 
         let reply: ReplyKind = r.read_u8().await?.into();
 
-        let rsv = r.read_u8().await?.into();
+        let rsv = r.read_u8().await?;
         if rsv != 0 {
             return Err(ProtocolError::UnexpectedByte { pos: 2, byte: rsv });
         }
@@ -209,7 +210,7 @@ impl UsernamePasswordResponse {
             UsernamePasswordSubnegotiationVersion::Unknown(version) => {
                 return Err(ProtocolError::UnexpectedByte {
                     pos: 0,
-                    byte: version.into(),
+                    byte: version,
                 });
             }
         }
@@ -239,6 +240,7 @@ impl UsernamePasswordResponse {
         buf.put_u8(self.status);
     }
 
+    #[allow(clippy::unused_self)]
     fn serialized_len(&self) -> usize {
         2
     }

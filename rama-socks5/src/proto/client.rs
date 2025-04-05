@@ -45,7 +45,7 @@ impl Header {
             ProtocolVersion::Unknown(version) => {
                 return Err(ProtocolError::UnexpectedByte {
                     pos: 0,
-                    byte: version.into(),
+                    byte: version,
                 });
             }
         }
@@ -151,14 +151,14 @@ impl Request {
             ProtocolVersion::Unknown(version) => {
                 return Err(ProtocolError::UnexpectedByte {
                     pos: 0,
-                    byte: version.into(),
+                    byte: version,
                 });
             }
         }
 
         let command: Command = r.read_u8().await?.into();
 
-        let rsv = r.read_u8().await?.into();
+        let rsv = r.read_u8().await?;
         if rsv != 0 {
             return Err(ProtocolError::UnexpectedByte { pos: 2, byte: rsv });
         }
@@ -219,11 +219,11 @@ impl RequestRef<'_> {
         buf.put_u8(self.version.into());
         buf.put_u8(self.command.into());
         buf.put_u8(0 /* RSV */);
-        write_authority_to_buf(&self.destination, buf);
+        write_authority_to_buf(self.destination, buf);
     }
 
     fn serialized_len(&self) -> usize {
-        4 + authority_length(&self.destination)
+        4 + authority_length(self.destination)
     }
 }
 
@@ -277,7 +277,7 @@ impl UsernamePasswordRequest {
             UsernamePasswordSubnegotiationVersion::Unknown(version) => {
                 return Err(ProtocolError::UnexpectedByte {
                     pos: 0,
-                    byte: version.into(),
+                    byte: version,
                 });
             }
         }
@@ -357,11 +357,11 @@ impl UsernamePasswordRequestRef<'_> {
 
         debug_assert!(self.username.len() <= 255);
         buf.put_u8(self.username.len() as u8);
-        buf.put_slice(&self.username[..]);
+        buf.put_slice(self.username);
 
         debug_assert!(self.password.len() <= 255);
         buf.put_u8(self.password.len() as u8);
-        buf.put_slice(&self.password[..]);
+        buf.put_slice(self.password);
     }
 
     fn serialized_len(&self) -> usize {

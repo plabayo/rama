@@ -75,11 +75,11 @@ impl std::error::Error for HandshakeError {
         match &self.kind {
             HandshakeErrorKind::IO(err) => Some(
                 err.source()
-                    .unwrap_or_else(|| err as &(dyn std::error::Error + 'static)),
+                    .unwrap_or(err as &(dyn std::error::Error + 'static)),
             ),
             HandshakeErrorKind::Protocol(err) => Some(
                 err.source()
-                    .unwrap_or_else(|| err as &(dyn std::error::Error + 'static)),
+                    .unwrap_or(err as &(dyn std::error::Error + 'static)),
             ),
             HandshakeErrorKind::MethodMismatch(_)
             | HandshakeErrorKind::Reply(_)

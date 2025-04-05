@@ -35,12 +35,12 @@ impl std::error::Error for ProtocolError {
         match self {
             ProtocolError::IO(err) => Some(
                 err.source()
-                    .unwrap_or_else(|| err as &(dyn std::error::Error + 'static)),
+                    .unwrap_or(err as &(dyn std::error::Error + 'static)),
             ),
             ProtocolError::UnexpectedByte { .. } => None,
             ProtocolError::Unexpected(err) => Some(
                 err.source()
-                    .unwrap_or_else(|| err as &(dyn std::error::Error + 'static)),
+                    .unwrap_or(err as &(dyn std::error::Error + 'static)),
             ),
         }
     }
