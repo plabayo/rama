@@ -16,6 +16,7 @@ use rama::{
         fingerprint::{Ja3, Ja4, Ja4H},
         http::RequestContext,
         stream::SocketInfo,
+        tls::client::ECHClientHello,
     },
     tls::types::{
         SecureTransport,
@@ -479,9 +480,29 @@ pub(super) async fn get_tls_display_info_and_store(
                         v.iter().map(|s| s.to_string()).collect(),
                     )),
                 },
+                ClientHelloExtension::DelegatedCredentials(v) => TlsDisplayInfoExtension {
+                    id: extension.id().to_string(),
+                    data: Some(TlsDisplayInfoExtensionData::Multi(
+                        v.iter().map(|s| s.to_string()).collect(),
+                    )),
+                },
                 ClientHelloExtension::RecordSizeLimit(v) => TlsDisplayInfoExtension {
                     id: extension.id().to_string(),
                     data: Some(TlsDisplayInfoExtensionData::Single(v.to_string())),
+                },
+                ClientHelloExtension::EncryptedClientHello(ech) => TlsDisplayInfoExtension {
+                    id: extension.id().to_string(),
+                    data: match ech {
+                        ECHClientHello::Outer(hello) => {
+                            Some(TlsDisplayInfoExtensionData::Multi(vec![
+                                hello.cipher_suite.to_string(),
+                                hello.config_id.to_string(),
+                                format!("0x{}", hex::encode(&hello.enc)),
+                                format!("0x{}", hex::encode(&hello.payload)),
+                            ]))
+                        }
+                        ECHClientHello::Inner => None,
+                    },
                 },
                 ClientHelloExtension::Opaque { id, data } => TlsDisplayInfoExtension {
                     id: id.to_string(),
