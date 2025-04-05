@@ -1,0 +1,29 @@
+[package]
+name = "rama-boring"
+description = "everything we need from boring is exposed here"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "boring", "network", "rama"]
+categories = ["asynchronous", "network-programming", "cryptography", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+
+[dependencies]
+boring = { workspace = true }
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
