@@ -2,6 +2,8 @@
 //!
 //! [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
 
+mod common;
+
 pub mod client;
 pub mod server;
 
@@ -10,3 +12,6 @@ pub use enums::{
     AddressType, Command, ProtocolVersion, ReplyKind, SocksMethod,
     UsernamePasswordSubnegotiationVersion,
 };
+
+mod error;
+pub use error::ProtocolError;

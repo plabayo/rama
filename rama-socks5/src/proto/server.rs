@@ -2,9 +2,13 @@
 //!
 //! [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
 
+use super::{
+    ProtocolError, ProtocolVersion, ReplyKind, SocksMethod, UsernamePasswordSubnegotiationVersion,
+    common::{authority_length, read_authority, write_authority_to_buf},
+};
+use bytes::{BufMut, BytesMut};
 use rama_net::address::Authority;
-
-use super::{ProtocolVersion, ReplyKind, SocksMethod, UsernamePasswordSubnegotiationVersion};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 #[derive(Debug, Clone)]
 /// The server selects from one of the methods given in METHODS, and
@@ -20,6 +24,57 @@ use super::{ProtocolVersion, ReplyKind, SocksMethod, UsernamePasswordSubnegotiat
 pub struct Header {
     pub version: ProtocolVersion,
     pub method: SocksMethod,
+}
+
+impl Header {
+    /// Read the server [`Header`], decoded from binary format as specified by [RFC 1928] from the reader.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub async fn read_from<R>(r: &mut R) -> Result<Self, ProtocolError>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let version: ProtocolVersion = r.read_u8().await?.into();
+        match version {
+            ProtocolVersion::Socks5 => (),
+            ProtocolVersion::Unknown(version) => {
+                return Err(ProtocolError::UnexpectedByte {
+                    pos: 0,
+                    byte: version.into(),
+                });
+            }
+        }
+
+        let method: SocksMethod = r.read_u8().await?.into();
+
+        Ok(Self { version, method })
+    }
+
+    /// Write the server [`Header`] in binary format as specified by [RFC 1928] into the writer.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let mut buf = BytesMut::with_capacity(self.serialized_len());
+        self.write_to_buf(&mut buf);
+        w.write_all(&buf).await?;
+
+        Ok(())
+    }
+
+    /// Write the server [`Header`] in binary format as specified by [RFC 1928] into the buffer.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
+        buf.put_u8(self.version.into());
+        buf.put_u8(self.method.into());
+    }
+
+    const fn serialized_len(&self) -> usize {
+        1 + 1
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +100,68 @@ pub struct Reply {
     pub version: ProtocolVersion,
     pub reply: ReplyKind,
     pub bind_address: Authority,
+}
+
+impl Reply {
+    /// Read the server [`Reply`], decoded from binary format as specified by [RFC 1928] from the reader.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub async fn read_from<R>(r: &mut R) -> Result<Self, ProtocolError>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let version: ProtocolVersion = r.read_u8().await?.into();
+        match version {
+            ProtocolVersion::Socks5 => (),
+            ProtocolVersion::Unknown(version) => {
+                return Err(ProtocolError::UnexpectedByte {
+                    pos: 0,
+                    byte: version.into(),
+                });
+            }
+        }
+
+        let reply: ReplyKind = r.read_u8().await?.into();
+
+        let rsv = r.read_u8().await?.into();
+        if rsv != 0 {
+            return Err(ProtocolError::UnexpectedByte { pos: 2, byte: rsv });
+        }
+
+        let bind_address = read_authority(r).await?;
+
+        Ok(Reply {
+            version,
+            reply,
+            bind_address,
+        })
+    }
+
+    /// Write the server [`Reply`] in binary format as specified by [RFC 1928] into the writer.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let mut buf = BytesMut::with_capacity(self.serialized_len());
+        self.write_to_buf(&mut buf);
+        w.write_all(&buf).await
+    }
+
+    /// Write the server [`Reply`] in binary format as specified by [RFC 1928] into the buffer.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
+        buf.put_u8(self.version.into());
+        buf.put_u8(self.reply.into());
+        buf.put_u8(0 /* RSV */);
+        write_authority_to_buf(&self.bind_address, buf);
+    }
+
+    fn serialized_len(&self) -> usize {
+        4 + authority_length(&self.bind_address)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -75,5 +192,54 @@ impl UsernamePasswordResponse {
     /// Indicates if the (auth) response from the server indicates success.
     pub fn success(&self) -> bool {
         self.status == 0
+    }
+}
+
+impl UsernamePasswordResponse {
+    /// Read the server [`UsernamePasswordResponse`], decoded from binary format as specified by [RFC 1928] from the reader.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub async fn read_from<R>(r: &mut R) -> Result<Self, ProtocolError>
+    where
+        R: AsyncRead + Unpin,
+    {
+        let version: UsernamePasswordSubnegotiationVersion = r.read_u8().await?.into();
+        match version {
+            UsernamePasswordSubnegotiationVersion::One => (),
+            UsernamePasswordSubnegotiationVersion::Unknown(version) => {
+                return Err(ProtocolError::UnexpectedByte {
+                    pos: 0,
+                    byte: version.into(),
+                });
+            }
+        }
+
+        let status = r.read_u8().await?;
+
+        Ok(UsernamePasswordResponse { version, status })
+    }
+
+    /// Write the server [`UsernamePasswordResponse`] in binary format as specified by [RFC 1928] into the writer.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+    where
+        W: AsyncWrite + Unpin,
+    {
+        let mut buf = BytesMut::with_capacity(self.serialized_len());
+        self.write_to_buf(&mut buf);
+        w.write_all(&buf).await
+    }
+
+    /// Write the server [`UsernamePasswordResponse`] in binary format as specified by [RFC 1928] into the buffer.
+    ///
+    /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+    pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
+        buf.put_u8(self.version.into());
+        buf.put_u8(self.status);
+    }
+
+    fn serialized_len(&self) -> usize {
+        2
     }
 }

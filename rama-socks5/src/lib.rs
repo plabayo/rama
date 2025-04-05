@@ -18,3 +18,9 @@
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
 pub mod proto;
+
+mod client;
+pub use client::Client;
+
+mod auth;
+pub use auth::Socks5Auth;

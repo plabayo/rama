@@ -19,7 +19,11 @@ default = []
 [dependencies]
 rama-net = { version = "0.2.0-alpha.8", path = "../rama-net" }
 rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
 smallvec = { workspace = true }
+tokio = { workspace = true }
+bytes = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
 

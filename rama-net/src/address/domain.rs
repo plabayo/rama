@@ -122,6 +122,11 @@ impl Domain {
         psl::suffix_str(self.as_str())
     }
 
+    /// Gets the length of domain.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
     /// Gets the domain name as reference.
     pub fn as_str(&self) -> &str {
         self.as_ref()
