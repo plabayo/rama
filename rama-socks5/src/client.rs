@@ -125,42 +125,9 @@ impl Client {
 
         tracing::trace!(?client_method, "socks5 client: header written");
 
-        let server_header = server::Header::read_from(stream).await?;
-        if server_header.method != client_method {
-            return Err(HandshakeError {
-                kind: HandshakeErrorKind::MethodMismatch(server_header.method),
-            });
-        }
-
-        tracing::trace!(?client_method, "socks5 client: headers exchanged");
-
-        let request = RequestRef {
-            version: ProtocolVersion::Socks5,
-            command: Command::Connect,
-            destination,
-        };
-        request.write_to(stream).await?;
-
-        tracing::trace!(
-            ?client_method,
-            ?destination,
-            "socks5 client: client request sent"
-        );
-
-        let server_reply = server::Reply::read_from(stream).await?;
-        if server_reply.reply != ReplyKind::Succeeded {
-            return Err(HandshakeError {
-                kind: HandshakeErrorKind::Reply(server_reply.reply),
-            });
-        }
-
-        tracing::trace!(
-            ?client_method,
-            ?destination,
-            "socks5 client: handshake succeeded"
-        );
-
         if let Some(auth) = self.auth.as_ref() {
+            tracing::trace!(?client_method, "socks5 client: auth sub-negotation started");
+
             match auth {
                 Socks5Auth::UsernamePassword { username, password } => {
                     UsernamePasswordRequestRef {
@@ -191,6 +158,35 @@ impl Client {
                     );
                 }
             }
+        }
+
+        let server_header = server::Header::read_from(stream).await?;
+        if server_header.method != client_method {
+            return Err(HandshakeError {
+                kind: HandshakeErrorKind::MethodMismatch(server_header.method),
+            });
+        }
+
+        tracing::trace!(?client_method, "socks5 client: headers exchanged");
+
+        let request = RequestRef {
+            version: ProtocolVersion::Socks5,
+            command: Command::Connect,
+            destination,
+        };
+        request.write_to(stream).await?;
+
+        tracing::trace!(
+            ?client_method,
+            ?destination,
+            "socks5 client: client request sent"
+        );
+
+        let server_reply = server::Reply::read_from(stream).await?;
+        if server_reply.reply != ReplyKind::Succeeded {
+            return Err(HandshakeError {
+                kind: HandshakeErrorKind::Reply(server_reply.reply),
+            });
         }
 
         tracing::trace!(?client_method, ?destination, "socks5 client: connected");
