@@ -3,8 +3,7 @@ use std::fmt;
 use crate::{
     Socks5Auth,
     proto::{
-        Command, ProtocolError, ProtocolVersion, ReplyKind, SocksMethod,
-        UsernamePasswordSubnegotiationVersion, client,
+        Command, ProtocolError, ProtocolVersion, ReplyKind, SocksMethod, client,
         server::{Header, Reply, UsernamePasswordResponse},
     },
 };
@@ -151,22 +150,14 @@ impl Socks5Acceptor {
                     if username.eq(&client_auth_req.username)
                         && password.eq(&client_auth_req.password)
                     {
-                        UsernamePasswordResponse {
-                            version: UsernamePasswordSubnegotiationVersion::One,
-                            // TODO: define constants, there must be pseudo standards about this
-                            status: 0,
-                        }
-                        .write_to(stream)
-                        .await?;
+                        UsernamePasswordResponse::new_success()
+                            .write_to(stream)
+                            .await?;
                         Ok(SocksMethod::UsernamePassword)
                     } else {
-                        UsernamePasswordResponse {
-                            version: UsernamePasswordSubnegotiationVersion::One,
-                            // TODO: define constants, there must be pseudo standards about this
-                            status: 1,
-                        }
-                        .write_to(stream)
-                        .await?;
+                        UsernamePasswordResponse::new_invalid_credentails()
+                            .write_to(stream)
+                            .await?;
                         Err(HandshakeError::aborted(
                             "username-password: client unauthorized",
                         ))

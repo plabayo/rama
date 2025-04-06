@@ -190,6 +190,42 @@ pub struct UsernamePasswordResponse {
 }
 
 impl UsernamePasswordResponse {
+    /// Create a new [`UsernamePasswordResponse`] to indicate success.
+    pub fn new_success() -> Self {
+        Self {
+            version: UsernamePasswordSubnegotiationVersion::One,
+            status: 0,
+        }
+    }
+
+    /// Create a new failure [`UsernamePasswordResponse`] to indicate
+    /// the received credentials are partial or invalid otherwise.
+    pub fn new_invalid_credentails() -> Self {
+        Self {
+            version: UsernamePasswordSubnegotiationVersion::One,
+            status: 1,
+        }
+    }
+
+    /// Create a new failure [`UsernamePasswordResponse`] to indicate
+    /// no user cound be found for the given credentials.
+    pub fn new_user_not_found() -> Self {
+        Self {
+            version: UsernamePasswordSubnegotiationVersion::One,
+            status: 2,
+        }
+    }
+
+    /// Create a new [`UsernamePasswordResponse`]
+    /// to indicate the user couldn't be authorized
+    /// as the authorization used by the server is unavailable.
+    pub fn new_auth_system_unavailable() -> Self {
+        Self {
+            version: UsernamePasswordSubnegotiationVersion::One,
+            status: 4,
+        }
+    }
+
     /// Indicates if the (auth) response from the server indicates success.
     pub fn success(&self) -> bool {
         self.status == 0

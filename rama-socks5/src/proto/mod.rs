@@ -6,6 +6,7 @@ mod common;
 
 pub mod client;
 pub mod server;
+pub mod udp;
 
 mod enums;
 pub use enums::{
