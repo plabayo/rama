@@ -9,14 +9,39 @@ use crate::{
 };
 use rama_net::{address::Authority, stream::Stream};
 
-#[derive(Debug, Clone, Default)]
 /// Socks5 server implementation of [RFC 1928]
 ///
 /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
-pub struct Socks5Acceptor {
+pub struct Socks5Acceptor<C = (), B = (), U = ()> {
+    connector: C,
+    binder: B,
+    udp_associator: U,
+
     // TODO: replace with proper auth support
     // <https://github.com/plabayo/rama/issues/496>
     auth: Option<Socks5Auth>,
+}
+
+impl<C: fmt::Debug, B: fmt::Debug, U: fmt::Debug> fmt::Debug for Socks5Acceptor<C, B, U> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Socks5Acceptor")
+            .field("connector", &self.connector)
+            .field("binder", &self.binder)
+            .field("udp_associator", &self.udp_associator)
+            .field("auth", &self.auth)
+            .finish()
+    }
+}
+
+impl<C: Clone, B: Clone, U: Clone> Clone for Socks5Acceptor<C, B, U> {
+    fn clone(&self) -> Self {
+        Self {
+            connector: self.connector.clone(),
+            binder: self.binder.clone(),
+            udp_associator: self.udp_associator.clone(),
+            auth: self.auth.clone(),
+        }
+    }
 }
 
 #[derive(Debug)]

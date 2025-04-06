@@ -112,23 +112,42 @@ impl Client {
         stream: &mut S,
         destination: &Authority,
     ) -> Result<Authority, HandshakeError> {
-        let client_method = self
-            .auth
-            .as_ref()
-            .map(|a| a.socks5_method())
-            .unwrap_or(SocksMethod::NoAuthenticationRequired);
+        let mut methods = smallvec::smallvec![SocksMethod::NoAuthenticationRequired];
+        if let Some(auth) = self.auth.as_ref() {
+            methods.push(auth.socks5_method());
+        }
         let header = Header {
             version: ProtocolVersion::Socks5,
-            methods: smallvec::smallvec![client_method],
+            methods,
         };
         header.write_to(stream).await?;
+        let methods = header.methods;
 
-        tracing::trace!(?client_method, "socks5 client: header written");
+        // TODO: change this so that we do not need to unwrap auth
 
-        if let Some(auth) = self.auth.as_ref() {
-            tracing::trace!(?client_method, "socks5 client: auth sub-negotation started");
+        tracing::trace!(?methods, "socks5 client: header written");
 
-            match auth {
+        let server_header = server::Header::read_from(stream).await?;
+        if !methods.contains(&server_header.method) {
+            return Err(HandshakeError {
+                kind: HandshakeErrorKind::MethodMismatch(server_header.method),
+            });
+        }
+
+        tracing::trace!(
+            ?methods,
+            selected_method = ?server_header.method,
+            "socks5 client: headers exchanged",
+        );
+
+        if server_header.method != SocksMethod::NoAuthenticationRequired {
+            tracing::trace!(
+                ?methods,
+                selected_method = ?server_header.method,
+                "socks5 client: auth sub-negotation started",
+            );
+
+            match self.auth.as_ref().unwrap() {
                 Socks5Auth::UsernamePassword { username, password } => {
                     UsernamePasswordRequestRef {
                         version: UsernamePasswordSubnegotiationVersion::One,
@@ -139,7 +158,8 @@ impl Client {
                     .await?;
 
                     tracing::trace!(
-                        ?client_method,
+                        ?methods,
+                        selected_method = ?server_header.method,
                         ?destination,
                         "socks5 client: username-password request sent"
                     );
@@ -152,22 +172,14 @@ impl Client {
                     }
 
                     tracing::trace!(
-                        ?client_method,
+                        ?methods,
+                        selected_method = ?server_header.method,
                         ?destination,
                         "socks5 client: authorized using username-password"
                     );
                 }
             }
         }
-
-        let server_header = server::Header::read_from(stream).await?;
-        if server_header.method != client_method {
-            return Err(HandshakeError {
-                kind: HandshakeErrorKind::MethodMismatch(server_header.method),
-            });
-        }
-
-        tracing::trace!(?client_method, "socks5 client: headers exchanged");
 
         let request = RequestRef {
             version: ProtocolVersion::Socks5,
@@ -177,7 +189,8 @@ impl Client {
         request.write_to(stream).await?;
 
         tracing::trace!(
-            ?client_method,
+            ?methods,
+            selected_method = ?server_header.method,
             ?destination,
             "socks5 client: client request sent"
         );
@@ -189,7 +202,12 @@ impl Client {
             });
         }
 
-        tracing::trace!(?client_method, ?destination, "socks5 client: connected");
+        tracing::trace!(
+            ?methods,
+            selected_method = ?server_header.method,
+            ?destination,
+            "socks5 client: connected",
+        );
         Ok(server_reply.bind_address)
     }
 }
