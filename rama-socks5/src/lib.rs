@@ -20,7 +20,10 @@
 pub mod proto;
 
 mod client;
-pub use client::Client;
+pub use client::Client as Socks5Client;
+
+mod server;
+pub use server::Socks5Acceptor;
 
 mod auth;
 pub use auth::Socks5Auth;
