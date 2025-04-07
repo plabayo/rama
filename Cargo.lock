@@ -2675,6 +2675,7 @@ dependencies = [
  "rama-boring",
  "rama-core",
  "rama-http-types",
+ "rama-macros",
  "rama-utils",
  "rustls",
  "serde",
