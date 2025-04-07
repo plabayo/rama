@@ -10,6 +10,7 @@ use futures_util::future::join_all;
 use rama::http::dep::http_body_util::BodyExt;
 use rama::http::{Method, Request, Response};
 use rama::rt::Executor;
+use tokio::sync::Mutex;
 
 #[global_allocator]
 static ALLOC: divan::AllocProfiler = divan::AllocProfiler::system();
@@ -57,13 +58,11 @@ fn http1_consecutive_x1_both_10mb(b: divan::Bencher) {
 }
 
 #[divan::bench]
-#[ignore]
 fn http1_parallel_x10_empty(b: divan::Bencher) {
     opts().parallel(10).bench(b)
 }
 
 #[divan::bench]
-#[ignore]
 fn http1_parallel_x10_req_10mb(b: divan::Bencher) {
     let body = &[b'x'; 1024 * 1024 * 10];
     opts()
@@ -74,7 +73,6 @@ fn http1_parallel_x10_req_10mb(b: divan::Bencher) {
 }
 
 #[divan::bench]
-#[ignore]
 fn http1_parallel_x10_req_10kb_100_chunks(b: divan::Bencher) {
     let body = &[b'x'; 1024 * 10];
     opts()
@@ -85,14 +83,12 @@ fn http1_parallel_x10_req_10kb_100_chunks(b: divan::Bencher) {
 }
 
 #[divan::bench]
-#[ignore]
 fn http1_parallel_x10_res_1mb(b: divan::Bencher) {
     let body = &[b'x'; 1024 * 1024];
     opts().parallel(10).response_body(body).bench(b)
 }
 
 #[divan::bench]
-#[ignore]
 fn http1_parallel_x10_res_10mb(b: divan::Bencher) {
     let body = &[b'x'; 1024 * 1024 * 10];
     opts().parallel(10).response_body(body).bench(b)
@@ -307,7 +303,7 @@ impl Opts {
         let addr = spawn_server(&rt, &self);
 
         enum Client {
-            Http1(rama::http::core::client::conn::http1::SendRequest<BoxedBody>),
+            Http1(Mutex<rama::http::core::client::conn::http1::SendRequest<BoxedBody>>),
             Http2(rama::http::core::client::conn::http2::SendRequest<BoxedBody>),
         }
 
@@ -324,11 +320,6 @@ impl Opts {
                         .unwrap();
                 tokio::spawn(conn);
                 Client::Http2(tx)
-            } else if self.parallel_cnt > 1 {
-                #[allow(clippy::todo)]
-                {
-                    todo!("http/1 parallel >1");
-                }
             } else {
                 let tcp = tokio::net::TcpStream::connect(&addr).await.unwrap();
                 let (tx, conn) = rama::http::core::client::conn::http1::Builder::new()
@@ -336,7 +327,7 @@ impl Opts {
                     .await
                     .unwrap();
                 tokio::spawn(conn);
-                Client::Http1(tx)
+                Client::Http1(Mutex::new(tx))
             }
         });
 
@@ -371,12 +362,20 @@ impl Opts {
             req
         };
 
-        let client_ref = &client;
+        let shared_client = &client;
 
         let send_request = async |req| {
-            let res = match client_ref {
-                Client::Http1(tx) => tx.send_request(req).await.expect("client wait h1"),
-                Client::Http2(tx) => tx.send_request(req).await.expect("client wait h2"),
+            let res = match shared_client {
+                Client::Http1(tx) => {
+                    let mut tx = tx.lock().await;
+                    tx.ready().await.expect("client is ready");
+                    tx.send_request(req).await.expect("client wait h1")
+                }
+                Client::Http2(tx) => {
+                    let mut tx = tx.clone();
+                    tx.ready().await.expect("client is ready");
+                    tx.send_request(req).await.expect("client wait h2")
+                }
             };
             let mut body = res.into_body();
             while let Some(_chunk) = body.frame().await {}

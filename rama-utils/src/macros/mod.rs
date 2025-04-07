@@ -2,6 +2,10 @@
 
 #[doc(hidden)]
 #[macro_use]
+pub mod enums;
+
+#[doc(hidden)]
+#[macro_use]
 pub mod error;
 
 #[doc(hidden)]
@@ -212,11 +216,14 @@ macro_rules! __nz {
 /// Create NonZero from literal
 pub use crate::__nz as nz;
 
+#[doc(inline)]
+pub use rama_macros::paste;
+
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __generate_field_setters {
     ($field: ident, $type: ty) => {
-        rama_macros::paste! {
+        $crate::macros::paste! {
             /// Set field with Some(value)
             pub fn [<set_ $field>](&mut self, $field: $type) -> &mut Self {
                 self.$field = Some($field);

@@ -45,7 +45,8 @@ pub mod service;
 pub mod upgrade;
 
 mod headers;
-mod proto;
+
+pub(crate) mod proto;
 
 pub mod client;
 pub mod server;

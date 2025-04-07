@@ -75,12 +75,12 @@ use rama::{
     },
     layer::HijackLayer,
     net::{
-        address::Domain, http::RequestContext, stream::ClientSocketInfo,
+        address::Domain, conn::is_connection_error, http::RequestContext, stream::ClientSocketInfo,
         stream::layer::http::BodyLimitLayer, user::Basic,
     },
     rt::Executor,
     service::service_fn,
-    tcp::{client::default_tcp_connect, server::TcpListener, utils::is_connection_error},
+    tcp::{client::default_tcp_connect, server::TcpListener},
     username::{
         UsernameLabelParser, UsernameLabelState, UsernameLabels, UsernameOpaqueLabelParser,
     },

@@ -17,12 +17,11 @@ workspace = true
 default = []
 http = ["dep:rama-http-types", "dep:sha2", "dep:itertools", "dep:hex"]
 tls = ["dep:hex", "dep:md5", "dep:sha2", "dep:itertools"]
-rustls = ["tls", "dep:rustls", "dep:aws-lc-sys"]
+rustls = ["tls", "dep:rustls"]
 boring = ["tls", "dep:rama-boring", "dep:nom"]
 telemetry = ["rama-core/telemetry"]
 
 [dependencies]
-aws-lc-sys = { workspace = true, optional = true }
 base64 = { workspace = true }
 bytes = { workspace = true }
 const_format = { workspace = true }
@@ -34,7 +33,6 @@ ipnet = { workspace = true }
 itertools = { workspace = true, optional = true }
 md5 = { workspace = true, optional = true }
 nom = { workspace = true, optional = true }
-opentelemetry = { workspace = true, optional = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 psl = { workspace = true }
@@ -46,6 +44,7 @@ rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true, optional = true }
+smol_str = { workspace = true }
 socket2 = { workspace = true }
 tokio = { workspace = true, features = ["macros", "fs", "io-std", "io-util", "net"] }
 tracing = { workspace = true }

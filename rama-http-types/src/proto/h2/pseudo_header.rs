@@ -181,3 +181,22 @@ impl Iterator for PseudoHeaderOrderIter {
         self.headers.len()
     }
 }
+
+impl Serialize for PseudoHeaderOrder {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.headers.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PseudoHeaderOrder {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let v = <Vec<PseudoHeader>>::deserialize(deserializer)?;
+        Ok(v.into_iter().collect())
+    }
+}

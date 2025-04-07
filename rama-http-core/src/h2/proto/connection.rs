@@ -1,12 +1,13 @@
 use crate::h2::codec::UserError;
-use crate::h2::frame::{Reason, StreamId};
-use crate::h2::{client, server};
-
 use crate::h2::frame::DEFAULT_INITIAL_WINDOW_SIZE;
+use crate::h2::frame::{Priority, Reason, StreamDependency, StreamId};
 use crate::h2::proto::*;
+use crate::h2::{client, server};
 
 use bytes::Bytes;
 use futures_core::Stream;
+use rama_http_types::proto::h2::PseudoHeaderOrder;
+use std::borrow::Cow;
 use std::io;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -83,6 +84,9 @@ pub(crate) struct Config {
     pub remote_reset_stream_max: usize,
     pub local_error_reset_streams_max: Option<usize>,
     pub settings: frame::Settings,
+    pub headers_pseudo_order: Option<PseudoHeaderOrder>,
+    pub headers_priority: Option<StreamDependency>,
+    pub priority: Option<Cow<'static, [Priority]>>,
 }
 
 #[derive(Debug)]
@@ -123,6 +127,9 @@ where
                     .max_concurrent_streams()
                     .map(|max| max as usize),
                 local_max_error_reset_streams: config.local_error_reset_streams_max,
+                headers_priority: config.headers_priority.clone(),
+                headers_pseudo_order: config.headers_pseudo_order.clone(),
+                priority: config.priority.clone(),
             }
         }
         let streams = Streams::new(streams_config(&config));
@@ -352,6 +359,13 @@ where
                         &mut self.inner.streams,
                     )?;
                 }
+                ReceivedFrame::Priority(frame) => {
+                    self.inner.settings.recv_priority(
+                        frame,
+                        &mut self.codec,
+                        &mut self.inner.streams,
+                    )?;
+                }
                 ReceivedFrame::Continue => (),
                 ReceivedFrame::Done => {
                     return Poll::Ready(Ok(()));
@@ -542,7 +556,7 @@ where
             }
             Some(Frame::Priority(frame)) => {
                 tracing::trace!(?frame, "recv PRIORITY");
-                // TODO: handle
+                return Ok(ReceivedFrame::Priority(frame));
             }
             None => {
                 tracing::trace!("codec closed");
@@ -556,6 +570,7 @@ where
 
 enum ReceivedFrame {
     Settings(frame::Settings),
+    Priority(frame::Priority),
     Continue,
     Done,
 }

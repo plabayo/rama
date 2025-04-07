@@ -1,6 +1,7 @@
 use crate::h2::frame::{self, Error, Head, Kind, Reason, StreamId};
 
 use bytes::BufMut;
+use rama_utils::octets::unpack_octets_as_u32;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub struct Reset {
@@ -29,7 +30,7 @@ impl Reset {
             return Err(Error::InvalidPayloadLength);
         }
 
-        let error_code = unpack_octets_4!(payload, 0, u32);
+        let error_code = unpack_octets_as_u32(payload, 0);
 
         Ok(Reset {
             stream_id: head.stream_id(),

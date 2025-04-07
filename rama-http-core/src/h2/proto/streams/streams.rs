@@ -3,15 +3,18 @@ use super::store::{self, Entry, Resolve, Store};
 use super::{Buffer, Config, Counts, Prioritized, Recv, Send, Stream, StreamId};
 use crate::h2::codec::{Codec, SendError, UserError};
 use crate::h2::ext::Protocol;
-use crate::h2::frame::{self, Frame, Reason};
+use crate::h2::frame::{self, Frame, Priority, Reason, StreamDependency};
 use crate::h2::proto::{Error, Initiator, Open, Peer, WindowSize, peer};
 use crate::h2::{client, proto, server};
 
 use bytes::{Buf, Bytes};
+use rama_http_types::conn::{LastPeerPriorityParams, PriorityParams};
 use rama_http_types::dep::http::Extensions;
 use rama_http_types::proto::h1::headers::original::OriginalHttp1Headers;
 use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::frame::{InitialPeerSettings, SettingsConfig};
 use rama_http_types::{HeaderMap, Request, Response};
+use std::borrow::Cow;
 use std::task::{Context, Poll, Waker};
 use tokio::io::AsyncWrite;
 
@@ -81,6 +84,22 @@ struct Inner {
 
     /// The number of stream refs to this shared state.
     refs: usize,
+
+    /// The peer's initial h2 settings
+    peer_initial_settings: Option<Arc<SettingsConfig>>,
+
+    /// TODO: perhaps actually use these for something...
+    first_priority_params: Option<PriorityParams>,
+    last_priority_params: Option<PriorityParams>,
+
+    /// Pseudo order of the headers stream
+    headers_pseudo_order: Option<PseudoHeaderOrder>,
+
+    /// Priority of the headers stream
+    headers_priority: Option<StreamDependency>,
+
+    /// Priority stream list
+    priority: Option<Cow<'static, [Priority]>>,
 }
 
 #[derive(Debug)]
@@ -226,7 +245,27 @@ where
             &mut me.store,
             &mut me.counts,
             &mut me.actions.task,
-        )
+        )?;
+
+        if is_initial {
+            me.peer_initial_settings = Some(Arc::new(frame.config.clone()));
+        }
+
+        Ok(())
+    }
+
+    pub(crate) fn apply_priority(&mut self, frame: frame::Priority) -> Result<(), Error> {
+        let mut me = self.inner.lock().unwrap();
+        let me = &mut *me;
+
+        let params: PriorityParams = frame.into();
+
+        if me.first_priority_params.is_none() {
+            me.first_priority_params = Some(params.clone());
+        }
+        me.last_priority_params = Some(params);
+
+        Ok(())
     }
 
     pub(crate) fn apply_local_settings(&mut self, frame: &frame::Settings) -> Result<(), Error> {
@@ -294,12 +333,20 @@ where
         }
 
         // Convert the message
-        let headers =
-            client::Peer::convert_send_message(stream_id, request, protocol, end_of_stream)?;
+        let (priority, headers) = client::Peer::convert_send_message(
+            stream_id,
+            request,
+            protocol,
+            end_of_stream,
+            me.headers_pseudo_order.clone(),
+            me.headers_priority.clone(),
+            me.priority.clone(),
+        )?;
 
         let mut stream = me.store.insert(stream.id, stream);
 
-        let sent = me.actions.send.send_headers(
+        let sent = me.actions.send.send_priority_and_headers(
+            priority,
             headers,
             send_buffer,
             &mut stream,
@@ -432,6 +479,12 @@ impl Inner {
             },
             store: Store::new(),
             refs: 1,
+            peer_initial_settings: None,
+            first_priority_params: None,
+            last_priority_params: None,
+            headers_priority: config.headers_priority,
+            headers_pseudo_order: config.headers_pseudo_order,
+            priority: config.priority,
         }))
     }
 
@@ -1240,7 +1293,18 @@ impl<B> StreamRef<B> {
         let me = &mut *me;
 
         let mut stream = me.store.resolve(self.opaque.key);
-        me.actions.recv.take_request(&mut stream)
+        let mut request = me.actions.recv.take_request(&mut stream);
+        if let Some(settings) = me.peer_initial_settings.clone() {
+            request
+                .extensions_mut()
+                .insert(InitialPeerSettings(settings));
+        }
+        if let Some(params) = me.last_priority_params.clone() {
+            request
+                .extensions_mut()
+                .insert(LastPeerPriorityParams(params));
+        }
+        request
     }
 
     /// Called by a client to see if the current stream is pending open

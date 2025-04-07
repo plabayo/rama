@@ -448,7 +448,7 @@ async fn async_test(cfg: __TestConfig) {
             let stream = TcpStream::connect(addr).await.unwrap();
 
             let res = if http2_only {
-                let (sender, conn) =
+                let (mut sender, conn) =
                     rama::http::core::client::conn::http2::Builder::new(Executor::new())
                         .handshake(stream)
                         .await
@@ -461,7 +461,7 @@ async fn async_test(cfg: __TestConfig) {
                 });
                 sender.send_request(req).await.unwrap()
             } else {
-                let (sender, conn) = rama::http::core::client::conn::http1::Builder::new()
+                let (mut sender, conn) = rama::http::core::client::conn::http1::Builder::new()
                     .handshake(stream)
                     .await
                     .unwrap();
@@ -549,7 +549,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                                 .unwrap();
 
                             let result = if http2_only {
-                                let (sender, conn) =
+                                let (mut sender, conn) =
                                     rama::http::core::client::conn::http2::Builder::new(
                                         Executor::new(),
                                     )
@@ -566,7 +566,7 @@ async fn naive_proxy(cfg: ProxyConfig) -> (SocketAddr, impl Future<Output = ()>)
                                 sender.send_request(req).await
                             } else {
                                 let builder = rama::http::core::client::conn::http1::Builder::new();
-                                let (sender, conn) = builder.handshake(stream).await.unwrap();
+                                let (mut sender, conn) = builder.handshake(stream).await.unwrap();
 
                                 tokio::task::spawn(async move {
                                     if let Err(err) = conn.await {

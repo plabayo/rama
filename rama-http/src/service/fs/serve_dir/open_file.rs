@@ -20,6 +20,7 @@ pub(super) enum OpenFileOutput {
     FileNotFound,
     PreconditionFailed,
     NotModified,
+    InvalidRedirectUri,
 }
 
 pub(super) struct FileOpened {
@@ -213,7 +214,6 @@ async fn open_file_with_fallback(
                 path.set_extension(OsStr::new(""));
                 // Remove the encoding from the negotiated_encodings since the file doesn't exist
                 negotiated_encoding.retain(|qv| qv.value != encoding);
-                continue;
             }
             (Err(err), _) => return Err(err),
         };
@@ -239,7 +239,6 @@ async fn file_metadata_with_fallback(
                 path.set_extension(OsStr::new(""));
                 // Remove the encoding from the negotiated_encodings since the file doesn't exist
                 negotiated_encoding.retain(|qv| qv.value != encoding);
-                continue;
             }
             (Err(err), _) => return Err(err),
         };
@@ -264,8 +263,11 @@ async fn maybe_redirect_or_append_path(
         path_to_file.push("index.html");
         None
     } else {
-        let location =
-            HeaderValue::from_str(&append_slash_on_path(uri.clone()).to_string()).unwrap();
+        let uri = match append_slash_on_path(uri.clone()) {
+            Ok(uri) => uri,
+            Err(err) => return Some(err),
+        };
+        let location = HeaderValue::from_str(&uri.to_string()).unwrap();
         Some(OpenFileOutput::Redirect { location })
     }
 }
@@ -286,7 +288,7 @@ async fn is_dir(path_to_file: &Path) -> bool {
         .is_ok_and(|meta_data| meta_data.is_dir())
 }
 
-fn append_slash_on_path(uri: Uri) -> Uri {
+fn append_slash_on_path(uri: Uri) -> Result<Uri, OpenFileOutput> {
     let rama_http_types::dep::http::uri::Parts {
         scheme,
         authority,
@@ -314,5 +316,8 @@ fn append_slash_on_path(uri: Uri) -> Uri {
         uri_builder.path_and_query("/")
     };
 
-    uri_builder.build().unwrap()
+    uri_builder.build().map_err(|err| {
+        tracing::error!(?err, "redirect uri failed to build");
+        OpenFileOutput::InvalidRedirectUri
+    })
 }

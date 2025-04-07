@@ -167,6 +167,24 @@ mod tests {
         assert_eq!(decompressed_data, "Hello, World!");
     }
 
+    #[tokio::test]
+    async fn decompress_multi_zstd() {
+        let client = Decompression::new(service_fn(handle_multi_zstd));
+
+        let req = Request::builder()
+            .header("accept-encoding", "zstd")
+            .body(Body::empty())
+            .unwrap();
+        let res = client.serve(Context::default(), req).await.unwrap();
+
+        // read the body, it will be decompressed automatically
+        let body = res.into_body();
+        let decompressed_data =
+            String::from_utf8(body.collect().await.unwrap().to_bytes().to_vec()).unwrap();
+
+        assert_eq!(decompressed_data, "Hello, World!");
+    }
+
     async fn handle_multi_gz(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
         let mut buf = Vec::new();
         let mut enc1 = GzEncoder::new(&mut buf, Default::default());
@@ -180,6 +198,22 @@ mod tests {
         let mut res = Response::new(Body::from(buf));
         res.headers_mut()
             .insert("content-encoding", "gzip".parse().unwrap());
+        Ok(res)
+    }
+
+    async fn handle_multi_zstd(_req: Request<Body>) -> Result<Response<Body>, Infallible> {
+        let mut buf = Vec::new();
+        let mut enc1 = zstd::Encoder::new(&mut buf, Default::default()).unwrap();
+        enc1.write_all(b"Hello, ").unwrap();
+        enc1.finish().unwrap();
+
+        let mut enc2 = zstd::Encoder::new(&mut buf, Default::default()).unwrap();
+        enc2.write_all(b"World!").unwrap();
+        enc2.finish().unwrap();
+
+        let mut res = Response::new(Body::from(buf));
+        res.headers_mut()
+            .insert("content-encoding", "zstd".parse().unwrap());
         Ok(res)
     }
 }

@@ -356,14 +356,20 @@ where
         None
     };
 
-    inner_client.set_tls_config(ClientConfig {
-        server_verify_mode,
-        extensions: Some(vec![
+    let extensions = if cfg.emulate {
+        None
+    } else {
+        Some(vec![
             ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
                 ApplicationProtocol::HTTP_2,
                 ApplicationProtocol::HTTP_11,
             ]),
-        ]),
+        ])
+    };
+
+    inner_client.set_tls_config(ClientConfig {
+        server_verify_mode,
+        extensions,
         ..Default::default()
     });
 

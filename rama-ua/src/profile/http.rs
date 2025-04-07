@@ -1,7 +1,12 @@
 use rama_http_types::{
-    HeaderName,
-    proto::{h1::Http1HeaderMap, h2::PseudoHeader},
+    HeaderName, Method, Version,
+    conn::StreamDependencyParams,
+    proto::{
+        h1::Http1HeaderMap,
+        h2::{PseudoHeaderOrder, frame::SettingsConfig},
+    },
 };
+use rama_net::fingerprint::{HttpRequestInput, Ja4H, Ja4HComputeError};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -37,6 +42,116 @@ pub struct HttpProfile {
     pub h1: Arc<Http1Profile>,
     /// The HTTP/2 profile.
     pub h2: Arc<Http2Profile>,
+}
+
+impl HttpProfile {
+    /// Compute the [`Ja4H`] (hash) for the h1 navigate headers in this [`HttpProfile`].
+    ///
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
+    /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    pub fn ja4h_h1_navigate(&self, method: Option<Method>) -> Result<Ja4H, Ja4HComputeError> {
+        Ja4H::compute(HttpRequestInput {
+            header_map: self.h1.headers.navigate.clone(),
+            http_method: method.unwrap_or(Method::GET),
+            version: Version::HTTP_11,
+        })
+    }
+
+    /// Compute the [`Ja4H`] (hash) for the h1 fetch headers in this [`HttpProfile`], if such headers are available for fetch.
+    ///
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
+    /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    pub fn ja4h_h1_fetch(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
+        self.h1.headers.fetch.clone().map(|header_map| {
+            Ja4H::compute(HttpRequestInput {
+                header_map,
+                http_method: method.unwrap_or(Method::GET),
+                version: Version::HTTP_11,
+            })
+        })
+    }
+
+    /// Compute the [`Ja4H`] (hash) for the h1 xhr headers in this [`HttpProfile`], if such headers are available for xhr.
+    ///
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
+    /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    pub fn ja4h_h1_xhr(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
+        self.h1.headers.xhr.clone().map(|header_map| {
+            Ja4H::compute(HttpRequestInput {
+                header_map,
+                http_method: method.unwrap_or(Method::GET),
+                version: Version::HTTP_11,
+            })
+        })
+    }
+
+    /// Compute the [`Ja4H`] (hash) for the h1 form headers in this [`HttpProfile`], if such headers are available for form.
+    ///
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
+    /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    pub fn ja4h_h1_form(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
+        self.h1.headers.form.clone().map(|header_map| {
+            Ja4H::compute(HttpRequestInput {
+                header_map,
+                http_method: method.unwrap_or(Method::GET),
+                version: Version::HTTP_11,
+            })
+        })
+    }
+
+    /// Compute the [`Ja4H`] (hash) for the h2 navigate headers in this [`HttpProfile`].
+    ///
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
+    /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    pub fn ja4h_h2_navigate(&self, method: Option<Method>) -> Result<Ja4H, Ja4HComputeError> {
+        Ja4H::compute(HttpRequestInput {
+            header_map: self.h2.headers.navigate.clone(),
+            http_method: method.unwrap_or(Method::GET),
+            version: Version::HTTP_2,
+        })
+    }
+
+    /// Compute the [`Ja4H`] (hash) for the h2 fetch headers in this [`HttpProfile`], if such headers are available for fetch.
+    ///
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
+    /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    pub fn ja4h_h2_fetch(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
+        self.h2.headers.fetch.clone().map(|header_map| {
+            Ja4H::compute(HttpRequestInput {
+                header_map,
+                http_method: method.unwrap_or(Method::GET),
+                version: Version::HTTP_2,
+            })
+        })
+    }
+
+    /// Compute the [`Ja4H`] (hash) for the h2 xhr headers in this [`HttpProfile`], if such headers are available for xhr.
+    ///
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
+    /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    pub fn ja4h_h2_xhr(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
+        self.h2.headers.xhr.clone().map(|header_map| {
+            Ja4H::compute(HttpRequestInput {
+                header_map,
+                http_method: method.unwrap_or(Method::GET),
+                version: Version::HTTP_2,
+            })
+        })
+    }
+
+    /// Compute the [`Ja4H`] (hash) for the h2 form headers in this [`HttpProfile`], if such headers are available for form.
+    ///
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
+    /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    pub fn ja4h_h2_form(&self, method: Option<Method>) -> Option<Result<Ja4H, Ja4HComputeError>> {
+        self.h2.headers.form.clone().map(|header_map| {
+            Ja4H::compute(HttpRequestInput {
+                header_map,
+                http_method: method.unwrap_or(Method::GET),
+                version: Version::HTTP_2,
+            })
+        })
+    }
 }
 
 impl<'de> Deserialize<'de> for HttpProfile {
@@ -143,11 +258,21 @@ pub struct Http2Profile {
     pub settings: Http2Settings,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 /// The settings for the HTTP/2 profile.
 pub struct Http2Settings {
     /// The pseudo headers to be used for the HTTP/2 profile.
     ///
     /// See [`PseudoHeader`] for more details.
-    pub http_pseudo_headers: Option<Vec<PseudoHeader>>,
+    pub http_pseudo_headers: Option<PseudoHeaderOrder>,
+
+    /// The (initial) h2 settings to be used for the HTTP/2 profile.
+    ///
+    /// See [`SettingsConfig`] for more details.
+    pub initial_config: Option<SettingsConfig>,
+
+    /// The priority settings to be used for the HTTP/2 profile.
+    ///
+    /// See [`StreamDependencyParams`] for more details.
+    pub priority_header: Option<StreamDependencyParams>,
 }

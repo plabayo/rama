@@ -19,10 +19,11 @@ use std::{
 };
 
 use rama_http_types::{
-    Method, Request, Version,
+    Method, Version,
     header::{ACCEPT_LANGUAGE, COOKIE, REFERER},
-    proto::h1::Http1HeaderMap,
 };
+
+use crate::fingerprint::{HttpRequestInput, HttpRequestProvider};
 
 #[derive(Clone)]
 /// Input data for a "ja4h" hash.
@@ -44,9 +45,15 @@ impl Ja4H {
     ///
     /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
     /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
-    pub fn compute<B>(req: &Request<B>) -> Result<Self, Ja4HComputeError> {
-        let req_method = HttpRequestMethod::from(req.method().clone());
-        let version: HttpVersion = req.version().try_into()?;
+    pub fn compute(req: impl HttpRequestProvider) -> Result<Self, Ja4HComputeError> {
+        let HttpRequestInput {
+            header_map,
+            http_method,
+            version,
+        } = req.http_request_input();
+
+        let req_method = HttpRequestMethod::from(http_method);
+        let version: HttpVersion = version.try_into()?;
 
         let mut has_cookie_header = false;
         let mut has_referer_header = false;
@@ -54,7 +61,7 @@ impl Ja4H {
 
         let mut cookie_pairs = None;
 
-        let headers: Vec<_> = Http1HeaderMap::copy_from_req(req)
+        let headers: Vec<_> = header_map
             .into_iter()
             .filter_map(|(name, value)| match *name.header_name() {
                 ACCEPT_LANGUAGE => {
@@ -324,6 +331,7 @@ impl fmt::Display for HttpVersion {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rama_http_types::{Request, proto::h1::Http1HeaderMap};
 
     #[derive(Debug)]
     struct TestCase {

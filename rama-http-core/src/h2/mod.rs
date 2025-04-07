@@ -111,10 +111,7 @@ mod proto;
 #[allow(missing_docs)]
 pub mod proto;
 
-#[cfg(not(feature = "unstable"))]
-mod frame;
-
-#[cfg(feature = "unstable")]
+#[doc(hidden)]
 #[allow(missing_docs)]
 pub mod frame;
 

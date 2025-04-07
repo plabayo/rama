@@ -19,7 +19,6 @@ embed-profiles = ["dep:serde_json"]
 tls = ["rama-net/tls"]
 
 [dependencies]
-bytes = { workspace = true }
 itertools = { workspace = true }
 rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
 rama-http-types = { version = "0.2.0-alpha.8", path = "../rama-http-types" }

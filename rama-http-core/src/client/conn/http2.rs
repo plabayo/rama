@@ -1,5 +1,6 @@
 //! HTTP/2 client connections
 
+use std::borrow::Cow;
 use std::fmt;
 use std::marker::PhantomData;
 use std::pin::Pin;
@@ -9,12 +10,15 @@ use std::time::Duration;
 use futures_util::ready;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
+use rama_http_types::proto::h2::PseudoHeaderOrder;
+use rama_http_types::proto::h2::frame::{SettingOrder, SettingsConfig};
 use rama_http_types::{Request, Response};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, trace};
 
 use super::super::dispatch::{self, TrySendError};
 use crate::body::{Body, Incoming as IncomingBody};
+use crate::h2::frame::{Priority, StreamDependency};
 use crate::proto;
 
 /// The sender side of an established connection.
@@ -55,6 +59,9 @@ where
 pub struct Builder {
     pub(super) exec: Executor,
     h2_builder: proto::h2::client::Config,
+    headers_pseudo_order: Option<PseudoHeaderOrder>,
+    headers_priority: Option<StreamDependency>,
+    priority: Option<Cow<'static, [Priority]>>,
 }
 
 /// Returns a handshake future over some IO.
@@ -123,7 +130,7 @@ where
     /// Absolute-form `Uri`s are not required. If received, they will be serialized
     /// as-is.
     pub fn send_request(
-        &self,
+        &mut self,
         req: Request<B>,
     ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> {
         let sent = self.dispatch.send(req);
@@ -239,7 +246,39 @@ impl Builder {
         Builder {
             exec,
             h2_builder: Default::default(),
+            headers_pseudo_order: None,
+            headers_priority: None,
+            priority: None,
         }
+    }
+
+    pub fn apply_setting_config(&mut self, config: &SettingsConfig) -> &mut Self {
+        self.header_table_size(config.header_table_size)
+            .max_concurrent_streams(config.max_concurrent_streams)
+            .initial_stream_window_size(config.initial_window_size)
+            .max_frame_size(config.max_frame_size);
+
+        if let Some(value) = config.enable_push {
+            self.enable_push(value != 0);
+        }
+
+        if let Some(value) = config.max_header_list_size {
+            self.max_header_list_size(value);
+        }
+
+        if let Some(value) = config.enable_connect_protocol {
+            self.enable_connect_protocol(value);
+        }
+
+        if let Some(value) = config.unknown_setting_9 {
+            self.unknown_setting_9(value);
+        }
+
+        if let Some(order) = config.setting_order.clone() {
+            self.setting_order(order);
+        }
+
+        self
     }
 
     /// Sets the [`SETTINGS_INITIAL_WINDOW_SIZE`][spec] option for HTTP2
@@ -429,6 +468,41 @@ impl Builder {
         self
     }
 
+    pub fn enable_push(&mut self, enable: bool) -> &mut Self {
+        self.h2_builder.enable_push = enable;
+        self
+    }
+
+    pub fn enable_connect_protocol(&mut self, value: u32) -> &mut Self {
+        self.h2_builder.enable_connect_protocol = Some(value);
+        self
+    }
+
+    pub fn unknown_setting_9(&mut self, value: u32) -> &mut Self {
+        self.h2_builder.unknown_setting_9 = Some(value);
+        self
+    }
+
+    pub fn setting_order(&mut self, order: SettingOrder) -> &mut Self {
+        self.h2_builder.setting_order = Some(order);
+        self
+    }
+
+    pub fn headers_pseudo_order(&mut self, order: PseudoHeaderOrder) -> &mut Self {
+        self.headers_pseudo_order = Some(order);
+        self
+    }
+
+    pub fn headers_priority(&mut self, headers_priority: StreamDependency) -> &mut Self {
+        self.headers_priority = Some(headers_priority);
+        self
+    }
+
+    pub fn priority(&mut self, priority: impl Into<Cow<'static, [Priority]>>) -> &mut Self {
+        self.priority = Some(priority.into());
+        self
+    }
+
     /// Constructs a connection with the configured options and IO.
     /// See [`client::conn`](crate::client::conn) for more.
     ///
@@ -447,8 +521,28 @@ impl Builder {
         async move {
             trace!("client handshake HTTP/2");
 
+            let mut client_builder = proto::h2::client::new_builder(&self.h2_builder);
+            if let Some(order) = self.headers_pseudo_order.clone() {
+                client_builder.headers_pseudo_order(order);
+            }
+            if let Some(priority) = self.headers_priority.clone() {
+                client_builder.headers_priority(priority);
+            }
+            if let Some(priority) = self.priority.clone() {
+                client_builder.priority(priority);
+            }
+
             let (tx, rx) = dispatch::channel();
-            let h2 = proto::h2::client::handshake(io, rx, &opts.h2_builder, opts.exec).await?;
+
+            let h2 = proto::h2::client::handshake_with_builder(
+                client_builder,
+                io,
+                rx,
+                &opts.h2_builder,
+                opts.exec,
+            )
+            .await?;
+
             Ok((
                 SendRequest {
                     dispatch: tx.unbound(),

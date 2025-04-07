@@ -68,7 +68,10 @@ use rama_core::{Context, Layer, Service};
 use rama_utils::macros::define_inner_service_accessors;
 use uuid::Uuid;
 
-pub(crate) const X_REQUEST_ID: &str = "x-request-id";
+/// cfr: <https://www.rfc-editor.org/rfc/rfc6648>
+pub(crate) const REQUEST_ID: HeaderName = HeaderName::from_static("request-id");
+
+pub(crate) const X_REQUEST_ID: HeaderName = HeaderName::from_static("x-request-id");
 
 /// Trait for producing [`RequestId`]s.
 ///
@@ -145,12 +148,20 @@ impl<M> SetRequestIdLayer<M> {
         }
     }
 
+    /// Create a new `SetRequestIdLayer` that uses `request-id` as the header name.
+    pub const fn request_id(make_request_id: M) -> Self
+    where
+        M: MakeRequestId,
+    {
+        SetRequestIdLayer::new(REQUEST_ID, make_request_id)
+    }
+
     /// Create a new `SetRequestIdLayer` that uses `x-request-id` as the header name.
     pub const fn x_request_id(make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
-        SetRequestIdLayer::new(HeaderName::from_static(X_REQUEST_ID), make_request_id)
+        SetRequestIdLayer::new(X_REQUEST_ID, make_request_id)
     }
 }
 
@@ -221,16 +232,20 @@ impl<S, M> SetRequestId<S, M> {
         }
     }
 
+    /// Create a new `SetRequestId` that uses `request-id` as the header name.
+    pub const fn request_id(inner: S, make_request_id: M) -> Self
+    where
+        M: MakeRequestId,
+    {
+        Self::new(inner, REQUEST_ID, make_request_id)
+    }
+
     /// Create a new `SetRequestId` that uses `x-request-id` as the header name.
     pub const fn x_request_id(inner: S, make_request_id: M) -> Self
     where
         M: MakeRequestId,
     {
-        Self::new(
-            inner,
-            HeaderName::from_static(X_REQUEST_ID),
-            make_request_id,
-        )
+        Self::new(inner, X_REQUEST_ID, make_request_id)
     }
 
     define_inner_service_accessors!();
@@ -283,9 +298,14 @@ impl PropagateRequestIdLayer {
         PropagateRequestIdLayer { header_name }
     }
 
+    /// Create a new `PropagateRequestIdLayer` that uses `request-id` as the header name.
+    pub const fn request_id() -> Self {
+        Self::new(REQUEST_ID)
+    }
+
     /// Create a new `PropagateRequestIdLayer` that uses `x-request-id` as the header name.
     pub const fn x_request_id() -> Self {
-        Self::new(HeaderName::from_static(X_REQUEST_ID))
+        Self::new(X_REQUEST_ID)
     }
 }
 
@@ -314,9 +334,14 @@ impl<S> PropagateRequestId<S> {
         Self { inner, header_name }
     }
 
+    /// Create a new `PropagateRequestId` that uses `request-id` as the header name.
+    pub const fn request_id(inner: S) -> Self {
+        Self::new(inner, REQUEST_ID)
+    }
+
     /// Create a new `PropagateRequestId` that uses `x-request-id` as the header name.
     pub const fn x_request_id(inner: S) -> Self {
-        Self::new(inner, HeaderName::from_static(X_REQUEST_ID))
+        Self::new(inner, X_REQUEST_ID)
     }
 
     define_inner_service_accessors!();
@@ -442,6 +467,37 @@ mod tests {
             .unwrap();
         let res = svc.serve(Context::default(), req).await.unwrap();
         assert_eq!(res.headers()["x-request-id"], "foo");
+
+        // extension propagated
+        let req = Request::builder().body(Body::empty()).unwrap();
+        let res = svc.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.extensions().get::<RequestId>().unwrap().0, "2");
+    }
+
+    #[tokio::test]
+    async fn basic_with_request_id() {
+        let svc = (
+            SetRequestIdLayer::request_id(Counter::default()),
+            PropagateRequestIdLayer::request_id(),
+        )
+            .into_layer(service_fn(handler));
+
+        // header on response
+        let req = Request::builder().body(Body::empty()).unwrap();
+        let res = svc.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.headers()["request-id"], "0");
+
+        let req = Request::builder().body(Body::empty()).unwrap();
+        let res = svc.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.headers()["request-id"], "1");
+
+        // doesn't override if header is already there
+        let req = Request::builder()
+            .header("request-id", "foo")
+            .body(Body::empty())
+            .unwrap();
+        let res = svc.serve(Context::default(), req).await.unwrap();
+        assert_eq!(res.headers()["request-id"], "foo");
 
         // extension propagated
         let req = Request::builder().body(Body::empty()).unwrap();

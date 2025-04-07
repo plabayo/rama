@@ -1,6 +1,12 @@
 use std::sync::Arc;
 
-use rama_net::tls::client::{ClientConfig, ClientHello, ServerVerifyMode};
+use rama_net::{
+    fingerprint::{Ja3, Ja3ComputeError, Ja4, Ja4ComputeError},
+    tls::{
+        ProtocolVersion,
+        client::{ClientConfig, ClientHello, ServerVerifyMode},
+    },
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone)]
@@ -14,6 +20,37 @@ use serde::{Deserialize, Serialize};
 pub struct TlsProfile {
     /// The TLS client configuration.
     pub client_config: Arc<ClientConfig>,
+}
+
+impl TlsProfile {
+    /// Compute the [`Ja3`] (hash) based on this [`TlsProfile`].
+    ///
+    /// This can be useful in case you want to compare profiles
+    /// loaded into memory of your service with the profile
+    /// of an incoming request.
+    ///
+    /// As specified by <https://github.com/salesforce/ja3`>.
+    pub fn compute_ja3(
+        &self,
+        negotiated_tls_version: Option<ProtocolVersion>,
+    ) -> Result<Ja3, Ja3ComputeError> {
+        Ja3::compute_from_client_hello(self.client_config.as_ref(), negotiated_tls_version)
+    }
+
+    /// Compute the [`Ja4`] (hash) on this [`TlsProfile`].
+    ///
+    /// This can be useful in case you want to compare profiles
+    /// loaded into memory of your service with the profile
+    /// of an incoming request.
+    ///
+    /// As specified by <https://blog.foxio.io/ja4%2B-network-fingerprinting>
+    /// and reference implementations found at <https://github.com/FoxIO-LLC/ja4>.
+    pub fn compute_ja4(
+        &self,
+        negotiated_tls_version: Option<ProtocolVersion>,
+    ) -> Result<Ja4, Ja4ComputeError> {
+        Ja4::compute_from_client_hello(self.client_config.as_ref(), negotiated_tls_version)
+    }
 }
 
 impl<'de> Deserialize<'de> for TlsProfile {

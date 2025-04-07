@@ -4,3 +4,5 @@ mod pseudo_header;
 pub use pseudo_header::{
     InvalidPseudoHeaderStr, PseudoHeader, PseudoHeaderOrder, PseudoHeaderOrderIter,
 };
+
+pub mod frame;

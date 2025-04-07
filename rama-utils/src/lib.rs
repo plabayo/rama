@@ -29,6 +29,7 @@ pub mod backoff;
 pub mod future;
 pub mod info;
 pub mod latency;
+pub mod octets;
 pub mod rng;
 pub mod str;
 

@@ -1,4 +1,4 @@
-//! Utilities for the TCP protocol.
+//! Connection utilities
 
 use std::io;
 

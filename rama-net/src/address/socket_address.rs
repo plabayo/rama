@@ -7,7 +7,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV
 use std::str::FromStr;
 
 /// An [`IpAddr`] with an associated port
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct SocketAddress {
     ip_addr: IpAddr,
     port: u16,
@@ -18,6 +18,92 @@ impl SocketAddress {
     pub const fn new(ip_addr: IpAddr, port: u16) -> Self {
         SocketAddress { ip_addr, port }
     }
+
+    /// creates a new local ipv4 [`SocketAddress`] for the given port
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::SocketAddress;
+    ///
+    /// let addr = SocketAddress::local_ipv4(8080);
+    /// assert_eq!("127.0.0.1:8080", addr.to_string());
+    /// ```
+    pub const fn local_ipv4(port: u16) -> Self {
+        SocketAddress {
+            ip_addr: IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+            port,
+        }
+    }
+
+    /// creates a new local ipv6 [`SocketAddress`] for the given port.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::SocketAddress;
+    ///
+    /// let addr = SocketAddress::local_ipv6(8080);
+    /// assert_eq!("[::1]:8080", addr.to_string());
+    /// ```
+    pub const fn local_ipv6(port: u16) -> Self {
+        SocketAddress {
+            ip_addr: IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1)),
+            port,
+        }
+    }
+
+    /// creates a new default ipv4 [`SocketAddress`] for the given port
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::SocketAddress;
+    ///
+    /// let addr = SocketAddress::default_ipv4(8080);
+    /// assert_eq!("0.0.0.0:8080", addr.to_string());
+    /// ```
+    pub const fn default_ipv4(port: u16) -> Self {
+        SocketAddress {
+            ip_addr: IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)),
+            port,
+        }
+    }
+
+    /// creates a new default ipv6 [`SocketAddress`] for the given port.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::SocketAddress;
+    ///
+    /// let addr = SocketAddress::default_ipv6(8080);
+    /// assert_eq!("[::]:8080", addr.to_string());
+    /// ```
+    pub const fn default_ipv6(port: u16) -> Self {
+        SocketAddress {
+            ip_addr: IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0)),
+            port,
+        }
+    }
+
+    /// creates a new broadcast ipv4 [`SocketAddress`] for the given port
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::SocketAddress;
+    ///
+    /// let addr = SocketAddress::broadcast_ipv4(8080);
+    /// assert_eq!("255.255.255.255:8080", addr.to_string());
+    /// ```
+    pub const fn broadcast_ipv4(port: u16) -> Self {
+        SocketAddress {
+            ip_addr: IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255)),
+            port,
+        }
+    }
+
     /// Gets the [`IpAddr`] reference.
     pub fn ip_addr(&self) -> &IpAddr {
         &self.ip_addr

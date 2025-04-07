@@ -182,7 +182,7 @@ where
     /// This is however not enforced or validated and it is up to the user
     /// of this method to ensure the `Uri` is correct for their intended purpose.
     pub fn send_request(
-        &self,
+        &mut self,
         req: Request<B>,
     ) -> impl Future<Output = crate::Result<Response<IncomingBody>>> + use<B> {
         let sent = self.dispatch.send(req);

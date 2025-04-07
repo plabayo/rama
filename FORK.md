@@ -18,7 +18,7 @@ as a distant relative.
 - <https://github.com/tower-rs/tower/tree/954e4c7e8d889b3b77e68886b2c78d5bb45b74fb>
   - Service / Layer traits
   - Some layers such as timeout, filter, most of util ones
-- <https://github.com/tower-rs/tower-http/tree/d0c522b6da2620bf5314302d12e4cded7295b11c>
+- <https://github.com/tower-rs/tower-http/tree/33645694bda18105decc54be33d659c82ff07435>
   - pretty much everything
   - now kept directly in sync "conceptual logic wise",
     but originally forked as an actual `tower-async` package as found in
@@ -26,7 +26,7 @@ as a distant relative.
 
 ## Relative Forks
 
-- <https://github.com/tokio-rs/axum/tree/e0b55d750390d810028caad0387058751611c1b4>
+- <https://github.com/tokio-rs/axum/tree/2b6ae09568f29451b731674a578275955314badc>
   - IntoResponse Code
   - (Optional)FromRequest/ (Optional)FromRequestParts code
   - Error/BoxError

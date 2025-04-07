@@ -17,6 +17,17 @@ workspace = true
 default = []
 
 [dependencies]
+bytes = { workspace = true }
+futures-core = { workspace = true }
+futures-sink = { workspace = true }
+futures-util = { workspace = true }
+pin-project-lite = { workspace = true }
+rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.8", path = "../rama-net" }
+rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
+tokio = { workspace = true, features = ["macros", "net"] }
+tokio-util = { workspace = true, features = ["net", "codec"] }
+tracing = { workspace = true }
 
 [dev-dependencies]
 

@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use rama::error::BoxError;
 
 pub mod cmd;
-use cmd::{echo, fp, http, ip, proxy};
+use cmd::{echo, fp, http, ip, proxy, tls};
 
 pub mod error;
 
@@ -33,6 +33,7 @@ struct Cli {
 #[allow(clippy::large_enum_variant)]
 enum CliCommands {
     Http(http::CliCommandHttp),
+    Tls(tls::CliCommandTls),
     Proxy(proxy::CliCommandProxy),
     Echo(echo::CliCommandEcho),
     Ip(ip::CliCommandIp),
@@ -46,6 +47,7 @@ async fn main() -> Result<(), BoxError> {
     #[allow(clippy::exit)]
     match match cli.cmds {
         CliCommands::Http(cfg) => http::run(cfg).await,
+        CliCommands::Tls(cfg) => tls::run(cfg).await,
         CliCommands::Proxy(cfg) => proxy::run(cfg).await,
         CliCommands::Echo(cfg) => echo::run(cfg).await,
         CliCommands::Ip(cfg) => ip::run(cfg).await,

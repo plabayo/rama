@@ -25,10 +25,12 @@ use self::state::State;
 use self::store::Store;
 use self::stream::Stream;
 
-use crate::h2::frame::{StreamId, StreamIdOverflow};
+use crate::h2::frame::{Priority, StreamDependency, StreamId, StreamIdOverflow};
 use crate::h2::proto::*;
 
 use bytes::Bytes;
+use rama_http_types::proto::h2::PseudoHeaderOrder;
+use std::borrow::Cow;
 use std::time::Duration;
 
 #[derive(Debug)]
@@ -72,4 +74,13 @@ pub(crate) struct Config {
     ///
     /// When this gets exceeded, we issue GOAWAYs.
     pub local_max_error_reset_streams: Option<usize>,
+
+    /// Pseudo order of the headers stream
+    pub headers_pseudo_order: Option<PseudoHeaderOrder>,
+
+    /// Priority of the headers stream
+    pub headers_priority: Option<StreamDependency>,
+
+    /// Priority stream list
+    pub priority: Option<Cow<'static, [Priority]>>,
 }

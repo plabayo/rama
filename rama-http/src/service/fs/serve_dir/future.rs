@@ -45,6 +45,10 @@ where
 
         Ok(OpenFileOutput::NotModified) => Ok(response_with_status(StatusCode::NOT_MODIFIED)),
 
+        Ok(OpenFileOutput::InvalidRedirectUri) => {
+            Ok(response_with_status(StatusCode::INTERNAL_SERVER_ERROR))
+        }
+
         Err(err) => {
             #[cfg(unix)]
             // 20 = libc::ENOTDIR => "not a directory

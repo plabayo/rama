@@ -17,7 +17,6 @@ async fn test_tcp_listener_layers() {
             Err(e) => {
                 eprintln!("connect_tcp error: {}", e);
                 tokio::time::sleep(std::time::Duration::from_millis(500 + 250 * i)).await;
-                continue;
             }
         }
     }

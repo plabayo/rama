@@ -37,6 +37,7 @@ use rama::{
         matcher::MethodMatcher,
         server::HttpServer,
     },
+    net::conn::is_connection_error,
     net::http::RequestContext,
     net::stream::layer::http::BodyLimitLayer,
     net::tls::{

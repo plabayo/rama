@@ -33,6 +33,8 @@ mod http_telemetry;
 #[cfg(feature = "http-full")]
 mod http_user_agent_classifier;
 #[cfg(feature = "http-full")]
+mod http_web_router;
+#[cfg(feature = "http-full")]
 mod http_web_service_dir_and_api;
 #[cfg(all(feature = "http-full", feature = "rustls"))]
 mod https_connect_proxy;
@@ -42,6 +44,8 @@ mod mtls_tunnel_and_service;
 mod tcp_listener_hello;
 #[cfg(feature = "tcp")]
 mod tcp_listener_layers;
+#[cfg(feature = "udp")]
+mod udp_codec;
 
 #[cfg(all(feature = "boring", feature = "http-full"))]
 mod tls_boring_dynamic_certs;

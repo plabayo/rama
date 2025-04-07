@@ -1,6 +1,7 @@
 use crate::h2::frame::{self, Error, Head, Kind, StreamId};
 
 use bytes::BufMut;
+use rama_utils::octets::unpack_octets_as_u32;
 
 const SIZE_INCREMENT_MASK: u32 = 1 << 31;
 
@@ -35,7 +36,7 @@ impl WindowUpdate {
 
         // Clear the most significant bit, as that is reserved and MUST be ignored
         // when received.
-        let size_increment = unpack_octets_4!(payload, 0, u32) & !SIZE_INCREMENT_MASK;
+        let size_increment = unpack_octets_as_u32(payload, 0) & !SIZE_INCREMENT_MASK;
 
         if size_increment == 0 {
             return Err(Error::InvalidWindowUpdateValue);

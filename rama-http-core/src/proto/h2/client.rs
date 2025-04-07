@@ -15,7 +15,9 @@ use futures_util::stream::{StreamExt as _, StreamFuture};
 use pin_project_lite::pin_project;
 use rama_core::error::BoxError;
 use rama_core::rt::Executor;
-use rama_http_types::{Method, Request, Response, StatusCode, dep::http_body};
+use rama_http_types::{
+    Method, Request, Response, StatusCode, dep::http_body, proto::h2::frame::SettingOrder,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tracing::{debug, trace, warn};
 
@@ -64,7 +66,7 @@ const DEFAULT_INITIAL_MAX_SEND_STREAMS: usize = 100;
 pub(crate) struct Config {
     pub(crate) adaptive_window: bool,
     pub(crate) initial_conn_window_size: u32,
-    pub(crate) initial_stream_window_size: u32,
+    pub(crate) initial_stream_window_size: u32, // alias for initial_window_size
     pub(crate) initial_max_send_streams: usize,
     pub(crate) max_frame_size: Option<u32>,
     pub(crate) max_header_list_size: u32,
@@ -76,6 +78,10 @@ pub(crate) struct Config {
     pub(crate) max_pending_accept_reset_streams: Option<usize>,
     pub(crate) header_table_size: Option<u32>,
     pub(crate) max_concurrent_streams: Option<u32>,
+    pub(crate) enable_push: bool,
+    pub(crate) enable_connect_protocol: Option<u32>,
+    pub(crate) unknown_setting_9: Option<u32>,
+    pub(crate) setting_order: Option<SettingOrder>,
 }
 
 impl Default for Config {
@@ -95,11 +101,15 @@ impl Default for Config {
             max_pending_accept_reset_streams: None,
             header_table_size: None,
             max_concurrent_streams: None,
+            enable_push: false,
+            enable_connect_protocol: None,
+            unknown_setting_9: None,
+            setting_order: None,
         }
     }
 }
 
-fn new_builder(config: &Config) -> Builder {
+pub(crate) fn new_builder(config: &Config) -> Builder {
     let mut builder = Builder::default();
     builder
         .initial_max_send_streams(config.initial_max_send_streams)
@@ -107,7 +117,7 @@ fn new_builder(config: &Config) -> Builder {
         .initial_connection_window_size(config.initial_conn_window_size)
         .max_header_list_size(config.max_header_list_size)
         .max_send_buffer_size(config.max_send_buffer_size)
-        .enable_push(false);
+        .enable_push(config.enable_push);
     if let Some(max) = config.max_frame_size {
         builder.max_frame_size(max);
     }
@@ -122,6 +132,15 @@ fn new_builder(config: &Config) -> Builder {
     }
     if let Some(max) = config.max_concurrent_streams {
         builder.max_concurrent_streams(max);
+    }
+    if let Some(connect_protocol) = config.enable_connect_protocol {
+        builder.enable_connect_protocol(connect_protocol);
+    }
+    if let Some(unknown_setting_9) = config.unknown_setting_9 {
+        builder.unknown_setting_9(unknown_setting_9);
+    }
+    if let Some(setting_order) = config.setting_order.clone() {
+        builder.setting_order(setting_order);
     }
     builder
 }
@@ -139,6 +158,7 @@ fn new_ping_config(config: &Config) -> ping::Config {
     }
 }
 
+#[expect(dead_code)]
 pub(crate) async fn handshake<T, B>(
     io: T,
     req_rx: ClientRx<B>,
@@ -149,7 +169,21 @@ where
     T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
 {
-    let (h2_tx, mut conn) = new_builder(config)
+    handshake_with_builder(new_builder(config), io, req_rx, config, exec).await
+}
+
+pub(crate) async fn handshake_with_builder<T, B>(
+    builder: Builder,
+    io: T,
+    req_rx: ClientRx<B>,
+    config: &Config,
+    exec: Executor,
+) -> crate::Result<ClientTask<B, T>>
+where
+    T: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    B: Body<Data: Send + 'static, Error: Into<BoxError>> + Send + 'static + Unpin,
+{
+    let (h2_tx, mut conn) = builder
         .handshake::<_, SendBuf<B::Data>>(io)
         .await
         .map_err(crate::Error::new_h2)?;
@@ -746,7 +780,6 @@ where
                         }
                     }
                     self.poll_pipe(f, cx);
-                    continue;
                 }
 
                 Poll::Ready(None) => {

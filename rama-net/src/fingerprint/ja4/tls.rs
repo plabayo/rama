@@ -3,9 +3,12 @@ use std::{borrow::Cow, fmt};
 
 use rama_core::context::Extensions;
 
-use crate::tls::{
-    ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, SecureTransport,
-    SignatureScheme, client::NegotiatedTlsParameters,
+use crate::{
+    fingerprint::ClientHelloProvider,
+    tls::{
+        ApplicationProtocol, CipherSuite, ExtensionId, ProtocolVersion, SecureTransport,
+        SignatureScheme, client::NegotiatedTlsParameters,
+    },
 };
 
 #[derive(Clone)]
@@ -32,20 +35,33 @@ impl Ja4 {
             .get::<SecureTransport>()
             .and_then(|st| st.client_hello())
             .ok_or(Ja4ComputeError::MissingClientHello)?;
+        let negotiated_tls_version = ext
+            .get::<NegotiatedTlsParameters>()
+            .map(|param| param.protocol_version);
+        Self::compute_from_client_hello(client_hello, negotiated_tls_version)
+    }
 
-        let version: TlsVersion = match ext.get::<NegotiatedTlsParameters>() {
-            Some(params) => params.protocol_version,
-            None => {
-                tracing::trace!("NegotiatedTlsParameters missing: fallback to client hello tls.. (backward compat)");
+    /// Compute the [`Ja4`] (hash) from a reference to either a
+    /// [`ClientHello`] or a [`ClientConfig`] data structure.
+    ///
+    /// In case your source is [`Extensions`] you can use [`Self::compute`] instead.
+    ///
+    /// [`ClientHello`]: crate::tls::client::ClientHello
+    /// [`ClientConfig`]: crate::tls::client::ClientConfig
+    pub fn compute_from_client_hello(
+        client_hello: impl ClientHelloProvider,
+        negotiated_tls_version: Option<ProtocolVersion>,
+    ) -> Result<Self, Ja4ComputeError> {
+        let version: TlsVersion = negotiated_tls_version
+            .unwrap_or_else(|| {
+                tracing::trace!("negotiated tls version missing: fallback to client hello tls");
                 client_hello.protocol_version()
-            }
-        }.try_into()?;
+            })
+            .try_into()?;
 
         let mut cipher_suites: Vec<_> = client_hello
             .cipher_suites()
-            .iter()
             .filter(|c| !c.is_grease())
-            .copied()
             .collect();
         if cipher_suites.is_empty() {
             return Err(Ja4ComputeError::EmptyCipherSuites);
@@ -58,8 +74,7 @@ impl Ja4 {
         let mut protocol = TransportProtocol::Tcp;
         let mut has_sni = false;
 
-        let ce_extensions = client_hello.extensions();
-        for ext in ce_extensions {
+        for ext in client_hello.extensions() {
             let id = ext.id();
 
             match id {
@@ -76,9 +91,7 @@ impl Ja4 {
                 }
             }
 
-            extensions
-                .get_or_insert_with(|| Vec::with_capacity(ce_extensions.len()))
-                .push(id);
+            extensions.get_or_insert_with(Vec::default).push(id);
 
             match ext {
                 crate::tls::client::ClientHelloExtension::ApplicationLayerProtocolNegotiation(
@@ -272,7 +285,7 @@ impl TryFrom<ProtocolVersion> for TlsVersion {
             ProtocolVersion::TLSv1_1 => Ok(Self::Tls1_1),
             ProtocolVersion::TLSv1_2 | ProtocolVersion::DTLSv1_2 => Ok(Self::Tls1_2),
             ProtocolVersion::TLSv1_3 | ProtocolVersion::DTLSv1_3 => Ok(Self::Tls1_3),
-            _ => Err(Ja4ComputeError::InvalidTlsVersion),
+            ProtocolVersion::Unknown(_) => Err(Ja4ComputeError::InvalidTlsVersion),
         }
     }
 }

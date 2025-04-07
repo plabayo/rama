@@ -1,3 +1,6 @@
+use rama_error::OpaqueError;
+use serde::{Deserialize, Serialize, de::Error};
+
 /// A stream identifier, as described in [Section 5.1.1] of RFC 7540.
 ///
 /// Streams are identified with an unsigned 31-bit integer. Streams
@@ -90,5 +93,29 @@ impl From<StreamId> for u32 {
 impl PartialEq<u32> for StreamId {
     fn eq(&self, other: &u32) -> bool {
         self.0 == *other
+    }
+}
+
+impl Serialize for StreamId {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        self.0.serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for StreamId {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let n = u32::deserialize(deserializer)?;
+        if n & STREAM_ID_MASK == 0 {
+            return Err(D::Error::custom(OpaqueError::from_display(
+                "invalid stream ID -- MSB is set",
+            )));
+        }
+        Ok(Self(n))
     }
 }
