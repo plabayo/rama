@@ -24,7 +24,9 @@ macro_rules! __impl_either {
 #[doc(inline)]
 pub use crate::__impl_either as impl_either;
 
-macro_rules! define_either {
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __define_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
         /// A type to allow you to use multiple types as a single type.
         ///
@@ -117,9 +119,14 @@ macro_rules! define_either {
     };
 }
 
+#[doc(inline)]
+pub use crate::__define_either as define_either;
+
 impl_either!(define_either);
 
-macro_rules! impl_iterator_either {
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_iterator_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
         impl<$($param),+, Item> Iterator for $id<$($param),+>
         where
@@ -146,9 +153,14 @@ macro_rules! impl_iterator_either {
     };
 }
 
+#[doc(inline)]
+pub use crate::__impl_iterator_either as impl_iterator_either;
+
 impl_either!(impl_iterator_either);
 
-macro_rules! impl_async_read_write_either {
+#[macro_export]
+#[doc(hidden)]
+macro_rules! __impl_async_read_write_either {
     ($id:ident, $($param:ident),+ $(,)?) => {
         impl<$($param),+> AsyncRead for $id<$($param),+>
         where
@@ -221,5 +233,8 @@ macro_rules! impl_async_read_write_either {
         }
     };
 }
+
+#[doc(inline)]
+pub use crate::__impl_async_read_write_either as impl_async_read_write_either;
 
 impl_either!(impl_async_read_write_either);
