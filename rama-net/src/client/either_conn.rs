@@ -70,7 +70,7 @@ macro_rules! impl_service_either_conn {
 
 impl_either_conn!(impl_service_either_conn);
 
-/// `EitherConnConnected` is created when `EitherConn` has been connected and we now have an actuall
+/// `EitherConnConnected` is created when `EitherConn` has been connected and we now have an actual
 /// connection instead of a connector
 macro_rules! impl_either_conn_connected {
     ($macro:ident) => {
