@@ -274,9 +274,9 @@ where
         };
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_acceptor_data = match self.tls_server_config {
+        let tls_acceptor_data = match &self.tls_server_config {
             None => None,
-            Some(cfg) => Some(cfg.try_into()?),
+            Some(cfg) => Some(cfg.clone().try_into()?),
         };
 
         let tcp_service_builder = (
@@ -307,7 +307,7 @@ where
     }
 
     /// build an http service ready to echo http traffic back
-    pub fn build_http(&self) -> impl Service<(), Request, Response = impl IntoResponse, Error = Infallible> {
+    pub fn build_http(&self) -> impl Service<(), Request, Response: IntoResponse, Error = Infallible> + use<H> {
         let http_forwarded_layer = match &self.forward {
             None => None,
             Some(ForwardKind::Forwarded) =>
