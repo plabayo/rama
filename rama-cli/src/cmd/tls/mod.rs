@@ -75,7 +75,7 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
     };
 
     let tls_client_data = TlsConnectorData {
-        client_config,
+        client_config: Arc::new(client_config),
         server_name: None,
         store_server_certificate_chain: true,
     };

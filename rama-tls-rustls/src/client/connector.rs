@@ -412,7 +412,7 @@ impl<S, K> TlsConnector<S, K> {
             connector_data.server_name.unwrap_or(server_host),
         )?;
 
-        let connector = RustlsConnector::from(Arc::new(connector_data.client_config));
+        let connector = RustlsConnector::from(connector_data.client_config);
 
         let stream = connector.connect(server_name, stream).await?;
 

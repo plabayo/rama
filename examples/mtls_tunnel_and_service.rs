@@ -131,7 +131,7 @@ async fn main() {
         server_config.alpn_protocols = client_conf.alpn_protocols.clone();
 
         let tls_client_data = TlsConnectorData {
-            client_config: client_conf,
+            client_config: Arc::new(client_conf),
             server_name: Some(SERVER_AUTHORITY.into_host()),
             store_server_certificate_chain: false,
         };
