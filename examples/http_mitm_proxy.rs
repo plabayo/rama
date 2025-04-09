@@ -60,11 +60,7 @@ use rama::{
     net::{
         http::RequestContext,
         stream::layer::http::BodyLimitLayer,
-        tls::{
-            ApplicationProtocol,
-            client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
-            server::{SelfSignedData, ServerAuth, ServerConfig},
-        },
+        tls::{ApplicationProtocol, server::SelfSignedData},
         user::Basic,
     },
     rt::Executor,
@@ -73,10 +69,24 @@ use rama::{
 };
 
 #[cfg(feature = "boring")]
-use rama::tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer};
+use rama::{
+    net::tls::{
+        client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
+        server::{ServerAuth, ServerConfig},
+    },
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+};
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+use rama::net::tls::KeyLogIntent;
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use rama::tls_rustls::{
+    client::client_root_certs,
+    dep::rustls::{ALL_VERSIONS, ClientConfig, ServerConfig},
+    key_log::KeyLogFile,
+    server::{TlsAcceptorData, TlsAcceptorLayer, self_signed_server_auth},
+    verify::NoServerCertVerifier,
+};
 
 use rama_http::layer::compress_adapter::CompressAdaptLayer;
 use rama_ua::{
@@ -262,7 +272,25 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     {
-        todo!();
+        let mut config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
+            .with_root_certificates(client_root_certs())
+            .with_no_client_auth();
+
+        config
+            .dangerous()
+            .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+
+        config.alpn_protocols = vec![
+            ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
+            ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
+        ];
+
+        if let Some(path) = KeyLogIntent::Environment.file_path() {
+            let key_logger = Arc::new(KeyLogFile::new(path).unwrap());
+            config.key_log = key_logger;
+        };
+
+        client.set_tls_connector_layer(TlsConnectorLayer::Rustls(Some(config.into())));
     }
 
     match client.serve(ctx, req).await {
@@ -280,6 +308,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 // NOTE: for a production service you ideally use
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
+#[cfg(feature = "boring")]
 fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
@@ -294,4 +323,18 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
     tls_server_config
         .try_into()
         .context("create tls server config")
+}
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+    let (cert_chain, key_der) =
+        self_signed_server_auth(SelfSignedData::default()).context("create self signed data")?;
+
+    let builder = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS);
+    let r = builder
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key_der)
+        .unwrap();
+
+    Ok(TlsAcceptorData::from(r))
 }

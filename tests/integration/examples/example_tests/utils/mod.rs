@@ -32,10 +32,23 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use rama::http::layer::decompression::DecompressionLayer;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama::net::tls::{
-    ApplicationProtocol,
-    client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
+use rama::net::tls::ApplicationProtocol;
+
+#[cfg(feature = "boring")]
+use rama::net::tls::client::{ClientConfig, ClientHelloExtension, ServerVerifyMode};
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use rama::{
+    net::tls::KeyLogIntent,
+    tls_rustls::{
+        client::client_root_certs,
+        dep::rustls::{ALL_VERSIONS, ClientConfig},
+        key_log::KeyLogFile,
+        verify::NoServerCertVerifier,
+    },
 };
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use std::sync::Arc;
 
 pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
@@ -119,21 +132,25 @@ where
         // TODO
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         {
-            inner_client.set_tls_config(ClientConfig {
-                server_verify_mode: Some(ServerVerifyMode::Disable),
-                extensions: Some(vec![
-                    ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
-                        ApplicationProtocol::HTTP_2,
-                        ApplicationProtocol::HTTP_11,
-                    ]),
-                ]),
-                ..Default::default()
-            });
+            let mut config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
+                .with_root_certificates(client_root_certs())
+                .with_no_client_auth();
 
-            inner_client.set_proxy_tls_config(ClientConfig {
-                server_verify_mode: Some(ServerVerifyMode::Disable),
-                ..Default::default()
-            });
+            config
+                .dangerous()
+                .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+
+            config.alpn_protocols = vec![
+                ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
+                ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
+            ];
+
+            if let Some(path) = KeyLogIntent::Environment.file_path() {
+                let key_logger = Arc::new(KeyLogFile::new(path).unwrap());
+                config.key_log = key_logger;
+            };
+
+            inner_client.set_tls_connector_layer(TlsConnectorLayer::Rustls(Some(config.into())));
         }
 
         let client = (

@@ -22,6 +22,9 @@ use rama_net::{
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(feature = "boring")]
+use rama_net::tls::client::ClientConfig;
+
+#[cfg(feature = "boring")]
 use rama_tls::boring::client::{
     TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData,
 };
@@ -31,9 +34,6 @@ use rama_tls_rustls::client::{
     TlsConnector as RustlsTlsConnector, TlsConnectorData as RustlsTlsConnectorData,
     TlsConnectorData as RustTlsConnectorData,
 };
-
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_net::tls::client::ClientConfig;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use http_inspector::HttpsAlpnModifier;
@@ -62,11 +62,6 @@ pub struct EasyHttpWebClient<I1 = (), I2 = (), P = ()> {
     tls_connector_layer: Option<TlsConnectorLayer>,
     #[cfg(any(feature = "rustls", feature = "boring"))]
     proxy_tls_connector_layer: Option<TlsConnectorLayer>,
-
-    // #[cfg(any(feature = "rustls", feature = "boring"))]
-    // tls_config: Option<Arc<ClientConfig>>,
-    // #[cfg(any(feature = "rustls", feature = "boring"))]
-    // proxy_tls_config: Option<Arc<ClientConfig>>,
     connection_pool: P,
     proxy_http_connect_version: Option<Version>,
     http_req_inspector_jit: I1,
