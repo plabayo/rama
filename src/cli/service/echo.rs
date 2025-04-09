@@ -273,10 +273,12 @@ where
             _ => None,
         };
 
+let http_service = self.build_http();
+
         #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_acceptor_data = match &self.tls_server_config {
+        let tls_acceptor_data = match self.tls_server_config {
             None => None,
-            Some(cfg) => Some(cfg.clone().try_into()?),
+            Some(cfg) => Some(cfg.try_into()?),
         };
 
         let tcp_service_builder = (
@@ -290,7 +292,6 @@ where
             tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
         );
 
-        let http_service = self.build_http();
 
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A(HttpServer::h2(executor).service(http_service)),
@@ -311,7 +312,7 @@ where
         &self,
     ) -> impl Service<(), Request, Response: IntoResponse, Error = Infallible> + use<H> {
         let http_forwarded_layer = match &self.forward {
-            None => None,
+            None | Some(ForwardKind::HaProxy) => None,
             Some(ForwardKind::Forwarded) => Some(Either7::A(GetForwardedHeadersLayer::forwarded())),
             Some(ForwardKind::XForwardedFor) => {
                 Some(Either7::B(GetForwardedHeadersLayer::x_forwarded_for()))
@@ -331,7 +332,6 @@ where
             Some(ForwardKind::TrueClientIp) => {
                 Some(Either7::G(GetForwardedHeadersLayer::<TrueClientIp>::new()))
             }
-            Some(ForwardKind::HaProxy) => None,
         };
 
         (
