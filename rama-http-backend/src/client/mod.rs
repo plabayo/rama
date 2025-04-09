@@ -17,24 +17,27 @@ use rama_net::{
     Protocol,
     address::Authority,
     client::{
-        ConnectorService, EstablishedClientConnection, LeasedConnection, Pool, PoolStorage,
-        PooledConnector, ReqToConnID,
+        ConnectorService, EitherConn, EitherConn3, EitherConn4, EstablishedClientConnection,
+        LeasedConnection, Pool, PoolStorage, PooledConnector, ReqToConnID,
     },
     http::RequestContext,
+    transport::TryRefIntoTransportContext,
 };
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(feature = "boring")]
-use rama_tls::boring::client::{
-    TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData,
-    TlsConnectorLayer as BoringTlsConnectorLayer,
+use rama_tls::boring::{
+    client::{
+        TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData,
+        TlsConnectorLayer as BoringTlsConnectorLayer,
+    },
+    dep::boring_tokio::connect,
 };
 
-use rama_tls::boring::dep::boring_tokio::connect;
 #[cfg(feature = "rustls")]
 use rama_tls_rustls::client::{
     TlsConnector as RustlsTlsConnector, TlsConnectorData as RustlsTlsConnectorData,
-    TlsConnectorLayer as RustlsTlsConnectorLayer,
+    TlsConnectorData as RustTlsConnectorData, TlsConnectorLayer as RustlsTlsConnectorLayer,
 };
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -55,13 +58,6 @@ use tracing::trace;
 pub mod http_inspector;
 pub mod proxy;
 
-pub enum TlsConnector {
-    #[cfg(feature = "boring")]
-    Boring(BoringTlsConnectorLayer),
-    #[cfg(feature = "rustls")]
-    Rustls(RustlsTlsConnectorLayer),
-}
-
 /// An opiniated http client that can be used to serve HTTP requests.
 ///
 /// You can fork this http client in case you have use cases not possible with this service example.
@@ -71,54 +67,34 @@ pub enum TlsConnector {
 /// with your own service fork and use the full power of Rust at your fingertips ;)
 pub struct EasyHttpWebClient<I1 = (), I2 = (), P = ()> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    tls_connector: TlsConnector,
+    tls_connector_layer: Option<TlsConnectorLayer>,
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    proxy_tls_connector: Option<TlsConnector>,
+    proxy_tls_connector_layer: Option<TlsConnectorLayer>,
 
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    tls_config: Option<Arc<ClientConfig>>,
-    #[cfg(any(feature = "rustls", feature = "boring"))]
-    proxy_tls_config: Option<Arc<ClientConfig>>,
-
+    // #[cfg(any(feature = "rustls", feature = "boring"))]
+    // tls_config: Option<Arc<ClientConfig>>,
+    // #[cfg(any(feature = "rustls", feature = "boring"))]
+    // proxy_tls_config: Option<Arc<ClientConfig>>,
     connection_pool: P,
     proxy_http_connect_version: Option<Version>,
     http_req_inspector_jit: I1,
     http_req_inspector_svc: I2,
 }
 
-struct ConnectorOption<P, T, PT> {
-    pool: P,
-    tls: T,
-    proxy_tls: PT,
-}
-/// Pool (yes/no) Tls (no/rustls/boring) ProxyTls (no/rustls/boring) = 18
-enum Connector<P = ()> {
-    NoPoolNoTlsNoProxyTls(ConnectorOption<(), (), ()>),
-    NoPoolNoTlsProxyRustls(ConnectorOption<(), (), RustlsTlsConnectorLayer>),
-    NoPoolNoTlsProxyBoring(ConnectorOption<(), (), BoringTlsConnectorLayer>),
-    NoPoolRustlsNoProxyTls(ConnectorOption<(), RustlsTlsConnectorLayer, ()>),
-    NoPoolRustlsProxyRustls(ConnectorOption<(), RustlsTlsConnectorLayer, RustlsTlsConnectorLayer>),
-    NoPoolRustlsProxyBoring(ConnectorOption<(), RustlsTlsConnectorLayer, BoringTlsConnectorLayer>),
-    NoPoolBoringNoProxyTls(ConnectorOption<(), BoringTlsConnectorLayer, ()>),
-    NoPoolBoringProxyRustls(ConnectorOption<(), BoringTlsConnectorLayer, RustlsTlsConnectorLayer>),
-    NoPoolBoringProxyBoring(ConnectorOption<(), BoringTlsConnectorLayer, BoringTlsConnectorLayer>),
-    PoolNoTlsNoProxyTls(ConnectorOption<P, (), ()>),
-    PoolNoTlsProxyRustls(ConnectorOption<P, (), RustlsTlsConnectorLayer>),
-    PoolNoTlsProxyBoring(ConnectorOption<P, (), BoringTlsConnectorLayer>),
-    PoolRustlsNoProxyTls(ConnectorOption<P, RustlsTlsConnectorLayer, ()>),
-    PoolRustlsProxyRustls(ConnectorOption<P, RustlsTlsConnectorLayer, RustlsTlsConnectorLayer>),
-    PoolRustlsProxyBoring(ConnectorOption<P, RustlsTlsConnectorLayer, BoringTlsConnectorLayer>),
-    PoolBoringNoProxyTls(ConnectorOption<P, BoringTlsConnectorLayer, ()>),
-    PoolBoringProxyRustls(ConnectorOption<P, BoringTlsConnectorLayer, RustlsTlsConnectorLayer>),
-    PoolBoringProxyBoring(ConnectorOption<P, BoringTlsConnectorLayer, BoringTlsConnectorLayer>),
+#[derive(Debug, Clone)]
+pub enum TlsConnectorLayer {
+    #[cfg(feature = "boring")]
+    Boring(Option<ClientConfig>),
+    #[cfg(feature = "rustls")]
+    Rustls(Option<RustTlsConnectorData>),
 }
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 impl<I1: fmt::Debug, I2: fmt::Debug, P: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EasyHttpWebClient")
-            .field("tls_config", &self.tls_config)
-            .field("proxy_tls_config", &self.proxy_tls_config)
+            // .field("tls_config", &self.tls_connector_layer)
+            // .field("proxy_tls_config", &self.proxy_tls_connector_layer)
             .field("connection_pool", &self.connection_pool)
             .field(
                 "proxy_http_connect_version",
@@ -145,19 +121,19 @@ impl<I1: fmt::Debug, I2: fmt::Debug, P: fmt::Debug> fmt::Debug for EasyHttpWebCl
     }
 }
 
-// #[cfg(any(feature = "rustls", feature = "boring"))]
-// impl<I1: Clone, I2: Clone, P: Clone> Clone for EasyHttpWebClient<I1, I2, P> {
-//     fn clone(&self) -> Self {
-//         Self {
-//             tls_config: self.tls_config.clone(),
-//             proxy_tls_config: self.proxy_tls_config.clone(),
-//             connection_pool: self.connection_pool.clone(),
-//             proxy_http_connect_version: self.proxy_http_connect_version,
-//             http_req_inspector_jit: self.http_req_inspector_jit.clone(),
-//             http_req_inspector_svc: self.http_req_inspector_svc.clone(),
-//         }
-//     }
-// }
+#[cfg(any(feature = "rustls", feature = "boring"))]
+impl<I1: Clone, I2: Clone, P: Clone> Clone for EasyHttpWebClient<I1, I2, P> {
+    fn clone(&self) -> Self {
+        Self {
+            tls_connector_layer: self.tls_connector_layer.clone(),
+            proxy_tls_connector_layer: self.proxy_tls_connector_layer.clone(),
+            connection_pool: self.connection_pool.clone(),
+            proxy_http_connect_version: self.proxy_http_connect_version,
+            http_req_inspector_jit: self.http_req_inspector_jit.clone(),
+            http_req_inspector_svc: self.http_req_inspector_svc.clone(),
+        }
+    }
+}
 
 #[cfg(not(any(feature = "rustls", feature = "boring")))]
 impl<I1: Clone, I2: Clone, P: Clone> Clone for EasyHttpWebClient<I1, I2, P> {
@@ -171,20 +147,24 @@ impl<I1: Clone, I2: Clone, P: Clone> Clone for EasyHttpWebClient<I1, I2, P> {
     }
 }
 
-// impl Default for EasyHttpWebClient {
-//     fn default() -> Self {
-//         Self {
-//             #[cfg(any(feature = "rustls", feature = "boring"))]
-//             tls_config: None,
-//             #[cfg(any(feature = "rustls", feature = "boring"))]
-//             proxy_tls_config: None,
-//             connection_pool: (),
-//             proxy_http_connect_version: Some(Version::HTTP_11),
-//             http_req_inspector_jit: (),
-//             http_req_inspector_svc: (),
-//         }
-//     }
-// }
+impl Default for EasyHttpWebClient {
+    fn default() -> Self {
+        Self {
+            #[cfg(feature = "boring")]
+            tls_connector_layer: Some(TlsConnectorLayer::Boring(None)),
+            #[cfg(all(feature = "rustls", not(feature = "boring")))]
+            tls_connector_layer: Some(TlsConnectorLayer::Rustls(None)),
+            #[cfg(feature = "boring")]
+            proxy_tls_connector_layer: Some(TlsConnectorLayer::Boring(None)),
+            #[cfg(all(feature = "rustls", not(feature = "boring")))]
+            proxy_tls_connector_layer: Some(TlsConnectorLayer::Rustls(None)),
+            connection_pool: (),
+            proxy_http_connect_version: Some(Version::HTTP_11),
+            http_req_inspector_jit: (),
+            http_req_inspector_svc: (),
+        }
+    }
+}
 
 impl EasyHttpWebClient {
     /// Create a new [`EasyHttpWebClient`].
@@ -193,178 +173,178 @@ impl EasyHttpWebClient {
     }
 }
 
-// impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     /// Set the [`TlsConfig`] of this [`EasyHttpWebClient`].
-//     pub fn set_tls_config(&mut self, cfg: impl Into<Arc<TlsConfig>>) -> &mut Self {
-//         self.tls_config = Some(cfg.into());
-//         self
-//     }
+impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Set the [`TlsConnectorLayer`] of this [`EasyHttpWebClient`].
+    pub fn set_tls_connector_layer(&mut self, layer: TlsConnectorLayer) -> &mut Self {
+        self.tls_connector_layer = Some(layer);
+        self
+    }
 
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     /// Replace this [`EasyHttpWebClient`] with the [`TlsConfig`] set.
-//     pub fn with_tls_config(mut self, cfg: impl Into<Arc<TlsConfig>>) -> Self {
-//         self.tls_config = Some(cfg.into());
-//         self
-//     }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Replace this [`EasyHttpWebClient`] with the [`TlsConnectorLayer`] set.
+    pub fn with_tls_connector_layer(mut self, layer: TlsConnectorLayer) -> Self {
+        self.tls_connector_layer = Some(layer);
+        self
+    }
 
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     /// Replace this [`EasyHttpWebClient`] with an option of [`TlsConfig`] set.
-//     pub fn maybe_with_tls_config(mut self, cfg: Option<impl Into<Arc<TlsConfig>>>) -> Self {
-//         self.tls_config = cfg.map(Into::into);
-//         self
-//     }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Replace this [`EasyHttpWebClient`] with an option of [`TlsConfig`] set.
+    pub fn maybe_with_tls_connector_layer(mut self, layer: Option<TlsConnectorLayer>) -> Self {
+        self.tls_connector_layer = layer;
+        self
+    }
 
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     /// Set the [`TlsConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
-//     pub fn set_proxy_tls_config(&mut self, cfg: impl Into<Arc<TlsConfig>>) -> &mut Self {
-//         self.proxy_tls_config = Some(cfg.into());
-//         self
-//     }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Set the [`TlsConfig`] for the https proxy tunnel if needed within this [`EasyHttpWebClient`].
+    pub fn set_proxy_tls_connector_layer(&mut self, layer: TlsConnectorLayer) -> &mut Self {
+        self.proxy_tls_connector_layer = Some(layer);
+        self
+    }
 
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
-//     pub fn with_proxy_tls_config(mut self, cfg: impl Into<Arc<TlsConfig>>) -> Self {
-//         self.proxy_tls_config = Some(cfg.into());
-//         self
-//     }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
+    pub fn with_proxy_tls_connector_layer(mut self, layer: TlsConnectorLayer) -> Self {
+        self.proxy_tls_connector_layer = Some(layer);
+        self
+    }
 
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
-//     pub fn maybe_proxy_with_tls_config(
-//         mut self,
-//         cfg: Option<impl Into<Arc<TlsConfig>>>,
-//     ) -> Self {
-//         self.proxy_tls_config = cfg.map(Into::into);
-//         self
-//     }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    /// Replace this [`EasyHttpWebClient`] set for the https proxy tunnel if needed within this [`TlsConfig`].
+    pub fn maybe_proxy_with_tls_connector_layer(
+        mut self,
+        layer: Option<TlsConnectorLayer>,
+    ) -> Self {
+        self.proxy_tls_connector_layer = layer;
+        self
+    }
 
-//     /// Set the HTTP version to use for the Http Proxy CONNECT request.
-//     ///
-//     /// By default this is set to HTTP/1.1.
-//     pub fn with_proxy_http_connect_version(mut self, version: Version) -> Self {
-//         self.proxy_http_connect_version = Some(version);
-//         self
-//     }
+    /// Set the HTTP version to use for the Http Proxy CONNECT request.
+    ///
+    /// By default this is set to HTTP/1.1.
+    pub fn with_proxy_http_connect_version(mut self, version: Version) -> Self {
+        self.proxy_http_connect_version = Some(version);
+        self
+    }
 
-//     /// Set the HTTP version to use for the Http Proxy CONNECT request.
-//     pub fn set_proxy_http_connect_version(&mut self, version: Version) -> &mut Self {
-//         self.proxy_http_connect_version = Some(version);
-//         self
-//     }
+    /// Set the HTTP version to use for the Http Proxy CONNECT request.
+    pub fn set_proxy_http_connect_version(&mut self, version: Version) -> &mut Self {
+        self.proxy_http_connect_version = Some(version);
+        self
+    }
 
-//     /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-//     pub fn with_proxy_http_connect_auto_version(mut self) -> Self {
-//         self.proxy_http_connect_version = None;
-//         self
-//     }
+    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
+    pub fn with_proxy_http_connect_auto_version(mut self) -> Self {
+        self.proxy_http_connect_version = None;
+        self
+    }
 
-//     /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
-//     pub fn set_proxy_http_connect_auto_version(&mut self) -> &mut Self {
-//         self.proxy_http_connect_version = None;
-//         self
-//     }
+    /// Set the HTTP version to auto detect for the Http Proxy CONNECT request.
+    pub fn set_proxy_http_connect_auto_version(&mut self) -> &mut Self {
+        self.proxy_http_connect_version = None;
+        self
+    }
 
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     pub fn with_http_conn_req_inspector<T>(
-//         self,
-//         http_req_inspector: T,
-//     ) -> EasyHttpWebClient<T, I2, P> {
-//         EasyHttpWebClient {
-//             tls_config: self.tls_config,
-//             proxy_tls_config: self.proxy_tls_config,
-//             proxy_http_connect_version: self.proxy_http_connect_version,
-//             http_req_inspector_jit: http_req_inspector,
-//             http_req_inspector_svc: self.http_req_inspector_svc,
-//             connection_pool: self.connection_pool,
-//         }
-//     }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    pub fn with_http_conn_req_inspector<T>(
+        self,
+        http_req_inspector: T,
+    ) -> EasyHttpWebClient<T, I2, P> {
+        EasyHttpWebClient {
+            tls_connector_layer: self.tls_connector_layer,
+            proxy_tls_connector_layer: self.proxy_tls_connector_layer,
+            proxy_http_connect_version: self.proxy_http_connect_version,
+            http_req_inspector_jit: http_req_inspector,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: self.connection_pool,
+        }
+    }
 
-//     #[cfg(not(any(feature = "rustls", feature = "boring")))]
-//     pub fn with_http_conn_req_inspector<T>(
-//         self,
-//         http_req_inspector: T,
-//     ) -> EasyHttpWebClient<T, I2, P> {
-//         EasyHttpWebClient {
-//             proxy_http_connect_version: self.proxy_http_connect_version,
-//             http_req_inspector_jit: http_req_inspector,
-//             http_req_inspector_svc: self.http_req_inspector_svc,
-//             connection_pool: self.connection_pool,
-//         }
-//     }
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    pub fn with_http_conn_req_inspector<T>(
+        self,
+        http_req_inspector: T,
+    ) -> EasyHttpWebClient<T, I2, P> {
+        EasyHttpWebClient {
+            proxy_http_connect_version: self.proxy_http_connect_version,
+            http_req_inspector_jit: http_req_inspector,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: self.connection_pool,
+        }
+    }
 
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     pub fn with_http_serve_req_inspector<T>(
-//         self,
-//         http_req_inspector: T,
-//     ) -> EasyHttpWebClient<I1, T, P> {
-//         EasyHttpWebClient {
-//             tls_config: self.tls_config,
-//             proxy_tls_config: self.proxy_tls_config,
-//             proxy_http_connect_version: self.proxy_http_connect_version,
-//             http_req_inspector_jit: self.http_req_inspector_jit,
-//             http_req_inspector_svc: http_req_inspector,
-//             connection_pool: self.connection_pool,
-//         }
-//     }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    pub fn with_http_serve_req_inspector<T>(
+        self,
+        http_req_inspector: T,
+    ) -> EasyHttpWebClient<I1, T, P> {
+        EasyHttpWebClient {
+            tls_connector_layer: self.tls_connector_layer,
+            proxy_tls_connector_layer: self.proxy_tls_connector_layer,
+            proxy_http_connect_version: self.proxy_http_connect_version,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: http_req_inspector,
+            connection_pool: self.connection_pool,
+        }
+    }
 
-//     #[cfg(not(any(feature = "rustls", feature = "boring")))]
-//     pub fn with_http_serve_req_inspector<T>(
-//         self,
-//         http_req_inspector: T,
-//     ) -> EasyHttpWebClient<I1, T, P> {
-//         EasyHttpWebClient {
-//             proxy_http_connect_version: self.proxy_http_connect_version,
-//             http_req_inspector_jit: self.http_req_inspector_jit,
-//             http_req_inspector_svc: http_req_inspector,
-//             connection_pool: self.connection_pool,
-//         }
-//     }
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    pub fn with_http_serve_req_inspector<T>(
+        self,
+        http_req_inspector: T,
+    ) -> EasyHttpWebClient<I1, T, P> {
+        EasyHttpWebClient {
+            proxy_http_connect_version: self.proxy_http_connect_version,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: http_req_inspector,
+            connection_pool: self.connection_pool,
+        }
+    }
 
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     pub fn with_connection_pool<S>(self, pool: Pool<S>) -> EasyHttpWebClient<I1, I2, Pool<S>> {
-//         EasyHttpWebClient {
-//             tls_config: self.tls_config,
-//             proxy_tls_config: self.proxy_tls_config,
-//             proxy_http_connect_version: self.proxy_http_connect_version,
-//             http_req_inspector_jit: self.http_req_inspector_jit,
-//             http_req_inspector_svc: self.http_req_inspector_svc,
-//             connection_pool: pool,
-//         }
-//     }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> EasyHttpWebClient<I1, I2, Pool<S>> {
+        EasyHttpWebClient {
+            tls_connector_layer: self.tls_connector_layer,
+            proxy_tls_connector_layer: self.proxy_tls_connector_layer,
+            proxy_http_connect_version: self.proxy_http_connect_version,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: pool,
+        }
+    }
 
-//     #[cfg(any(feature = "rustls", feature = "boring"))]
-//     pub fn without_connection_pool(self) -> EasyHttpWebClient<I1, I2, ()> {
-//         EasyHttpWebClient {
-//             tls_config: self.tls_config,
-//             proxy_tls_config: self.proxy_tls_config,
-//             proxy_http_connect_version: self.proxy_http_connect_version,
-//             http_req_inspector_jit: self.http_req_inspector_jit,
-//             http_req_inspector_svc: self.http_req_inspector_svc,
-//             connection_pool: (),
-//         }
-//     }
+    #[cfg(any(feature = "rustls", feature = "boring"))]
+    pub fn without_connection_pool(self) -> EasyHttpWebClient<I1, I2, ()> {
+        EasyHttpWebClient {
+            tls_connector_layer: self.tls_connector_layer,
+            proxy_tls_connector_layer: self.proxy_tls_connector_layer,
+            proxy_http_connect_version: self.proxy_http_connect_version,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: (),
+        }
+    }
 
-//     #[cfg(not(any(feature = "rustls", feature = "boring")))]
-//     pub fn with_connection_pool<S>(self, pool: Pool<S>) -> EasyHttpWebClient<I1, I2, Pool<S>> {
-//         EasyHttpWebClient {
-//             proxy_http_connect_version: self.proxy_http_connect_version,
-//             http_req_inspector_jit: self.http_req_inspector_jit,
-//             http_req_inspector_svc: self.http_req_inspector_svc,
-//             connection_pool: pool,
-//         }
-//     }
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    pub fn with_connection_pool<S>(self, pool: Pool<S>) -> EasyHttpWebClient<I1, I2, Pool<S>> {
+        EasyHttpWebClient {
+            proxy_http_connect_version: self.proxy_http_connect_version,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: pool,
+        }
+    }
 
-//     #[cfg(not(any(feature = "rustls", feature = "boring")))]
-//     pub fn without_connection_pool(self) -> EasyHttpWebClient<I1, I2, ()> {
-//         EasyHttpWebClient {
-//             proxy_http_connect_version: self.proxy_http_connect_version,
-//             http_req_inspector_jit: self.http_req_inspector_jit,
-//             http_req_inspector_svc: self.http_req_inspector_svc,
-//             connection_pool: (),
-//         }
-//     }
-// }
+    #[cfg(not(any(feature = "rustls", feature = "boring")))]
+    pub fn without_connection_pool(self) -> EasyHttpWebClient<I1, I2, ()> {
+        EasyHttpWebClient {
+            proxy_http_connect_version: self.proxy_http_connect_version,
+            http_req_inspector_jit: self.http_req_inspector_jit,
+            http_req_inspector_svc: self.http_req_inspector_svc,
+            connection_pool: (),
+        }
+    }
+}
 
 /// Map http request to unique connection id so we can use a connection pool
 #[derive(Debug)]
@@ -493,77 +473,79 @@ where
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
         let connector = {
-            // let proxy_tls_connector = self.proxy_tls_connector.map(|connector| match connector {
-            //     #[cfg(feature = "boring")]
-            //     TlsConnector::Boring(client_config) => Either::A(BoringTlsConnector::tunnel(tcp_connector, None).with_connector_data(client_config.as_ref().clone().try_into().unwrap())),
-            //     #[cfg(feature = "rustls")]
-            //     TlsConnector::Rustls(tls_connector_data) => Either::B(RustlsTlsConnector::tunnel(tcp_connector, None).with_connector_data(tls_connector_data.as_ref().clone())),
-            // });
+            // 1 TCP
+            let connector = tcp_connector;
 
-            // let inner = match proxy_tls_connector {
-            //     Some(tls_connector) => Either::A(tls_connector),
-            //     None => Either::B(tcp_connector),
-            // };
+            // 2 Maybe proxy tls
 
-            // // let proxy_tls_connector_data = self.create_proxy_connector_data(&ctx)?;
-            // let mut transport_connector = HttpProxyConnector::optional( inner);
-            // match self.proxy_http_connect_version {
-            //     Some(version) => transport_connector.set_version(version),
-            //     None => transport_connector.set_auto_version(),
-            // };
+            // This syntax might look weird compared to using match statement but allows us to reuse all code for a mix of features.
+            // This is a design limit of how Either works, Eg Either3 will not work if one feature is disabled as it won't be able to infer all types.
+            // Solution to this is splitting everything up, and doing it this way, only requires us to do it once.
 
-            let transport_connector = tcp_connector;
+            #[cfg(feature = "boring")]
+            let connector = if let Some(TlsConnectorLayer::Boring(config)) =
+                &self.proxy_tls_connector_layer
+            {
+                let data = match config {
+                    Some(config) => config.clone().try_into()?,
+                    None => BoringTlsConnectorData::new_http_auto()?,
+                };
 
-            // let tls_connector_data = self.create_connector_data(&ctx)?;
-
-            // let tls_connector = self.tls_connector.as_ref().map(|connector| match connector {
-            //     // #[cfg(feature = "boring")]
-            //     // TlsConnector::Boring(client_config) => Either::A(BoringTlsConnector::auto(transport_connector).with_connector_data(client_config.as_ref().clone().try_into().unwrap())),
-            //     // TlsConnector::Rustls(tls_connector_data) => Either::B(RustlsTlsConnector::auto(transport_connector).with_connector_data(tls_connector_data.as_ref().clone())),
-            //     // #[cfg(feature = "rustls")]
-            //     // TlsConnector::Rustls(tls_connector_data) => Either::B(RustlsTlsConnector::auto(transport_connector).with_connector_data(tls_connector_data.as_ref().clone())),
-            // });
-
-            // let inner = match tls_connector {
-            //     Some(tls_connector) => tls_connector,
-            //     None => todo!()
-            //     // None => Either::B(transport_connector),
-            // };
-
-            // HttpConnector::new(inner)
-            // .with_jit_req_inspector((
-            //     HttpsAlpnModifier::default(),
-            //     self.http_req_inspector_jit.clone(),
-            // ))
-
-            // match self.tls_connector.as_ref() {
-            //     Some(connector) => match connector {
-            //         TlsConnector::Boring(client_config) => {
-            //             Either::A(HttpConnector::new(BoringTlsConnector::auto(transport_connector).with_connector_data(client_config.as_ref().clone().try_into().unwrap()))
-            //             .with_jit_req_inspector((
-            //                 HttpsAlpnModifier::default(),
-            //                 self.http_req_inspector_jit.clone(),
-            //             )).with_svc_req_inspector(self.http_req_inspector_svc.clone()))
-            //         },
-            //         TlsConnector::Rustls(tls_connector_data) => {
-            //             Either::B(HttpConnector::new(RustlsTlsConnector::auto(transport_connector).with_connector_data(tls_connector_data.as_ref().clone()))
-            //             .with_jit_req_inspector((
-            //                 HttpsAlpnModifier::default(),
-            //                 self.http_req_inspector_jit.clone(),
-            //             )).with_svc_req_inspector(self.http_req_inspector_svc.clone()))
-            //         },
-            //     },
-            //     None => todo!(),
-            // }
-
-            let connector = match self.tls_connector {
-                TlsConnector::Boring(tls_connector_layer) => {
-                    HttpConnector::new((tls_connector_layer.clone(),).layer(transport_connector))
-                }
-                TlsConnector::Rustls(tls_connector_layer) => {
-                    HttpConnector::new((tls_connector_layer.clone(),).layer(transport_connector))
-                }
+                EitherConn::A(BoringTlsConnector::tunnel(connector, None).with_connector_data(data))
+            } else {
+                EitherConn::B(connector)
             };
+
+            #[cfg(feature = "rustls")]
+            let connector =
+                if let Some(TlsConnectorLayer::Rustls(_config)) = &self.proxy_tls_connector_layer {
+                    EitherConn::A(
+                        RustlsTlsConnector::tunnel(connector, None)
+                            .with_connector_data(RustlsTlsConnectorData::new_http_auto()?),
+                    )
+                } else {
+                    EitherConn::B(connector)
+                };
+
+            // 3 Http proxy tunnel if needed
+            let mut connector = HttpProxyConnector::optional(connector);
+            match self.proxy_http_connect_version {
+                Some(version) => connector.set_version(version),
+                None => connector.set_auto_version(),
+            };
+
+            // 4 Tls for normal flow
+            #[cfg(feature = "boring")]
+            let connector =
+                if let Some(TlsConnectorLayer::Boring(config)) = &self.tls_connector_layer {
+                    let data = match config {
+                        Some(config) => config.clone().try_into()?,
+                        None => BoringTlsConnectorData::new_http_auto()?,
+                    };
+
+                    EitherConn::A(BoringTlsConnector::auto(connector).with_connector_data(data))
+                } else {
+                    EitherConn::B(connector)
+                };
+
+            #[cfg(feature = "rustls")]
+            let connector =
+                if let Some(TlsConnectorLayer::Rustls(_config)) = &self.tls_connector_layer {
+                    EitherConn::A(
+                        RustlsTlsConnector::auto(connector)
+                            .with_connector_data(RustlsTlsConnectorData::new_http_auto()?),
+                    )
+                } else {
+                    EitherConn::B(connector)
+                };
+
+            // 4 Http normal flow
+            let connector = HttpConnector::new(connector);
+
+            connector.with_jit_req_inspector((
+                HttpsAlpnModifier::default(),
+                self.http_req_inspector_jit.clone(),
+            ))
         };
 
         #[cfg(not(any(feature = "rustls", feature = "boring")))]
@@ -614,14 +596,14 @@ where
 //                 trace!(
 //                     "create tls connector using rama tls client config(s) from context and/or the predefined one if defined"
 //                 );
-//                 if let Some(tls_config) = self.tls_config.clone() {
+//                 if let Some(tls_config) = self.tls_connector_layer.clone() {
 //                     chain_ref.prepend(tls_config);
 //                 }
 //                 TlsConnectorData::try_from_multiple_client_configs(chain_ref.iter()).context(
 //                     "EasyHttpWebClient: create tls connector data from tls client config(s) from context and/or the predefined one if defined",
 //                 )
 //             }
-//             None => match self.tls_config.as_deref() {
+//             None => match self.tls_connector_layer.as_deref() {
 //                 Some(tls_config) => {
 //                     trace!("create tls connector using pre-defined rama tls client config");
 //                     tls_config.clone().try_into().context(
@@ -649,7 +631,7 @@ where
 //             ));
 //         }
 
-//         match self.tls_config.as_deref() {
+//         match self.tls_connector_layer.as_deref() {
 //             Some(tls_config) => {
 //                 trace!("create tls connector using pre-defined rama tls client config");
 //                 Ok(tls_config.clone())
@@ -667,7 +649,7 @@ where
 //         &self,
 //         ctx: &Context<State>,
 //     ) -> Result<TlsConnectorData, OpaqueError> {
-//         let data = match (ctx.get::<ProxyClientConfig>(), &self.proxy_tls_config) {
+//         let data = match (ctx.get::<ProxyClientConfig>(), &self.proxy_tls_connector_layer) {
 //             (Some(proxy_tls_config), _) => {
 //                 trace!("create proxy tls connector using rama tls client config from context");
 //                 proxy_tls_config
@@ -703,7 +685,7 @@ where
 //         ctx: &Context<State>,
 //     ) -> Result<TlsConnectorData, OpaqueError> {
 //         // TODO get from ctx
-//         match self.tls_config.as_deref() {
+//         match self.tls_connector_layer.as_deref() {
 //             Some(tls_config) => {
 //                 trace!("create tls connector using pre-defined rama tls client config");
 //                 Ok(tls_config.clone())

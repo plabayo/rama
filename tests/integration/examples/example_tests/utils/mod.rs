@@ -19,6 +19,7 @@ use rama::{
     service::BoxService,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
+use rama_http_backend::client::TlsConnectorLayer;
 use std::{
     process::{Child, ExitStatus},
     sync::Once,
@@ -94,7 +95,29 @@ where
 
         let mut inner_client = EasyHttpWebClient::default();
 
-        #[cfg(any(feature = "rustls", feature = "boring"))]
+        #[cfg(feature = "boring")]
+        {
+            inner_client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(ClientConfig {
+                server_verify_mode: Some(ServerVerifyMode::Disable),
+                extensions: Some(vec![
+                    ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
+                        ApplicationProtocol::HTTP_2,
+                        ApplicationProtocol::HTTP_11,
+                    ]),
+                ]),
+                ..Default::default()
+            })));
+
+            inner_client.set_proxy_tls_connector_layer(TlsConnectorLayer::Boring(Some(
+                ClientConfig {
+                    server_verify_mode: Some(ServerVerifyMode::Disable),
+                    ..Default::default()
+                },
+            )));
+        }
+
+        // TODO
+        #[cfg(all(feature = "rustls", not(feature = "boring")))]
         {
             inner_client.set_tls_config(ClientConfig {
                 server_verify_mode: Some(ServerVerifyMode::Disable),

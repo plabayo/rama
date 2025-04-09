@@ -23,6 +23,7 @@ pub struct TlsConnectorData {
     // pub client_config_input: Arc<ClientConfigInput>,
     pub client_config: rustls::ClientConfig,
     pub server_name: Option<Host>,
+    pub store_server_certificate_chain: bool,
 }
 
 // #[derive(Debug, Default)]
@@ -64,6 +65,7 @@ impl TlsConnectorData {
         Ok(TlsConnectorData {
             client_config: config,
             server_name: None,
+            store_server_certificate_chain: false,
         })
         // Ok(TlsConnectorData {
         //     client_config_input: Arc::new(ClientConfigInput {

@@ -1,5 +1,7 @@
 #![allow(clippy::print_stdout)]
 
+use std::sync::Arc;
+
 use clap::Args;
 use rama::{
     Context, Layer, Service,
@@ -7,15 +9,15 @@ use rama::{
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
-        tls::{
-            DataEncoding,
-            client::{ClientConfig, NegotiatedTlsParameters, ServerVerifyMode},
-        },
+        tls::{DataEncoding, KeyLogIntent, client::NegotiatedTlsParameters},
     },
     tcp::client::{Request, service::TcpConnector},
-    tls::{
-        rustls::client::{TlsConnectorData, TlsConnectorLayer},
-        std::dep::boring::x509::X509,
+    tls::boring::dep::boring::x509::X509,
+    tls_rustls::{
+        client::{TlsConnectorData, TlsConnectorLayer, client_root_certs},
+        dep::rustls::{ALL_VERSIONS, ClientConfig},
+        key_log::KeyLogFile,
+        verify::NoServerCertVerifier,
     },
 };
 use tokio::net::TcpStream;
@@ -58,12 +60,25 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
 
     tracing::info!("Connecting to: {}", authority);
 
-    let tls_client_data = TlsConnectorData::try_from(ClientConfig {
+    let mut client_config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
+        .with_root_certificates(client_root_certs())
+        .with_no_client_auth();
+
+    if cfg.insecure {
+        client_config
+            .dangerous()
+            .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+    }
+
+    if let Some(path) = KeyLogIntent::Environment.file_path() {
+        client_config.key_log = Arc::new(KeyLogFile::new(path).unwrap());
+    };
+
+    let tls_client_data = TlsConnectorData {
+        client_config,
+        server_name: None,
         store_server_certificate_chain: true,
-        server_verify_mode: cfg.insecure.then_some(ServerVerifyMode::Disable),
-        ..Default::default()
-    })
-    .expect("create tls connector data for client");
+    };
 
     let tcp_connector = TcpConnector::new();
     let loggin_service = LoggingLayer.layer(tcp_connector);

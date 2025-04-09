@@ -43,7 +43,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, TlsConnectorLayer},
         layer::{
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
@@ -245,16 +245,26 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             ),
         ));
 
-    client.set_tls_config(ClientConfig {
-        server_verify_mode: Some(ServerVerifyMode::Disable),
-        extensions: Some(vec![
-            ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
-                ApplicationProtocol::HTTP_2,
-                ApplicationProtocol::HTTP_11,
+    #[cfg(feature = "boring")]
+    {
+        let config = ClientConfig {
+            server_verify_mode: Some(ServerVerifyMode::Disable),
+            extensions: Some(vec![
+                ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
+                    ApplicationProtocol::HTTP_2,
+                    ApplicationProtocol::HTTP_11,
+                ]),
             ]),
-        ]),
-        ..Default::default()
-    });
+            ..Default::default()
+        };
+        client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(config)));
+    }
+
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    {
+        todo!();
+    }
+
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
         Err(err) => {
