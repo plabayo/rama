@@ -9,7 +9,7 @@ use rama::{
     http::{
         Request, Response,
         client::{
-            EasyHttpWebClient,
+            EasyHttpWebClient, TlsConnectorLayer,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         layer::{
@@ -367,44 +367,23 @@ where
         ])
     };
 
-    #[cfg(feature = "boring")]
-    {
-        let config = ClientConfig {
-            server_verify_mode,
-            extensions,
-            ..Default::default()
-        };
-        inner_client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(config)));
+    let config = ClientConfig {
+        server_verify_mode,
+        extensions,
+        ..Default::default()
+    };
+    inner_client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(config)));
 
-        // TODO: need to insert TLS separate from http:
-        // - first tls is needed
-        // - but http only is to be selected after handshake is done...
+    // TODO: need to insert TLS separate from http:
+    // - first tls is needed
+    // - but http only is to be selected after handshake is done...
 
-        let config = ClientConfig {
-            server_verify_mode,
-            ..Default::default()
-        };
+    let config = ClientConfig {
+        server_verify_mode,
+        ..Default::default()
+    };
 
-        inner_client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(config)));
-    }
-
-    {
-        todo!();
-        // inner_client.set_tls_config(ClientConfig {
-        //     server_verify_mode,
-        //     extensions,
-        //     ..Default::default()
-        // });
-
-        // // TODO: need to insert TLS separate from http:
-        // // - first tls is needed
-        // // - but http only is to be selected after handshake is done...
-
-        // inner_client.set_proxy_tls_config(ClientConfig {
-        //     server_verify_mode,
-        //     ..Default::default()
-        // });
-    }
+    inner_client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(config)));
 
     let client_builder = (
         MapResultLayer::new(map_internal_client_error),

@@ -1,13 +1,9 @@
-use crate::dep::pemfile;
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::dep::rcgen::{self, KeyPair};
-use crate::dep::rustls::{self, RootCertStore, server::WebPkiClientVerifier};
-use crate::key_log::KeyLogFile;
+use crate::dep::rustls::{self};
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::{Domain, Host};
-use rama_net::tls::DataEncoding;
-use rama_net::tls::server::{ClientVerifyMode, SelfSignedData, ServerAuth};
-use std::io::BufReader;
+use rama_net::tls::server::SelfSignedData;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

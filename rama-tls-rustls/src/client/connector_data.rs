@@ -1,18 +1,12 @@
-use crate::dep::pemfile;
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::dep::rcgen::{self, KeyPair};
 use crate::dep::rustls::RootCertStore;
-use crate::dep::rustls::client::danger::ServerCertVerifier;
-use crate::dep::rustls::{ALL_VERSIONS, ClientConfig, SupportedProtocolVersion};
+use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
 use crate::key_log::KeyLogFile;
-use crate::verify::NoServerCertVerifier;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::Host;
-use rama_net::tls::client::{ClientAuth, ClientHelloExtension, ServerVerifyMode};
-use rama_net::tls::{ApplicationProtocol, DataEncoding, KeyLogIntent};
-use std::io::BufReader;
+use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
 use std::sync::{Arc, OnceLock};
-use tracing::trace;
 
 #[derive(Debug, Clone)]
 /// Internal data used as configuration/input for the [`super::HttpsConnector`].

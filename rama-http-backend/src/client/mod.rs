@@ -2,13 +2,10 @@
 //! which provides the [`EasyHttpWebClient`] type to serve HTTP requests.
 
 use std::fmt;
-#[cfg(any(feature = "rustls", feature = "boring"))]
-use std::sync::Arc;
 
 use proxy::layer::HttpProxyConnector;
 use rama_core::{
-    Context, Layer, Service,
-    combinators::Either,
+    Context, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},
     inspect::RequestInspector,
 };
@@ -17,31 +14,26 @@ use rama_net::{
     Protocol,
     address::Authority,
     client::{
-        ConnectorService, EitherConn, EitherConn3, EitherConn4, EstablishedClientConnection,
-        LeasedConnection, Pool, PoolStorage, PooledConnector, ReqToConnID,
+        ConnectorService, EitherConn, EstablishedClientConnection, LeasedConnection, Pool,
+        PoolStorage, PooledConnector, ReqToConnID,
     },
     http::RequestContext,
-    transport::TryRefIntoTransportContext,
 };
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(feature = "boring")]
-use rama_tls::boring::{
-    client::{
-        TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData,
-        TlsConnectorLayer as BoringTlsConnectorLayer,
-    },
-    dep::boring_tokio::connect,
+use rama_tls::boring::client::{
+    TlsConnector as BoringTlsConnector, TlsConnectorData as BoringTlsConnectorData,
 };
 
 #[cfg(feature = "rustls")]
 use rama_tls_rustls::client::{
     TlsConnector as RustlsTlsConnector, TlsConnectorData as RustlsTlsConnectorData,
-    TlsConnectorData as RustTlsConnectorData, TlsConnectorLayer as RustlsTlsConnectorLayer,
+    TlsConnectorData as RustTlsConnectorData,
 };
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
+use rama_net::tls::client::ClientConfig;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use http_inspector::HttpsAlpnModifier;

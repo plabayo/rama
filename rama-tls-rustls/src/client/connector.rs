@@ -13,7 +13,6 @@ use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
-use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].

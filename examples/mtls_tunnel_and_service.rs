@@ -28,7 +28,6 @@
 // rama provides everything out of the box to build mtls web services and proxies
 use rama::{
     Layer,
-    error::ErrorContext,
     graceful::Shutdown,
     http::{
         layer::trace::TraceLayer,
@@ -39,11 +38,7 @@ use rama::{
     layer::TraceErrLayer,
     net::{
         address::{Authority, Host},
-        tls::{
-            ApplicationProtocol, DataEncoding,
-            client::{ClientAuth, ClientHelloExtension, ServerVerifyMode},
-            server::{ClientVerifyMode, SelfSignedData, ServerAuth},
-        },
+        tls::ApplicationProtocol,
     },
     rt::Executor,
     tcp::{
@@ -61,7 +56,6 @@ use rama_tls_rustls::{
     client::{client_root_certs, self_signed_client_auth},
     dep::rustls::{ALL_VERSIONS, ClientConfig, server::WebPkiClientVerifier},
     key_log::KeyLogFile,
-    server::self_signed_server_auth,
     verify::NoServerCertVerifier,
 };
 
