@@ -49,7 +49,10 @@ use rama::{
 
 #[cfg(feature = "boring")]
 use rama::{
-    net::tls::{ApplicationProtocol, ServerAuth, ServerConfig},
+    net::tls::{
+        ApplicationProtocol,
+        server::{ServerAuth, ServerConfig},
+    },
     tls::boring::server::TlsAcceptorLayer,
 };
 
