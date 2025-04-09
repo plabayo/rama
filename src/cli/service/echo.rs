@@ -273,7 +273,7 @@ where
             _ => None,
         };
 
-let http_service = self.build_http();
+        let http_service = self.build_http();
 
         #[cfg(any(feature = "rustls", feature = "boring"))]
         let tls_acceptor_data = match self.tls_server_config {
@@ -291,7 +291,6 @@ let http_service = self.build_http();
             #[cfg(any(feature = "rustls", feature = "boring"))]
             tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
         );
-
 
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A(HttpServer::h2(executor).service(http_service)),
