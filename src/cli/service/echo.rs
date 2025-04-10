@@ -315,15 +315,13 @@ where
             Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
         };
 
-        let tls_cfg: Option<TlsAcceptorData> = {
-            #[cfg(all(feature = "rustls", not(feature = "boring")))]
-            return self.tls_server_config;
+        #[cfg(all(feature = "rustls", not(feature = "boring")))]
+        let tls_cfg = self.tls_server_config;
 
-            #[cfg(feature = "boring")]
-            match self.tls_server_config {
-                Some(cfg) => Some(cfg.try_into()?),
-                None => None,
-            }
+        #[cfg(feature = "boring")]
+        let tls_cfg: Option<TlsAcceptorData> = match self.tls_server_config {
+            Some(cfg) => Some(cfg.try_into()?),
+            None => None,
         };
 
         let tcp_service_builder = (
