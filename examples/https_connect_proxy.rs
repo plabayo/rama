@@ -99,8 +99,11 @@ async fn main() {
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     let tls_service_data = {
-        let (cert_chain, key_der) =
-            self_signed_server_auth(SelfSignedData::default()).expect("create self signed data");
+        let (cert_chain, key_der) = self_signed_server_auth(SelfSignedData {
+            organisation_name: Some("Example Server Acceptor".to_owned()),
+            ..Default::default()
+        })
+        .expect("create self signed data");
 
         let builder = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS);
         let r = builder

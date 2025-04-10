@@ -3,14 +3,14 @@ use rama::{
     Context, Layer,
     http::{BodyExtractExt, Request, response::Json, server::HttpServer},
     net::address::ProxyAddress,
-    net::tls::{
-        ApplicationProtocol,
-        server::{SelfSignedData, ServerAuth, ServerConfig},
-    },
+    net::tls::{ApplicationProtocol, server::SelfSignedData},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::boring::server::TlsAcceptorLayer,
+};
+use rama_tls_rustls::{
+    dep::rustls::{ALL_VERSIONS, ServerConfig},
+    server::{TlsAcceptorLayer, self_signed_server_auth},
 };
 use serde_json::{Value, json};
 
@@ -34,23 +34,26 @@ async fn test_http_mitm_proxy() {
             .unwrap();
     });
 
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-            organisation_name: Some("Example Server Acceptor".to_owned()),
-            ..Default::default()
-        }))
-    };
-    let tls_service_data = tls_server_config
-        .try_into()
-        .expect("create tls server config");
+    let (cert_chain, key_der) = self_signed_server_auth(SelfSignedData {
+        organisation_name: Some("Example Server Acceptor".to_owned()),
+        ..Default::default()
+    })
+    .expect("create self signed data");
+
+    let builder = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS);
+    let mut config = builder
+        .with_no_client_auth()
+        .with_single_cert(cert_chain, key_der)
+        .unwrap();
+
+    config.alpn_protocols = vec![
+        ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
+        ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
+    ];
 
     let executor = Executor::default();
 
-    let tcp_service = TlsAcceptorLayer::new(tls_service_data).into_layer(
+    let tcp_service = TlsAcceptorLayer::new(config.into()).into_layer(
         HttpServer::auto(executor).service(service_fn(async |req: Request| {
             Ok(Json(json!({
                 "method": req.method().as_str(),

@@ -16,7 +16,7 @@ mod http_k8s_health;
 mod http_key_value_store;
 #[cfg(feature = "http-full")]
 mod http_listener_hello;
-#[cfg(all(feature = "http-full", feature = "boring"))]
+#[cfg(all(feature = "http-full", feature = "rustls"))]
 mod http_mitm_proxy;
 #[cfg(feature = "http-full")]
 mod http_pooled_client;
