@@ -32,7 +32,6 @@ use rama_tls::boring::client::{
 #[cfg(feature = "rustls")]
 use rama_tls_rustls::client::{
     TlsConnector as RustlsTlsConnector, TlsConnectorData as RustlsTlsConnectorData,
-    TlsConnectorData as RustTlsConnectorData,
 };
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -73,7 +72,7 @@ pub enum TlsConnectorLayer {
     #[cfg(feature = "boring")]
     Boring(Option<ClientConfig>),
     #[cfg(feature = "rustls")]
-    Rustls(Option<RustTlsConnectorData>),
+    Rustls(Option<RustlsTlsConnectorData>),
 }
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
@@ -473,22 +472,21 @@ where
             let connector = if let Some(TlsConnectorLayer::Boring(config)) =
                 &self.proxy_tls_connector_layer
             {
-                let data = create_proxy_connector_data(&ctx, config)?;
+                let data = create_proxy_connector_data_boring(&ctx, config)?;
                 EitherConn::A(BoringTlsConnector::tunnel(connector, None).with_connector_data(data))
             } else {
                 EitherConn::B(connector)
             };
 
             #[cfg(feature = "rustls")]
-            let connector =
-                if let Some(TlsConnectorLayer::Rustls(_config)) = &self.proxy_tls_connector_layer {
-                    EitherConn::A(
-                        RustlsTlsConnector::tunnel(connector, None)
-                            .with_connector_data(RustlsTlsConnectorData::new_http_auto()?),
-                    )
-                } else {
-                    EitherConn::B(connector)
-                };
+            let connector = if let Some(TlsConnectorLayer::Rustls(config)) =
+                &self.proxy_tls_connector_layer
+            {
+                let data = create_proxy_connector_data_rustls(&ctx, config)?;
+                EitherConn::A(RustlsTlsConnector::tunnel(connector, None).with_connector_data(data))
+            } else {
+                EitherConn::B(connector)
+            };
 
             // 3 Http proxy tunnel if needed
             let mut connector = HttpProxyConnector::optional(connector);
@@ -501,7 +499,7 @@ where
             #[cfg(feature = "boring")]
             let connector =
                 if let Some(TlsConnectorLayer::Boring(config)) = &self.tls_connector_layer {
-                    let data = create_connector_data(&ctx, config)?;
+                    let data = create_connector_data_boring(&ctx, config)?;
                     EitherConn::A(BoringTlsConnector::auto(connector).with_connector_data(data))
                 } else {
                     EitherConn::B(connector)
@@ -509,11 +507,9 @@ where
 
             #[cfg(feature = "rustls")]
             let connector =
-                if let Some(TlsConnectorLayer::Rustls(_config)) = &self.tls_connector_layer {
-                    EitherConn::A(
-                        RustlsTlsConnector::auto(connector)
-                            .with_connector_data(RustlsTlsConnectorData::new_http_auto()?),
-                    )
+                if let Some(TlsConnectorLayer::Rustls(config)) = &self.tls_connector_layer {
+                    let data = create_connector_data_rustls(&ctx, config)?;
+                    EitherConn::A(RustlsTlsConnector::auto(connector).with_connector_data(data))
                 } else {
                     EitherConn::B(connector)
                 };
@@ -565,7 +561,7 @@ where
 }
 
 #[cfg(feature = "boring")]
-fn create_connector_data<State>(
+fn create_connector_data_boring<State>(
     ctx: &Context<State>,
     tls_config: &Option<ClientConfig>,
 ) -> Result<BoringTlsConnectorData, OpaqueError> {
@@ -597,33 +593,8 @@ fn create_connector_data<State>(
     }
 }
 
-// #[cfg(all(feature = "rustls", not(feature = "boring")))]
-// fn create_connector_data<State>(
-//     &self,
-//     ctx: &Context<State>,
-// ) -> Result<TlsConnectorData, OpaqueError> {
-//     // TODO refactor
-//     if let Some(_) = extract_client_config_from_ctx(ctx) {
-//         return Err(OpaqueError::from_display(
-//             "client config stored in ctx not supported for rustls",
-//         ));
-//     }
-
-//     match self.tls_connector_layer.as_deref() {
-//         Some(tls_config) => {
-//             trace!("create tls connector using pre-defined rama tls client config");
-//             Ok(tls_config.clone())
-//         }
-//         None => {
-//             trace!("create tls connector using the 'new_http_auto' constructor");
-//             TlsConnectorData::new_http_auto()
-//                 .context("EasyHttpWebClient: create tls connector data for http (auto)")
-//         }
-//     }
-// }
-
 #[cfg(feature = "boring")]
-fn create_proxy_connector_data<State>(
+fn create_proxy_connector_data_boring<State>(
     ctx: &Context<State>,
     tls_config: &Option<ClientConfig>,
 ) -> Result<BoringTlsConnectorData, OpaqueError> {
@@ -656,21 +627,38 @@ fn create_proxy_connector_data<State>(
     Ok(data)
 }
 
-// #[cfg(all(feature = "rustls", not(feature = "boring")))]
-// fn create_proxy_connector_data<State>(
-//     &self,
-//     ctx: &Context<State>,
-// ) -> Result<TlsConnectorData, OpaqueError> {
-//     // TODO get from ctx
-//     match self.tls_connector_layer.as_deref() {
-//         Some(tls_config) => {
-//             trace!("create tls connector using pre-defined rama tls client config");
-//             Ok(tls_config.clone())
-//         }
-//         None => {
-//             trace!("create tls connector using the 'new_http_auto' constructor");
-//             TlsConnectorData::new_http_auto()
-//                 .context("EasyHttpWebClient: create tls connector data for http (auto)")
-//         }
-//     }
-// }
+#[cfg(feature = "rustls")]
+fn create_connector_data_rustls<State>(
+    ctx: &Context<State>,
+    tls_config: &Option<RustlsTlsConnectorData>,
+) -> Result<RustlsTlsConnectorData, OpaqueError> {
+    match tls_config {
+        Some(tls_config) => {
+            trace!("create tls connector using pre-defined rustls tls client config");
+            Ok(tls_config.clone())
+        }
+        None => {
+            trace!("create tls connector using the 'new_http_auto' constructor");
+            RustlsTlsConnectorData::new_http_auto()
+                .context("EasyHttpWebClient: create tls connector data for http (auto)")
+        }
+    }
+}
+
+#[cfg(feature = "rustls")]
+fn create_proxy_connector_data_rustls<State>(
+    ctx: &Context<State>,
+    tls_config: &Option<RustlsTlsConnectorData>,
+) -> Result<RustlsTlsConnectorData, OpaqueError> {
+    match tls_config {
+        Some(tls_config) => {
+            trace!("create tls connector using pre-defined rustls tls client config");
+            Ok(tls_config.clone())
+        }
+        None => {
+            trace!("create tls connector using the 'new_http_auto' constructor");
+            RustlsTlsConnectorData::new_http_auto()
+                .context("EasyHttpWebClient: create tls connector data for http (auto)")
+        }
+    }
+}

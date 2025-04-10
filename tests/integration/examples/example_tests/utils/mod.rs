@@ -133,28 +133,35 @@ where
             )));
         }
 
-        // TODO
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         {
-            let mut config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
-                .with_root_certificates(client_root_certs())
-                .with_no_client_auth();
+            let create_config = || {
+                let mut config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
+                    .with_root_certificates(client_root_certs())
+                    .with_no_client_auth();
 
-            config
-                .dangerous()
-                .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+                config
+                    .dangerous()
+                    .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+
+                if let Some(path) = KeyLogIntent::Environment.file_path() {
+                    config.key_log = Arc::new(KeyLogFile::new(path).unwrap());
+                };
+                config
+            };
+
+            let mut config = create_config();
+            let proxy_config = create_config();
 
             config.alpn_protocols = vec![
                 ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
                 ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
             ];
 
-            if let Some(path) = KeyLogIntent::Environment.file_path() {
-                let key_logger = Arc::new(KeyLogFile::new(path).unwrap());
-                config.key_log = key_logger;
-            };
-
             inner_client.set_tls_connector_layer(TlsConnectorLayer::Rustls(Some(config.into())));
+            inner_client.set_proxy_tls_connector_layer(TlsConnectorLayer::Rustls(Some(
+                proxy_config.into(),
+            )));
         }
 
         let client = (
