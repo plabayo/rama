@@ -629,9 +629,10 @@ fn create_proxy_connector_data_boring<State>(
 
 #[cfg(feature = "rustls")]
 fn create_connector_data_rustls<State>(
-    ctx: &Context<State>,
+    _ctx: &Context<State>,
     tls_config: &Option<RustlsTlsConnectorData>,
 ) -> Result<RustlsTlsConnectorData, OpaqueError> {
+    // TODO do we also want to support getting this from ctx?
     match tls_config {
         Some(tls_config) => {
             trace!("create tls connector using pre-defined rustls tls client config");
@@ -647,9 +648,10 @@ fn create_connector_data_rustls<State>(
 
 #[cfg(feature = "rustls")]
 fn create_proxy_connector_data_rustls<State>(
-    ctx: &Context<State>,
+    _ctx: &Context<State>,
     tls_config: &Option<RustlsTlsConnectorData>,
 ) -> Result<RustlsTlsConnectorData, OpaqueError> {
+    // TODO do we also want to support getting this from ctx?
     match tls_config {
         Some(tls_config) => {
             trace!("create tls connector using pre-defined rustls tls client config");
