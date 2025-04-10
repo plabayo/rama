@@ -102,6 +102,7 @@ where
             .run()
             .unwrap()
             .command()
+            .env("RUST_LOG", "info")
             .env("SSLKEYLOGFILE", "./target/test_ssl_key_log.txt")
             .spawn()
             .unwrap();
@@ -237,6 +238,7 @@ impl ExampleRunner<()> {
                 .run()
                 .unwrap()
                 .command()
+                .env("RUST_LOG", "info")
                 .status()
                 .unwrap()
         })
