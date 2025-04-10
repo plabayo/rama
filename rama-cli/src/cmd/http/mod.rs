@@ -378,12 +378,12 @@ where
     // - first tls is needed
     // - but http only is to be selected after handshake is done...
 
-    let config = ClientConfig {
+    let proxy_config = ClientConfig {
         server_verify_mode,
         ..Default::default()
     };
 
-    inner_client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(config)));
+    inner_client.set_proxy_tls_connector_layer(TlsConnectorLayer::Boring(Some(proxy_config)));
 
     let client_builder = (
         MapResultLayer::new(map_internal_client_error),

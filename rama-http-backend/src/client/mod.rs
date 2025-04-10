@@ -80,8 +80,8 @@ pub enum TlsConnectorLayer {
 impl<I1: fmt::Debug, I2: fmt::Debug, P: fmt::Debug> fmt::Debug for EasyHttpWebClient<I1, I2, P> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("EasyHttpWebClient")
-            // .field("tls_config", &self.tls_connector_layer)
-            // .field("proxy_tls_config", &self.proxy_tls_connector_layer)
+            .field("tls_connector_layer", &self.tls_connector_layer)
+            .field("proxy_tls_connector_layer", &self.proxy_tls_connector_layer)
             .field("connection_pool", &self.connection_pool)
             .field(
                 "proxy_http_connect_version",
