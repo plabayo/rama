@@ -18,6 +18,7 @@ use rama_net::{
         PoolStorage, PooledConnector, ReqToConnID,
     },
     http::RequestContext,
+    tls::client::{ProxyClientConfig, extract_client_config_from_ctx},
 };
 use rama_tcp::client::service::TcpConnector;
 
@@ -473,11 +474,7 @@ where
             let connector = if let Some(TlsConnectorLayer::Boring(config)) =
                 &self.proxy_tls_connector_layer
             {
-                let data = match config {
-                    Some(config) => config.clone().try_into()?,
-                    None => BoringTlsConnectorData::new_http_auto()?,
-                };
-
+                let data = create_proxy_connector_data(&ctx, config)?;
                 EitherConn::A(BoringTlsConnector::tunnel(connector, None).with_connector_data(data))
             } else {
                 EitherConn::B(connector)
@@ -505,11 +502,7 @@ where
             #[cfg(feature = "boring")]
             let connector =
                 if let Some(TlsConnectorLayer::Boring(config)) = &self.tls_connector_layer {
-                    let data = match config {
-                        Some(config) => config.clone().try_into()?,
-                        None => BoringTlsConnectorData::new_http_auto()?,
-                    };
-
+                    let data = create_connector_data(&ctx, config)?;
                     EitherConn::A(BoringTlsConnector::auto(connector).with_connector_data(data))
                 } else {
                     EitherConn::B(connector)
@@ -572,116 +565,113 @@ where
     }
 }
 
-// impl<I1, I2, P> EasyHttpWebClient<I1, I2, P> {
-//     #[cfg(feature = "boring")]
-//     fn create_connector_data<State>(
-//         &self,
-//         ctx: &Context<State>,
-//     ) -> Result<TlsConnectorData, OpaqueError> {
-//         match extract_client_config_from_ctx(ctx) {
-//             Some(mut chain_ref) => {
-//                 trace!(
-//                     "create tls connector using rama tls client config(s) from context and/or the predefined one if defined"
-//                 );
-//                 if let Some(tls_config) = self.tls_connector_layer.clone() {
-//                     chain_ref.prepend(tls_config);
-//                 }
-//                 TlsConnectorData::try_from_multiple_client_configs(chain_ref.iter()).context(
-//                     "EasyHttpWebClient: create tls connector data from tls client config(s) from context and/or the predefined one if defined",
-//                 )
-//             }
-//             None => match self.tls_connector_layer.as_deref() {
-//                 Some(tls_config) => {
-//                     trace!("create tls connector using pre-defined rama tls client config");
-//                     tls_config.clone().try_into().context(
-//                         "EasyHttpWebClient: create tls connector data from pre-defined tls config",
-//                     )
-//                 }
-//                 None => {
-//                     trace!("create tls connector using the 'new_http_auto' constructor");
-//                     TlsConnectorData::new_http_auto()
-//                         .context("EasyHttpWebClient: create tls connector data for http (auto)")
-//                 }
-//             },
-//         }
+#[cfg(feature = "boring")]
+fn create_connector_data<State>(
+    ctx: &Context<State>,
+    tls_config: &Option<ClientConfig>,
+) -> Result<BoringTlsConnectorData, OpaqueError> {
+    match extract_client_config_from_ctx(ctx) {
+        Some(mut chain_ref) => {
+            trace!(
+                "create tls connector using rama tls client config(s) from context and/or the predefined one if defined"
+            );
+            if let Some(tls_config) = tls_config {
+                chain_ref.prepend(tls_config.clone());
+            }
+            BoringTlsConnectorData::try_from_multiple_client_configs(chain_ref.iter()).context(
+                "EasyHttpWebClient: create tls connector data from tls client config(s) from context and/or the predefined one if defined",
+            )
+        }
+        None => match tls_config {
+            Some(tls_config) => {
+                trace!("create tls connector using pre-defined rama tls client config");
+                tls_config.clone().try_into().context(
+                    "EasyHttpWebClient: create tls connector data from pre-defined tls config",
+                )
+            }
+            None => {
+                trace!("create tls connector using the 'new_http_auto' constructor");
+                BoringTlsConnectorData::new_http_auto()
+                    .context("EasyHttpWebClient: create tls connector data for http (auto)")
+            }
+        },
+    }
+}
+
+// #[cfg(all(feature = "rustls", not(feature = "boring")))]
+// fn create_connector_data<State>(
+//     &self,
+//     ctx: &Context<State>,
+// ) -> Result<TlsConnectorData, OpaqueError> {
+//     // TODO refactor
+//     if let Some(_) = extract_client_config_from_ctx(ctx) {
+//         return Err(OpaqueError::from_display(
+//             "client config stored in ctx not supported for rustls",
+//         ));
 //     }
 
-//     #[cfg(all(feature = "rustls", not(feature = "boring")))]
-//     fn create_connector_data<State>(
-//         &self,
-//         ctx: &Context<State>,
-//     ) -> Result<TlsConnectorData, OpaqueError> {
-//         // TODO refactor
-//         if let Some(_) = extract_client_config_from_ctx(ctx) {
-//             return Err(OpaqueError::from_display(
-//                 "client config stored in ctx not supported for rustls",
-//             ));
+//     match self.tls_connector_layer.as_deref() {
+//         Some(tls_config) => {
+//             trace!("create tls connector using pre-defined rama tls client config");
+//             Ok(tls_config.clone())
 //         }
-
-//         match self.tls_connector_layer.as_deref() {
-//             Some(tls_config) => {
-//                 trace!("create tls connector using pre-defined rama tls client config");
-//                 Ok(tls_config.clone())
-//             }
-//             None => {
-//                 trace!("create tls connector using the 'new_http_auto' constructor");
-//                 TlsConnectorData::new_http_auto()
-//                     .context("EasyHttpWebClient: create tls connector data for http (auto)")
-//             }
+//         None => {
+//             trace!("create tls connector using the 'new_http_auto' constructor");
+//             TlsConnectorData::new_http_auto()
+//                 .context("EasyHttpWebClient: create tls connector data for http (auto)")
 //         }
 //     }
+// }
 
-//     #[cfg(feature = "boring")]
-//     fn create_proxy_connector_data<State>(
-//         &self,
-//         ctx: &Context<State>,
-//     ) -> Result<TlsConnectorData, OpaqueError> {
-//         let data = match (ctx.get::<ProxyClientConfig>(), &self.proxy_tls_connector_layer) {
-//             (Some(proxy_tls_config), _) => {
-//                 trace!("create proxy tls connector using rama tls client config from context");
-//                 proxy_tls_config
-//                     .0
-//                     .as_ref()
-//                     .clone()
-//                     .try_into()
-//                     .context(
-//                     "EasyHttpWebClient: create proxy tls connector data from tls config found in context",
-//                 )?
-//             }
-//             (None, Some(proxy_tls_config)) => {
-//                 trace!("create proxy tls connector using pre-defined rama tls client config");
-//                 proxy_tls_config
-//                     .as_ref()
-//                     .clone()
-//                     .try_into()
-//                     .context("EasyHttpWebClient: create proxy tls connector data from tls config")?
-//             }
-//             (None, None) => {
-//                 trace!("create proxy tls connector using the 'new_http_auto' constructor");
-//                 TlsConnectorData::new().context(
-//                     "EasyHttpWebClient: create proxy tls connector data with no application presets",
-//                 )?
-//             }
-//         };
-//         Ok(data)
-//     }
+#[cfg(feature = "boring")]
+fn create_proxy_connector_data<State>(
+    ctx: &Context<State>,
+    tls_config: &Option<ClientConfig>,
+) -> Result<BoringTlsConnectorData, OpaqueError> {
+    let data = match (ctx.get::<ProxyClientConfig>(), tls_config) {
+        (Some(proxy_tls_config), _) => {
+            trace!("create proxy tls connector using rama tls client config from context");
+            proxy_tls_config
+                .0
+                .as_ref()
+                .clone()
+                .try_into()
+                .context(
+                "EasyHttpWebClient: create proxy tls connector data from tls config found in context",
+            )?
+        }
+        (None, Some(proxy_tls_config)) => {
+            trace!("create proxy tls connector using pre-defined rama tls client config");
+            proxy_tls_config
+                .clone()
+                .try_into()
+                .context("EasyHttpWebClient: create proxy tls connector data from tls config")?
+        }
+        (None, None) => {
+            trace!("create proxy tls connector using the 'new_http_auto' constructor");
+            BoringTlsConnectorData::new().context(
+                "EasyHttpWebClient: create proxy tls connector data with no application presets",
+            )?
+        }
+    };
+    Ok(data)
+}
 
-//     #[cfg(all(feature = "rustls", not(feature = "boring")))]
-//     fn create_proxy_connector_data<State>(
-//         &self,
-//         ctx: &Context<State>,
-//     ) -> Result<TlsConnectorData, OpaqueError> {
-//         // TODO get from ctx
-//         match self.tls_connector_layer.as_deref() {
-//             Some(tls_config) => {
-//                 trace!("create tls connector using pre-defined rama tls client config");
-//                 Ok(tls_config.clone())
-//             }
-//             None => {
-//                 trace!("create tls connector using the 'new_http_auto' constructor");
-//                 TlsConnectorData::new_http_auto()
-//                     .context("EasyHttpWebClient: create tls connector data for http (auto)")
-//             }
+// #[cfg(all(feature = "rustls", not(feature = "boring")))]
+// fn create_proxy_connector_data<State>(
+//     &self,
+//     ctx: &Context<State>,
+// ) -> Result<TlsConnectorData, OpaqueError> {
+//     // TODO get from ctx
+//     match self.tls_connector_layer.as_deref() {
+//         Some(tls_config) => {
+//             trace!("create tls connector using pre-defined rama tls client config");
+//             Ok(tls_config.clone())
+//         }
+//         None => {
+//             trace!("create tls connector using the 'new_http_auto' constructor");
+//             TlsConnectorData::new_http_auto()
+//                 .context("EasyHttpWebClient: create tls connector data for http (auto)")
 //         }
 //     }
 // }
