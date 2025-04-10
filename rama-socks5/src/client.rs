@@ -3,8 +3,7 @@ use std::fmt;
 use crate::{
     Socks5Auth,
     proto::{
-        Command, ProtocolError, ProtocolVersion, ReplyKind, SocksMethod,
-        UsernamePasswordSubnegotiationVersion,
+        Command, ProtocolError, ReplyKind, SocksMethod,
         client::{Header, RequestRef, UsernamePasswordRequestRef},
         server,
     },
@@ -23,6 +22,49 @@ pub struct Client {
 /// Client-side error returned in case of a failure during the handshake process.
 pub struct HandshakeError {
     kind: HandshakeErrorKind,
+    context: Option<&'static str>,
+}
+
+impl HandshakeError {
+    fn io(err: std::io::Error) -> Self {
+        Self {
+            kind: HandshakeErrorKind::IO(err),
+            context: None,
+        }
+    }
+
+    fn protocol(value: ProtocolError) -> Self {
+        Self {
+            kind: HandshakeErrorKind::Protocol(value),
+            context: None,
+        }
+    }
+
+    fn reply_kind(kind: ReplyKind) -> Self {
+        Self {
+            kind: HandshakeErrorKind::Reply(kind),
+            context: None,
+        }
+    }
+
+    fn method_mismatch(method: SocksMethod) -> Self {
+        Self {
+            kind: HandshakeErrorKind::MethodMismatch(method),
+            context: None,
+        }
+    }
+
+    fn unauthorized(status: u8) -> Self {
+        Self {
+            kind: HandshakeErrorKind::Unauthorized(status),
+            context: None,
+        }
+    }
+
+    fn with_context(mut self, context: &'static str) -> Self {
+        self.context = Some(context);
+        self
+    }
 }
 
 impl HandshakeError {
@@ -50,21 +92,34 @@ enum HandshakeErrorKind {
 
 impl fmt::Display for HandshakeError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let context = self.context.unwrap_or("no context");
         match &self.kind {
             HandshakeErrorKind::IO(error) => {
-                write!(f, "client: handshake eror: I/O: {error}")
+                write!(f, "client: handshake eror: I/O: {error} ({context})")
             }
             HandshakeErrorKind::Protocol(error) => {
-                write!(f, "client: handshake eror: protocol error: {error}")
+                write!(
+                    f,
+                    "client: handshake eror: protocol error: {error} ({context})"
+                )
             }
             HandshakeErrorKind::MethodMismatch(method) => {
-                write!(f, "client: handshake error: method mistmatch: {method:?}")
+                write!(
+                    f,
+                    "client: handshake error: method mistmatch: {method:?} ({context})"
+                )
             }
             HandshakeErrorKind::Reply(reply) => {
-                write!(f, "client: handshake error: error reply: {reply:?}")
+                write!(
+                    f,
+                    "client: handshake error: error reply: {reply:?} ({context})"
+                )
             }
             HandshakeErrorKind::Unauthorized(status) => {
-                write!(f, "client: handshake error: unauthorized: {status}")
+                write!(
+                    f,
+                    "client: handshake error: unauthorized: {status} ({context})"
+                )
             }
         }
     }
@@ -88,22 +143,6 @@ impl std::error::Error for HandshakeError {
     }
 }
 
-impl From<std::io::Error> for HandshakeError {
-    fn from(value: std::io::Error) -> Self {
-        Self {
-            kind: HandshakeErrorKind::IO(value),
-        }
-    }
-}
-
-impl From<ProtocolError> for HandshakeError {
-    fn from(value: ProtocolError) -> Self {
-        Self {
-            kind: HandshakeErrorKind::Protocol(value),
-        }
-    }
-}
-
 impl Client {
     rama_utils::macros::generate_field_setters!(auth, Socks5Auth);
 
@@ -117,27 +156,27 @@ impl Client {
             None => self.handshake_headers_no_auth(stream).await?,
         };
 
-        let request = RequestRef {
-            version: ProtocolVersion::Socks5,
-            command: Command::Connect,
-            destination,
-        };
-        request.write_to(stream).await?;
+        let request = RequestRef::new(Command::Connect, destination);
+        request
+            .write_to(stream)
+            .await
+            .map_err(|err| HandshakeError::io(err).with_context("write client request: connect"))?;
 
         tracing::trace!(
             ?selected_method,
-            ?destination,
+            %destination,
             "socks5 client: client request sent"
         );
 
-        let server_reply = server::Reply::read_from(stream).await?;
+        let server_reply = server::Reply::read_from(stream)
+            .await
+            .map_err(|err| HandshakeError::protocol(err).with_context("read server reply"))?;
         if server_reply.reply != ReplyKind::Succeeded {
-            return Err(HandshakeError {
-                kind: HandshakeErrorKind::Reply(server_reply.reply),
-            });
+            return Err(HandshakeError::reply_kind(server_reply.reply)
+                .with_context("server responded with non-success reply"));
         }
 
-        tracing::trace!(?selected_method, ?destination, "socks5 client: connected");
+        tracing::trace!(?selected_method, %destination, "socks5 client: connected");
         Ok(server_reply.bind_address)
     }
 
@@ -147,16 +186,17 @@ impl Client {
         auth: &Socks5Auth,
     ) -> Result<SocksMethod, HandshakeError> {
         let auth_method = auth.socks5_method();
-        let header = Header {
-            version: ProtocolVersion::Socks5,
-            methods: smallvec::smallvec![SocksMethod::NoAuthenticationRequired, auth_method],
-        };
-        header.write_to(stream).await?;
+        let header = Header::new([SocksMethod::NoAuthenticationRequired, auth_method]);
+        header.write_to(stream).await.map_err(|err| {
+            HandshakeError::io(err).with_context("write client header: with auth method")
+        })?;
         let methods = header.methods;
 
         tracing::trace!(?methods, "socks5 client: header with auth written");
 
-        let server_header = server::Header::read_from(stream).await?;
+        let server_header = server::Header::read_from(stream).await.map_err(|err| {
+            HandshakeError::protocol(err).with_context("read server header (auth?)")
+        })?;
 
         tracing::trace!(
             ?methods,
@@ -170,9 +210,8 @@ impl Client {
         }
 
         if server_header.method != auth_method {
-            return Err(HandshakeError {
-                kind: HandshakeErrorKind::MethodMismatch(server_header.method),
-            });
+            return Err(HandshakeError::method_mismatch(server_header.method)
+                .with_context("unsolicited auth method"));
         }
 
         tracing::trace!(
@@ -183,13 +222,14 @@ impl Client {
 
         match auth {
             Socks5Auth::UsernamePassword { username, password } => {
-                UsernamePasswordRequestRef {
-                    version: UsernamePasswordSubnegotiationVersion::One,
-                    username: username.as_ref(),
-                    password: password.as_ref(),
-                }
-                .write_to(stream)
-                .await?;
+                UsernamePasswordRequestRef::new(username, password)
+                    .write_to(stream)
+                    .await
+                    .map_err(|err| {
+                        HandshakeError::io(err).with_context(
+                            "write client sub-negotiation request: username-password auth",
+                        )
+                    })?;
 
                 tracing::trace!(
                     ?methods,
@@ -197,11 +237,15 @@ impl Client {
                     "socks5 client: username-password request sent"
                 );
 
-                let auth_reply = server::UsernamePasswordResponse::read_from(stream).await?;
+                let auth_reply = server::UsernamePasswordResponse::read_from(stream)
+                    .await
+                    .map_err(|err| {
+                        HandshakeError::protocol(err).with_context(
+                            "read server sub-negotiation response: username-password auth",
+                        )
+                    })?;
                 if !auth_reply.success() {
-                    return Err(HandshakeError {
-                        kind: HandshakeErrorKind::Unauthorized(auth_reply.status),
-                    });
+                    return Err(HandshakeError::unauthorized(auth_reply.status));
                 }
 
                 tracing::trace!(
@@ -219,16 +263,17 @@ impl Client {
         &self,
         stream: &mut S,
     ) -> Result<SocksMethod, HandshakeError> {
-        let header = Header {
-            version: ProtocolVersion::Socks5,
-            methods: smallvec::smallvec![SocksMethod::NoAuthenticationRequired],
-        };
-        header.write_to(stream).await?;
+        let header = Header::new(smallvec::smallvec![SocksMethod::NoAuthenticationRequired]);
+        header.write_to(stream).await.map_err(|err| {
+            HandshakeError::io(err).with_context("write client headers: no auth required")
+        })?;
         let methods = header.methods;
 
         tracing::trace!(?methods, "socks5 client: header without auth written");
 
-        let server_header = server::Header::read_from(stream).await?;
+        let server_header = server::Header::read_from(stream).await.map_err(|err| {
+            HandshakeError::protocol(err).with_context("read server headers: no auth required (?)")
+        })?;
 
         tracing::trace!(
             ?methods,
@@ -237,9 +282,8 @@ impl Client {
         );
 
         if server_header.method != SocksMethod::NoAuthenticationRequired {
-            return Err(HandshakeError {
-                kind: HandshakeErrorKind::MethodMismatch(server_header.method),
-            });
+            return Err(HandshakeError::method_mismatch(server_header.method)
+                .with_context("expected 'no auth required' method"));
         }
 
         Ok(SocksMethod::NoAuthenticationRequired)

@@ -13,6 +13,12 @@ pub enum ProtocolError {
     Unexpected(OpaqueError),
 }
 
+impl ProtocolError {
+    pub fn unexpected_byte(pos: usize, byte: u8) -> Self {
+        Self::UnexpectedByte { pos, byte }
+    }
+}
+
 impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {

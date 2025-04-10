@@ -27,6 +27,14 @@ pub struct Header {
 }
 
 impl Header {
+    /// Create a new server [`Header`].
+    pub fn new(method: SocksMethod) -> Self {
+        Self {
+            version: ProtocolVersion::Socks5,
+            method,
+        }
+    }
+
     /// Read the server [`Header`], decoded from binary format as specified by [RFC 1928] from the reader.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
@@ -104,6 +112,15 @@ pub struct Reply {
 }
 
 impl Reply {
+    /// [`Reply`] with an error.
+    pub fn error_reply(kind: ReplyKind) -> Self {
+        Self {
+            version: ProtocolVersion::Socks5,
+            reply: kind,
+            bind_address: Authority::default_ipv4(0),
+        }
+    }
+
     /// Read the server [`Reply`], decoded from binary format as specified by [RFC 1928] from the reader.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
@@ -115,10 +132,7 @@ impl Reply {
         match version {
             ProtocolVersion::Socks5 => (),
             ProtocolVersion::Unknown(version) => {
-                return Err(ProtocolError::UnexpectedByte {
-                    pos: 0,
-                    byte: version,
-                });
+                return Err(ProtocolError::unexpected_byte(0, version));
             }
         }
 
@@ -126,7 +140,7 @@ impl Reply {
 
         let rsv = r.read_u8().await?;
         if rsv != 0 {
-            return Err(ProtocolError::UnexpectedByte { pos: 2, byte: rsv });
+            return Err(ProtocolError::unexpected_byte(2, rsv));
         }
 
         let bind_address = read_authority(r).await?;
@@ -244,10 +258,7 @@ impl UsernamePasswordResponse {
         match version {
             UsernamePasswordSubnegotiationVersion::One => (),
             UsernamePasswordSubnegotiationVersion::Unknown(version) => {
-                return Err(ProtocolError::UnexpectedByte {
-                    pos: 0,
-                    byte: version,
-                });
+                return Err(ProtocolError::unexpected_byte(0, version));
             }
         }
 

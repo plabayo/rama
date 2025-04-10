@@ -32,6 +32,13 @@ pub struct Header {
 }
 
 impl Header {
+    pub fn new(methods: impl Into<SmallVec<[SocksMethod; 2]>>) -> Self {
+        Self {
+            version: ProtocolVersion::Socks5,
+            methods: methods.into(),
+        }
+    }
+
     /// Read the client [`Header`], decoded from binary format as specified by [RFC 1928] from the reader.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
@@ -199,6 +206,16 @@ pub struct RequestRef<'a> {
     pub destination: &'a Authority,
 }
 
+impl<'a> RequestRef<'a> {
+    pub fn new(command: Command, destination: &'a Authority) -> Self {
+        Self {
+            version: ProtocolVersion::Socks5,
+            command,
+            destination,
+        }
+    }
+}
+
 impl RequestRef<'_> {
     /// Write the client [`Request`] in binary format as specified by [RFC 1928] into the writer.
     ///
@@ -336,7 +353,15 @@ pub struct UsernamePasswordRequestRef<'a> {
     pub password: &'a [u8],
 }
 
-impl UsernamePasswordRequestRef<'_> {
+impl<'a> UsernamePasswordRequestRef<'a> {
+    pub fn new(username: &'a [u8], password: &'a [u8]) -> Self {
+        Self {
+            version: UsernamePasswordSubnegotiationVersion::One,
+            username,
+            password,
+        }
+    }
+
     /// Write the client [`UsernamePasswordRequest`] in binary format as specified by [RFC 1929] into the writer.
     ///
     /// [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929
