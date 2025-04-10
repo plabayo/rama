@@ -28,7 +28,10 @@ impl RamaService {
             .arg("ip")
             .arg("-p")
             .arg(port.to_string())
-            .env("RUST_LOG", "info")
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
             .spawn()
             .unwrap();
 
@@ -85,7 +88,10 @@ impl RamaService {
             .arg("echo")
             .arg("-p")
             .arg(port.to_string())
-            .env("RUST_LOG", "info");
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            );
 
         if secure {
             builder.arg("-s");
@@ -124,7 +130,10 @@ impl RamaService {
             .command()
             .stdout(std::process::Stdio::piped())
             .args(args)
-            .env("RUST_LOG", "info")
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
             .spawn()
             .unwrap();
 

@@ -52,7 +52,10 @@ impl ExampleRunner {
             .run()
             .unwrap()
             .command()
-            .env("RUST_LOG", "info")
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
             .env("SSLKEYLOGFILE", "./target/test_ssl_key_log.txt")
             .spawn()
             .unwrap();
@@ -81,7 +84,10 @@ impl ExampleRunner {
             .run()
             .unwrap()
             .command()
-            .env("RUST_LOG", "info")
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
             .status()
             .unwrap()
     }
