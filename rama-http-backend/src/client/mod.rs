@@ -18,12 +18,11 @@ use rama_net::{
         PoolStorage, PooledConnector, ReqToConnID,
     },
     http::RequestContext,
-    tls::client::{ProxyClientConfig, extract_client_config_from_ctx},
 };
 use rama_tcp::client::service::TcpConnector;
 
 #[cfg(feature = "boring")]
-use rama_net::tls::client::ClientConfig;
+use rama_net::tls::client::{ClientConfig, ProxyClientConfig, extract_client_config_from_ctx};
 
 #[cfg(feature = "boring")]
 use rama_tls::boring::client::{

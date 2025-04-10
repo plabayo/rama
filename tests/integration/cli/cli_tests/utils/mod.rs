@@ -79,6 +79,8 @@ impl RamaService {
             );
         }
 
+        builder.env("RUST_LOG", "trace");
+
         builder
             .stdout(std::process::Stdio::piped())
             .arg("echo")
