@@ -331,10 +331,15 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
         self_signed_server_auth(SelfSignedData::default()).context("create self signed data")?;
 
     let builder = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS);
-    let r = builder
+    let mut config = builder
         .with_no_client_auth()
         .with_single_cert(cert_chain, key_der)
         .unwrap();
 
-    Ok(TlsAcceptorData::from(r))
+    config.alpn_protocols = vec![
+        ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
+        ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
+    ];
+
+    Ok(TlsAcceptorData::from(config))
 }
