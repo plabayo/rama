@@ -38,16 +38,15 @@ use crate::{
     rt::Executor,
     ua::profile::UserAgentDatabase,
 };
-use serde::Serialize;
-use serde_json::json;
-use std::{convert::Infallible, time::Duration};
-use tokio::net::TcpStream;
-
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
     net::fingerprint::{Ja3, Ja4},
     tls::types::{SecureTransport, client::ClientHelloExtension},
 };
+use serde::Serialize;
+use serde_json::json;
+use std::{convert::Infallible, time::Duration};
+use tokio::net::TcpStream;
 
 #[cfg(feature = "boring")]
 use crate::{
@@ -282,38 +281,12 @@ where
         mut self,
         executor: Executor,
     ) -> Result<impl Service<(), TcpStream, Response = (), Error = Infallible>, BoxError> {
-        let (tcp_forwarded_layer, http_forwarded_layer) = match &self.forward {
-            None => (None, None),
-            Some(ForwardKind::Forwarded) => (
-                None,
-                Some(Either7::A(GetForwardedHeadersLayer::forwarded())),
-            ),
-            Some(ForwardKind::XForwardedFor) => (
-                None,
-                Some(Either7::B(GetForwardedHeadersLayer::x_forwarded_for())),
-            ),
-            Some(ForwardKind::XClientIp) => (
-                None,
-                Some(Either7::C(GetForwardedHeadersLayer::<XClientIp>::new())),
-            ),
-            Some(ForwardKind::ClientIp) => (
-                None,
-                Some(Either7::D(GetForwardedHeadersLayer::<ClientIp>::new())),
-            ),
-            Some(ForwardKind::XRealIp) => (
-                None,
-                Some(Either7::E(GetForwardedHeadersLayer::<XRealIp>::new())),
-            ),
-            Some(ForwardKind::CFConnectingIp) => (
-                None,
-                Some(Either7::F(GetForwardedHeadersLayer::<CFConnectingIp>::new())),
-            ),
-            Some(ForwardKind::TrueClientIp) => (
-                None,
-                Some(Either7::G(GetForwardedHeadersLayer::<TrueClientIp>::new())),
-            ),
-            Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
+        let tcp_forwarded_layer = match &self.forward {
+            Some(ForwardKind::HaProxy) => Some(HaProxyLayer::default()),
+            _ => None,
         };
+
+        let http_service = self.build_http();
 
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         let tls_cfg = self.tls_server_config;
@@ -340,18 +313,6 @@ where
             }),
         );
 
-        let http_service = (
-            TraceLayer::new_for_http(),
-            AddRequiredResponseHeadersLayer::default(),
-            UserAgentClassifierLayer::new(),
-            ConsumeErrLayer::default(),
-            http_forwarded_layer,
-        )
-            .into_layer(
-                self.http_service_builder
-                    .into_layer(EchoService { uadb: self.uadb }),
-            );
-
         let http_transport_service = match self.http_version {
             Some(Version::HTTP_2) => Either3::A(HttpServer::h2(executor).service(http_service)),
             Some(Version::HTTP_11 | Version::HTTP_10 | Version::HTTP_09) => {
@@ -364,6 +325,45 @@ where
         };
 
         Ok(tcp_service_builder.into_layer(http_transport_service))
+    }
+
+    /// build an http service ready to echo http traffic back
+    pub fn build_http(
+        &self,
+    ) -> impl Service<(), Request, Response: IntoResponse, Error = Infallible> + use<H> {
+        let http_forwarded_layer = match &self.forward {
+            None | Some(ForwardKind::HaProxy) => None,
+            Some(ForwardKind::Forwarded) => Some(Either7::A(GetForwardedHeadersLayer::forwarded())),
+            Some(ForwardKind::XForwardedFor) => {
+                Some(Either7::B(GetForwardedHeadersLayer::x_forwarded_for()))
+            }
+            Some(ForwardKind::XClientIp) => {
+                Some(Either7::C(GetForwardedHeadersLayer::<XClientIp>::new()))
+            }
+            Some(ForwardKind::ClientIp) => {
+                Some(Either7::D(GetForwardedHeadersLayer::<ClientIp>::new()))
+            }
+            Some(ForwardKind::XRealIp) => {
+                Some(Either7::E(GetForwardedHeadersLayer::<XRealIp>::new()))
+            }
+            Some(ForwardKind::CFConnectingIp) => {
+                Some(Either7::F(GetForwardedHeadersLayer::<CFConnectingIp>::new()))
+            }
+            Some(ForwardKind::TrueClientIp) => {
+                Some(Either7::G(GetForwardedHeadersLayer::<TrueClientIp>::new()))
+            }
+        };
+
+        (
+            TraceLayer::new_for_http(),
+            AddRequiredResponseHeadersLayer::default(),
+            UserAgentClassifierLayer::new(),
+            ConsumeErrLayer::default(),
+            http_forwarded_layer,
+        )
+            .into_layer(self.http_service_builder.layer(EchoService {
+                uadb: self.uadb.clone(),
+            }))
     }
 }
 
