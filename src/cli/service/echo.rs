@@ -46,15 +46,23 @@ use tokio::net::TcpStream;
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
     net::fingerprint::{Ja3, Ja4},
-    net::tls::server::ServerConfig,
     tls::types::{SecureTransport, client::ClientHelloExtension},
 };
 
 #[cfg(feature = "boring")]
-use crate::tls::boring::server::TlsAcceptorLayer;
+use crate::{
+    net::tls::server::ServerConfig,
+    tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
+};
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls_rustls::server::TlsAcceptorLayer;
+use crate::tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+
+#[cfg(feature = "boring")]
+type TlsConfig = ServerConfig;
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+type TlsConfig = TlsAcceptorData;
 
 #[derive(Debug, Clone)]
 /// Builder that can be used to run your own echo [`Service`],
@@ -66,7 +74,7 @@ pub struct EchoServiceBuilder<H> {
     forward: Option<ForwardKind>,
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    tls_server_config: Option<ServerConfig>,
+    tls_server_config: Option<TlsConfig>,
 
     http_version: Option<Version>,
 
@@ -181,7 +189,7 @@ impl<H> EchoServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
-    pub fn tls_server_config(mut self, cfg: ServerConfig) -> Self {
+    pub fn tls_server_config(mut self, cfg: TlsConfig) -> Self {
         self.tls_server_config = Some(cfg);
         self
     }
@@ -189,15 +197,15 @@ impl<H> EchoServiceBuilder<H> {
     #[cfg(any(feature = "rustls", feature = "boring"))]
     /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
-    pub fn set_tls_server_config(&mut self, cfg: ServerConfig) -> &mut Self {
+    pub fn set_tls_server_config(&mut self, cfg: TlsConfig) -> &mut Self {
         self.tls_server_config = Some(cfg);
         self
     }
 
     #[cfg(any(feature = "rustls", feature = "boring"))]
-    /// maybe define a tls server cert config to be used for tls terminaton
+    /// define a tls server cert config to be used for tls terminaton
     /// by the echo service.
-    pub fn maybe_tls_server_config(mut self, cfg: Option<ServerConfig>) -> Self {
+    pub fn maybe_tls_server_config(mut self, cfg: Option<TlsConfig>) -> Self {
         self.tls_server_config = cfg;
         self
     }
@@ -307,10 +315,15 @@ where
             Some(ForwardKind::HaProxy) => (Some(HaProxyLayer::default()), None),
         };
 
-        #[cfg(any(feature = "rustls", feature = "boring"))]
-        let tls_acceptor_data = match self.tls_server_config {
-            None => None,
-            Some(cfg) => Some(cfg.try_into()?),
+        let tls_cfg: Option<TlsAcceptorData> = {
+            #[cfg(all(feature = "rustls", not(feature = "boring")))]
+            return self.tls_server_config;
+
+            #[cfg(feature = "boring")]
+            match self.tls_server_config {
+                Some(cfg) => Some(cfg.try_into()?),
+                None => None,
+            }
         };
 
         let tcp_service_builder = (
@@ -321,7 +334,12 @@ where
             tcp_forwarded_layer,
             BodyLimitLayer::request_only(self.body_limit),
             #[cfg(any(feature = "rustls", feature = "boring"))]
-            tls_acceptor_data.map(|data| TlsAcceptorLayer::new(data).with_store_client_hello(true)),
+            tls_cfg.map(|cfg| {
+                #[cfg(feature = "boring")]
+                return TlsAcceptorLayer::new(cfg).with_store_client_hello(true);
+                #[cfg(all(feature = "rustls", not(feature = "boring")))]
+                TlsAcceptorLayer::new(cfg).with_store_client_hello(true)
+            }),
         );
 
         let http_service = (
