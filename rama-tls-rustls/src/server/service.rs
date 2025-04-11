@@ -1,10 +1,6 @@
-use crate::{
-    rustls::dep::{
-        rustls::server::Acceptor,
-        tokio_rustls::{LazyConfigAcceptor, server::TlsStream},
-    },
-    types::SecureTransport,
-};
+use crate::dep::rustls::server::Acceptor;
+use crate::dep::tokio_rustls::{LazyConfigAcceptor, server::TlsStream};
+use crate::types::SecureTransport;
 use rama_core::{
     Context, Service,
     error::{BoxError, ErrorContext, ErrorExt, OpaqueError},

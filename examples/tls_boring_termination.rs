@@ -1,7 +1,7 @@
 //! This example demonstrates how to create a TLS termination proxy, forwarding the
 //! plain transport stream to another service.
 //!
-//! This example is an alternative version of the [tls_termination](./tls_termination.rs) example,
+//! This example is an alternative version of the [tls_rustls_termination](./tls_rustls_termination.rs) example,
 //! but using boring instead of rustls.
 //!
 //! # Run the example

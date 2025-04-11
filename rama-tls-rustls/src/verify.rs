@@ -2,13 +2,11 @@
 //!
 //! ... or rather the lack of verification where it is not needed.
 
-use crate::rustls::dep::{
-    pki_types::{CertificateDer, ServerName, UnixTime},
-    rustls::{
-        DigitallySignedStruct, SignatureScheme,
-        client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
-    },
+use crate::dep::rustls::{
+    DigitallySignedStruct, SignatureScheme,
+    client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
 };
+use rustls_pki_types::{CertificateDer, ServerName, UnixTime};
 
 /// Cert verifier that does not verify the server certificate.
 #[derive(Debug)]

@@ -1,5 +1,5 @@
 use super::TlsConnectorData;
-use crate::rustls::dep::tokio_rustls::{TlsConnector as RustlsConnector, client::TlsStream};
+use crate::dep::tokio_rustls::{TlsConnector as RustlsConnector, client::TlsStream};
 use crate::types::TlsTunnel;
 use pin_project_lite::pin_project;
 use private::{ConnectorKindAuto, ConnectorKindSecure, ConnectorKindTunnel};
@@ -13,7 +13,6 @@ use rama_net::tls::ApplicationProtocol;
 use rama_net::tls::client::NegotiatedTlsParameters;
 use rama_net::transport::TryRefIntoTransportContext;
 use std::fmt;
-use std::sync::Arc;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 /// A [`Layer`] which wraps the given service with a [`TlsConnector`].
@@ -277,7 +276,6 @@ where
         );
 
         let connector_data = ctx.get::<TlsConnectorData>().cloned();
-
         let (stream, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
 
         tracing::trace!(
@@ -332,7 +330,6 @@ where
         let server_host = transport_ctx.authority.host().clone();
 
         let connector_data = ctx.get::<TlsConnectorData>().cloned();
-
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
         ctx.insert(negotiated_params);
 
@@ -379,7 +376,6 @@ where
         };
 
         let connector_data = ctx.get::<TlsConnectorData>().cloned();
-
         let (conn, negotiated_params) = self.handshake(connector_data, server_host, conn).await?;
         ctx.insert(negotiated_params);
 
@@ -404,25 +400,21 @@ impl<S, K> TlsConnector<S, K> {
     where
         T: Stream + Unpin,
     {
-        let connector_data = connector_data.as_ref().or(self.connector_data.as_ref());
-        let client_config_data = match connector_data {
-            Some(connector_data) => connector_data.try_to_build_config()?,
-            None => TlsConnectorData::new_http_auto()?.try_to_build_config()?,
-        };
+        let connector_data = connector_data
+            .or(self.connector_data.clone())
+            .unwrap_or(TlsConnectorData::new_http_auto()?);
+
         let server_name = rustls_pki_types::ServerName::try_from(
-            client_config_data.server_name.unwrap_or(server_host),
+            connector_data.server_name.unwrap_or(server_host),
         )?;
 
-        let connector = RustlsConnector::from(Arc::new(client_config_data.config));
+        let connector = RustlsConnector::from(connector_data.client_config);
 
         let stream = connector.connect(server_name, stream).await?;
 
         let (_, conn_data_ref) = stream.get_ref();
 
-        let store_server_cert_chain = connector_data
-            .is_some_and(|data| data.client_config_input.store_server_certificate_chain);
-
-        let server_certificate_chain = if store_server_cert_chain {
+        let server_certificate_chain = if connector_data.store_server_certificate_chain {
             conn_data_ref.peer_certificates().map(Into::into)
         } else {
             None

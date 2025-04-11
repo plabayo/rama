@@ -6,7 +6,7 @@
 //!
 //! See the [Examples Directory](https://github.com/plabayo/rama/tree/main/examples):
 //!
-//! - [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
+//! - [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_termination.rs):
 //!   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
 //!   plain text stream to the first.
 //! - [/examples/mtls_tunnel_and_services.rs](https://github.com/plabayo/rama/tree/main/examples/mtls_tunnel_and_services.rs):
@@ -23,4 +23,4 @@ pub use layer::TlsAcceptorLayer;
 
 mod acceptor_data;
 #[doc(inline)]
-pub use acceptor_data::TlsAcceptorData;
+pub use acceptor_data::{TlsAcceptorData, TlsAcceptorDataBuilder, self_signed_server_auth};
