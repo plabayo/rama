@@ -13,7 +13,7 @@ use rama_net::address::Authority;
 use smallvec::{SmallVec, smallvec};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// The client connects to the server, and sends a header which
 /// contains the protocol version desired and SOCKS methods supported by the client.
 ///
@@ -116,7 +116,7 @@ impl Header {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// The SOCKS request sent by the client.
 ///
 /// Once the method-dependent subnegotiation has completed, the client
@@ -195,7 +195,7 @@ impl Request {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// The SOCKS request sent by the client.
 ///
 /// Reference (write-only) version of [`Request`],
@@ -204,6 +204,21 @@ pub struct RequestRef<'a> {
     pub version: ProtocolVersion,
     pub command: Command,
     pub destination: &'a Authority,
+}
+
+impl PartialEq<Request> for RequestRef<'_> {
+    fn eq(&self, other: &Request) -> bool {
+        self.version == other.version
+            && self.command == other.command
+            && self.destination.eq(&other.destination)
+    }
+}
+
+impl PartialEq<RequestRef<'_>> for Request {
+    #[inline]
+    fn eq(&self, other: &RequestRef<'_>) -> bool {
+        other == self
+    }
 }
 
 impl<'a> RequestRef<'a> {
@@ -244,7 +259,7 @@ impl RequestRef<'_> {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Initial username-password negotiation starts with the client sending this request.
 ///
 /// Once the SOCKS V5 server has started, and the client has selected the
@@ -277,10 +292,19 @@ impl RequestRef<'_> {
 pub struct UsernamePasswordRequest {
     pub version: UsernamePasswordSubnegotiationVersion,
     pub username: Vec<u8>,
-    pub password: Vec<u8>,
+    pub password: Option<Vec<u8>>,
 }
 
 impl UsernamePasswordRequest {
+    /// Create a new [`UsernamePasswordRequest`].
+    pub fn new(username: impl Into<Vec<u8>>, password: impl Into<Vec<u8>>) -> Self {
+        Self {
+            version: UsernamePasswordSubnegotiationVersion::One,
+            username: username.into(),
+            password: Some(password.into()),
+        }
+    }
+
     /// Read the client [`UsernamePasswordRequest`], decoded from binary format as specified by [RFC 1929] from the reader.
     ///
     /// [RFC 1929]: https://datatracker.ietf.org/doc/html/rfc1929
@@ -306,18 +330,17 @@ impl UsernamePasswordRequest {
                 byte: username_length,
             });
         }
-        let mut username = Vec::with_capacity(username_length as usize);
+        let mut username = vec![0u8; username_length as usize];
         r.read_exact(username.as_mut_slice()).await?;
 
         let password_length = r.read_u8().await?;
-        if password_length == 0 {
-            return Err(ProtocolError::UnexpectedByte {
-                pos: (2 + (username_length as usize)),
-                byte: password_length,
-            });
-        }
-        let mut password = Vec::with_capacity(password_length as usize);
-        r.read_exact(password.as_mut_slice()).await?;
+        let password = if password_length == 0 {
+            None
+        } else {
+            let mut password = vec![0u8; password_length as usize];
+            r.read_exact(password.as_mut_slice()).await?;
+            Some(password)
+        };
 
         Ok(UsernamePasswordRequest {
             version,
@@ -336,13 +359,13 @@ impl UsernamePasswordRequest {
         let self_ref = UsernamePasswordRequestRef {
             version: self.version,
             username: self.username.as_ref(),
-            password: self.password.as_ref(),
+            password: self.password.as_deref(),
         };
         self_ref.write_to(w).await
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Initial username-password negotiation starts with the client sending this request.
 ///
 /// Reference (write-only) version of [`UsernamePasswordRequest`],
@@ -350,7 +373,22 @@ impl UsernamePasswordRequest {
 pub struct UsernamePasswordRequestRef<'a> {
     pub version: UsernamePasswordSubnegotiationVersion,
     pub username: &'a [u8],
-    pub password: &'a [u8],
+    pub password: Option<&'a [u8]>,
+}
+
+impl PartialEq<UsernamePasswordRequest> for UsernamePasswordRequestRef<'_> {
+    fn eq(&self, other: &UsernamePasswordRequest) -> bool {
+        self.version == other.version
+            && self.username == other.username
+            && self.password == other.password.as_deref()
+    }
+}
+
+impl PartialEq<UsernamePasswordRequestRef<'_>> for UsernamePasswordRequest {
+    #[inline]
+    fn eq(&self, other: &UsernamePasswordRequestRef<'_>) -> bool {
+        other == self
+    }
 }
 
 impl<'a> UsernamePasswordRequestRef<'a> {
@@ -358,7 +396,7 @@ impl<'a> UsernamePasswordRequestRef<'a> {
         Self {
             version: UsernamePasswordSubnegotiationVersion::One,
             username,
-            password,
+            password: Some(password),
         }
     }
 
@@ -380,16 +418,92 @@ impl<'a> UsernamePasswordRequestRef<'a> {
     pub fn write_to_buf<B: BufMut>(&self, buf: &mut B) {
         buf.put_u8(self.version.into());
 
-        debug_assert!(self.username.len() <= 255);
+        debug_assert!((1..=255).contains(&self.username.len()));
         buf.put_u8(self.username.len() as u8);
         buf.put_slice(self.username);
 
-        debug_assert!(self.password.len() <= 255);
-        buf.put_u8(self.password.len() as u8);
-        buf.put_slice(self.password);
+        match self.password {
+            Some(password) => {
+                if password.is_empty() {
+                    buf.put_u8(0)
+                } else {
+                    debug_assert!((1..=255).contains(&password.len()));
+                    buf.put_u8(password.len() as u8);
+                    buf.put_slice(password);
+                }
+            }
+            None => buf.put_u8(0),
+        }
     }
 
     fn serialized_len(&self) -> usize {
-        3 + self.username.len() + self.password.len()
+        3 + self.username.len() + self.password.map(|p| p.len()).unwrap_or_default()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::proto::test_write_read_eq;
+    use rama_net::address::{Domain, Host};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_header_write_read_eq() {
+        test_write_read_eq!(
+            Header::new(smallvec::smallvec![SocksMethod::NoAuthenticationRequired]),
+            Header,
+        );
+        test_write_read_eq!(
+            Header::new([SocksMethod::NoAuthenticationRequired, SocksMethod::GSSAPI]),
+            Header,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_request_write_read_eq() {
+        test_write_read_eq!(
+            Request {
+                version: ProtocolVersion::Socks5,
+                command: Command::Connect,
+                destination: Authority::local_ipv6(1450)
+            },
+            Request,
+        );
+
+        test_write_read_eq!(
+            RequestRef {
+                version: ProtocolVersion::Socks5,
+                command: Command::Bind,
+                destination: &Authority::new(Host::Name(Domain::example()), 1450),
+            },
+            Request,
+        );
+    }
+
+    #[tokio::test]
+    async fn test_username_password_request_write_read_eq() {
+        test_write_read_eq!(
+            UsernamePasswordRequest::new("john", "secret"),
+            UsernamePasswordRequest,
+        );
+
+        test_write_read_eq!(
+            UsernamePasswordRequestRef {
+                version: UsernamePasswordSubnegotiationVersion::One,
+                username: b"a",
+                password: Some(b"b"),
+            },
+            UsernamePasswordRequest,
+        );
+
+        test_write_read_eq!(
+            UsernamePasswordRequestRef {
+                version: UsernamePasswordSubnegotiationVersion::One,
+                username: b"a",
+                password: None,
+            },
+            UsernamePasswordRequest,
+        );
     }
 }

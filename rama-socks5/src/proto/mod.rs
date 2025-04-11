@@ -16,3 +16,22 @@ pub use enums::{
 
 mod error;
 pub use error::ProtocolError;
+
+#[cfg(test)]
+macro_rules! test_write_read_eq {
+    ($w:expr, $r:ty $(,)?) => {{
+        let mut buf = Vec::new();
+        let w = $w;
+        w.write_to(&mut buf).await.unwrap();
+        let encoded = format!("{buf:x?}");
+        let mut r = std::io::Cursor::new(buf);
+        let output = match <$r>::read_from(&mut r).await {
+            Ok(output) => output,
+            Err(err) => panic!("unexpected err {err:?} for reading encoded: {encoded}"),
+        };
+        assert_eq!(w, output, "encoded: {encoded}");
+    }};
+}
+
+#[cfg(test)]
+use test_write_read_eq;

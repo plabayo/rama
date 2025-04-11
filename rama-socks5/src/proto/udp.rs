@@ -12,7 +12,7 @@ use super::{
     common::{authority_length, read_authority},
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Layout for each packet sent by a UDP Client (as request) and UDP server (as resonse)..
 ///
 /// A UDP-based client MUST send its datagrams to the UDP relay server at
@@ -96,7 +96,7 @@ impl UdpPacket {
                 byte: data_length,
             });
         }
-        let mut data = Vec::with_capacity(data_length as usize);
+        let mut data = vec![0u8; data_length as usize];
         r.read_exact(data.as_mut_slice()).await?;
 
         Ok(UdpPacket {
@@ -133,5 +133,25 @@ impl UdpPacket {
 
     fn serialized_len(&self) -> usize {
         5 + authority_length(&self.destination) + self.data.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_net::address::Authority;
+
+    use super::*;
+    use crate::proto::test_write_read_eq;
+
+    #[tokio::test]
+    async fn test_udp_packet_write_read_eq() {
+        test_write_read_eq!(
+            UdpPacket {
+                fragment_number: 2,
+                destination: Authority::local_ipv6(45),
+                data: "foo;bar".into(),
+            },
+            UdpPacket
+        );
     }
 }

@@ -10,7 +10,7 @@ use bytes::{BufMut, BytesMut};
 use rama_net::address::Authority;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// The server selects from one of the methods given in METHODS, and
 /// sends a header back containing the selected METHOD and same Protocol vesion.
 ///
@@ -86,7 +86,7 @@ impl Header {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Sent by the server as a reply on an earlier client request.
 ///
 /// The SOCKS request information is sent by the client as soon as it has
@@ -179,7 +179,7 @@ impl Reply {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 /// Response to the username-password request sent by the client.
 ///
 /// he server verifies the supplied UNAME and PASSWD, and sends the
@@ -290,5 +290,42 @@ impl UsernamePasswordResponse {
     #[allow(clippy::unused_self)]
     fn serialized_len(&self) -> usize {
         2
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::proto::test_write_read_eq;
+
+    #[tokio::test]
+    async fn test_header_write_read_eq() {
+        test_write_read_eq!(Header::new(SocksMethod::JSONParameterBlock), Header,);
+    }
+
+    #[tokio::test]
+    async fn test_reply_write_read_eq() {
+        test_write_read_eq!(
+            Reply {
+                version: ProtocolVersion::Socks5,
+                reply: ReplyKind::Succeeded,
+                bind_address: Authority::default_ipv4(4128)
+            },
+            Reply,
+        );
+
+        test_write_read_eq!(Reply::error_reply(ReplyKind::ConnectionNotAllowed), Reply,);
+    }
+
+    #[tokio::test]
+    async fn test_username_password_response_write_read_eq() {
+        test_write_read_eq!(
+            UsernamePasswordResponse::new_success(),
+            UsernamePasswordResponse,
+        );
+        test_write_read_eq!(
+            UsernamePasswordResponse::new_invalid_credentails(),
+            UsernamePasswordResponse,
+        );
     }
 }

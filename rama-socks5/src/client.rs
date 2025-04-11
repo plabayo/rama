@@ -3,7 +3,7 @@ use std::fmt;
 use crate::{
     Socks5Auth,
     proto::{
-        Command, ProtocolError, ReplyKind, SocksMethod,
+        Command, ProtocolError, ReplyKind, SocksMethod, UsernamePasswordSubnegotiationVersion,
         client::{Header, RequestRef, UsernamePasswordRequestRef},
         server,
     },
@@ -222,14 +222,18 @@ impl Client {
 
         match auth {
             Socks5Auth::UsernamePassword { username, password } => {
-                UsernamePasswordRequestRef::new(username, password)
-                    .write_to(stream)
-                    .await
-                    .map_err(|err| {
-                        HandshakeError::io(err).with_context(
-                            "write client sub-negotiation request: username-password auth",
-                        )
-                    })?;
+                UsernamePasswordRequestRef {
+                    version: UsernamePasswordSubnegotiationVersion::One,
+                    username: username.as_ref(),
+                    password: password.as_deref(),
+                }
+                .write_to(stream)
+                .await
+                .map_err(|err| {
+                    HandshakeError::io(err).with_context(
+                        "write client sub-negotiation request: username-password auth",
+                    )
+                })?;
 
                 tracing::trace!(
                     ?methods,

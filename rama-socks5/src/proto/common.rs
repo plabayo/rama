@@ -49,7 +49,7 @@ pub(super) async fn read_authority<R: AsyncRead + Unpin>(
             if n == 0 {
                 return Err(ReadError::UnexpectedByte { pos: 4, byte: n });
             }
-            let mut raw = Vec::with_capacity(n as usize);
+            let mut raw = vec![0u8; n as usize];
             r.read_exact(raw.as_mut_slice()).await?;
             Domain::try_from(raw)?.into()
         }
@@ -87,4 +87,45 @@ pub(super) fn write_authority_to_buf<B: BufMut>(authority: &Authority, buf: &mut
         },
     }
     buf.put_u16(authority.port());
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::proto::test_write_read_eq;
+    use rama_net::address::{Domain, Host};
+    use tokio::io::{AsyncWrite, AsyncWriteExt};
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_authority_write_read_eq() {
+        #[derive(Debug, PartialEq, Eq)]
+        struct SocksAuthority(Authority);
+
+        impl SocksAuthority {
+            async fn read_from<R>(r: &mut R) -> Result<Self, ReadError>
+            where
+                R: AsyncRead + Unpin,
+            {
+                let authority = read_authority(r).await?;
+                Ok(Self(authority))
+            }
+
+            async fn write_to<W>(&self, w: &mut W) -> Result<(), std::io::Error>
+            where
+                W: AsyncWrite + Unpin,
+            {
+                let mut v = Vec::new();
+                write_authority_to_buf(&self.0, &mut v);
+                w.write_all(&v).await
+            }
+        }
+
+        test_write_read_eq!(SocksAuthority(Authority::local_ipv4(1)), SocksAuthority);
+        test_write_read_eq!(SocksAuthority(Authority::local_ipv6(42)), SocksAuthority);
+        test_write_read_eq!(
+            SocksAuthority(Authority::new(Host::Name(Domain::example()), 1450)),
+            SocksAuthority
+        );
+    }
 }

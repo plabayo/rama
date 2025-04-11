@@ -7,7 +7,7 @@ pub enum Socks5Auth {
     /// Reference: [RFC 1928](https://datatracker.ietf.org/doc/html/rfc1929)
     UsernamePassword {
         username: Vec<u8>,
-        password: Vec<u8>,
+        password: Option<Vec<u8>>,
     },
 }
 
@@ -18,7 +18,7 @@ impl Socks5Auth {
     pub fn username_password(username: impl Into<Vec<u8>>, password: impl Into<Vec<u8>>) -> Self {
         Self::UsernamePassword {
             username: username.into(),
-            password: password.into(),
+            password: Some(password.into()),
         }
     }
 
