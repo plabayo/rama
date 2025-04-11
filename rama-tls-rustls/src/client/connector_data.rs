@@ -3,9 +3,11 @@ use crate::dep::rcgen::{self, KeyPair};
 use crate::dep::rustls::RootCertStore;
 use crate::dep::rustls::{ALL_VERSIONS, ClientConfig};
 use crate::key_log::KeyLogFile;
-use rama_core::error::{ErrorContext, OpaqueError};
+use crate::verify::NoServerCertVerifier;
+use rama_core::error::{BoxError, ErrorContext, OpaqueError};
 use rama_net::address::Host;
 use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
+use rustls::client::danger::ServerCertVerifier;
 use std::sync::{Arc, OnceLock};
 
 #[derive(Debug, Clone)]
@@ -41,21 +43,166 @@ impl TlsConnectorData {
     /// on providing auto http connections, meaning supporting
     /// the http connections which `rama` supports out of the box.
     pub fn new_http_auto() -> Result<TlsConnectorData, OpaqueError> {
-        let mut config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
+        Ok(TlsConnectorDataBuilder::new()
+            .with_env_key_logger()?
+            .with_http_versions(&[ApplicationProtocol::HTTP_11, ApplicationProtocol::HTTP_2])
+            .build())
+    }
+
+    /// Create a default [`TlsConnectorData`] that is focussed
+    /// on providing http/1.1 connections.
+    pub fn new_http_1() -> Result<TlsConnectorData, OpaqueError> {
+        Ok(TlsConnectorDataBuilder::new()
+            .with_env_key_logger()?
+            .with_http_versions(&[ApplicationProtocol::HTTP_11])
+            .build())
+    }
+
+    /// Create a default [`TlsConnectorData`] that is focussed
+    /// on providing h2 connections.
+    pub fn new_http_2() -> Result<TlsConnectorData, OpaqueError> {
+        Ok(TlsConnectorDataBuilder::new()
+            .with_env_key_logger()?
+            .with_http_versions(&[ApplicationProtocol::HTTP_2])
+            .build())
+    }
+}
+
+/// [`ClientConfigBuilder`] can be used to construct [`rustls::ClientConfig`] for most common use cases in Rama.
+/// If this doesn't work for your use case, not problem [`TlsConnectorData`] can be created from a raw [`rustls::ClientConfig`]
+pub struct TlsConnectorDataBuilder {
+    client_config: rustls::ClientConfig,
+    server_name: Option<Host>,
+    store_server_certificate_chain: bool,
+}
+
+impl TlsConnectorDataBuilder {
+    /// Create a [`TlsConnectorDataBuilder`] with a starting config of: support for all tls versions, global root
+    /// certificate store, and no client auth
+    pub fn new() -> Self {
+        let config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
             .with_root_certificates(client_root_certs())
             .with_no_client_auth();
+        Self {
+            client_config: config,
+            server_name: None,
+            store_server_certificate_chain: false,
+        }
+    }
 
-        config.alpn_protocols = vec![
-            ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-            ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-        ];
+    /// Create a [`TlsConnectorDataBuilder`] with a starting config of: support for all tls versions, global root
+    /// certificate store, and with client auth
+    pub fn new_with_client_auth(
+        client_cert_chain: Vec<CertificateDer<'static>>,
+        client_priv_key: PrivateKeyDer<'static>,
+    ) -> Result<Self, BoxError> {
+        let config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
+            .with_root_certificates(client_root_certs())
+            .with_client_auth_cert(client_cert_chain, client_priv_key)
+            .map_err(Into::<BoxError>::into)?;
 
+        Ok(Self {
+            client_config: config,
+            server_name: None,
+            store_server_certificate_chain: false,
+        })
+    }
+
+    /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
+    /// and set it in the current config
+    pub fn set_env_key_logger(&mut self) -> Result<&mut Self, OpaqueError> {
         if let Some(path) = KeyLogIntent::Environment.file_path() {
-            let key_logger = Arc::new(KeyLogFile::new(path).unwrap());
-            config.key_log = key_logger;
+            let key_logger = Arc::new(KeyLogFile::new(path)?);
+            self.client_config.key_log = key_logger;
         };
+        Ok(self)
+    }
 
-        Ok(config.into())
+    /// Same as [`Self::set_env_key_logger`] but consuming self
+    pub fn with_env_key_logger(mut self) -> Result<Self, OpaqueError> {
+        self.set_env_key_logger()?;
+        Ok(self)
+    }
+
+    /// Set [`ApplicationProtocol`] supported in alpn extension
+    pub fn set_http_versions(&mut self, versions: &[ApplicationProtocol]) -> &mut Self {
+        self.client_config.alpn_protocols = versions
+            .iter()
+            .map(|version| version.as_bytes().to_vec())
+            .collect();
+
+        self
+    }
+
+    /// Same as [`Self::set_http_versions`] but consuming self
+    pub fn with_http_versions(mut self, versions: &[ApplicationProtocol]) -> Self {
+        self.set_http_versions(versions);
+        self
+    }
+
+    /// Set certificate verifier that will be used to verify certs
+    pub fn set_cert_verifier(&mut self, verifier: Arc<dyn ServerCertVerifier>) -> &mut Self {
+        self.client_config
+            .dangerous()
+            .set_certificate_verifier(verifier);
+        self
+    }
+
+    /// Same as [`Self::set_cert_verifier`] but consuming self
+    pub fn with_cert_verifier(mut self, verifier: Arc<dyn ServerCertVerifier>) -> Self {
+        self.set_cert_verifier(verifier);
+        self
+    }
+
+    /// Set certificate verifier to a custom one that will allow all certificates, resulting
+    /// in certificates not being verified.
+    pub fn set_no_cert_verifier(&mut self) -> &mut Self {
+        self.set_cert_verifier(Arc::new(NoServerCertVerifier::default()))
+    }
+
+    /// Same as [`Self::set_no_cert_verifier`] but consuming self
+    pub fn with_no_cert_verifier(mut self) -> Self {
+        self.set_no_cert_verifier();
+        self
+    }
+
+    /// Set servername that will be used for SNI
+    pub fn set_server_name(&mut self, server_name: Host) -> &mut Self {
+        self.server_name = Some(server_name);
+        self
+    }
+
+    /// Same as [`Self::set_server_name`] but consuming self
+    pub fn with_server_name(mut self, server_name: Host) -> Self {
+        self.set_server_name(server_name);
+        self
+    }
+
+    /// Set server_name on this config to the provided option consuming self
+    pub fn maybe_with_server_name(mut self, server_name: Option<Host>) -> Self {
+        self.server_name = server_name;
+        self
+    }
+
+    /// Set if server certificate should be stored in ctx
+    pub fn set_store_server_certificate_chain(&mut self, value: bool) -> &mut Self {
+        self.store_server_certificate_chain = value;
+        self
+    }
+
+    /// Same as [`Self::set_store_server_certificate_chain`] but consuming self
+    pub fn with_store_server_certificate_chain(mut self, value: bool) -> Self {
+        self.set_store_server_certificate_chain(value);
+        self
+    }
+
+    /// Build [`TlsConnectorData`] from the current config
+    pub fn build(self) -> TlsConnectorData {
+        TlsConnectorData {
+            client_config: Arc::new(self.client_config),
+            server_name: self.server_name,
+            store_server_certificate_chain: self.store_server_certificate_chain,
+        }
     }
 }
 

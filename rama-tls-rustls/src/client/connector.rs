@@ -403,10 +403,7 @@ impl<S, K> TlsConnector<S, K> {
         let connector_data = connector_data
             .or(self.connector_data.clone())
             .unwrap_or(TlsConnectorData::new_http_auto()?);
-        // let connector_data = match connector_data {
-        //     Some(connector_data) => connector_data,
-        //     None => TlsConnectorData::new_http_auto()?,
-        // };
+
         let server_name = rustls_pki_types::ServerName::try_from(
             connector_data.server_name.unwrap_or(server_host),
         )?;

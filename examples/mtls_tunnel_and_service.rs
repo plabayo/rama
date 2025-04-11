@@ -46,17 +46,13 @@ use rama::{
         server::TcpListener,
     },
     tls_rustls::{
-        client::{TlsConnectorData, TlsConnectorLayer},
-        dep::rustls,
-        server::{TlsAcceptorData, TlsAcceptorLayer},
+        client::{TlsConnectorDataBuilder, TlsConnectorLayer, self_signed_client_auth},
+        dep::rustls::{
+            ALL_VERSIONS, RootCertStore,
+            server::{ServerConfig, WebPkiClientVerifier},
+        },
+        server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
     },
-};
-use rama_net::tls::KeyLogIntent;
-use rama_tls_rustls::{
-    client::{client_root_certs, self_signed_client_auth},
-    dep::rustls::{ALL_VERSIONS, ClientConfig, server::WebPkiClientVerifier},
-    key_log::KeyLogFile,
-    verify::NoServerCertVerifier,
 };
 
 // everything else is provided by the standard library, community crates or tokio
@@ -85,52 +81,48 @@ async fn main() {
 
     let shutdown = Shutdown::default();
 
-    // TODO right now this is a rustls example, but we can and should add boring here aswel
-
     let (tls_client_data, tls_server_data) = {
         let (client_cert_chain, client_priv_key) = self_signed_client_auth().unwrap();
+        let client_cert = client_cert_chain[0].clone();
+        let http_versions = &[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11];
 
-        let mut client_conf = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
-            .with_root_certificates(client_root_certs())
-            .with_client_auth_cert(client_cert_chain.clone(), client_priv_key)
-            .unwrap();
+        let tls_client_data =
+            TlsConnectorDataBuilder::new_with_client_auth(client_cert_chain, client_priv_key)
+                .expect("connector with client auth")
+                .with_no_cert_verifier()
+                .with_http_versions(http_versions)
+                .with_server_name(SERVER_AUTHORITY.into_host())
+                .with_env_key_logger()
+                .expect("connector with env keylogger")
+                .build();
 
-        client_conf
-            .dangerous()
-            .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+        // More complex use cases like this aren't directly supported by rama, but that is no problem, we can work with rustls
+        // native configs, so that means if rustls can do it: so can we, and so can you.
+        // We can either directly convert [`rustls::ServerConfig`] into [`TlsAcceptorData`] or we can convert it into
+        // [`TlsAcceptorDataBuilder`] so we can make use of some of the utils rama provides.
 
-        let builder = rustls::ServerConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS);
-        let mut root_cert_storage = rustls::RootCertStore::empty();
-        root_cert_storage.add(client_cert_chain[0].clone()).unwrap();
+        let builder = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS);
+        let mut root_cert_storage = RootCertStore::empty();
+        root_cert_storage.add(client_cert).unwrap();
         let cert_verifier = WebPkiClientVerifier::builder(Arc::new(root_cert_storage))
             .build()
-            .unwrap();
+            .expect("new webpki client verifier");
         let builder = builder.with_client_cert_verifier(cert_verifier);
 
         let (server_cert_chain, server_priv_key) = self_signed_client_auth().unwrap();
-        let mut server_config = builder
+        let server_config = builder
             .with_single_cert(server_cert_chain, server_priv_key)
-            .unwrap();
+            .expect("server config with single cert");
 
-        if let Some(path) = KeyLogIntent::Environment.file_path() {
-            let key_logger = Arc::new(KeyLogFile::new(path).unwrap());
-            server_config.key_log = key_logger.clone();
-            client_conf.key_log = key_logger;
-        };
+        // Directly convert [`rustls::ServerConfig`] to [`TlsAcceptorData`]
+        let _tls_server_data = TlsAcceptorData::from(server_config.clone());
 
-        client_conf.alpn_protocols = vec![
-            ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-            ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-        ];
-        server_config.alpn_protocols = client_conf.alpn_protocols.clone();
-
-        let tls_client_data = TlsConnectorData {
-            client_config: Arc::new(client_conf),
-            server_name: Some(SERVER_AUTHORITY.into_host()),
-            store_server_certificate_chain: false,
-        };
-
-        let tls_server_data = TlsAcceptorData::from(server_config);
+        // Or convert [`rustls::ServerConfig`] to [`TlsAcceptorDataBuilder`] to make use of some of the utils rama provides
+        let tls_server_data = TlsAcceptorDataBuilder::from(server_config)
+            .with_http_versions(http_versions)
+            .with_env_key_logger()
+            .expect("acceptor with env keylogger")
+            .build();
 
         (tls_client_data, tls_server_data)
     };

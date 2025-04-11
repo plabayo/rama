@@ -78,14 +78,9 @@ use rama::{
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::net::tls::KeyLogIntent;
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama::tls_rustls::{
-    client::client_root_certs,
-    dep::rustls::{ALL_VERSIONS, ClientConfig, ServerConfig},
-    key_log::KeyLogFile,
-    server::{TlsAcceptorData, TlsAcceptorLayer, self_signed_server_auth},
-    verify::NoServerCertVerifier,
+    client::TlsConnectorDataBuilder,
+    server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 
 use rama_http::layer::compress_adapter::CompressAdaptLayer;
@@ -119,8 +114,14 @@ async fn main() -> Result<(), BoxError> {
         )
         .init();
 
+    #[cfg(feature = "boring")]
     let mitm_tls_service_data =
-        new_mitm_tls_service_data().context("generate self-signed mitm tls cert")?;
+        new_mitm_tls_service_data_boring().context("generate self-signed mitm tls cert")?;
+
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    let mitm_tls_service_data =
+        new_mitm_tls_service_data_rustls().context("generate self-signed mitm tls cert")?;
+
     let state = State {
         mitm_tls_service_data,
         ua_db: Arc::new(UserAgentDatabase::embedded()),
@@ -267,31 +268,21 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             ]),
             ..Default::default()
         };
+
         client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(config)));
-    }
+    };
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     {
-        let mut config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
-            .with_root_certificates(client_root_certs())
-            .with_no_client_auth();
+        let data = TlsConnectorDataBuilder::new()
+            .with_no_cert_verifier()
+            .with_http_versions(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+            .with_env_key_logger()
+            .expect("with env key logger")
+            .build();
 
-        config
-            .dangerous()
-            .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
-
-        config.alpn_protocols = vec![
-            ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-            ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-        ];
-
-        if let Some(path) = KeyLogIntent::Environment.file_path() {
-            let key_logger = Arc::new(KeyLogFile::new(path).unwrap());
-            config.key_log = key_logger;
-        };
-
-        client.set_tls_connector_layer(TlsConnectorLayer::Rustls(Some(config.into())));
-    }
+        client.set_tls_connector_layer(TlsConnectorLayer::Rustls(Some(data)))
+    };
 
     match client.serve(ctx, req).await {
         Ok(resp) => Ok(resp),
@@ -309,7 +300,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 // an issued TLS cert (if possible via ACME). Or at the very least
 // load it in from memory/file, so that your clients can install the certificate for trust.
 #[cfg(feature = "boring")]
-fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
+fn new_mitm_tls_service_data_boring() -> Result<TlsAcceptorData, OpaqueError> {
     let tls_server_config = ServerConfig {
         application_layer_protocol_negotiation: Some(vec![
             ApplicationProtocol::HTTP_2,
@@ -326,23 +317,16 @@ fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
 }
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-fn new_mitm_tls_service_data() -> Result<TlsAcceptorData, OpaqueError> {
-    let (cert_chain, key_der) = self_signed_server_auth(SelfSignedData {
+fn new_mitm_tls_service_data_rustls() -> Result<TlsAcceptorData, OpaqueError> {
+    let data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
         organisation_name: Some("Example Server Acceptor".to_owned()),
         ..Default::default()
     })
-    .context("create self signed data")?;
+    .context("self signed builder")?
+    .with_http_versions(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+    .with_env_key_logger()
+    .context("with env key logger")?
+    .build();
 
-    let builder = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS);
-    let mut config = builder
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, key_der)
-        .unwrap();
-
-    config.alpn_protocols = vec![
-        ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-        ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-    ];
-
-    Ok(TlsAcceptorData::from(config))
+    Ok(data)
 }

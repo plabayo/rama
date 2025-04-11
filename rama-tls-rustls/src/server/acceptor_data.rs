@@ -1,9 +1,12 @@
 use crate::dep::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
 use crate::dep::rcgen::{self, KeyPair};
-use crate::dep::rustls::{self};
+use crate::dep::rustls::ServerConfig;
+use crate::key_log::KeyLogFile;
 use rama_core::error::{ErrorContext, OpaqueError};
 use rama_net::address::{Domain, Host};
 use rama_net::tls::server::SelfSignedData;
+use rama_net::tls::{ApplicationProtocol, KeyLogIntent};
+use rustls::ALL_VERSIONS;
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]
@@ -12,20 +15,105 @@ use std::sync::Arc;
 /// Created by converting a [`rustls::ServerConfig`] into it directly,
 /// or by trying to turn the _rama_ opiniated [`rama_net::tls::server::ServerConfig`] into it.
 pub struct TlsAcceptorData {
-    pub server_config: Arc<rustls::ServerConfig>,
+    pub(super) server_config: Arc<ServerConfig>,
 }
 
-impl From<rustls::ServerConfig> for TlsAcceptorData {
+impl From<ServerConfig> for TlsAcceptorData {
     #[inline]
-    fn from(value: rustls::ServerConfig) -> Self {
+    fn from(value: ServerConfig) -> Self {
         Arc::new(value).into()
     }
 }
 
-impl From<Arc<rustls::ServerConfig>> for TlsAcceptorData {
-    fn from(value: Arc<rustls::ServerConfig>) -> Self {
+impl From<Arc<ServerConfig>> for TlsAcceptorData {
+    fn from(value: Arc<ServerConfig>) -> Self {
         Self {
             server_config: value,
+        }
+    }
+}
+
+/// [`ClientConfigBuilder`] can be used to construct [`rustls::ClientConfig`] for most common use cases in Rama.
+/// If this doesn't work for your use case, not problem [`TlsConnectorData`] can be created from a raw [`rustls::ClientConfig`]
+pub struct TlsAcceptorDataBuilder {
+    server_config: ServerConfig,
+}
+
+impl From<ServerConfig> for TlsAcceptorDataBuilder {
+    fn from(value: ServerConfig) -> Self {
+        Self {
+            server_config: value,
+        }
+    }
+}
+
+impl TlsAcceptorDataBuilder {
+    /// Create a [`TlsAcceptorDataBuilder`] support all tls versions, using no client auth, and the
+    /// provided certificate chain and private key for the server
+    pub fn new(
+        cert_chain: Vec<CertificateDer<'static>>,
+        key_der: PrivateKeyDer<'static>,
+    ) -> Result<Self, OpaqueError> {
+        let config = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, key_der)
+            .context("new tls acceptor builder with single cert")?;
+
+        Ok(Self {
+            server_config: config,
+        })
+    }
+
+    /// Create a [`TlsAcceptorDataBuilder`] support all tls versions, using no client auth, and a self
+    /// generated certificate chain and private key
+    pub fn new_self_signed(data: SelfSignedData) -> Result<Self, OpaqueError> {
+        let (cert_chain, key_der) = self_signed_server_auth(data)?;
+        let config = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS)
+            .with_no_client_auth()
+            .with_single_cert(cert_chain, key_der)
+            .context("new tls acceptor builder with self signed data")?;
+
+        Ok(Self {
+            server_config: config,
+        })
+    }
+
+    /// If [`KeyLogIntent::Environment`] is set to a path, create a key logger that will write to that path
+    /// and set it in the current config
+    pub fn set_env_key_logger(&mut self) -> Result<&mut Self, OpaqueError> {
+        if let Some(path) = KeyLogIntent::Environment.file_path() {
+            let key_logger = Arc::new(KeyLogFile::new(path)?);
+            self.server_config.key_log = key_logger;
+        };
+        Ok(self)
+    }
+
+    /// Same as [`Self::set_env_key_logger`] but consuming self
+    pub fn with_env_key_logger(mut self) -> Result<Self, OpaqueError> {
+        self.set_env_key_logger()?;
+        Ok(self)
+    }
+
+    /// Set [`ApplicationProtocol`] supported in alpn extension
+    pub fn set_http_versions(&mut self, versions: &[ApplicationProtocol]) -> &mut Self {
+        self.server_config.alpn_protocols = versions
+            .iter()
+            .map(|version| version.as_bytes().to_vec())
+            .collect();
+
+        self
+    }
+
+    /// Same as [`Self::set_http_versions`] but consuming self
+    pub fn with_http_versions(mut self, versions: &[ApplicationProtocol]) -> Self {
+        self.set_http_versions(versions);
+        self
+    }
+
+    /// Build [`TlsAcceptorData`] from the current config
+    pub fn build(self) -> TlsAcceptorData {
+        TlsAcceptorData {
+            server_config: Arc::new(self.server_config),
         }
     }
 }

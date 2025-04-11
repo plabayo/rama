@@ -56,8 +56,7 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    tls_rustls::dep::rustls,
-    tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer, self_signed_server_auth},
+    tls_rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 use rama_net::tls::server::SelfSignedData;
 // use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
@@ -79,15 +78,11 @@ async fn main() {
         )
         .init();
 
-    let builder = rustls::ServerConfig::builder_with_protocol_versions(rustls::ALL_VERSIONS);
-    let (cert_chain, key_der) = self_signed_server_auth(SelfSignedData::default()).unwrap();
-
-    let r = builder
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, key_der)
-        .unwrap();
-
-    let acceptor_data = TlsAcceptorData::from(r);
+    let acceptor_data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData::default())
+        .expect("tls acceptor with self signed data")
+        .with_env_key_logger()
+        .expect("with env key logger")
+        .build();
 
     let shutdown = Shutdown::default();
 
