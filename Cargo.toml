@@ -27,7 +27,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0-alpha.8"
+version = "0.2.0-alpha.9"
 license = "MIT OR Apache-2.0"
 edition = "2024"
 repository = "https://github.com/plabayo/rama"
@@ -45,7 +45,7 @@ md5 = "0.7.0"
 brotli = "7"
 bytes = "1"
 clap = { version = "4.5.35", features = ["derive"] }
-crossterm = "0.28"
+crossterm = "0.29"
 csv = "1.3.1"
 flate2 = "1.1"
 futures-lite = "2.6.0"
@@ -130,7 +130,7 @@ venndb = "0.5.0"
 unicode-normalization = "0.1.24"
 iri-string = "0.7.8"
 escargot = "0.5.13"
-divan = "0.1.17"
+divan = "0.1.21"
 webpki-roots = "0.26.8"
 terminal-prompt = "0.2.3"
 parking_lot = "0.12.3"
@@ -150,14 +150,14 @@ walkdir = "2.5.0"
 tokio-postgres = "0.7.13"
 env_logger = "0.11.8"
 httparse = "1.10"
-smallvec = { version = "1.14", features = ["const_generics", "const_new"] }
+smallvec = { version = "1.15", features = ["const_generics", "const_new"] }
 itoa = "1"
 want = "0.3"
 futures-util = "0.3"
 futures-channel = "0.3"
 sha2 = "0.10.8"
 jemallocator = { package = "tikv-jemallocator", version = "0.6" }
-mimalloc = { version = "0.1.45", default-features = false }
+mimalloc = { version = "0.1.46", default-features = false }
 chrono = "0.4.40"
 smol_str = "0.3"
 
@@ -256,20 +256,20 @@ base64 = { workspace = true, optional = true }
 bytes = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
 matchit = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.8", path = "rama-core" }
-rama-dns = { version = "0.2.0-alpha.8", path = "rama-dns", optional = true }
-rama-haproxy = { version = "0.2.0-alpha.8", path = "rama-haproxy", optional = true }
-rama-http = { version = "0.2.0-alpha.8", path = "rama-http", optional = true }
-rama-http-backend = { version = "0.2.0-alpha.8", path = "rama-http-backend", optional = true }
-rama-http-core = { version = "0.2.0-alpha.8", path = "rama-http-core", optional = true }
-rama-net = { version = "0.2.0-alpha.8", path = "rama-net", optional = true }
-rama-proxy = { version = "0.2.0-alpha.8", path = "rama-proxy", optional = true }
-rama-tcp = { version = "0.2.0-alpha.8", path = "rama-tcp", optional = true }
-rama-tls = { version = "0.2.0-alpha.8", path = "rama-tls", optional = true }
-rama-tls-rustls = { version = "0.2.0-alpha.8", path = "rama-tls-rustls", optional = true }
-rama-ua = { version = "0.2.0-alpha.8", path = "rama-ua", optional = true }
-rama-udp = { version = "0.2.0-alpha.8", path = "rama-udp", optional = true }
-rama-utils = { version = "0.2.0-alpha.8", path = "rama-utils" }
+rama-core = { version = "0.2.0-alpha.9", path = "rama-core" }
+rama-dns = { version = "0.2.0-alpha.9", path = "rama-dns", optional = true }
+rama-haproxy = { version = "0.2.0-alpha.9", path = "rama-haproxy", optional = true }
+rama-http = { version = "0.2.0-alpha.9", path = "rama-http", optional = true }
+rama-http-backend = { version = "0.2.0-alpha.9", path = "rama-http-backend", optional = true }
+rama-http-core = { version = "0.2.0-alpha.9", path = "rama-http-core", optional = true }
+rama-net = { version = "0.2.0-alpha.9", path = "rama-net", optional = true }
+rama-proxy = { version = "0.2.0-alpha.9", path = "rama-proxy", optional = true }
+rama-tcp = { version = "0.2.0-alpha.9", path = "rama-tcp", optional = true }
+rama-tls = { version = "0.2.0-alpha.9", path = "rama-tls", optional = true }
+rama-tls-rustls = { version = "0.2.0-alpha.9", path = "rama-tls-rustls", optional = true }
+rama-ua = { version = "0.2.0-alpha.9", path = "rama-ua", optional = true }
+rama-udp = { version = "0.2.0-alpha.9", path = "rama-udp", optional = true }
+rama-utils = { version = "0.2.0-alpha.9", path = "rama-utils" }
 serde = { workspace = true, optional = true }
 serde_html_form = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
