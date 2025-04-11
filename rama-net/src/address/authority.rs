@@ -22,6 +22,91 @@ impl Authority {
         Authority { host, port }
     }
 
+    /// creates a new local ipv4 [`Authority`] for the given port
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::local_ipv4(8080);
+    /// assert_eq!("127.0.0.1:8080", addr.to_string());
+    /// ```
+    pub const fn local_ipv4(port: u16) -> Self {
+        Authority {
+            host: Host::Address(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1))),
+            port,
+        }
+    }
+
+    /// creates a new local ipv6 [`Authority`] for the given port.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::local_ipv6(8080);
+    /// assert_eq!("[::1]:8080", addr.to_string());
+    /// ```
+    pub const fn local_ipv6(port: u16) -> Self {
+        Authority {
+            host: Host::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 1))),
+            port,
+        }
+    }
+
+    /// creates a new default ipv4 [`Authority`] for the given port
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::default_ipv4(8080);
+    /// assert_eq!("0.0.0.0:8080", addr.to_string());
+    /// ```
+    pub const fn default_ipv4(port: u16) -> Self {
+        Authority {
+            host: Host::Address(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0))),
+            port,
+        }
+    }
+
+    /// creates a new default ipv6 [`Authority`] for the given port.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::default_ipv6(8080);
+    /// assert_eq!("[::]:8080", addr.to_string());
+    /// ```
+    pub const fn default_ipv6(port: u16) -> Self {
+        Authority {
+            host: Host::Address(IpAddr::V6(Ipv6Addr::new(0, 0, 0, 0, 0, 0, 0, 0))),
+            port,
+        }
+    }
+
+    /// creates a new broadcast ipv4 [`Authority`] for the given port
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rama_net::address::Authority;
+    ///
+    /// let addr = Authority::broadcast_ipv4(8080);
+    /// assert_eq!("255.255.255.255:8080", addr.to_string());
+    /// ```
+    pub const fn broadcast_ipv4(port: u16) -> Self {
+        Authority {
+            host: Host::Address(IpAddr::V4(Ipv4Addr::new(255, 255, 255, 255))),
+            port,
+        }
+    }
+
     /// Gets the [`Host`] reference.
     pub fn host(&self) -> &Host {
         &self.host

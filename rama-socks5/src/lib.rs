@@ -17,5 +17,13 @@
 #![cfg_attr(test, allow(clippy::float_cmp))]
 #![cfg_attr(not(test), warn(clippy::print_stdout, clippy::dbg_macro))]
 
-/// TODO
-pub const PLACEHOLDER: bool = true;
+pub mod proto;
+
+mod client;
+pub use client::Client as Socks5Client;
+
+pub mod server;
+pub use server::Socks5Acceptor;
+
+mod auth;
+pub use auth::Socks5Auth;
