@@ -76,6 +76,12 @@ pub struct TlsConnectorDataBuilder {
     store_server_certificate_chain: bool,
 }
 
+impl Default for TlsConnectorDataBuilder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl TlsConnectorDataBuilder {
     /// Create a [`TlsConnectorDataBuilder`] with a starting config of: support for all tls versions, global root
     /// certificate store, and no client auth
