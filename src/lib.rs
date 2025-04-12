@@ -368,7 +368,7 @@ pub use ::rama_net as net;
 #[cfg(feature = "http")]
 pub mod http;
 
-#[cfg(any(feature = "proxy", feature = "haproxy"))]
+#[cfg(any(feature = "proxy", feature = "haproxy", feature = "socks5"))]
 pub mod proxy {
     //! rama proxy support
 
@@ -379,6 +379,10 @@ pub mod proxy {
     #[cfg(feature = "haproxy")]
     #[doc(inline)]
     pub use ::rama_haproxy as haproxy;
+
+    #[cfg(feature = "socks5")]
+    #[doc(inline)]
+    pub use ::rama_socks5 as socks5;
 }
 
 #[cfg(feature = "ua")]

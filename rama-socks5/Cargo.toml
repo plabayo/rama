@@ -19,8 +19,8 @@ default = []
 [dependencies]
 bytes = { workspace = true }
 rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.8", path = "../rama-net" }
-rama-tcp = { version = "0.2.0-alpha.8", path = "../rama-tcp" }
+rama-net = { version = "0.2.0-alpha.8", path = "../rama-net", features = ["http"] }
+rama-tcp = { version = "0.2.0-alpha.8", path = "../rama-tcp", features = ["http"] }
 rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
 smallvec = { workspace = true }
 tokio = { workspace = true }

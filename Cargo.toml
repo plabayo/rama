@@ -240,12 +240,13 @@ http = ["net", "dep:rama-http", "net", "ua", "rama-net/http", "rama-tcp/http"]
 http-full = ["http", "tcp", "dep:rama-http-backend", "dep:rama-http-core", "ua-embed-profiles", "compression"]
 proxy = ["dep:rama-proxy"]
 haproxy = ["dep:rama-haproxy"]
+socks5 = ["dep:rama-socks5", "rama-net/http", "rama-tcp/http"]
 ua = ["dep:rama-ua"]
 ua-embed-profiles = ["ua", "rama-ua/embed-profiles"]
 proxy-memory-db = ["proxy", "rama-proxy/memory-db", "rama-net/venndb"]
 proxy-live-update = ["proxy", "rama-proxy/live-update"]
 proxy-csv = ["proxy", "rama-proxy/csv"]
-proxy-full = ["proxy-memory-db", "proxy-live-update", "proxy-csv", "haproxy"]
+proxy-full = ["proxy-memory-db", "proxy-live-update", "proxy-csv", "haproxy", "socks5"]
 
 [build-dependencies]
 rustversion = { workspace = true }
@@ -263,6 +264,7 @@ rama-http-backend = { version = "0.2.0-alpha.9", path = "rama-http-backend", opt
 rama-http-core = { version = "0.2.0-alpha.9", path = "rama-http-core", optional = true }
 rama-net = { version = "0.2.0-alpha.9", path = "rama-net", optional = true }
 rama-proxy = { version = "0.2.0-alpha.9", path = "rama-proxy", optional = true }
+rama-socks5 = { version = "0.2.0-alpha.9", path = "rama-socks5", optional = true }
 rama-tcp = { version = "0.2.0-alpha.9", path = "rama-tcp", optional = true }
 rama-tls = { version = "0.2.0-alpha.9", path = "rama-tls", optional = true }
 rama-ua = { version = "0.2.0-alpha.9", path = "rama-ua", optional = true }

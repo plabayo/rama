@@ -2377,6 +2377,7 @@ dependencies = [
  "rama-http-core",
  "rama-net",
  "rama-proxy",
+ "rama-socks5",
  "rama-tcp",
  "rama-tls",
  "rama-ua",
