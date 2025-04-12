@@ -43,7 +43,7 @@ bitflags = "2.9"
 md5 = "0.7.0"
 brotli = "7"
 bytes = "1"
-clap = { version = "4.5.35", features = ["derive"] }
+clap = { version = "4.5.36", features = ["derive"] }
 crossterm = "0.29"
 csv = "1.3.1"
 flate2 = "1.1"
