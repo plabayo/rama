@@ -36,7 +36,7 @@ use rama::net::tls::ApplicationProtocol;
 #[cfg(feature = "boring")]
 use rama::net::tls::client::{ClientConfig, ClientHelloExtension, ServerVerifyMode};
 
-#[cfg(feature = "rustls")]
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama_tls_rustls::client::TlsConnectorDataBuilder;
 
 pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxError>;

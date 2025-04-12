@@ -7,18 +7,12 @@ use rama::{
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
-        tls::{DataEncoding, KeyLogIntent, client::NegotiatedTlsParameters},
+        tls::{DataEncoding, client::NegotiatedTlsParameters},
     },
     tcp::client::{Request, service::TcpConnector},
     tls::boring::dep::boring::x509::X509,
-    tls_rustls::{
-        client::{TlsConnectorData, TlsConnectorDataBuilder, TlsConnectorLayer, client_root_certs},
-        dep::rustls::{ALL_VERSIONS, ClientConfig},
-        key_log::KeyLogFile,
-        verify::NoServerCertVerifier,
-    },
+    tls_rustls::client::{TlsConnectorDataBuilder, TlsConnectorLayer},
 };
-use std::sync::Arc;
 use tokio::net::TcpStream;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};

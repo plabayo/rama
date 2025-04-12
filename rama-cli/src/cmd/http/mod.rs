@@ -9,7 +9,7 @@ use rama::{
     http::{
         Request, Response,
         client::{
-            EasyHttpWebClient, TlsConnectorLayer,
+            EasyHttpWebClient, TlsConnectorConfig,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         layer::{
