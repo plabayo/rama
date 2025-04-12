@@ -16,20 +16,20 @@ use std::sync::{Arc, OnceLock};
 /// Created by converting a [`rustls::ClientConfig`] into it directly,
 /// or by using [`TlsConnectorDataBuilder`] to build this in a more ergonomic way.
 pub struct TlsConnectorData {
-    pub client_config: Arc<rustls::ClientConfig>,
+    pub client_config: Arc<ClientConfig>,
     pub server_name: Option<Host>,
     pub store_server_certificate_chain: bool,
 }
 
-impl From<rustls::ClientConfig> for TlsConnectorData {
+impl From<ClientConfig> for TlsConnectorData {
     #[inline]
-    fn from(value: rustls::ClientConfig) -> Self {
+    fn from(value: ClientConfig) -> Self {
         Arc::new(value).into()
     }
 }
 
-impl From<Arc<rustls::ClientConfig>> for TlsConnectorData {
-    fn from(value: Arc<rustls::ClientConfig>) -> Self {
+impl From<Arc<ClientConfig>> for TlsConnectorData {
+    fn from(value: Arc<ClientConfig>) -> Self {
         Self {
             client_config: value,
             server_name: None,
@@ -71,7 +71,7 @@ impl TlsConnectorData {
 /// [`ClientConfigBuilder`] can be used to construct [`rustls::ClientConfig`] for most common use cases in Rama.
 /// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ClientConfig`]
 pub struct TlsConnectorDataBuilder {
-    client_config: rustls::ClientConfig,
+    pub client_config: rustls::ClientConfig,
     server_name: Option<Host>,
     store_server_certificate_chain: bool,
 }
@@ -79,6 +79,15 @@ pub struct TlsConnectorDataBuilder {
 impl Default for TlsConnectorDataBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl From<ClientConfig> for TlsConnectorDataBuilder {
+    fn from(value: ClientConfig) -> Self {
+        Self {
+            client_config: value,
+            ..Default::default()
+        }
     }
 }
 

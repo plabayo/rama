@@ -36,7 +36,7 @@ impl From<Arc<ServerConfig>> for TlsAcceptorData {
 /// [`TlsAcceptorDataBuilder`] can be used to construct [`rustls::ServerConfig`] for most common use cases in Rama.
 /// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ServerConfig`]
 pub struct TlsAcceptorDataBuilder {
-    server_config: ServerConfig,
+    pub server_config: ServerConfig,
 }
 
 impl From<ServerConfig> for TlsAcceptorDataBuilder {
