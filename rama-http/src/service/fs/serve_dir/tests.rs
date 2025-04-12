@@ -472,6 +472,25 @@ async fn access_space_percent_encoded_uri_path() {
 }
 
 #[tokio::test]
+async fn read_partial_empty() {
+    let svc = ServeDir::new("../test-files");
+
+    let req = Request::builder()
+        .uri("/empty.txt")
+        .header("Range", "bytes=0-")
+        .body(Body::empty())
+        .unwrap();
+
+    let res = svc.serve(Context::default(), req).await.unwrap();
+    assert_eq!(res.status(), StatusCode::PARTIAL_CONTENT);
+    assert_eq!(res.headers()["content-length"], "0");
+    assert_eq!(res.headers()["content-range"], "bytes 0-0/0");
+
+    let body = res.into_body().collect().await.unwrap().to_bytes();
+    assert!(body.is_empty());
+}
+
+#[tokio::test]
 async fn read_partial_in_bounds() {
     let svc = ServeDir::new("..");
     let bytes_start_incl = 9;
