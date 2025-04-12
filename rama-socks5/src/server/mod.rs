@@ -32,7 +32,7 @@ pub use udp::Socks5UdpAssociator;
 /// Socks5 server implementation of [RFC 1928]
 ///
 /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
-pub struct Socks5Acceptor<C = (), B = (), U = ()> {
+pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = ()> {
     connector: C,
     binder: B,
     udp_associator: U,
@@ -42,7 +42,7 @@ pub struct Socks5Acceptor<C = (), B = (), U = ()> {
     auth: Option<Socks5Auth>,
 }
 
-impl Socks5Acceptor {
+impl Socks5Acceptor<(), (), ()> {
     pub fn new() -> Self {
         Self {
             connector: (),
@@ -73,7 +73,7 @@ impl<B, U> Socks5Acceptor<(), B, U> {
     }
 }
 
-impl Default for Socks5Acceptor<DefaultConnector, (), ()> {
+impl Default for Socks5Acceptor {
     #[inline]
     fn default() -> Self {
         Socks5Acceptor::new().with_default_connector()
