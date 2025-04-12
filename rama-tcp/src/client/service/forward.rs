@@ -83,7 +83,10 @@ where
     }
 }
 
-impl Forwarder<super::TcpConnector, ()> {
+/// Default [`Forwarder`].
+pub type DefaultForwarder = Forwarder<super::TcpConnector, ()>;
+
+impl DefaultForwarder {
     /// Create a new static forwarder for the given target [`Authority`]
     pub fn new(target: impl Into<Authority>) -> Self {
         Self {

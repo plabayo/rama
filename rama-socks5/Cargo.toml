@@ -20,6 +20,7 @@ default = []
 bytes = { workspace = true }
 rama-core = { version = "0.2.0-alpha.8", path = "../rama-core" }
 rama-net = { version = "0.2.0-alpha.8", path = "../rama-net" }
+rama-tcp = { version = "0.2.0-alpha.8", path = "../rama-tcp" }
 rama-utils = { version = "0.2.0-alpha.8", path = "../rama-utils" }
 smallvec = { workspace = true }
 tokio = { workspace = true }

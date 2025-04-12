@@ -1,4 +1,6 @@
 //! Socks5 Server Implementation for Rama.
+//!
+//! TODO: add more helpful in-depth comment here
 
 use crate::{
     Socks5Auth,
@@ -12,7 +14,14 @@ use rama_net::stream::Stream;
 use std::fmt;
 
 mod connect;
-pub use connect::Socks5Connector;
+pub use connect::{
+    Connector, DefaultConnector, ProxyRequest, Socks5Connector, StreamForwardService,
+};
+
+// TODO:
+// - add good doc comments
+// - move primitive connect types to rama-net
+// - use these primitive types in rama-socks5 as well as rama-tcp (proxy)
 
 mod bind;
 pub use bind::Socks5Binder;
@@ -31,6 +40,44 @@ pub struct Socks5Acceptor<C = (), B = (), U = ()> {
     // TODO: replace with proper auth support
     // <https://github.com/plabayo/rama/issues/496>
     auth: Option<Socks5Auth>,
+}
+
+impl Socks5Acceptor {
+    pub fn new() -> Self {
+        Self {
+            connector: (),
+            binder: (),
+            udp_associator: (),
+            auth: None,
+        }
+    }
+}
+
+impl<C, B, U> Socks5Acceptor<C, B, U> {
+    rama_utils::macros::generate_field_setters!(auth, Socks5Auth);
+}
+
+impl<B, U> Socks5Acceptor<(), B, U> {
+    pub fn with_connector<C>(self, connector: C) -> Socks5Acceptor<C, B, U> {
+        Socks5Acceptor {
+            connector,
+            binder: self.binder,
+            udp_associator: self.udp_associator,
+            auth: self.auth,
+        }
+    }
+
+    #[inline]
+    pub fn with_default_connector(self) -> Socks5Acceptor<DefaultConnector, B, U> {
+        self.with_connector(DefaultConnector::default())
+    }
+}
+
+impl Default for Socks5Acceptor<DefaultConnector, (), ()> {
+    #[inline]
+    fn default() -> Self {
+        Socks5Acceptor::new().with_default_connector()
+    }
 }
 
 impl<C: fmt::Debug, B: fmt::Debug, U: fmt::Debug> fmt::Debug for Socks5Acceptor<C, B, U> {
@@ -84,6 +131,13 @@ impl Error {
         }
     }
 
+    fn service(error: impl Into<BoxError>) -> Self {
+        Self {
+            kind: ErrorKind::Service(error.into()),
+            context: None,
+        }
+    }
+
     fn with_context(mut self, context: &'static str) -> Self {
         self.context = Some(context);
         self
@@ -95,7 +149,6 @@ enum ErrorKind {
     IO(std::io::Error),
     Protocol(ProtocolError),
     Aborted(&'static str),
-    #[expect(dead_code)]
     Service(BoxError),
 }
 
@@ -141,14 +194,12 @@ impl std::error::Error for Error {
 
 impl<C, B, U> Socks5Acceptor<C, B, U>
 where
-    C: Socks5Connector,
     B: Socks5Binder,
     U: Socks5UdpAssociator,
 {
-    rama_utils::macros::generate_field_setters!(auth, Socks5Auth);
-
     pub async fn accept<S, State>(&self, ctx: Context<State>, mut stream: S) -> Result<(), Error>
     where
+        C: Socks5Connector<S, State>,
         S: Stream + Unpin,
         State: Clone + Send + Sync + 'static,
     {
