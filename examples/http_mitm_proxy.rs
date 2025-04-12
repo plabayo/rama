@@ -43,7 +43,7 @@ use rama::{
     error::{BoxError, ErrorContext, OpaqueError},
     http::{
         Body, IntoResponse, Request, Response, StatusCode,
-        client::{EasyHttpWebClient, TlsConnectorLayer},
+        client::{EasyHttpWebClient, TlsConnectorConfig},
         layer::{
             map_response_body::MapResponseBodyLayer,
             proxy_auth::ProxyAuthLayer,
@@ -269,7 +269,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             ..Default::default()
         };
 
-        client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(config)));
+        client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(config)));
     };
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
@@ -281,7 +281,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             .expect("with env key logger")
             .build();
 
-        client.set_tls_connector_layer(TlsConnectorLayer::Rustls(Some(data)))
+        client.set_tls_connector_config(TlsConnectorConfig::Rustls(Some(data)))
     };
 
     match client.serve(ctx, req).await {

@@ -1,7 +1,5 @@
 #![allow(clippy::print_stdout)]
 
-use std::sync::Arc;
-
 use clap::Args;
 use rama::{
     Context, Layer, Service,
@@ -14,12 +12,13 @@ use rama::{
     tcp::client::{Request, service::TcpConnector},
     tls::boring::dep::boring::x509::X509,
     tls_rustls::{
-        client::{TlsConnectorData, TlsConnectorLayer, client_root_certs},
+        client::{TlsConnectorData, TlsConnectorDataBuilder, TlsConnectorLayer, client_root_certs},
         dep::rustls::{ALL_VERSIONS, ClientConfig},
         key_log::KeyLogFile,
         verify::NoServerCertVerifier,
     },
 };
+use std::sync::Arc;
 use tokio::net::TcpStream;
 use tracing::level_filters::LevelFilter;
 use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberInitExt};
@@ -60,25 +59,15 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
 
     tracing::info!("Connecting to: {}", authority);
 
-    let mut client_config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
-        .with_root_certificates(client_root_certs())
-        .with_no_client_auth();
+    let mut builder = TlsConnectorDataBuilder::new()
+        .with_env_key_logger()?
+        .with_store_server_certificate_chain(true);
 
     if cfg.insecure {
-        client_config
-            .dangerous()
-            .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+        builder.set_no_cert_verifier();
     }
 
-    if let Some(path) = KeyLogIntent::Environment.file_path() {
-        client_config.key_log = Arc::new(KeyLogFile::new(path).unwrap());
-    };
-
-    let tls_client_data = TlsConnectorData {
-        client_config: Arc::new(client_config),
-        server_name: None,
-        store_server_certificate_chain: true,
-    };
+    let tls_client_data = builder.build();
 
     let tcp_connector = TcpConnector::new();
     let loggin_service = LoggingLayer.layer(tcp_connector);

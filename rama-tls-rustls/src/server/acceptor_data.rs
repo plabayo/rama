@@ -13,7 +13,7 @@ use std::sync::Arc;
 /// Internal data used as configuration/input for the [`super::TlsAcceptorService`].
 ///
 /// Created by converting a [`rustls::ServerConfig`] into it directly,
-/// or by trying to turn the _rama_ opiniated [`rama_net::tls::server::ServerConfig`] into it.
+/// or by using [`TlsAcceptorDataBuilder`] to create this in a more ergonomic way.
 pub struct TlsAcceptorData {
     pub(super) server_config: Arc<ServerConfig>,
 }
@@ -33,8 +33,8 @@ impl From<Arc<ServerConfig>> for TlsAcceptorData {
     }
 }
 
-/// [`ClientConfigBuilder`] can be used to construct [`rustls::ClientConfig`] for most common use cases in Rama.
-/// If this doesn't work for your use case, not problem [`TlsConnectorData`] can be created from a raw [`rustls::ClientConfig`]
+/// [`TlsAcceptorDataBuilder`] can be used to construct [`rustls::ServerConfig`] for most common use cases in Rama.
+/// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ServerConfig`]
 pub struct TlsAcceptorDataBuilder {
     server_config: ServerConfig,
 }

@@ -14,7 +14,7 @@ use std::sync::{Arc, OnceLock};
 /// Internal data used as configuration/input for the [`super::HttpsConnector`].
 ///
 /// Created by converting a [`rustls::ClientConfig`] into it directly,
-/// or by trying to turn the _rama_ opiniated [`rama_net::tls::client::ClientConfig`] into it.
+/// or by using [`TlsConnectorDataBuilder`] to build this in a more ergonomic way.
 pub struct TlsConnectorData {
     pub client_config: Arc<rustls::ClientConfig>,
     pub server_name: Option<Host>,
@@ -69,7 +69,7 @@ impl TlsConnectorData {
 }
 
 /// [`ClientConfigBuilder`] can be used to construct [`rustls::ClientConfig`] for most common use cases in Rama.
-/// If this doesn't work for your use case, not problem [`TlsConnectorData`] can be created from a raw [`rustls::ClientConfig`]
+/// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ClientConfig`]
 pub struct TlsConnectorDataBuilder {
     client_config: rustls::ClientConfig,
     server_name: Option<Host>,

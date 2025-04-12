@@ -13,7 +13,6 @@ use rama::{
         boring::dep::boring::{hash::MessageDigest, nid::Nid, ssl::SslRef},
     },
 };
-
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_postgres::tls::{self, ChannelBinding, MakeTlsConnect, TlsConnect};
 

@@ -7,7 +7,7 @@ use rama::{
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::{
         Request, Response,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, TlsConnectorConfig},
         layer::{
             follow_redirect::FollowRedirectLayer,
             required_header::AddRequiredRequestHeadersLayer,
@@ -19,7 +19,6 @@ use rama::{
     service::BoxService,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_http_backend::client::TlsConnectorLayer;
 use std::{
     process::{Child, ExitStatus},
     sync::Once,
@@ -37,18 +36,8 @@ use rama::net::tls::ApplicationProtocol;
 #[cfg(feature = "boring")]
 use rama::net::tls::client::{ClientConfig, ClientHelloExtension, ServerVerifyMode};
 
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::{
-    net::tls::KeyLogIntent,
-    tls_rustls::{
-        client::client_root_certs,
-        dep::rustls::{ALL_VERSIONS, ClientConfig},
-        key_log::KeyLogFile,
-        verify::NoServerCertVerifier,
-    },
-};
-#[cfg(all(feature = "rustls", not(feature = "boring")))]
-use std::sync::Arc;
+#[cfg(feature = "rustls")]
+use rama_tls_rustls::client::TlsConnectorDataBuilder;
 
 pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
@@ -114,7 +103,7 @@ where
 
         #[cfg(feature = "boring")]
         {
-            inner_client.set_tls_connector_layer(TlsConnectorLayer::Boring(Some(ClientConfig {
+            inner_client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(ClientConfig {
                 server_verify_mode: Some(ServerVerifyMode::Disable),
                 extensions: Some(vec![
                     ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
@@ -125,7 +114,7 @@ where
                 ..Default::default()
             })));
 
-            inner_client.set_proxy_tls_connector_layer(TlsConnectorLayer::Boring(Some(
+            inner_client.set_proxy_tls_connector_config(TlsConnectorConfig::Boring(Some(
                 ClientConfig {
                     server_verify_mode: Some(ServerVerifyMode::Disable),
                     ..Default::default()
@@ -135,33 +124,22 @@ where
 
         #[cfg(all(feature = "rustls", not(feature = "boring")))]
         {
-            let create_config = || {
-                let mut config = ClientConfig::builder_with_protocol_versions(ALL_VERSIONS)
-                    .with_root_certificates(client_root_certs())
-                    .with_no_client_auth();
+            let data = TlsConnectorDataBuilder::new()
+                .with_no_cert_verifier()
+                .with_http_versions(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+                .with_env_key_logger()
+                .expect("connector with env keylogger")
+                .build();
 
-                config
-                    .dangerous()
-                    .set_certificate_verifier(Arc::new(NoServerCertVerifier::default()));
+            let proxy_data = TlsConnectorDataBuilder::new()
+                .with_no_cert_verifier()
+                .with_env_key_logger()
+                .expect("connector with env keylogger")
+                .build();
 
-                if let Some(path) = KeyLogIntent::Environment.file_path() {
-                    config.key_log = Arc::new(KeyLogFile::new(path).unwrap());
-                };
-                config
-            };
-
-            let mut config = create_config();
-            let proxy_config = create_config();
-
-            config.alpn_protocols = vec![
-                ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-                ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-            ];
-
-            inner_client.set_tls_connector_layer(TlsConnectorLayer::Rustls(Some(config.into())));
-            inner_client.set_proxy_tls_connector_layer(TlsConnectorLayer::Rustls(Some(
-                proxy_config.into(),
-            )));
+            inner_client.set_tls_connector_config(TlsConnectorConfig::Rustls(Some(data)));
+            inner_client
+                .set_proxy_tls_connector_config(TlsConnectorConfig::Rustls(Some(proxy_data)));
         }
 
         let client = (

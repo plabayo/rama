@@ -8,10 +8,7 @@ use rama::{
     service::service_fn,
     tcp::server::TcpListener,
 };
-use rama_tls_rustls::{
-    dep::rustls::{ALL_VERSIONS, ServerConfig},
-    server::{TlsAcceptorLayer, self_signed_server_auth},
-};
+use rama_tls_rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -34,33 +31,26 @@ async fn test_http_mitm_proxy() {
             .unwrap();
     });
 
-    let (cert_chain, key_der) = self_signed_server_auth(SelfSignedData {
+    let data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
         organisation_name: Some("Example Server Acceptor".to_owned()),
         ..Default::default()
     })
-    .expect("create self signed data");
-
-    let builder = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS);
-    let mut config = builder
-        .with_no_client_auth()
-        .with_single_cert(cert_chain, key_der)
-        .unwrap();
-
-    config.alpn_protocols = vec![
-        ApplicationProtocol::HTTP_2.as_bytes().to_vec(),
-        ApplicationProtocol::HTTP_11.as_bytes().to_vec(),
-    ];
+    .expect("self signed acceptor data")
+    .with_http_versions(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+    .with_env_key_logger()
+    .expect("with env key logger")
+    .build();
 
     let executor = Executor::default();
 
-    let tcp_service = TlsAcceptorLayer::new(config.into()).into_layer(
-        HttpServer::auto(executor).service(service_fn(async |req: Request| {
+    let tcp_service = TlsAcceptorLayer::new(data).into_layer(HttpServer::auto(executor).service(
+        service_fn(async |req: Request| {
             Ok(Json(json!({
                 "method": req.method().as_str(),
                 "path": req.uri().path(),
             })))
-        })),
-    );
+        }),
+    ));
 
     tokio::spawn(async {
         TcpListener::bind("127.0.0.1:63004")

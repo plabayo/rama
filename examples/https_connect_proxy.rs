@@ -47,20 +47,17 @@ use rama::{
     tcp::{client::default_tcp_connect, server::TcpListener},
 };
 
+#[cfg(any(feature = "boring", feature = "rustls"))]
+use rama::net::tls::ApplicationProtocol;
+
 #[cfg(feature = "boring")]
 use rama::{
-    net::tls::{
-        ApplicationProtocol,
-        server::{ServerAuth, ServerConfig},
-    },
+    net::tls::server::{ServerAuth, ServerConfig},
     tls::boring::server::TlsAcceptorLayer,
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::tls_rustls::{
-    dep::rustls::{ALL_VERSIONS, ServerConfig},
-    server::{TlsAcceptorData, TlsAcceptorLayer, self_signed_server_auth},
-};
+use rama::tls_rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -99,19 +96,15 @@ async fn main() {
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     let tls_service_data = {
-        let (cert_chain, key_der) = self_signed_server_auth(SelfSignedData {
+        TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
         })
-        .expect("create self signed data");
-
-        let builder = ServerConfig::builder_with_protocol_versions(ALL_VERSIONS);
-        let r = builder
-            .with_no_client_auth()
-            .with_single_cert(cert_chain, key_der)
-            .unwrap();
-
-        TlsAcceptorData::from(r)
+        .expect("self signed acceptor data")
+        .with_http_versions(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+        .with_env_key_logger()
+        .expect("with env key logger")
+        .build()
     };
 
     // create tls proxy
