@@ -18,6 +18,14 @@ pub struct Client {
     auth: Option<Socks5Auth>,
 }
 
+impl Client {
+    /// Creates a new socks5 [`Client`].
+    #[inline]
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
 #[derive(Debug)]
 /// Client-side error returned in case of a failure during the handshake process.
 pub struct HandshakeError {
@@ -293,5 +301,204 @@ impl Client {
         }
 
         Ok(SocksMethod::NoAuthenticationRequired)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rama_net::address::Host;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_no_auth_failure_command_not_supported() {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x01\x00")
+            // server header
+            .read(b"\x05\x00")
+            // client request
+            .write(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
+            // server reply
+            .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+            .build();
+
+        let client = Client::new();
+        let err = client
+            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .await
+            .unwrap_err();
+        assert_eq!(err.reply(), ReplyKind::CommandNotSupported);
+    }
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_auth_error_guest() {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x01\x00")
+            // server header
+            .read(b"\x05\xff")
+            .build();
+
+        let client = Client::default();
+        let err = client
+            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .await
+            .unwrap_err();
+        assert_eq!(err.reply(), ReplyKind::GeneralServerFailure);
+    }
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_auth_not_used_by_server_failure_command_not_supported() {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x02\x00\x02")
+            // server header
+            .read(b"\x05\x00")
+            // client request
+            .write(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
+            // server reply
+            .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+            .build();
+
+        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let err = client
+            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .await
+            .unwrap_err();
+        assert_eq!(err.reply(), ReplyKind::CommandNotSupported);
+    }
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_with_auth_flow_failure_command_not_supported() {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x02\x00\x02")
+            // server header
+            .read(b"\x05\x02")
+            // client username-password request
+            .write("\x01\x04john\x06secret".as_bytes())
+            // server username-password response
+            .read(b"\x01\x00")
+            // client request
+            .write(b"\x05\x01\x00\x01\x00\x00\x00\x00\x00\x00")
+            // server reply
+            .read(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
+            .build();
+
+        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let err = client
+            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .await
+            .unwrap_err();
+        assert_eq!(err.reply(), ReplyKind::CommandNotSupported);
+    }
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_with_auth_flow_failure_invalid_credentials() {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x02\x00\x02")
+            // server header
+            .read(b"\x05\x02")
+            // client username-password request
+            .write("\x01\x04john\x06secret".as_bytes())
+            // server username-password response
+            .read(b"\x01\x01")
+            .build();
+
+        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let err = client
+            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .await
+            .unwrap_err();
+        assert_eq!(err.reply(), ReplyKind::ConnectionNotAllowed);
+    }
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_failure_method_mismatch() {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x01\x00")
+            // server header
+            .read(b"\x05\x02")
+            .build();
+
+        let client = Client::default();
+        let err = client
+            .handshake_connect(&mut stream, &Authority::default_ipv4(0))
+            .await
+            .unwrap_err();
+        assert_eq!(err.reply(), ReplyKind::GeneralServerFailure);
+    }
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_guest_connect_established() {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x01\x00")
+            // server header
+            .read(b"\x05\x00")
+            // client request
+            .write(&[
+                b'\x05', b'\x01', b'\x00', b'\x04', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+                0, 1,
+            ])
+            // server reply
+            .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 65])
+            .build();
+
+        let client = Client::default();
+        let local_addr = client
+            .handshake_connect(&mut stream, &Authority::local_ipv6(1))
+            .await
+            .unwrap();
+        assert_eq!(local_addr, Authority::local_ipv4(65));
+    }
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_guest_connect_established_domain() {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x01\x00")
+            // server header
+            .read(b"\x05\x00")
+            // client request
+            .write("\x05\x01\x00\x03\x0bexample.com\x00\x01".as_bytes())
+            // server reply
+            .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
+            .build();
+
+        let client = Client::default();
+        let local_addr = client
+            .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
+            .await
+            .unwrap();
+        assert_eq!(local_addr, Authority::local_ipv4(1));
+    }
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_guest_connect_established_domain_with_auth_flow() {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x02\x00\x02")
+            // server header
+            .read(b"\x05\x02")
+            // client username-password request
+            .write(b"\x01\x04john\x06secret")
+            // server username-password response
+            .read(b"\x01\x00")
+            // client request
+            .write(b"\x05\x01\x00\x03\x0bexample.com\x00\x01")
+            // server reply
+            .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
+            .build();
+
+        let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let local_addr = client
+            .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
+            .await
+            .unwrap();
+        assert_eq!(local_addr, Authority::local_ipv4(1));
     }
 }
