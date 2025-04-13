@@ -11,7 +11,7 @@ use rama::{
     },
     tcp::client::{Request, service::TcpConnector},
     tls::boring::dep::boring::x509::X509,
-    tls_rustls::client::{TlsConnectorDataBuilder, TlsConnectorLayer},
+    tls::rustls::client::{TlsConnectorDataBuilder, TlsConnectorLayer},
 };
 use tokio::net::TcpStream;
 use tracing::level_filters::LevelFilter;

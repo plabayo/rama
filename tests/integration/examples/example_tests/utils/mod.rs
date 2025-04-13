@@ -37,7 +37,7 @@ use rama::net::tls::ApplicationProtocol;
 use rama::net::tls::client::{ClientConfig, ClientHelloExtension, ServerVerifyMode};
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama_tls_rustls::client::TlsConnectorDataBuilder;
+use rama::tls::rustls::client::TlsConnectorDataBuilder;
 
 pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
@@ -126,7 +126,7 @@ where
         {
             let data = TlsConnectorDataBuilder::new()
                 .with_no_cert_verifier()
-                .with_http_versions(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+                .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
                 .with_env_key_logger()
                 .expect("connector with env keylogger")
                 .build();

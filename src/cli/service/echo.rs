@@ -55,7 +55,7 @@ use crate::{
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use crate::tls_rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
+use crate::tls::rustls::server::{TlsAcceptorData, TlsAcceptorLayer};
 
 #[cfg(feature = "boring")]
 type TlsConfig = ServerConfig;

@@ -1,7 +1,7 @@
 //! Keylog facility used by any tls implementation
 //! supported by rama, and which can be used for your owns as well.
 //!
-//! Center to thsi module is the `KeyLogger` which is a wrapper around
+//! Center to this module is the `KeyLogger` which is a wrapper around
 //! a FS file
 
 use parking_lot::RwLock;

@@ -7,8 +7,8 @@ use rama::{
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
+    tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
-use rama_tls_rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 use serde_json::{Value, json};
 
 #[tokio::test]
@@ -36,7 +36,7 @@ async fn test_http_mitm_proxy() {
         ..Default::default()
     })
     .expect("self signed acceptor data")
-    .with_http_versions(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+    .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
     .with_env_key_logger()
     .expect("with env key logger")
     .build();

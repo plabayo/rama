@@ -57,7 +57,7 @@ use rama::{
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
-use rama::tls_rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
+use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -101,7 +101,7 @@ async fn main() {
             ..Default::default()
         })
         .expect("self signed acceptor data")
-        .with_http_versions(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+        .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
         .with_env_key_logger()
         .expect("with env key logger")
         .build()

@@ -353,13 +353,16 @@ pub use ::rama_udp as udp;
 #[doc(inline)]
 pub use ::rama_core::telemetry;
 
-#[cfg(feature = "tls")]
-#[doc(inline)]
-pub use ::rama_tls as tls;
+#[cfg(any(feature = "rustls", feature = "boring"))]
+pub mod tls {
+    #[cfg(feature = "tls")]
+    #[doc(inline)]
+    pub use ::rama_tls::*;
 
-#[cfg(feature = "rustls")]
-#[doc(inline)]
-pub use ::rama_tls_rustls as tls_rustls;
+    #[cfg(feature = "rustls")]
+    #[doc(inline)]
+    pub use ::rama_tls_rustls as rustls;
+}
 
 #[cfg(feature = "dns")]
 #[doc(inline)]

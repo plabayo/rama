@@ -45,7 +45,7 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    tls_rustls::{
+    tls::rustls::{
         client::{TlsConnectorDataBuilder, TlsConnectorLayer, self_signed_client_auth},
         dep::rustls::{
             ALL_VERSIONS, RootCertStore,
@@ -90,7 +90,7 @@ async fn main() {
             TlsConnectorDataBuilder::new_with_client_auth(client_cert_chain, client_priv_key)
                 .expect("connector with client auth")
                 .with_no_cert_verifier()
-                .with_http_versions(http_versions)
+                .with_alpn_protocols(http_versions)
                 .with_server_name(SERVER_AUTHORITY.into_host())
                 .with_env_key_logger()
                 .expect("connector with env keylogger")
@@ -119,7 +119,7 @@ async fn main() {
 
         // Or convert [`rustls::ServerConfig`] to [`TlsAcceptorDataBuilder`] to make use of some of the utils rama provides
         let tls_server_data = TlsAcceptorDataBuilder::from(server_config)
-            .with_http_versions(http_versions)
+            .with_alpn_protocols(http_versions)
             .with_env_key_logger()
             .expect("acceptor with env keylogger")
             .build();

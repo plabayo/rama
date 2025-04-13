@@ -34,9 +34,10 @@ impl From<Arc<ServerConfig>> for TlsAcceptorData {
 }
 
 /// [`TlsAcceptorDataBuilder`] can be used to construct [`rustls::ServerConfig`] for most common use cases in Rama.
+///
 /// If this doesn't work for your use case, no problem [`TlsConnectorData`] can be created from a raw [`rustls::ServerConfig`]
 pub struct TlsAcceptorDataBuilder {
-    pub server_config: ServerConfig,
+    server_config: ServerConfig,
 }
 
 impl From<ServerConfig> for TlsAcceptorDataBuilder {
@@ -94,19 +95,19 @@ impl TlsAcceptorDataBuilder {
         Ok(self)
     }
 
-    /// Set [`ApplicationProtocol`] supported in alpn extension
-    pub fn set_http_versions(&mut self, versions: &[ApplicationProtocol]) -> &mut Self {
-        self.server_config.alpn_protocols = versions
+    /// Set [`ApplicationProtocol`]s supported in alpn extension
+    pub fn set_alpn_protocols(&mut self, protos: &[ApplicationProtocol]) -> &mut Self {
+        self.server_config.alpn_protocols = protos
             .iter()
-            .map(|version| version.as_bytes().to_vec())
+            .map(|proto| proto.as_bytes().to_vec())
             .collect();
 
         self
     }
 
-    /// Same as [`Self::set_http_versions`] but consuming self
-    pub fn with_http_versions(mut self, versions: &[ApplicationProtocol]) -> Self {
-        self.set_http_versions(versions);
+    /// Same as [`Self::set_alpn_protocols`] but consuming self
+    pub fn with_alpn_protocols(mut self, protos: &[ApplicationProtocol]) -> Self {
+        self.set_alpn_protocols(protos);
         self
     }
 
