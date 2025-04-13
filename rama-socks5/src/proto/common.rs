@@ -6,6 +6,9 @@ use rama_core::error::OpaqueError;
 use rama_net::address::{Authority, Domain, Host};
 use tokio::io::{AsyncRead, AsyncReadExt};
 
+/// Compute the length of an authority,
+/// used in the context of buffer allocation
+/// in function of writing a socks5 protocol element.
 pub(super) fn authority_length(authority: &Authority) -> usize {
     2 + match authority.host() {
         Host::Name(domain) => 1 + domain.len(),
@@ -34,6 +37,7 @@ impl From<OpaqueError> for ReadError {
     }
 }
 
+/// Read the authority from a Socks5 protocol element.
 pub(super) async fn read_authority<R: AsyncRead + Unpin>(
     r: &mut R,
 ) -> Result<Authority, ReadError> {
@@ -67,6 +71,7 @@ pub(super) async fn read_authority<R: AsyncRead + Unpin>(
     Ok((host, port).into())
 }
 
+/// Write the authority into the (usually pre-allocated) buffer.
 pub(super) fn write_authority_to_buf<B: BufMut>(authority: &Authority, buf: &mut B) {
     match authority.host() {
         Host::Name(domain) => {
@@ -96,6 +101,18 @@ mod tests {
     use tokio::io::{AsyncWrite, AsyncWriteExt};
 
     use super::*;
+
+    #[test]
+    fn test_authority_length() {
+        for (authority, expected_length) in [
+            (Authority::local_ipv4(1248), 4 + 2),
+            (Authority::local_ipv6(42), 16 + 2),
+            (Authority::new(Host::EXAMPLE_NAME, 1), 1 + 11 + 2),
+        ] {
+            let length = authority_length(&authority);
+            assert_eq!(expected_length, length, "authority: {authority}");
+        }
+    }
 
     #[tokio::test]
     async fn test_authority_write_read_eq() {

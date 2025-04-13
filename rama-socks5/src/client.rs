@@ -128,10 +128,7 @@ impl fmt::Display for HandshakeError {
 impl std::error::Error for HandshakeError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self.kind {
-            HandshakeErrorKind::IO(err) => Some(
-                err.source()
-                    .unwrap_or(err as &(dyn std::error::Error + 'static)),
-            ),
+            HandshakeErrorKind::IO(err) => Some(err as &(dyn std::error::Error + 'static)),
             HandshakeErrorKind::Protocol(err) => Some(
                 err.source()
                     .unwrap_or(err as &(dyn std::error::Error + 'static)),
@@ -146,6 +143,11 @@ impl std::error::Error for HandshakeError {
 impl Client {
     rama_utils::macros::generate_field_setters!(auth, Socks5Auth);
 
+    /// Establish a connection with a Socks5 server making use of the [`Command::Connect`] flow.
+    ///
+    /// In case the handshake was sucessfull it will return
+    /// the local address used by the Socks5 (proxy) server
+    /// to connect to the destination [`Authority`] on behalf of this [`Client`].
     pub async fn handshake_connect<S: Stream + Unpin>(
         &self,
         stream: &mut S,
@@ -163,7 +165,7 @@ impl Client {
             .map_err(|err| HandshakeError::io(err).with_context("write client request: connect"))?;
 
         tracing::trace!(
-            ?selected_method,
+            %selected_method,
             %destination,
             "socks5 client: client request sent"
         );
@@ -176,7 +178,7 @@ impl Client {
                 .with_context("server responded with non-success reply"));
         }
 
-        tracing::trace!(?selected_method, %destination, "socks5 client: connected");
+        tracing::trace!(%selected_method, %destination, "socks5 client: connected");
         Ok(server_reply.bind_address)
     }
 
@@ -254,7 +256,7 @@ impl Client {
 
                 tracing::trace!(
                     ?methods,
-                    selected_method = ?server_header.method,
+                    selected_method = %server_header.method,
                     "socks5 client: authorized using username-password"
                 );
             }
@@ -281,7 +283,7 @@ impl Client {
 
         tracing::trace!(
             ?methods,
-            selected_method = ?server_header.method,
+            selected_method = %server_header.method,
             "socks5 client: headers exchanged without auth",
         );
 

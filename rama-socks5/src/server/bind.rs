@@ -5,7 +5,16 @@ use crate::proto::{ReplyKind, server::Reply};
 
 use super::Error;
 
-/// Types which can be used as socks5 bind drivers on the server side.
+/// Types which can be used as socks5 [`Command::Bind`] drivers on the server side.
+///
+/// Typically used as a component part of a [`Socks5Acceptor`].
+///
+/// The actual underlying trait is sealed and not exposed for usage.
+/// No custom binders can be implemented. You can however customise
+/// the individual steps as provided and used by `Binder` (TODO).
+///
+/// [`Socks5Acceptor`]: crate::server::Socks5Acceptor
+/// [`Command::Bind`]: crate::proto::Command::Bind
 pub trait Socks5Binder: Socks5BinderSeal {}
 
 impl<C> Socks5Binder for C where C: Socks5BinderSeal {}

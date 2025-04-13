@@ -39,10 +39,7 @@ impl fmt::Display for ProtocolError {
 impl std::error::Error for ProtocolError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            ProtocolError::IO(err) => Some(
-                err.source()
-                    .unwrap_or(err as &(dyn std::error::Error + 'static)),
-            ),
+            ProtocolError::IO(err) => Some(err as &(dyn std::error::Error + 'static)),
             ProtocolError::UnexpectedByte { .. } => None,
             ProtocolError::Unexpected(err) => Some(
                 err.source()

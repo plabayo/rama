@@ -13,7 +13,8 @@ use super::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Layout for each packet sent by a UDP Client (as request) and UDP server (as resonse)..
+/// Layout for a header sent by a UDP Client (as request) and UDP server (as resonse),
+/// for any datagram (to be) relayed by the proxy.
 ///
 /// A UDP-based client MUST send its datagrams to the UDP relay server at
 /// the UDP port indicated by BND.PORT in the reply to the UDP ASSOCIATE
@@ -69,13 +70,26 @@ use super::{
 /// - if ATYP is X'01': 10+method_dependent octets smaller
 /// - if ATYP is X'03': 262+method_dependent octets smaller
 /// - if ATYP is X'04': 20+method_dependent octets smaller
-pub struct UdpPacket {
+///
+/// # Fragmentation
+///
+/// Warning. Rama's build in Udp associator / relayer does not
+/// support fragmentation and will reject any udp datagram
+/// with a header containing a fragment number != 0.
+///
+/// # Data
+///
+/// The length of the data is not explicitly defined,
+/// nor is the data NULL terminated, instead it is to be assumed
+/// that the data (original UDP datagram) is all the bytes received
+/// in the datagram containing the header except for the first bytes
+/// encoding said header.
+pub struct UdpHeader {
     pub fragment_number: u8,
     pub destination: rama_net::address::Authority,
-    pub data: Vec<u8>,
 }
 
-impl UdpPacket {
+impl UdpHeader {
     /// Read the [`UdpPacket`], decoded from binary format as specified by [RFC 1928] from the reader.
     ///
     /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
@@ -89,20 +103,9 @@ impl UdpPacket {
 
         let destination = read_authority(r).await?;
 
-        let data_length = r.read_u8().await?;
-        if data_length == 0 {
-            return Err(ProtocolError::UnexpectedByte {
-                pos: 4 + authority_length(&destination),
-                byte: data_length,
-            });
-        }
-        let mut data = vec![0u8; data_length as usize];
-        r.read_exact(data.as_mut_slice()).await?;
-
-        Ok(UdpPacket {
+        Ok(UdpHeader {
             fragment_number,
             destination,
-            data,
         })
     }
 
@@ -125,14 +128,10 @@ impl UdpPacket {
         buf.put_u16(0 /* RSV */);
         buf.put_u8(self.fragment_number);
         write_authority_to_buf(&self.destination, buf);
-
-        debug_assert!(self.data.len() <= 255);
-        buf.put_u8(self.data.len() as u8);
-        buf.put_slice(&self.data[..]);
     }
 
     fn serialized_len(&self) -> usize {
-        5 + authority_length(&self.destination) + self.data.len()
+        5 + authority_length(&self.destination)
     }
 }
 
@@ -146,12 +145,11 @@ mod tests {
     #[tokio::test]
     async fn test_udp_packet_write_read_eq() {
         test_write_read_eq!(
-            UdpPacket {
+            UdpHeader {
                 fragment_number: 2,
                 destination: Authority::local_ipv6(45),
-                data: "foo;bar".into(),
             },
-            UdpPacket
+            UdpHeader
         );
     }
 }

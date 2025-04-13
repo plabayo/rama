@@ -1,6 +1,10 @@
 //! Socks5 Server Implementation for Rama.
 //!
-//! TODO: add more helpful in-depth comment here
+//! See [`Socks5Acceptor`] for more information,
+//! its [`Default`] implementation only
+//! supports the [`Command::Connect`] method using the [`DefaultConnector`],
+//! but custom connectors as well as binders and udp associators
+//! are optionally possible.
 
 use crate::{
     Socks5Auth,
@@ -19,7 +23,6 @@ pub use connect::{
 };
 
 // TODO:
-// - add good doc comments
 // - move primitive connect types to rama-net
 // - use these primitive types in rama-socks5 as well as rama-tcp (proxy)
 
@@ -32,6 +35,17 @@ pub use udp::Socks5UdpAssociator;
 /// Socks5 server implementation of [RFC 1928]
 ///
 /// [RFC 1928]: https://datatracker.ietf.org/doc/html/rfc1928
+///
+/// An instance constructed with [`Socks5Acceptor::new`]
+/// is one that accepts none of the available [`Command`]s,
+/// until you embed one or more of: connector, binder and udp associator.
+///
+/// # [`Default`]
+///
+/// The [`Default`] implementation of the [`Socks5Acceptor`] only
+/// supports the [`Command::Connect`] method using the [`DefaultConnector`],
+/// but custom connectors as well as binders and udp associators
+/// are optionally possible.
 pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = ()> {
     connector: C,
     binder: B,
@@ -40,33 +54,76 @@ pub struct Socks5Acceptor<C = DefaultConnector, B = (), U = ()> {
     // TODO: replace with proper auth support
     // <https://github.com/plabayo/rama/issues/496>
     auth: Option<Socks5Auth>,
+
+    // opt-in flag which allows even if server has auth configured
+    // to also support a client which doesn't support username-password auth,
+    // despite it normally working with authentication.
+    //
+    // This can be useful in case you also wish to support guest users.
+    auth_opt: bool,
 }
 
 impl Socks5Acceptor<(), (), ()> {
+    /// Create a new [`Socks5Acceptor`] which supports none of the valid [`Command`]s.
+    ///
+    /// Use [`Socks5Acceptor::default`] instead if you wish to create a default
+    /// [`Socks5Acceptor`] which can be used as a simple and honest byte-byte proxy.
     pub fn new() -> Self {
         Self {
             connector: (),
             binder: (),
             udp_associator: (),
             auth: None,
+            auth_opt: false,
         }
     }
 }
 
 impl<C, B, U> Socks5Acceptor<C, B, U> {
     rama_utils::macros::generate_field_setters!(auth, Socks5Auth);
+
+    /// Define whether or not the authentication (if supported by this [`Socks5Acceptor`]) is optional,
+    /// by default it is no optional.
+    ///
+    /// Making authentication optional, despite supporting authentication on server side,
+    /// can be useful in case you wish to support so called Guest users.
+    pub fn set_auth_optional(&mut self, optional: bool) -> &mut Self {
+        self.auth_opt = optional;
+        self
+    }
+
+    /// Define whether or not the authentication (if supported by this [`Socks5Acceptor`]) is optional,
+    /// by default it is no optional.
+    ///
+    /// Making authentication optional, despite supporting authentication on server side,
+    /// can be useful in case you wish to support so called Guest users.
+    pub fn with_auth_optional(mut self, optional: bool) -> Self {
+        self.auth_opt = optional;
+        self
+    }
 }
 
 impl<B, U> Socks5Acceptor<(), B, U> {
+    /// Attach a [`Socks5Connector`] to this [`Socks5Acceptor`],
+    /// used to accept incoming [`Command::Connect`] [`client::Request`]s.
+    ///
+    /// Use [`Socks5Acceptor::with_default_connector`] in case you
+    /// the [`DefaultConnector`] serves your needs just fine.
     pub fn with_connector<C>(self, connector: C) -> Socks5Acceptor<C, B, U> {
         Socks5Acceptor {
             connector,
             binder: self.binder,
             udp_associator: self.udp_associator,
             auth: self.auth,
+            auth_opt: self.auth_opt,
         }
     }
 
+    /// Attach a the [`DefaultConnector`] to this [`Socks5Acceptor`],
+    /// used to accept incoming [`Command::Connect`] [`client::Request`]s.
+    ///
+    /// Use [`Socks5Acceptor::with_connector`] in case you want to use a custom
+    /// [`Socks5Connector`] or customised [`Connector`].
     #[inline]
     pub fn with_default_connector(self) -> Socks5Acceptor<DefaultConnector, B, U> {
         self.with_connector(DefaultConnector::default())
@@ -87,6 +144,7 @@ impl<C: fmt::Debug, B: fmt::Debug, U: fmt::Debug> fmt::Debug for Socks5Acceptor<
             .field("binder", &self.binder)
             .field("udp_associator", &self.udp_associator)
             .field("auth", &self.auth)
+            .field("auth_opt", &self.auth_opt)
             .finish()
     }
 }
@@ -98,6 +156,7 @@ impl<C: Clone, B: Clone, U: Clone> Clone for Socks5Acceptor<C, B, U> {
             binder: self.binder.clone(),
             udp_associator: self.udp_associator.clone(),
             auth: self.auth.clone(),
+            auth_opt: self.auth_opt,
         }
     }
 }
@@ -106,40 +165,59 @@ impl<C: Clone, B: Clone, U: Clone> Clone for Socks5Acceptor<C, B, U> {
 /// Server-side error returned in case of a failure during the handshake process.
 pub struct Error {
     kind: ErrorKind,
-    context: Option<&'static str>,
+    context: ErrorContext,
+}
+
+#[derive(Debug)]
+enum ErrorContext {
+    None,
+    Message(&'static str),
+    ReplyKind(ReplyKind),
+}
+
+impl From<&'static str> for ErrorContext {
+    fn from(value: &'static str) -> Self {
+        ErrorContext::Message(value)
+    }
+}
+
+impl From<ReplyKind> for ErrorContext {
+    fn from(value: ReplyKind) -> Self {
+        ErrorContext::ReplyKind(value)
+    }
 }
 
 impl Error {
     fn io(err: std::io::Error) -> Self {
         Self {
             kind: ErrorKind::IO(err),
-            context: None,
+            context: ErrorContext::None,
         }
     }
 
     fn protocol(value: ProtocolError) -> Self {
         Self {
             kind: ErrorKind::Protocol(value),
-            context: None,
+            context: ErrorContext::None,
         }
     }
 
     fn aborted(reason: &'static str) -> Self {
         Self {
             kind: ErrorKind::Aborted(reason),
-            context: None,
+            context: ErrorContext::None,
         }
     }
 
     fn service(error: impl Into<BoxError>) -> Self {
         Self {
             kind: ErrorKind::Service(error.into()),
-            context: None,
+            context: ErrorContext::None,
         }
     }
 
-    fn with_context(mut self, context: &'static str) -> Self {
-        self.context = Some(context);
+    fn with_context(mut self, context: impl Into<ErrorContext>) -> Self {
+        self.context = context.into();
         self
     }
 }
@@ -152,9 +230,19 @@ enum ErrorKind {
     Service(BoxError),
 }
 
+impl fmt::Display for ErrorContext {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ErrorContext::Message(message) => write!(f, "{message}"),
+            ErrorContext::ReplyKind(kind) => write!(f, "reply: {kind}"),
+            ErrorContext::None => write!(f, "no context"),
+        }
+    }
+}
+
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let context = self.context.unwrap_or("no context");
+        let context = &self.context;
         match &self.kind {
             ErrorKind::IO(error) => {
                 write!(f, "server: handshake eror: I/O: {error} ({context})")
@@ -260,7 +348,8 @@ where
                         Error::io(err)
                             .with_context("write server reply: unknown command not supported")
                     })?;
-                Err(Error::aborted("unknown command not supported"))
+                Err(Error::aborted("unknown command not supported")
+                    .with_context(ReplyKind::CommandNotSupported))
             }
         }
     }
@@ -311,6 +400,20 @@ where
                             })?;
                         Err(Error::aborted("username-password: client unauthorized"))
                     }
+                } else if self.auth_opt && methods.contains(&SocksMethod::NoAuthenticationRequired)
+                {
+                    tracing::trace!(
+                        "socks5 server: auth supported but optional: skipping auth as client does not support username-passowrd auth",
+                    );
+
+                    Header::new(SocksMethod::NoAuthenticationRequired)
+                        .write_to(stream)
+                        .await
+                        .map_err(|err| {
+                            Error::io(err).with_context("write server reply: no auth required")
+                        })?;
+
+                    return Ok(SocksMethod::NoAuthenticationRequired);
                 } else {
                     Header::new(SocksMethod::NoAcceptableMethods)
                     .write_to(stream)

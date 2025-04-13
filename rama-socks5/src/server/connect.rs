@@ -2,14 +2,29 @@ use rama_core::{
     Context, Service,
     error::{BoxError, ErrorExt, OpaqueError},
 };
-use rama_net::{address::Authority, client::EstablishedClientConnection, stream::Stream};
+use rama_net::{
+    address::Authority,
+    client::EstablishedClientConnection,
+    stream::{Socket, Stream},
+};
 use rama_tcp::client::{Request as TcpRequest, service::TcpConnector};
 use std::fmt;
 
 use super::Error;
 use crate::proto::{ReplyKind, server::Reply};
 
-/// Types which can be used as socks5 connect drivers on the server side.
+/// Types which can be used as socks5 [`Command::Connect`] drivers on the server side.
+///
+/// Typically used as a component part of a [`Socks5Acceptor`].
+///
+/// The actual underlying trait is sealed and not exposed for usage.
+/// No custom connectors can be implemented. You can however customise
+/// both the connection and actual stream proxy phase by using
+/// your own matching [`Service`] implementations as part of the usage
+/// of [`Connector`].
+///
+/// [`Socks5Acceptor`]: crate::server::Socks5Acceptor
+/// [`Command::Connect`]: crate::proto::Command::Connect
 pub trait Socks5Connector<S, State>: Socks5ConnectorSeal<S, State> {}
 
 impl<S, State, C> Socks5Connector<S, State> for C where C: Socks5ConnectorSeal<S, State> {}
@@ -34,7 +49,7 @@ where
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
-        tracing::debug!(
+        tracing::trace!(
             %destination,
             "socks5 server: abort: command not supported: Connect",
         );
@@ -45,28 +60,78 @@ where
             .map_err(|err| {
                 Error::io(err).with_context("write server reply: command not supported (connect)")
             })?;
-        Err(Error::aborted("command not supported: Connect"))
+        Err(Error::aborted("command not supported: Connect")
+            .with_context(ReplyKind::CommandNotSupported))
     }
 }
 
 /// Default [`Connector`] type.
 pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
 
+/// Only "useful" public [`Socks5Connector`] implementation,
+/// which actually is able to accept connect requests and process them.
+///
+/// The [`Default`] implementation establishes a connection for the requested
+/// destination [`Authority`] and pipes the incoming [`Stream`] with the established
+/// outgoing [`Stream`] by copying the bytes without doing anyting else with them.
+///
+/// You can customise the [`Connector`] fully by creating it using [`Connector::new`]
+/// or overwrite any of the default components using either or both of [`Connector::with_connector`]
+/// and [`Connector::with_service`].
 pub struct Connector<C, S> {
     connector: C,
     service: S,
 }
 
 pub struct ProxyRequest<S, T> {
-    source: S,
-    target: T,
+    pub source: S,
+    pub target: T,
 }
 
 // ^ TODO: this might be useful to move to somewhere else??
 
 impl<C, S> Connector<C, S> {
+    /// Create a new [`Connector`].
+    ///
+    /// In case you only wish to overwrite one of these components
+    /// you can also use a [`Default`] [`Connector`] and overwrite the specific component
+    /// using [`Connector::with_connector`] or [`Connector::with_service`].
     pub fn new(connector: C, service: S) -> Self {
         Self { connector, service }
+    }
+}
+
+impl<C, S> Connector<C, S> {
+    /// Overwrite the [`Connector`]'s connector [`Service`]
+    /// used to establish a Tcp connection used as the
+    /// [`Stream`] in the direction from target to source.
+    ///
+    /// Any [`Service`] can be used as long as it has the signature:
+    ///
+    /// ```plain
+    /// (Context<State>, TcpRequest)
+    ///     -> (EstablishedConnection<T, State, TcpRequest>, Into<BoxError>)
+    /// ```
+    pub fn with_connector<T>(self, connector: T) -> Connector<T, S> {
+        Connector {
+            connector,
+            service: self.service,
+        }
+    }
+
+    /// Overwrite the [`Connector`]'s [`Service`]
+    /// used to actually do the proxy between the source and target [`Stream`].
+    ///
+    /// Any [`Service`] can be used as long as it has the signature:
+    ///
+    /// ```plain
+    /// (Context<State>, ProxyRequest) -> ((), Into<BoxError>)
+    /// ```
+    pub fn with_service<T>(self, service: T) -> Connector<C, T> {
+        Connector {
+            connector: self.connector,
+            service,
+        }
     }
 }
 
@@ -117,12 +182,16 @@ impl<S: Clone, T: Clone> Clone for ProxyRequest<S, T> {
 
 #[derive(Debug, Clone, Default)]
 #[non_exhaustive]
+/// A proxy [`Service`] which takes a [`ProxyRequest`]
+/// and copies the bytes of both the source and target [`Stream`]s
+/// bidirectionally.
 pub struct StreamForwardService;
 
 // ^ TODO: this might be useful to move to somewhere else??
 
 impl StreamForwardService {
     #[inline]
+    /// Create a new [`StreamForwardService`].
     pub fn new() -> Self {
         Self::default()
     }
@@ -169,7 +238,7 @@ impl<S, T, State, InnerConnector, StreamService> Socks5ConnectorSeal<S, State>
     for Connector<InnerConnector, StreamService>
 where
     S: Stream + Unpin,
-    T: Stream + Unpin,
+    T: Stream + Socket + Unpin,
     State: Clone + Send + Sync + 'static,
     InnerConnector: Service<
             State,
@@ -185,7 +254,7 @@ where
         mut stream: S,
         destination: Authority,
     ) -> Result<(), Error> {
-        tracing::debug!(
+        tracing::trace!(
             %destination,
             "socks5 server: connect: try to establish connection",
         );
@@ -206,21 +275,62 @@ where
                     "socks5 server: abort: connect failed",
                 );
 
-                // TODO: support more granular reply kinds, if possible
-                Reply::error_reply(ReplyKind::ConnectionRefused)
+                let reply_kind = if let Some(err) = err.downcast_ref::<std::io::Error>() {
+                    match err.kind() {
+                        std::io::ErrorKind::PermissionDenied => ReplyKind::ConnectionNotAllowed,
+                        std::io::ErrorKind::HostUnreachable => ReplyKind::HostUnreachable,
+                        std::io::ErrorKind::NetworkUnreachable => ReplyKind::NetworkUnreachable,
+                        std::io::ErrorKind::TimedOut | std::io::ErrorKind::UnexpectedEof => {
+                            ReplyKind::TtlExpired
+                        }
+                        _ => ReplyKind::ConnectionRefused,
+                    }
+                } else {
+                    ReplyKind::ConnectionRefused
+                };
+
+                Reply::error_reply(reply_kind)
                     .write_to(&mut stream)
                     .await
                     .map_err(|err| {
                         Error::io(err).with_context("write server reply: connect failed")
                     })?;
-                return Err(Error::aborted("connect failed"));
+                return Err(Error::aborted("connect failed").with_context(reply_kind));
             }
         };
 
-        tracing::debug!(
+        let local_addr = target
+            .local_addr()
+            .map(Into::into)
+            .inspect_err(|err| {
+                tracing::debug!(
+                    %destination,
+                    %err,
+                    "socks5 server: connect: failed to retrieve local addr from established conn, use default '0.0.0.0:0'",
+                );
+            })
+            .unwrap_or(Authority::default_ipv4(0));
+        let peer_addr = target.peer_addr();
+
+        tracing::trace!(
             %destination,
+            %local_addr,
+            ?peer_addr,
             "socks5 server: connect: connection established, serve pipe",
         );
+
+        Reply::new(local_addr.clone())
+            .write_to(&mut stream)
+            .await
+            .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
+
+        tracing::trace!(
+            %destination,
+            %local_addr,
+            ?peer_addr,
+            "socks5 server: connect: reply sent, start serving source-target pipe",
+        );
+
         self.service
             .serve(
                 ctx,
