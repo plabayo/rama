@@ -306,9 +306,8 @@ impl Client {
 
 #[cfg(test)]
 mod tests {
-    use rama_net::address::Host;
-
     use super::*;
+    use rama_net::address::Host;
 
     #[tokio::test]
     async fn test_client_handshake_connect_no_auth_failure_command_not_supported() {
@@ -495,6 +494,32 @@ mod tests {
             .build();
 
         let client = Client::default().with_auth(Socks5Auth::username_password("john", "secret"));
+        let local_addr = client
+            .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
+            .await
+            .unwrap();
+        assert_eq!(local_addr, Authority::local_ipv4(1));
+    }
+
+    #[tokio::test]
+    async fn test_client_handshake_connect_guest_connect_established_domain_with_auth_flow_username_only()
+     {
+        let mut stream = tokio_test::io::Builder::new()
+            // client header
+            .write(b"\x05\x02\x00\x02")
+            // server header
+            .read(b"\x05\x02")
+            // client username-password request
+            .write(b"\x01\x04john\x00")
+            // server username-password response
+            .read(b"\x01\x00")
+            // client request
+            .write(b"\x05\x01\x00\x03\x0bexample.com\x00\x01")
+            // server reply
+            .read(&[b'\x05', b'\x00', b'\x00', b'\x01', 127, 0, 0, 1, 0, 1])
+            .build();
+
+        let client = Client::default().with_auth(Socks5Auth::username("john"));
         let local_addr = client
             .handshake_connect(&mut stream, &Authority::new(Host::EXAMPLE_NAME, 1))
             .await

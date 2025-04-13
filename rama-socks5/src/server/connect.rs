@@ -343,3 +343,106 @@ where
             .map_err(|err| Error::service(err).with_context("serve connect pipe"))
     }
 }
+
+#[cfg(test)]
+pub(crate) use test::MockConnector;
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use std::{ops::DerefMut, sync::Arc};
+    use tokio::sync::Mutex;
+
+    #[derive(Debug)]
+    pub(crate) struct MockConnector {
+        reply: MockReply,
+    }
+
+    #[derive(Debug)]
+    enum MockReply {
+        Success {
+            local_addr: Authority,
+            target: Option<Arc<Mutex<tokio_test::io::Mock>>>,
+        },
+        Error(ReplyKind),
+    }
+
+    impl MockConnector {
+        pub(crate) fn new(local_addr: Authority) -> Self {
+            Self {
+                reply: MockReply::Success {
+                    local_addr,
+                    target: None,
+                },
+            }
+        }
+        pub(crate) fn new_err(reply: ReplyKind) -> Self {
+            Self {
+                reply: MockReply::Error(reply),
+            }
+        }
+
+        pub(crate) fn with_proxy_data(mut self, target: tokio_test::io::Mock) -> Self {
+            self.reply = match self.reply {
+                MockReply::Success { local_addr, .. } => MockReply::Success {
+                    local_addr,
+                    target: Some(Arc::new(Mutex::new(target))),
+                },
+                MockReply::Error(_) => unreachable!(),
+            };
+            self
+        }
+    }
+
+    impl<S, State> Socks5ConnectorSeal<S, State> for MockConnector
+    where
+        S: Stream + Unpin,
+        State: Clone + Send + Sync + 'static,
+    {
+        async fn accept_connect(
+            &self,
+            _ctx: Context<State>,
+            mut stream: S,
+            _destination: Authority,
+        ) -> Result<(), Error> {
+            match &self.reply {
+                MockReply::Success { local_addr, target } => {
+                    Reply::new(local_addr.clone())
+                        .write_to(&mut stream)
+                        .await
+                        .map_err(Error::io)?;
+
+                    if let Some(target) = target.as_ref() {
+                        let mut target = target.lock().await;
+                        match tokio::io::copy_bidirectional(&mut stream, target.deref_mut()).await {
+                            Ok((bytes_copied_north, bytes_copied_south)) => {
+                                tracing::trace!(
+                                    %bytes_copied_north,
+                                    %bytes_copied_south,
+                                    "(proxy) I/O stream forwarder finished"
+                                );
+                                Ok(())
+                            }
+                            Err(err) => {
+                                if rama_net::conn::is_connection_error(&err) {
+                                    Ok(())
+                                } else {
+                                    Err(Error::io(err))
+                                }
+                            }
+                        }
+                    } else {
+                        Ok(())
+                    }
+                }
+                MockReply::Error(reply_kind) => {
+                    Reply::error_reply(*reply_kind)
+                        .write_to(&mut stream)
+                        .await
+                        .map_err(Error::io)?;
+                    Err(Error::aborted("mock abort").with_context(*reply_kind))
+                }
+            }
+        }
+    }
+}

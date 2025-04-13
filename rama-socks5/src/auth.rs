@@ -12,6 +12,16 @@ pub enum Socks5Auth {
 }
 
 impl Socks5Auth {
+    /// Use Username Authentication for SOCKS V5.
+    ///
+    /// Reference: [RFC 1928](https://datatracker.ietf.org/doc/html/rfc1929)
+    pub fn username(username: impl Into<Vec<u8>>) -> Self {
+        Self::UsernamePassword {
+            username: username.into(),
+            password: None,
+        }
+    }
+
     /// Use Username/Password Authentication for SOCKS V5.
     ///
     /// Reference: [RFC 1928](https://datatracker.ietf.org/doc/html/rfc1929)
