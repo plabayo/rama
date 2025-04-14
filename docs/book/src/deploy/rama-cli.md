@@ -52,7 +52,10 @@ brew install plabayo/rama/rama
 > Contributions to the homebrew distributions can be made via
 > <https://github.com/plabayo/homebrew-rama>.
 
-You can also install it from `curl`:
+In case you run on a platform for which we do not have (correct) package manager support yet,
+you can also download the archive with the ease of running a script.
+
+Using this approach you can install it using `curl`
 
 ```
 curl https://raw.githubusercontent.com/plabayo/rama/main/rama-cli/scripts/install.sh | bash
