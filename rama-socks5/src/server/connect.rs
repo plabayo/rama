@@ -81,6 +81,10 @@ pub type DefaultConnector = Connector<TcpConnector, StreamForwardService>;
 pub struct Connector<C, S> {
     connector: C,
     service: S,
+
+    // if true it uses the 0.0.0.0:0 bind address
+    // instead of the actual local address used to connect
+    hide_local_address: bool,
 }
 
 pub struct ProxyRequest<S, T> {
@@ -97,7 +101,25 @@ impl<C, S> Connector<C, S> {
     /// you can also use a [`Default`] [`Connector`] and overwrite the specific component
     /// using [`Connector::with_connector`] or [`Connector::with_service`].
     pub fn new(connector: C, service: S) -> Self {
-        Self { connector, service }
+        Self {
+            connector,
+            service,
+            hide_local_address: false,
+        }
+    }
+
+    /// Define whether or not the local address is exposed as the bind address in the reply,
+    /// by default it is exposed.
+    pub fn set_hide_local_address(&mut self, hide: bool) -> &mut Self {
+        self.hide_local_address = hide;
+        self
+    }
+
+    /// Define whether or not the local address is exposed as the bind address in the reply,
+    /// by default it is exposed.
+    pub fn with_hide_local_address(mut self, hide: bool) -> Self {
+        self.hide_local_address = hide;
+        self
     }
 }
 
@@ -116,6 +138,7 @@ impl<C, S> Connector<C, S> {
         Connector {
             connector,
             service: self.service,
+            hide_local_address: self.hide_local_address,
         }
     }
 
@@ -131,6 +154,7 @@ impl<C, S> Connector<C, S> {
         Connector {
             connector: self.connector,
             service,
+            hide_local_address: self.hide_local_address,
         }
     }
 }
@@ -140,6 +164,7 @@ impl Default for DefaultConnector {
         Self {
             connector: TcpConnector::default(),
             service: StreamForwardService::default(),
+            hide_local_address: false,
         }
     }
 }
@@ -149,6 +174,7 @@ impl<C: fmt::Debug, S: fmt::Debug> fmt::Debug for Connector<C, S> {
         f.debug_struct("Connector")
             .field("connector", &self.connector)
             .field("service", &self.service)
+            .field("hide_local_address", &self.hide_local_address)
             .finish()
     }
 }
@@ -158,6 +184,7 @@ impl<C: Clone, S: Clone> Clone for Connector<C, S> {
         Self {
             connector: self.connector.clone(),
             service: self.service.clone(),
+            hide_local_address: self.hide_local_address,
         }
     }
 }
@@ -319,10 +346,14 @@ where
             "socks5 server: connect: connection established, serve pipe",
         );
 
-        Reply::new(local_addr.clone())
-            .write_to(&mut stream)
-            .await
-            .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
+        Reply::new(if self.hide_local_address {
+            Authority::default_ipv4(0)
+        } else {
+            local_addr.clone()
+        })
+        .write_to(&mut stream)
+        .await
+        .map_err(|err| Error::io(err).with_context("write server reply: connect succeeded"))?;
 
         tracing::trace!(
             %destination,
