@@ -7,7 +7,7 @@ use rama::{
     http::service::client::{HttpClientExt, IntoUrl, RequestBuilder},
     http::{
         Request, Response,
-        client::EasyHttpWebClient,
+        client::{EasyHttpWebClient, TlsConnectorConfig},
         layer::{
             follow_redirect::FollowRedirectLayer,
             required_header::AddRequiredRequestHeadersLayer,
@@ -31,10 +31,13 @@ use tracing_subscriber::{EnvFilter, fmt, layer::SubscriberExt, util::SubscriberI
 use rama::http::layer::decompression::DecompressionLayer;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
-use rama::net::tls::{
-    ApplicationProtocol,
-    client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
-};
+use rama::net::tls::ApplicationProtocol;
+
+#[cfg(feature = "boring")]
+use rama::net::tls::client::{ClientConfig, ClientHelloExtension, ServerVerifyMode};
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use rama::tls::rustls::client::TlsConnectorDataBuilder;
 
 pub(super) type ClientService<State> = BoxService<State, Request, Response, BoxError>;
 
@@ -88,15 +91,19 @@ where
             .run()
             .unwrap()
             .command()
+            .env(
+                "RUST_LOG",
+                std::env::var("RUST_LOG").unwrap_or("info".into()),
+            )
             .env("SSLKEYLOGFILE", "./target/test_ssl_key_log.txt")
             .spawn()
             .unwrap();
 
         let mut inner_client = EasyHttpWebClient::default();
 
-        #[cfg(any(feature = "rustls", feature = "boring"))]
+        #[cfg(feature = "boring")]
         {
-            inner_client.set_tls_config(ClientConfig {
+            inner_client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(ClientConfig {
                 server_verify_mode: Some(ServerVerifyMode::Disable),
                 extensions: Some(vec![
                     ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
@@ -105,12 +112,34 @@ where
                     ]),
                 ]),
                 ..Default::default()
-            });
+            })));
 
-            inner_client.set_proxy_tls_config(ClientConfig {
-                server_verify_mode: Some(ServerVerifyMode::Disable),
-                ..Default::default()
-            });
+            inner_client.set_proxy_tls_connector_config(TlsConnectorConfig::Boring(Some(
+                ClientConfig {
+                    server_verify_mode: Some(ServerVerifyMode::Disable),
+                    ..Default::default()
+                },
+            )));
+        }
+
+        #[cfg(all(feature = "rustls", not(feature = "boring")))]
+        {
+            let data = TlsConnectorDataBuilder::new()
+                .with_no_cert_verifier()
+                .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+                .with_env_key_logger()
+                .expect("connector with env keylogger")
+                .build();
+
+            let proxy_data = TlsConnectorDataBuilder::new()
+                .with_no_cert_verifier()
+                .with_env_key_logger()
+                .expect("connector with env keylogger")
+                .build();
+
+            inner_client.set_tls_connector_config(TlsConnectorConfig::Rustls(Some(data)));
+            inner_client
+                .set_proxy_tls_connector_config(TlsConnectorConfig::Rustls(Some(proxy_data)));
         }
 
         let client = (
@@ -197,6 +226,10 @@ impl ExampleRunner<()> {
                 .run()
                 .unwrap()
                 .command()
+                .env(
+                    "RUST_LOG",
+                    std::env::var("RUST_LOG").unwrap_or("info".into()),
+                )
                 .status()
                 .unwrap()
         })

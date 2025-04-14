@@ -9,7 +9,7 @@ use rama::{
     http::{
         Request, Response,
         client::{
-            EasyHttpWebClient,
+            EasyHttpWebClient, TlsConnectorConfig,
             proxy::layer::{HttpProxyAddressLayer, SetProxyAuthHttpHeaderLayer},
         },
         layer::{
@@ -367,20 +367,23 @@ where
         ])
     };
 
-    inner_client.set_tls_config(ClientConfig {
+    let config = ClientConfig {
         server_verify_mode,
         extensions,
         ..Default::default()
-    });
+    };
+    inner_client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(config)));
 
     // TODO: need to insert TLS separate from http:
     // - first tls is needed
     // - but http only is to be selected after handshake is done...
 
-    inner_client.set_proxy_tls_config(ClientConfig {
+    let proxy_config = ClientConfig {
         server_verify_mode,
         ..Default::default()
-    });
+    };
+
+    inner_client.set_proxy_tls_connector_config(TlsConnectorConfig::Boring(Some(proxy_config)));
 
     let client_builder = (
         MapResultLayer::new(map_internal_client_error),

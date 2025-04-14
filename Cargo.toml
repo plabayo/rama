@@ -20,6 +20,7 @@ members = [
     "rama-socks5",
     "rama-tcp",
     "rama-tls",
+    "rama-tls-rustls",
     "rama-ua",
     "rama-udp",
     "rama-utils",
@@ -229,7 +230,7 @@ full = [
 telemetry = ["rama-core/telemetry", "rama-net/telemetry", "rama-http/telemetry"]
 compression = ["http", "rama-http/compression", "rama-tls/compression"]
 tls = ["net", "dep:rama-tls", "rama-net/tls", "rama-http/tls", "rama-http-backend/tls", "rama-ua/tls"]
-rustls = ["tls", "rama-tls/rustls", "rama-net/rustls", "rama-http-backend/rustls"]
+rustls = ["tls", "dep:rama-tls-rustls", "rama-net/rustls", "rama-http-backend/rustls"]
 boring = ["tls", "rama-tls/boring", "rama-net/boring", "rama-http-backend/boring"]
 cli = ["dep:base64", "dep:bytes", "dep:hex", "dep:serde", "dep:serde_json", "dep:serde_html_form", "dep:tracing", "dep:tokio", "http"]
 net = ["dep:rama-net"]
@@ -267,6 +268,7 @@ rama-proxy = { version = "0.2.0-alpha.9", path = "rama-proxy", optional = true }
 rama-socks5 = { version = "0.2.0-alpha.9", path = "rama-socks5", optional = true }
 rama-tcp = { version = "0.2.0-alpha.9", path = "rama-tcp", optional = true }
 rama-tls = { version = "0.2.0-alpha.9", path = "rama-tls", optional = true }
+rama-tls-rustls = { version = "0.2.0-alpha.9", path = "rama-tls-rustls", optional = true }
 rama-ua = { version = "0.2.0-alpha.9", path = "rama-ua", optional = true }
 rama-udp = { version = "0.2.0-alpha.9", path = "rama-udp", optional = true }
 rama-utils = { version = "0.2.0-alpha.9", path = "rama-utils" }
@@ -446,7 +448,7 @@ name = "tls_boring_termination"
 required-features = ["boring", "haproxy", "http-full"]
 
 [[example]]
-name = "tls_termination"
+name = "tls_rustls_termination"
 required-features = ["rustls", "haproxy", "http-full"]
 
 [profile.release]

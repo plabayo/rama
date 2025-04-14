@@ -126,9 +126,9 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.97"
+version = "1.0.98"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dcfed56ad506cb2c684a14971b8861fdc3baaaae314b9e5f9bb532cbe3ba7a4f"
+checksum = "e16d2d3311acee920a9eb8d33b8cbc1787ce4a264e85f964c2404b969bdcd487"
 
 [[package]]
 name = "arbitrary"
@@ -1629,9 +1629,9 @@ checksum = "4a5f13b858c8d314ee3e8f639011f7ccefe71f97f96e50151fb991f267928e2c"
 
 [[package]]
 name = "jiff"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "18ac8a13ed52bd2a3004d6495147917068b1eb90e4e8b43eff0906fd7d9882a2"
+checksum = "e5ad87c89110f55e4cd4dc2893a9790820206729eaf221555f742d540b0724a0"
 dependencies = [
  "jiff-static",
  "log",
@@ -1642,9 +1642,9 @@ dependencies = [
 
 [[package]]
 name = "jiff-static"
-version = "0.2.7"
+version = "0.2.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f078382f7a4e3fd1526c40d1fb2b3cea0e5552592fd394a002c52b4bf283bc45"
+checksum = "d076d5b64a7e2fe6f0743f02c43ca4a6725c0f904203bfe276a5b3e793103605"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2380,6 +2380,7 @@ dependencies = [
  "rama-socks5",
  "rama-tcp",
  "rama-tls",
+ "rama-tls-rustls",
  "rama-ua",
  "rama-udp",
  "rama-utils",
@@ -2575,6 +2576,7 @@ dependencies = [
  "rama-net",
  "rama-tcp",
  "rama-tls",
+ "rama-tls-rustls",
  "rama-utils",
  "tokio",
  "tracing",
@@ -2663,6 +2665,7 @@ dependencies = [
  "base64 0.22.1",
  "bytes",
  "const_format",
+ "flume",
  "futures-lite",
  "headers",
  "hex",
@@ -2754,6 +2757,29 @@ dependencies = [
  "rama-boring",
  "rama-boring-tokio",
  "rama-core",
+ "rama-net",
+ "rama-utils",
+ "rcgen",
+ "rustls",
+ "rustls-native-certs",
+ "rustls-pemfile",
+ "rustls-pki-types",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "webpki-roots",
+]
+
+[[package]]
+name = "rama-tls-rustls"
+version = "0.2.0-alpha.9"
+dependencies = [
+ "flume",
+ "itertools 0.14.0",
+ "parking_lot",
+ "pin-project-lite",
+ "rama-core",
+ "rama-http-types",
  "rama-net",
  "rama-utils",
  "rcgen",

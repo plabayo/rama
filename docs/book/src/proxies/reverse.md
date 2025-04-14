@@ -10,7 +10,7 @@
 
 [Examples](https://github.com/plabayo/rama/tree/main/examples):
 
-- [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
+- [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_termination.rs):
   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
   plain text stream to the first.
   - See also [the TLS Termination Proxies chapter](./tls.md), as a specific example of a reverse proxy;

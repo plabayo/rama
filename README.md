@@ -85,7 +85,7 @@ This framework comes with 🔋 batteries included, giving you the full freedom t
 
 | category | support list |
 |-|-|
-| ✅ [transports](https://ramaproxy.org/docs/rama/net/stream/index.html) | ✅ [tcp](https://ramaproxy.org/docs/rama/tcp/index.html) ⸱ 🏗️ udp <sup>(2)</sup> ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/net/stream/layer/index.html) |
+| ✅ [transports](https://ramaproxy.org/docs/rama/net/stream/index.html) | ✅ [tcp](https://ramaproxy.org/docs/rama/tcp/index.html) ⸱ ✅ [udp](https://ramaproxy.org/docs/rama/udp/index.html) ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/net/stream/layer/index.html) |
 | ✅ [http](https://ramaproxy.org/docs/rama/http/index.html) | ✅ [auto](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.auto) ⸱ ✅ [http/1.1](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.http1) ⸱ ✅ [h2](https://ramaproxy.org/docs/rama/http/server/service/struct.HttpServer.html#method.h2) ⸱ 🏗️ h3 <sup>(2)</sup> ⸱ ✅ [middleware](https://ramaproxy.org/docs/rama/http/layer/index.html) |
 | ✅ web server | ✅ [fs](https://ramaproxy.org/docs/rama/http/service/fs/index.html) ⸱ ✅ [redirect](https://ramaproxy.org/docs/rama/http/service/redirect/struct.Redirect.html) ⸱ ✅ [dyn router](https://ramaproxy.org/docs/rama/http/service/web/struct.WebService.html) ⸱ ✅ [static router](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html) ⸱ ✅ [handler extractors](https://ramaproxy.org/docs/rama/http/service/web/extract/index.html) ⸱ ✅ [k8s healthcheck](https://ramaproxy.org/docs/rama/http/service/web/k8s/index.html) |
 | ✅ http [client](https://ramaproxy.org/docs/rama/http/client/index.html) | ✅ [easy client](https://ramaproxy.org/docs/rama/http/client/struct.EasyHttpWebClient.html) ⸱ ✅ [high level API](https://ramaproxy.org/docs/rama/http/service/client/trait.HttpClientExt.html) ⸱ ✅ [Proxy Connect](https://ramaproxy.org/docs/rama/http/client/proxy/layer/struct.HttpProxyConnector.html) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
@@ -225,6 +225,7 @@ Here is a list of all `rama` crates:
 - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
+- [`rama-tls-rustls`](https://crates.io/crates/rama-tls-rustls): [Rustls](https://github.com/rustls/rustls) support for rama
 - [`rama-tls`](https://crates.io/crates/rama-tls): TLS support for rama (types, `rustls` and `boring`)
 - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
 - [`rama-socks5`](https://crates.io/crates/rama-socks5): SOCKS5 support for rama
@@ -250,12 +251,12 @@ repositories in function of rama that aren't crates:
 
 ## 🏢 | Proxy Examples
 
-- [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
+- [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_termination.rs):
   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
-  plain text stream to the first.
-- [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
+  plain text stream to the first. Tls is handled by rustls
+- [/examples/tls_boring_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_termination.rs):
   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
-  plain text stream to the first.
+  plain text stream to the first. Tls is handled by boring
 - [/examples/mtls_tunnel_and_service.rs](https://github.com/plabayo/rama/blob/main/examples/mtls_tunnel_and_service.rs):
   Example of how to do mTls (manual Tls, where the client also needs a certificate) using rama,
   as well as how one might use this concept to provide a tunnel service build with these concepts;
