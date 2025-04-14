@@ -28,7 +28,16 @@ hex = { workspace = true }
 itertools = { workspace = true }
 jemallocator = { workspace = true, optional = true }
 mimalloc = { workspace = true, optional = true }
-rama = { version = "0.2.0-alpha.9", path = "..", features = ["full"] }
+rama = { version = "0.2.0-alpha.9", path = "..", features = [
+    "telemetry",
+    "compression",
+    "boring",
+    "cli",
+    "tcp",
+    "udp",
+    "http-full",
+    "proxy-full",
+] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 terminal-prompt = { workspace = true }

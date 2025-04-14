@@ -132,9 +132,6 @@ detect-biggest-crates:
 mdbook-serve:
 	cd docs/book && mdbook serve
 
-rama-cli-build:
-	rama-cli/scripts/build.sh
-
 publish:
     cargo publish -p rama-error
     cargo publish -p rama-macros
@@ -156,3 +153,8 @@ publish:
     cargo publish -p rama-socks5
     cargo publish -p rama
     cargo publish -p rama-cli
+
+update-deps:
+    cargo upgrade
+    cargo upgrades
+    cargo update
