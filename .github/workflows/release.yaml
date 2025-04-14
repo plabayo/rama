@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release Tag'
+        description: "Release Tag"
         required: true
         type: string
 
@@ -108,49 +108,6 @@ jobs:
       - name: Package
         run: |
           cd target/${{ matrix.target }}/release && tar -cJf rama.${{ matrix.target }}.tar.xz rama
-
-      - name: Upload Github Assets
-        uses: softprops/action-gh-release@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          files: target/${{ matrix.target }}/release/*.tar.xz
-          prerelease: ${{ contains(github.ref_name, '-') }}
-          tag_name: ${{ inputs.tag || github.ref_name }}
-
-  build-release-windows:
-    runs-on: ubuntu-latest
-    env:
-      RUST_BACKTRACE: full
-    strategy:
-      fail-fast: true
-      matrix:
-        target:
-          - x86_64-pc-windows-gnu
-          - i686-pc-windows-gnu
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{env.RUST_TOOLCHAIN}}
-          targets: ${{ matrix.target }}
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          env-vars: "RUST_TOOLCHAIN=${{env.RUST_TOOLCHAIN}}"
-
-      - name: Install cross
-        run: |
-          cargo install --git https://github.com/cross-rs/cross --branch main cross
-
-      - name: Build release
-        run: |
-          cross build --release -p rama-cli --target ${{ matrix.target }}
-
-      - name: Package
-        run: |
-          cd target/${{ matrix.target }}/release && tar -cJf rama.${{ matrix.target }}.tar.xz rama.exe
 
       - name: Upload Github Assets
         uses: softprops/action-gh-release@v2

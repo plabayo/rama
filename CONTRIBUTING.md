@@ -54,4 +54,4 @@ Before you can do this you do require the following to be installed:
 
 Once this is all done you should be able to run `just qa`.
 When all these pass you can be pretty certain that all tests in the GitHub CI step
-will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV (`1.85`) and three platforms in total: MacOS, Linux and Windows.
+will also succeed. The difference still though is that GitHub Action will also run some of these tests on the MSRV and the supported platforms (for now just Linux and MacOS).

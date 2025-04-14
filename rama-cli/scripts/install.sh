@@ -10,16 +10,14 @@ OS=$(uname -s | tr '[:upper:]' '[:lower:]')
 
 # Select the appropriate filename based on the system architecture and OS
 case "$ARCH-$OS" in
-    "aarch64-darwin") FILENAME="rama-aarch64-apple-darwin.tar.gz" ;;
-    "arm64-darwin") FILENAME="rama-aarch64-apple-darwin.tar.gz" ;;
-    # "aarch64-linux") FILENAME="rama-aarch64-unknown-linux-musl.tar.gz" ;;
-    # "arm-linux") FILENAME="rama-arm-unknown-linux-musleabihf.tar.gz" ;;
-    # "armv7l-linux") FILENAME="rama-armv7-unknown-linux-musleabihf.tar.gz" ;;
-    # "i686-windows") FILENAME="rama-i686-pc-windows-gnu.tar.gz" ;;
-    # "i686-linux") FILENAME="rama-i686-unknown-linux-musl.tar.gz" ;;
-    "x86_64-darwin") FILENAME="rama-x86_64-apple-darwin.tar.gz" ;;
-    # "x86_64-windows") FILENAME="rama-x86_64-pc-windows-gnu.tar.gz" ;;
-    # "x86_64-linux") FILENAME="rama-x86_64-unknown-linux-musl.tar.gz" ;;
+    "aarch64-darwin") FILENAME="rama.aarch64-apple-darwin.tar.gz" ;;
+    "arm64-darwin") FILENAME="rama.aarch64-apple-darwin.tar.gz" ;;
+    # "aarch64-linux") FILENAME="rama,aarch64-unknown-linux-musl.tar.gz" ;;
+    # "arm-linux") FILENAME="rama-arm.unknown-linux-musleabihf.tar.gz" ;;
+    # "armv7l-linux") FILENAME="rama.armv7-unknown-linux-musleabihf.tar.gz" ;;
+    # "i686-linux") FILENAME="rama.i686-unknown-linux-musl.tar.gz" ;;
+    "x86_64-darwin") FILENAME="rama.x86_64-apple-darwin.tar.gz" ;;
+    # "x86_64-linux") FILENAME="rama.x86_64-unknown-linux-musl.tar.gz" ;;
     *) echo "Unknown system architecture: $ARCH-$OS"; exit 1 ;;
 esac
 
