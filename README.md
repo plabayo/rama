@@ -225,6 +225,7 @@ Here is a list of all `rama` crates:
 - [`rama-dns`](https://crates.io/crates/rama-dns): DNS support for rama
 - [`rama-tcp`](https://crates.io/crates/rama-tcp): TCP support for rama
 - [`rama-udp`](https://crates.io/crates/rama-udp): UDP support for rama
+- [`rama-tls`](https://crates.io/crates/rama-tls-rustls): [Rustls](https://github.com/rustls/rustls) support for rama
 - [`rama-tls`](https://crates.io/crates/rama-tls): TLS support for rama (types, `rustls` and `boring`)
 - [`rama-proxy`](https://crates.io/crates/rama-proxy): proxy types and utilities for rama
 - [`rama-socks5`](https://crates.io/crates/rama-socks5): SOCKS5 support for rama
