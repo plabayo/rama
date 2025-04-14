@@ -59,7 +59,6 @@ use rama::{
     tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 use rama_net::tls::server::SelfSignedData;
-// use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
