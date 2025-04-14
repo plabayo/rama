@@ -16,7 +16,7 @@
 //! # Run the example
 //!
 //! ```sh
-//! cargo run --example tls_termination --features=haproxy,http-full,rustls
+//! cargo run --example tls_rustls_termination --features=haproxy,http-full,rustls
 //! ```
 //!
 //! # Expected output
@@ -56,9 +56,9 @@ use rama::{
         client::service::{Forwarder, TcpConnector},
         server::TcpListener,
     },
-    tls::std::server::{TlsAcceptorData, TlsAcceptorLayer},
+    tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
-use rama_net::tls::server::{SelfSignedData, ServerAuth, ServerConfig};
+use rama_net::tls::server::SelfSignedData;
 
 // everything else is provided by the standard library, community crates or tokio
 use std::{convert::Infallible, time::Duration};
@@ -77,9 +77,11 @@ async fn main() {
         )
         .init();
 
-    let tls_server_config = ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData::default()));
-
-    let acceptor_data = TlsAcceptorData::try_from(tls_server_config).expect("create acceptor data");
+    let acceptor_data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData::default())
+        .expect("tls acceptor with self signed data")
+        .with_env_key_logger()
+        .expect("with env key logger")
+        .build();
 
     let shutdown = Shutdown::default();
 

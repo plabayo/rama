@@ -3,14 +3,11 @@ use rama::{
     Context, Layer,
     http::{BodyExtractExt, Request, response::Json, server::HttpServer},
     net::address::ProxyAddress,
-    net::tls::{
-        ApplicationProtocol,
-        server::{SelfSignedData, ServerAuth, ServerConfig},
-    },
+    net::tls::{ApplicationProtocol, server::SelfSignedData},
     rt::Executor,
     service::service_fn,
     tcp::server::TcpListener,
-    tls::rustls::server::TlsAcceptorLayer,
+    tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 use serde_json::{Value, json};
 
@@ -34,30 +31,26 @@ async fn test_http_mitm_proxy() {
             .unwrap();
     });
 
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
-            organisation_name: Some("Example Server Acceptor".to_owned()),
-            ..Default::default()
-        }))
-    };
-    let tls_service_data = tls_server_config
-        .try_into()
-        .expect("create tls server config");
+    let data = TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
+        organisation_name: Some("Example Server Acceptor".to_owned()),
+        ..Default::default()
+    })
+    .expect("self signed acceptor data")
+    .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+    .with_env_key_logger()
+    .expect("with env key logger")
+    .build();
 
     let executor = Executor::default();
 
-    let tcp_service = TlsAcceptorLayer::new(tls_service_data).into_layer(
-        HttpServer::auto(executor).service(service_fn(async |req: Request| {
+    let tcp_service = TlsAcceptorLayer::new(data).into_layer(HttpServer::auto(executor).service(
+        service_fn(async |req: Request| {
             Ok(Json(json!({
                 "method": req.method().as_str(),
                 "path": req.uri().path(),
             })))
-        })),
-    );
+        }),
+    ));
 
     tokio::spawn(async {
         TcpListener::bind("127.0.0.1:63004")

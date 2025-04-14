@@ -7,16 +7,11 @@ use rama::{
     net::{
         address::Authority,
         client::{ConnectorService, EstablishedClientConnection},
-        tls::{
-            DataEncoding,
-            client::{ClientConfig, NegotiatedTlsParameters, ServerVerifyMode},
-        },
+        tls::{DataEncoding, client::NegotiatedTlsParameters},
     },
     tcp::client::{Request, service::TcpConnector},
-    tls::{
-        rustls::client::{TlsConnectorData, TlsConnectorLayer},
-        std::dep::boring::x509::X509,
-    },
+    tls::boring::dep::boring::x509::X509,
+    tls::rustls::client::{TlsConnectorDataBuilder, TlsConnectorLayer},
 };
 use tokio::net::TcpStream;
 use tracing::level_filters::LevelFilter;
@@ -58,12 +53,15 @@ pub async fn run(cfg: CliCommandTls) -> Result<(), BoxError> {
 
     tracing::info!("Connecting to: {}", authority);
 
-    let tls_client_data = TlsConnectorData::try_from(ClientConfig {
-        store_server_certificate_chain: true,
-        server_verify_mode: cfg.insecure.then_some(ServerVerifyMode::Disable),
-        ..Default::default()
-    })
-    .expect("create tls connector data for client");
+    let mut builder = TlsConnectorDataBuilder::new()
+        .with_env_key_logger()?
+        .with_store_server_certificate_chain(true);
+
+    if cfg.insecure {
+        builder.set_no_cert_verifier();
+    }
+
+    let tls_client_data = builder.build();
 
     let tcp_connector = TcpConnector::new();
     let loggin_service = LoggingLayer.layer(tcp_connector);

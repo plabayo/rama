@@ -40,16 +40,24 @@ use rama::{
     net::conn::is_connection_error,
     net::http::RequestContext,
     net::stream::layer::http::BodyLimitLayer,
-    net::tls::{
-        ApplicationProtocol, SecureTransport,
-        server::{SelfSignedData, ServerAuth, ServerConfig},
-    },
+    net::tls::{SecureTransport, server::SelfSignedData},
     net::user::Basic,
     rt::Executor,
     service::service_fn,
     tcp::{client::default_tcp_connect, server::TcpListener},
-    tls::std::server::TlsAcceptorLayer,
 };
+
+#[cfg(any(feature = "boring", feature = "rustls"))]
+use rama::net::tls::ApplicationProtocol;
+
+#[cfg(feature = "boring")]
+use rama::{
+    net::tls::server::{ServerAuth, ServerConfig},
+    tls::boring::server::TlsAcceptorLayer,
+};
+
+#[cfg(all(feature = "rustls", not(feature = "boring")))]
+use rama::tls::rustls::server::{TlsAcceptorDataBuilder, TlsAcceptorLayer};
 
 use std::convert::Infallible;
 use std::time::Duration;
@@ -69,19 +77,35 @@ async fn main() {
 
     let shutdown = Shutdown::default();
 
-    let tls_server_config = ServerConfig {
-        application_layer_protocol_negotiation: Some(vec![
-            ApplicationProtocol::HTTP_2,
-            ApplicationProtocol::HTTP_11,
-        ]),
-        ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
+    #[cfg(feature = "boring")]
+    let tls_service_data = {
+        let tls_server_config = ServerConfig {
+            application_layer_protocol_negotiation: Some(vec![
+                ApplicationProtocol::HTTP_2,
+                ApplicationProtocol::HTTP_11,
+            ]),
+            ..ServerConfig::new(ServerAuth::SelfSigned(SelfSignedData {
+                organisation_name: Some("Example Server Acceptor".to_owned()),
+                ..Default::default()
+            }))
+        };
+        tls_server_config
+            .try_into()
+            .expect("create tls server config")
+    };
+
+    #[cfg(all(feature = "rustls", not(feature = "boring")))]
+    let tls_service_data = {
+        TlsAcceptorDataBuilder::new_self_signed(SelfSignedData {
             organisation_name: Some("Example Server Acceptor".to_owned()),
             ..Default::default()
-        }))
+        })
+        .expect("self signed acceptor data")
+        .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+        .with_env_key_logger()
+        .expect("with env key logger")
+        .build()
     };
-    let tls_service_data = tls_server_config
-        .try_into()
-        .expect("create tls server config");
 
     // create tls proxy
     shutdown.spawn_task_fn(async |guard| {

@@ -52,7 +52,7 @@
 //! | ✅ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(1)</sup> ⸱ ✅ [middleware](crate::http::layer) |
 //! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
 //! | ✅ [http client](crate::http::client) | ✅ [easy client](crate::http::client::EasyHttpWebClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
-//! | ✅ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ ✅ [BoringSSL](crate::tls::boring) ⸱ ❌ NSS <sup>(3)</sup> |
+//! | ✅ [tls] | ✅ [Rustls](crate::tls_rustls) ⸱ ✅ [BoringSSL](crate::tls::boring) ⸱ ❌ NSS <sup>(3)</sup> |
 //! | ✅ [dns] | ✅ [DNS Resolver][crate::dns::DnsResolver] |
 //! | ✅ [proxy] protocols | ✅ [PROXY protocol](crate::proxy::haproxy) ⸱ ✅ [http proxy](https://github.com/plabayo/rama/blob/main/examples/http_connect_proxy.rs) ⸱ ✅ [https proxy](https://github.com/plabayo/rama/blob/main/examples/https_connect_proxy.rs) ⸱ 🏗️ SOCKS5 <sup>(2)</sup> ⸱ 🏗️ SOCKS5H <sup>(2)</sup> |
 //! | 🏗️ web protocols | 🏗️ Web Sockets (WS) <sup>(2)</sup> ⸱ 🏗️ WSS <sup>(2)</sup> ⸱ ❌ Web Transport <sup>(3)</sup> ⸱ ❌ gRPC <sup>(3)</sup> |
@@ -207,11 +207,11 @@
 //!
 //! ## 🏢 | Proxy Examples
 //!
-//! - [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
-//!   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
+//! - [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_rustls_termination.rs):
+//!   Spawns a mini handmade http server, as well as a TLS termination proxy (using rustls), forwarding the
 //!   plain text stream to the first.
-//! - [/examples/tls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_termination.rs):
-//!   Spawns a mini handmade http server, as well as a TLS termination proxy, forwarding the
+//! - [/examples/tls_rustls_termination.rs](https://github.com/plabayo/rama/tree/main/examples/tls_boring_termination.rs):
+//!   Spawns a mini handmade http server, as well as a TLS termination proxy (using boring), forwarding the
 //!   plain text stream to the first.
 //! - [/examples/mtls_tunnel_and_service.rs](https://github.com/plabayo/rama/blob/main/examples/mtls_tunnel_and_service.rs):
 //!   Example of how to do mTls (manual Tls, where the client also needs a certificate) using rama,
@@ -353,9 +353,16 @@ pub use ::rama_udp as udp;
 #[doc(inline)]
 pub use ::rama_core::telemetry;
 
-#[cfg(feature = "tls")]
-#[doc(inline)]
-pub use ::rama_tls as tls;
+#[cfg(any(feature = "rustls", feature = "boring"))]
+pub mod tls {
+    #[cfg(feature = "tls")]
+    #[doc(inline)]
+    pub use ::rama_tls::*;
+
+    #[cfg(feature = "rustls")]
+    #[doc(inline)]
+    pub use ::rama_tls_rustls as rustls;
+}
 
 #[cfg(feature = "dns")]
 #[doc(inline)]
