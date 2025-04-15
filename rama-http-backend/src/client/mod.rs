@@ -14,8 +14,8 @@ use rama_net::{
     Protocol,
     address::Authority,
     client::{
-        ConnectorService, EitherConn, EstablishedClientConnection, LeasedConnection, Pool,
-        PoolStorage, PooledConnector, ReqToConnID,
+        ConnectorService, EstablishedClientConnection, LeasedConnection, Pool, PoolStorage,
+        PooledConnector, ReqToConnID,
     },
     http::RequestContext,
 };
@@ -36,6 +36,9 @@ use rama_tls_rustls::client::{
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use http_inspector::HttpsAlpnModifier;
+
+#[cfg(any(feature = "rustls", feature = "boring"))]
+use rama_net::client::EitherConn;
 
 mod svc;
 #[doc(inline)]

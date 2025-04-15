@@ -29,6 +29,20 @@ impl<T: Clone> Clone for Query<T> {
     }
 }
 
+impl<T> Query<T>
+where
+    T: DeserializeOwned + Send + Sync + 'static,
+{
+    /// Create a `Query<T>` directly from the query str,
+    /// can be useful to combine this method as part of another extractor
+    /// or otherwise impossible combination.
+    pub fn parse_query_str(query: &str) -> Result<Self, FailedToDeserializeQueryString> {
+        let params =
+            serde_html_form::from_str(query).map_err(FailedToDeserializeQueryString::from_err)?;
+        Ok(Query(params))
+    }
+}
+
 impl<T, S> FromRequestContextRefPair<S> for Query<T>
 where
     T: DeserializeOwned + Send + Sync + 'static,
@@ -41,9 +55,7 @@ where
         parts: &Parts,
     ) -> Result<Self, Self::Rejection> {
         let query = parts.uri.query().unwrap_or_default();
-        let params =
-            serde_html_form::from_str(query).map_err(FailedToDeserializeQueryString::from_err)?;
-        Ok(Query(params))
+        Query::parse_query_str(query)
     }
 }
 
