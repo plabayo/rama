@@ -41,7 +41,10 @@ impl TryFrom<&str> for ProxyAddress {
                         Host::try_from(&slice[i + 1..]).map(|h| {
                             (
                                 h,
-                                protocol.as_ref().unwrap_or(&Protocol::HTTP).default_port(),
+                                protocol
+                                    .as_ref()
+                                    .and_then(|proto| proto.default_port())
+                                    .unwrap_or(80),
                             )
                                 .into()
                         })
@@ -62,7 +65,10 @@ impl TryFrom<&str> for ProxyAddress {
                 Host::try_from(slice).map(|h| {
                     (
                         h,
-                        protocol.as_ref().unwrap_or(&Protocol::HTTP).default_port(),
+                        protocol
+                            .as_ref()
+                            .and_then(|proto| proto.default_port())
+                            .unwrap_or(80),
                     )
                         .into()
                 })

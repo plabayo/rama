@@ -239,10 +239,17 @@ fn sanitize_client_req_header<S, B>(
                 // NOTE: in a green future we might not need to stringify
                 // this entire thing first... maybe something someone at some
                 // point can take a look at this mess
+
+                // Default port is stripped in browsers. It's important that we also do this
+                // as some reverse proxies such as nginx respond 404 if authority is not an exact match
+                let authority = if request_ctx.authority_has_default_port() {
+                    request_ctx.authority.host().to_string()
+                } else {
+                    request_ctx.authority.to_string()
+                };
+
                 uri_parts.authority = Some(
-                    request_ctx
-                        .authority
-                        .to_string()
+                    authority
                         .try_into()
                         .context("use RequestContext.authority as http authority")?,
                 );
