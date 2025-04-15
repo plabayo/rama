@@ -1,8 +1,8 @@
-name: Build Releases
+name: Build Rama CLI Releases
 on:
   push:
     tags:
-      - v*
+      - rama-*
   workflow_dispatch:
     inputs:
       tag:

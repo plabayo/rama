@@ -41,7 +41,10 @@ impl TryFrom<&str> for ProxyAddress {
                         Host::try_from(&slice[i + 1..]).map(|h| {
                             (
                                 h,
-                                protocol.as_ref().unwrap_or(&Protocol::HTTP).default_port(),
+                                protocol
+                                    .as_ref()
+                                    .and_then(|proto| proto.default_port())
+                                    .unwrap_or(80),
                             )
                                 .into()
                         })
@@ -62,7 +65,10 @@ impl TryFrom<&str> for ProxyAddress {
                 Host::try_from(slice).map(|h| {
                     (
                         h,
-                        protocol.as_ref().unwrap_or(&Protocol::HTTP).default_port(),
+                        protocol
+                            .as_ref()
+                            .and_then(|proto| proto.default_port())
+                            .unwrap_or(80),
                     )
                         .into()
                 })
@@ -275,20 +281,24 @@ mod tests {
                         let credential = it.next().unwrap();
                         let host = it.next().unwrap();
                         s = match scheme {
-                            Some(scheme) => format!("{scheme}://{credential}@[{host}]:80"),
+                            Some(scheme) => format!("{scheme}://{credential}@[{host}]:1080"),
                             None => format!("{credential}@[{host}]:80"),
                         };
                     } else {
                         s = match scheme {
-                            Some(scheme) => format!("{scheme}://[{host}]:80"),
+                            Some(scheme) => format!("{scheme}://[{host}]:1080"),
                             None => format!("[{host}]:80"),
                         };
                     }
                 } else {
-                    s = format!("{s}:80");
+                    s = if s.contains("://") {
+                        format!("{s}:1080")
+                    } else {
+                        format!("{s}:80")
+                    };
                 }
             }
-            assert_eq!(s, out);
+            assert_eq!(s, out, "addr: {addr}");
         }
     }
 }
