@@ -22,9 +22,9 @@ futures-core = { workspace = true }
 futures-sink = { workspace = true }
 futures-util = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.10", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.10", path = "../rama-net" }
-rama-utils = { version = "0.2.0-alpha.10", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.11", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.11", path = "../rama-net" }
+rama-utils = { version = "0.2.0-alpha.11", path = "../rama-utils" }
 tokio = { workspace = true, features = ["macros", "net"] }
 tokio-util = { workspace = true, features = ["net", "codec"] }
 tracing = { workspace = true }

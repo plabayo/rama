@@ -21,10 +21,10 @@ flume = { workspace = true, features = ["async"] }
 itertools = { workspace = true }
 parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.10", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.10", path = "../rama-http-types" }
-rama-net = { version = "0.2.0-alpha.10", path = "../rama-net", features = ["http", "tls", "rustls"] }
-rama-utils = { version = "0.2.0-alpha.10", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.11", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.11", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.11", path = "../rama-net", features = ["http", "tls", "rustls"] }
+rama-utils = { version = "0.2.0-alpha.11", path = "../rama-utils" }
 rcgen = { workspace = true }
 rustls = { workspace = true }
 rustls-native-certs = { workspace = true }
