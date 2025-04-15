@@ -86,8 +86,8 @@ use rama::tls::rustls::{
 use rama_http::layer::compress_adapter::CompressAdaptLayer;
 use rama_ua::{
     emulate::{
-        UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
-        UserAgentEmulateLayer,
+        SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
+        UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
     },
     profile::UserAgentDatabase,
 };
@@ -256,7 +256,7 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
     {
         let config = ClientConfig {
             server_verify_mode: Some(ServerVerifyMode::Disable),
-            extensions: Some(vec![
+            extensions: (!ctx.contains::<SelectedUserAgentProfile>()).then_some(vec![
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
                     ApplicationProtocol::HTTP_2,
                     ApplicationProtocol::HTTP_11,
@@ -270,9 +270,12 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     {
-        let data = TlsConnectorDataBuilder::new()
-            .with_no_cert_verifier()
-            .with_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11])
+        let mut builder = TlsConnectorDataBuilder::new().with_no_cert_verifier();
+        if !ctx.contains::<SelectedUserAgentProfile>() {
+            builder
+                .set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
+        }
+        let data = builder
             .with_env_key_logger()
             .expect("with env key logger")
             .build();
