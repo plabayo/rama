@@ -9,6 +9,9 @@ lint: fmt sort
 check:
 	cargo check --workspace --all-targets --all-features
 
+check-links:
+    lychee .
+
 clippy:
 	cargo clippy --workspace --all-targets --all-features
 
@@ -40,7 +43,7 @@ test-ignored:
 
 qa: lint check clippy doc test
 
-qa-full: lint check clippy doc hack test test-ignored fuzz-60s
+qa-full: lint check clippy doc hack test test-ignored fuzz-60s check-links
 
 upgrades:
     cargo upgrades
