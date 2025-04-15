@@ -244,7 +244,7 @@ fn sanitize_client_req_header<S, B>(
                 // as some reverse proxies such as nginx respond 404 if authority is not an exact match
                 let authority = match request_ctx.is_authority_default_port() {
                     true => request_ctx.authority.host().to_string(),
-                    false => request_ctx.authority.host().to_string(),
+                    false => request_ctx.authority.to_string(),
                 };
 
                 uri_parts.authority = Some(
