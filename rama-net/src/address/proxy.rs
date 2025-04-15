@@ -43,8 +43,7 @@ impl TryFrom<&str> for ProxyAddress {
                                 h,
                                 protocol
                                     .as_ref()
-                                    .map(|proto| proto.default_port())
-                                    .flatten()
+                                    .and_then(|proto| proto.default_port())
                                     .unwrap_or(80),
                             )
                                 .into()
@@ -68,8 +67,7 @@ impl TryFrom<&str> for ProxyAddress {
                         h,
                         protocol
                             .as_ref()
-                            .map(|proto| proto.default_port())
-                            .flatten()
+                            .and_then(|proto| proto.default_port())
                             .unwrap_or(80),
                     )
                         .into()

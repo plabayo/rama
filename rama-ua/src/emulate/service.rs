@@ -789,12 +789,9 @@ fn compute_sec_fetch_site_value(
                     let referer_protocol =
                         Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), method);
 
-                    let default_port = uri.port_u16().or_else(|| {
-                        referer_protocol
-                            .as_ref()
-                            .map(|p| p.default_port())
-                            .flatten()
-                    });
+                    let default_port = uri
+                        .port_u16()
+                        .or_else(|| referer_protocol.as_ref().and_then(|p| p.default_port()));
 
                     let maybe_authority = uri
                         .host()
