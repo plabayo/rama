@@ -37,10 +37,10 @@ parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 psl = { workspace = true }
 rama-boring = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.9", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.9", path = "../rama-http-types", optional = true }
-rama-macros = { version = "0.2.0-alpha.9", path = "../rama-macros" }
-rama-utils = { version = "0.2.0-alpha.9", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.10", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.10", path = "../rama-http-types", optional = true }
+rama-macros = { version = "0.2.0-alpha.10", path = "../rama-macros" }
+rama-utils = { version = "0.2.0-alpha.10", path = "../rama-utils" }
 rustls = { workspace = true, optional = true }
 serde = { workspace = true, features = ["derive"] }
 sha2 = { workspace = true, optional = true }

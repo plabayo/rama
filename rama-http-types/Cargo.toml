@@ -26,10 +26,10 @@ http-body-util = { workspace = true }
 mime = { workspace = true }
 mime_guess = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.9", path = "../rama-core" }
-rama-error = { version = "0.2.0-alpha.9", path = "../rama-error" }
-rama-macros = { version = "0.2.0-alpha.9", path = "../rama-macros" }
-rama-utils = { version = "0.2.0-alpha.9", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.10", path = "../rama-core" }
+rama-error = { version = "0.2.0-alpha.10", path = "../rama-error" }
+rama-macros = { version = "0.2.0-alpha.10", path = "../rama-macros" }
+rama-utils = { version = "0.2.0-alpha.10", path = "../rama-utils" }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
 serde_json = { workspace = true }
