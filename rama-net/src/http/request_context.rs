@@ -54,7 +54,7 @@ pub struct RequestContext {
 
 impl RequestContext {
     /// Check if [`Authority`] is using the default port for the [`Protocol`] set in this [`RequestContext`]
-    pub fn is_authority_default_port(&self) -> bool {
+    pub fn authority_has_default_port(&self) -> bool {
         self.protocol.default_port() == Some(self.authority.port())
     }
 }

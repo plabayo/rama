@@ -242,9 +242,10 @@ fn sanitize_client_req_header<S, B>(
 
                 // Default port is stripped in browsers. It's important that we also do this
                 // as some reverse proxies such as nginx respond 404 if authority is not an exact match
-                let authority = match request_ctx.is_authority_default_port() {
-                    true => request_ctx.authority.host().to_string(),
-                    false => request_ctx.authority.to_string(),
+                let authority = if request_ctx.authority_has_default_port() {
+                    request_ctx.authority.host().to_string()
+                } else {
+                    request_ctx.authority.to_string()
                 };
 
                 uri_parts.authority = Some(
