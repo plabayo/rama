@@ -2,7 +2,7 @@ name: Build Releases
 on:
   push:
     tags:
-      - v*
+      - rama-*
   workflow_dispatch:
     inputs:
       tag:
