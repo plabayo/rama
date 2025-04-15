@@ -281,20 +281,24 @@ mod tests {
                         let credential = it.next().unwrap();
                         let host = it.next().unwrap();
                         s = match scheme {
-                            Some(scheme) => format!("{scheme}://{credential}@[{host}]:80"),
+                            Some(scheme) => format!("{scheme}://{credential}@[{host}]:1080"),
                             None => format!("{credential}@[{host}]:80"),
                         };
                     } else {
                         s = match scheme {
-                            Some(scheme) => format!("{scheme}://[{host}]:80"),
+                            Some(scheme) => format!("{scheme}://[{host}]:1080"),
                             None => format!("[{host}]:80"),
                         };
                     }
                 } else {
-                    s = format!("{s}:80");
+                    s = if s.contains("://") {
+                        format!("{s}:1080")
+                    } else {
+                        format!("{s}:80")
+                    };
                 }
             }
-            assert_eq!(s, out);
+            assert_eq!(s, out, "addr: {addr}");
         }
     }
 }
