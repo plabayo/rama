@@ -52,6 +52,13 @@ pub struct RequestContext {
     pub authority: Authority,
 }
 
+impl RequestContext {
+    /// Check if [`Authority`] is using the default port for the [`Protocol`] set in this [`RequestContext`]
+    pub fn is_authority_default_port(&self) -> bool {
+        self.protocol.default_port() == Some(self.authority.port())
+    }
+}
+
 impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext {
     type Error = OpaqueError;
 
@@ -64,7 +71,9 @@ impl<Body, State> TryFrom<(&Context<State>, &Request<Body>)> for RequestContext 
             uri.scheme()
         );
 
-        let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
+        let default_port = uri
+            .port_u16()
+            .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
         let authority = match ctx.get().and_then(try_get_host_from_secure_transport) {
@@ -141,7 +150,9 @@ impl<State> TryFrom<(&Context<State>, &Parts)> for RequestContext {
             uri.scheme()
         );
 
-        let default_port = uri.port_u16().unwrap_or_else(|| protocol.default_port());
+        let default_port = uri
+            .port_u16()
+            .unwrap_or_else(|| protocol.default_port().unwrap_or(80));
         tracing::trace!(uri = %uri, "request context: detected default port: {default_port}");
 
         let authority = match ctx.get().and_then(try_get_host_from_secure_transport) {
@@ -485,7 +496,10 @@ mod tests {
             assert_eq!(req_ctx.protocol, expected_protocol);
             assert_eq!(
                 req_ctx.authority.to_string(),
-                format!("www.example.com:{}", expected_protocol.default_port())
+                format!(
+                    "www.example.com:{}",
+                    expected_protocol.default_port().unwrap_or(80)
+                )
             );
         }
     }

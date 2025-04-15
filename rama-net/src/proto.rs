@@ -207,14 +207,13 @@ impl Protocol {
         }
     }
 
-    /// Return a port that can be used as default in case no port is defined.
-    ///
-    /// NOTE that this is not going to be valid for non-http ports.
-    pub fn default_port(&self) -> u16 {
+    /// Returns the default port for this [`Protocol`]
+    pub fn default_port(&self) -> Option<u16> {
         match &self.0 {
-            ProtocolKind::Https | ProtocolKind::Wss => 443,
-            ProtocolKind::Http | ProtocolKind::Ws => 80,
-            ProtocolKind::Socks5 | ProtocolKind::Socks5h | ProtocolKind::Custom(_) => 80, // \_(ツ)_/¯
+            ProtocolKind::Https | ProtocolKind::Wss => Some(443),
+            ProtocolKind::Http | ProtocolKind::Ws => Some(80),
+            ProtocolKind::Socks5 | ProtocolKind::Socks5h => Some(1080),
+            ProtocolKind::Custom(_) => None,
         }
     }
 

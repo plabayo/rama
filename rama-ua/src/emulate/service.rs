@@ -789,9 +789,12 @@ fn compute_sec_fetch_site_value(
                     let referer_protocol =
                         Protocol::maybe_from_uri_scheme_str_and_method(uri.scheme(), method);
 
-                    let default_port = uri
-                        .port_u16()
-                        .or_else(|| referer_protocol.as_ref().map(|p| p.default_port()));
+                    let default_port = uri.port_u16().or_else(|| {
+                        referer_protocol
+                            .as_ref()
+                            .map(|p| p.default_port())
+                            .flatten()
+                    });
 
                     let maybe_authority = uri
                         .host()
@@ -903,7 +906,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -920,7 +923,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -937,7 +940,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -951,7 +954,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -965,7 +968,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -990,7 +993,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -1015,7 +1018,7 @@ mod tests {
                 preserve_ua_header: true,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -1041,7 +1044,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -1074,7 +1077,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("ramaproxy.org").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1111,7 +1114,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::EXAMPLE_NAME,
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1150,7 +1153,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("ramaproxy.org").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1207,7 +1210,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTP.default_port(),
+                    Protocol::HTTP.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTP,
                 requested_client_hints: None,
@@ -1277,7 +1280,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1327,7 +1330,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: None,
@@ -1400,7 +1403,7 @@ mod tests {
                 preserve_ua_header: false,
                 request_authority: Authority::new(
                     Host::from_str("www.google.com").unwrap(),
-                    Protocol::HTTPS.default_port(),
+                    Protocol::HTTPS.default_port().unwrap(),
                 ),
                 protocol: Protocol::HTTPS,
                 requested_client_hints: Some(vec![

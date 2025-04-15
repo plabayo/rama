@@ -10,7 +10,7 @@ use rama_http_types::{
     header::{CONNECTION, HOST, KEEP_ALIVE, PROXY_CONNECTION, TRANSFER_ENCODING, UPGRADE},
     headers::HeaderMapExt,
 };
-use rama_net::{Protocol, address::ProxyAddress, http::RequestContext};
+use rama_net::{address::ProxyAddress, http::RequestContext};
 use std::fmt;
 use tokio::sync::Mutex;
 
@@ -242,10 +242,9 @@ fn sanitize_client_req_header<S, B>(
 
                 // Default port is stripped in browsers. It's important that we also do this
                 // as some reverse proxies such as nginx respond 404 if authority is not an exact match
-                let authority = match (&request_ctx.protocol, request_ctx.authority.port()) {
-                    (&Protocol::HTTP, 80) => request_ctx.authority.host().to_string(),
-                    (&Protocol::HTTPS, 443) => request_ctx.authority.host().to_string(),
-                    (_, _) => request_ctx.authority.to_string(),
+                let authority = match request_ctx.is_authority_default_port() {
+                    true => request_ctx.authority.host().to_string(),
+                    false => request_ctx.authority.host().to_string(),
                 };
 
                 uri_parts.authority = Some(
