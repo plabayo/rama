@@ -15,6 +15,7 @@ Usage: rama <COMMAND>
 
 Commands:
   http   rama http client
+  tls    rama tls support
   proxy  rama proxy server
   echo   rama echo service (echos the http request and tls client config)
   ip     rama ip service (returns the ip address of the client)
