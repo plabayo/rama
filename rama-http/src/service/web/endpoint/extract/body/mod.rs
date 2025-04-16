@@ -1,3 +1,5 @@
+//! module in function of extractors for `Request` bodies
+
 use super::FromRequest;
 use rama_http_types as http;
 use rama_utils::macros::impl_deref;

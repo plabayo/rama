@@ -1,3 +1,5 @@
+//! Module in function of the [`Authority`] extractor.
+
 use super::FromRequestContextRefPair;
 use crate::utils::macros::define_http_rejection;
 use rama_core::Context;

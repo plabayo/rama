@@ -3,30 +3,30 @@
 use crate::{HeaderMap, IntoResponse, dep::http::request::Parts, dep::mime, header};
 use rama_core::Context;
 
-mod host;
+pub mod host;
 #[doc(inline)]
 pub use host::Host;
 
-mod authority;
+pub mod authority;
 #[doc(inline)]
 pub use authority::Authority;
 
-mod path;
+pub mod path;
 #[doc(inline)]
 pub use path::Path;
 
-mod query;
+pub mod query;
 #[doc(inline)]
 pub use query::Query;
 
 mod method;
 mod request;
 
-mod typed_header;
+pub mod typed_header;
 #[doc(inline)]
-pub use typed_header::{TypedHeader, TypedHeaderRejection, TypedHeaderRejectionReason};
+pub use typed_header::TypedHeader;
 
-mod body;
+pub mod body;
 #[doc(inline)]
 pub use body::{Body, Bytes, Csv, Form, Json, Text};
 
