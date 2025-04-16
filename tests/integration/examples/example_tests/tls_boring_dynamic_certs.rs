@@ -25,7 +25,7 @@ use rama_net::{
     },
 };
 use rama_tcp::client::service::TcpConnector;
-use rama_tls_boring::{client::TlsConnector, dep::boring::x509::X509};
+use rama_tls_boring::{client::TlsConnector, core::x509::X509};
 use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
 use std::{str::FromStr, time::Duration};
 

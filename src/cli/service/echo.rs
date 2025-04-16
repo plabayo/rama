@@ -41,7 +41,7 @@ use crate::{
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
     net::fingerprint::{Ja3, Ja4},
-    tls::types::{SecureTransport, client::ClientHelloExtension},
+    net::tls::{SecureTransport, client::ClientHelloExtension},
 };
 use serde::Serialize;
 use serde_json::json;

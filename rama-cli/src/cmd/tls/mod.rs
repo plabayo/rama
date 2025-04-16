@@ -15,7 +15,7 @@ use rama::{
     tcp::client::{Request, service::TcpConnector},
     tls::boring::{
         client::{TlsConnectorData, TlsConnectorLayer},
-        dep::boring::x509::X509,
+        core::x509::X509,
     },
 };
 use tokio::net::TcpStream;
