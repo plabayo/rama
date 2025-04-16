@@ -29,9 +29,9 @@ parking_lot = { workspace = true }
 pin-project-lite = { workspace = true }
 rama-boring = { workspace = true, optional = true }
 rama-boring-tokio = { workspace = true, optional = true }
-rama-core = { version = "0.2.0-alpha.11", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.11", path = "../rama-net", features = ["http", "tls"] }
-rama-utils = { version = "0.2.0-alpha.11", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.12", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.12", path = "../rama-net", features = ["http", "tls"] }
+rama-utils = { version = "0.2.0-alpha.12", path = "../rama-utils" }
 rcgen = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 rustls-native-certs = { workspace = true, optional = true }

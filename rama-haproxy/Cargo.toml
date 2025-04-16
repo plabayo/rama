@@ -17,8 +17,8 @@ workspace = true
 default = []
 
 [dependencies]
-rama-core = { version = "0.2.0-alpha.11", path = "../rama-core" }
-rama-net = { version = "0.2.0-alpha.11", path = "../rama-net" }
+rama-core = { version = "0.2.0-alpha.12", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.12", path = "../rama-net" }
 tokio = { workspace = true, features = ["macros", "io-std"] }
 tracing = { workspace = true }
 
