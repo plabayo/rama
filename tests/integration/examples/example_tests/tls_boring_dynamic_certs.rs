@@ -27,7 +27,18 @@ use rama::{
     tls::boring::dep::boring::x509::X509,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-
+use rama_http_backend::client::HttpConnector;
+use rama_net::{
+    address::{Domain, Host},
+    client::{ConnectorService, EstablishedClientConnection},
+    tls::{
+        ApplicationProtocol, DataEncoding,
+        client::{ClientConfig, ClientHelloExtension, NegotiatedTlsParameters, ServerVerifyMode},
+    },
+};
+use rama_tcp::client::service::TcpConnector;
+use rama_tls_boring::{client::TlsConnector, dep::boring::x509::X509};
+use rama_utils::{backoff::ExponentialBackoff, rng::HasherRng};
 use std::{str::FromStr, time::Duration};
 
 #[tokio::test]

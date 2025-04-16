@@ -380,9 +380,9 @@ pub use ::rama_core::telemetry;
 
 #[cfg(any(feature = "rustls", feature = "boring"))]
 pub mod tls {
-    #[cfg(feature = "tls")]
+    #[cfg(feature = "boring")]
     #[doc(inline)]
-    pub use ::rama_tls::*;
+    pub use ::rama_tls_boring as boring;
 
     #[cfg(feature = "rustls")]
     #[doc(inline)]
