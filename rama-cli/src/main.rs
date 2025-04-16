@@ -8,7 +8,7 @@ use clap::{Parser, Subcommand};
 use rama::error::BoxError;
 
 pub mod cmd;
-use cmd::{echo, fp, http, ip, proxy, tls};
+use cmd::{echo, fp, http, ip, proxy, serve, tls};
 
 pub mod error;
 
@@ -38,6 +38,7 @@ enum CliCommands {
     Echo(echo::CliCommandEcho),
     Ip(ip::CliCommandIp),
     Fp(fp::CliCommandFingerprint),
+    Serve(serve::CliCommandServe),
 }
 
 #[tokio::main]
@@ -52,6 +53,7 @@ async fn main() -> Result<(), BoxError> {
         CliCommands::Echo(cfg) => echo::run(cfg).await,
         CliCommands::Ip(cfg) => ip::run(cfg).await,
         CliCommands::Fp(cfg) => fp::run(cfg).await,
+        CliCommands::Serve(cfg) => serve::run(cfg).await,
     } {
         Ok(()) => Ok(()),
         Err(err) => {
