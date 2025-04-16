@@ -2378,6 +2378,7 @@ dependencies = [
  "rama-proxy",
  "rama-tcp",
  "rama-tls",
+ "rama-tls-boring",
  "rama-tls-rustls",
  "rama-ua",
  "rama-udp",
@@ -2575,6 +2576,7 @@ dependencies = [
  "rama-net",
  "rama-tcp",
  "rama-tls",
+ "rama-tls-boring",
  "rama-tls-rustls",
  "rama-utils",
  "tokio",
@@ -2732,6 +2734,26 @@ dependencies = [
 
 [[package]]
 name = "rama-tls"
+version = "0.2.0-alpha.13"
+dependencies = [
+ "brotli",
+ "flate2",
+ "flume",
+ "itertools 0.14.0",
+ "moka",
+ "parking_lot",
+ "pin-project-lite",
+ "rama-boring",
+ "rama-boring-tokio",
+ "rama-core",
+ "rama-net",
+ "rama-utils",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "rama-tls-boring"
 version = "0.2.0-alpha.13"
 dependencies = [
  "brotli",

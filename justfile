@@ -151,6 +151,7 @@ publish:
     cargo publish -p rama-dns
     cargo publish -p rama-tcp
     cargo publish -p rama-udp
+    cargo publish -p rama-tls-boring
     cargo publish -p rama-tls-rustls
     cargo publish -p rama-tls
     cargo publish -p rama-http-core

@@ -1,0 +1,43 @@
+[package]
+name = "rama-tls-boring"
+description = "tls implementations for rama using boring"
+version = { workspace = true }
+license = { workspace = true }
+edition = { workspace = true }
+repository = { workspace = true }
+keywords = ["io", "async", "tls", "network", "rama"]
+categories = ["asynchronous", "network-programming", "cryptography", "web-programming"]
+authors = { workspace = true }
+rust-version = { workspace = true }
+
+[lints]
+workspace = true
+
+[features]
+default = []
+compression = ["dep:flate2", "dep:brotli"]
+
+[dependencies]
+brotli = { workspace = true, optional = true }
+flate2 = { workspace = true, optional = true }
+flume = { workspace = true, features = ["async"] }
+itertools = { workspace = true }
+moka = { workspace = true, features = ["sync"] }
+parking_lot = { workspace = true }
+pin-project-lite = { workspace = true }
+rama-boring = { workspace = true }
+rama-boring-tokio = { workspace = true }
+rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
+rama-net = { version = "0.2.0-alpha.13", path = "../rama-net", features = ["http", "tls"] }
+rama-utils = { version = "0.2.0-alpha.13", path = "../rama-utils" }
+tokio = { workspace = true, features = ["macros", "io-std"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+
+[package.metadata.cargo-public-api-crates]
+allowed = []
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
