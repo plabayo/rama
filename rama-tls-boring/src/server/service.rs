@@ -1,8 +1,8 @@
 use super::TlsAcceptorData;
 use crate::{
-    boring::dep::{
-        boring::ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
+    core::{
         boring_tokio::SslStream,
+        ssl::{AlpnError, SslAcceptor, SslMethod, SslRef},
     },
     keylog::new_key_log_file_handle,
     types::SecureTransport,

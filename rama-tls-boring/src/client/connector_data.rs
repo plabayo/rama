@@ -24,9 +24,7 @@ use std::{fmt, sync::Arc};
 use tracing::{debug, trace};
 
 #[cfg(feature = "compression")]
-use crate::boring::client::compress_certificate::{
-    BrotliCertificateCompressor, ZlibCertificateCompressor,
-};
+use super::compress_certificate::{BrotliCertificateCompressor, ZlibCertificateCompressor};
 
 use crate::keylog::new_key_log_file_handle;
 

@@ -8,9 +8,9 @@ use deadpool_postgres::Config;
 use rama::{
     error::{ErrorContext, OpaqueError},
     net::{address::Host, stream::Stream},
-    tls::{
-        boring::client::{TlsStream, tls_connect},
-        boring::dep::boring::{hash::MessageDigest, nid::Nid, ssl::SslRef},
+    tls::boring::{
+        client::{TlsStream, tls_connect},
+        core::{hash::MessageDigest, nid::Nid, ssl::SslRef},
     },
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};

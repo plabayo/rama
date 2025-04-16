@@ -1,4 +1,4 @@
-use crate::boring::dep::boring::{
+use crate::core::{
     asn1::Asn1Time,
     bn::{BigNum, MsbOption},
     hash::MessageDigest,

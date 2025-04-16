@@ -16,11 +16,10 @@ use rama::{
         fingerprint::{Ja3, Ja4, Ja4H},
         http::RequestContext,
         stream::SocketInfo,
-        tls::client::ECHClientHello,
-    },
-    tls::types::{
-        SecureTransport,
-        client::{ClientHello, ClientHelloExtension},
+        tls::{
+            SecureTransport,
+            client::{ClientHello, ClientHelloExtension, ECHClientHello},
+        },
     },
     ua::{
         UserAgent,
