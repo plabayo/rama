@@ -10,7 +10,7 @@ use rama::{
             decompression::DecompressionLayer,
             follow_redirect::FollowRedirectLayer,
             required_header::AddRequiredRequestHeadersLayer,
-            retry::{ManagedPolicy, RetryLayer},
+            retry::{ManagedPolicy, RetryLayer, managed::DoNotRetry},
             trace::TraceLayer,
         },
     },
@@ -24,10 +24,9 @@ use rama::{
             },
         },
     },
-    tls::boring::dep::boring::x509::X509,
+    tls::boring::core::x509::X509,
     utils::{backoff::ExponentialBackoff, rng::HasherRng},
 };
-use rama_http::layer::retry::managed::DoNotRetry;
 use tokio_test::assert_err;
 
 use std::{str::FromStr, time::Duration};
