@@ -20,10 +20,10 @@ tls = ["rama-net/tls"]
 
 [dependencies]
 itertools = { workspace = true }
-rama-core = { version = "0.2.0-alpha.11", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.11", path = "../rama-http-types" }
-rama-net = { version = "0.2.0-alpha.11", path = "../rama-net", features = ["http"] }
-rama-utils = { version = "0.2.0-alpha.11", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.12", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.12", path = "../rama-http-types" }
+rama-net = { version = "0.2.0-alpha.12", path = "../rama-net", features = ["http"] }
+rama-utils = { version = "0.2.0-alpha.12", path = "../rama-utils" }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true, optional = true }
