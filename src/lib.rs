@@ -285,7 +285,7 @@
 //! Learn more about it at <https://ramaproxy.org/book/web_servers.html#datastar> or see it in
 //! action at [datastar > examples > rust > rama](https://github.com/starfederation/datastar/blob/develop/examples/rust/rama/hello-world/src/main.rs):
 //!
-//! ```rust,ignore
+//! ```rust,no_run,ignore
 //! async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoResponse {
 //!     Sse(stream! {
 //!         for i in 0..MESSAGE.len() {
