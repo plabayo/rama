@@ -301,29 +301,6 @@ async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoRes
 }
 ```
 
-### More Examples
-
-The following are examples that use the high level concepts of Request/State extractors and IntoResponse converters,
-that you'll recognise from `axum`, just as available for `rama` services:
-
-- [/examples/http_key_value_store.rs](./examples/http_key_value_store.rs):
-  a web service example showcasing how one might do a key value store web service using `Rama`;
-- [/examples/http_web_service_dir_and_api.rs](./examples/http_web_service_dir_and_api.rs):
-   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
- - [/examples/http_web_router.rs](./examples/http_web_router.rs):
-   a web service example showcasing demonstrating how to create a web router,
-   which is excellent for the typical path-centric routing,
-   and an approach you'll recognise from most other web frameworks out there.
-
-For a production-like example of a web service you can also read the [`rama-fp` source code](https://github.com/plabayo/rama/tree/main/rama-fp/src).
-This is the webservice behind the Rama fingerprinting service, which is used by the maintainers of 🦙 Rama (ラマ) to generate
-the UA emulation data for the Http and TLS layers. It is not meant to fingerprint humans or users. Instead it is meant to help
-automated processes look like a human.
-
-> 💡 This example showcases how you can make use of the [`match_service`](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html)
-> macro to create a `Box`-free service router. Another example of this approach can be seen in the
-> [/examples/http_service_match.rs](./examples/http_service_match.rs) example.
-
 ## 🌐 | Web Service Examples
 
 Here are some low level web service examples without fancy features:
@@ -349,6 +326,10 @@ that you'll recognise from `axum`, just as available for `rama` services:
   a web service example showcasing how one might do a key value store web service using `Rama`;
 - [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
+- [/examples/http_web_router.rs](./examples/http_web_router.rs):
+  a web service example showcasing demonstrating how to create a web router,
+  which is excellent for the typical path-centric routing,
+  and an approach you'll recognise from most other web frameworks out there.
 
 For a production-like example of a web service you can also read the [rama cli `fp` cmd source code](https://github.com/plabayo/rama/tree/main/rama-cli/src/cmd/fp).
 This is the webservice behind the Rama fingerprinting service, which is used by the maintainers of 🦙 Rama (ラマ) to generate
