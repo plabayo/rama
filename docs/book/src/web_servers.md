@@ -30,6 +30,40 @@ specialised Web Servers, use Rama in case your prime focus is on proxies instead
 If you are a bit like us,
 do feel free to use Rama for using [Http Clients](./http_clients.md) and [Web Services](./web_servers.md). Either way the choice is yours, but keep in mind that Rama might still have some sharp edges, whereas an excellent project like [Axum](https://docs.rs/axum/latest/axum) will be a much smoother and easier experience for most.
 
+## Datastar
+
+> Datastar helps you build reactive web applications with the simplicity of server-side rendering and the power of a full-stack SPA framework.
+>
+> — <https://data-star.dev/>
+
+Rama is also supported in the official Rust SDK of [🚀 data-\*](https://data-star.dev).
+You can see it in action at [datastar > examples > rust > rama](https://github.com/starfederation/datastar/blob/develop/examples/rust/rama/hello-world/src/main.rs):
+
+```rust
+async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoResponse {
+    Sse(stream! {
+        for i in 0..MESSAGE.len() {
+            yield MergeFragments::new(format!("<div id='message'>{}</div>", &MESSAGE[0..i + 1])).into();
+            tokio::time::sleep(Duration::from_millis(signals.delay)).await;
+        }
+    })
+}
+```
+
+You can join the discord server of [🚀 data-\*](https://data-star.dev) at <https://discord.gg/sGfFuw9k>,
+after which you can join [the #general-rust channel](https://discord.com/channels/1296224603642925098/1315397669954392146)
+for any datastar specific help.
+
+Combining [🚀 data-\*](https://data-star.dev) with 🦙 Rama (ラマ) provides a powerful foundation for your web application—one that **empowers you to build and scale without limitations**.
+
+> If you, your company, or your organization relies on **Rama**,
+> consider supporting its continued development by becoming a sponsor, either through an appropriate tier
+> on [GitHub Sponsors](https://github.com/sponsors/plabayo/sponsorships?tier_id=300734),
+> or by reaching out directly at [sponsor@ramaproxy.org](mailto:sponsor@ramaproxy.org).
+>
+> As a sponsor, you'll benefit from development support,
+> maintenance assistance, and tailored guidance to meet your specific needs.
+
 ## Proxy Web Services
 
 A proxy service is of course also a type of web service, but for this context we are not talking about

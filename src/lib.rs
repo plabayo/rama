@@ -50,7 +50,7 @@
 //! |-|-|
 //! | ✅ [transports](crate::net::stream) | ✅ [tcp] ⸱ ✅ [udp] ⸱ ✅ [middleware](crate::net::stream::layer) |
 //! | ✅ [http] | ✅ [auto](crate::http::server::service::HttpServer::auto) ⸱ ✅ [http/1.1](crate::http::server::service::HttpServer::http1) ⸱ ✅ [h2](crate::http::server::service::HttpServer::h2) ⸱ 🏗️ h3 <sup>(1)</sup> ⸱ ✅ [middleware](crate::http::layer) |
-//! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
+//! | ✅ web server | ✅ [fs](crate::http::service::fs) ⸱ ✅ [redirect](crate::http::service::redirect::Redirect) ⸱ ✅ [router](crate::http::service::web::Router) ⸱ ✅ [dyn router](crate::http::service::web::WebService) ⸱ ✅ [static router](crate::http::service::web::match_service) ⸱ ✅ [handler extractors](crate::http::service::web::extract) ⸱ ✅ [k8s healthcheck](crate::http::service::web::k8s) |
 //! | ✅ [http client](crate::http::client) | ✅ [easy client](crate::http::client::EasyHttpWebClient) ⸱ ✅ [high level API](crate::http::service::client::HttpClientExt) ⸱ ✅ [Proxy Connect](crate::http::client::proxy::layer::HttpProxyConnector) ⸱ ❌ [Chromium Http](https://github.com/plabayo/rama/issues/189) <sup>(3)</sup> |
 //! | ✅ [tls] | ✅ [Rustls](crate::tls::rustls) ⸱ ✅ [BoringSSL](crate::tls::boring) ⸱ ❌ NSS <sup>(3)</sup> |
 //! | ✅ [dns] | ✅ [DNS Resolver][crate::dns::DnsResolver] |
@@ -266,6 +266,9 @@
 //!   a web service example showcasing how one might do a key value store web service using `Rama`;
 //! - [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
 //!   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
+//! - [/examples/http_web_router.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_router.rs):
+//!   a web service example showcasing demonstrating how to create a web router, which is excellent for the typical path-centric routing,
+//!   and an approach you'll recognise from most other web frameworks out there.
 //!
 //! For a production-like example of a web service you can also read the [`rama-fp` source code](https://github.com/plabayo/rama/tree/main/rama-fp/src).
 //! This is the webservice behind the Rama fingerprinting service, which is used by the maintainers of 🦙 Rama (ラマ) to generate
@@ -274,7 +277,24 @@
 //!
 //! > 💡 This example showcases how you can make use of the [`match_service`](https://docs.rs/rama-http/latest/rama_http/service/web/macro.match_service.html)
 //! > macro to create a `Box`-free service router. Another example of this approach can be seen in the
-//! > [http_service_match.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_match.rs) example.
+//! > [/examples/http_service_match.rs](https://github.com/plabayo/rama/tree/main/examples/http_service_match.rs) example.
+//!
+//! ### Datastar
+//!
+//! Rama is also supported in the official Rust SDK of [🚀 data-\*](https://data-star.dev).
+//! Learn more about it at <https://ramaproxy.org/book/web_servers.html#datastar> or see it in
+//! action at [datastar > examples > rust > rama](https://github.com/starfederation/datastar/blob/develop/examples/rust/rama/hello-world/src/main.rs):
+//!
+//! ```rust,ignore
+//! async fn hello_world(ReadSignals(signals): ReadSignals<Signals>) -> impl IntoResponse {
+//!     Sse(stream! {
+//!         for i in 0..MESSAGE.len() {
+//!             yield MergeFragments::new(format!("<div id='message'>{}</div>", &MESSAGE[0..i + 1])).into();
+//!             tokio::time::sleep(Duration::from_millis(signals.delay)).await;
+//!         }
+//!     })
+//! }
+//! ```
 //!
 //! ## 🧑‍💻 | Http Clients
 //!
