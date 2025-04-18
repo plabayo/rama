@@ -36,6 +36,9 @@ do feel free to use Rama for using [Http Clients](./http_clients.md) and [Web Se
 >
 > — <https://data-star.dev/>
 
+[![Crates.io][https://img.shields.io/crates/v/datastar.svg]][https://crates.io/crates/datastar]
+[![Docs.rs][https://img.shields.io/docsrs/datastar/latest]][https://docs.rs/datastar/latest/datastar/index.html]
+
 Rama is also supported in the official Rust SDK of [🚀 data-\*](https://data-star.dev).
 You can see it in action at [datastar > examples > rust > rama](https://github.com/starfederation/datastar/blob/develop/examples/rust/rama/hello-world/src/main.rs):
 
@@ -101,6 +104,10 @@ that you'll recognise from `axum`, just as available for `rama` services:
   a web service example showcasing how one might do a key value store web service using `Rama`;
 - [/examples/http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
+- [/examples/http_web_router.rs](./examples/http_web_router.rs):
+  a web service example showcasing demonstrating how to create a web router,
+  which is excellent for the typical path-centric routing,
+  and an approach you'll recognise from most other web frameworks out there.
 
 For a production-like example of a web service you can also read the [rama cli `fp` source code](https://github.com/plabayo/rama/tree/main/rama-cli/src/cmd/fp).
 This is the webservice behind the Rama fingerprinting service, which is used by the maintainers of 🦙 Rama (ラマ) to generate
