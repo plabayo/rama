@@ -229,9 +229,9 @@ dependencies = [
 
 [[package]]
 name = "aws-lc-sys"
-version = "0.28.0"
+version = "0.28.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9f7720b74ed28ca77f90769a71fd8c637a0137f6fae4ae947e1050229cff57f"
+checksum = "0ddeb19ee86cb16ecfc871e5b0660aff6285760957aaedda6284cf0e790d3769"
 dependencies = [
  "bindgen 0.69.5",
  "cc",
@@ -2351,7 +2351,7 @@ checksum = "dc33ff2d4973d518d823d61aa239014831e521c75da58e3df4840d3f47749d09"
 
 [[package]]
 name = "rama"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2435,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "rama-cli"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2458,7 +2458,7 @@ dependencies = [
 
 [[package]]
 name = "rama-core"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "futures-lite",
  "opentelemetry",
@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "rama-dns"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "hickory-resolver",
  "rama-core",
@@ -2490,7 +2490,7 @@ dependencies = [
 
 [[package]]
 name = "rama-error"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 
 [[package]]
 name = "rama-fuzz"
@@ -2507,7 +2507,7 @@ dependencies = [
 
 [[package]]
 name = "rama-haproxy"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "rama-core",
  "rama-net",
@@ -2518,7 +2518,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "async-compression",
  "base64 0.22.1",
@@ -2565,7 +2565,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-backend"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "const_format",
  "futures",
@@ -2584,7 +2584,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-core"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "atomic-waker",
  "bytes",
@@ -2621,7 +2621,7 @@ dependencies = [
 
 [[package]]
 name = "rama-http-types"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "bytes",
  "const_format",
@@ -2651,7 +2651,7 @@ dependencies = [
 
 [[package]]
 name = "rama-macros"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "paste-test-suite",
  "rustversion",
@@ -2660,7 +2660,7 @@ dependencies = [
 
 [[package]]
 name = "rama-net"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -2696,7 +2696,7 @@ dependencies = [
 
 [[package]]
 name = "rama-proxy"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "arc-swap",
  "itertools 0.14.0",
@@ -2717,7 +2717,7 @@ dependencies = [
 
 [[package]]
 name = "rama-socks5"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "bytes",
  "rama-core",
@@ -2732,7 +2732,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tcp"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "rama-core",
  "rama-dns",
@@ -2745,7 +2745,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "brotli",
  "flate2",
@@ -2772,7 +2772,7 @@ dependencies = [
 
 [[package]]
 name = "rama-tls-rustls"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "flume",
  "itertools 0.14.0",
@@ -2795,7 +2795,7 @@ dependencies = [
 
 [[package]]
 name = "rama-ua"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "itertools 0.14.0",
  "rama-core",
@@ -2811,7 +2811,7 @@ dependencies = [
 
 [[package]]
 name = "rama-udp"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "bytes",
  "futures-core",
@@ -2828,7 +2828,7 @@ dependencies = [
 
 [[package]]
 name = "rama-utils"
-version = "0.2.0-alpha.12"
+version = "0.2.0-alpha.13"
 dependencies = [
  "parking_lot",
  "pin-project-lite",

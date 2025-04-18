@@ -1,4 +1,4 @@
-use std::convert::Infallible;
+use std::{convert::Infallible, sync::Arc};
 
 use crate::{
     Request, Response,
@@ -139,15 +139,20 @@ where
     where
         I: IntoEndpointService<State, T>,
     {
-        let path = format!("{}/{}", prefix.trim_end_matches(['/']), "{*nest}");
-        let matcher = HttpMatcher::custom(true);
+        let path = format!("{}/{}", prefix.trim().trim_end_matches(['/']), "{*nest}");
+        let nested = Arc::new(service.into_endpoint_service().boxed());
 
         let nested_router_service = NestedRouterService {
-            prefix: prefix.to_owned(),
-            nested: service.into_endpoint_service().boxed(),
+            prefix: Arc::from(prefix),
+            nested,
         };
 
-        self.match_route(&path, matcher, nested_router_service)
+        self.match_route(
+            prefix,
+            HttpMatcher::custom(true),
+            nested_router_service.clone(),
+        )
+        .match_route(&path, HttpMatcher::custom(true), nested_router_service)
     }
 
     /// add a route to the router with it's matcher and service.
@@ -161,6 +166,11 @@ where
         I: IntoEndpointService<State, T>,
     {
         let service = service.into_endpoint_service().boxed();
+
+        let mut path = path.trim().trim_end_matches('/');
+        if path.is_empty() {
+            path = "/"
+        }
 
         if let Ok(matched) = self.routes.at_mut(path) {
             matched.value.push((matcher, service));
@@ -183,17 +193,11 @@ where
     }
 }
 
+#[derive(Debug, Clone)]
 struct NestedRouterService<State> {
-    prefix: String,
-    nested: BoxService<State, Request, Response, Infallible>,
-}
-
-impl<State: std::fmt::Debug> std::fmt::Debug for NestedRouterService<State> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NestedRouterService")
-            .field("prefix", &self.prefix)
-            .finish()
-    }
+    #[expect(unused)]
+    prefix: Arc<str>,
+    nested: Arc<BoxService<State, Request, Response, Infallible>>,
 }
 
 impl<State> Service<State, Request> for NestedRouterService<State>
@@ -210,7 +214,7 @@ where
     ) -> Result<Self::Response, Self::Error> {
         let params: UriParams = match ctx.remove::<UriParams>() {
             Some(params) => {
-                let nested_path = params.get("nest").unwrap();
+                let nested_path = params.get("nest").unwrap_or_default();
 
                 let filtered_params: UriParams =
                     params.iter().filter(|(key, _)| *key != "nest").collect();
@@ -311,7 +315,7 @@ mod tests {
         })
     }
 
-    fn get_users_servic() -> impl Service<(), Request, Response = Response, Error = Infallible> {
+    fn get_users_service() -> impl Service<(), Request, Response = Response, Error = Infallible> {
         service_fn(|_ctx, _req| async {
             Ok(Response::builder()
                 .status(200)
@@ -383,7 +387,7 @@ mod tests {
     async fn test_router() {
         let router = Router::new()
             .get("/", root_service())
-            .get("/users", get_users_servic())
+            .get("/users", get_users_service())
             .post("/users", create_user_service())
             .get("/users/{user_id}", get_user_service())
             .delete("/users/{user_id}", delete_user_service())
@@ -452,12 +456,14 @@ mod tests {
     #[tokio::test]
     async fn test_router_nest() {
         let api_router = Router::new()
-            .get("/users", get_users_servic())
+            .get("/users", get_users_service())
             .post("/users", create_user_service())
             .delete("/users/{user_id}", delete_user_service())
             .sub(
                 "/users/{user_id}",
-                Router::new().get("/orders/{order_id}", get_user_order_service()),
+                Router::new()
+                    .get("/", get_user_service())
+                    .get("/orders/{order_id}", get_user_order_service()),
             );
 
         let app = Router::new()
@@ -472,6 +478,12 @@ mod tests {
                 Method::DELETE,
                 "/api/users/123",
                 "Delete User: 123",
+                StatusCode::OK,
+            ),
+            (
+                Method::GET,
+                "/api/users/123",
+                "Get User: 123",
                 StatusCode::OK,
             ),
             (
@@ -493,9 +505,13 @@ mod tests {
             .unwrap();
 
             let res = app.serve(Context::default(), req).await.unwrap();
-            assert_eq!(res.status(), expected_status);
+            assert_eq!(
+                res.status(),
+                expected_status,
+                "method: {method} ; path = {path}"
+            );
             let body = res.into_body().collect().await.unwrap().to_bytes();
-            assert_eq!(body, expected_body);
+            assert_eq!(body, expected_body, "method: {method} ; path = {path}");
         }
     }
 }
