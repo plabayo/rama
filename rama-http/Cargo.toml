@@ -42,12 +42,12 @@ mime_guess = { workspace = true }
 nanoid = { workspace = true }
 percent-encoding = { workspace = true }
 pin-project-lite = { workspace = true }
-rama-core = { version = "0.2.0-alpha.12", path = "../rama-core" }
-rama-http-types = { version = "0.2.0-alpha.12", path = "../rama-http-types" }
-rama-macros = { version = "0.2.0-alpha.12", path = "../rama-macros" }
-rama-net = { version = "0.2.0-alpha.12", path = "../rama-net", features = ["http"] }
-rama-ua = { version = "0.2.0-alpha.12", path = "../rama-ua" }
-rama-utils = { version = "0.2.0-alpha.12", path = "../rama-utils" }
+rama-core = { version = "0.2.0-alpha.13", path = "../rama-core" }
+rama-http-types = { version = "0.2.0-alpha.13", path = "../rama-http-types" }
+rama-macros = { version = "0.2.0-alpha.13", path = "../rama-macros" }
+rama-net = { version = "0.2.0-alpha.13", path = "../rama-net", features = ["http"] }
+rama-ua = { version = "0.2.0-alpha.13", path = "../rama-ua" }
+rama-utils = { version = "0.2.0-alpha.13", path = "../rama-utils" }
 regex = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_html_form = { workspace = true }
@@ -63,8 +63,8 @@ brotli = { workspace = true }
 flate2 = { workspace = true }
 itertools = { workspace = true }
 parking_lot = { workspace = true }
-rama-http-backend = { version = "0.2.0-alpha.12", path = "../rama-http-backend" }
-rama-tcp = { version = "0.2.0-alpha.12", path = "../rama-tcp" }
+rama-http-backend = { version = "0.2.0-alpha.13", path = "../rama-http-backend" }
+rama-tcp = { version = "0.2.0-alpha.13", path = "../rama-tcp" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-test = { workspace = true }
