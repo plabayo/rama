@@ -33,7 +33,6 @@ use crate::{
     net::forwarded::Forwarded,
     net::http::RequestContext,
     net::stream::{SocketInfo, layer::http::BodyLimitLayer},
-    net::tls::client::{ECHClientHello, NegotiatedTlsParameters},
     proxy::haproxy::server::HaProxyLayer,
     rt::Executor,
     ua::profile::UserAgentDatabase,
@@ -41,6 +40,7 @@ use crate::{
 #[cfg(any(feature = "rustls", feature = "boring"))]
 use crate::{
     net::fingerprint::{Ja3, Ja4},
+    net::tls::client::{ECHClientHello, NegotiatedTlsParameters},
     tls::types::{SecureTransport, client::ClientHelloExtension},
 };
 use serde::Serialize;
