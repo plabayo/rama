@@ -68,26 +68,28 @@ use rama::{
     tcp::server::TcpListener,
 };
 
+use rama::net::tls::client::{
+    ClientConfig, ClientHelloExtension, ServerVerifyMode, extract_client_config_from_ctx,
+};
+
 #[cfg(feature = "boring")]
 use rama::{
-    net::tls::{
-        client::{ClientConfig, ClientHelloExtension, ServerVerifyMode},
-        server::{ServerAuth, ServerConfig},
-    },
+    net::tls::server::{ServerAuth, ServerConfig},
     tls::boring::server::{TlsAcceptorData, TlsAcceptorLayer},
 };
 
 #[cfg(all(feature = "rustls", not(feature = "boring")))]
 use rama::tls::rustls::{
-    client::TlsConnectorDataBuilder,
+    client::TlsConnectorData,
     server::{TlsAcceptorData, TlsAcceptorDataBuilder, TlsAcceptorLayer},
 };
 
 use rama_http::layer::compress_adapter::CompressAdaptLayer;
+use rama_net::tls::SecureTransport;
 use rama_ua::{
     emulate::{
-        SelectedUserAgentProfile, UserAgentEmulateHttpConnectModifier,
-        UserAgentEmulateHttpRequestModifier, UserAgentEmulateLayer,
+        UserAgentEmulateHttpConnectModifier, UserAgentEmulateHttpRequestModifier,
+        UserAgentEmulateLayer,
     },
     profile::UserAgentDatabase,
 };
@@ -202,6 +204,7 @@ async fn http_connect_proxy(ctx: Context, upgraded: Upgraded) -> Result<(), Infa
     let http_transport_service = HttpServer::auto(ctx.executor().clone()).service(http_service);
 
     let https_service = TlsAcceptorLayer::new(ctx.state().mitm_tls_service_data.clone())
+        .with_store_client_hello(true)
         .into_layer(http_transport_service);
 
     https_service
@@ -252,34 +255,43 @@ async fn http_mitm_proxy(ctx: Context, req: Request) -> Result<Response, Infalli
             ),
         ));
 
-    #[cfg(feature = "boring")]
-    {
-        let config = ClientConfig {
+    let base_tls_cfg = ctx
+        .get::<SecureTransport>()
+        .and_then(|st| st.client_hello())
+        .cloned()
+        .map(Into::into)
+        .unwrap_or_else(|| ClientConfig {
             server_verify_mode: Some(ServerVerifyMode::Disable),
-            extensions: (!ctx.contains::<SelectedUserAgentProfile>()).then_some(vec![
+            extensions: Some(vec![
                 ClientHelloExtension::ApplicationLayerProtocolNegotiation(vec![
                     ApplicationProtocol::HTTP_2,
                     ApplicationProtocol::HTTP_11,
                 ]),
             ]),
             ..Default::default()
-        };
+        });
 
-        client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(config)));
+    // TODO: this tls stack API needs to be easier and more performant; but especially less messy
+
+    let tls_client_config = match extract_client_config_from_ctx(&ctx) {
+        Some(chain) => {
+            let mut cfg = base_tls_cfg;
+            for other_cfg in chain.iter() {
+                cfg.merge(other_cfg.clone());
+            }
+            cfg
+        }
+        None => base_tls_cfg,
+    };
+
+    #[cfg(feature = "boring")]
+    {
+        client.set_tls_connector_config(TlsConnectorConfig::Boring(Some(tls_client_config)));
     };
 
     #[cfg(all(feature = "rustls", not(feature = "boring")))]
     {
-        let mut builder = TlsConnectorDataBuilder::new().with_no_cert_verifier();
-        if !ctx.contains::<SelectedUserAgentProfile>() {
-            builder
-                .set_alpn_protocols(&[ApplicationProtocol::HTTP_2, ApplicationProtocol::HTTP_11]);
-        }
-        let data = builder
-            .with_env_key_logger()
-            .expect("with env key logger")
-            .build();
-
+        let data = TlsConnectorData::from(tls_client_config);
         client.set_tls_connector_config(TlsConnectorConfig::Rustls(Some(data)))
     };
 
