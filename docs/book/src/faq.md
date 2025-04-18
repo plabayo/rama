@@ -72,6 +72,10 @@ Yes you can, there are even some examples:
   a web service example showcasing how one might do a key value store web service using `Rama`;
 - [http_web_service_dir_and_api.rs](https://github.com/plabayo/rama/tree/main/examples/http_web_service_dir_and_api.rs):
   a web service example showcasing how one can make a web service to serve a website which includes an XHR API;
+- [/examples/http_web_router.rs](./examples/http_web_router.rs):
+  a web service example showcasing demonstrating how to create a web router,
+  which is excellent for the typical path-centric routing,
+  and an approach you'll recognise from most other web frameworks out there.
 
 Given Rama's prime focus is to aid in the development of proxy services it is
 even more natural to write web services that run as part of a proxy service, e.g.:
